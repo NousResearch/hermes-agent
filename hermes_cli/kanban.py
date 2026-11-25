@@ -207,7 +207,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
+    "claim", "continue", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
@@ -315,6 +315,17 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
                                  expected_run_id=_worker_run_id_for(args.task_id))
     return _ok_or_err(ok, f"cannot heartbeat {args.task_id} (not running?)",
                       f"Heartbeat recorded for {args.task_id}")
+
+
+def _cmd_continue(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        grant = kb.authorize_continuation(
+            conn, args.task_id, profile=args.profile, expected_run_id=args.from_run,
+            authority_comment_id=args.authority_comment, reason=args.reason,
+            actor=_profile_author(), ttl_seconds=args.ttl,
+        )
+    print(f"Continuation authorized: {args.task_id}, event {grant}; awaiting normal dispatcher admission")
+    return 0
 
 
 def _cmd_assignees(args: argparse.Namespace) -> int:
@@ -1323,7 +1334,7 @@ _HANDLERS = {
     "assign": _cmd_assign, "set-model": _cmd_set_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
-    "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
+    "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim, "continue": _cmd_continue,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,

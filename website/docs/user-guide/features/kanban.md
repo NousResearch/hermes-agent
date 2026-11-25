@@ -1040,6 +1040,43 @@ To see why a ready card is not spawning, run `hermes kanban dispatch --dry-run` 
 
 `recent_success` and `active_pr` hold the **ready** lane only — they are the inputs to a review handoff, not signals against one. To have a reviewer, closer or other recovery profile pick up a card whose PR is already open, either move it to the review lane with `hermes kanban request-review <id>` (accepted from `ready` as well as `running`; the review-lane spawn is not subject to either guard) or hand the ready card to that profile with `hermes kanban assign <id> <profile>`: a handoff recorded *after* the PR comment — an operator reassign, a reviewer's changes-requested verdict, or a review reopen — lifts `active_pr` for the profile now named on the card, because that PR is exactly what it must work on. Only a change to a *different* profile counts: re-assigning the same profile, unassigning, or the dispatcher's own `kanban.default_assignee` fill-in does not lift the guard, so the assignee that opened the PR is still not re-spawned against it after a crash, reclaim or no-op reassign, and a newer PR comment posted after the handoff guards again. A deliberate re-queue after a success (drag `done→ready`, `unblock`, re-promotion) also lifts `recent_success`, so a manual re-run is never silently held for the whole window.
 
+### Explicit same-owner continuation
+
+A PR link is not permission to start another worker. After verifying the current
+instruction and the existing PR, a local operator can explicitly authorize **one**
+additional attempt by the same responsible profile:
+
+```bash
+hermes kanban continue t_example --profile builder --from-run 42 \
+  --authority-comment 73 --reason "Approved amendment to the existing PR"
+```
+
+The exact newest comment is a versioned evidence anchor; its text is never parsed
+as authorization. The explicit operation records actor, reason, task, responsible
+profile, source run/claim, acceptance fingerprint and expiry (default one hour;
+`--ttl` accepts 1–86400 seconds). The task must have a matching current/previous
+attempt. A worker cannot authorize its own continuation, and delegated children
+cannot use the mutation. This is the existing trusted-local-operator boundary,
+not authentication against another process running as the same OS user.
+
+Authorization does **not** unblock, reassign, claim, start a process or imply that
+work resumed. It may be recorded before or after an active attempt blocks; an
+ordinary, separately justified unblock is still required. A valid grant allows
+normal dispatch through `active_pr`/`recent_success` only. All other quota/auth,
+profile, memory, workload, dependency and atomic-claim gates remain in place. The
+grant is rechecked and consumed in the same transaction that opens the new run;
+`continuation_consumed` carries that run's identity. Concurrent claims cannot
+consume it twice. Changed acceptance, newer comments, changed ownership/review,
+a later attempt, expiry or prior consumption make the grant unusable. Reconcile
+new evidence explicitly rather than replaying or extending an old permission.
+
+Use `hermes kanban dispatch --dry-run` to inspect eligibility without consuming
+a grant. Read actual claim, owner-admission and worker receipts, then substantive
+work, before reporting recovery. Source support alone does not activate this
+behavior in an already-running dispatcher; use the normal program publication
+and permitted activation procedure. Never hand-edit a running install or use a
+fake review/reassignment to bypass the guard.
+
 ### Drag-to-delete and bulk delete (dashboard)
 
 The dashboard exposes a **trash drop zone** on the kanban page — drag any card into it to delete the task (cascades through `task_events`, child links, and subscriptions). A confirmation prompt protects against accidents. Bulk delete is also reachable via `DELETE /api/plugins/kanban/tasks` with a JSON body `{"ids": ["t_abc", "t_def", ...]}`.

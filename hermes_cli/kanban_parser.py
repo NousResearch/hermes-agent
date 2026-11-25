@@ -277,6 +277,14 @@ _SPECS = [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),
     ], help="Atomically claim a ready task (prints resolved workspace path)"),
+    _cmd("continue", [
+        _TASK_ID,
+        _arg("--profile", required=True, help="Existing responsible profile (not a reassignment)"),
+        _arg("--from-run", type=int, required=True, help="Exact previous/current owner attempt"),
+        _arg("--authority-comment", type=int, required=True, help="Exact newest authority/evidence comment ID"),
+        _arg("--reason", required=True, help="Why this explicit continuation is authorized"),
+        _arg("--ttl", type=int, default=3600, help="One-use grant lifetime, 1–86400 seconds"),
+    ], help="Authorize one same-owner attempt through normal dispatcher admission (does not unblock or spawn)"),
     _cmd("comment", [
         _TASK_ID,
         _arg("text", nargs="+", help="Comment body"),

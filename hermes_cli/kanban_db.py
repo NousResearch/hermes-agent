@@ -2168,39 +2168,20 @@ def _claim_and_open_run(
     return run_id
 
 
+def authorize_continuation(conn, task_id, **kwargs):
+    """Explicit operator authorization; see ``kanban_continuation``."""
+    from hermes_cli.kanban_continuation import authorize_continuation as authorize
+    return authorize(conn, task_id, **kwargs)
+
+
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, continuation_id: Optional[int] = None,
 ) -> Optional[Task]:
-    """Atomically transition ``ready -> running``.
-
-    Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
-    """
-    now = int(time.time())
-    lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
-        # Single enforcement point: never ready -> running with an undone
-        # parent, whichever writer set 'ready'. Demote to 'todo';
-        # recompute_ready re-promotes when the parents finish.
-        if not _parents_satisfied(conn, task_id):
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' "
-                "WHERE id = ? AND status = 'ready'", (task_id,),
-            )
-            _append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
-            return None
-        # Close a leaked prior run so the CAS below doesn't strand it.
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
-        )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
-        if run_id is None:
-            return None
-        claimed = get_task(conn, task_id)
-    _fire_task_hook("kanban_task_claimed", claimed, task_id, run_id)
-    return claimed
+    """Atomic ready -> running; an explicit continuation is consumed in the same transaction."""
+    from hermes_cli.kanban_continuation import claim_ready_task
+    return claim_ready_task(conn, task_id, ttl_seconds=ttl_seconds,
+                            claimer=claimer, continuation_id=continuation_id)
 
 
 def claim_review_task(

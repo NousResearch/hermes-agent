@@ -149,6 +149,21 @@ def test_a_stored_handoff_keeps_its_own_list_and_an_unstored_one_carries_it(home
         msgs = msgs + _next_batch(rnd + 1)
 
 
+def test_an_unstored_handoff_in_the_protected_head_keeps_its_archives_listed():
+    """Assembly drops a standalone handoff from the protected head; its archive paths must then move into
+    the new list rather than be counted as "kept" by a row the committed transcript no longer has."""
+    from agent.context_compressor import _HandoffScan
+    from tools.tool_result_storage import ARCHIVE_LIST_HEADING, pruned_archive_refs
+    c = _compressor()
+    old = {"role": "user", COMPRESSED_SUMMARY_METADATA_KEY: True, "content": c._with_summary_prefix("old")
+           + f"\n\n{ARCHIVE_LIST_HEADING}\n- ~/.hermes/cache/pruned/old.txt"}
+    rows = [old, {"role": "assistant", "content": "work"}, {"role": "user", "content": "continue"}]
+    scan = _HandoffScan(turns_to_summarize=[], summary_indices={0}, tail_start=2,
+                        previous_summary_before=None, has_user_turn_before=True)
+    out = c._assemble_with_archive_list(rows, 1, 2, scan, c._with_summary_prefix("new"))
+    assert pruned_archive_refs(out) == {"cache/pruned/old.txt"}
+
+
 def test_stripping_removes_only_generated_list_blocks_not_a_quoted_heading():
     from tools.tool_result_storage import ARCHIVE_LIST_HEADING, strip_archive_list
     block = f"\n\n{ARCHIVE_LIST_HEADING}\n- ~/.hermes/cache/pruned/a.txt\n- ~/.hermes/cache/pruned/b.json"

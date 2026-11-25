@@ -160,7 +160,9 @@ class CompactionWindowMixin:
                 or not (msg.get(_DB_PERSISTED_MARKER) or isinstance(msg.get("_row_id"), int))
                 else self._strip_context_summary_handoff_message(msg)) is not None
         )
-        kept = [*messages[:start], *messages[max(end, scan.tail_start):], {"content": summary}]
+        # What the committed transcript really keeps: assembly drops standalone handoffs from the head and tail.
+        kept = [*self._assemble_head(messages, start), {"content": summary},
+                *self._assemble_tail(messages, end, scan.tail_start, scan.summary_indices)]
         return self._assemble_compressed(messages, start, end, scan, summary + archive_list_for_summary(named, kept))
 
     def _offload_window_results(

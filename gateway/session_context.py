@@ -53,9 +53,6 @@ _SESSION_VARS = (
 # (steer, redirect) clears its user in place (``absorb_turn_input``); the worker's copied ACTOR vars
 # cannot change from outside, so ``get_session_env`` re-reads the actor through it.
 _SESSION_TURN_EVENT: ContextVar[Any] = ContextVar("HERMES_SESSION_TURN_EVENT", default=None)
-# ``bound_turn_origin`` of an event-less follow-up turn (a late /steer run as the next turn), which
-# runs under the turn event it follows; _UNSET defers to that event.
-_SESSION_TURN_ORIGIN: ContextVar[Any] = ContextVar("HERMES_SESSION_TURN_ORIGIN", default=_UNSET)
 _ACTOR_VAR_NAMES = frozenset({"HERMES_SESSION_ACTOR_ID", "HERMES_SESSION_ACTOR_NAME"})
 
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
@@ -125,26 +122,13 @@ def scoped_turn_actor(event: Any, turn: Any) -> Iterator[None]:
     actor = event if getattr(event, "user_id", None) is not None else getattr(event, "source", None)
     tokens = ((_SESSION_ACTOR_ID, _SESSION_ACTOR_ID.set(str(getattr(actor, "user_id", None) or ""))),
               (_SESSION_ACTOR_NAME, _SESSION_ACTOR_NAME.set(str(getattr(actor, "user_name", None) or ""))),
-              (_SESSION_TURN_EVENT, _SESSION_TURN_EVENT.set(event)),
-              (_SESSION_TURN_ORIGIN, _SESSION_TURN_ORIGIN.set(_UNSET)))
+              (_SESSION_TURN_EVENT, _SESSION_TURN_EVENT.set(event)))
     try:
         with turn.running_follow_up(event):
             yield
     finally:
         for var, token in reversed(tokens):
             var.reset(token)
-
-
-@contextmanager
-def scoped_turn_origin(origin: str | None) -> Iterator[None]:
-    """Answer ``bound_turn_origin`` with *origin* for a follow-up turn that has no event of its own and
-    so runs under the event it follows (a late /steer drained as the next turn: the person's text, not
-    the turn it followed), restoring the outer answer on exit."""
-    token = _SESSION_TURN_ORIGIN.set(origin)
-    try:
-        yield
-    finally:
-        _SESSION_TURN_ORIGIN.reset(token)
 
 
 @contextmanager
@@ -201,7 +185,6 @@ def set_session_vars(
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
     tokens.append(_SESSION_TURN_EVENT.set(turn_event))
-    tokens.append(_SESSION_TURN_ORIGIN.set(_UNSET))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
@@ -217,7 +200,6 @@ def clear_session_vars(tokens: list) -> None:
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _SESSION_TURN_EVENT.set(None)
-    _SESSION_TURN_ORIGIN.set(_UNSET)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -232,7 +214,6 @@ def reset_session_vars() -> None:
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _SESSION_TURN_EVENT.set(None)
-    _SESSION_TURN_ORIGIN.set(_UNSET)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -248,11 +229,7 @@ def _bound_session_value(name: str) -> Any:
 
 def bound_turn_origin() -> str | None:
     """``MessageEvent.turn_origin`` of the turn this context runs, ``None`` with no turn bound (a
-    managed worker, cron, the CLI or a plugin's slash command bind no event); an event-less
-    follow-up's own answer (``scoped_turn_origin``) wins over the event it runs under."""
-    origin = _SESSION_TURN_ORIGIN.get()
-    if origin is not _UNSET:
-        return origin
+    managed worker, cron, the CLI or a plugin's slash command bind no event)."""
     event = _SESSION_TURN_EVENT.get()
     return event.turn_origin() if event is not None else None
 

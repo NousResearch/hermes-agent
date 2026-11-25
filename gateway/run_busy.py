@@ -258,14 +258,15 @@ class GatewayBusySessionMixin:
                 )
         return pending_event, pending
 
-    def _follow_up_turn_scope(self, session_key: Optional[str], pending_event: Optional[MessageEvent]) -> Any:
+    def _follow_up_turn_scope(
+        self, session_key: Optional[str], source: SessionSource, pending_event: Optional[MessageEvent], pending: str,
+    ) -> Any:
         """The binding a drained follow-up turn runs under (``_run_agent_queued_followup``): its own
-        event's sender and origin, or, with no event of its own (a late /steer, interrupt text), the
-        turn it follows minus that turn's origin: the follow-up is not that producer's input."""
-        from gateway.session_context import scoped_turn_actor, scoped_turn_origin
-        if pending_event is not None:
-            return scoped_turn_actor(pending_event, self._session_state(session_key).turn)
-        return scoped_turn_origin(None)
+        event, or, with none (a late /steer, interrupt text), a carry-over event for its text
+        (``_carry_over_event``): the turn's actor, and no producer, since it is the person's input."""
+        from gateway.session_context import scoped_turn_actor
+        event = pending_event if pending_event is not None else self._carry_over_event(session_key, source, pending)
+        return scoped_turn_actor(event, self._session_state(session_key).turn)
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""

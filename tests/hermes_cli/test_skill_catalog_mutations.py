@@ -124,6 +124,83 @@ def test_cancelled_queued_acquire_never_reaches_projection(tmp_path, monkeypatch
         facade.release(dict(permit_id=permit['permit_id']))
 
 
+@pytest.mark.parametrize('method', ['acquire', 'recovery_acquire'])
+def test_cancel_cleanup_publication_failure_keeps_worker_alive(tmp_path, monkeypatch, method):
+    from hermes_cli.skill_catalog import projection as storage
+    from tests.waiting import wait_until
+
+    with admitted(tmp_path) as (p, owner, facade, admission, op):
+        # Bind is durable before acquire. A failed unknown-state publication must
+        # retain that unresolved row byte-for-byte, never invent a terminal result.
+        before = (p.directory / 'claims.json').read_bytes()
+        entered, resume = threading.Event(), threading.Event()
+        original = getattr(facade, '_do_' + method)
+        original_wait, original_put = threading.Event.wait, facade._queue.put_nowait
+        stage = storage._stage
+        commands = []
+
+        def record(command):
+            commands.append(command)
+            return original_put(command)
+
+        def delayed(payload):
+            result = original(payload)
+            entered.set()
+            assert resume.wait(10)
+            return result
+
+        def failed_stage(*args):
+            raise OSError('injected disk publication failure')
+
+        monkeypatch.setattr(facade._queue, 'put_nowait', record)
+        monkeypatch.setattr(facade, '_do_' + method, delayed)
+        monkeypatch.setattr(threading.Event, 'wait', lambda event, timeout=None:
+            original_wait(event, 0.1 if timeout == 3.5 else timeout))
+        payload = dict(admission=admission, operation_id=op)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(getattr(facade, method), payload)
+                assert entered.wait(5)
+                with pytest.raises(CatalogError) as caught:
+                    pending.result(5)
+                assert caught.value.code == 'outcome_unknown'
+                command, = commands
+                # Only the abandoned caller gets the accelerated wait. Restored
+                # FIFO/reconciliation commands retain their real production budget.
+                monkeypatch.setattr(threading.Event, 'wait', original_wait)
+                monkeypatch.setattr(storage, '_stage', failed_stage)
+                resume.set()
+                assert wait_until(lambda: command.done.is_set() or not facade._thread.is_alive(), timeout=5)
+                assert facade._thread.is_alive(), 'cancel cleanup publication error killed permit owner'
+                assert command.done.is_set(), 'abandoned command was not notified'
+                assert isinstance(command.error, CatalogError)
+                assert command.error.code == 'ownership_state_unavailable'
+                assert facade._permit is None
+                assert (p.directory / 'claims.json').read_bytes() == before
+                assert 'Catalog abandoned acquire cleanup failed: CatalogError' in (
+                    tmp_path / 'logs/skill-catalog.log').read_text()
+            monkeypatch.setattr(storage, '_stage', stage)
+            monkeypatch.setattr(facade, '_do_' + method, original)
+            assert p.read()['reservations'][admission['reservation_id']]['state'] == 'bound'
+            assert facade.settlement(op) == 'reconciling'  # real next FIFO command
+            acquired = getattr(facade, method)(payload)
+            assert facade.validate(dict(permit_id=acquired['permit_id']))
+            facade._send('release', dict(permit_id=acquired['permit_id']))
+            result = operation(owner, op, state='failed', outcome='refused',
+                               managed_state='not_installed', installation_revision=None)
+            owner.provider = type('Provider', (), {'operation': lambda self, request: dict(ok=True, data=result)})()
+            owner.ready = True
+            facade.reconcile(operation_id=op)
+            assert facade.settlement(op) == 'settled'
+            assert p.read()['reservations'] == {}
+        finally:
+            resume.set()
+            monkeypatch.setattr(storage, '_stage', stage)
+            # The baseline dies here. Avoid masking its behavioral failure at teardown.
+            if not facade._thread.is_alive():
+                facade._closed = True
+
+
 def test_commit_derives_target_holds_both_locks_and_idempotently_settles(tmp_path):
     with admitted(tmp_path) as (p, owner, facade, admission, op):
         with facade.commit(admission, op) as commit:

@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from agent.memory_provider import spawn_context_thread
+from hermes_cli.skill_catalog import diagnostics
 from hermes_cli.skill_catalog.locks import writer_hold
 from hermes_cli.skill_catalog.projection import _target, _conflict
 from hermes_cli.skill_catalog.validation import CatalogError, validate_result
@@ -62,10 +63,16 @@ class Mutations:
                 command.error = exc
             finally:
                 with command.lock:
-                    if (command.cancelled and command.method in ('acquire', 'recovery_acquire')
-                            and command.result is not None):
-                        self._do_release(dict(permit_id=command.result['permit_id']))
-                    command.done.set()
+                    try:
+                        if (command.cancelled and command.method in ('acquire', 'recovery_acquire')
+                                and command.result is not None):
+                            self._do_release(dict(permit_id=command.result['permit_id']))
+                    except Exception as exc:  # health: allow BLE001 -- abandoned publication has the same containment as the command body
+                        command.error = exc
+                        diagnostics.write(self.projection.home,
+                                          f'Catalog abandoned acquire cleanup failed: {type(exc).__name__}')
+                    finally:
+                        command.done.set()
             if command.method == 'close' and command.error is None:
                 return
 

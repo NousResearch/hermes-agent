@@ -153,6 +153,19 @@ it('lets a keyboard-opened card be clicked: focus moving into the card does not 
   expect(preview()).not.toBeNull()
 })
 
+it('closes a keyboard-opened card when its picture is pressed to open the Screen', async () => {
+  render(<AgentScreenRow agent={OPS} />)
+  focusRow(true)
+  await wait(0)
+  const tile = preview()!.querySelector('button')!
+
+  fireEvent.blur(row(), { relatedTarget: tile })
+  fireEvent.click(tile)
+  await wait(0)
+
+  expect(preview()).toBeNull()
+})
+
 it('starts closed again when the screen stops and later runs again', async () => {
   const view = render(<AgentScreenRow agent={OPS} />)
   rest()

@@ -141,17 +141,18 @@ function LiveScreenRow({ mark, screen }: { mark: 'needs-input' | 'working'; scre
             align="start"
             aria-label={`${b.screen.portalTitle}: ${says}`}
             className="portal-screen-preview"
+            // A press on the picture opens the Screen: the look is over, however the card was opened.
+            onClick={preview.close}
             // Looking is not moving: focus stays on the row, opening and closing.
             onCloseAutoFocus={event => event.preventDefault()}
             // The row is the card's own anchor, not somewhere else: it decides when the card goes.
             onInteractOutside={event => row.current?.contains(event.target as Node) && event.preventDefault()}
             onOpenAutoFocus={event => event.preventDefault()}
+            ref={card}
             side="right"
             {...preview.hoverHandlers}
           >
-            <div ref={card}>
-              <ScreenHero bot={bot} />
-            </div>
+            <ScreenHero bot={bot} />
           </PopoverContent>
         </Popover>
       </div>

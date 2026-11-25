@@ -2192,10 +2192,6 @@ class ContextCompressor(
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
         super().on_session_start(session_id, **kwargs)
-        if "platform" in kwargs:
-            from agent.session_source import SEARCH_HIDDEN_SOURCES, session_source_for
-
-            self._store_searchable = session_source_for(kwargs["platform"]) not in SEARCH_HIDDEN_SOURCES
         boundary_reason = kwargs.get("boundary_reason")
         old_session_id = kwargs.get("old_session_id")
         if "session_db" in kwargs:
@@ -5090,8 +5086,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
         # Phase 4: the summary exists, so archive what the compaction drops or shortens, then assemble.
-        messages, pruned_count = self._commit_window(canonical_messages, plan, pruned_count, compress_start, compress_end)
-        compressed = self._assemble_with_archive_list(messages, compress_start, compress_end, scan, summary)
+        searchable = self._session_searchable()
+        messages, pruned_count = self._commit_window(canonical_messages, plan, pruned_count, compress_start, compress_end,
+                                                     searchable)
+        compressed = self._assemble_with_archive_list(messages, compress_start, compress_end, scan, summary, searchable)
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(

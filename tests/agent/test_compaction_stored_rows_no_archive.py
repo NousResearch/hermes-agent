@@ -25,10 +25,13 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _compressor():
+def _compressor(searchable=True):
+    """A compressor whose session row session_search returns (the real check reads the store; see the e2e test)."""
     with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
         c = ContextCompressor(model="test/model", quiet_mode=True, protect_first_n=2, protect_last_n=4)
     c._session_id = "s1"
+    if searchable:
+        c._session_searchable = lambda: True
     return c
 
 
@@ -96,11 +99,9 @@ def test_a_stored_row_that_already_points_at_an_archive_adds_no_list_entry(home)
     assert "s1_earlier_read_file_00" not in _summary(out)
 
 
-@pytest.mark.parametrize("platform", ["subagent", "kanban"])
-def test_a_session_search_never_returns_keeps_its_archives_and_list(home, platform):
-    """session_search hides subagent and kanban sessions, so their store copy is no way back: keep the files."""
-    c = _compressor()
-    c.on_session_start("s1", platform=platform)
+def test_a_session_not_confirmed_searchable_keeps_its_archives_and_list(home):
+    """No bound store row to read the source from (the gateway's one-off compressor): keep every file and list it."""
+    c = _compressor(searchable=False)
     with _no_pointer_summary():
         out = c.compress(_transcript(), current_tokens=c.threshold_tokens + 1)
 
@@ -130,7 +131,8 @@ def test_a_mixed_window_lists_only_the_unstored_results(home):
     assert _archived(home) == listed | pruned_archive_refs(kept)
 
 
-def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_file(home):
+@pytest.mark.parametrize("source", ["cli", "subagent", "kanban"])
+def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_file(home, source):
     """Real AIAgent, real SQLite and the in-place commit: the replaced tool result's exact text comes back from
     session_search, so dropping its file and list line loses nothing the model can reach."""
     import os
@@ -145,7 +147,7 @@ def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_fil
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), \
             open_persistence(profile_scope(home=Path(home))) as db, _no_pointer_summary(), \
             patch("agent.context_compressor.get_model_context_length", return_value=200_000):
-        seed_session(db, sid, "cli", model="test/model")
+        seed_session(db, sid, source, model="test/model")
         from run_agent import AIAgent
 
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
@@ -160,6 +162,10 @@ def test_a_real_store_commit_keeps_each_replaced_result_searchable_without_a_fil
 
         active = [m.as_openai_message() for m in db.messages.read_conversation(sid, ConversationRequest())]
         summary = _summary(active)
+        if source != "cli":  # session_search hides this session, even from itself: the files stay the way back
+            listed = pruned_archive_refs([{"content": summary}])
+            assert listed and listed <= _archived(home)
+            return
         assert ARCHIVE_LIST_HEADING not in summary
         replaced = sorted({int(m["content"][7:9]) for m in msgs if m.get("role") == "tool"}
                           - {int(m["content"][7:9]) for m in compressed

@@ -710,6 +710,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                     max_tool_calls=max_tool_calls, reset=bool(reset),
                     idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
                     session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                    approval=approval,
                 )
             except Exception:
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)

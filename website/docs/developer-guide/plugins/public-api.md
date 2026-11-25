@@ -135,13 +135,11 @@ with a name allows that one name only.
 | `agent.runtime_cwd` | `resolve_agent_cwd` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `agent.terminal_env_provider` | `CommandApproval` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `agent.terminal_env_provider` | `CommandContext` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
-| `agent.terminal_env_provider` | `command_context` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `agent.terminal_env_provider` | `current_command_context` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `agent.usage_pricing` | `CostResult` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `hermes_cli.auth_constants` | `AuthError` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `tools.environments.base` | `BaseEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `tools.environments` | `BaseEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
-| `tools.environments.command_context` | whole module | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `utils` | `atomic_json_write` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `utils` | `read_json_or_empty` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `gateway.platforms.access_policy_mixin` | `OwnAccessPolicyMixin` | adding-platform-adapters.md § Public helpers for platform plugins |

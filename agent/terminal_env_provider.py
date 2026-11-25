@@ -13,7 +13,7 @@ know who is calling and whether the dangerous-command gate already approved the 
 :func:`current_command_context` inside ``execute()``: it returns a :class:`CommandContext` (origin,
 background job id, the gated command, task/session ids, and the :class:`CommandApproval`) or ``None``
 for a caller that has not opted in. See ``tools/environments/command_context.py`` for the origins and
-the rule for trusting ``approval``.
+the rule for trusting ``approval``. Only Hermes stamps a context; a plugin can read it, not set it.
 """
 
 from __future__ import annotations
@@ -23,12 +23,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.provider_base import ProviderBase
 from tools.environments.command_context import (
-    CommandApproval, CommandContext, command_context, current_command_context,
+    CommandApproval, CommandContext, current_command_context,
 )
 
+# The reader is public; the ``command_context`` setter is not, so a plugin cannot stamp an approval.
 __all__ = [
     "CommandApproval", "CommandContext", "TerminalEnvironmentProvider",
-    "command_context", "current_command_context",
+    "current_command_context",
 ]
 
 

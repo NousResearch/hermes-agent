@@ -12,8 +12,9 @@ The context rides a :class:`contextvars.ContextVar` rather than a new ``execute(
 plugin environments are duck types, so a new keyword would raise ``TypeError`` on the environments
 that never opted in. Context already propagates to every place that needs it — ``run_bounded_sync``
 copies context into its worker, ``asyncio.to_thread`` copies it, and execute_code's RPC threads run
-under ``propagate_context_to_thread``. A background poller thread starts under the *spawn's* copied
-context, so it sets its own value instead of inheriting one.
+under ``propagate_context_to_thread``. A background poller thread starts under a copy of its *caller's*
+context, which may still carry the spawn's stamp, so the poller sets ``background_poll`` itself
+instead of inheriting one.
 
 ``None`` means unknown, the default for anything that has not opted in (including a plugin's own
 calls into its environment). Hermes sets the innermost context; a ``terminal`` tool call dispatched
@@ -65,10 +66,13 @@ class CommandContext:
     ``"internal"`` (Hermes's own probes, e.g. the system prompt's backend probe).
 
     ``job_id`` is the ``ProcessSession.id`` of a background job (spawn, poll, kill). ``inner_command``
-    is the command a background wrapper carries: the one the gate approved. ``approval.kind`` is
-    ``"user"``, ``"smart"``, ``"pre_approved"``, ``"forced"``, ``"no_findings"``, ``"batch"`` (a
-    decision collected ahead of the run by the batch approval flow), ``"gate_skipped"`` (the backend
-    skips dangerous-command prompts), or ``"execute_code:<kind>"`` for a whole-script gate.
+    is the command a background wrapper carries: the one the gate approved. ``approval.kind`` says
+    how the gate let the command through. A human or Hermes's rules approved this exact command for
+    ``"user"``, ``"smart"``, ``"pre_approved"``, ``"batch"`` (a decision collected ahead of the run
+    by the batch approval flow) and ``"no_findings"`` (a scan ran and found nothing).
+    Nothing judged it for ``"bypass"`` (yolo or ``approvals.mode: off``), ``"unattended"`` (no
+    reviewer present under an approve policy), ``"forced"`` (the caller's ``force`` skipped the gate)
+    and ``"gate_skipped"`` (the gate did not run, e.g. an isolated backend). ``"execute_code:<kind>"`` is a whole-script gate with one of those kinds.
     """
 
     origin: str

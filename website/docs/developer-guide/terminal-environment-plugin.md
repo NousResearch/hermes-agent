@@ -217,15 +217,34 @@ not opted in, your own calls included):
 | `task_id`, `session_key` | the owning task and session, when known |
 | `approval` | `CommandApproval(command, kind)`, or `None` |
 
-`kind` is how the dangerous-command gate let the command through: `user`,
-`smart`, `pre_approved`, `forced`, `no_findings`, `gate_skipped` (the backend
-skips prompts) or `batch` (the batch approval flow collected the decision
-before the run). **Trust `approval` only when** `origin == "terminal"` and
+`kind` is how the dangerous-command gate let the command through:
+
+| `kind` | How the command passed | Someone approved this exact command |
+|---|---|---|
+| `user` | a person answered the approval prompt | yes |
+| `smart` | smart approval (the guardian model) approved the flagged command | yes |
+| `pre_approved` | an earlier session/always answer or an allowlist entry covers it | yes |
+| `batch` | the batch approval flow collected the decision before the run | yes |
+| `forced` | the caller ran it with `force`, which skips the gate | no |
+| `no_findings` | the scan ran and found nothing to flag | yes (Hermes's rules) |
+| `bypass` | yolo or `approvals.mode: off`; nothing was scanned | no |
+| `unattended` | no reviewer was present and an approve policy (cron, `-q`, webhook) applied; nothing was scanned | no |
+| `gate_skipped` | the gate did not run (an isolated backend, or `execute_code` leaving the script to per-call guards) | no |
+
+Treat `user`, `smart`, `pre_approved`, `batch` and `no_findings` as "a person or
+Hermes's rules approved this command". Treat `bypass`, `unattended`, `forced`
+and `gate_skipped` as "nobody judged it".
+
+**Trust `approval` only when** `origin == "terminal"` and
 `approval.command` is exactly the `command` argument your `execute()` received
 (the gate approves the raw command before Hermes rewrites it), or for a
 background spawn when `inner_command` matches it. Anything else is provenance
 only: an `execute_code` script is gated as a whole and stamped
-`execute_code:<kind>`, which says nothing about the commands inside it.
+`execute_code:<kind>` (with `origin == "execute_code"` on the command that ships
+the script), which says nothing about the commands inside it.
+
+You can read the context, not set it: only Hermes stamps one, so a plugin cannot
+forge an approval.
 
 The value rides a `ContextVar`, so it needs no `execute()` keyword: it is set
 for the duration of one call and reset on return, and a nested call (a

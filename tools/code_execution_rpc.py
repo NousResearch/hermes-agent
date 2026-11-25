@@ -14,9 +14,10 @@ import shlex
 import socket
 import threading
 import time
+from typing import Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
-from tools.environments.command_context import command_context
+from tools.environments.command_context import CommandApproval, command_context
 from tools.registry import tool_error
 
 # Logger name kept as the origin module's so existing log expectations hold.
@@ -48,13 +49,23 @@ def _private_dirs_cmd(root: str, *subdirs: str) -> str:
     return f"umask 077 && mkdir -p {mkdir} && chmod 700 {chmod}"
 
 
-def _execute_checked(env, cmd: str, what: str, *, timeout: int, **kwargs) -> dict:
+def _rpc_or_script_context(approval: Optional[CommandApproval], task_id: Optional[str]):
+    """The stamp for a shipped file: ``execute_code`` carrying the gate's *approval* when the file
+    IS the model's script (a kernel cell request), else ``execute_code_rpc`` for Hermes's traffic."""
+    if approval is None:
+        return command_context("execute_code_rpc", task_id=task_id)
+    return command_context("execute_code", task_id=task_id, approval=approval)
+
+
+def _execute_checked(env, cmd: str, what: str, *, timeout: int,
+                     approval: Optional[CommandApproval] = None, task_id: Optional[str] = None,
+                     **kwargs) -> dict:
     """Run *cmd* from ``/`` and raise ``RuntimeError`` on a non-zero exit.
 
     Used where a silent failure would ship secrets or code into a missing,
     half-written, or still-permissive remote path. The error carries the
     command output only, never the payload."""
-    with command_context("execute_code_rpc"):
+    with _rpc_or_script_context(approval, task_id):
         result = env.execute(cmd, cwd="/", timeout=timeout, **kwargs)
     if result.get("returncode", 1) != 0:
         raise RuntimeError(f"{what} failed: {result.get('output')!r}")
@@ -62,7 +73,8 @@ def _execute_checked(env, cmd: str, what: str, *, timeout: int, **kwargs) -> dic
 
 
 def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
-                  timeout: int = 30, check: bool = False):
+                  timeout: int = 30, check: bool = False,
+                  approval: Optional[CommandApproval] = None, task_id: Optional[str] = None):
     """Write *content* owner-only to *remote_path*; returns the execute() result
     (``check=True`` raises on failure via _execute_checked).
 
@@ -72,7 +84,11 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     ``/proc/*/cmdline``; ``BaseEnvironment.execute`` embeds it as a heredoc
     for heredoc-mode backends (modal, daytona, vercel), and managed_modal
     forwards it as ``stdinData``, the same contract ``_write_to_sandbox``
-    relies on."""
+    relies on.
+
+    ``approval`` is set only when *content* carries the model's script (a kernel cell request):
+    the write is then stamped ``execute_code`` with the gate's verdict instead of
+    ``execute_code_rpc``."""
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     target = shlex.quote(remote_path)
     write = (f"base64 -d > {target}.tmp && mv -f {target}.tmp {target}"
@@ -80,8 +96,8 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     cmd = f"umask 077 && {write}"
     if check:
         return _execute_checked(env, cmd, f"remote file ship for {remote_path!r}",
-                                timeout=timeout, stdin_data=encoded)
-    with command_context("execute_code_rpc"):
+                                timeout=timeout, stdin_data=encoded, approval=approval, task_id=task_id)
+    with _rpc_or_script_context(approval, task_id):
         return env.execute(cmd, cwd="/", timeout=timeout, stdin_data=encoded)
 
 

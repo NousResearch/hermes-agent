@@ -9,6 +9,7 @@ environment and assert what ``execute()`` sees.
 
 import asyncio
 import base64
+import contextlib
 import json
 import re
 import time
@@ -33,6 +34,7 @@ class RecordingEnv:
 
     def __init__(self, output="", responder=None):
         self.commands = []
+        self.stdins = []
         self.contexts = []
         self.cwd = "~"
         self.output = output
@@ -40,6 +42,7 @@ class RecordingEnv:
 
     def execute(self, command, cwd="", *, timeout=None, stdin_data=None, **kwargs):
         self.commands.append(command)
+        self.stdins.append(stdin_data)
         self.contexts.append(current_command_context())
         output = self.responder(command) if self.responder else self.output
         return {"output": output, "returncode": 0}
@@ -142,7 +145,7 @@ def test_background_spawn_stamps_its_job_and_the_gated_command(monkeypatch):
 
 
 def test_poller_and_stop_stamp_the_job_without_an_approval(monkeypatch):
-    """Poller threads start under the spawn's copied context, so they set their own value."""
+    """A poller thread copies its caller's context (which may carry the spawn's stamp), so it sets its own value."""
     env = RecordingEnv(output="0 0 exit:0\n")
     registry = ProcessRegistry()
     session = ProcessSession(id="proc_ctx", command="sleep 5", task_id="t1",
@@ -165,8 +168,9 @@ def test_poller_and_stop_stamp_the_job_without_an_approval(monkeypatch):
     assert killed.contexts[0].job_id == session.id
 
 
-def _run_execute_code(env, code, guard):
-    """Drive the real ``execute_code`` entry point against a remote *env*."""
+def _run_execute_code(env, code, guard, *, kernel_result=None, use_kernel=False):
+    """Drive the real ``execute_code`` entry point against a remote *env*; ``use_kernel`` leaves
+    the real remote-kernel path in place instead of patching it out to the per-call fallback."""
     from tools import code_execution_tool
     with patch.object(code_execution_tool, "_get_or_create_env", return_value=(env, "docker")), \
             patch.object(code_execution_tool, "_load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
@@ -176,7 +180,8 @@ def _run_execute_code(env, code, guard):
             patch("tools.terminal_tool._get_env_config", return_value={"env_type": "docker"}), \
             patch("tools.terminal_tool._docker_has_host_access", return_value=False), \
             patch("tools.terminal_tool._resolve_container_task_id", side_effect=lambda value: value), \
-            patch("tools.code_kernel_remote.execute_in_remote_kernel", return_value=None), \
+            patch("tools.code_kernel_remote.execute_in_remote_kernel", return_value=kernel_result) \
+            if not use_kernel else contextlib.nullcontext(), \
             patch("tools.process_registry._is_supervised_gateway_process", return_value=False), \
             patch("hermes_cli.observability.shared_metrics_loop.record_execution_backend",
                   side_effect=lambda kind, backend, result: result):
@@ -261,6 +266,18 @@ def test_spill_write_announces_itself(tmp_path, monkeypatch):
     assert all(c.approval is None for c in env.contexts)
 
 
+def test_spill_readability_probe_announces_itself(monkeypatch):
+    """The ``test -r`` probe that decides whether a spill is visible in the sandbox is Hermes's
+    own traffic, not an unknown caller's."""
+    from tools.tool_result_storage import _sandbox_visible_spillover_path
+    env = RecordingEnv()
+    monkeypatch.setattr("tools.credential_files.to_agent_visible_cache_path", lambda path: path)
+
+    assert _sandbox_visible_spillover_path("/host/cache/spill.txt", env) == "/host/cache/spill.txt"
+    assert env.commands == ["test -r /host/cache/spill.txt"]
+    assert env.origins() == ["spill"]
+
+
 def test_guard_script_read_announces_itself():
     from tools.terminal_tool_guards import _read_script_for_guard
     env = RecordingEnv(output="echo hi")
@@ -282,3 +299,54 @@ def test_prompt_builder_backend_probe_announces_itself():
 
     assert "os=Linux" in output
     assert env.contexts[0].origin == "internal"
+
+
+def _kernel_env():
+    """A remote that behaves like a live kernel host: a runner pid, liveness, one finished cell."""
+    def respond(command):
+        if "command -v python3" in command:
+            return "OK"
+        if "kill -0" in command:
+            return "ALIVE"
+        if "cat " in command and "cell_res_" in command:
+            return json.dumps({"status": "ok", "stdout": "hi\n", "stderr": "", "execution_count": 1})
+        if "nohup python3" in command:
+            return "PID:4242"
+        return ""
+    return RecordingEnv(responder=respond)
+
+
+def test_remote_kernel_ships_the_model_script_as_execute_code(monkeypatch, tmp_path):
+    """The kernel path ships the model's code in the cell request. That one ``execute()`` carries
+    ``origin="execute_code"`` and the gate's verdict; the mkdir, liveness, result read and cleanup
+    around it stay ``execute_code_rpc``."""
+    from tools import code_kernel_remote
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    env = _kernel_env()
+    code = "print('model script')"
+
+    try:
+        result = _run_execute_code(env, code, {"approved": True, "user_approved": True}, use_kernel=True)
+    finally:
+        code_kernel_remote.shutdown_all_remote_kernels()
+
+    assert result["status"] == "success", result
+    ships = [ctx for ctx, stdin in zip(env.contexts, env.stdins)
+             if stdin and code in base64.b64decode(stdin).decode("utf-8", "replace")]
+    assert [ctx.origin for ctx in ships] == ["execute_code"]
+    assert ships[0].approval == CommandApproval(command=code, kind="execute_code:user")
+    assert ships[0].task_id == "t1"
+    others = [ctx for ctx in env.contexts if ctx not in ships]
+    assert others and all(ctx is not None and ctx.approval is None for ctx in others)
+    assert {ctx.origin for ctx in others} <= {"execute_code_rpc", "internal"}
+
+
+def test_a_plugin_can_read_the_context_but_not_set_it():
+    """The reader and its value types are public; the setter is Hermes's, so a plugin cannot forge an
+    approval stamp."""
+    import agent.terminal_env_provider as provider
+
+    assert {"CommandApproval", "CommandContext", "current_command_context"} <= set(provider.__all__)
+    assert "command_context" not in provider.__all__
+    assert not hasattr(provider, "command_context")
+

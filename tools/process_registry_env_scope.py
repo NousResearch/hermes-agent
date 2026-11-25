@@ -53,8 +53,9 @@ class ProcessEnvScopeMixin:
 
     def _env_poller_loop(self, session: Any, env: Any, log_path: str, pid_path: str, exit_path: str):
         """Background thread: poll a sandbox log file for non-local backends."""
-        # Set here, not inherited: the poller thread starts under the SPAWN's copied context,
-        # where the approval stamp belongs to the spawn and not to these reads.
+        # Set here, not inherited: ``_track_started`` starts this thread under a copy of the
+        # CALLER's context, which may still carry the spawn's stamp and approval; these reads
+        # are Hermes's own polls, not the gated command.
         with command_context("background_poll", job_id=session.id, task_id=session.task_id,
                              session_key=session.session_key):
             self._poll_env_log(session, env, log_path, pid_path, exit_path)

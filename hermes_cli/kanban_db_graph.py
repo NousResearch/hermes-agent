@@ -87,6 +87,43 @@ def _validate_children_graph(children: list) -> None:
         raise ValueError("cyclic dependency detected in decomposed children list")
 
 
+# A triage status is not authority to replace recovery work. Keep one predicate
+# for candidate selection, preflight, and the two transactional write paths.
+_FRESH_TRIAGE_SQL = """
+    status = 'triage'
+    AND started_at IS NULL AND completed_at IS NULL AND current_run_id IS NULL
+    AND block_kind IS NULL AND COALESCE(block_recurrences, 0) = 0
+    AND COALESCE(consecutive_failures, 0) = 0
+    AND NOT EXISTS (SELECT 1 FROM task_runs WHERE task_id = tasks.id)
+    AND NOT EXISTS (
+        SELECT 1 FROM task_events WHERE task_id = tasks.id
+        AND kind IN ('decomposed', 'specified', 'blocked', 'block_loop_detected', 'dependency_wait')
+    )
+"""
+
+
+def is_fresh_triage_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Only never-executed intake may be decomposed; dependency edges are not lineage.
+
+    Writers must check this under their write transaction, not just before an
+    auxiliary call, because the task can acquire execution history during it.
+    """
+    return conn.execute(
+        f"SELECT 1 FROM tasks WHERE id = ? AND {_FRESH_TRIAGE_SQL}", (task_id,),
+    ).fetchone() is not None
+
+
+def list_fresh_triage_ids(conn: sqlite3.Connection, *, tenant: Optional[str] = None) -> list[str]:
+    """Filter recovery before the intake limit so it cannot starve fresh work."""
+    query = f"SELECT id FROM tasks WHERE {_FRESH_TRIAGE_SQL}"
+    params = ()
+    if tenant is not None:
+        query += " AND tenant = ?"
+        params = (tenant,)
+    query += " ORDER BY priority DESC, created_at ASC LIMIT 1000"
+    return [row["id"] for row in conn.execute(query, params)]
+
+
 def decompose_triage_task(
     conn: sqlite3.Connection, task_id: str, *, root_assignee: Optional[str], children: list[dict],
     author: Optional[str] = None, auto_promote: bool = True,
@@ -120,12 +157,9 @@ def decompose_triage_task(
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
             return None
-        # Dependency links alone do not imply lineage. The completion event is
-        # committed with the graph, and survives re-triage or unlinking.
-        if conn.execute(
-            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
-            (task_id,),
-        ).fetchone():
+        # Completion history survives re-triage and unlinking; recovery stays
+        # on the original card and owner even if it never decomposed before.
+        if not is_fresh_triage_task(conn, task_id):
             return None
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)

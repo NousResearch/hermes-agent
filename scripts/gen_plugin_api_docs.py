@@ -1,5 +1,5 @@
 #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
-"""Regenerate website/docs/developer-guide/plugins/public-api.md from hermes_cli/data/plugin_api.json.
+"""Regenerate apps/docs/content/en/developer-guide/plugins/public-api.md from hermes_cli/data/plugin_api.json.
 
 The same file is the public list ``hermes plugins validate`` checks plugin imports against, so the
 page and the warning cannot drift. ``--check`` writes nothing and exits 1 when the page is stale.
@@ -16,7 +16,7 @@ sys.path.append(str(ROOT))
 from hermes_agent.compat.paths import current_path
 
 DATA = ROOT / current_path("hermes_cli/data/plugin_api.json")
-OUT = ROOT / "website" / "docs" / "developer-guide" / "plugins" / "public-api.md"
+OUT = ROOT / "apps" / "docs" / "content" / "en" / "developer-guide" / "plugins" / "public-api.md"
 
 HEADER = """---
 sidebar_label: "Public plugin API"

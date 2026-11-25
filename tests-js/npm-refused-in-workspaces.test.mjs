@@ -8,7 +8,10 @@ import { afterAll, expect, test } from 'vitest'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const { packages } = load(readFileSync(join(repo, 'pnpm-workspace.yaml'), 'utf8'))
-const workspaces = packages.flatMap(pattern => globSync(pattern, { cwd: repo }))
+// A `!dir` entry takes a folder out of the workspace (apps/docs is its own npm project).
+const excluded = packages.filter(pattern => pattern.startsWith('!')).map(pattern => pattern.slice(1))
+const workspaces = packages.filter(pattern => !pattern.startsWith('!'))
+  .flatMap(pattern => globSync(pattern, { cwd: repo, exclude: excluded }))
   .filter(dir => existsSync(join(repo, dir, 'package.json'))).sort()
 // The root too: its preinstall does not stop `npm install --ignore-scripts`.
 const folders = ['.', ...workspaces]

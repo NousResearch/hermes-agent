@@ -7,7 +7,7 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 ``plugin-catalog/README.md``.
 
 Live refresh: the docs build publishes the same data as ONE JSON document
-(``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
+(``apps/docs/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
 an installed Hermes sees new entries and removals without updating. The doc is built from the same merged
 directory on ``main``, so it is trusted only as served over HTTPS by the docs host or its GitHub Pages
 origin (redirects elsewhere are refused). A fetch failure reuses the last valid

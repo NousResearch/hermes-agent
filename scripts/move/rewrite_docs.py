@@ -61,9 +61,9 @@ from renames import config_keys, current_name, emptied_folders, git, module_rena
 EXCLUDED = (
     "tests/compat/**", "hermes_agent/compat/**", "plugin-catalog/**", "evals/**/results/**", "**/SCORECARD*",
     "tests/install/KNOWN_FAILURES.md", "scripts/update-test/HANDOFF.md", "hermes_cli/observability/schemas/**",
-    "**/vendor/conformance/**", "website/docs/user-guide/skills/bundled/**",
-    "website/docs/user-guide/skills/optional/**", "website/docs/reference/*skills-catalog.md",
-    "website/docs/developer-guide/plugins/public-api.md", "website/docs/developer-guide/gateway-command-parity.md",
+    "**/vendor/conformance/**", "apps/docs/content/en/user-guide/skills/bundled/**",
+    "apps/docs/content/en/user-guide/skills/optional/**", "apps/docs/content/en/reference/*skills-catalog.md",
+    "apps/docs/content/en/developer-guide/plugins/public-api.md", "apps/docs/content/en/developer-guide/gateway-command-parity.md",
     "optional-skills/mlops/**", "skills/mlops/**", "locales/**", "contributors/**",
     "scripts/move/**", "tests/scripts/test_move_*", "node_modules/**", "**/node_modules/**",
 )

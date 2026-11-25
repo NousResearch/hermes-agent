@@ -23,7 +23,7 @@ Load this skill when you're working on:
 - Modifying `cont-init.d` boot scripts (UID remap, volume seeding, profile reconciliation)
 - Changing the rendered run-script for per-profile gateways (Phase 4)
 
-If you're just running the Hermes Agent and want to use Docker, see `website/docs/user-guide/docker.md` instead.
+If you're just running the Hermes Agent and want to use Docker, see `apps/docs/content/en/user-guide/docker.md` instead.
 
 ## Architecture at a glance
 

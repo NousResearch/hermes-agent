@@ -14,7 +14,10 @@ Usage::
 
     python scripts/build_model_catalog.py
 
-Output: ``website/static/api/model-catalog.json``
+Output: ``apps/docs/public/api/model-catalog.json`` (served at
+``/docs/api/model-catalog.json``) plus a byte-identical legacy copy at
+``website/static/api/model-catalog.json`` — the raw fallback URL released
+Hermes clients fetch, which a web redirect cannot repair.
 
 Live URL (after ``deploy-site.yml`` runs on merge to main):
 ``https://hermes-agent.nousresearch.com/docs/api/model-catalog.json``
@@ -39,7 +42,15 @@ from hermes_cli.models import (
     _PROVIDER_MODELS,
 )
 
-OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json")
+OUTPUT_PATHS = (
+    # Served by the docs app at /docs/api/model-catalog.json.
+    os.path.join(REPO_ROOT, "apps", "docs", "public", "api", "model-catalog.json"),
+    # Legacy raw URL fetched by released clients
+    # (hermes_cli.model_catalog.DEFAULT_CATALOG_FALLBACK_URLS): a web redirect
+    # cannot repair a GitHub raw path, so the generator keeps this copy
+    # byte-identical to the one above until a support policy retires it.
+    os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json"),
+)
 CATALOG_VERSION = 1
 
 
@@ -101,12 +112,13 @@ def build_catalog() -> dict:
 
 def main() -> int:
     catalog = build_catalog()
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as fh:
-        json.dump(catalog, fh, indent=2)
-        fh.write("\n")
-
-    print(f"Wrote {OUTPUT_PATH}")
+    # Serialize once: every published copy must be the same bytes.
+    payload = json.dumps(catalog, indent=2) + "\n"
+    for output_path in OUTPUT_PATHS:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        print(f"Wrote {output_path}")
     for provider, block in catalog["providers"].items():
         print(f"  {provider}: {len(block['models'])} models")
     return 0

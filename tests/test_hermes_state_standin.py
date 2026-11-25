@@ -154,7 +154,7 @@ def test_writes_land_as_their_replacements_read_them(store, legacy):
 
 
 def test_the_plugin_guides_resume_lookup_resolves_a_short_id_as_written(quiet, store):
-    # website/docs/user-guide/features/plugins.md, _session_to_resume
+    # apps/docs/content/en/user-guide/features/plugins.md, _session_to_resume
     seed_session(store, "abc123", "cli")
     db = hermes_state.SessionDB(db_path=hermes_constants.get_hermes_home() / "state.db", read_only=True)
     try:
@@ -166,7 +166,7 @@ def test_the_plugin_guides_resume_lookup_resolves_a_short_id_as_written(quiet, s
 
 
 def test_the_plugin_guides_lineage_read_gives_the_root_first_on_a_read_only_handle(store, legacy):
-    # website/docs/developer-guide/plugins/index.md: the replacement for get_compression_lineage
+    # apps/docs/content/en/developer-guide/plugins/index.md: the replacement for get_compression_lineage
     from persistence_assembly import open_persistence_reader
 
     seed_session(store, "root", "telegram")
@@ -395,9 +395,9 @@ def test_the_stand_in_is_removed_before_its_removal_release_ships(monkeypatch):
         "plugin context engines get (context_engine_session_db and close_context_engine_session_db in "
         "agent/conversation_compression.py, and their callers); _REMOVED_STORE_PRIVATE_METHODS in "
         "hermes_cli/plugin_validate_private_imports.py; the hermes_state entries in hermes_cli/data/plugin_api.json "
-        "and website/docs/developer-guide/plugins/public-api.md; the section \"hermes_state deprecated: use the "
-        "storage interface\" in website/docs/developer-guide/plugins/index.md and session_db in "
-        "website/docs/developer-guide/context-engine-plugin.md.")
+        "and apps/docs/content/en/developer-guide/plugins/public-api.md; the section \"hermes_state deprecated: use the "
+        "storage interface\" in apps/docs/content/en/developer-guide/plugins/index.md and session_db in "
+        "apps/docs/content/en/developer-guide/context-engine-plugin.md.")
 
 
 def test_a_fresh_process_warns_once_for_its_imports():

@@ -30,7 +30,7 @@ _PLACEHOLDER = re.compile(r"(?<![\w.])(?:\.\.\.|…)(?![\w.])")
 
 
 def _plugin_docs() -> list[Path]:
-    docs = _ROOT / "website" / "docs"
+    docs = _ROOT / "apps" / "docs" / "content" / "en"
     return [*sorted((docs / "developer-guide").rglob("*.md*")),
             *sorted((docs / "user-guide" / "features").glob("plugins*.md")), _ROOT / "plugins" / "AGENTS.md"]
 

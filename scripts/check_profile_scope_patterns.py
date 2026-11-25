@@ -34,7 +34,7 @@ from hermes_agent.compat.paths import original_path
 from scripts.code_health import gitio
 PATTERNS = ROOT / "scripts" / "ci" / "profile_scope_patterns.json"
 SUFFIXES = (".py", ".ts", ".tsx")
-SKIP_PREFIXES = ("tests/", "website/", "skills/", "optional-skills/", "evals/", "scripts/", ".worktrees/")
+SKIP_PREFIXES = ("tests/", "apps/docs/", "skills/", "optional-skills/", "evals/", "scripts/", ".worktrees/")
 
 
 @dataclass(frozen=True)

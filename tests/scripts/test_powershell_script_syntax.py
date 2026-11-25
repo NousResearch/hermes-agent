@@ -54,7 +54,7 @@ if ($failed) { exit 1 }
 
 
 # Scripts users fetch and run as a string, never from disk:
-# `& ([scriptblock]::Create((irm <raw url>)))` (website/docs/user-guide/
+# `& ([scriptblock]::Create((irm <raw url>)))` (apps/docs/content/en/user-guide/
 # windows-native.md, scripts/update-test/HANDOFF.md). Windows PowerShell
 # 5.1's irm keeps a UTF-8 BOM as a literal U+FEFF, so `param(` is no longer
 # the first statement and the script dies with "The assignment expression is

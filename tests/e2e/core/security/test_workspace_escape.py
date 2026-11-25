@@ -1,6 +1,6 @@
 """File tools keep the documented write sandbox, write denylist and read denylist under ../ and symlink spellings.
 
-Hermes documents three file-tool boundaries (website/docs/user-guide/security.md, "File write safety"):
+Hermes documents three file-tool boundaries (apps/docs/content/en/user-guide/security.md, "File write safety"):
 
 * ``HERMES_WRITE_SAFE_ROOT``: ``write_file`` / ``patch`` may only land inside the listed roots.
 * Protected paths: the Hermes-home ``.env`` / OAuth stores, ``~/.ssh`` keys and ``authorized_keys`` are

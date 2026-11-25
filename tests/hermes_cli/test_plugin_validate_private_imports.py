@@ -159,7 +159,7 @@ def test_plugin_guide_session_identity_example_validates_clean(tmp_path):
     import ast
     import re
 
-    guide = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/plugins/index.md"
+    guide = Path(__file__).resolve().parents[2] / "apps/docs/content/en/developer-guide/plugins/index.md"
     blocks = [b for b in re.findall(r"```python\n(.*?)```", guide.read_text(encoding="utf-8"), re.DOTALL)
               if "get_session_env" in b]
     assert blocks, "plugins/index.md shows no code example importing get_session_env"
@@ -178,7 +178,7 @@ def test_plugin_guide_file_safety_and_yaml_example_validates_clean(tmp_path):
     module imported whole still warns."""
     import re
 
-    guide = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/plugins/index.md"
+    guide = Path(__file__).resolve().parents[2] / "apps/docs/content/en/developer-guide/plugins/index.md"
     [block] = [b for b in re.findall(r"```python\n(.*?)```", guide.read_text(encoding="utf-8"), re.DOTALL)
                if "get_read_block_error" in b]
     clean = _plugin(tmp_path / "guide", {"example.py": block})
@@ -293,7 +293,7 @@ def test_public_api_docs_page_is_generated_from_the_data_file():
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)
 
-    assert gen.check() == 0, "website/docs/developer-guide/plugins/public-api.md is stale"
+    assert gen.check() == 0, "apps/docs/content/en/developer-guide/plugins/public-api.md is stale"
 
 
 def test_a_published_module_moved_under_hermes_agent_is_public_in_every_spelling(tmp_path, monkeypatch):

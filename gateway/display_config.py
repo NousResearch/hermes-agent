@@ -236,7 +236,7 @@ def _warn_unsupported_value(platform_key: str, setting: str, value: Any) -> None
     logger.warning(
         "display.%s for platform %r is set to unsupported value %r; ignoring it and inheriting the "
         "platform default (accepted values are listed in "
-        "website/docs/user-guide/messaging/index.md)",
+        "apps/docs/content/en/user-guide/messaging/index.md)",
         setting, platform_key, value,
     )
 

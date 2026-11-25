@@ -1,7 +1,7 @@
 /**
  * Invariants tying the dependency build allowlists to the lockfiles they gate:
  * pnpm's ``allowBuilds`` (root ``pnpm-workspace.yaml``) and npm's
- * ``allowScripts`` (``website/``, still an npm project).
+ * ``allowScripts`` (``apps/docs/``, still an npm project).
  *
  * Both allowlists are keyed by exact ``name@version``, so an entry silently
  * stops matching the moment that dependency is bumped. npm downgrades the
@@ -43,7 +43,7 @@ import { describe, test } from 'vitest'
 const REPO_ROOT = path.resolve(__dirname, '..')
 
 const MANIFESTS = [
-  { name: 'website', dir: 'website' }
+  { name: 'docs', dir: 'apps/docs' }
 ]
 
 function manifestLabel(dir: string): string {

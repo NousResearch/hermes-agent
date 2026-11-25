@@ -220,7 +220,7 @@ What gets imported from OpenClaw:
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
 
-Start with the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow)
+Start with the [PM developer workflow](apps/docs/content/en/reference/package-management.md#developer-workflow)
 for activation, daily use, dependency changes, and leaving the environment.
 [Development Setup](CONTRIBUTING.md#development-setup) covers the separate test environment and verification commands.
 

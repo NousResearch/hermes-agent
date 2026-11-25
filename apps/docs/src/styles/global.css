@@ -1,0 +1,62 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+@import '@docsearch/css/dist/style.css';
+
+@source '../';
+
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 100 900; font-display: swap; src: url('/docs/fonts/inter.woff2') format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 100 800; font-display: swap; src: url('/docs/fonts/jetbrains-mono.woff2') format('woff2'); }
+
+:root {
+  --color-fd-primary: #8b6508;
+  --color-fd-primary-foreground: #ffffff;
+  --plugin-catalog-official: #6e4f00;
+  --plugin-catalog-official-bg: rgba(110, 79, 0, 0.1);
+  --plugin-catalog-official-border: rgba(110, 79, 0, 0.4);
+  --plugin-catalog-verified: #0f766e;
+  --plugin-catalog-verified-bg: rgba(15, 118, 110, 0.1);
+  --plugin-catalog-verified-border: rgba(15, 118, 110, 0.4);
+  --plugin-catalog-community: #475569;
+  --plugin-catalog-community-bg: rgba(71, 85, 105, 0.1);
+  --plugin-catalog-community-border: rgba(71, 85, 105, 0.35);
+  --plugin-catalog-link: #1d4ed8;
+}
+
+.dark {
+  --color-fd-primary: #ffd700;
+  --color-fd-primary-foreground: #07070d;
+  --color-fd-background: #07070d;
+  --color-fd-foreground: #e8e4dc;
+  --color-fd-card: #0f0f18;
+  --color-fd-card-foreground: #e8e4dc;
+  --color-fd-popover: #0f0f18;
+  --color-fd-popover-foreground: #e8e4dc;
+  --color-fd-muted: #14142a;
+  --color-fd-muted-foreground: #9a968e;
+  --plugin-catalog-official: #ffd700;
+  --plugin-catalog-official-bg: rgba(255, 215, 0, 0.08);
+  --plugin-catalog-official-border: rgba(255, 215, 0, 0.25);
+  --plugin-catalog-verified: #5eead4;
+  --plugin-catalog-verified-bg: rgba(94, 234, 212, 0.08);
+  --plugin-catalog-verified-border: rgba(94, 234, 212, 0.25);
+  --plugin-catalog-community: #94a3b8;
+  --plugin-catalog-community-bg: rgba(148, 163, 184, 0.08);
+  --plugin-catalog-community-border: rgba(148, 163, 184, 0.2);
+}
+
+body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+pre, code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
+a:where(:not(:hover)) { transition: color 100ms; }
+a:hover { transition: none; }
+.docs-mermaid { margin-block: 1.5rem; overflow-x: auto; }
+.docs-mermaid svg { max-width: 100%; height: auto; margin-inline: auto; }
+.docs-terminal-figure { display: block; width: 100%; max-width: 900px; margin: 1.25rem auto .5rem; border-radius: .75rem; }
+.docs-figure-caption { margin-top: .35rem; text-align: center; font-size: .875rem; color: var(--color-fd-muted-foreground); }
+.DocSearch-Container { z-index: 1000; }
+.DocSearch {
+  --docsearch-primary-color: var(--color-fd-primary);
+  --docsearch-highlight-color: var(--color-fd-primary);
+  --docsearch-soft-primary-color: color-mix(in srgb, var(--color-fd-primary) 10%, transparent);
+  --docsearch-hit-highlight-color: color-mix(in srgb, var(--color-fd-primary) 10%, transparent);
+}

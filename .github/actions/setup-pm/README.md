@@ -26,7 +26,7 @@ publish an application selection. It does not enable plugins.
 
 Subsequent steps get `python`, `python3`, `node`, `pnpm`, `npm` and `npx`
 for the selected toolchain on PATH. The pinned npm precedes Node's bundled npm.
-pnpm installs the workspace; npm serves the standalone npm projects (website/ and
+pnpm installs the workspace; npm serves the standalone npm projects (apps/docs/ and
 the sidecars). `pnpm_config_store_dir` points pnpm's store into the runner's temp
 dir, on the checkout's drive, so pnpm can hard-link from it on Windows too.
 On Windows, PM selects the host architecture even if the bootstrap interpreter
@@ -69,7 +69,7 @@ that toolchain. `python-cache-dependency-glob` defaults to `pyproject.toml` and
 `uv.lock`. `node-package-manager` selects whose downloads the node cache holds:
 `pnpm` (default) for the workspace, `npm` for the standalone npm projects.
 `node-cache-dependency-path` defaults to `pnpm-lock.yaml` and `pnpm-workspace.yaml`;
-site jobs use `npm` with `website/package-lock.json`. Both accept multiline glob
+site jobs use `npm` with `apps/docs/package-lock.json`. Both accept multiline glob
 strings. A node cache without a matching lockfile fails, rather than caching an
 unversioned dependency set.
 

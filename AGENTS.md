@@ -3,7 +3,7 @@
 This root file is a hub: what applies everywhere, then a routing table. Each area's `AGENTS.md`
 loads automatically when you work in that directory; read it before editing there.
 `python scripts/check` caps this file at 12k chars and every root-to-area chain at 30k: long form
-goes in `website/docs/developer-guide/`.
+goes in `apps/docs/content/en/developer-guide/`.
 
 **Never give up on the right solution.**
 
@@ -32,7 +32,7 @@ A change to the stock system prompt or `tools[]` fails `tests/ci/test_prompt_sur
 The project's intent layer, for contributors and for the triage sweeper (which may only close on
 `implemented_on_main`, `cannot_reproduce` or `incoherent`; taste-based closes are a maintainer's
 call, and when in doubt a PR stays open). Long form with examples:
-`website/docs/developer-guide/contributing.md` § Contribution rubric.
+`apps/docs/content/en/developer-guide/contributing.md` § Contribution rubric.
 
 **Wanted:** real bug fixes (repro on `main`, the exact line, the whole class incl. sibling paths);
 reach at the edges (adapters, providers, models, UI features) wired into the existing setup UX;
@@ -63,7 +63,7 @@ otherwise).
 ## Development Environment
 
 `source ./activate` (`activate.fish`, `activate.ps1`) provisions and activates the PM environment; pick an isolated `HERMES_HOME`/`HERMES_RUNTIME_DIR` first
-(`website/docs/reference/package-management.md#developer-workflow`). Tests need the separate test
+(`apps/docs/content/en/reference/package-management.md#developer-workflow`). Tests need the separate test
 environment in `CONTRIBUTING.md`. **`python scripts/check`** (`just check`) runs every blocking
 lint check CI runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push (re-run
 after pulling to refresh the hook). `just` lists every developer command (lefthook calls the same
@@ -85,7 +85,7 @@ hermes-agent/
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 ├── evals/                # live-model A/B and probe harnesses
-└── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
+└── apps/docs/            # Fumadocs docs app
 ```
 
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
@@ -113,7 +113,7 @@ per variant and a name → variant table (`tools/environments/`, its table still
   dispatch by table, not `if name ==` ladders; collaborators are objects, not mixins; no module
   constant kept only for tests to patch.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
-  fixing its docs in the same PR (search `website/docs`, `skills/`, every `AGENTS.md`).
+  fixing its docs in the same PR (search `apps/docs`, `skills/`, every `AGENTS.md`).
 
 ## Rules that apply everywhere
 
@@ -166,7 +166,7 @@ per variant and a name → variant table (`tools/environments/`, its table still
 | `tests/` | `tests/AGENTS.md` | runner, placement, OS markers, `wine2e`, banned test shapes |
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, release-age rule |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
-| `acp_adapter/` | `website/docs/developer-guide/acp-internals.md` | ACP server for editors |
+| `acp_adapter/` | `apps/docs/content/en/developer-guide/acp-internals.md` | ACP server for editors |
 | `providers/` | `providers/README.md` | `ProviderProfile` registry and ABC |
 
 PR workflow: `CONTRIBUTING.md` (maintainers: the `hermes-agent-dev` skill, not shipped here).

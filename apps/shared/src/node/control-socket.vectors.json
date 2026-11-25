@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "description": "Public local control-socket contract (protocol 1): one JSON line in, one line out. Run by tests/gateway/test_control_socket_vectors.py; documented in website/docs/developer-guide/gateway-internals.md (Local control socket).",
+  "description": "Public local control-socket contract (protocol 1): one JSON line in, one line out. Run by tests/gateway/test_control_socket_vectors.py; documented in apps/docs/content/en/developer-guide/gateway-internals.md (Local control socket).",
   "placeholders": {
     "$HOME": "a standalone profile home (resolved absolute path)",
     "$ROOT": "a multiplexer's default root",

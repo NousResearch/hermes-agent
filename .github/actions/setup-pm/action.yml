@@ -43,7 +43,7 @@ inputs:
       pyproject.toml
       uv.lock
   node-package-manager:
-    description: Whose downloads the node cache holds; pnpm (the workspace) or npm (website/ and the other standalone npm projects).
+    description: Whose downloads the node cache holds; pnpm (the workspace) or npm (apps/docs/ and the other standalone npm projects).
     default: pnpm
   node-cache-dependency-path:
     description: Files that invalidate the node download cache; supports multiline globs.

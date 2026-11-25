@@ -18,7 +18,7 @@ from pm.paths import lockfile_path
 from pm.registry import walk
 from pm.store import current_target
 
-# npm stays beside pnpm: website/ and the sidecars are standalone npm projects.
+# npm stays beside pnpm: apps/docs and the sidecars are standalone npm projects.
 _ROOTS = {"python": ["uv"], "node": ["npm", "pnpm"], "all": ["npm", "pnpm", "uv"]}
 
 

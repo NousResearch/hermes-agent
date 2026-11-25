@@ -143,7 +143,7 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
-    _ingress_handler_entered: bool = field(default=False, init=False, repr=False, compare=False)
+    _ingress_handler_entries: int = field(default=0, init=False, repr=False, compare=False)
     # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The
     # producer will not retry, so a restart drain runs this event instead of refusing it at the
     # drain gate or discarding it as a queued follow-up (#138123).
@@ -170,6 +170,13 @@ class MessageEvent:
         actor: ``user_id`` "" exports none, so a narrowed approval binds to approvers and admins only
         instead of to the first sender while it carries the second sender's text."""
         self.absorb_reply_expected(other)
+        if self._ingress_claims or other._ingress_claims:
+            media_ids = self.__dict__.setdefault("_ingress_media_message_ids", {})
+            for path in self.media_urls:
+                media_ids.setdefault(path, self.message_id)
+            other_ids = getattr(other, "_ingress_media_message_ids", {})
+            for path in other.media_urls:
+                media_ids[path] = other_ids.get(path, other.message_id)
         if self._ingress_claims is not other._ingress_claims:
             self._ingress_claims.extend(other._ingress_claims)
         if self.sender_id() != other.sender_id():
@@ -182,8 +189,15 @@ class MessageEvent:
     def _retain_ingress_claims(self) -> None:
         self._ingress_claims.clear()
 
+    def _ingress_controls_unchanged(self) -> bool:
+        check = getattr(self, "_ingress_control_check", None)
+        return bool(check is not None and check())
+
     async def _release_unadmitted_claims(self) -> None:
         claims, self._ingress_claims[:] = self._ingress_claims[:], []
+        release_batch = getattr(claims[0], "release_batch", None) if claims else None
+        if callable(release_batch) and await release_batch(claims):
+            return
         for claim in claims:
             await claim.release()
 

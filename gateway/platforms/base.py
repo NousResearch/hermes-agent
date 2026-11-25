@@ -4350,7 +4350,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
-            event._ingress_handler_entered = True
+            event._ingress_handler_entries += 1
             response = await self._message_handler(event)
             generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # Muted diagnostic replies stay hidden; policy binds the routed profile, delivery the launch scope.

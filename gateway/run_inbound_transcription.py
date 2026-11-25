@@ -95,12 +95,13 @@ def _take_gate_transcript(path: str) -> Optional[str]:
 # ``_gateway_pending_stt_*``) but keeps the chat and message id, so it reuses that transcript and
 # skips a shown echo (#152457). The same clip forwarded into another chat is another message: it is
 # transcribed and echoed there as usual and never consumes this one's record.
-_HANDED_OFF: OrderedDict[tuple, tuple[str, bool]] = OrderedDict()
+_HANDED_OFF: OrderedDict[tuple, tuple[str, bool, frozenset[str]]] = OrderedDict()
 
 
 def _echo_key(event, path: str) -> Optional[tuple]:
     source = getattr(event, "source", None)
-    message_id = getattr(event, "message_id", None)
+    message_id = (getattr(event, "_ingress_media_message_ids", {}).get(path)
+                  or getattr(event, "message_id", None))
     if source is None or not message_id or (key := _gate_key(path)) is None:
         return None  # no message identity: never hand a transcript or an echo to another turn
     platform = getattr(getattr(source, "platform", None), "value", None)
@@ -114,8 +115,15 @@ def hand_prepared_voice_to_turn(event) -> None:
     done = [(path, transcript) for path, (transcript, _note) in clip_memo.items() if transcript is not None]
     # Transcript indices whose busy echo the platform accepted (``done`` follows the transcripts' order).
     shown = getattr(event, "_gateway_pending_stt_shown", None) or ()
-    records = [(key, (transcript, index in shown)) for index, (path, transcript) in enumerate(done)
-               if (key := _echo_key(event, path)) is not None]
+    records = []
+    for index, (path, transcript) in enumerate(done):
+        if (key := _echo_key(event, path)) is None:
+            continue
+        # A durable merged turn is restored under its head message ID; a failed batch may
+        # instead redeliver each original message separately. One clip occupies one cache slot.
+        head = getattr(event, "message_id", None)
+        aliases = frozenset({str(head)}) if head and str(head) != key[3] else frozenset()
+        records.append((key, (transcript, index in shown, aliases)))
     with _GATE_TRANSCRIPTS_LOCK:
         for key, record in records:
             _HANDED_OFF[key] = record
@@ -131,11 +139,19 @@ def take_handed_off_clips(event, paths: list[str]) -> dict[str, tuple[str, bool]
     keys = {path: _echo_key(event, path) for path in paths}
     found = {}
     with _GATE_TRANSCRIPTS_LOCK:
+        consumed = set()
         for path, key in keys.items():
-            if key is not None and key in _HANDED_OFF:
-                found[path] = _HANDED_OFF[key]
-        for path in found:
-            _HANDED_OFF.pop(keys[path], None)
+            if key is None:
+                continue
+            matched = key if key in _HANDED_OFF else next(
+                (stored for stored, (_, _, aliases) in _HANDED_OFF.items()
+                 if stored[:3] == key[:3] and stored[4:] == key[4:] and key[3] in aliases), None)
+            if matched is not None:
+                transcript, shown, _aliases = _HANDED_OFF[matched]
+                found[path] = (transcript, shown)
+                consumed.add(matched)
+        for key in consumed:
+            _HANDED_OFF.pop(key, None)
     return found
 
 
@@ -259,19 +275,32 @@ class GatewayInboundTranscriptionMixin:
         # Per-clip results outlive the merged-event cache below (a merge drops only that), so every
         # re-run — this loop's or the drain path's — transcribes just the newly merged clips.
         clip_memo = getattr(event, "_gateway_pending_stt_clips", None)
+        handed = {}
         if clip_memo is None:  # a restored turn that lands on a busy session again reuses its hand-off
             handed = await asyncio.to_thread(take_handed_off_clips, event, audio_paths)
             clip_memo = {path: (tx, transcript_note(tx, path)) for path, (tx, _shown) in handed.items()}
             event._gateway_pending_stt_clips = clip_memo
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths, clip_memo)
         # A voice note merged in during the await dropped a cache that did not exist yet; re-run on
         # the merged media rather than publish a transcript that silently omits the new note.
-        while self._pending_event_audio_paths(event) != audio_paths:
-            audio_paths = self._pending_event_audio_paths(event)
-            text = user_text if user_text is not None else (getattr(event, "text", "") or "")
+        while True:
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
                 text, audio_paths, clip_memo,
             )
+            ordered = await asyncio.to_thread(_dedupe_audio_paths, audio_paths) if handed else []
+            if self._pending_event_audio_paths(event) == audio_paths:
+                break
+            audio_paths = self._pending_event_audio_paths(event)
+            text = user_text if user_text is not None else (getattr(event, "text", "") or "")
+        if handed:
+            # Handed-off clips can be interspersed with newly transcribed clips. Keep memo and
+            # echo indices in input order so a later hand-off also records the right clip.
+            ordered_memo = {path: clip_memo[path] for path in ordered if path in clip_memo}
+            clip_memo.clear()
+            clip_memo.update(ordered_memo)
+            done = [path for path, (transcript, _note) in clip_memo.items() if transcript is not None]
+            event._gateway_pending_stt_shown = {
+                index for index, path in enumerate(done) if handed.get(path, (None, False))[1]
+            }
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts
@@ -294,6 +323,8 @@ class GatewayInboundTranscriptionMixin:
         # a steered message has no later turn to make up a skipped echo.
         shown = event._gateway_pending_stt_shown = set(getattr(event, "_gateway_pending_stt_shown", None) or ())
         for index, transcript in enumerate(tail, start=already_echoed):
+            if index in shown:
+                continue
             if await self._echo_stt_transcripts(
                 adapter, source, [transcript], metadata=metadata, log_context=log_context,
             ):

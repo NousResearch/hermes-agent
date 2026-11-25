@@ -13,43 +13,129 @@ class _Claim:
     def __init__(self, adapter, message_id, token):
         self.adapter, self.message_id, self.token = adapter, message_id, token
         self.dispatched = False
+        self.control_check = None
 
     async def release(self):
+        await self.release_batch([self])
+
+    async def release_batch(self, claims):
+        if not all(isinstance(claim, _Claim) and claim.adapter._dedup_lock is self.adapter._dedup_lock
+                   and claim.adapter._dedup_persist_lock_or_create() is self.adapter._dedup_persist_lock_or_create()
+                   for claim in claims):
+            return False
         try:
-            await self.adapter._release_message_claim(self.message_id, self.token)
+            await self.adapter._release_message_claims(claims)
         except Exception:
             logger.exception("[Feishu] Failed to release an unadmitted message claim")
+        return True
 
 
 class FeishuDedupMixin:
+    def _capture_ingress_controls(self, event, session_key=None):
+        if not event._ingress_claims:
+            return
+        if not hasattr(event, "_ingress_control_check"):
+            event._ingress_control_check = self._ingress_control_snapshot(event, session_key)
+        for claim in event._ingress_claims:
+            if claim.control_check is None:
+                claim.control_check = event._ingress_control_check
+
+    def _ingress_control_snapshot(self, event, session_key=None):
+        session_key = session_key or self._event_session_key(event)
+        local_epochs = self.__dict__.setdefault("_feishu_ingress_control_epochs", {})
+        local_epoch = local_epochs.get(session_key, 0)
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return lambda: local_epochs.get(session_key, 0) == local_epoch
+        from gateway.session_authorities import all_authorities
+        from gateway.session_identity import identity_of
+        try:
+            route = runner._session_key_for_source(event.source)
+            registry = getattr(runner, "session_authorities", None)
+            identity = identity_of(event.source)
+            owner_home = identity.runtime_home if identity is not None and callable(getattr(registry, "for_home", None)) else None
+            if owner_home is not None:
+                owner = registry.for_home(owner_home)
+                if owner is None:
+                    return lambda: False
+                epochs = [(owner, owner.route_epoch(route))]
+            else:
+                epochs = [(authority, authority.route_epoch(route)) for authority in all_authorities(runner)]
+        except Exception:
+            logger.debug("[Feishu] Could not capture ingress control epochs", exc_info=True)
+            return lambda: False
+
+        def unchanged():
+            try:
+                current = [registry.for_home(owner_home)] if owner_home is not None else all_authorities(runner)
+                return (local_epochs.get(session_key, 0) == local_epoch and len(current) == len(epochs)
+                        and all(any(authority is other for other in current)
+                                and authority.route_epoch(route) == epoch for authority, epoch in epochs))
+            except Exception:
+                logger.debug("[Feishu] Could not compare ingress control epochs", exc_info=True)
+                return False
+        return unchanged
+
     def _start_session_processing(self, event, session_key, *, interrupt_event=None):
+        self._capture_ingress_controls(event, session_key)
+        previous_entries = event._ingress_handler_entries
+        # Startup restore queues the event before plugins or admission; its first replay is a new attempt.
+        startup_replay = (getattr(event, "_hermes_startup_restore_replay", False)
+                          and not getattr(event, "_feishu_startup_replay_started", False))
         started = super()._start_session_processing(event, session_key, interrupt_event=interrupt_event)
         if started and event._ingress_claims:
+            if startup_replay:
+                event._feishu_startup_replay_started = True
             event._mark_ingress_dispatched()
             task = self._session_tasks.get(session_key)
             if task is not None and hasattr(task, "add_done_callback"):
-                task.add_done_callback(lambda done: self._settle_unstarted_ingress(done, event))
+                task.add_done_callback(lambda done: self._settle_unstarted_ingress(
+                    done, event, previous_entries, startup_replay))
         return started
 
-    def _settle_unstarted_ingress(self, task, event):
-        if event._ingress_handler_entered or getattr(task, "_feishu_control_cancel", False):
+    def _settle_unstarted_ingress(self, task, event, previous_entries, startup_replay):
+        if ((previous_entries and not startup_replay) or event._ingress_handler_entries > previous_entries
+                or not event._ingress_controls_unchanged()
+                or getattr(task, "_feishu_control_cancel", False)):
             return
         cleanups = self.__dict__.setdefault("_feishu_ingress_cleanups", set())
-        cleanup = asyncio.create_task(event._release_unadmitted_claims())
+        cleanup = asyncio.create_task(self._release_if_controls_unchanged(event))
         cleanups.add(cleanup)
         cleanup.add_done_callback(cleanups.discard)
 
+    async def _release_if_controls_unchanged(self, event):
+        if event._ingress_controls_unchanged():
+            await event._release_unadmitted_claims()
+
     async def _handle_message_while_active(self, event, session_key):
+        self._capture_ingress_controls(event, session_key)
+        if getattr(event, "_hermes_startup_restore_replay", False):
+            event._feishu_startup_replay_started = True
         event._mark_ingress_dispatched()
         await super()._handle_message_while_active(event, session_key)
+        burst = self.__dict__.get("_shared_bursts", {}).get(session_key)
+        if burst is not None and any(claim in burst.head._ingress_claims for claim in event._ingress_claims):
+            tracked = self.__dict__.setdefault("_feishu_ingress_busy_bursts", {})
+            if burst not in tracked:
+                tracked[burst] = burst.head._ingress_handler_entries
+                burst.done.add_done_callback(lambda done: not done.cancelled() and tracked.pop(burst, None))
 
     async def cancel_session_processing(self, session_key, *, release_guard=True, discard_pending=True):
+        epochs = self.__dict__.setdefault("_feishu_ingress_control_epochs", {})
+        epochs[session_key] = epochs.get(session_key, 0) + 1
         if (task := self._session_tasks.get(session_key)) is not None:
             task._feishu_control_cancel = True
         await super().cancel_session_processing(session_key, release_guard=release_guard, discard_pending=discard_pending)
 
     async def cancel_background_tasks(self):
         await super().cancel_background_tasks()
+        await self._release_held_busy_bursts()
+        tracked = self.__dict__.get("_feishu_ingress_busy_bursts", {})
+        for burst, entries in list(tracked.items()):
+            if (burst.commit is not None and burst.commit.cancelled() and not entries
+                    and burst.head._ingress_handler_entries == entries and burst.head._ingress_controls_unchanged()):
+                await burst.head._release_unadmitted_claims()
+            tracked.pop(burst, None)
         while pending := tuple(self.__dict__.get("_feishu_ingress_cleanups", ())):
             await asyncio.gather(*pending, return_exceptions=True)
 
@@ -140,18 +226,25 @@ class FeishuDedupMixin:
     async def _is_duplicate(self, message_id: str) -> bool:
         return await self._claim_message_id(message_id) is None
 
-    async def _release_message_claim(self, message_id, token):
+    async def _release_message_claims(self, claims):
         async with self._dedup_persist_lock_or_create():
+            # A /stop may have landed while release was waiting for the persistence lock.
+            if any(claim.control_check is not None and not claim.control_check() for claim in claims):
+                return
             with self._dedup_lock:
                 owners = self.__dict__.setdefault("_dedup_claim_tokens", {})
-                if owners.get(message_id) is not token:
+                ids = {claim.message_id for claim in claims if owners.get(claim.message_id) is claim.token}
+                if not ids:
                     return
-                owners.pop(message_id, None)
-                self._seen_message_ids.pop(message_id, None)
-                self._seen_message_order[:] = [item for item in self._seen_message_order if item != message_id]
-            # A retired adapter cannot restart its SDK executor. Its replacement shares this
-            # state and will persist the released ID when a redelivery claims it again.
-            if not getattr(self, "_sdk_executor_closing", False):
+                for message_id in ids:
+                    owners.pop(message_id, None)
+                    self._seen_message_ids.pop(message_id, None)
+                self._seen_message_order[:] = [item for item in self._seen_message_order if item not in ids]
+            # A retired adapter cannot restart its SDK executor, but a late failure still
+            # needs to persist the release for a replacement that has not adopted its state.
+            if getattr(self, "_sdk_executor_closing", False):
+                await asyncio.to_thread(self._persist_seen_message_ids)
+            else:
                 await self._run_blocking(self._persist_seen_message_ids)
 
     def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
@@ -163,3 +256,17 @@ class FeishuDedupMixin:
     async def _release_buffered_ingress(self):
         for event in [*self._pending_text_batches.values(), *self._pending_media_batches.values()]:
             await event._release_unadmitted_claims()
+        await self._release_held_busy_bursts()
+
+    async def _release_held_busy_bursts(self):
+        bursts = self.__dict__.get("_shared_bursts", {})
+        for key, burst in list(bursts.items()):
+            if burst.commit is not None or bursts.get(key) is not burst:
+                continue
+            del bursts[key]
+            if burst.timer is not None:
+                burst.timer.cancel()
+            if not burst.done.done():
+                burst.done.cancel()
+            if burst.head._ingress_controls_unchanged():
+                await burst.head._release_unadmitted_claims()

@@ -5,3 +5,4 @@ openpyxl>=3.0.0
 
 # HTTP requests
 requests>=2.28.0
+certifi>=2026.10.19,<2027  # GHSA-6q48-6c7w-9gw2; transitive through requests

@@ -16,7 +16,7 @@ We strive to never break installations and updates for these. Issues & regressio
 
 | OS / Architecture                                                             | Installation methods                                                                                                           | Notes                                                                                                                                                     |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **macOS** (Apple Silicon)                                                     | [Hermes Desktop](https://hermes-agent.nousresearch.com/), [`install.sh`](./installation.md) | The macOS desktop bundle (`Hermes Agent.app`) requires **macOS 13 Ventura or later** on Apple Silicon (M1–M4). Intel Macs and macOS 12 or earlier use [`install.sh`](./installation.md#linux--macos--wsl2). |
+| **macOS** (Apple Silicon)                                                     | [Hermes Desktop](https://hermes-agent.nousresearch.com/), [`install.sh`](./installation.md) | The macOS desktop bundle (`Hermes Agent.app`) requires **macOS 13 Ventura or later** on Apple Silicon (`arm64`). Intel Macs and macOS 12 or earlier use [`install.sh`](./installation.md#linux--macos--wsl2). |
 | [**Windows 10 / 11**](../user-guide/windows-native.md) (x86_64, aarch64) | [Microsoft Store / MSIX desktop](../user-guide/windows-native.md), [`install.ps1`](./installation.md) | Desktop bundles (Microsoft Store and `.appinstaller` MSIX, x64 or ARM64) require **Windows 11 22H2 or later (`10.0.22621.0`)**. Windows 10 and Windows 11 earlier than 22H2 use [`install.ps1`](./installation.md#windows-native) or [WSL2](../user-guide/windows-wsl-quickstart.md). Optional dependencies have [architecture limits](../user-guide/windows-native.md). |
 | **Linux / [WSL2](../user-guide/windows-wsl-quickstart.md)** (x86_64, aarch64) | [`install.sh`](./installation.md)                                                           | We test on the latest Ubuntu and WSL2. If your distro has glibc, systemd, and follows the Filesystem Hierarchy Standard, it's likely to work pretty well. |
 | [**Docker Container**](../user-guide/docker.md) (x86_64, aarch64) | [`docker pull`](../user-guide/docker.md)                                                                           | Docker installs do not support `hermes update`. Updating is done by running a new image.                                                                  |
@@ -38,7 +38,7 @@ PRs will be accepted to fix issues with them, but they will take precedence belo
 ### Build targets and support priority
 
 Releases build the macOS desktop bundle (`Hermes Agent.app`) for **Apple Silicon
-(M1–M4, `arm64`) on macOS 13 Ventura or later** (`LSMinimumSystemVersion`
+(`arm64`) on macOS 13 Ventura or later** (`LSMinimumSystemVersion`
 `13.0`, matching Electron 44's OS floor); no release or CI workflow builds or
 tests an Intel macOS (`x64`) bundle. The macOS update feed is arm64-only, so
 Intel Macs installed from an older desktop bundle get no update. Intel Macs and

@@ -69,7 +69,7 @@ is baked into the package (see below).
 ### Bundled desktop updates
 
 Packaged desktop bundles require **macOS 13 Ventura or later on Apple Silicon
-(M1–M4)** (`Hermes Agent.app`) or **Windows 11 22H2 or later (`10.0.22621.0`)**,
+(`arm64`)** (`Hermes Agent.app`) or **Windows 11 22H2 or later (`10.0.22621.0`)**,
 x64 or ARM64 (both Microsoft Store and `.appinstaller` MSIX). Intel Macs and
 macOS 12 or earlier use the CLI / source installer (`install.sh`); Windows 10
 and Windows 11 earlier than 22H2 use `install.ps1` or

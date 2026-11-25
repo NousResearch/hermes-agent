@@ -29,7 +29,7 @@ Download the package for your platform from the
   open it with Windows App Installer to install the signed MSIX bundle and
   register its update source. Microsoft Store packages have separate Store
   ownership.
-- **macOS (macOS 13 Ventura or later, Apple Silicon M1–M4):** open the DMG,
+- **macOS (macOS 13 Ventura or later, Apple Silicon `arm64`):** open the DMG,
   then copy `Hermes Agent.app` to Applications. The ZIP artifact carries the
   signed app used by the automatic updater.
 
@@ -48,7 +48,7 @@ from **Settings → Gateways**; see
 [Connecting to a remote backend](../user-guide/desktop.md#connecting-to-a-remote-backend).
 
 :::note Desktop bundle OS requirements and fallbacks
-- **macOS Desktop Bundle:** requires **macOS 13 Ventura or later on Apple Silicon (M1–M4)**. Intel (x86_64) Macs and macOS 12 Monterey or earlier are not supported by the desktop bundle — use the [CLI / source installer (`install.sh`)](#linux--macos--wsl2) below.
+- **macOS Desktop Bundle:** requires **macOS 13 Ventura or later on Apple Silicon (`arm64`)**. Intel (x86_64) Macs and macOS 12 Monterey or earlier are not supported by the desktop bundle — use the [CLI / source installer (`install.sh`)](#linux--macos--wsl2) below.
 - **Windows Desktop Bundle (Microsoft Store & `.appinstaller` MSIX):** requires **Windows 11 22H2 or later (`10.0.22621.0`)**, x64 or ARM64. On Windows 10 or Windows 11 earlier than 22H2, use the [Windows source installer (`install.ps1`)](#windows-native) below or [WSL2](../user-guide/windows-wsl-quickstart.md).
 :::
 

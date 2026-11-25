@@ -29,7 +29,7 @@ hermes update --set-channel stable   # 恢复为仅正式版本
 
 ### 捆绑桌面应用更新 {#bundled-desktop-updates}
 
-自包含桌面软件包要求 **macOS 13 Ventura 或更新版本（Apple Silicon M1–M4，`Hermes Agent.app`）** 或 **Windows 11 22H2 或更新版本（`10.0.22621.0`，x64 或 ARM64，涵盖 Microsoft Store 与 `.appinstaller` MSIX）**。Intel Mac 和 macOS 12 及更早版本请使用源码安装脚本（`install.sh`）；Windows 10 和低于 22H2 的 Windows 11 请使用 `install.ps1` 或 [WSL2](../user-guide/windows-wsl-quickstart.md)。
+自包含桌面软件包要求 **macOS 13 Ventura 或更新版本（Apple Silicon `arm64`，`Hermes Agent.app`）** 或 **Windows 11 22H2 或更新版本（`10.0.22621.0`，x64 或 ARM64，涵盖 Microsoft Store 与 `.appinstaller` MSIX）**。Intel Mac 和 macOS 12 及更早版本请使用源码安装脚本（`install.sh`）；Windows 10 和低于 22H2 的 Windows 11 请使用 `install.ps1` 或 [WSL2](../user-guide/windows-wsl-quickstart.md)。
 
 桌面软件包的更新耗时由**网络下载时间**（取决于带宽）与**本地校验和替换时间**两部分组成：
 

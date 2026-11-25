@@ -109,9 +109,12 @@ def model_line(plugin_id: str, card_id: str) -> str:
 def legacy_model_line(plugin_id: str, card_id: str) -> str:
     """The line a row admitted before the opaque reference carries: the plugin's own card id. That
     line is part of the row's durable payload digest, so an unchanged retry of such a card matches
-    its row only under this text. ``post`` sends it only after the ``model_line`` admission met an
-    existing row with another digest, and only as an existing-only admission: the store answers it
-    with that row or refuses it inside the one write that decides, so it never queues a row."""
+    its row only under this text. ``post`` sends it only after the ``model_line`` admission raised
+    ``admission_conflict``, and only as an existing-only admission. A conflict usually means a row
+    with another digest, but the route fence raises the same reason when the chat's conversation
+    moved during that admission, with no row anywhere. The store, not that guard, keeps this line
+    out of history: it answers with an existing row or refuses inside the one write that decides,
+    so the legacy line never queues a row."""
     return f"[{plugin_id} posted a card {card_id}]"
 
 
@@ -206,12 +209,13 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
             except AuthorityRefusal as exc:
                 if exc.reason != "admission_conflict":
                     raise
-                # The row this card id already has was digested under another line: a card admitted
-                # before the opaque reference carries its legacy line. Replay it under that durable
-                # identity as an existing-only admission. The store decides in one write, on the
+                # A conflict usually means this card id's row was digested under another line: a card
+                # admitted before the opaque reference carries its legacy line. The route fence raises
+                # the same reason when the chat's conversation moved during the admission, with no row
+                # anywhere, so a conflict is a lead, not proof of a row. Either way the legacy line goes
+                # only as an existing-only admission, and the store decides in one write, on the
                 # conversation the route resolves to then: an exact legacy row is returned (duplicate),
-                # another digest is still a conflict, and no row there (the chat's route moved to
-                # another conversation since the conflict) is refused. The legacy line is never queued.
+                # another digest is still a conflict, and no row there is refused. It is never queued.
                 replay = AdmissionReplay(existing_only=True)
                 admitted = await _admit(runner, adapter, source, plugin_home,
                                         legacy_model_line(plugin_id, normalized["card_id"]),

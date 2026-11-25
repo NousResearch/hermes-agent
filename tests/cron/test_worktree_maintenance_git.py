@@ -1,38 +1,36 @@
 """Cron worktree discovery must not launch Apple's uninstalled Git stub."""
 
 import os
-import subprocess
-from types import SimpleNamespace
+
+import pytest
 
 from cron import jobs, scheduler
 from hermes_cli import worktree_registry
 from hermes_platform.resolver import git as git_resolver
 
 
+@pytest.mark.platforms("posix")
 def test_cron_discovery_does_not_launch_uninstalled_apple_git(tmp_path, monkeypatch):
-    monkeypatch.setattr(git_resolver, "sys", SimpleNamespace(platform="darwin"))
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    monkeypatch.delenv("DEVELOPER_DIR", raising=False)
-    monkeypatch.setattr(git_resolver, "_CLT_CACHE", git_resolver._CltGitCache())
+    spawn_log = tmp_path / "git_spawns.log"
+    trap_git = tmp_path / "apple_usr_bin" / "git"
+    trap_git.parent.mkdir()
+    trap_git.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{spawn_log}'\nexit 1\n", encoding="utf-8")
+    trap_git.chmod(0o755)
+    # The trap stands in for /usr/bin/git without the Command Line Tools; the resolver's own
+    # darwin/xcode-select verdict is covered in tests/hermes_platform/test_resolver_git.py.
+    real_check = git_resolver.is_usable_git_executable
+    trap = os.path.realpath(trap_git)
+    monkeypatch.setattr(
+        git_resolver, "is_usable_git_executable",
+        lambda exe, env=None, **kw: bool(exe) and os.path.realpath(exe) != trap and real_check(exe, env, **kw),
+    )
+    monkeypatch.setenv("PATH", str(trap_git.parent))
+    workdir = tmp_path / "job"
+    workdir.mkdir()
     monkeypatch.setattr(worktree_registry, "registered_repos", lambda: [])
-    monkeypatch.setattr(jobs, "load_jobs", lambda: [{"workdir": str(tmp_path)}])
+    monkeypatch.setattr(jobs, "load_jobs", lambda: [{"workdir": str(workdir)}])
     monkeypatch.setattr(scheduler, "project_root_str", lambda: str(tmp_path))
 
-    xcode_select = tmp_path / "xcode-select"
-    xcode_select.write_text("#!/bin/sh\nexit 1\n")
-    xcode_select.chmod(0o755)
-    original_run = subprocess.run
-    git_launches = []
-
-    def run(argv, **kwargs):
-        if argv == ["/usr/bin/xcode-select", "-p"]:
-            return original_run([str(xcode_select), "-p"], **kwargs)
-        if os.path.basename(argv[0]) == "git":
-            git_launches.append(argv[1:])
-            return subprocess.CompletedProcess(argv, 1, "", "")
-        return original_run(argv, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", run)
     assert git_resolver.inspect_git(cached=False).status == "clt_stub"
     assert scheduler._worktree_maintenance_repos() == []
-    assert not git_launches
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"

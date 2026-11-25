@@ -385,7 +385,7 @@ _PLANTED = {"win32-x64": ("version-info-x64.json", "nested/HermesBundled-0.33.0-
                              "HermesBundled-0.33.0-mac-arm64.dmg.blockmap.blockmap",
                              "Other-0.33.0-mac-arm64.dmg.blockmap", "<package symlink>"),
             "termux": ("metadata-termux-aarch64.json", "deb/nested/hermes-agent_0.33.0_aarch64.deb", "<deb symlink>",
-                       "deb/.other_0.33.0_aarch64.deb")}
+                       "deb/.other_0.33.0_aarch64.deb", "<package symlink>")}
 
 
 @pytest.mark.parametrize("target,planted", [(t, p) for t, paths in _PLANTED.items() for p in paths])
@@ -404,7 +404,7 @@ def test_claim_staging_refuses_anything_but_the_built_packages(tmp_path, target,
         (staged / "deb").rename(tmp_path / "elsewhere")
         (staged / "deb").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     elif planted == "<package symlink>":
-        package = min(path for path in staged.iterdir() if path.is_file())
+        package = min(path for path in staged.rglob("*") if path.is_file())
         package.rename(tmp_path / package.name)
         package.symlink_to(tmp_path / package.name)
     else:

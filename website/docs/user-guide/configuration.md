@@ -1549,6 +1549,8 @@ credential_pool_strategies:
 
 Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](./features/credential-pools.md) for full documentation.
 
+`credential_pool_usage_caps` moves a session off a Claude subscription login before its plan window is spent; see [Soft usage caps](./features/credential-pools.md#soft-usage-caps).
+
 ## Prompt caching
 
 Hermes turns on cross-session prompt caching automatically when the active provider supports it — no user config needed.

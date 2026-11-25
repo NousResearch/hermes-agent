@@ -176,6 +176,34 @@ credential_pool_strategies:
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
 
+### Soft usage caps for subscription logins {#soft-usage-caps}
+
+The pool rotates a credential only after the provider rejects it. With several Claude subscription
+logins in one pool you can make a session leave a login earlier, for example to keep part of an
+account's weekly window free for other work:
+
+```yaml
+credential_pool_usage_caps:
+  anthropic:
+    five_hour: 85        # percent of the 5-hour window
+    seven_day: 80        # percent of the weekly window
+    accounts:            # per pool label, overrides the caps above
+      backup:
+        seven_day: 50
+```
+
+Before each request Hermes reads the plan windows of the login in use (cached for three minutes).
+Once a window is at or above its cap, that login is benched until the window resets and the session
+continues on the next pooled login that is still under its own caps. `hermes auth list` shows the
+bench with the reason `usage_cap`. A session that left a higher-priority login goes back to it once
+the window reopens.
+
+The check fails open. Unknown usage never benches a login, and when every login is over its caps the
+session stays where it is. The check runs with a five-second budget: if a usage read hangs, the
+request goes out on the credential it has and the check stays off until the read returns. Rotation
+on a provider 429 works as before. Without a `credential_pool_usage_caps` entry for the provider the
+feature is off. API keys have no plan windows and are never capped.
+
 ### Demoting a healthy credential {#demoting-a-healthy-credential}
 
 The pool only benches a credential *after* the provider rejects it (429/402/401). To keep a

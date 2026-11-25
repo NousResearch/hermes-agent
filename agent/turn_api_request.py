@@ -192,7 +192,9 @@ def build_api_request(
     """Assemble the attempt's request in the original order (every mutation happens BEFORE
     middleware/hooks/debug dumps observe the payload)."""
     from agent.conversation_loop import _moa_client_consumes_prepared_request
+    from agent.credential_pool_usage_caps import enforce_usage_caps
 
+    enforce_usage_caps(agent)  # soft caps: leave a nearly spent subscription login before this request
     built = build_request_payload(
         agent, api_messages=api_messages, _moa_prepared_request=_moa_prepared_request,
         tools_for_api=tools_for_api, system_message=system_message, api_call_count=api_call_count,

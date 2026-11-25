@@ -2120,8 +2120,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
     force-redacted first. Returns the output file path."""
     import tempfile
     canon, profile_dir = _existing_profile_dir(name)
-    # Archive base name without extension (.tar.gz appended by the writer).
-    base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")
+    base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")  # writer appends .tar.gz
 
     # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
     # copy under a temp dir named after the canonical id: root allow-list for default,
@@ -2144,7 +2143,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         _scrub_export_secrets(staged)
-        return Path(make_targz(base, tmpdir, canon))
+        return Path(make_targz(base, tmpdir, canon, link_source=profile_dir))  # import refuses absolute links
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
@@ -2181,7 +2180,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     # clears the read-only bits extraction re-applies, which a plain rmtree can't delete on Windows.
     with _create_lock(canon), tempfile.TemporaryDirectory(  # publish as create does: a racing publish wins
             prefix=f".{canon}.staging-", dir=profile_dir.parent, ignore_cleanup_errors=True) as staging_root:
-        safe_extract_targz(archive, Path(staging_root))
+        safe_extract_targz(archive, Path(staging_root), allow_symlinks=True)  # export keeps links
         extracted = Path(staging_root) / archive_root
         if not extracted.is_dir():
             raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")

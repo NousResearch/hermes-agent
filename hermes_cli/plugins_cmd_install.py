@@ -60,10 +60,15 @@ class _ConsentRefusal(str):
     """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
     so publication classifies the refusal without matching the copy."""
 
+    failure_class: str
+
     def __new__(cls, text: str, failure_class: str) -> _ConsentRefusal:
         refusal = super().__new__(cls, text)
         refusal.failure_class = failure_class
         return refusal
+
+    def __getnewargs_ex__(self):  # copy/pickle rebuild via __new__, which needs the class
+        return (str(self), self.failure_class), {}
 
 
 def _install_plugin_python_deps(

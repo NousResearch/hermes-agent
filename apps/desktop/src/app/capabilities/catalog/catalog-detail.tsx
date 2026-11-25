@@ -12,7 +12,7 @@ import { ExternalLink } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
 import { catalogIcon, CatalogImage } from './catalog-card'
-import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
+import { catalogAttribution, type CatalogEntry, type CatalogKind } from './catalog-data'
 import { CatalogDates, CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
 
 interface CatalogDetailProps {
@@ -44,7 +44,7 @@ function CatalogDetailHeader({ entry, action, dialog }: { entry: CatalogEntry; a
                 {action && <span className="shrink-0">{action}</span>}
               </div>
               <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-(--ui-text-tertiary)">
-                <span className="min-w-0 truncate">{entry.author || catalogLabel(entry.source)}</span>
+                <span className="min-w-0 truncate">{catalogAttribution(entry)}</span>
                 <CatalogHeaderMeta entry={entry} />
               </div>
             </div>

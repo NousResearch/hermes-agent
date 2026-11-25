@@ -89,6 +89,10 @@ function webUrl(value: unknown): string | null {
 export const catalogLabel = (value: string) =>
   value.includes('.') ? value : value.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
+/** A source label is a display fallback, not an invented skill author. */
+export const catalogAttribution = (entry: CatalogEntry) =>
+  entry.author || entry.provider?.label || catalogLabel(entry.source)
+
 const isoDate = (value: unknown) => (Number.isFinite(Date.parse(text(value))) ? text(value) : undefined)
 
 /** Where an entry points: install id, source/docs links, artwork. */

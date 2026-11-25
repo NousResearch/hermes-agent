@@ -310,6 +310,33 @@ def test_an_edit_that_changes_when_what_or_where_asks(cron_store, monkeypatch, c
     assert [k for k, _ in asked] == ["schedule_edit"] and shown in asked[0][1]
 
 
+def test_an_equivalent_schedule_does_not_rearm_the_job(cron_store, monkeypatch):
+    """`every 24h` and `every 1d` parse to the same schedule: the saved next run must not move."""
+    job = cron_store.create_job(prompt="check", schedule="every 24h", name="Check")
+    before = cron_store.get_job(job["id"])["next_run_at"]
+    asked = _asking(monkeypatch, "once")
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "schedule": "every 1d"}))
+    assert result.get("success") is True, result
+    assert asked == []
+    assert cron_store.get_job(job["id"])["next_run_at"] == before
+
+
+def test_a_job_paused_while_the_edit_card_waits_is_not_resumed(cron_store, monkeypatch):
+    """An approval must not overwrite a state change made while the card was open."""
+    job = _existing_job(cron_store)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def callback(*_a, **_k):
+        cron_store.pause_job(job["id"], "paused while the card waited")
+        return "once"
+    terminal_tool.set_approval_callback(callback)
+    result = json.loads(registry.dispatch("cronjob_manage", {
+        "action": "update", "job_id": job["id"], "schedule": "every 3h"}))
+    assert result.get("success") is False, result
+    assert cron_store.get_job(job["id"])["enabled"] is False
+
+
 def test_a_run_finished_while_the_edit_card_waits_is_kept(cron_store, monkeypatch):
     """The card waits; a run completing meanwhile must survive the save, or the job gains extra runs."""
     job = _existing_job(cron_store)

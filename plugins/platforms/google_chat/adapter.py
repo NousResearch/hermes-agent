@@ -422,6 +422,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: dict[str, str] = {}
+        # Quote-replies: quoted message name -> (text, sender display name, ours?), and the display names
+        # learned to be ours or not, so a later quote of the same sender needs no messages.get.
+        self._quoted_messages: dict[str, tuple[str, str, bool]] = {}
+        self._quote_own_names: set[str] = set()
+        self._quote_other_names: set[str] = set()
         from hermes_constants import get_hermes_home as _get_hermes_home
         self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
@@ -1003,10 +1008,100 @@ class GoogleChatAdapter(BasePlatformAdapter):
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
             thread_id=session_thread_id, user_id_alt=(sender_name or None), message_id=msg.get("name") or None,
         )
-        return MessageEvent(
+        event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,
             media_urls=media_urls, media_types=media_types,
         )
+        await self._apply_quoted_reply(event, msg)
+        return event
+
+    # -- quote-replies -------------------------------------------------------------------------
+    # Chat's "Quote in reply" puts ``quotedMessageMetadata`` on the message: {name, lastUpdateTime,
+    # quoteType: "REPLY", quotedMessageSnapshot: {sender: <display name>, text}}. It becomes the
+    # event's reply fields, so the gateway prepends its ``[Replying to ...]`` pointer as it does for
+    # Telegram and Discord replies, and plugins know which message was answered.
+    _QUOTE_FETCH_TIMEOUT = 4.0   # one messages.get on a quoted message, at most this long
+    _QUOTE_KEEP = 500            # quoted messages remembered
+
+    def _own_sender_ids(self) -> set[str]:
+        """``users/{id}`` this adapter posts as: the Chat app, and the Workspace user when configured."""
+        ids = {self._bot_user_id}
+        if self._workspace_user is not None:
+            ids.add(getattr(self._workspace_user.listener, "user_id", None))
+        return {str(i) for i in ids if i}
+
+    def _get_quoted_message(self, name: str) -> dict[str, Any]:
+        """Blocking (run in a thread): ``messages.get`` on a quoted message."""
+        return self._chat_api.spaces().messages().get(name=name).execute(http=self._new_authed_http())
+
+    async def _fetch_quoted_message(self, name: str) -> Optional[tuple[str, str, str, bool]]:
+        """(text, sender display name, sender id, ours?) of a quoted message, or None when it cannot be read
+        within ``_QUOTE_FETCH_TIMEOUT``. The sender's display name is remembered as ours or not."""
+        try:
+            m = await asyncio.wait_for(asyncio.to_thread(self._get_quoted_message, name), self._QUOTE_FETCH_TIMEOUT)
+        except Exception as exc:
+            logger.info("[GoogleChat] quoted message %s not fetched (%s); the snapshot stands", name,
+                        _redact_sensitive(str(exc))[:200] or type(exc).__name__)
+            return None
+        sender = (m or {}).get("sender") or {}
+        sid, display = str(sender.get("name") or ""), str(sender.get("displayName") or "")
+        own = bool(sid) and sid in self._own_sender_ids()
+        if display:
+            (self._quote_own_names if own else self._quote_other_names).add(display)
+        return str((m or {}).get("text") or ""), display, sid, own
+
+    async def _apply_quoted_reply(self, event: MessageEvent, msg: dict[str, Any]) -> None:
+        """Fill ``reply_to_message_id``, ``reply_to_text``, ``reply_to_author_name`` /
+        ``reply_to_author_id`` and ``reply_to_is_own_message`` from a REPLY quote. The snapshot names its
+        sender by display name only, so whose message it is comes from a learned display name, else one
+        bounded ``messages.get`` (which also fills an empty snapshot). Never raises: a quote that cannot
+        be read leaves the message as it was, and a slow fetch is cut at ``_QUOTE_FETCH_TIMEOUT``."""
+        try:
+            q = msg.get("quotedMessageMetadata")
+            if not isinstance(q, dict):
+                return
+            name = str(q.get("name") or "")
+            kind = str(q.get("quoteType") or "REPLY").upper()
+            if "/messages/" not in name:
+                return
+            if kind != "REPLY":
+                logger.info("[GoogleChat] message %s quotes %s as %s, not a reply; left as it is",
+                            msg.get("name"), name, kind)
+                return
+            snap = q.get("quotedMessageSnapshot") if isinstance(q.get("quotedMessageSnapshot"), dict) else {}
+            text, sender, sid = str(snap.get("text") or ""), str(snap.get("sender") or ""), ""
+            how = "snapshot" if text.strip() else "no snapshot text"
+            seen = self._quoted_messages.get(name)
+            if seen is not None:
+                if not text.strip():
+                    text, how = seen[0], "remembered"
+                sender = sender or seen[1]
+                own: Optional[bool] = seen[2]
+            elif sender and sender in self._quote_own_names:
+                own = True
+            elif sender and sender in self._quote_other_names:
+                own = False
+            else:
+                own = None
+            if not text.strip() or own is None:
+                got = await self._fetch_quoted_message(name)
+                if got is not None:
+                    if not text.strip():
+                        text, how = got[0], "fetched"
+                    sender, sid, own = sender or got[1], got[2], got[3]
+            event.reply_to_message_id = name
+            event.reply_to_text = text if text.strip() else None
+            event.reply_to_author_name = sender or None
+            if sid:
+                event.reply_to_author_id = sid
+            event.reply_to_is_own_message = bool(own)
+            self._quoted_messages[name] = (text, sender, bool(own))
+            while len(self._quoted_messages) > self._QUOTE_KEEP:
+                self._quoted_messages.pop(next(iter(self._quoted_messages)))
+            logger.info("[GoogleChat] message %s quotes %s (%s, %d chars, %s)", msg.get("name"), name,
+                        "ours" if own else (sender or "someone else's"), len(text), how)
+        except Exception:
+            logger.debug("[GoogleChat] quoted reply not read; the message goes on without it", exc_info=True)
 
     async def _download_attachment(self, attachment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
         """Download an inbound attachment to the local cache; return (path, mime). Bot SA

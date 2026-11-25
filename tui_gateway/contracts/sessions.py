@@ -130,6 +130,10 @@ class SessionCreateParams(ProfileParams):
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
     service_tier: str | None = None
+    # Per-session toolset override for the Chat-vs-Work split (session-scoped, NOT a mid-session toggle).
+    # Chat mode passes [] for zero tools (later ["web","skills",...]); None inherits the platform's
+    # configured toolsets (Work). Toolsets are baked into the agent at build time, so this is set at create.
+    enabled_toolsets: list[str] | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False

@@ -417,6 +417,11 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": session_cwd, "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
+            # Chat-vs-Work split, session-scoped (set at create; None = inherit platform toolsets).
+            "enabled_toolsets": (
+                list(params["enabled_toolsets"])
+                if isinstance(params.get("enabled_toolsets"), list) else None
+            ),
             "composer_override_profile": composer_override_profile,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,

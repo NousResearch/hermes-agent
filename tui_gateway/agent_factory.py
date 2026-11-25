@@ -673,8 +673,15 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=onboarding_toolsets(_load_enabled_toolsets(platform),
-                                             session_db if session_db is not None else _get_db(), session_id or key),
+        enabled_toolsets=(
+            # A Chat-mode session carries an explicit toolset set at create (e.g. [] for zero tools).
+            # None inherits the platform's configured toolsets (Work). Bypass onboarding for an explicit
+            # set so a deliberately-stripped Chat never regains tools via first-run hints.
+            (session or {}).get("enabled_toolsets")
+            if (session or {}).get("enabled_toolsets") is not None
+            else onboarding_toolsets(_load_enabled_toolsets(platform),
+                                     session_db if session_db is not None else _get_db(), session_id or key)
+        ),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),

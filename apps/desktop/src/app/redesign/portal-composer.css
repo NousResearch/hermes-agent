@@ -7,6 +7,8 @@
   /* 18px rows; controls keep their 24px hit area and overlap the padding. */
   --portal-composer-row: 1.125rem;
   --portal-composer-gap: 1rem;
+  /* The editor's cap where room is scarce (a phone, or a window shorter than 30rem): ~150px. */
+  --composer-input-max-height-tight: min(9.375rem, 25dvh);
 }
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-root'] {
@@ -44,7 +46,9 @@
   container: portal-composer / inline-size;
   --composer-surface-pad-x: var(--portal-composer-inset);
   --composer-surface-pad-y: 1rem;
-  --composer-input-max-height: min(9.375rem, 25dvh);
+  /* Starts at two lines (min-height: 2lh) and grows with the draft: a multi-paragraph prompt on a
+     spacious window reaches 288px, capped at 40% of the window's height. */
+  --composer-input-max-height: min(18rem, 40dvh);
   --composer-row-gap: var(--portal-composer-gap);
   border-width: 0;
   border-radius: var(--portal-radius-panel) var(--portal-radius-panel) 0 0;
@@ -246,6 +250,9 @@
   :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
     --composer-surface-pad-y: var(--portal-space-compact);
     --portal-composer-gap: var(--portal-space-compact);
+    /* A phone keeps the short editor: the card is the screen's whole width and every line it takes
+       is transcript the user cannot see. */
+    --composer-input-max-height: var(--composer-input-max-height-tight);
   }
 
   /* The card takes its content's height, not Figma's 146px desktop card. */
@@ -269,6 +276,7 @@
   :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
     --composer-surface-pad-y: var(--portal-space-tight);
     --portal-composer-gap: var(--portal-space-tight);
+    --composer-input-max-height: var(--composer-input-max-height-tight);
   }
 
   :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] {

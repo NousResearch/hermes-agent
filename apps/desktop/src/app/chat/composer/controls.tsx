@@ -274,7 +274,12 @@ export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelR
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1" data-slot="composer-model-row">
-      <Codicon aria-hidden className="shrink-0 text-(--ui-text-tertiary)" name="comment" size="1.125rem" />
+      <Codicon
+        aria-hidden
+        className="pointer-events-none shrink-0 select-none text-(--ui-text-tertiary)"
+        name="comment"
+        size="1.125rem"
+      />
       <span className="min-w-0 flex-1" />
       {signUpRequired ? (
         <ComposerSignUpLink />
@@ -282,7 +287,12 @@ export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelR
         <>
           <ModelPill disabled={disabled} model={model} />
           <ReasoningPill disabled={disabled} model={model} />
-          <Codicon aria-hidden className="shrink-0 text-(--ui-text-secondary)" name="zap" size="0.875rem" />
+          <Codicon
+            aria-hidden
+            className="pointer-events-none shrink-0 select-none text-(--ui-text-tertiary)"
+            name="zap"
+            size="0.875rem"
+          />
         </>
       )}
     </div>

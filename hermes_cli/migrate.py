@@ -1,6 +1,7 @@
 """CLI handlers for ``hermes migrate ...``.
 
-Currently exposes only ``hermes migrate xai`` — diagnoses and (with --apply) rewrites references to
+``hermes migrate`` (bare) and ``hermes migrate <agent>`` move a user over from another agent through
+the agent-importers plugin; ``hermes migrate xai`` diagnoses and (with --apply) rewrites references to
 xAI models retired on May 15, 2026.
 """
 from __future__ import annotations
@@ -17,9 +18,31 @@ def cmd_migrate(args: Any) -> int:
     """Dispatcher for ``hermes migrate <subtype>``."""
     if getattr(args, "migrate_type", None) == "xai":
         return cmd_migrate_xai(args)
+    if getattr(args, "migrate_type", None) is None:
+        from hermes_cli.config import get_hermes_home
+        from hermes_cli.setup_agent_import import migrate_from_agents
+        return migrate_from_agents(get_hermes_home())
 
-    print("usage: hermes migrate xai [--apply] [--no-backup]", file=sys.stderr)
+    print("usage: hermes migrate [<agent> | xai [--apply] [--no-backup]]", file=sys.stderr)
     return 2
+
+
+# ``hermes migrate <agent>`` flags forwarded to ``hermes import-agent <agent>``, as (dest, flag).
+_AGENT_IMPORT_FLAGS = (("dry_run", "--dry-run"), ("overwrite", "--overwrite"), ("yes", "--yes"),
+                       ("activate_routines", "--activate-routines"), ("migrate_secrets", "--migrate-secrets"))
+
+
+def cmd_migrate_agent(args: Any) -> int:
+    """``hermes migrate <agent>``: install the agent-importers plugin when missing, then run its
+    import for that agent with the flags given here."""
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.setup_agent_import import migrate_from_agents
+    extra = [flag for dest, flag in _AGENT_IMPORT_FLAGS if getattr(args, dest, False)]
+    if getattr(args, "source", None):
+        extra += ["--source", str(Path(args.source).expanduser())]
+    for name in getattr(args, "bot", None) or ():
+        extra += ["--bot", name]
+    return migrate_from_agents(get_hermes_home(), args.migrate_agent, tuple(extra))
 
 
 def _fail(message: str) -> int:
@@ -29,6 +52,7 @@ def _fail(message: str) -> int:
 
 def cmd_migrate_xai(args: Any) -> int:
     """Run xAI May-15 model migration in dry-run or apply mode."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.xai_retirement import (
         MIGRATION_GUIDE_URL, RETIREMENT_DATE, apply_migration, find_retired_xai_refs, format_issue)
 
@@ -62,7 +86,7 @@ def cmd_migrate_xai(args: Any) -> int:
             Colors.DIM))
         return 0
 
-    if not config_path or not config_path.exists():
+    if not config_path or not config_exists(config_path):
         return _fail(f"Could not locate config.yaml (looked at: {config_path})")
 
     try:

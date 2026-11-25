@@ -11,9 +11,55 @@ Covers:
 """
 
 from __future__ import annotations
+
+import asyncio
+import json
 import sys
+from types import SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
+
+def _run_owned_job(job, tmp_path):
+    """Exercise the production owner bridge with an isolated canonical store."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from tests.fixtures.storage_seed import seed_session
+
+    ref = SessionRef("test-profile", "cron-owner-session")
+    admission_id = "cron-owner-admission"
+    request_id = "cron-owner-request"
+    persistence = storage_handle(tmp_path)
+    seed_session(persistence, ref.session_id, "cron")
+    authority = SimpleNamespace(
+        persistence=persistence,
+        sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
+        pending_results={},
+    )
+    row = {
+        "admission_id": admission_id, "request_id": request_id,
+        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
+    }
+    policy = SimpleNamespace(request_json=json.dumps({
+        "cron_job": job, "extra_prompt": None, "request_id": request_id,
+    }))
+
+    async def run():
+        previous = current_execution()
+        try:
+            await execute(authority, ref, row, policy)
+        except RuntimeError as exc:
+            # Failed scheduler tuples are published before execute raises.
+            saved = authority.pending_results.get(admission_id)
+            if saved is None:
+                raise
+            assert str(exc) == saved["result"]["cron_result"][3]
+        assert current_execution() is previous
+        assert authority._cron_cancellations == {}
+        return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
+
+    return asyncio.run(run())
 
 
 @pytest.fixture()
@@ -239,7 +285,7 @@ class TestRunJobTerminalCwd:
         monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
 
 
-    def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
+    def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch, tmp_path):
         """When workdir is absent, run_job must not touch TERMINAL_CWD at all —
         whatever value was present before the call should be present after.
 
@@ -265,7 +311,7 @@ class TestRunJobTerminalCwd:
             "schedule_display": "manual",
         }
 
-        success, *_ = sched.run_job(job)
+        success, *_ = _run_owned_job(job, tmp_path)
         assert success is True
 
         # Feature is OFF — skip_context_files stays True.
@@ -293,13 +339,14 @@ class TestRunJobTerminalCwd:
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
-        success, *_ = sched.run_job(
+        success, *_ = _run_owned_job(
             {
                 "id": "cwd-bound",
                 "name": "cwd-bound",
                 "workdir": str(workdir),
                 "schedule_display": "manual",
-            }
+            },
+            tmp_path,
         )
 
         assert success is True
@@ -327,7 +374,7 @@ class TestRunJobTerminalCwd:
         monkeypatch.setattr(
             sched, "_run_job_script_with_claim_heartbeat", run_script
         )
-        success, *_ = sched.run_job(
+        success, *_ = _run_owned_job(
             {
                 "id": "agent-script-workdir",
                 "name": "agent-script-workdir",
@@ -335,7 +382,8 @@ class TestRunJobTerminalCwd:
                 "script": "collect.py",
                 "workdir": str(workdir),
                 "schedule_display": "manual",
-            }
+            },
+            tmp_path,
         )
 
         assert success is True
@@ -351,7 +399,7 @@ def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch,
     workdir.mkdir()
     observed: dict = {}
 
-    def run_script(script_path, workdir=None, cancel_event=None):
+    def run_script(script_path, workdir=None, cancel_event=None, interpreter=None):
         observed["script_workdir"] = workdir
         return True, "collected data"
 

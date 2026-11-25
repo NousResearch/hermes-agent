@@ -65,7 +65,7 @@ You'll need these values from the dashboard — the wizard prompts for them in t
 | **Access Token** | App Dashboard → WhatsApp → API Setup → "Generate access token" | Starts with `EAA`, 100+ chars | Temp tokens last 24h — see "Permanent token" below for production. |
 | **App Secret** | App Dashboard → Settings → Basic → click "Show" next to App secret | 32-character lowercase hex | Used to verify incoming webhook signatures.  Without it, inbound delivery is refused with 503. |
 | **App ID** (optional) | App Dashboard → Settings → Basic | Numeric, 15-16 digits | Not required for messaging, useful for analytics. |
-| **WABA ID** (optional) | App Dashboard → WhatsApp → API Setup → near the top | Numeric, 15+ digits | Not required for messaging, useful for analytics. |
+| **WABA ID** (optional) | App Dashboard → WhatsApp → API Setup → near the top | Numeric, 15+ digits | When set, inbound webhooks must match this business account. |
 
 ---
 
@@ -228,7 +228,7 @@ All settings live in `~/.hermes/.env`.  Required values are in **bold**.
 | **`WHATSAPP_CLOUD_ALLOWED_USERS`** | — | Comma-separated wa_ids allowed to message the bot. |
 | `WHATSAPP_CLOUD_ALLOW_ALL_USERS` | `false` | Set to `true` to bypass the allowlist. |
 | `WHATSAPP_CLOUD_APP_ID` | — | Optional, for future analytics integration. |
-| `WHATSAPP_CLOUD_WABA_ID` | — | Optional, for future analytics integration. |
+| `WHATSAPP_CLOUD_WABA_ID` | — | Optional; when set, inbound webhooks must match this business account. |
 | `WHATSAPP_CLOUD_WEBHOOK_HOST` | unset (dual-stack: all interfaces, IPv4+IPv6) | Interface the webhook server binds to. |
 | `WHATSAPP_CLOUD_WEBHOOK_PORT` | `8090` | Port the webhook server binds to.  Must match the port your tunnel forwards. |
 | `WHATSAPP_CLOUD_WEBHOOK_PATH` | `/whatsapp/webhook` | URL path Meta posts to. |

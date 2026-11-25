@@ -42,7 +42,9 @@ def read_terminal_tool(
         "read_terminal is only available in the Hermes desktop app.",
         "start_line and count must be integers.",
         "Failed to read terminal: ",
-        "No in-app terminal is open, or the read timed out.",
+        "No in-app terminal answered: nothing is open, or the bridge timed out. "
+        "If the terminal pane IS open, the desktop app may be older than this "
+        "backend — update it and retry.",
     ))
 
 
@@ -79,11 +81,3 @@ registry.register(
     ),
     emoji="🖥️",
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

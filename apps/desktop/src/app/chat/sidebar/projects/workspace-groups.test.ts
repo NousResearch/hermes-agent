@@ -8,6 +8,7 @@ import {
   baseName,
   excludeProjectSessions,
   kanbanWorktreeDir,
+  laneSwitchTarget,
   liveSessionProjectId,
   mergeRepoWorktreeGroups,
   NO_PROJECT_ID,
@@ -38,6 +39,30 @@ describe('baseName', () => {
     expect(baseName('/www/hermes-agent/')).toBe('hermes-agent')
     expect(baseName('C:\\repos\\app')).toBe('app')
     expect(baseName('')).toBeUndefined()
+  })
+})
+
+describe('laneSwitchTarget (#108694)', () => {
+  const main = { isMain: true, label: 'main', path: '/repo' }
+  const local = (name: string) => ({ isRemote: false, name })
+
+  it('skips the synthetic main fallback on a repo whose trunk is master', () => {
+    expect(laneSwitchTarget(main, [local('master')])).toBeNull()
+  })
+
+  it('switches to a label git lists as a local branch', () => {
+    expect(laneSwitchTarget(main, [local('master'), local('main')])).toBe('main')
+  })
+
+  it('switches to a remote-only branch git switch can DWIM', () => {
+    expect(laneSwitchTarget(main, [local('dev'), { isRemote: true, name: 'origin/main' }])).toBe('main')
+  })
+
+  it('never switches non-git, linked, or unverifiable lanes', () => {
+    expect(laneSwitchTarget({ ...main, isGit: false }, [local('main')])).toBeNull()
+    expect(laneSwitchTarget({ ...main, isMain: false }, [local('main')])).toBeNull()
+    expect(laneSwitchTarget({ ...main, path: null }, [local('main')])).toBeNull()
+    expect(laneSwitchTarget(main, [])).toBeNull()
   })
 })
 
@@ -1132,6 +1157,19 @@ describe('overlayLiveLanes', () => {
     expect(overlayLiveLanes(home, [makeCwdSession('/www/app', { id: 'fresh' })])).toBe(home)
   })
 
+  it('lists a cwd-carrying chat the snapshot filed in Home (#139909)', () => {
+    // A Desktop chat stamped with the bare home dir: the backend files it in
+    // Home, but the unhydrated tree carries only its id (`sessionIds`), so the
+    // overlay is the only thing that can paint its row.
+    const stamped = makeCwdSession('C:\\Users\\wrain', { id: 'stamped' })
+    const home = { ...homeNode([]), previewSessions: [stamped], sessionCount: 1, sessionIds: ['stamped'] }
+
+    const overlaid = overlayLiveLanes(home, [stamped], new Set(), projectOwnerBySessionId([home]))
+
+    expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['stamped'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
   // #77591 C: compression rotates the live id (root -> tip) while the snapshot
   // still holds the older segment. Both are one conversation, so one row.
   it.each([
@@ -1451,5 +1489,18 @@ describe('project filter row rule (#97762)', () => {
     expect(sessionMatchesProjectFilter(sibling, ['p_app'], explicit, owners)).toBe(true)
     expect(sessionBucketId(sibling, explicit, owners)).toBe('p_app')
     expect(sessionProjectColor(sibling, explicit, owners)).toBe('#abc')
+  })
+
+  // #139909: the backend files a home-dir-stamped chat in Home; its cwd alone
+  // would make it a phantom project named after the home dir.
+  it('files a row the backend placed in Home under Home, cwd or not', () => {
+    const stamped = makeCwdSession('/home/me', { id: 'stamped', git_repo_root: null })
+
+    const owners = projectOwnerBySessionId([
+      projectNode({ id: NO_PROJECT_ID, isNoProject: true, sessionIds: ['stamped'] })
+    ])
+
+    expect(sessionBucketId(stamped, projects, owners)).toBe(NO_PROJECT_ID)
+    expect(sessionMatchesProjectFilter(stamped, [NO_PROJECT_ID], projects, owners)).toBe(true)
   })
 })

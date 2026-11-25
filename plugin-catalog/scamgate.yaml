@@ -1,0 +1,23 @@
+name: scamgate
+repo: https://github.com/odaiameera/scamgate
+sha: 041ec7bf6f73bf3e1609ca914bcbfe01fc3cf393
+subdir: src/scamgate
+description: "Offline scam gate. Blocks known-bad links and payments before a tool runs, and asks a human when it cannot see the destination. Disclosure — blocks agent tool calls that would edit Hermes config/profiles/plugins/hooks or Claude Code settings/hooks/plugins, turn approvals off, or disable a Claude Code plugin or its hooks, and asks before an agent installs or enables a plugin; with approvals off it turns its \"ask\" into a block (setting when_approvals_off: allow restores asks); keeps its signing key and ask log under ~/.local/state/scamgate and phishing feeds under ~/.cache/scamgate (not per-profile); downloads phishing feeds (openphish.com, Phishing-Database on GitHub, optional urlhaus) in the background every 6 hours while Hermes runs (auto_update_feeds: false turns this off) and on /scamgate update, hermes scamgate update-feeds or its no-argument scamgate_update_feeds tool; the downloads carry nothing about the links being checked; optional SCAMGATE_RDAP=live sends each checked link's domain to its RDAP registry."
+maintainer: odaiameera
+tier: community
+category: tools
+requires_hermes: ">=0.19.1"
+version: "0.3.3"
+docs_url: https://github.com/odaiameera/scamgate
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - scamgate_check_url
+    - scamgate_check_payment
+    - scamgate_update_feeds
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -11,6 +11,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { byteRange } from './windows-bundled-helpers.mjs'
+
 test('native acceptance descriptor CLI uses explicit publisher and a stable subscription across upgrades', () => {
   const feed = fs.mkdtempSync(path.join(os.tmpdir(), 'wbh-descriptor-'))
   try {
@@ -28,4 +30,14 @@ test('native acceptance descriptor CLI uses explicit publisher and a stable subs
       assert.match(xml, /HoursBetweenUpdateChecks="12"/)
     }
   } finally { fs.rmSync(feed, { recursive: true, force: true }) }
+})
+
+test('the feed honours byte ranges, which App Installer requires (0x80D05011 without them)', () => {
+  assert.equal(byteRange(undefined, 1000), null)
+  assert.deepEqual(byteRange('bytes=0-99', 1000), { start: 0, end: 99 })
+  assert.deepEqual(byteRange('bytes=900-', 1000), { start: 900, end: 999 })
+  assert.deepEqual(byteRange('bytes=-100', 1000), { start: 900, end: 999 })
+  assert.deepEqual(byteRange('bytes=990-5000', 1000), { start: 990, end: 999 })
+  assert.equal(byteRange('bytes=1000-', 1000), 'unsatisfiable')
+  assert.equal(byteRange('bytes=0-1,5-9', 1000), null)
 })

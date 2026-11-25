@@ -16,14 +16,18 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, TranscriptView
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _make_flush_agent(db: SessionDB, session_id: str):
+def _make_flush_agent(db, session_id: str):
     """Minimal agent shell that owns the real flush implementation."""
     agent = SimpleNamespace(
         _session_db=db,
+        persistence=db,
         _session_db_created=True,
         _persist_disabled=False,
         session_id=session_id,
@@ -59,48 +63,48 @@ def test_rotation_flush_without_history_boundary_is_safe(tmp_path: Path) -> None
     the loaders stamp the marker at row-materialization time, so even the
     "wrong" call shape (no history boundary) is idempotent.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "COLD_ROTATE_DUP"
-    db.create_session(sid, source="cli")
-    db.append_message(sid, "user", "persisted question")
-    db.append_message(sid, "assistant", "persisted answer")
+    seed_session(db, sid, "cli")
+    seed_messages(db, sid, {"role": "user", "content": "persisted question"},
+                  {"role": "assistant", "content": "persisted answer"})
 
-    loaded = db.get_messages_as_conversation(sid)
+    loaded = conversation(db, sid)
     agent = _make_flush_agent(db, sid)
     agent._flush_messages_to_session_db(loaded)  # missing conversation_history=
 
-    rows = db.get_messages_as_conversation(sid, include_inactive=True)
+    rows = conversation(db, sid, ConversationRequest(view=TranscriptView.ALL))
     assert _contents(rows) == ["persisted question", "persisted answer"]
 
 
 def test_rotation_flush_with_history_boundary_is_noop(tmp_path: Path) -> None:
     """Fix shape used by /new, /resume, /branch: pass conversation_history=self list."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "COLD_ROTATE_OK"
-    db.create_session(sid, source="cli")
-    db.append_message(sid, "user", "persisted question")
-    db.append_message(sid, "assistant", "persisted answer")
+    seed_session(db, sid, "cli")
+    seed_messages(db, sid, {"role": "user", "content": "persisted question"},
+                  {"role": "assistant", "content": "persisted answer"})
 
-    loaded = db.get_messages_as_conversation(sid)
+    loaded = conversation(db, sid)
     agent = _make_flush_agent(db, sid)
     agent._flush_messages_to_session_db(
         loaded,
         conversation_history=loaded,
     )
 
-    rows = db.get_messages_as_conversation(sid, include_inactive=True)
+    rows = conversation(db, sid, ConversationRequest(view=TranscriptView.ALL))
     assert _contents(rows) == ["persisted question", "persisted answer"]
 
 
 def test_rotation_flush_writes_only_new_tail(tmp_path: Path) -> None:
     """If a turn added messages after cold resume, only the tail is written."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "COLD_ROTATE_TAIL"
-    db.create_session(sid, source="cli")
-    db.append_message(sid, "user", "persisted question")
-    db.append_message(sid, "assistant", "persisted answer")
+    seed_session(db, sid, "cli")
+    seed_messages(db, sid, {"role": "user", "content": "persisted question"},
+                  {"role": "assistant", "content": "persisted answer"})
 
-    loaded = db.get_messages_as_conversation(sid)
+    loaded = conversation(db, sid)
     live = [*loaded, {"role": "user", "content": "new unpersisted turn"}]
     agent = _make_flush_agent(db, sid)
     agent._flush_messages_to_session_db(
@@ -108,7 +112,7 @@ def test_rotation_flush_writes_only_new_tail(tmp_path: Path) -> None:
         conversation_history=loaded,
     )
 
-    rows = db.get_messages_as_conversation(sid, include_inactive=True)
+    rows = conversation(db, sid, ConversationRequest(view=TranscriptView.ALL))
     assert _contents(rows) == [
         "persisted question",
         "persisted answer",

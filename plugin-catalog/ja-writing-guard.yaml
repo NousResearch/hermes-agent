@@ -1,0 +1,19 @@
+name: ja-writing-guard
+repo: https://github.com/TakeshiTGAL/hermes-plugin-ja-writing-guard
+sha: 02d5e3ac52e9851b086e271e1788aac2a154a592
+description: "ja_writing_check returns line, column and fix hint. Default is report; enforce rewrites a flagged answer only when numbers, names, URLs, code, and negation survive and the score drops under threshold. Disclosure — no network calls of its own; mode report (default) only logs scores; opt-in mode enforce sends each flagged final answer (with finding excerpts) to the user's configured model via ctx.llm (1–3 calls, up to 25 s delay) and replaces the delivered and stored answer when its preservation checks pass, which do not prove meaning is unchanged; a read-only post_tool_call hook notes turns with MEDIA: lines so attachments from other plugins are kept; the ja_writing_check tool has no user list of its own and is on by default on every platform for anyone who can use the agent there (`hermes tools disable ja_writing --platform <platform>` turns it off); reads plugins.hook_callback_timeout via a private read-only Hermes helper; eval/ dev scripts ship in the tree but are never loaded."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-ja-writing-guard#readme
+version: 0.1.1
+requires_hermes: ">=0.21.4"
+platforms: []
+capabilities:
+  provides_tools:
+  - ja_writing_check
+  provides_hooks:
+  - transform_llm_output
+  - post_tool_call
+  provides_middleware: []
+  requires_env: []

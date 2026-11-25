@@ -584,3 +584,42 @@ test('a killed renderer is never reloaded or surfaced after close or during an i
   assert.equal(live.reloadCalls.length, 0)
   assert.equal(terminated.length, 0)
 })
+
+test('onRendererGone observes a live-window renderer loss but never teardown, and cannot break recovery', async () => {
+  const gone: unknown[] = []
+  let quitting = false
+
+  const makeWindow = () => {
+    const win = makeFakeWindow()
+
+    const { options } = makeOptions(win, 'main', {
+      isIntentionalTeardown: () => quitting,
+      onRendererGone: (reason: unknown) => {
+        gone.push(reason)
+
+        throw new Error('observer failure')
+      }
+    })
+
+    installWindowRendererLifecycle(win, options)
+
+    return win
+  }
+
+  const live = makeWindow()
+  live.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 3 })
+  await flushDeferred()
+
+  assert.deepEqual(gone, ['crashed'])
+  assert.equal(live.reloadCalls.length, 1)
+
+  const closed = makeWindow()
+  closed.setDestroyed(true)
+  closed.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+
+  quitting = true
+  const tearingDown = makeWindow()
+  tearingDown.webContents.emit('render-process-gone', {}, { reason: 'killed', exitCode: 9 })
+
+  assert.deepEqual(gone, ['crashed'])
+})

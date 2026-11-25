@@ -9,15 +9,15 @@ for loopback URLs only.
 
 import pytest
 
-import tools.browser_tool as bt
+import tools.browser_session as bs
 from agent.proxy_bypass import add_loopback_no_proxy, loopback_connect_kwargs, loopback_request_kwargs
 
 
 @pytest.fixture
 def stub_sanitized_env(monkeypatch):
     """Replace the credential-scrub layer with a fixed dict so the test sees exactly what
-    ``_build_browser_env`` adds on top."""
-    import tools.environments.local as local
+    ``build_browser_env`` adds on top."""
+    from tools.environments import local
     holder = {}
     monkeypatch.setattr(local, "hermes_subprocess_env", lambda inherit_credentials=False: dict(holder))
     return holder
@@ -25,7 +25,7 @@ def stub_sanitized_env(monkeypatch):
 
 def test_browser_env_appends_loopback_to_operator_no_proxy(stub_sanitized_env):
     stub_sanitized_env["NO_PROXY"] = "git.internal, 10.0.0.0/8"
-    env = bt._build_browser_env()
+    env = bs.build_browser_env()
     assert env["NO_PROXY"] == "git.internal,10.0.0.0/8,127.0.0.1,localhost,::1"
     assert env["no_proxy"] == "127.0.0.1,localhost,::1"
 

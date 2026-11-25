@@ -164,3 +164,87 @@ def test_oauth_plugin_without_handler_fails_loud_and_builtins_are_untouched(tmp_
     assert _log(tmp_path) == []
     pool = json.loads((tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8"))["credential_pool"]
     assert next(e for e in pool["openrouter"] if e["access_token"] == "sk-or-fixture")["label"] == "personal"
+
+
+def test_external_process_plugin_relogin_hint_never_names_a_failing_auth_add(install_provider, monkeypatch):
+    """An ``external_process`` plugin with no ``auth_handler`` (its vendor CLI owns sign-in) must not be
+    told to run ``hermes auth add <slug> --type oauth``: that exact command fails loud with "ships no
+    auth_handler". The hint points at ``hermes model``, whose external-process flow runs the CLI login."""
+    plugin_dir = install_provider("cli-owned", with_handler=False)
+    init = plugin_dir / "__init__.py"
+    init.write_text(init.read_text(encoding="utf-8").replace(
+        'auth_type="oauth_external"', 'auth_type="external_process", process_command="vendor-cli"'),
+        encoding="utf-8")
+    _rediscover()
+    monkeypatch.setattr("hermes_constants.profile_cli_selector", lambda: "")
+
+    from agent.turn_failure_copy import oauth_relogin_command, relogin_command_hint
+    from hermes_cli.auth_commands import auth_command
+
+    with pytest.raises(SystemExit) as excinfo:
+        auth_command(_parse_auth_args(["add", "cli-owned", "--type", "oauth"]))
+    assert "ships no auth_handler" in str(excinfo.value)
+
+    assert oauth_relogin_command("cli-owned") == "hermes model"
+    assert "auth add" not in relogin_command_hint("cli-owned")
+    # Handler-shipping plugins and built-ins keep their `hermes auth add` command.
+    install_provider("fake-auth")
+    assert oauth_relogin_command("fake-auth") == "hermes auth add fake-auth --type oauth"
+    assert oauth_relogin_command("nous") == "hermes portal"
+
+
+def _declares_login(monkeypatch, tmp_path, *, cli="vendor cli/vendor", login_args=("auth", "login")):
+    """A handler-less external-process plugin whose CLI resolves to an executable under ``tmp_path``.
+
+    ``setup_status`` raises: building a sign-in hint must never run the plugin's live status probe
+    (Claude's runs ``claude auth status``), because hints are built on the gateway's event loop."""
+    from hermes_cli import auth_plugin_providers as ap
+    from providers.base import ProviderProfile
+
+    exe = tmp_path / cli
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
+
+    class _Declares(ProviderProfile):
+        def setup_status(self, **kwargs):
+            raise AssertionError("a sign-in hint ran the plugin's live status probe")
+
+    profile = _Declares(name="cli-declares", auth_type="external_process", process_command=str(exe),
+                        login_args=login_args)
+    monkeypatch.setattr(ap, "plugin_profile", lambda slug: profile if slug == "cli-declares" else None)
+    monkeypatch.setattr(ap, "plugin_auth_handler", lambda slug: None)
+    monkeypatch.setattr("hermes_constants.profile_cli_selector", lambda: "")
+    return exe
+
+
+@pytest.mark.platforms("posix")
+def test_external_process_plugin_relogin_is_its_declared_login_command(monkeypatch, tmp_path):
+    """A plugin that declares its CLI's login (``login_args``) gets exactly that command on every
+    re-login surface: ``hermes model`` also runs that login, but then saves the provider as the
+    default, which a sign-in hint must not do. The command comes from the declaration, not a probe."""
+    exe = _declares_login(monkeypatch, tmp_path)
+    from agent.turn_failure_copy import oauth_relogin_command, relogin_command_hint
+
+    expected = f"'{exe}' auth login"
+    assert oauth_relogin_command("cli-declares") == expected
+    assert relogin_command_hint("cli-declares") == expected
+
+
+def test_external_process_plugin_without_declared_login_keeps_hermes_model(monkeypatch, tmp_path):
+    """No ``login_args``: the hint stays ``hermes model`` and still never runs the status probe."""
+    _declares_login(monkeypatch, tmp_path, login_args=())
+    from agent.turn_failure_copy import oauth_relogin_command
+
+    assert oauth_relogin_command("cli-declares") == "hermes model"
+
+
+@pytest.mark.platforms("windows")
+def test_declared_login_command_runs_in_both_windows_shells():
+    """The Copy button's command runs in cmd.exe or PowerShell. Neither reads POSIX single quotes, and
+    PowerShell runs a leading quoted path only behind ``&``, so a spaced path keeps the caller's fallback."""
+    from agent.turn_failure_copy import render_login_command
+
+    assert render_login_command([r"C:\Users\Jane Doe\.local\bin\claude.exe", "auth", "login"]) == ""
+    plain = r"C:\Users\jane\.local\bin\claude.exe"
+    assert render_login_command([plain, "auth", "login"]) == plain + " auth login"

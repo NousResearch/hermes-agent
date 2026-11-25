@@ -75,7 +75,6 @@ def _make_runner_with_cached_agent(close_fn):
     runner.session_store._generate_session_key.return_value = session_key
     runner._running_agents = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._is_user_authorized = lambda _source: True
     runner._format_session_info = lambda: ""
@@ -185,7 +184,7 @@ async def test_reset_completes_when_cleanup_times_out(caplog):
     async def _instant_timeout(aw, timeout=None):
         if asyncio.iscoroutine(aw):
             aw.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     runner = _make_runner_with_cached_agent(lambda: None)
 

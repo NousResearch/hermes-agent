@@ -19,7 +19,11 @@ vi.mock('@hermes/plugin-sdk', () => ({
   host: { openSession, notifyError: vi.fn() }
 }))
 vi.mock('./bot-state', () => ({ saveSelectedRosterBot: () => undefined }))
-vi.mock('./canonical-chat', () => ({ prepareBotSource }))
+vi.mock('./canonical-chat', () => ({
+  prepareBotSource,
+  resolveExpectHistory: (summary: { message_count?: number; live_message_count?: number } | null | undefined) =>
+    (summary?.live_message_count ?? summary?.message_count ?? 1) > 0
+}))
 vi.mock('./roster-actions', () => ({ openRosterBot }))
 vi.mock('./routing', () => ({
   botConnectionRoute: () => ({ connectionId: 'local', mode: 'local', profile: 'researcher' }),

@@ -419,3 +419,68 @@ describe('setProviderVisibility', () => {
     expect(next.has(modelVisibilityKey('nous', 'model-fast'))).toBe(false)
   })
 })
+
+describe('resetModelVisibility', () => {
+  // Fresh module per load: the atoms read localStorage at import, so a
+  // re-import is a renderer reload.
+  const loadStore = () => import('./model-visibility')
+
+  const catalog = [provider('openai-codex', ['gpt-5.5', 'gpt-6']), provider('qwen', ['qwen3-coder'])]
+  const gpt6 = modelVisibilityKey('openai-codex', 'gpt-6')
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('brings back a model the known snapshot froze hidden, and the reset survives a reload', async () => {
+    // A curation saved while the snapshot machinery was live: gpt-6 was listed
+    // when the user kept gpt-5.5 and switched it off, so the snapshot counts it
+    // as judged and the default rule never re-admits it.
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['openai-codex::gpt-5.5']))
+    window.localStorage.setItem(
+      'hermes.desktop.known-models',
+      JSON.stringify(['openai-codex::gpt-5.5', 'openai-codex::gpt-6', 'qwen::qwen3-coder'])
+    )
+
+    const stuck = await loadStore()
+
+    const before = stuck.effectiveVisibleKeys(stuck.$visibleModels.get(), catalog)
+    expect(before.has(gpt6)).toBe(false)
+    expect(before.has(modelVisibilityKey('qwen', 'qwen3-coder'))).toBe(true)
+
+    stuck.resetModelVisibility()
+
+    expect(stuck.effectiveVisibleKeys(stuck.$visibleModels.get(), catalog)).toEqual(stuck.defaultVisibleKeys(catalog))
+
+    vi.resetModules()
+    const reloaded = await loadStore()
+    reloaded.seedKnownModels(catalog)
+
+    expect(reloaded.effectiveVisibleKeys(reloaded.$visibleModels.get(), catalog)).toEqual(
+      reloaded.defaultVisibleKeys(catalog)
+    )
+  })
+
+  it('forgets what the old snapshot counted as judged, so later arrivals are new again', async () => {
+    // gpt-6-mini was listed (and left hidden) before the reset, then dropped
+    // out of the catalog.
+    const store = await loadStore()
+    store.setVisibleModels(new Set(['openai-codex::gpt-5.5']), [provider('openai-codex', ['gpt-5.5', 'gpt-6-mini'])])
+
+    store.resetModelVisibility()
+
+    // Curate again without it, then it comes back: the user never judged it
+    // since the reset, so it lands visible through the default rule.
+    store.setVisibleModels(
+      store.toggleModelVisibility(store.$visibleModels.get(), catalog, 'openai-codex', 'gpt-5.5'),
+      catalog
+    )
+
+    const returned = [provider('openai-codex', ['gpt-5.5', 'gpt-6', 'gpt-6-mini']), catalog[1]]
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), returned)
+
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-6-mini'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-5.5'))).toBe(false)
+  })
+})

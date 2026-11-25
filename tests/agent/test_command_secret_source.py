@@ -31,16 +31,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.secret_sources.command import (  # noqa: E402
+from agent.secret_sources.command import (
     CommandSource,
     _run_helper,
     unquote_dotenv_value,
 )
-from agent.secret_sources.base import (  # noqa: E402
+from agent.secret_sources.base import (
     reset_source_environment,
     set_source_environment,
 )
-from hermes_cli import env_loader  # noqa: E402
+from hermes_cli import env_loader
 
 
 pytestmark = pytest.mark.platforms("posix")  # the command secret provider is POSIX-only

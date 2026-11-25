@@ -1,0 +1,23 @@
+name: model-presets
+title: Model Presets
+repo: https://github.com/will-lynas/hermes-model-presets
+sha: 27eec57bc17d92d931a025ed333b330dd17636e5
+description: Named model, provider and reasoning presets for gateway /model commands. Uses only the pre_gateway_dispatch hook; no network calls, credential access, shell commands, background processes or self-updating.
+maintainer: will-lynas
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/will-lynas/hermes-model-presets#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/will-lynas/hermes-model-presets/27eec57bc17d92d931a025ed333b330dd17636e5/assets/alias-demo.png
+known_issues:
+  - Messaging gateways only; local CLI/TUI, Desktop and API turns are not supported.
+  - Session presets must be reapplied after a gateway restart; --once is not expanded.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+  provides_middleware: []
+  requires_env: []

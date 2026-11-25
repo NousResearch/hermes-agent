@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from agent.deadline import poll_until
 from agent.shell_hooks import (
     _TOOL_EVENTS as _TOOL_SCOPED_EVENTS,
     _ToolMatcherMixin,
@@ -43,10 +44,10 @@ QUEUE_MAX_SIZE = 256
 
 # (home, event, url) triples already wired in this process. Home is part of the key so a
 # multiplexed gateway's secondary profiles (own plugin managers) can register identical targets.
-_registered: Set[Tuple[str, str, str]] = set()
+_registered: set[tuple[str, str, str]] = set()
 _registered_lock = threading.Lock()
 
-_delivery_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(maxsize=QUEUE_MAX_SIZE)
+_delivery_queue: queue.Queue[Optional[dict[str, Any]]] = queue.Queue(maxsize=QUEUE_MAX_SIZE)
 _worker_lock = threading.Lock()
 _worker: Optional[threading.Thread] = None
 
@@ -56,7 +57,7 @@ class WebhookTarget(_ToolMatcherMixin):
     """Parsed and validated representation of one ``hooks.outbound`` entry."""
     _MATCHER_KIND = "outbound webhook"
     url: str
-    events: List[str]
+    events: list[str]
     name: str = ""
     secret: Optional[str] = None
     matcher: Optional[str] = None
@@ -68,9 +69,13 @@ class WebhookTarget(_ToolMatcherMixin):
         return self.name or self.url
 
 
-def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
+def register_from_config(cfg: Optional[dict[str, Any]]) -> list[WebhookTarget]:
     """Register every configured outbound webhook on the plugin manager.  Malformed ``hooks.outbound``
     means zero targets — never raises.  Returns the targets that ended up wired (deduplicated)."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
     if not isinstance(cfg, dict):
         return []
     from utils import env_var_enabled
@@ -83,7 +88,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     from hermes_cli.plugins import get_plugin_manager
     manager = get_plugin_manager()
     home_key = _home_key()
-    registered: List[WebhookTarget] = []
+    registered: list[WebhookTarget] = []
     with _registered_lock:
         for target in targets:
             wired_any = False
@@ -103,7 +108,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     return registered
 
 
-def iter_configured_targets(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
+def iter_configured_targets(cfg: Optional[dict[str, Any]]) -> list[WebhookTarget]:
     """Parse ``hooks.outbound`` without registering anything (``hermes hooks list``)."""
     if not isinstance(cfg, dict):
         return []
@@ -119,14 +124,11 @@ def iter_configured_targets(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget
 
 def flush(timeout: float = 5.0) -> bool:
     """Block until all queued deliveries are done (or *timeout* elapses); True if drained."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def _drained() -> bool:
         with _delivery_queue.all_tasks_done:
-            if _delivery_queue.unfinished_tasks == 0:
-                return True
-        time.sleep(0.02)
-    with _delivery_queue.all_tasks_done:
-        return _delivery_queue.unfinished_tasks == 0
+            return _delivery_queue.unfinished_tasks == 0
+
+    return poll_until(_drained, timeout, 0.02)
 
 
 def re_register_config_hooks() -> None:
@@ -179,7 +181,7 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
     if not isinstance(events_raw, list) or not events_raw:
         warn(" needs a non-empty 'events' list (valid: %s)", valid_list)
         return None
-    events: List[str] = [ev for ev in events_raw if ev in VALID_HOOKS]
+    events: list[str] = [ev for ev in events_raw if ev in VALID_HOOKS]
     for ev in events_raw:
         if ev not in VALID_HOOKS:
             warn(": unknown event %r ignored (valid: %s)", ev, valid_list)
@@ -223,6 +225,10 @@ def _make_callback(event: str, target: WebhookTarget):
     """Build the notify-only closure ``invoke_hook()`` calls per firing."""
 
     def _callback(**kwargs: Any) -> None:
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return
         if event in _TOOL_SCOPED_EVENTS and not target.matches_tool(kwargs.get("tool_name")):
             return
         delivery_id = uuid.uuid4().hex
@@ -238,7 +244,7 @@ def _make_callback(event: str, target: WebhookTarget):
     return _callback
 
 
-def _serialize_payload(event: str, kwargs: Dict[str, Any], delivery_id: str) -> bytes:
+def _serialize_payload(event: str, kwargs: dict[str, Any], delivery_id: str) -> bytes:
     """Render the POST body: shell-hooks stdin shape plus delivery metadata.  ``delivery_id``
     (also the ``X-Hermes-Delivery`` header) and ``timestamp`` live inside the HMAC-signed
     body, so they double as replay protection."""
@@ -252,7 +258,7 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any], delivery_id: str) -> 
     return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
 
 
-def _build_delivery(event: str, target: WebhookTarget, body: bytes, delivery_id: str) -> Dict[str, Any]:
+def _build_delivery(event: str, target: WebhookTarget, body: bytes, delivery_id: str) -> dict[str, Any]:
     headers = {
         "Content-Type": "application/json", "User-Agent": "Hermes-Agent-Outbound-Webhook",
         "X-Hermes-Event": event, "X-Hermes-Delivery": delivery_id,
@@ -263,7 +269,7 @@ def _build_delivery(event: str, target: WebhookTarget, body: bytes, delivery_id:
     return {"url": target.url, "label": target.label, "event": event, "body": body, "headers": headers, "timeout": target.timeout}
 
 
-def _enqueue(delivery: Dict[str, Any]) -> None:
+def _enqueue(delivery: dict[str, Any]) -> None:
     global _worker
     if _worker is None or not _worker.is_alive():
         with _worker_lock:
@@ -299,14 +305,14 @@ class _NoRedirectHandler(urlrequest.HTTPRedirectHandler):
     """Refuse redirects: urllib would turn a redirected POST into a body-less GET,
     silently dropping the signed payload. Any 3xx surfaces as HTTPError instead."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
 _opener = urlrequest.build_opener(_NoRedirectHandler)
 
 
-def _deliver(delivery: Dict[str, Any]) -> None:
+def _deliver(delivery: dict[str, Any]) -> None:
     """POST with bounded retries: retry on connection errors and 5xx; 4xx and 3xx are final."""
     event, label = delivery["event"], delivery["label"]
     last_error = ""
@@ -338,13 +344,3 @@ def _deliver(delivery: Dict[str, Any]) -> None:
         "outbound webhook delivery failed after %d attempt(s) (event=%s target=%s): %s",
         MAX_DELIVERY_ATTEMPTS, event, label, last_error,
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-from datetime import timezone  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

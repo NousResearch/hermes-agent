@@ -1,0 +1,15 @@
+name: anyrouter
+repo: https://github.com/AnyRouterHQ/hermes-provider-anyrouter
+sha: ba9fd9c05570800dcbbf6dae4605fd4106880d27
+subdir: anyrouter
+description: AnyRouter — one API key for many models through an OpenAI-compatible gateway. The /model picker lists only tool-capable routes, and meta-models like anyrouter/hermes auto-route across top models with fallback. Disclosure — sends your prompts and ANYROUTER_API_KEY to anyrouter.dev, a third-party relay that forwards to upstream vendors (OpenAI, Anthropic, Google, xAI, …), on some plans through a shared pool of other members' donated free-tier vendor keys; billed in prepaid AnyRouter credits. anyrouter/hermes is AnyRouter's own routing meta-model, not a Nous Research model. Opt-in ANYROUTER_APP_ATTRIBUTION=1 adds Hermes attribution headers.
+maintainer: AnyRouterHQ
+tier: community
+category: models
+docs_url: https://github.com/AnyRouterHQ/hermes-provider-anyrouter#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ANYROUTER_API_KEY

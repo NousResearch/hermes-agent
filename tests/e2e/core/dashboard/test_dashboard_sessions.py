@@ -3,7 +3,7 @@
 Users hit this as "the Sessions page 500s / shows 'database is locked' while a chat is running" or
 "the session count jumps backwards / double-counts" (the dashboard reads the same SQLite file the
 agent, gateway and cron write). Harness: the real ``hermes dashboard`` process and a real writer
-process (``hermes_state.SessionDB``, the agent's own persistence layer) appending sessions and
+process (the store through ``open_persistence``, the agent's own persistence layer) appending sessions and
 messages as fast as it can. Readers hammer the list, stats, detail and messages routes in parallel.
 
 Invariants while the writer runs: every read is a 200 (never a lock/busy error), the list total
@@ -24,6 +24,7 @@ from typing import Callable
 import pytest
 
 from . import _helpers as H
+import itertools
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX dashboard process")
 
@@ -34,15 +35,16 @@ WRITE_SECONDS = 8.0
 # every session so the harness knows an upper bound at any instant.
 _WRITER = r"""
 import sys, time
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 deadline = time.monotonic() + float(sys.argv[1])
-db = SessionDB()
+db = open_persistence(profile_scope())
 n = 0
 while time.monotonic() < deadline:
     sid = f"live-{n:05d}"
-    db.create_session(sid, source="cli", model="writer")
+    seed_session(db, sid, "cli", model="writer")
     for j in range(3):
-        db.append_message(sid, "user" if j % 2 == 0 else "assistant", f"{sid} message {j}")
+        seed_messages(db, sid, {"role": "user" if j % 2 == 0 else "assistant", "content": f"{sid} message {j}"})
     n += 1
     print(n, flush=True)
 db.close()
@@ -151,7 +153,7 @@ def test_session_routes_stay_consistent_under_a_concurrent_writer(env) -> None:
     assert w.done >= 20, f"writer committed only {w.done} sessions: the contention window never opened"
     assert len(totals) >= 10 and len(series) >= 10, f"too few reads overlapped the writer ({len(totals)}, {len(series)})"
     assert not problems, f"{len(problems)} inconsistent read(s) while writing:\n  " + "\n  ".join(dict.fromkeys(problems[:30]))
-    backwards = [(a, b) for a, b in zip(series, series[1:]) if b < a]
+    backwards = [(a, b) for a, b in itertools.pairwise(series) if b < a]
     assert not backwards, f"session total went backwards between sequential reads: {backwards[:5]}"
 
     raw = H.db_rows(p.db, "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL")[0][0]

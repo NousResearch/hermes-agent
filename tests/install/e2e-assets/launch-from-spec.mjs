@@ -27,8 +27,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
-import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
 import { assertStagedBranch, pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } from './update-ui.cjs';
 import { installSourceBranchProbe, prepareSourceBranchEnvironment } from './source-branch-probe.cjs';
@@ -36,6 +36,9 @@ import { observeSourceUpdate } from './source-update-observer.mjs';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
 import { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } from './smoke-env.mjs';
 import { sourceRuntimeSettleCommand } from './source-runtime-settle.mjs';
+
+// The checkout's tests-js declares the driver's Playwright.
+const { _electron } = createRequire(new URL('../../../tests-js/package.json', import.meta.url))('@playwright/test');
 
 /**
  * @typedef {{argv: string[], cwd: string, env: Record<string, string>,
@@ -114,13 +117,6 @@ async function main() {
   // holding node's event loop open, so the driver can outlive its own
   // finished test. Success and failure paths exit explicitly; this unref'd
   // timer is the backstop so no unknown state holds a runner past its budget.
-  const SELF_DEADLINE_MS = 20 * 60 * 1000;
-  const selfDeadline = setTimeout(() => {
-    log(`DRIVER SELF-TIMEOUT after ${SELF_DEADLINE_MS / 60000}min - exiting 124 (phase: ${currentPhase})`);
-    process.exit(124);
-  }, SELF_DEADLINE_MS);
-  selfDeadline.unref();
-
   const { values } = parseArgs({
     options: {
       spec: { type: 'string' },
@@ -131,9 +127,19 @@ async function main() {
       'chat-out': { type: 'string' },
       'mock-url': { type: 'string' },
       'no-update': { type: 'boolean', default: false },
-      'timeout-ms': { type: 'string', default: '600000' },
+      // A full app-driven update (git pull, dependency sync, npm ci, TUI/web/desktop builds)
+      // takes ~7.5 min on a normal macOS runner and ~10.5 min on a slow one.
+      'timeout-ms': { type: 'string', default: '900000' },
     },
   });
+  // After the update wait (--timeout-ms), not inside it: launch, OLD chat and
+  // relaunch checks get their own 20 minutes.
+  const SELF_DEADLINE_MS = Number(values['timeout-ms']) + 20 * 60 * 1000;
+  const selfDeadline = setTimeout(() => {
+    log(`DRIVER SELF-TIMEOUT after ${SELF_DEADLINE_MS / 60000}min - exiting 124 (phase: ${currentPhase})`);
+    process.exit(124);
+  }, SELF_DEADLINE_MS);
+  selfDeadline.unref();
   if (!values.spec) throw new Error('--spec is required');
   if (!values['old-sha'] || !values['chat-out'] || !values['mock-url'] || !values['repo-dir']) {
     throw new Error('--old-sha, --chat-out, --mock-url and --repo-dir are required for OLD chat');

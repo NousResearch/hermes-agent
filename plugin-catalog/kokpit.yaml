@@ -1,0 +1,33 @@
+name: kokpit
+repo: https://github.com/sahindemirbas/kokpit
+sha: 21112512fcb8d5fa24efc1558e9b50195eb031a0
+subdir: integrations/hermes/kokpit
+description: "A personal cockpit for Hermes Agent. When a session produces something, Kokpit leaves a short card and receipt in plain Markdown that Hermes, Claude Code and Codex all read, so the next session picks up where the last one stopped. It also captures notes and todos from any Hermes chat, gives a morning brief, and runs a night pass whose proposals quote their exact source lines. Local, stdlib only. Disclosure — Adds notes from your Kokpit Markdown vault (threads, last session card, latest receipt, related notes) to each turn's context; by default writes a session card and receipt into the vault when a session captured notes or wrote files (listing the paths written); its tools let the agent append notes, tasks, journal lines and accepted idea files to the vault without a prompt and read the Kokpit app's SQLite database read-only; optional settings, all off by default, run the night pass in a background thread at session start (`night_auto`), send up to 10 vault files to your configured model (`night_model`), and run `systemctl --user is-active` for units you list (`server`)."
+maintainer: sahindemirbas
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/sahindemirbas/kokpit/blob/main/docs/hermes-plugin.md
+version: "0.4.0"
+title: Kokpit
+capabilities:
+  provides_tools:
+    - kokpit_today
+    - kokpit_brain_search
+    - kokpit_threads
+    - kokpit_capture
+    - kokpit_events
+    - kokpit_jobs
+    - kokpit_ai_usage
+    - kokpit_health
+    - kokpit_training
+    - kokpit_server
+    - kokpit_night
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - on_session_start
+    - on_session_finalize
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

@@ -9,6 +9,7 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
+import type { AgentProfileRoute } from '@/store/profile'
 import { fetchProjectSessions, projectProfile } from '@/store/projects'
 
 import {
@@ -25,6 +26,7 @@ import {
 } from '../chrome'
 import { shellOwnsPress } from '../reorderable-list'
 
+import { ownedNewSessionHandlers } from './gateway-project-rows'
 import {
   expandedProjectSessions,
   latestProjectSessions,
@@ -82,7 +84,8 @@ export function ProjectBackRow({ label, onClick }: { label: string; onClick: () 
 interface ProjectOverviewRowProps {
   project: SidebarProjectTree
   onEnter?: (id: string) => void
-  onNewSession?: (path: null | string) => void
+  /** `owner` is set for a project another gateway owns: the session starts there. */
+  onNewSession?: (path: null | string, owner?: AgentProfileRoute) => void
   /** Drag the project's "+" onto a chat zone: create a new session pinned to
    *  this project's cwd, placed exactly where it's dropped. */
   onNewSessionSplit?: NewSessionSplitHandler
@@ -106,8 +109,8 @@ interface ProjectOverviewRowProps {
 export function ProjectOverviewRow({
   project,
   onEnter,
-  onNewSession,
-  onNewSessionSplit,
+  onNewSession: onNewSessionIn,
+  onNewSessionSplit: onNewSessionSplitIn,
   renderRows,
   activeProjectId,
   previewSessions,
@@ -122,6 +125,7 @@ export function ProjectOverviewRow({
   const { t } = useI18n()
   const s = t.sidebar
   const isActive = project.id === activeProjectId
+  const { onNewSession, onNewSessionSplit } = ownedNewSessionHandlers(project, onNewSessionIn, onNewSessionSplitIn)
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
@@ -146,6 +150,16 @@ export function ProjectOverviewRow({
   const total = project.sessionCount - hiddenSessionCount
   const hiddenCount = total - preview.length
   const offerShowAll = !showAllSessions && !expanded && preview.length > 0 && hiddenCount > 0
+
+  // #124808: a path-less explicit project (multi-folder, never assigned a
+  // primary_path) still carries repo roots. Its trunk "+" must anchor at
+  // the first repo root — passing the null wire path through would take the
+  // reserved Home/detached branch downstream and silently create a global
+  // session. Home itself keeps null ("no folder" is its contract).
+  const newSessionPath =
+    !project.isNoProject && !(project.path ?? '').trim()
+      ? ((project.repos ?? []).map(repo => repo.path).find(root => (root ?? '').trim()) ?? project.path)
+      : project.path
 
   const showAll = () => {
     // All-profiles view has no single backend to ask for one project's lanes;
@@ -204,7 +218,7 @@ export function ProjectOverviewRow({
           {onNewSession && (
             <WorkspaceAddButton
               label={s.newSessionIn(project.label)}
-              onClick={() => onNewSession(project.path)}
+              onClick={() => onNewSession(newSessionPath)}
               onPointerDown={
                 onNewSessionSplit
                   ? event => {
@@ -217,11 +231,11 @@ export function ProjectOverviewRow({
                           onNewSessionSplit(placement.dir, {
                             anchor: placement.anchor,
                             before: placement.before,
-                            cwd: project.path
+                            cwd: newSessionPath
                           })
                         },
                         event,
-                        { cwd: project.path, label: s.newSessionIn(project.label) }
+                        { cwd: newSessionPath, label: s.newSessionIn(project.label) }
                       )
                     }
                   : undefined
@@ -268,7 +282,18 @@ export function ProjectOverviewRow({
     // project in the overview — the parallel to the entered-project wrapper's
     // `data-sessions-project` (index.tsx), which only fires once you've drilled
     // in. Here it's present on every row of the list.
-    <div className={cn(dragging && 'relative z-10')} data-sessions-project={project.id} ref={ref} style={style}>
+    <div
+      className={cn(
+        dragging && 'relative z-10',
+        // Painted imperatively by session-drag.ts while a dragged session
+        // hovers this row — a live "drop here to move" cue, not React state
+        // (it must not repaint the sidebar on every pixel of pointer travel).
+        'rounded-[6px] data-[session-drop-hover=true]:outline-2 data-[session-drop-hover=true]:-outline-offset-2 data-[session-drop-hover=true]:outline-sidebar-ring'
+      )}
+      data-sessions-project={project.id}
+      ref={ref}
+      style={style}
+    >
       {/* Home has no per-project actions, so it gets no right-click menu. */}
       {project.isNoProject ? (
         shell

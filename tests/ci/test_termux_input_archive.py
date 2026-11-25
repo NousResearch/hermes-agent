@@ -7,6 +7,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from tests.ci.desktop_release_roles import DOWNLOADABLE_DISPATCHES, gate, needs_of
+from tests.ci.workflow_steps import is_checkout
 
 ROOT = Path(__file__).resolve().parents[2]
 R2_ENV = {"CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_R2_BUCKET"}
@@ -62,11 +63,10 @@ def test_archive_gate_uses_bootstrap_python_and_trusted_exact_revision():
         assert gate(archive["if"], inputs, {}, job_if=False), dispatch
     for skipped in ({"disposable_run": "98765"}, {"disposable_channel": "native-preview"},
                     {"release-phase": "publish"}, {"release-phase": "promote"}):
-        assert not gate(archive["if"], {**DOWNLOADABLE_DISPATCHES["tag"], **skipped}, {}, job_if=False), skipped
+        assert not gate(archive["if"], {**DOWNLOADABLE_DISPATCHES["candidate"], **skipped}, {}, job_if=False), skipped
     assert R2_ENV <= archive["env"].keys()
     assert validate["environment"] == "release-signing"
-    checkout = validate["steps"][0]
-    assert "actions/checkout" in checkout["uses"]
+    assert is_checkout(validate["steps"][0])
     assert not [name for name, job in release.items() if "archive-inputs" in needs_of(job)]
 
     action = YAML(typ="base").load((ROOT / ".github/actions/setup-pm/action.yml").read_text(encoding="utf-8"))

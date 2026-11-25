@@ -1139,7 +1139,8 @@ def _apply_platform_live(profile: Optional[str], platform_id: str) -> dict:
     if answer.get("error"):
         live["detail"] = str(answer["error"])
     elif state == "unavailable":
-        live["detail"] = "the running gateway could not build this platform's adapter"
+        live["detail"] = ((answer.get("reasons") or {}).get(platform_id)
+                          or "the running gateway could not build this platform's adapter")
     return live
 
 

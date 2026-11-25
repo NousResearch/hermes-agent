@@ -18,7 +18,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 
 _CHILD = r'''
-import asyncio, json, os, sys, threading
+import asyncio, json, os, sys, threading, time
 from pathlib import Path
 repo = Path(sys.argv[1])
 sys.path.insert(0, str(repo))
@@ -27,6 +27,7 @@ env_loader.load_hermes_dotenv = lambda **_kwargs: []
 from gateway import restart_when_idle, run_bootstrap, run_runtime
 from gateway.config import GatewayConfig
 from hermes_constants import get_hermes_home
+from tests.waiting import async_wait_until
 
 late = []
 
@@ -48,12 +49,14 @@ stopped = threading.Event()
 async def serve_until_stop(runner):
     # Background boot work (the dashboard server, listeners) keeps importing for a moment after the
     # runner starts; arm once it settles, so only the restart wait and the stop are measured.
-    loop = asyncio.get_running_loop()
-    seen, quiet_since, deadline = len(sys.modules), loop.time(), loop.time() + 60
-    while loop.time() - quiet_since < 1.0 and loop.time() < deadline:
-        await asyncio.sleep(0.1)
-        if len(sys.modules) != seen:
-            seen, quiet_since = len(sys.modules), loop.time()
+    quiet = {"count": len(sys.modules), "since": time.monotonic()}
+
+    def settled():
+        if len(sys.modules) != quiet["count"]:
+            quiet.update(count=len(sys.modules), since=time.monotonic())
+        return time.monotonic() - quiet["since"] >= 1.0
+
+    await async_wait_until(settled, timeout=60, interval=0.1, what="boot imports to settle")
     recorder.armed = True
     await restart_when_idle.await_idle(runner)
 
@@ -63,12 +66,12 @@ run_bootstrap._start_gateway_start_cron_and_housekeeping = lambda runner: (
 run_runtime.wait_gateway_runtime = serve_until_stop
 get_hermes_home().chmod(0o700)
 try:
-    asyncio.run(asyncio.wait_for(run_bootstrap.start_gateway(GatewayConfig()), 60))
-except SystemExit:
-    pass
+    verdict = asyncio.run(asyncio.wait_for(run_bootstrap.start_gateway(GatewayConfig()), 120))
+except SystemExit as exc:  # a failed stop ends here; report it so the test fails on it
+    verdict = f"SystemExit({exc.code})"
 finally:
     stopped.set()
-print(json.dumps({"armed": recorder.armed, "late": sorted(set(late))}))
+print(json.dumps({"armed": recorder.armed, "verdict": verdict, "late": sorted(set(late))}))
 sys.stdout.flush()
 os._exit(0)
 '''
@@ -124,5 +127,6 @@ def test_a_stop_imports_no_repo_module_boot_did_not_load(tmp_path):
     assert proc.returncode == 0, proc.stderr[-3000:]
     result = json.loads(proc.stdout.strip().splitlines()[-1])
     assert result["armed"], "the child gateway never finished booting:\n" + proc.stderr[-3000:]
+    assert result["verdict"] is True, f"the stop did not complete cleanly: {result['verdict']}\n" + proc.stderr[-3000:]
     assert not result["late"], "imported for the first time during the stop (add them to STOP_PATH_MODULES):\n  " + \
         "\n  ".join(result["late"])

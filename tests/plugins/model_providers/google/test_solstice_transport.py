@@ -17,7 +17,7 @@ import pytest
 
 import providers
 from providers.base import ProviderProfile
-from agent.gemini_native_adapter import _FREE_TIER_GUIDANCE, _STANDARD_KEY_GUIDANCE, GeminiAPIError
+from plugins.model_providers.google.native_adapter import _FREE_TIER_GUIDANCE, _STANDARD_KEY_GUIDANCE, GeminiAPIError
 
 URL = "https://generativelanguage.googleapis.com/v1beta/interactions:createPerUserQuota"
 TOKEN = "ya29.test-access-token"
@@ -83,7 +83,7 @@ def test_a_request_the_shared_builder_would_store_still_goes_out_stateless_at_on
     client = _client(handler)
     thinking = {"includeThoughts": True, "thinkingLevel": "xhigh"}
     # The shared builder stores a long-decode request (continuation hops resume only from a stored one).
-    wire = importlib.import_module("plugins.model_providers.gemini.interactions")
+    wire = importlib.import_module("plugins.model_providers.google.interactions")
     assert wire.build_interactions_request(model="gemini-4-hydrogen", messages=USER, max_tokens=262_144,
                                            thinking_config=thinking)["store"] is True
 
@@ -221,15 +221,16 @@ def test_http_error_on_the_method_uses_the_interactions_mapper_without_api_key_r
 
 
 def test_profile_imports_without_httpx_and_loads_the_transport_only_in_create_client():
-    root = Path(__file__).resolve().parents[3]
+    root = Path(__file__).resolve().parents[4]
     code = (
         "import sys; sys.modules['httpx'] = None\n"
         "import importlib.util\n"
-        "d = 'plugins/model-providers/solstice'\n"
-        "spec = importlib.util.spec_from_file_location('plugins.model_providers.solstice', d + '/__init__.py',"
+        "d = 'plugins/model-providers/google'\n"
+        "spec = importlib.util.spec_from_file_location('plugins.model_providers.google', d + '/__init__.py',"
         " submodule_search_locations=[d])\n"
         "m = importlib.util.module_from_spec(spec); sys.modules[spec.name] = m; spec.loader.exec_module(m)\n"
-        "assert 'plugins.model_providers.solstice.transport' not in sys.modules\n"
+        "assert 'plugins.model_providers.google.account_client' not in sys.modules\n"
+        "assert 'plugins.model_providers.google.client' not in sys.modules\n"
         "print('ok')\n"
     )
     result = subprocess.run([sys.executable, "-c", code], check=False, cwd=root, capture_output=True, text=True, timeout=120)
@@ -242,36 +243,14 @@ class _ReplacementGeminiProfile(ProviderProfile):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("gemini", ["absent", "replaced"])
-def test_without_the_gemini_plugins_wire_a_call_raises_a_clear_error_and_sends_nothing(monkeypatch, gemini, stream):
-    providers.get_provider_profile("gemini")  # discovery has run, so the registry entry exists to remove
+def test_solstice_uses_its_own_sibling_interactions_wire_even_if_gemini_is_replaced(monkeypatch, gemini, stream):
+    providers.get_provider_profile("gemini")
     if gemini == "absent":
         monkeypatch.delitem(providers._REGISTRY, "gemini")
     else:
         monkeypatch.setitem(providers._REGISTRY, "gemini", _ReplacementGeminiProfile(name="gemini"))
     seen, handler = _recorder()
-    client = _client(handler)  # creating the client must not fail: that would fall back to the generic client
-    with pytest.raises(GeminiAPIError) as raised:
-        _call(client, stream=stream)
-    assert raised.value.code == "gemini_wire_unavailable"
-    assert "Solstice sends its requests through the gemini provider plugin's Interactions wire" in str(raised.value)
-    assert ("no gemini provider plugin is loaded" if gemini == "absent" else "has no interactions module") in str(raised.value)
-    assert seen == []
-
-
-@pytest.mark.parametrize("stream", [False, True])
-def test_an_older_gemini_wire_without_key_guidance_is_refused_before_any_request(monkeypatch, stream):
-    """A profile-local gemini plugin copy from before ``http_error(key_guidance=...)`` existed: refused up
-    front with the reason, instead of a ``TypeError`` when the first error response comes back."""
-    from plugins.model_providers.solstice.transport import interactions_wire
-
-    def old_http_error(response, *, body_text, api_key, base_url):  # the signature before key_guidance
-        raise AssertionError("never reached")
-
-    monkeypatch.setattr(interactions_wire.__globals__["gemini_plugin_module"]("interactions"), "http_error", old_http_error)
-    seen, handler = _recorder(status=429, body=b'{"error": {"code": "too_many_requests", "message": "slow down"}}')
     client = _client(handler)
-    with pytest.raises(GeminiAPIError) as raised:
-        _call(client, stream=stream)
-    assert raised.value.code == "gemini_wire_unavailable"
-    assert "http_error(key_guidance=...)" in str(raised.value)
-    assert seen == []
+    result = list(_call(client, stream=stream)) if stream else _call(client, stream=stream)
+    assert result
+    assert len(seen) == 1

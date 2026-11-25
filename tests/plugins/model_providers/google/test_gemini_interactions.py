@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 import providers
-from agent.gemini_native_adapter import GeminiAPIError
+from plugins.model_providers.google.native_adapter import GeminiAPIError
 
 SIG_A, SIG_B = "c2lnLWE=", "c2lnLWI="
 PNG = "data:image/png;base64,iVBORw0KGgo="
@@ -21,8 +21,8 @@ PNG = "data:image/png;base64,iVBORw0KGgo="
 @pytest.fixture()
 def gemini():
     providers.get_provider_profile("gemini")  # discovery imports the bundled plugin
-    return (importlib.import_module("plugins.model_providers.gemini.client"),
-            importlib.import_module("plugins.model_providers.gemini.interactions"))
+    return (importlib.import_module("plugins.model_providers.google.client"),
+            importlib.import_module("plugins.model_providers.google.interactions"))
 
 
 @pytest.fixture()

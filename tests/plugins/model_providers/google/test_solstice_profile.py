@@ -162,6 +162,6 @@ def test_profile_loads_and_shapes_thinking_without_httpx():
         "{'thinking_config': {'includeThoughts': True, 'thinkingLevel': 'medium'}}\n"
         "assert 'httpx' not in {m for m in sys.modules if sys.modules[m] is not None}\n"
     )
-    root = Path(__file__).resolve().parents[3]
+    root = Path(__file__).resolve().parents[4]
     done = subprocess.run([sys.executable, "-c", code], check=False, cwd=root, capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr[-2000:]

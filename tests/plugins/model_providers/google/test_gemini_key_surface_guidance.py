@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-from agent.gemini_native_adapter import gemini_http_error, wrong_gemini_surface_guidance
+from plugins.model_providers.google.native_adapter import gemini_http_error, wrong_gemini_surface_guidance
 
 # Concatenated so the file never contains a contiguous real-format key.
 _AQ_KEY = "AQ." + "C" * 24

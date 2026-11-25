@@ -1,7 +1,7 @@
 """Gemini text-turn signatures survive capture and reach only their route."""
 
 from agent.chat_completion_helpers import build_assistant_message
-from agent.gemini_native_adapter import _build_gemini_contents, translate_gemini_response, translate_stream_event
+from plugins.model_providers.google.native_adapter import _build_gemini_contents, translate_gemini_response, translate_stream_event
 from agent.reasoning_carriers import shape_wire_carriers
 from agent.transports.chat_completions import ChatCompletionsTransport
 

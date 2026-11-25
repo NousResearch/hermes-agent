@@ -58,6 +58,12 @@ vi.mock('@/store/session-focus', async () => {
   const TILE_PANE_PREFIX = 'session-tile:'
 
   return {
+    PLUGIN_PANE_PREFIX: 'plugin-workspace:',
+    isApprovalContentPane: (paneId?: string) =>
+      paneId === 'workspace' ||
+      Boolean(paneId?.startsWith(TILE_PANE_PREFIX) || paneId?.startsWith('plugin-workspace:')),
+    TILE_PANE_PREFIX,
+    $lastApprovalContentPane: $focusedTreePaneId,
     $focusedTreePaneId,
     $focusedSessionIsTile: computed($focusedTreePaneId, active => Boolean(active?.startsWith(TILE_PANE_PREFIX))),
     $focusedStoredSessionId: computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>

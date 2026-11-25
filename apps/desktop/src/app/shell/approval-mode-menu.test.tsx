@@ -1,9 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
+import { group, split } from '@/components/pane-shell/tree/model'
+import { $activeTreeGroup, $hiddenTreePanes, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $approvalModes } from '@/store/approval-mode'
+import { $focusedTreePaneId } from '@/store/session-focus'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { useApprovalModeStatusbarItem } from './approval-mode-menu'
@@ -37,6 +40,48 @@ function Harness({
 }
 
 describe('approval mode statusbar item', () => {
+  it('keeps plugin scope across side focus and responds to visibility changes', () => {
+    const previousTree = $layoutTree.get()
+    const previousGroup = $activeTreeGroup.get()
+    const previousHidden = $hiddenTreePanes.get()
+    const plugin = 'plugin-workspace:generic'
+    const requestGateway = vi.fn(async () => ({ value: 'off' }))
+
+    try {
+      act(() => {
+        $layoutTree.set(
+          split('row', [
+            group(['workspace'], { id: 'chat' }),
+            group([plugin], { id: 'plugin' }),
+            group(['files'], { id: 'side' })
+          ])
+        )
+        $activeTreeGroup.set('chat')
+        $activeTreeGroup.set('plugin')
+      })
+      render(<Harness gatewayState="connecting" requestGateway={requestGateway} />)
+      expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
+
+      act(() => $activeTreeGroup.set('side'))
+      expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
+      expect($focusedTreePaneId.get()).toBe('workspace')
+
+      act(() => $hiddenTreePanes.set(new Set([plugin])))
+      expect(screen.getByRole('button', { name: /smart/i })).toBeTruthy()
+      act(() => $hiddenTreePanes.set(new Set()))
+      expect(screen.getByRole('button', { name: 'Per profile' })).toBeTruthy()
+
+      act(() => $activeTreeGroup.set('plugin'))
+      act(() => $hiddenTreePanes.set(new Set([plugin])))
+      expect(screen.getByRole('button', { name: /smart/i })).toBeTruthy()
+    } finally {
+      cleanup()
+      $hiddenTreePanes.set(previousHidden)
+      $layoutTree.set(previousTree)
+      $activeTreeGroup.set(previousGroup)
+    }
+  })
+
   it('writes the selected mode through the gateway and updates its shared trigger label', async () => {
     const requestGateway = vi.fn(async (_method, params) => ({ value: params?.value ?? 'smart' }))
     render(<Harness profile="work" requestGateway={requestGateway} />)
@@ -65,9 +110,7 @@ describe('approval mode statusbar item', () => {
     // is 'off'.
     const requestGateway = vi.fn(async () => ({ value: 'off' }))
 
-    const { rerender } = render(
-      <Harness gatewayState="connecting" profile="boot" requestGateway={requestGateway} />
-    )
+    const { rerender } = render(<Harness gatewayState="connecting" profile="boot" requestGateway={requestGateway} />)
 
     expect(requestGateway).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /smart/i })).toBeTruthy()

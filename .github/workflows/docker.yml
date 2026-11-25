@@ -432,6 +432,7 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ env.CANDIDATE_COMMIT }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          sbom: true
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: ${{ matrix.variant == 'slim' && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
 

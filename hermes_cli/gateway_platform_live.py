@@ -31,17 +31,45 @@ def set_config_value_live(key: str, value: str, force: bool = False) -> None:
 
 
 def config_set_live_note(key: str) -> Optional[str]:
-    """After ``hermes config set <key>``: nudge the running gateway when the key can change a platform
-    (an env setting such as a bot token, or a ``platforms.*`` block) and describe only what it did.
-    None when nothing ran or changed, so no hint is printed that is not true."""
+    """After ``hermes config set <key>``: nudge the running gateway only when the key can change a
+    platform (a platform's env setting such as a bot token, or a ``platforms.*`` / ``gateway.*`` path)
+    and describe only what it did. Any other key (``model``, ``terminal.backend``) never contacts a
+    gateway. None when nothing ran or changed, so no hint is printed that is not true."""
+    if not _can_change_a_platform(key):
+        return None
     from hermes_cli.gateway import _current_profile_name
     from hermes_constants import get_hermes_home
-    if "." in key and key.split(".", 1)[0] not in {"platforms", "gateway"}:  # dotless = an env setting
-        return None
     answer = reconcile_running_gateway_platforms(_current_profile_name() or "default", get_hermes_home())
+    if answer and answer.get("pending"):
+        return _pending_note(answer)
     if not answer or not answer.get("changed"):
         return None
     return _live_note(answer)
+
+
+def _can_change_a_platform(key: str) -> bool:
+    """A ``platforms.*`` / ``gateway.*`` path, or an env setting a messaging platform owns: declared
+    outright by an adapter, or under a platform's env prefixes (what a platform's build print reads)."""
+    if "." in key:
+        return key.split(".", 1)[0] in {"platforms", "gateway"}
+    from hermes_cli.config_env_routing import is_env_setting_key
+    if not is_env_setting_key(key):
+        return False
+    from hermes_cli.profile_channels import declared_channel_env_keys, platform_env_prefixes, platform_ids
+    name = key.upper()
+    return name in declared_channel_env_keys() or any(
+        name.startswith(prefix) for pid in platform_ids() for prefix in platform_env_prefixes(pid))
+
+
+def _pending_note(answer: dict) -> str:
+    """The gateway's verb window closed before its apply finished: say what it is still doing."""
+    parts = [f"{verb} {', '.join(names)}" for verb, names in (
+        ("starting", answer.get("starting")), ("restarting", answer.get("restarting")),
+        ("stopping", answer.get("stopping"))) if names]
+    if not parts:
+        return "  Running gateway is still applying it; `hermes logs` shows the outcome"
+    still = "still connecting" if parts[0].startswith("starting") and len(parts) == 1 else "still in progress"
+    return f"  Running gateway is {'; '.join(parts)} ({still})"
 
 
 def _live_note(answer: dict) -> str:

@@ -162,6 +162,7 @@ class GatewayPlatformReconcileMixin:
     """Per-profile platform adapter reconcile (primary and multiplexed secondaries)."""
 
     _primary_platform_signature: Optional[tuple] = None
+    _primary_platform_plan: Optional[PlatformPlan] = None
 
     # ── triggers ─────────────────────────────────────────────────────────────────────────────────
 
@@ -210,7 +211,10 @@ class GatewayPlatformReconcileMixin:
             async with self._reconcile_lock():
                 # Taken before the read: an edit landing during this apply is seen by the next tick.
                 signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
-                plan = await self._apply_primary_platform_plan(reason)
+                try:
+                    plan = await self._apply_primary_platform_plan(reason)
+                finally:
+                    self._primary_platform_plan = None
                 self._primary_platform_signature = signature
             return _receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
                             dict(getattr(self, "_primary_blocked_platforms", None) or {}))
@@ -228,6 +232,12 @@ class GatewayPlatformReconcileMixin:
         started = tuple(p for p in after if p not in before and p not in plan.restart)
         return _receipt(profile_name, started, plan.restart, plan.stop,
                         self._secondary_platform_states(profile_name), {})
+
+    def platform_plan_in_flight(self, profile_name: Optional[str]) -> Optional[PlatformPlan]:
+        """The plan a still-running reconcile of ``profile_name`` (None = the launch profile) applies."""
+        if profile_name is None:
+            return self._primary_platform_plan
+        return (getattr(self, "_profile_platform_plans", None) or {}).get(profile_name)
 
     def _secondary_running_platforms(self, profile_name: str) -> set:
         queued = (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}
@@ -311,6 +321,7 @@ class GatewayPlatformReconcileMixin:
             built.pop(platform, None)
         if not plan:
             return plan
+        self._primary_platform_plan = plan  # what a ``pending`` verb answer reports while this runs
         logger.info("Platform reconcile (%s): start=%s restart=%s stop=%s", reason,
                     [p.value for p in plan.start], [p.value for p in plan.restart], [p.value for p in plan.stop])
         for platform in (*plan.stop, *plan.restart):
@@ -526,6 +537,9 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
         try:
             return future.result(timeout=_VERB_WAIT_SECS)
         except concurrent.futures.TimeoutError:
-            return {"applied": True, "pending": True}
+            # Still connecting (or draining a turn): name what it is doing, so callers can say so.
+            plan = runner.platform_plan_in_flight(name) or PlatformPlan((), (), ())
+            return {"applied": True, "pending": True, "starting": [p.value for p in plan.start],
+                    "restarting": [p.value for p in plan.restart], "stopping": [p.value for p in plan.stop]}
 
     return _handler

@@ -214,3 +214,32 @@ async def test_a_reconnect_superseded_while_connecting_never_publishes(monkeypat
     runner._install_reconnected_adapter.assert_not_awaited()
     stale.disconnect.assert_awaited()
     assert runner._failed_platforms[Platform.TELEGRAM] is replacement and replacement["attempts"] == 0
+
+
+def test_a_verb_answer_past_its_window_names_what_is_still_starting(monkeypatch):
+    """A connect longer than the verb window answers ``pending`` with the in-flight plan, so a caller
+    can say which platform is still connecting instead of printing nothing."""
+    import threading
+    from gateway import run_platform_reconcile as reconcile
+    monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 0.2)
+    runner = _runner(types.SimpleNamespace())
+    runner._primary_platform_home = lambda: Path("primary-home")
+    release = asyncio.Event()
+
+    async def slow_apply(name, *, reason):
+        runner._primary_platform_plan = reconcile.PlatformPlan((Platform.TELEGRAM,), (), ())
+        await release.wait()
+        return {}
+
+    runner.reconcile_profile_platforms = slow_apply
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        answer = reconcile.reconcile_platforms_verb(runner, loop)({"home": "primary-home"})
+    finally:
+        loop.call_soon_threadsafe(release.set)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+    assert answer == {"applied": True, "pending": True, "starting": ["telegram"], "restarting": [], "stopping": []}

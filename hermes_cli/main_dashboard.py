@@ -57,7 +57,7 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
 
     try:
         tokens = shlex.split(command, posix=False)
-    except Exception:
+    except ValueError:
         tokens = command.split()
     from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
     normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
@@ -68,42 +68,29 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
 
     port = 9119
     host = "127.0.0.1"
-    port_found = False
-    host_found = False
-
-    for i, tok in enumerate(tokens):
-        raw = tok.strip("\"'")
-        if raw == "--port" and i + 1 < len(tokens):
-            try:
-                port = int(tokens[i + 1].strip("\"'"))
-                port_found = True
-            except ValueError:
-                return None
-        elif raw.startswith("--port="):
-            try:
-                port = int(raw.split("=", 1)[1].strip("\"'"))
-                port_found = True
-            except ValueError:
-                return None
-        elif raw == "--host" and i + 1 < len(tokens):
-            host = tokens[i + 1].strip("\"'") or "127.0.0.1"
-            host_found = True
-        elif raw.startswith("--host="):
-            host = raw.split("=", 1)[1].strip("\"'") or "127.0.0.1"
-            host_found = True
-
-    if not port_found:
-        port_match = re.search(r"(?:^|\s)--port(?:=|\s+)(\d+)", command)
-        if port_match:
-            try:
-                port = int(port_match.group(1))
-            except ValueError:
-                return None
-
-    if not host_found:
-        host_match = re.search(r"(?:^|\s)--host(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)", command)
-        if host_match:
-            host = host_match.group(1).strip("\"'") or "127.0.0.1"
+    i = 0
+    while i < len(tokens):
+        raw = tokens[i].strip("\"'")
+        flag, eq, inline_value = raw.partition("=")
+        if flag in ("--port", "--host"):
+            if eq:
+                value, step = inline_value.strip("\"'"), 1
+            elif i + 1 < len(tokens):
+                value, step = tokens[i + 1].strip("\"'"), 2
+            else:
+                break
+            if flag == "--port":
+                try:
+                    port = int(value)
+                except ValueError:
+                    return None
+                if port < 0:
+                    return None
+            else:
+                host = value or "127.0.0.1"
+            i += step
+        else:
+            i += 1
 
     return mode, host, port
 

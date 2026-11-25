@@ -3,7 +3,8 @@
 The scheduler classifies the failure text through ``agent.error_classifier.classify_api_error``
 (one classifier for the whole app, no cron-local regex ladder) and looks the verdict up here.
 Every notice says WHAT happened and WHAT TO DO, and names the exact ``hermes cron`` command plus
-the real output directory — "cron output" alone sent operators hunting.
+the real output directory — "cron output" alone sent operators hunting. The failure text itself
+starts at ``failed_run_error``, the scheduler's verdict on a finished turn.
 """
 
 from __future__ import annotations
@@ -21,6 +22,26 @@ def cron_output_dir_display(job_id: str) -> str:
 
 _HTTP_STATUS_IN_TEXT = re.compile(r"(?:\bHTTP\b|\bError code\b|\bstatus(?: code)?\b)\W{0,3}(\b[45]\d\d\b)", re.IGNORECASE)
 _LEADING_EXC_TYPE = re.compile(r"^(?:[\w.]+\.)?([A-Z]\w*(?:Error|Timeout|Exception))\s*:")
+
+
+def failed_run_error(result: dict) -> Optional[str]:
+    """Error text when a ``run_conversation`` result is a failed cron run, else None.
+
+    ``failed=True`` / ``completed=False`` (all retries exhausted, model abort, mid-run interrupt):
+    run_agent may put the error into ``final_response``, which would otherwise be delivered as the
+    agent's reply with ``last_status`` "ok" (#17855). A max-iteration handoff still carries a
+    summary and is not a failure. A tool-loop guardrail halt is a controlled stop to the turn
+    loop (``failed=False``), but its reply asks for ``continue``, which nobody can send to a cron
+    run, so it fails the run too (#160062)."""
+    from agent.turn_failure_copy import is_max_iteration_handoff
+
+    if result.get("failed") is True or (result.get("completed") is False and not is_max_iteration_handoff(result)):
+        return result.get("error") or (result.get("final_response") or "").strip() or "agent reported failure"
+    if str(result.get("turn_exit_reason") or "") == "guardrail_halt":
+        halt = result.get("guardrail") or {}
+        return (f"the tool-loop guardrail stopped the run: {halt.get('tool_name') or 'a tool'} ran "
+                f"{halt.get('count') or 'several'} times without making progress")
+    return None
 
 
 def classify_cron_failure_reason(text: str) -> str:

@@ -91,7 +91,8 @@ def _inherited_flag(parser, *args, **kwargs):
 _EPILOGUE = """
 Examples:
     hermes                        Start interactive chat
-    hermes chat -q "Hello"        Single query mode
+    hermes chat -q "Hello"        Start a chat with "Hello" as the first turn
+    hermes chat --oneshot -q "Hi" Answer one query and exit (also -Q, or piped stdio)
     hermes --tui                  Launch the modern TUI (or set display.interface: tui)
     hermes --cli                  Force the classic REPL (overrides display.interface: tui)
     hermes -c                     Resume the most recent session

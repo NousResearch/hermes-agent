@@ -93,7 +93,7 @@ outside the package. See [Desktop installation](../user-guide/desktop.md#install
 
 **Download sizes and update timing:** bundled updates split into network
 download time (which depends on your connection) and local verification/swap
-time:
+time. The sizes below are approximate and change between releases:
 
 - **macOS:** a fresh DMG install is ~948 MB, and choosing **Update** in the
   app downloads the signed update ZIP (~983 MB in full). After the ZIP finishes

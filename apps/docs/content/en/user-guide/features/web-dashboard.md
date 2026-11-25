@@ -75,7 +75,7 @@ Pass `--isolated` to opt out and run a dedicated server for that profile
 names, unified session sidebar and the Desktop profile rail (and so its
 SOUL editor) show only the launch profile.
 
-:::warning `--isolated` is not a security boundary
+:::warning[`--isolated` is not a security boundary]
 `--isolated` is a routing and operations convenience, not tenant isolation.
 Every profile under one OS user can read every other profile's files: on
 the dedicated server, routes that take a profile selector, `/api/fs/*` and
@@ -543,7 +543,7 @@ steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE
 aside before the gateway is installed; they run as typed in PowerShell or Command Prompt. On macOS a
 LaunchAgent is planned like a systemd user unit.
 
-### Moving a dashboard backend to the gateway {#moving-a-dashboard-backend-to-the-gateway}
+### Moving a dashboard backend to the gateway [#moving-a-dashboard-backend-to-the-gateway]
 
 ```bash
 hermes gateway migrate --backends --apply --dry-run   # the plan and every blocker; changes nothing
@@ -705,7 +705,7 @@ still serves this profile and points at the dry run; it changes nothing itself. 
 older than v2026.7.30 has no `/api/health`, so the dry run stops and says to restart that backend with the updated
 hermes first, then run the dry run again.
 
-#### What clients notice after the move {#after-the-move}
+#### What clients notice after the move [#after-the-move]
 
 The address stays the same, and so do the sign-in providers, but clients notice these changes, whether the move ran automatically or by hand:
 

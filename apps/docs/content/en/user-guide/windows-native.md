@@ -252,7 +252,7 @@ Login auto-start is only ever installed on an explicit answer: `hermes gateway i
 
 Services require admin rights to install and tie the gateway's lifecycle to machine boot, not user login. The typical Hermes user wants: log in → gateway available, log out → gateway gone. Scheduled Tasks do exactly that without elevation. If you genuinely want a service, use `nssm` or `sc create` manually — but you probably don't. If you do, name it `Hermes*` or point its binary path inside the Hermes install (`venv\Scripts\hermes.exe`, the checkout, or `gateway-service\`): `hermes update` stops and restarts only services it can positively identify as Hermes-owned through the Service Control Manager, and pauses a Scheduled-Task-launched gateway by PID (Task Scheduler itself is never touched).
 
-## Moving a dashboard backend to the gateway {#moving-a-dashboard-backend-to-the-gateway}
+## Moving a dashboard backend to the gateway [#moving-a-dashboard-backend-to-the-gateway]
 
 Hermes never sets up `hermes dashboard` or `hermes serve` to start by itself, so a dashboard that runs at sign-in on Windows is a Task Scheduler task or a Startup-folder entry you made. It is a second copy of Hermes beside the gateway: chats started in it run in its own process. The gateway's Webapp can serve its address instead. Automatic migration is not available on Windows: this command exits 6, changes nothing and prints the steps for the backend it found, one command per line, each valid as typed in PowerShell or Command Prompt (with `--detach` too, which starts nothing here). When it exits 3 instead, something blocks the move and it prints no steps: fix what it names and run it again.
 

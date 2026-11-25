@@ -17,7 +17,7 @@ See also:
 - [Bundled Skills Catalog](../../reference/skills-catalog.md)
 - [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
-## Desktop install links {#install-from-the-website}
+## Desktop install links [#install-from-the-website]
 
 Skill cards on the [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) have an **Install in Hermes**
 button that opens one of these links. Hermes Desktop accepts install links with a URL-encoded, source-qualified skill

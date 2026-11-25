@@ -520,7 +520,7 @@ webhook 适配器包含多层安全机制：
 
 若已配置 secret 但请求中不存在已识别的签名请求头，则请求被拒绝。
 
-### 固定签名方案 {#pin-the-signature-scheme}
+### 固定签名方案 [#pin-the-signature-scheme]
 
 GitHub（`X-Hub-Signature-256`）、Linear（`Linear-Signature`）和已拒绝的 V1 请求头携带的是同一个值：用路由 secret 对请求体计算的 HMAC-SHA256，不含时间戳。因此在未设置 `signature` 的路由上，截获的 V1 请求仍可被重放：把其 MAC 放进 `Linear-Signature`（或加上 `sha256=` 前缀放进 `X-Hub-Signature-256`）并换一个新的投递 ID 即可。请为每个路由设置 `signature`，只接受其发送方实际使用的方案：
 

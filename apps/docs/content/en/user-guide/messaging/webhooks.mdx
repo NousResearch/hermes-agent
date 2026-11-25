@@ -612,7 +612,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
 
-### Pin the signature scheme {#pin-the-signature-scheme}
+### Pin the signature scheme [#pin-the-signature-scheme]
 
 GitHub (`X-Hub-Signature-256`), Linear (`Linear-Signature`) and the rejected V1 header all carry the same value: HMAC-SHA256 of the body under the route secret, with no timestamp. On a route without `signature`, a captured V1 request can therefore still be replayed by moving its MAC into `Linear-Signature` (or `X-Hub-Signature-256` with a `sha256=` prefix) and sending a fresh delivery ID. Set `signature` on every route so it accepts only the scheme its sender uses:
 

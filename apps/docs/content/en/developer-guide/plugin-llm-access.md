@@ -716,7 +716,7 @@ plugin, and the turn-scoped `pre_api_request` /
 
 ## Forking the session's own agent (`ctx.fork_session`)
 
-:::caution Experimental
+:::caution[Experimental]
 `ctx.fork_session` and [`ctx.register_idle_task`](#idle-tasks-ctxregister_idle_task) are
 experimental. Their signatures and the fork handle's shape may change in a later release; keep
 the handle inside one small function of your plugin that returns plain data, and do not store it

@@ -14,7 +14,7 @@ Start with a local trace file, then choose whether to keep files, send traces to
 
 Beyond observability, Hermes also runs model and tool calls through Relay's [middleware](https://docs.nvidia.com/nemo/relay/v0.11.1/about-nemo-relay/concepts/middleware), including asynchronous middleware. Configured plugins can inspect or modify requests and results, apply policy checks, and serve cached responses. Observability redaction is separate: it changes exported copies without changing the live model or tool payload.
 
-:::note Different from Hermes Relay
+:::note[Different from Hermes Relay]
 NeMo Relay handles agent observability and middleware. [Hermes Relay](../user-guide/messaging/relay.md) connects a Hermes gateway to messaging platforms.
 :::
 
@@ -285,7 +285,7 @@ Hermes passes configuration to Relay's plugin host, which applies its validation
 
 Hermes does not download artifacts or install dependencies when a conversation starts. Native plugins run inside the Hermes process; worker plugins run in separate processes, but are not security sandboxes. Restart Hermes after changing the configuration and exercise the plugin's documented behavior to confirm that it works.
 
-:::caution Enforcement coverage
+:::caution[Enforcement coverage]
 Hermes can continue without Relay plugins after initialization fails. It also skips managed recording and middleware for a later overlapping turn in one session, or a model/tool call nested inside an active managed callback. Do not treat this integration as the only security boundary when every operation must be checked.
 :::
 

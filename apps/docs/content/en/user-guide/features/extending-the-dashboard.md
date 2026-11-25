@@ -822,7 +822,7 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 
 A user plugin's tab, files and backend are served only while it is turned on with `hermes plugins enable <directory name>` (its `plugin.yaml` name or its dashboard `name` also counts, each only when no other installed plugin has that name), and a plugin in `plugins.disabled` is never served. A dashboard `name` that is another installed plugin's name is not registered, so give each plugin its own `name` in `dashboard/manifest.json`.
 
-:::note Upgrading
+:::note[Upgrading]
 A dashboard `name` must be the plugin's own name. The names of plugins that ship with Hermes (including its platform, provider and backend plugins, such as `telegram`, `openai` or `kanban`) and of other installed plugins are not registered as another plugin's dashboard name, and the log says which plugin has the name. If a plugin's tab disappeared after an update, change `name` in its `dashboard/manifest.json` and turn it on by its directory name: `hermes plugins enable <directory name>`.
 :::
 

@@ -7,7 +7,19 @@ cap is ``max_iterations`` (default 500), each subagent's ``delegation.max_iterat
 
 from __future__ import annotations
 
+import math
 import threading
+
+
+def normalize_budget_warning_ratio(value) -> float | None:
+    """A finite ratio strictly between zero and one, or None (feature off)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return None
+    return ratio if math.isfinite(ratio) and 0 < ratio < 1 else None
 
 
 class IterationBudget:

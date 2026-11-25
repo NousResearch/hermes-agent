@@ -50,6 +50,14 @@ afterEach(() => {
 })
 
 describe('CachedShikiBlock (warm-switch perf guard)', () => {
+  it('keeps escaped code visible while a cache miss waits for highlighting', () => {
+    const code = '<script>not executable</script>\nconst two = 2\n'
+    const { container } = render(<CachedShikiBlock code={code} language="typescript" />)
+    expect(container.querySelector('pre code')?.textContent).toBe(code)
+    expect(container.querySelector('script')).toBeNull()
+    expect(codeToHtml).not.toHaveBeenCalled()
+  })
+
   it('highlights on first mount and reuses the cached HTML on remount', async () => {
     const { unmount } = render(<CachedShikiBlock {...TS_BLOCK} />)
     await waitForHighlighted()

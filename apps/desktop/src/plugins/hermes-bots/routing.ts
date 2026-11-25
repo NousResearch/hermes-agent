@@ -9,7 +9,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
-import type { BotMeta, ProfileRoute, RosterRow } from './types'
+import type { BotMeta, GroupMessageAuthor, ProfileRoute, RosterRow } from './types'
 
 export function botRouteKey(route: ProfileRoute): string {
   return `${route.connectionId}::${route.profile}`
@@ -96,6 +96,35 @@ export function botWorkspaceOwnerKey(bot: RosterRow) {
   return `bot:${route ? botRouteKey(route) : String(bot?.name || 'default')}`
 }
 
+function botWorkspaceTarget(
+  bot: null | RosterRow,
+  blockedMessage: string
+): { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute } {
+  const resolved = bot ? resolveBotConnectionRoute(bot) : null
+
+  if (resolved?.route) {
+    return { kind: 'route', route: resolved.route }
+  }
+
+  const connectionId = resolved?.status === 'not_scoped' ? String(host.state.connectionId?.get?.() || '').trim() : ''
+
+  if (!bot || !connectionId) {
+    return { kind: 'blocked', message: blockedMessage }
+  }
+
+  const name = String(bot.name || '').trim() || 'default'
+
+  return {
+    kind: 'route',
+    route: {
+      connectionId,
+      mode: connectionId === 'local' ? 'local' : 'remote',
+      profile: name,
+      targetProfile: String(bot.targetProfile || name).trim() || name
+    }
+  }
+}
+
 export function setBotsWorkspaceOwner(
   ownerKey: string,
   bot: null | RosterRow = null,
@@ -103,17 +132,15 @@ export function setBotsWorkspaceOwner(
 ) {
   // Render-reachable (sidebar listener fires on visibility flips). An
   // orphaned row degrades to the blocked target instead of throwing.
-  const route = bot ? resolveBotConnectionRoute(bot).route : null
-
-  const target: { kind: 'blocked'; message: string } | { kind: 'route'; route: ProfileRoute } = route
-    ? {
-        kind: 'route',
-        route
-      }
-    : {
-        kind: 'blocked',
-        message: blockedMessage
-      }
+  // A non-source-scoped bot (`not_scoped`) has no captured route, but it IS
+  // a profile on the window's ACTIVE source — the rich profiles.list rows come
+  // from that gateway. Publish that as a route so Bot Mode surfaces (sidebar
+  // fetch, "+" target) aim at the bot's own profile, where its Telegram
+  // threads live (#126732). The connection is the active source's, never a
+  // guessed `local`: on a remote window a `local` owner would start the "+"
+  // chat on this device. No known active source, or an owner_removed row,
+  // stays blocked.
+  const target = botWorkspaceTarget(bot, blockedMessage)
 
   host.setWorkspaceScope?.('bots', ownerKey, target)
 }
@@ -197,10 +224,28 @@ export function botBackendProfileScope(route: null | ProfileRoute | undefined, f
 
 /** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
  * explicit descriptor, including a registered local source. */
+export interface BotRequestOptions {
+  /** 'foreground' for an explicit user gesture (roster click, Create Bot) so
+   *  a cold backend spawn takes the pool's reserved slot; leave unset for
+   *  passive roster warming. Only source-scoped routes can carry it. */
+  spawnPriority?: 'background' | 'foreground'
+  /** Per-request wait for RPCs that legitimately outlive the socket's 30 s
+   *  default (session.compress runs an LLM summary); unset keeps the default. */
+  timeoutMs?: number
+}
+
+/** Writes to a bot's own profile only ever come from a user action (a save,
+ *  a section move, an avatar change, a duplicate). The pool reserves a slot
+ *  for foreground dials only, so a write left at the background default
+ *  queues behind warm bot backends, times out after 30 s, then backs off —
+ *  the write is lost. They dial foreground unless the caller says otherwise. */
+const PROFILE_WRITE_METHODS = new Set(['profiles.configure', 'profiles.create', 'profiles.set_asset'])
+
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  options?: BotRequestOptions
 ): Promise<T> {
   const route = botConnectionRoute(bot)
 
@@ -210,7 +255,18 @@ export async function requestForBot<T = unknown>(
     }
 
     try {
-      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+      const routedParams = scopedBotParams(route, method, params)
+
+      const spawnPriority =
+        options?.spawnPriority ?? (PROFILE_WRITE_METHODS.has(method) ? ('foreground' as const) : undefined)
+
+      // Keep the three-argument shape when no options were given so older
+      // desktop shells (and the arity-pinning tests) see the same call.
+      return await (spawnPriority
+        ? host.requestProfile(route, method, routedParams, options?.timeoutMs, { spawnPriority })
+        : options?.timeoutMs === undefined
+          ? host.requestProfile(route, method, routedParams)
+          : host.requestProfile(route, method, routedParams, options.timeoutMs))
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,
@@ -220,7 +276,9 @@ export async function requestForBot<T = unknown>(
   }
 
   try {
-    return await host.request(method, params)
+    return await (options?.timeoutMs === undefined
+      ? host.request(method, params)
+      : host.request(method, params, options.timeoutMs))
   } catch (error) {
     throw asRpcError(error, `Gateway request ${method} failed`)
   }
@@ -371,6 +429,16 @@ export function aliasIdentityFor(bot: Partial<RosterRow> | null | undefined): Al
   return entry && entry.name !== String(bot?.name || '').trim() ? entry : null
 }
 
+/** The metadata record of the configured alias claiming this row, if any. */
+export function aliasMetaFor<T extends BotMeta>(
+  bot: Partial<RosterRow> | null | undefined,
+  metaByName: Record<string, T>
+): T | undefined {
+  const key = aliasIdentityFor(bot)?.metaKeys.find(metaKey => metaByName?.[metaKey])
+
+  return key ? metaByName[key] : undefined
+}
+
 // Bot metadata is scoped to the active gateway until the server exposes a
 // union of rich profile rows. Never paint that metadata onto a thin row from
 // another source: two `default` agents must not borrow each other's title,
@@ -391,17 +459,7 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
       return direct
     }
 
-    const alias = aliasIdentityFor(bot)
-
-    if (alias) {
-      for (const key of alias.metaKeys) {
-        if (metaByName?.[key]) {
-          return metaByName[key]
-        }
-      }
-    }
-
-    return direct
+    return aliasMetaFor(bot, metaByName) || direct
   }
 
   const own = metaByName?.[bot?.name]
@@ -410,15 +468,67 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
     return own
   }
 
-  const alias = aliasIdentityFor(bot)
+  return aliasMetaFor(bot, metaByName) || own
+}
 
-  if (alias) {
-    for (const key of alias.metaKeys) {
-      if (metaByName?.[key]) {
-        return metaByName[key]
-      }
-    }
+type TranscriptEntry = { from?: GroupMessageAuthor } | null | undefined
+
+function speaksAs(from: GroupMessageAuthor, bot: Partial<RosterRow>): boolean {
+  return (
+    bot.name === from.name &&
+    (from.source ? (bot.connectionLabel || bot.connectionId) === from.source : !bot.remoteSource)
+  )
+}
+
+/** The row a transcript line's speaker is named from. Seated members first; a
+ *  former member (or a seat whose source has not painted yet) resolves against
+ *  the live roster, else to a row carrying the line's own owner, so a remote
+ *  speaker never falls back to this device's identity ("Hermes" for every
+ *  `default`). Null for user lines. */
+export function groupTranscriptSpeaker(
+  entry: TranscriptEntry,
+  members: RosterRow[],
+  roster: RosterRow[] = []
+): Partial<RosterRow> | null {
+  const from = entry?.from
+
+  if (!from || from.kind === 'user') {
+    return null
   }
 
-  return own
+  const known = members.find(bot => speaksAs(from, bot)) || roster.find(bot => speaksAs(from, bot))
+
+  if (known) {
+    return known
+  }
+
+  return from.source ? { connectionLabel: from.source, name: from.name, remoteSource: true } : { name: from.name }
+}
+
+/** Group Chat transcript speaker meta (#96432). Owner-aware: a source-qualified
+ *  line looks up its speaker's row via botRosterMeta, never `allMeta[name]`
+ *  and never `null` just because `entry.from.source` is set. */
+export function groupTranscriptSpeakerMeta(
+  entry: TranscriptEntry,
+  members: RosterRow[],
+  allMeta: Record<string, BotMeta>,
+  roster: RosterRow[] = []
+): BotMeta | null | undefined {
+  const from = entry?.from
+
+  if (!from || from.kind === 'user') {
+    return null
+  }
+
+  const known = members.find(bot => speaksAs(from, bot)) || roster.find(bot => speaksAs(from, bot))
+
+  if (known) {
+    return botRosterMeta(known, allMeta)
+  }
+
+  if (from.source) {
+    return null
+  }
+
+  return allMeta?.[from.name] || null
 }

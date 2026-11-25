@@ -68,13 +68,15 @@ vi.mock('./shared', () => ({ getPluginCtx: () => null }))
 
 /** Route every RPC through one table, recording what was asked. */
 function respondWith(handler: (method: string, params: Record<string, unknown>) => unknown) {
-  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  const calls: Array<{ method: string; options?: { spawnPriority?: string }; params: Record<string, unknown> }> = []
 
-  requestForBotMock.mockImplementation(async (_bot: unknown, method: string, params: Record<string, unknown>) => {
-    calls.push({ method, params: structuredClone(params ?? {}) })
+  requestForBotMock.mockImplementation(
+    async (_bot: unknown, method: string, params: Record<string, unknown>, options?: { spawnPriority?: string }) => {
+      calls.push({ method, options, params: structuredClone(params ?? {}) })
 
-    return handler(method, params)
-  })
+      return handler(method, params)
+    }
+  )
 
   return calls
 }
@@ -91,6 +93,26 @@ beforeEach(() => {
 })
 
 describe('the registry row wins, always', () => {
+  it('passes explicit tab intent to the stored canonical chat without creating another session', async () => {
+    const calls = respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: [{ id: 'root', resolved_id: 'tip', message_count: 10, title: 'Bot Chat' }] }
+      }
+
+      return {}
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat('ops', { intent: 'tab' })).resolves.toEqual({
+      openedId: 'tip', registryId: 'root'
+    })
+    expect(hostMock.openSession).toHaveBeenCalledWith('tip', expect.objectContaining({
+      intent: 'tab', profile: 'ops', workspaceMode: 'bots', workspaceOwnerKey: 'bot:ops'
+    }))
+    expect(calls.map(call => call.method)).toEqual(['session.list'])
+  })
+
   it('resolves the profile\u2019s "Bot Chat" row by exact title and opens it', async () => {
     const calls = respondWith(method => {
       if (method === 'session.list') {
@@ -134,6 +156,9 @@ describe('the registry row wins, always', () => {
       include_hidden: true,
       title: 'Bot Chat'
     })
+    // #105104: the click's first RPC is the one that cold-spawns the bot's
+    // backend; it must dial foreground or it queues behind roster hydration.
+    expect(list?.options).toEqual({ spawnPriority: 'foreground' })
   })
 
   it('opens the lineage tip of a compression-rotated registry row', async () => {
@@ -197,6 +222,10 @@ describe('no registry row → create', () => {
       hidden: true,
       title: 'Bot Chat'
     })
+    // Same click gesture as the lookup: the create dials foreground too, while
+    // the follow-up title write stays untagged (the socket is already open).
+    expect(calls.find(call => call.method === 'session.create')?.options).toEqual({ spawnPriority: 'foreground' })
+    expect(calls.find(call => call.method === 'session.title')?.options).toBeUndefined()
     // The eager title write persists the row; no user-attributed intro.
     expect(calls.find(call => call.method === 'session.title')?.params).toMatchObject({ session_id: 'rt-1' })
     expect(calls.find(call => call.method === 'prompt.submit')).toBeUndefined()
@@ -285,14 +314,22 @@ describe('a failed lookup fails CLOSED — never "no chat exists"', () => {
   // SUCCESSFULLY with an empty list instead of throwing. `rows.find(...) ||
   // null` used to read that identically to "this bot never had a chat",
   // which minted a replacement and re-fired the kickoff on every click.
-  it('refuses to mint on an empty lookup when the roster already confirmed a canonical chat', async () => {
+  // #139779: an empty title lookup plus a roster pointer is no longer an
+  // automatic fail-close — probe the id. A still-live hidden "Bot Chat" at
+  // that id means the lookup lied (or the backend is mid-restart), so minting
+  // would fork. Archived / missing / tombstoned ids are the next describe.
+  it('refuses to mint on an empty lookup when the roster id still names a live Bot Chat', async () => {
     const calls = respondWith(method => {
       if (method === 'session.list') {
         return { sessions: [] }
       }
 
+      if (method === 'session.info') {
+        return { title: 'Bot Chat' }
+      }
+
       if (method === 'session.create') {
-        throw new Error('must not create: an empty result is not confirmed absence')
+        throw new Error('must not create: a live Bot Chat at the roster id is not confirmed absence')
       }
 
       return {}
@@ -301,8 +338,85 @@ describe('a failed lookup fails CLOSED — never "no chat exists"', () => {
     const bot = { canonical_session: { id: 'forever-chat' }, name: 'ops' } as RosterRow
     const { openBotCanonicalChat } = await loadModule()
 
-    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Bot Chat registry/)
+    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Could not confirm ops's Bot Chat registry/)
     expect(calls.some(call => call.method === 'session.create')).toBe(false)
     expect(hostMock.openSession).not.toHaveBeenCalled()
+    expect(calls.find(call => call.method === 'session.info')?.params).toEqual({ session_id: 'forever-chat' })
+  })
+
+  it('refuses to mint when the roster-id probe itself throws', async () => {
+    const calls = respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: [] }
+      }
+
+      if (method === 'session.info') {
+        throw new Error('gateway not ready')
+      }
+
+      if (method === 'session.create') {
+        throw new Error('must not create: a failed probe is not confirmed absence')
+      }
+
+      return {}
+    })
+
+    const bot = { canonical_session: { id: 'forever-chat' }, name: 'ops' } as RosterRow
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat(bot)).rejects.toThrow(/Could not confirm ops's Bot Chat registry/)
+    expect(calls.some(call => call.method === 'session.create')).toBe(false)
+  })
+})
+
+describe('#139779 stale roster canonical_session.id is absent so mint is allowed', () => {
+  const stale = { canonical_session: { id: 'retired-1' }, name: 'ops' } as RosterRow
+
+  function mintOnStalePointer(info: () => unknown) {
+    return respondWith(method => {
+      if (method === 'session.list') {
+        return { sessions: [] }
+      }
+
+      if (method === 'session.info') {
+        return info()
+      }
+
+      if (method === 'session.create') {
+        return { session_id: 'rt-fresh', stored_session_id: 'fresh-1' }
+      }
+
+      return {}
+    })
+  }
+
+  it('mints when the roster id is archived', async () => {
+    const calls = mintOnStalePointer(() => ({ archived: true, title: 'Bot Chat' }))
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat(stale)).resolves.toEqual({ openedId: 'fresh-1', registryId: 'fresh-1' })
+    expect(calls.find(call => call.method === 'session.info')?.params).toEqual({ session_id: 'retired-1' })
+    expect(calls.find(call => call.method === 'session.info')?.options).toEqual({ spawnPriority: 'foreground' })
+    expect(calls.some(call => call.method === 'session.create')).toBe(true)
+  })
+
+  it('mints when the roster id is tombstoned (title no longer Bot Chat)', async () => {
+    const calls = mintOnStalePointer(() => ({ title: null }))
+    const { createCanonicalChat } = await loadModule()
+
+    await expect(createCanonicalChat(stale)).resolves.toBe('fresh-1')
+    expect(calls.some(call => call.method === 'session.create')).toBe(true)
+    expect(hostMock.openSession).toHaveBeenCalled()
+  })
+
+  it('mints when the roster id is missing (session.info not_found)', async () => {
+    const calls = mintOnStalePointer(() => {
+      throw Object.assign(new Error('session not found'), { data: { reason: 'not_found' } })
+    })
+
+    const { openBotCanonicalChat } = await loadModule()
+
+    await expect(openBotCanonicalChat(stale)).resolves.toEqual({ openedId: 'fresh-1', registryId: 'fresh-1' })
+    expect(calls.some(call => call.method === 'session.create')).toBe(true)
   })
 })

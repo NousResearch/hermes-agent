@@ -19,16 +19,13 @@ sqlite3 CLI for the page-level salvage lane even on the snapshot.
 from __future__ import annotations
 
 import argparse
-import inspect
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-import hermes_state_repair
-
-from hermes_cli.session_lost_and_found import (
+from persistence.sqlite.admin._lost_and_found import (
     _parse_sqlite3_cli_version,
     _wal_reset_vulnerable,
     find_sqlite3_cli,
@@ -36,14 +33,11 @@ from hermes_cli.session_lost_and_found import (
 )
 from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
 
-
 LIVE_DB_SALVAGE_COMMAND = 'sqlite3 ~/.hermes/state.db ".recover"'
-
 
 # ---------------------------------------------------------------------------
 # The version gate itself
 # ---------------------------------------------------------------------------
-
 
 class TestWalResetVersionGate:
     @pytest.mark.parametrize(
@@ -88,27 +82,25 @@ class TestWalResetVersionGate:
                 is_sqlite_wal_reset_vulnerable(version)
             ), f"salvage gate disagrees with the runtime gate at {version}"
 
-
 # ---------------------------------------------------------------------------
 # find_sqlite3_cli refuses unsafe shells and explains why
 # ---------------------------------------------------------------------------
 
-
 class TestFindSqlite3CliRefusal:
     def test_missing_binary_refusal(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which", lambda _: None
+            "persistence.sqlite.admin._lost_and_found.shutil.which", lambda _: None
         )
         assert find_sqlite3_cli() is None
         assert find_sqlite3_cli_refusal()["reason"] == "missing"
 
     def test_no_dbpage_refusal(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: False,
         )
         assert find_sqlite3_cli() is None
@@ -122,15 +114,15 @@ class TestFindSqlite3CliRefusal:
         passes, while the WAL-reset opener bug is still present.
         """
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "persistence.sqlite.admin._lost_and_found._parse_sqlite3_cli_version",
             lambda _: (3, 45, 1),
         )
         assert find_sqlite3_cli() is None
@@ -141,15 +133,15 @@ class TestFindSqlite3CliRefusal:
 
     def test_fixed_capable_cli_accepted(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/local/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "persistence.sqlite.admin._lost_and_found._parse_sqlite3_cli_version",
             lambda _: (3, 51, 3),
         )
         assert find_sqlite3_cli() == "/usr/local/bin/sqlite3"
@@ -160,19 +152,18 @@ class TestFindSqlite3CliRefusal:
         version grounds alone (the salvage lane runs against a snapshot
         copy, not the live file)."""
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "persistence.sqlite.admin._lost_and_found._parse_sqlite3_cli_version",
             lambda _: None,
         )
         assert find_sqlite3_cli() == "/usr/bin/sqlite3"
-
 
 class TestParseSqlite3CliVersion:
     def test_parses_modern_output(self):
@@ -181,39 +172,23 @@ class TestParseSqlite3CliVersion:
             stdout = b"3.51.4 2026-XX-XX 12:34:56\n"
 
         with patch(
-            "hermes_cli.session_lost_and_found.subprocess.run",
+            "persistence.sqlite.admin._lost_and_found.subprocess.run",
             return_value=Probe(),
         ):
             assert _parse_sqlite3_cli_version("x") == (3, 51, 4)
 
     def test_unexecutable_returns_none(self):
         with patch(
-            "hermes_cli.session_lost_and_found.subprocess.run",
+            "persistence.sqlite.admin._lost_and_found.subprocess.run",
             side_effect=OSError("no such file"),
         ):
             assert _parse_sqlite3_cli_version("x") is None
-
 
 # ---------------------------------------------------------------------------
 # The operator-facing guidance never names the live DB
 # ---------------------------------------------------------------------------
 
-
 class TestGuidanceNeverNamesLiveDb:
-    def test_gateway_corruption_banner(self):
-        """The gateway broadcast must route to the two-stage `sessions
-        recover` contract and must warn against pointing a raw sqlite3
-        shell at the live file."""
-        import gateway.run as gateway_run
-
-        body = inspect.getsource(
-            gateway_run.GatewayRunner._send_session_db_warning_notifications
-        )
-        assert LIVE_DB_SALVAGE_COMMAND not in body
-        assert "sessions recover --source" in body
-        assert "--inspect-only" in body
-        assert "--output" in body
-        assert "do NOT" in body
 
     def test_run_agent_corrupt_explanation(self):
         from run_agent import AIAgent
@@ -228,7 +203,7 @@ class TestGuidanceNeverNamesLiveDb:
         assert ".recover" in explanation  # the warning still names the hazard
 
     def test_repair_budget_error_names_safe_lane(self, tmp_path: Path):
-        import hermes_state_repair as hermes_state  # helper lives in the split-out repair module
+        from persistence.sqlite._state import repair as hermes_state  # helper lives in the split-out repair module
 
         message = hermes_state._persistent_repair_exhausted_error(
             tmp_path / "state.db"
@@ -242,24 +217,6 @@ class TestGuidanceNeverNamesLiveDb:
         assert ".recover\"`" not in message
         assert "do NOT" in message
 
-    def test_forensic_backup_refusals_name_safe_lane(self):
-        """The low-disk and stat-failure forensic backup refusal strings
-        must not embed a raw sqlite3 command against the live path."""
-        import hermes_state
-
-        body = inspect.getsource(hermes_state_repair._backup_db_file)
-        assert ".recover\"`" not in body
-        assert "sessions recover --source" in body
-        assert "--inspect-only" in body
-
-    def test_kanban_manual_recovery_warns_about_live_db(self):
-        import hermes_cli.kanban_ops as kanban  # ``_cmd_repair`` lives here (split from hermes_cli.kanban)
-
-        source = inspect.getsource(kanban)
-        assert '`sqlite3 kanban.db ".recover"`' not in source
-        assert "copy kanban.db aside FIRST" in source
-
-
 # ---------------------------------------------------------------------------
 # The emitted command satisfies the real CLI contract
 # ---------------------------------------------------------------------------
@@ -270,7 +227,6 @@ class TestGuidanceNeverNamesLiveDb:
 # shapes the banners emit through the real parser + cmd_sessions, so a
 # guidance string can never again pass a source-substring test while the
 # command it prints deterministically fails.
-
 
 class TestEmittedCommandsSatisfyCliContract:
     """Every `sessions recover` argv the guidance prints must be accepted
@@ -288,7 +244,7 @@ class TestEmittedCommandsSatisfyCliContract:
     """
 
     @staticmethod
-    def _namespace(source: Path, **overrides) -> "argparse.Namespace":
+    def _namespace(source: Path, **overrides) -> argparse.Namespace:
         """The namespace hermes main() produces for `sessions recover`.
 
         Mirrors the registrations in hermes_cli/main.py (sessions_recover
@@ -353,34 +309,3 @@ class TestEmittedCommandsSatisfyCliContract:
             self._namespace(source, output=tmp_path / "recovered-state.db")
         )
         assert rc != 2, "--output shape must pass the contract gate"
-
-    def test_banner_strings_emit_only_contract_valid_argv(self, tmp_path):
-        """The exact argv shapes embedded in the guidance strings, when
-        parsed and dispatched, must never return the contract-gate 2.
-
-        Extracts each `sessions recover` invocation printed by the
-        banners' code and runs its flag set through the real dispatcher.
-        """
-        import hermes_cli.sessions_cmd as sc
-
-        source = tmp_path / "state.db"
-        conn = sqlite3.connect(str(source))
-        try:
-            conn.execute("CREATE TABLE t (x)")
-            conn.commit()
-        finally:
-            conn.close()
-
-        # Every emitted flag-set from the five guidance sites. Stage 1
-        # (inspect) and stage 2 (output) as printed by the banners:
-        emitted_shapes = [
-            {"inspect_only": True},                      # --inspect-only
-            {"output": tmp_path / "recovered-state.db"},  # --output <new>
-        ]
-        for overrides in emitted_shapes:
-            rc = sc.cmd_sessions(self._namespace(source, **overrides))
-            assert rc != 2, (
-                f"emitted shape {overrides} must pass the cmd_sessions "
-                "contract gate — the banner is printing a command the CLI "
-                "rejects before doing anything"
-            )

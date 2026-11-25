@@ -2,32 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import type { McpTestResult } from '@/hermes'
 
-import { classifyProbe, freshProbe, NEEDS_AUTH_RE, PROBE_TTL_MS, probeCache, probeKey } from './mcp-probe-cache'
+import { freshProbe, PROBE_TTL_MS, probeCache, probeKey } from './mcp-probe-cache'
 
 const result = (over: Partial<McpTestResult> = {}): McpTestResult => ({ ok: true, tools: [], ...over })
-
-describe('classifyProbe', () => {
-  it('classifies a successful probe as ok', () => {
-    expect(classifyProbe(result())).toBe('ok')
-  })
-
-  it.each([
-    'HTTP 401 Unauthorized',
-    'invalid_token: The access token expired',
-    'OAuth authorization required',
-    'authentication failed'
-  ])('classifies "%s" as needs-auth', error => {
-    expect(classifyProbe(result({ ok: false, error }))).toBe('needs-auth')
-  })
-
-  it('classifies other failures as error', () => {
-    expect(classifyProbe(result({ ok: false, error: 'ECONNREFUSED 127.0.0.1:3845' }))).toBe('error')
-  })
-
-  it('classifies a failure without an error string as error', () => {
-    expect(classifyProbe(result({ ok: false }))).toBe('error')
-  })
-})
 
 describe('probeKey', () => {
   it('scopes by profile, name, and connection-relevant config', () => {
@@ -55,11 +32,5 @@ describe('freshProbe', () => {
     expect(freshProbe(key, 1_000 + PROBE_TTL_MS)).toBeNull()
     expect(freshProbe('missing', 0)).toBeNull()
     probeCache.delete(key)
-  })
-})
-
-describe('NEEDS_AUTH_RE', () => {
-  it('does not match unrelated failure text', () => {
-    expect(NEEDS_AUTH_RE.test('connection timed out after 60000ms')).toBe(false)
   })
 })

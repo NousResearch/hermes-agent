@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from argparse import ArgumentTypeError
 from typing import Callable
+
+
+def _non_negative_keep(value: str) -> int:
+    # A negative keep would slice away the NEWEST archives instead of the oldest.
+    if not value.isdecimal():
+        raise ArgumentTypeError("must be a non-negative integer (0 keeps everything)")
+    return int(value)
 
 
 def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
@@ -20,4 +28,8 @@ def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
         help="Quick snapshot: only critical state files (config, state.db, .env, auth, cron)")
     backup_parser.add_argument(
         "-l", "--label", help="Label for the snapshot (only used with --quick)")
+    backup_parser.add_argument(
+        "-k", "--keep", type=_non_negative_keep, default=3, metavar="N",
+        help="After a full backup, delete older hermes-backup-*.zip files in the output "
+             "directory beyond the newest N (default 3; 0 keeps everything)")
     backup_parser.set_defaults(func=cmd_backup)

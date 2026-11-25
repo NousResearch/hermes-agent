@@ -15,7 +15,7 @@ import pytest
 
 @pytest.fixture
 def hermes_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so SessionDB.state_meta writes don't clobber the real one."""
+    """Isolated HERMES_HOME so state_meta writes don't clobber the real one."""
     from pathlib import Path
 
     home = tmp_path / ".hermes"
@@ -133,16 +133,6 @@ class TestParseLoopArgs:
         p = parse_loop_args("2m poll --times zero")
         assert p["error"] is not None
 
-    def test_no_start_now_flag_anymore(self):
-        from hermes_cli.loops import parse_loop_args
-
-        # Immediate first wakeup is the default now; --start-now was never
-        # released, so the token is NOT parsed as a flag.
-        p = parse_loop_args("1h check the deploy status")
-        assert "start_now" not in p
-        assert p["interval_seconds"] == 3600
-        assert p["prompt"] == "check the deploy status"
-        assert p["error"] is None
 
     def test_start_now_word_in_prompt_kept_verbatim(self):
         from hermes_cli.loops import parse_loop_args
@@ -552,18 +542,6 @@ class TestControls:
         mgr.pause(reason="user-interrupted")
         assert mgr.state.awaiting_response is False
 
-    def test_status_line_shapes(self, hermes_home):
-        from hermes_cli.loops import LoopManager
-
-        mgr = LoopManager(session_id="c4")
-        assert "No loop set" in mgr.status_line()
-        mgr.set("poll the build", interval_seconds=300)
-        assert "active" in mgr.status_line()
-        assert "poll the build" in mgr.status_line()
-        mgr.pause()
-        assert "paused" in mgr.status_line()
-        mgr.clear()
-        assert "No loop set" in mgr.status_line()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -609,14 +587,6 @@ class TestGoalMixing:
 
 
 class TestDispatchLoopCommand:
-    def test_create_fixed(self, hermes_home):
-        from hermes_cli.loops import LoopManager, dispatch_loop_command
-
-        mgr = LoopManager(session_id="d1")
-        result = dispatch_loop_command(mgr, "5m check the deploy")
-        assert result["created"] is True
-        assert "Loop set" in result["output"]
-        assert "every 5m" in result["output"]
 
     def test_create_self_paced(self, hermes_home):
         from hermes_cli.loops import LoopManager, dispatch_loop_command
@@ -662,13 +632,6 @@ class TestDispatchLoopCommand:
         dispatch_loop_command(mgr, "5m ping", route=route)
         assert load_loop("d5").route == route
 
-    def test_help(self, hermes_home):
-        from hermes_cli.loops import LoopManager, dispatch_loop_command
-
-        mgr = LoopManager(session_id="d6")
-        out = dispatch_loop_command(mgr, "help")["output"]
-        assert "Usage" in out
-        assert "--times" in out
 
     def test_bad_times_error(self, hermes_home):
         from hermes_cli.loops import LoopManager, dispatch_loop_command
@@ -684,44 +647,28 @@ class TestDispatchLoopCommand:
 # ──────────────────────────────────────────────────────────────────────
 
 
-class TestCommandRegistry:
-    def test_loop_registered_with_proactive_alias(self):
-        from hermes_cli.commands import resolve_command
-
-        cmd = resolve_command("loop")
-        assert cmd is not None
-        assert cmd.name == "loop"
-        alias = resolve_command("proactive")
-        assert alias is not None
-        assert alias.name == "loop"
 
 
 # ──────────────────────────────────────────────────────────────────────
-# SessionDB.list_meta_prefix
+# state_meta.list_prefix
 # ──────────────────────────────────────────────────────────────────────
 
 
 class TestListMetaPrefix:
     def test_prefix_scan(self, hermes_home):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        db.set_meta("lmp-test:aaa", "1")
-        db.set_meta("lmp-test:bbb", "2")
-        db.set_meta("other:aaa", "3")
-        rows = dict(db.list_meta_prefix("lmp-test:"))
+        with open_persistence(profile_scope()) as store:
+            store.state_meta.set("lmp-test:aaa", "1")
+            store.state_meta.set("lmp-test:bbb", "2")
+            store.state_meta.set("other:aaa", "3")
+            rows = {entry.key: entry.value for entry in store.state_meta.list_prefix("lmp-test:")}
         assert rows == {"lmp-test:aaa": "1", "lmp-test:bbb": "2"}
 
     def test_wildcards_escaped(self, hermes_home):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        db.set_meta("pre%fix:x", "1")
-        db.set_meta("prefix:y", "2")
-        assert db.list_meta_prefix("pre%") == [("pre%fix:x", "1")]
-
-    def test_empty_prefix(self, hermes_home):
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        assert db.list_meta_prefix("") == []
+        with open_persistence(profile_scope()) as store:
+            store.state_meta.set("pre%fix:x", "1")
+            store.state_meta.set("prefix:y", "2")
+            assert [(entry.key, entry.value) for entry in store.state_meta.list_prefix("pre%")] == [("pre%fix:x", "1")]

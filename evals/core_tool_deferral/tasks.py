@@ -1,10 +1,10 @@
 """Task battery for PR #97979 core-tool-deferral A/B.
 
-Covers all 19 deferred tools:
+Covers all 18 deferred tools:
   computer_use, session_search, clarify, image_generate, todo_list,
   process_manage, cronjob_manage, drive_preview, gui_tour, desktop_preview,
-  annotate_preview, show_tip, setup_mcp, desktop_project, close_terminal,
-  apply_layout, read_terminal, read_window_below, focus_pane
+  annotate_preview, show_tip, desktop_project, close_terminal,
+  set_theme, read_terminal, read_window_below, focus_pane
 plus an eager-surface control and a false-discovery distractor.
 
 Each task: id, prompt, fixtures(workspace), grade(ctx) -> (score 0..1, notes).
@@ -235,10 +235,10 @@ def g_tour(ctx):
 
 def g_layout(ctx):
     score, notes = 0.0, []
-    if _called(ctx, "apply_layout") or _events(ctx, "layout"):
+    if _called(ctx, "set_theme") or _cb(ctx, "theme"):
         score += 0.25
     else:
-        notes.append("apply_layout never used")
+        notes.append("set_theme never used")
     if _called(ctx, "focus_pane") or _events(ctx, "focus"):
         score += 0.2
     else:
@@ -300,16 +300,17 @@ def g_project(ctx):
             notes.append("desktop_project called but not with 'apollo'")
     else:
         notes.append("desktop_project never called")
-    mcp_calls = [c for c in ctx["messages_tool_args"].get("setup_mcp", [])
-                 if "github" in json.dumps(c).lower()]
-    if _called(ctx, "setup_mcp"):
+    # MCP install is a manage_connections call with an mcp:true target.
+    mcp_calls = [c for c in ctx["messages_tool_args"].get("manage_connections", [])
+                 if "github" in json.dumps(c).lower() and "mcp" in json.dumps(c).lower()]
+    if _called(ctx, "manage_connections"):
         score += 0.3
         if mcp_calls:
             score += 0.2
         else:
-            notes.append("setup_mcp called but not for github")
+            notes.append("manage_connections called but not for the github MCP")
     else:
-        notes.append("setup_mcp never called")
+        notes.append("manage_connections never called")
     return score, notes
 
 

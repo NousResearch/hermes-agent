@@ -32,8 +32,22 @@ function transcriptBytes(state: ClientSessionState): number {
   return JSON.stringify(state.messages).length * 2
 }
 
+const pendingMessageByTranscript = new WeakMap<ClientSessionState['messages'], boolean>()
+
 function hasDraftOrInFlightMessage(state: ClientSessionState): boolean {
-  return state.messages.some(message => message.pending === true)
+  // prune() runs after every published state, including each streamed delta.
+  // Most of the cache is settled transcripts whose arrays never change, so the
+  // O(messages) scan only needs to happen once per array identity.
+  const cached = pendingMessageByTranscript.get(state.messages)
+
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const pending = state.messages.some(message => message.pending === true)
+  pendingMessageByTranscript.set(state.messages, pending)
+
+  return pending
 }
 
 /**
@@ -45,6 +59,7 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
   readonly #maxBytes: number
   readonly #maxCount: number
   readonly #recency = new Map<string, number>()
+  readonly #transcriptWeights = new WeakMap<ClientSessionState['messages'], number>()
   #clock = 0
 
   constructor(callbacks: SessionStateCacheCallbacks, limits: SessionStateCacheLimits = {}) {
@@ -91,7 +106,7 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
         continue
       }
 
-      const weight = transcriptBytes(state)
+      const weight = this.#weight(state)
       candidates.push({ bytes: weight, runtimeId, state, touched: this.#recency.get(runtimeId) ?? 0 })
       bytes += weight
     }
@@ -143,6 +158,19 @@ export class SessionStateCache extends Map<string, ClientSessionState> {
       !hasDraftOrInFlightMessage(state) &&
       !this.#callbacks.isReferenced(runtimeId, state)
     )
+  }
+
+  #weight(state: ClientSessionState): number {
+    const cached = this.#transcriptWeights.get(state.messages)
+
+    if (cached !== undefined) {
+      return cached
+    }
+
+    const weight = transcriptBytes(state)
+    this.#transcriptWeights.set(state.messages, weight)
+
+    return weight
   }
 
   #touch(runtimeId: string): void {

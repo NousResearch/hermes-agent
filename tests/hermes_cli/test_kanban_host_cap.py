@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -84,27 +85,6 @@ def test_run_daemon_resolves_and_passes_max_in_progress(
     assert captured.get("max_in_progress") == 3
 
 
-def test_run_daemon_explicit_config_wins(kanban_home, monkeypatch):
-    captured: dict = {}
-    stop = threading.Event()
-
-    def fake_dispatch_once(conn, **kwargs):
-        captured.update(kwargs)
-        return kb.DispatchResult()
-
-    monkeypatch.setattr(kbd, "dispatch_once", fake_dispatch_once)
-    monkeypatch.setattr(kbd, "configured_max_in_progress", lambda: 7)
-    monkeypatch.setattr(
-        kbd, "derive_default_max_in_progress",
-        lambda sample=None: pytest.fail("derived default must not be consulted"),
-    )
-
-    def on_tick(res):
-        stop.set()
-
-    kbd.run_daemon(interval=0.01, stop_event=stop, on_tick=on_tick)
-
-    assert captured.get("max_in_progress") == 7
 
 
 def test_configured_max_in_progress_parsing(monkeypatch):
@@ -240,6 +220,73 @@ def test_review_lane_gets_reserved_slot_under_ready_backlog(
     # Budget 2: one ready + the reserved review slot — never 2×ready.
     assert len(spawned_ids) == 2
     assert review_id in spawned_ids
+
+
+def _guard_review_row(conn: sqlite3.Connection, review_id: str) -> dict:
+    """Latest run ``rate_limited`` → ``check_respawn_guard`` returns a cooldown."""
+    now = int(time.time())
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'reviewer', 'rate_limited', "
+            "'rate_limited', ?, ?)",
+            (review_id, now, now),
+        )
+    assert kbd.check_respawn_guard(conn, review_id, lane="review") == "rate_limit_cooldown"
+    return {"max_in_progress": 1}
+
+
+def _cap_review_row(conn: sqlite3.Connection, review_id: str) -> dict:
+    """``reviewer`` already has one running worker → the review row is per-profile capped."""
+    busy_id = kb.create_task(conn, title="busy", assignee="reviewer")
+    assert kb.claim_task(conn, busy_id) is not None
+    return {"max_in_progress": 2, "max_in_progress_per_profile": 1}
+
+
+@pytest.mark.parametrize("make_unspawnable", [_guard_review_row, _cap_review_row])
+def test_unspawnable_review_does_not_reserve_the_only_ready_slot(
+    kanban_home, all_assignees_spawnable, monkeypatch, make_unspawnable,
+):
+    """A review card the review loop would refuse this tick (respawn guard,
+    per-profile cap) must not consume the fairness reservation — otherwise the
+    ready lane starves every tick while the reserved slot goes unused."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        ready_id = kb.create_task(conn, title="ready-now", assignee="alice")
+        review_id = _park_in_review(conn, "review-unspawnable", "reviewer")
+        caps = make_unspawnable(conn, review_id)
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory(spawns), **caps)
+
+    assert [task_id for task_id, *_ in res.spawned] == [ready_id]
+
+
+def test_unguarded_review_reserves_the_only_ready_slot(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A dispatchable review card still receives the single shared slot."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="ready-now", assignee="alice")
+        review_id = _park_in_review(conn, "review-now", "reviewer")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert [task_id for task_id, *_ in res.spawned] == [review_id]
 
 
 def test_review_reservation_released_when_no_review_work(

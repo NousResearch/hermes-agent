@@ -1,0 +1,51 @@
+name: Canary E2E red tracker
+
+# Manual preview (dry-run, the default) or replay of tests/install/e2e-assets/red-tracker.mjs
+# for any Stable Release / Canary E2E run. Automatic updates run inside
+# .github/workflows/stable-release.yml (`track-canary-red`) because canary-release.yml
+# dispatches stable-release.yml with GITHUB_TOKEN, and GitHub Actions suppresses
+# downstream workflow_run events from GITHUB_TOKEN-dispatched runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: 'Run id to report on.'
+        required: true
+        type: string
+      dry-run:
+        description: 'Print the planned issue change instead of making it.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Live replays (dry-run false) serialize under one group so two never both see
+# "no open issue" and create one each; dry-run previews write nothing and run alone.
+concurrency:
+  group: >-
+    install-e2e-red-tracker-${{ inputs.dry-run == false && 'auto' || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  track:
+    name: Update the install-e2e-red tracker
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          sparse-checkout: tests/install/e2e-assets/red-tracker.mjs
+          sparse-checkout-cone-mode: false
+      - name: Open, update or close the tracker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run-id }}
+          DRY_RUN: ${{ inputs.dry-run == true && '--dry-run' || '' }}
+        run: node tests/install/e2e-assets/red-tracker.mjs --run-id "$RUN_ID" $DRY_RUN

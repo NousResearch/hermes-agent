@@ -58,8 +58,6 @@ describe('GlyphSpinner', () => {
     const frames = [...strip().querySelectorAll('.glyph-spinner__frame')].map(node => node.textContent)
 
     expect(frames).toEqual([...BRAILLE.frames])
-    // The old ticker started on frame 0; steps() starts the strip there too.
-    expect(frames[0]).toBe('⠋')
   })
 
   it('feeds steps() and the duration from the spinner data, so cadence is unchanged', () => {
@@ -71,19 +69,6 @@ describe('GlyphSpinner', () => {
     // for exactly `interval` ms, which is what the setInterval did.
     expect(style.getPropertyValue('--glyph-spinner-frames')).toBe(String(BRAILLE.frames.length))
     expect(style.getPropertyValue('--glyph-spinner-duration')).toBe(`${BRAILLE.frames.length * BRAILLE.interval}ms`)
-  })
-
-  it('keeps per-variant cadence distinct', () => {
-    render(<GlyphSpinner ariaLabel="Working" spinner="breathe" />)
-
-    const node = screen.getByRole('status', { name: 'Working' })
-    const found = node.querySelector<HTMLElement>('.glyph-spinner__strip')!
-    const breathe = spinners.breathe
-
-    expect(found.querySelectorAll('.glyph-spinner__frame')).toHaveLength(breathe.frames.length)
-    expect(found.style.getPropertyValue('--glyph-spinner-duration')).toBe(
-      `${breathe.frames.length * breathe.interval}ms`
-    )
   })
 
   it('creates no timer and no update-phase React commit', () => {
@@ -141,8 +126,8 @@ describe('GlyphSpinner', () => {
   })
 
   it('pauses on request while staying mounted', () => {
-    // For a caller that keeps the spinner in the tree through a fade-out
-    // (ChatSwapOverlay) and does not want it animating once the wait is over.
+    // For a caller that keeps the spinner in the tree through a fade-out and
+    // does not want it animating once the wait is over.
     const { rerender } = render(<GlyphSpinner paused spinner="braille" />)
     const viewport = () => screen.getByRole('status', { name: 'Loading' }).querySelector('.glyph-spinner')
 

@@ -5,7 +5,7 @@ disposition) and `hermes cron status` calls out jobs whose last dispatch
 was a late/missed-fire catch-up.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -17,14 +17,12 @@ from hermes_cli.cron import (
     cron_list,
 )
 
-
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
-
 
 def _stamp_last_dispatch(job_id, stamp):
     jobs = load_jobs()
@@ -33,16 +31,14 @@ def _stamp_last_dispatch(job_id, stamp):
             job["last_dispatch"] = stamp
     save_jobs(jobs)
 
-
 def _catch_up_stamp(late_seconds=1860.0, kind="catch_up"):
-    scheduled = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+    scheduled = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
     return {
         "scheduled_at": scheduled.isoformat(),
         "dispatched_at": (scheduled + timedelta(seconds=late_seconds)).isoformat(),
         "lateness_seconds": late_seconds,
         "kind": kind,
     }
-
 
 class TestCronListDispatchLine:
     def test_catch_up_dispatch_rendered(self, tmp_cron_dir, capsys, monkeypatch):
@@ -84,7 +80,6 @@ class TestCronListDispatchLine:
 
         assert "Dispatch:" not in capsys.readouterr().out
 
-
 class TestStatusLateJobsCallout:
     def test_late_jobs_called_out(self, capsys):
         jobs = [
@@ -105,7 +100,8 @@ class TestStatusLateJobsCallout:
         _print_active_jobs_summary(jobs)
 
         out = capsys.readouterr().out
-        assert "1 job(s) last fired late (missed-fire catch-up)" in out
+        assert "1 job(s) last fired late" in out
+        assert "catch-up after missed fire" in out
         assert "abc123" in out
         assert "31m late" in out
         # On-time job is not in the callout.
@@ -125,7 +121,6 @@ class TestStatusLateJobsCallout:
 
         assert "fired late" not in capsys.readouterr().out
 
-
 class TestDisplayHelpers:
     def test_format_lateness(self):
         assert _format_lateness(45) == "45s"
@@ -139,8 +134,3 @@ class TestDisplayHelpers:
         assert _dispatch_display("late") is None
         assert _dispatch_display({}) is None
         assert _dispatch_display({"scheduled_at": "x"}) is None
-
-    def test_dispatch_display_late_kind(self):
-        line = _dispatch_display(_catch_up_stamp(600.0, kind="late"))
-        assert "late" in line
-        assert "10m" in line

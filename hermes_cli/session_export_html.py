@@ -5,6 +5,8 @@ import secrets
 from typing import Any, Dict, List
 from urllib.parse import quote
 
+from hermes_cli.timefmt import coerce_epoch
+
 # --- Icons (Lucide-style SVGs) ---
 ICON_USER = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
 ICON_BOT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-bot"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>'
@@ -650,8 +652,9 @@ def _escape_html(text: Any) -> str:
     )
 
 
-def _format_timestamp(ts: float) -> str:
-    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "N/A"
+def _format_timestamp(ts: Any) -> str:
+    # A corrupt cell renders as N/A; never raw text (a TEXT timestamp would otherwise reach an HTML sink).
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts and (ts := coerce_epoch(ts)) else "N/A"
 
 
 _ROLE_ICONS = {"user": ICON_USER, "assistant": ICON_BOT, "system": ICON_SHIELD}
@@ -688,7 +691,7 @@ def _collapsible(kind: str, icon: str, title: str, inner: str, indent: str, oute
 {indent}"""
 
 
-def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
+def _generate_messages_html(messages: list[dict[str, Any]]) -> str:
     html_list = []
     for i, msg in enumerate(messages):
         role = msg.get("role", "unknown")
@@ -725,7 +728,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(html_list)
 
 
-def _sidebar_item_html(s: Dict[str, Any]) -> str:
+def _sidebar_item_html(s: dict[str, Any]) -> str:
     sid = str(s.get("id", "N/A"))
     title = s.get("title") or s.get("preview") or "Untitled Session"
     title = title[:47] + "..." if len(title) > 50 else title
@@ -740,7 +743,7 @@ def _sidebar_item_html(s: Dict[str, Any]) -> str:
             """
 
 
-def _sidebar_html(sessions: List[Dict[str, Any]]) -> str:
+def _sidebar_html(sessions: list[dict[str, Any]]) -> str:
     return f"""
         <aside class="sidebar">
             <div class="sidebar-header">
@@ -759,7 +762,7 @@ def _sidebar_html(sessions: List[Dict[str, Any]]) -> str:
         """
 
 
-def _session_view_html(s: Dict[str, Any], is_multi: bool) -> str:
+def _session_view_html(s: dict[str, Any], is_multi: bool) -> str:
     escaped_sid = _escape_html(str(s.get("id", "N/A")))
     system_html = _collapsible(
         "system-prompt", ICON_SHIELD, "System Prompt (Persona)",
@@ -784,7 +787,7 @@ def _session_view_html(s: Dict[str, Any], is_multi: bool) -> str:
         """
 
 
-def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
+def generate_multi_session_html_export(sessions: list[dict[str, Any]]) -> str:
     if not sessions:
         return "<html><body><h1>No sessions to export.</h1></body></html>"
     is_multi = len(sessions) > 1
@@ -799,6 +802,6 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
     )
 
 
-def generate_html_export(session_data: Dict[str, Any]) -> str:
+def generate_html_export(session_data: dict[str, Any]) -> str:
     """Single-session export (legacy entry point)."""
     return generate_multi_session_html_export([session_data])

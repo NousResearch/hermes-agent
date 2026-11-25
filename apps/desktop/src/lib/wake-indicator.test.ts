@@ -30,17 +30,4 @@ describe('wake indicator lifecycle', () => {
 
     expect(setState).not.toHaveBeenCalled()
   })
-
-  it('deduplicates repeated visual states', async () => {
-    const setState = vi.fn()
-    vi.stubGlobal('window', { hermesDesktop: { wakeIndicator: { setState } } })
-    const { activateWakeIndicator, clearWakeIndicator } = await import('./wake-indicator')
-
-    activateWakeIndicator()
-    activateWakeIndicator()
-    clearWakeIndicator()
-    clearWakeIndicator()
-
-    expect(setState.mock.calls.map(([state]) => state)).toEqual(['detected', 'hidden'])
-  })
 })

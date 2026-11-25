@@ -21,7 +21,7 @@ _VOICE_MOD_ALIASES = {"ctrl": "c-", "control": "c-", "alt": "a-", "option": "a-"
 
 # Named keys prompt_toolkit accepts as ``c-<name>`` / ``a-<name>``; aliases collapse to canonical.
 # Aliases collapse to prompt_toolkit's canonical spelling so the same config value binds identically in both
-# runtimes (Copilot round-10 on #19835).
+# runtimes (review round-10 on #19835).
 _VOICE_NAMED_KEYS = {
     "space": "space", "spc": "space", "enter": "enter", "return": "enter", "ret": "enter", "tab": "tab",
     "escape": "escape", "esc": "escape", "backspace": "backspace", "bs": "backspace", "delete": "delete", "del": "delete",
@@ -36,7 +36,7 @@ _VOICE_RESERVED_CHARS = frozenset({"c", "d", "l"})
 # On macOS the classic CLI's prompt_toolkit bindings for copy / exit / clear also claim ``a-c`` / ``a-d`` /
 # ``a-l`` via the action-modifier lookup, and hermes-ink reports Alt as ``key.meta`` on many terminals.
 # Mirror the TUI parser's darwin-only reservation so ``option+c`` etc. don't bind Alt+C in the CLI while the
-# TUI silently falls back to Ctrl+B (Copilot round-14 on #19835).
+# TUI silently falls back to Ctrl+B (review round-14 on #19835).
 _DEFAULT_PT_KEY = "c-b"
 
 
@@ -46,7 +46,7 @@ def voice_record_key_from_config(cfg: Any) -> Any:
 
     ``load_config()`` deep-merges raw YAML and preserves scalar overrides, so a hand-edited ``voice: true``
     / ``voice: cmd+b`` leaves ``cfg["voice"]`` as a bool/str instead of a dict, and the naive
-    ``.get("voice", {}).get("record_key")`` chain raises AttributeError before voice can even start (Copilot
+    ``.get("voice", {}).get("record_key")`` chain raises AttributeError before voice can even start (review
     round-11 on 19835). Return ``None`` for malformed shapes so call sites can feed the result straight into
     the normalizer/formatter and get the documented default. See #19835.
     """
@@ -65,7 +65,7 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
 
     * ``super`` / ``win`` / ``windows`` → ``c-b`` (TUI-only modifiers — prompt_toolkit has no super mod; the
     CLI binding site is expected to warn when this fallback fires so users see the cross-runtime split,
-    Copilot round-11 on #19835)
+    review round-11 on #19835)
     """
     if not isinstance(raw, str):
         return _DEFAULT_PT_KEY
@@ -76,7 +76,7 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     # ``super`` / ``win`` / ``windows`` are TUI-only (prompt_toolkit has no super modifier, so
     # ``@kb.add(super+b)`` crashes the CLI at startup). Fall back to the documented default here; the CLI
     # binding site is expected to log a warning when the configured value is one of these spellings so users
-    # know the TUI+CLI runtimes diverge on that shortcut (Copilot round-11 on #19835).
+    # know the TUI+CLI runtimes diverge on that shortcut (review round-11 on #19835).
     normalized_mod = _VOICE_MOD_ALIASES.get(modifier_token)
     if not normalized_mod:
         return _DEFAULT_PT_KEY
@@ -109,13 +109,8 @@ def format_voice_record_key_for_status(raw: Any) -> str:
     return prefix + key[0].upper() + key[1:]
 
 
-from tools.voice_mode import (
-    create_audio_recorder,
-    is_voice_stop_phrase,
-    is_whisper_hallucination,
-    play_audio_file,
-    transcribe_recording,
-)
+from tools.voice_mode_transcript import is_voice_stop_phrase, is_whisper_hallucination
+from tools.voice_mode import create_audio_recorder, play_audio_file, transcribe_recording
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +332,7 @@ def start_continuous(
     auto_restart: bool = True,
     max_recording_seconds: float = 0.0,
     on_stop_phrase: Optional[Callable[[str], None]] = None,
+    on_partial: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Start a VAD-driven continuous recording loop.
 
@@ -344,6 +340,7 @@ def start_continuous(
     non-positive / non-numeric disables the cap. ``on_stop_phrase`` receives the stripped
     transcript when the user utters a bare stop phrase (``voice.stop_phrases``); the loop halts
     first, so the consumer only reflects "voice off" — like the manual stop control.
+    ``on_partial`` receives live STT text while the user speaks (``stt.streaming``).
     """
     global _continuous_active, _continuous_recorder, _continuous_auto_restart, _continuous_no_speech_count
     global _continuous_callbacks
@@ -364,6 +361,7 @@ def start_continuous(
         if _continuous_recorder is None:
             _continuous_recorder = create_audio_recorder()
         rec = _continuous_recorder
+        rec.on_live_partial = on_partial
         rec._silence_threshold = silence_threshold
         rec._silence_duration = silence_duration
         # Same numeric-with-bool-excluded guard as cli.py:_voice_start_recording.
@@ -582,7 +580,7 @@ def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
 
     if resolve_streaming_provider(_load_tts_config()) is None:
         return False
-    text_queue: "queue.Queue" = queue.Queue()
+    text_queue: queue.Queue = queue.Queue()
     text_queue.put(text)
     text_queue.put(None)  # end-of-text sentinel
     done_event = threading.Event()

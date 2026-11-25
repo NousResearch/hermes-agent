@@ -15,6 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from plugins.google_meet._jsonfile import say_queue_lock
+
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
 
@@ -150,7 +152,7 @@ class RealtimeSpeaker:
         if not self.queue_path.exists():
             return []
         out: list[dict] = []
-        for line in self.queue_path.read_text(encoding="utf-8").splitlines():
+        for line in self.queue_path.read_text(encoding="utf-8-sig").splitlines():
             with contextlib.suppress(ValueError):
                 entry = json.loads(line) if line.strip() else None
                 if isinstance(entry, dict):
@@ -187,7 +189,9 @@ class RealtimeSpeaker:
                 except Exception as exc:
                     result = {"ok": False, "error": str(exc)}
             self._append_processed(head, result)
-            # Re-read (new entries may have arrived), then drop the head by position or id.
-            latest = self._read_queue()
-            self._rewrite_queue(latest[1:] if latest and latest[0].get("id") == head.get("id")
-                                else [e for e in latest if e.get("id") != head.get("id")])
+            # Re-read (new entries may have arrived), then drop the head by position or id — under the
+            # queue lock, so a meet_say append cannot land between the re-read and the rewrite.
+            with say_queue_lock(self.queue_path):
+                latest = self._read_queue()
+                self._rewrite_queue(latest[1:] if latest and latest[0].get("id") == head.get("id")
+                                    else [e for e in latest if e.get("id") != head.get("id")])

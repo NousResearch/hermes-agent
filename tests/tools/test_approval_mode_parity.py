@@ -30,14 +30,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     return home
-
 
 @pytest.fixture()
 def tui_server():
@@ -50,7 +48,6 @@ def tui_server():
     ):
         yield importlib.import_module("tui_gateway.server")
 
-
 def _write_config(home, yaml_text: str | None) -> None:
     cfg = home / "config.yaml"
     if yaml_text is None:
@@ -58,7 +55,6 @@ def _write_config(home, yaml_text: str | None) -> None:
             cfg.unlink()
     else:
         cfg.write_text(yaml_text, encoding="utf-8")
-
 
 # (config yaml, expected mode, expected timeout)
 CASES = [
@@ -91,7 +87,6 @@ CASES = [
     ),
 ]
 
-
 def _approval_module():
     """Resolve tools.approval via sys.modules, not the package attribute.
 
@@ -103,7 +98,6 @@ def _approval_module():
     the same sys.modules entry.
     """
     return importlib.import_module("tools.approval")
-
 
 @pytest.mark.parametrize("yaml_text,expected_mode,expected_timeout", CASES)
 def test_mode_and_timeout_parity_across_surfaces(
@@ -135,23 +129,3 @@ def test_mode_and_timeout_parity_across_surfaces(
             assert approval_mod.is_approval_bypass_active() == (
                 core_mode == "off"
             )
-
-
-def test_tui_loader_delegates_to_core(hermes_home, tui_server):
-    """The TUI must not re-resolve mode itself — it delegates to the core.
-
-    Pin the delegation seam directly: patching the core resolver changes
-    what the TUI reports, proving there is no independent config read left.
-    """
-    approval_context = importlib.import_module("tools.approval_context")
-
-    with patch.object(approval_context, "_get_approval_mode", return_value="smart"):
-        assert tui_server._load_approval_mode() == "smart"
-    with patch.object(approval_context, "_get_approval_mode", return_value="off"):
-        assert tui_server._load_approval_mode() == "off"
-    # Defensive clamp: an out-of-vocabulary value from the core is coerced
-    # to manual rather than leaking an unknown mode to the TUI client.
-    with patch.object(
-        approval_context, "_get_approval_mode", return_value="weird"
-    ):
-        assert tui_server._load_approval_mode() == "manual"

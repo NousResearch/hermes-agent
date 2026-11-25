@@ -21,6 +21,7 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
+        # Branched call, not ``force_fresh=force_fresh``: tests stub the reader with zero-arg lambdas.
         account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
                         else get_nous_portal_account_info())
         return bool(account_info.logged_in) and account_info.tool_gateway_entitled
@@ -35,7 +36,8 @@ def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gatew
         from hermes_cli.nous_account import (
             format_nous_portal_entitlement_message, get_nous_portal_account_info)
         message = format_nous_portal_entitlement_message(
-            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability)
+            get_nous_portal_account_info(force_fresh=force_fresh), capability=capability,
+            in_chat=True)
         if message:
             return message
     except Exception:
@@ -56,12 +58,21 @@ def coerce_modal_mode(value: object | None) -> str:
     return mode if mode in _VALID_MODAL_MODES else _DEFAULT_MODAL_MODE
 
 
-normalize_modal_mode = coerce_modal_mode
-
-
 def has_direct_modal_credentials() -> bool:
-    """Return True when direct Modal credentials/config are available."""
-    if os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"):
+    """Return True when direct Modal credentials/config are available. The token pair is a
+    profile credential: read it through the secret scope so the default profile's Modal
+    account never selects the direct backend for a multiplexed secondary. The host-wide
+    ``~/.modal.toml`` login counts only for the process's own profile: ``ModalEnvironment``
+    refuses it for a routed profile, so selection and status must not offer it there."""
+    from agent.secret_scope import UnscopedSecretError, get_secret, serves_routed_profile
+
+    names = ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET")
+    if serves_routed_profile():
+        try:
+            return all((get_secret(name) or "").strip() for name in names)
+        except UnscopedSecretError:
+            return False
+    if all(_scoped_credential(name) for name in names):
         return True
     try:
         return (Path.home() / ".modal.toml").exists()
@@ -71,7 +82,7 @@ def has_direct_modal_credentials() -> bool:
 
 def resolve_modal_backend_state(modal_mode: object | None, *, has_direct: bool,
                                 managed_ready: bool,
-                                managed_enabled: bool | None = None) -> Dict[str, Any]:
+                                managed_enabled: bool | None = None) -> dict[str, Any]:
     """Resolve direct vs managed Modal backend: ``direct``/``managed`` are exclusive; ``auto``
     prefers managed when available, else direct."""
     requested_mode = coerce_modal_mode(modal_mode)
@@ -107,19 +118,36 @@ def _dotenv_value(env_var: str) -> str:
         return ""
 
 
+def _env_source_suppressed(provider_id: str, env_var: str) -> bool:
+    """``hermes auth remove <provider>`` records ``env:<VAR>`` in ``suppressed_sources`` and promises
+    the variable is ignored until ``hermes auth add``; a value still living in a long-running
+    gateway's process environment (inherited across update restarts) must honor that too."""
+    if not provider_id:
+        return False
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed(provider_id, f"env:{env_var}")
+    except Exception:  # pragma: no cover — auth store unreadable: keep prior behavior
+        return False
+
+
 def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = "",
                             env_getter=None) -> str:
     """Resolve a voice-provider API key (single owner for STT/TTS lookup). Order: explicit
     ``config_value`` -> profile secret scope / env -> ``.env`` via ``env_getter`` (or
     ``hermes_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
     active multiplex turn the profile scope is authoritative: a miss returns ``""`` rather
-    than borrowing another profile's env or pool. Never raises.
+    than borrowing another profile's env or pool. Never raises. The env/.env tier is skipped
+    entirely while ``env:<env_var>`` is suppressed for ``provider_id`` (#116155).
 
     Resolution order (fixes #68003 — keys added via ``hermes auth add <provider>`` were invisible to the
     voice tools, which only consulted env/.env):
     """
-    key = str(config_value or "").strip() or _scoped_credential(env_var)
+    key = str(config_value or "").strip()
     if key:
+        return key
+    env_suppressed = _env_source_suppressed(provider_id, env_var)
+    if not env_suppressed and (key := _scoped_credential(env_var)):
         return key
     try:
         from agent.secret_scope import is_multiplex_active
@@ -127,7 +155,8 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
             return ""
     except Exception:  # pragma: no cover — secret_scope is in-repo
         pass
-    key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
+    if not env_suppressed:
+        key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
     if key or not provider_id:
         return key
     try:
@@ -158,28 +187,32 @@ def resolve_openai_audio_api_key() -> str:
             or resolve_provider_secret("OPENAI_API_KEY", "openai-api"))
 
 
-def prefers_gateway(config_section: str) -> bool:
-    """True when ``<section>.use_gateway`` is set in config.yaml. Never raises."""
-    try:
-        from hermes_cli.config import load_config
-        section = (load_config() or {}).get(config_section)
-        return isinstance(section, dict) and is_truthy_value(section.get("use_gateway"))
-    except Exception:
-        return False
-
-
 # Provider value the managed "Nous Subscription" picker rows write for every category;
 # any other name = that vendor direct; no key = legacy autodetect.
 NOUS_MANAGED_PROVIDER = "nous"
 # Per-capability keys that also count as "this category has been configured".
 _EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
-# Key(s) carrying the category's provider selection. ``browser.backend`` is the DRIVER
-# choice (browser-use CLI vs built-in), not the cloud provider — excluded.
-_SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
 _DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
+# Key(s) carrying each category's provider selection: one entry per `hermes tools` / Tool Gateway
+# category read_selection() serves. A leftover ``browser.backend`` (the pre-v52 driver choice) is
+# not the cloud provider — excluded.
+_SELECTION_NAME_KEYS = {
+    "browser": ("cloud_provider",), "web": ("backend",),
+    **dict.fromkeys(("image_gen", "video_gen", "tts", "stt"), _DEFAULT_NAME_KEYS),
+}
 
 
-def _raw_section(section: str) -> Dict[str, Any] | None:
+def selection_config_keys() -> frozenset[str]:
+    """Dotted config keys read_selection()/selection_exists() honour, from their own tables.
+    DEFAULT_CONFIG leaves them unseeded on purpose (a stored key is the user's explicit pick), so
+    the config-key validator asks here instead of walking the defaults."""
+    return frozenset(
+        f"{section}.{key}"
+        for section, name_keys in _SELECTION_NAME_KEYS.items()
+        for key in ("use_gateway", *name_keys, *_EXTRA_SELECTION_KEYS.get(section, ())))
+
+
+def _raw_section(section: str) -> dict[str, Any] | None:
     """The RAW (unmerged) config.yaml mapping for ``section``, or None."""
     try:
         from hermes_cli.config import read_raw_config_readonly
@@ -211,6 +244,19 @@ def read_selection(section: str) -> str | None:
     return None
 
 
+def read_web_capability_selection(capability: Optional[str] = None) -> str | None:
+    """Stored selection that decides ONE web capability (``"search"`` / ``"extract"``):
+    ``web.<capability>_backend`` when set (``"nous"`` = managed gateway, a vendor name =
+    that vendor direct), else the shared :func:`read_selection`. Lets search and extract
+    each choose between the user's own key and the Nous Tool Gateway."""
+    if capability:
+        raw = _raw_section("web") or {}
+        pin = str(raw.get(f"{capability}_backend") or "").strip().lower()
+        if pin:
+            return pin
+    return read_selection("web")
+
+
 def selection_exists(section: str) -> bool:
     """True when ANY selection signal was ever written for the section (wider than
     read_selection: per-capability web keys count too)."""
@@ -221,36 +267,18 @@ def selection_exists(section: str) -> bool:
     return raw is not None and any(str(raw.get(key) or "").strip() for key in extra)
 
 
-# Backends that once shipped in-tree but were removed; a config still pointing at one would
-# otherwise fail silently at the FIRST tool call with a generic "no registered provider has that
-# name". Used by the startup config check and selection_error(); add removals here, never as
-# one-off string checks:  "web": {"<name>": "the <Name> backend was removed in vX (...)"}
-REMOVED_BACKENDS: Dict[str, Dict[str, str]] = {}
-
-
-# Backends that once shipped in-tree but were removed. A config that still points at one otherwise fails
-# silently at the FIRST tool call with a generic "no registered provider has that name" — no migration, no
-# startup notice (reported after the Tavily removal in #99199). Both the startup config check
-# (hermes_cli.config.validate_config_structure) and selection_error() consult this map so the user learns
-# what actually happened and what to do. Declared data, one policy — add future removals here, never as
-# one-off string checks at call sites.
-# Currently empty: the Tavily removal (#99199) that introduced this registry was reverted by the #99731
-# restore. Future backend removals add an entry here, e.g. "web": {"<name>": "the <Name> backend was removed
-# in vX.Y.Z (...)"},
-def removed_backend_note(section: str, name: str) -> Optional[str]:
-    """Explanation for a backend that used to ship in-tree, or None. ``name`` tolerates the
-    quoted form callers pass to selection_error()."""
-    return REMOVED_BACKENDS.get(section, {}).get((name or "").strip().strip("'\"").lower())
-
-
 def selection_error(section: str, selection_name: str, failure: str) -> str:
     """The uniform honest-error contract for a selected-but-broken provider."""
-    failure = removed_backend_note(section, selection_name) or failure
     return (f"{section} is configured to use {selection_name} (set via hermes "
             f"tools), but {failure}. Run 'hermes tools' to change it.")
 
 
+def fal_key() -> str:
+    """The active profile's FAL_KEY (scope/env, else ``.env`` for CLI paths that run before dotenv
+    loads), stripped; ``""`` when unset. The key a direct FAL client is built with."""
+    return _scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY")
+
+
 def fal_key_is_configured() -> bool:
-    """True when FAL_KEY is set (scope/env, else ``.env`` for CLI paths that run before dotenv
-    loads) to a non-whitespace value, so tool-side and CLI setup-time checks agree."""
-    return bool(_scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY"))
+    """True when :func:`fal_key` is non-empty, so tool-side and CLI setup-time checks agree."""
+    return bool(fal_key())

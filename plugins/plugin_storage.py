@@ -26,11 +26,12 @@ def _validate_name(name: str) -> str:
 
 def plugin_data_dir(name: str) -> Path:
     """Return (and create) ``<hermes home>/plugin-data/<name>/``; resolves ``get_hermes_home()`` on
-    every call so it follows the active profile — don't cache across profile switches."""
-    from hermes_constants import get_hermes_home
-    root = get_hermes_home() / "plugin-data" / _validate_name(name)
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    every call so it follows the active profile — don't cache across profile switches.
+
+    Raises ``FileNotFoundError`` when the active named profile was deleted or renamed (a session
+    still bound to it) instead of recreating that profile's home."""
+    from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+    return mkdir_under_hermes_home(get_hermes_home() / "plugin-data" / _validate_name(name))
 
 
 def plugin_db(name: str, filename: str = "data.db") -> sqlite3.Connection:
@@ -38,7 +39,9 @@ def plugin_db(name: str, filename: str = "data.db") -> sqlite3.Connection:
     ``check_same_thread=False`` for the threaded FastAPI/tool env — caller owns transactions."""
     if Path(filename).name != filename or not filename:
         raise ValueError(f"invalid plugin db filename: {filename!r}")
-    conn = sqlite3.connect(plugin_data_dir(name) / filename, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    from hermes_cli.sqlite_util import open_db
+
+    # WAL via the shared fallback helper: network filesystems degrade to DELETE and WAL-reset-bug
+    # builds never enable it, instead of every plugin DB bypassing those rules with a raw PRAGMA.
+    return open_db(plugin_data_dir(name) / filename, db_label=f"plugin-data/{name}/{filename}",
+                   foreign_keys=True, row_factory=None, check_same_thread=False)

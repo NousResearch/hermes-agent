@@ -1,0 +1,22 @@
+name: freebusy
+title: Freebusy
+repo: https://github.com/davidtsailabs/freebusy
+sha: "9436f9e683a55169df8e6233be18c64ba0e632c2"
+description: "Books meetings over email or chat from free or busy time only, with any CalDAV calendar and any IMAP/SMTP mailbox; every slot is held before it is offered. Disclosure — Fixture mode is the default: no network calls, demo data only. Connectors mode, switched on by /freebusy connect once its test passes, talks only to the CalDAV, IMAP and SMTP servers the owner sets up (https/TLS only, private and loopback addresses refused), plus one unauthenticated check of the owner's email domain for /.well-known/caldav during setup; app passwords are typed in a terminal and kept in the system keychain, never in config or chat. In that mode it reads only busy times, writes holds and bookings to the one calendar the owner picks (or a local feed file), reads only mail addressed to its agent address, and sends scheduling replies, invites and owner notes by SMTP without a per-message prompt, within the owner's groups, tiers and its own policy gate. Holds, settings and a redacted audit log stay in its data folder; a short scheduling context is added each turn. pre_tool_call gates its own actions, and other plugins' mail and calendar tools only with vet_other_tools. post_gateway_admission answers only admitted chat senders the owner lists in chat_contacts; everyone else reaches the agent as usual. Reminders are owner-only cronjob_manage jobs. Google adapter inert until 0.4."
+maintainer: davidtsailabs
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/davidtsailabs/freebusy/blob/9436f9e683a55169df8e6233be18c64ba0e632c2/README.md
+version: "0.3.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "CalDAV and IMAP/SMTP are tested against local Radicale and GreenMail servers and recorded provider replies, not yet against iCloud, Fastmail, Zoho or Nextcloud themselves."
+  - "Travel buffers read locations only on fixture data; the CalDAV adapter does not read locations yet."
+  - "No background mail watcher: /freebusy check runs one pass, and the owner can schedule it with Hermes cron."
+capabilities:
+  provides_tools: [schedule_parse, schedule_offer, schedule_check, schedule_book, schedule_holds, schedule_resume]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, post_approval_response, post_gateway_admission]
+  provides_middleware: []
+  requires_env: []

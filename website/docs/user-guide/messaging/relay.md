@@ -41,8 +41,8 @@ Relay is for deployments where a hosted or shared connector service manages
 the platform side — for example multi-tenant hosting where one shared bot
 fronts many users' agents, or setups where you don't want bot tokens on the
 gateway machine. If you run your own bots directly, use the native platform
-adapters ([Telegram](/user-guide/messaging/telegram),
-[Discord](/user-guide/messaging/discord), etc.) instead.
+adapters ([Telegram](./telegram.md),
+[Discord](./discord.md), etc.) instead.
 
 ## Enrollment
 
@@ -96,12 +96,33 @@ environment.
 
 ## Configuration
 
-Relay activates when a connector relay URL is configured — there is no
-separate feature flag. Deployments that don't set it are unaffected.
+Relay activates when a connector relay URL is configured. To keep a profile off
+the relay even when the deployment injects a URL, disable the platform in
+`config.yaml`:
+
+```yaml
+platforms:
+  relay:
+    enabled: false
+```
+
+- **Explicit disable wins.** With `enabled: false` the gateway does not resolve
+  an identity token, provision or rewrite `GATEWAY_RELAY_*` credentials, register
+  the relay adapter or send the relevance policy — even with `gateway.relay_url`
+  or `GATEWAY_RELAY_URL` set. Native messaging adapters connect as if no relay
+  URL were present, and cron delivery treats no platform as relay-fronted.
+- **Omitting `enabled` keeps URL-based activation.** `enabled: true` still needs
+  a connector URL. A `gateway.json` `enabled: false` is advisory, as for every
+  other platform; put the opt-out in `config.yaml` (user or managed).
+
+The verdict comes from the same files and merge the gateway loader uses (top-level
+or `gateway.platforms` block, managed overlay) and is applied at activation time.
+Restart the gateway after changing it; an open relay socket is not torn down.
+`hermes gateway enroll` remains available while runtime relay is disabled.
 
 | Setting | Where | Meaning |
 |---------|-------|---------|
-| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | Connector relay WebSocket URL. Presence enables the relay platform. |
+| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | Connector relay WebSocket URL. Enables relay unless explicitly disabled in platform configuration. |
 | `gateway.relay_url` | `config.yaml` | Same as above, config-file form (env takes precedence). |
 | `GATEWAY_RELAY_ID` | env | This gateway instance's id (written by `enroll`). |
 | `GATEWAY_RELAY_SECRET` | env | Per-gateway secret authenticating the WebSocket upgrade (written by `enroll`). |
@@ -184,6 +205,11 @@ not-yet-provisioned race and retried normally.
 
 **Nothing changed after enrolling** — the gateway reads `GATEWAY_RELAY_*` at
 startup. Restart it (`hermes gateway restart`).
+
+**Inbound attachments are missing and the log says a `/relay/media/` URL "is not on
+the relay origin"** — the gateway sends its bearer only to the origin of `GATEWAY_RELAY_URL`, but
+the connector mints re-host URLs from its `PUBLIC_BASE_URL`. Point both at the same
+scheme, host and port.
 
 **A feature (buttons, media, threads…) silently degrades to plain text** — the
 connector for your platform did not advertise that operation in its handshake

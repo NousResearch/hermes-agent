@@ -1,54 +1,57 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseTranscriptDirective } from './transcript-directives'
+import { segmentTranscriptDirectives } from './transcript-directives'
 
-describe('parseTranscriptDirective', () => {
+const directive = (text: string) => segmentTranscriptDirectives(text)?.find(segment => segment.kind === 'directive')
+
+describe('segmentTranscriptDirectives', () => {
   it('parses a bare directive with no attributes', () => {
-    expect(parseTranscriptDirective('::tasks')).toEqual({ name: 'tasks', attrs: {}, source: '::tasks' })
-  })
-
-  it('parses double-quoted attributes', () => {
-    expect(parseTranscriptDirective('::preview{file="demo.html"}')).toEqual({
-      name: 'preview',
-      attrs: { file: 'demo.html' },
-      source: '::preview{file="demo.html"}'
-    })
+    expect(segmentTranscriptDirectives('::tasks')).toEqual([
+      { kind: 'directive', directive: { name: 'tasks', attrs: {}, source: '::tasks' } }
+    ])
   })
 
   it('parses multiple attributes and accepts single quotes', () => {
-    expect(parseTranscriptDirective(`::vis{file="a b.html" height='480'}`)?.attrs).toEqual({
-      file: 'a b.html',
-      height: '480'
+    expect(directive(`::vis{file="a b.html" height='480'}`)).toEqual({
+      kind: 'directive',
+      directive: {
+        name: 'vis',
+        attrs: { file: 'a b.html', height: '480' },
+        source: `::vis{file="a b.html" height='480'}`
+      }
     })
   })
 
   it('lowercases attribute keys but preserves values', () => {
-    expect(parseTranscriptDirective('::vis{File="A.html"}')?.attrs).toEqual({ file: 'A.html' })
+    expect(directive('::vis{File="A.html"}')).toMatchObject({ directive: { attrs: { file: 'A.html' } } })
   })
 
-  it('tolerates surrounding whitespace', () => {
-    expect(parseTranscriptDirective('  ::tasks{id="1"}  ')?.name).toBe('tasks')
+  it('ignores unquoted attribute values', () => {
+    expect(directive('::preview{file=demo.html}')).toMatchObject({ directive: { attrs: {} } })
   })
 
-  it('rejects prose containing a directive mid-text', () => {
-    expect(parseTranscriptDirective('see ::preview{file="x.html"} above')).toBeNull()
+  it('does not read C++ scope resolution or capitalised names as directives', () => {
+    expect(segmentTranscriptDirectives('std::vector<int>')).toBeNull()
+    expect(segmentTranscriptDirectives('::Vector')).toBeNull()
   })
 
-  it('rejects multi-line paragraphs', () => {
-    expect(parseTranscriptDirective('::preview{file="x.html"}\nmore')).toBeNull()
-  })
-
-  it('rejects C++ scope-resolution lookalikes', () => {
-    expect(parseTranscriptDirective('::std')).toEqual({ name: 'std', attrs: {}, source: '::std' })
-    expect(parseTranscriptDirective('std::vector<int>')).toBeNull()
-    expect(parseTranscriptDirective('::Vector')).toBeNull()
-  })
-
-  it('rejects unquoted attribute values', () => {
-    expect(parseTranscriptDirective('::preview{file=demo.html}')?.attrs).toEqual({})
+  it('leaves a directive whose attributes do not parse as text', () => {
+    expect(segmentTranscriptDirectives('::x{unclosed')).toBeNull()
   })
 
   it('bounds pathological input instead of scanning it', () => {
-    expect(parseTranscriptDirective(`::x{${'a="b" '.repeat(400)}}`)).toBeNull()
+    expect(segmentTranscriptDirectives(`::x{${'a="b" '.repeat(1000)}}`)).toBeNull()
+  })
+})
+
+describe('segmentTranscriptDirectives / long attribute values', () => {
+  it('parses a directive carrying two signed URLs', () => {
+    // Signed CDN URLs run 500-1,000 chars; a model card names a model and its thumbnail.
+    const signed = (name: string) => `https://cdn.example.com/${name}?Signature=${'s'.repeat(800)}&Key-Pair-Id=K`
+    const text = `::model{url="${signed('m.glb')}" thumb="${signed('t.png')}" title="Fox"}`
+
+    expect(directive(text)).toMatchObject({
+      directive: { attrs: { url: signed('m.glb'), thumb: signed('t.png'), title: 'Fox' } }
+    })
   })
 })

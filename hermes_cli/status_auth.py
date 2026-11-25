@@ -2,7 +2,7 @@
 Origin helpers (``_row``, ``_first_env_value``, ...) are resolved through the ``hermes_cli.status``
 module object so tests that monkeypatch that module keep working."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 from hermes_cli.auth import AuthError
 from hermes_cli.nous_account import (
@@ -10,6 +10,7 @@ from hermes_cli.nous_account import (
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_cli import config
+from hermes_time import safe_strftime
 
 
 def _format_iso_timestamp(value) -> str:
@@ -22,12 +23,12 @@ def _format_iso_timestamp(value) -> str:
     except Exception:
         return value
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        parsed = parsed.replace(tzinfo=UTC)
+    return safe_strftime(parsed.astimezone(), "%Y-%m-%d %H:%M:%S %Z")
 
 
 def _qwen_expiry(expires_at_ms) -> str:
-    return datetime.fromtimestamp(int(expires_at_ms) / 1000, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(int(expires_at_ms) / 1000, tz=UTC).isoformat()
 
 
 def _oauth_block(name: str, status: dict, hint: str, rows) -> None:
@@ -98,7 +99,7 @@ def _render_api_keys(ctx):
 
 def _render_auth_providers(ctx):
     _status._section("Auth Providers")
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
     try:
         # Read-only display: the refresh-free snapshot, so `hermes status` never performs an OAuth
         # refresh or burns a single-use refresh token.
@@ -124,6 +125,17 @@ def _render_auth_providers(ctx):
     ctx.nous_inference_present = inference = bool(
         nous_status.get("inference_credential_present") or (info and info.inference_credential_present)
     )
+    if nous_status.get("free_tier"):
+        # Free tier: never rendered as an account login (no account ids, no refresh row).
+        from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+        _status._row("Nous Portal", True, f"{FREE_TIER_LABEL} · {GUEST_MODEL}")
+        _status._detail("", UPGRADE_HINT)
+        inference_url = nous_status.get("inference_base_url")
+        if inference_url:
+            _status._detail("Inference:", inference_url)
+        for name, getter, hint, rows in _OAUTH_BLOCKS:
+            _oauth_block(name, statuses.get(getter, {}), hint, rows)
+        return
     nous_error = nous_status.get("error")
     _status._row("Nous Portal", logged_in,
          "logged in" if logged_in else "not logged in (Nous inference key configured)" if inference
@@ -175,7 +187,10 @@ def _render_apikey_providers(ctx):
 
     # LM Studio reachability: probe only when it is the active provider so users with foreign
     # configs see no noise. Auth rejection vs. a silent empty list is the common support case.
-    if _status._effective_provider_label() == "LM Studio":
+    # Not for a profile a plugin runs elsewhere: the address is in config.yaml, which that backend
+    # writes, and its model is reached from there, not from this host.
+    from hermes_cli.profiles_run_elsewhere import home_runs_elsewhere
+    if _status._effective_provider_label() == "LM Studio" and not home_runs_elsewhere(_status.get_hermes_home()):
         from hermes_cli.models_local import probe_lmstudio_models
         model_cfg = ctx.config.get("model")
         base = ((model_cfg.get("base_url") if isinstance(model_cfg, dict) else None)
@@ -190,4 +205,4 @@ def _render_apikey_providers(ctx):
         _status._row("LM Studio", ok, msg, 16, " ")
 
 
-import hermes_cli.status as _status  # noqa: E402  (bottom: hermes_cli.status imports this module)
+import hermes_cli.status as _status

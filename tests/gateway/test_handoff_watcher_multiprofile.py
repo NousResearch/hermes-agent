@@ -22,12 +22,17 @@ from pathlib import Path
 import pytest
 
 from gateway import run
+from persistence.authority.coordination import PendingHandoff
+
+
+def _store(coordination):
+    """A storage handle stand-in exposing ``coordination`` in its awaitable form."""
+    return types.SimpleNamespace(aio=types.SimpleNamespace(coordination=coordination))
 
 
 class _FakeConfig:
-    def __init__(self, multiplex, allowlist=None):
+    def __init__(self, multiplex):
         self.multiplex_profiles = multiplex
-        self.multiplex_profile_allowlist = allowlist
 
 
 def test_scopes_single_profile_gateway_is_root_only():
@@ -73,13 +78,10 @@ def test_scopes_degrade_to_root_when_resolution_raises(monkeypatch):
     assert run._handoff_watch_scopes(runner) == [(None, None)]
 
 
-def test_scopes_tolerate_runner_without_config():
-    """The watcher's own unit tests bind onto a config-less stand-in."""
-    assert run._handoff_watch_scopes(types.SimpleNamespace()) == [(None, None)]
 
 
 class _RecordingDB:
-    """Minimal AsyncSessionDB-shaped stub; records nothing pending."""
+    """Minimal coordination stub in its awaitable form; records nothing pending."""
 
     def __init__(self, tag=None):
         self.polls = 0
@@ -88,6 +90,95 @@ class _RecordingDB:
     async def list_pending_handoffs(self):
         self.polls += 1
         return []
+
+
+class _ProbeDB:
+    """Probe-side store stub for the idle gate (goals store-handle cache)."""
+
+    def __init__(self, pending):
+        self.coordination = types.SimpleNamespace(has_pending_handoffs=lambda: pending)
+
+
+@pytest.mark.asyncio
+async def test_watcher_gates_profile_scope_on_pending_handoffs(monkeypatch):
+    """Idle profiles must not pay the scope entry (config/secret re-parse) every tick.
+
+    The gate probes the profile's store off-loop; only a store WITH a pending handoff gets
+    its scope entered by the tick. Both directions are the contract: no work → no scope
+    entry; work present → scope entered and the store polled. The startup reclaim is
+    exempt (once per boot, and it must also see 'running' leftovers)."""
+    scopes = [
+        (None, None),
+        ("bala", Path("/h/profiles/bala")),
+        ("medicina", Path("/h/profiles/medicina")),
+    ]
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: scopes)
+
+    from hermes_cli import goals
+
+    entered = []
+
+    class _SpyScope:
+        def __init__(self, home):
+            self.home = home
+
+        async def __aenter__(self):
+            entered.append(self.home)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _SpyScope)
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(run.asyncio, "sleep", _no_sleep)
+
+    homes = [h for _n, h in scopes[1:]]
+
+    async def _run_once(pending_by_home):
+        monkeypatch.setattr(
+            goals, "_DB_CACHE",
+            {str(h): _ProbeDB(pending_by_home[h]) for h in homes})
+        entered.clear()
+        db = _RecordingDB()
+        states = iter([True, False])
+
+        class _Running:
+            def __bool__(_self):
+                try:
+                    return next(states)
+                except StopIteration:
+                    return False
+
+        fake = types.SimpleNamespace()
+        fake.persistence = _store(db)
+        fake._running = _Running()
+        fake._run_in_executor_with_context = asyncio.to_thread
+
+        async def _process_handoff(row, profile_name=None):
+            return None
+
+        fake._process_handoff = _process_handoff
+        coro = run.GatewayRunner._handoff_watcher(fake, interval=0.0)
+        await asyncio.wait_for(coro, timeout=5)
+        return db
+
+    # Idle: nothing pending anywhere → the tick skips both named scopes (only the
+    # startup reclaim enters them, once each); the unscoped root poll still runs.
+    db = await _run_once({h: False for h in homes})
+    assert entered == homes, (
+        f"only the startup reclaim may enter idle profile scopes; got {entered}")
+    assert db.polls == 1, "only the root store is polled when no profile has work"
+
+    # Work in one profile → the tick enters THAT profile's scope (reclaim + tick),
+    # while the still-idle profile is entered only by the reclaim.
+    db = await _run_once({homes[0]: True, homes[1]: False})
+    assert entered == [homes[0], homes[1], homes[0]], (
+        f"tick must enter exactly the profile with pending work; got {entered}")
+    assert db.polls == 2, "root + the busy profile are polled"
 
 
 @pytest.mark.asyncio
@@ -137,7 +228,7 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
                 return False
 
     fake = types.SimpleNamespace()
-    fake._session_db = db
+    fake.persistence = _store(db)
     fake._running = _Running()
 
     async def _process_handoff(row, profile_name=None):
@@ -158,6 +249,39 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
         f"and the poll tick; got {entered}"
     )
     assert db.polls == 3, "root + both profiles polled once each per tick"
+
+
+@pytest.mark.asyncio
+async def test_watcher_resolves_scopes_off_the_event_loop(monkeypatch):
+    """Scope resolution walks the filesystem (profiles_to_serve); it must never run on the loop
+    thread, or a stalled walk trips the loop-liveness watchdog — startup reclaim and tick alike."""
+    on_loop = []
+
+    def _scopes(_runner):
+        on_loop.append(threading.current_thread() is threading.main_thread())
+        return [(None, None)]
+
+    monkeypatch.setattr(run, "_handoff_watch_scopes", _scopes)
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(run.asyncio, "sleep", _no_sleep)
+    states = iter([True, False])
+
+    class _Running:
+        def __bool__(_self):
+            return next(states, False)
+
+    async def _process_handoff(row, profile_name=None):
+        return None
+
+    fake = types.SimpleNamespace(persistence=_store(_RecordingDB()), _running=_Running(),
+                                 _process_handoff=_process_handoff,
+                                 _run_in_executor_with_context=asyncio.to_thread)
+    await asyncio.wait_for(run.GatewayRunner._handoff_watcher(fake, interval=0.0), timeout=5)
+
+    assert on_loop == [False, False], f"reclaim + tick must resolve scopes off-loop; got {on_loop}"
 
 
 @pytest.mark.asyncio
@@ -191,7 +315,7 @@ async def test_slow_profile_secret_load_does_not_block_event_loop(monkeypatch, t
             return []
 
     fake = types.SimpleNamespace(
-        _session_db=_DB(),
+        persistence=_store(_DB()),
         _running=False,
     )
 
@@ -229,7 +353,7 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
 
     The earlier test proves the ``with`` runs; it cannot prove the store was
     re-resolved, because it pins one fake db for every scope. Here
-    ``_session_db`` is a property whose value depends on the active scope, and
+    ``persistence`` is a property whose value depends on the active scope, and
     each store yields a pending row tagged with its profile — so a regression
     that polls the root three times, or that drops ``profile_name``, fails.
     """
@@ -268,16 +392,16 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
             self.tag = tag
 
         async def list_pending_handoffs(self):
-            return [{"id": f"row-from-{self.tag}"}]
+            return (PendingHandoff(session_id=f"row-from-{self.tag}", platform=None, title=None, started_at=0.0),)
 
-        async def claim_handoff(self, _sid):
+        async def claim_handoff(self, *, session_id):
             return True
 
-        async def complete_handoff(self, _sid):
+        async def complete_handoff(self, *, session_id):
             return None
 
-        async def fail_handoff(self, _sid, _err):
-            return None
+        async def fail_handoff(self, *, session_id, error, only_states=None):
+            return True
 
     stores = {
         None: _ScopedDB("root"),
@@ -297,9 +421,9 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
                 return False
 
         @property
-        def _session_db(self):
+        def persistence(self):
             # Mirrors the real property: resolves from the ACTIVE scope.
-            return stores[active["home"]]
+            return _store(stores[active["home"]])
 
         async def _process_handoff(self, row, profile_name=None):
             processed.append((row["id"], profile_name))

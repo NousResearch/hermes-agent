@@ -1,14 +1,8 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { describe, expect, it, vi } from 'vitest'
 
-import { BackendDialClaims } from './backend-dial-claim'
-import { parseBackendScopeKey } from './connection-registry'
-
-const here = path.dirname(fileURLToPath(import.meta.url))
-const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+import { BackendDialClaims, DIAL_ROUTE_REPLACED } from './backend-dial-claim'
+import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
+import { resolveDesktopConnectionRequest } from './desktop-profile'
 
 describe('BackendDialClaims (#90812)', () => {
   it('coalesces two concurrent dials for the same (connectionId, profile) onto ONE backend spawn', async () => {
@@ -107,6 +101,113 @@ describe('BackendDialClaims (#90812)', () => {
   })
 })
 
+describe('BackendDialClaims.forget', () => {
+  it('the next caller dials again, and the callers of the forgotten dial are told to ask again', async () => {
+    const claims = new BackendDialClaims()
+    const old = claims.run('work', () => new Promise<string>(() => undefined))
+    const joined = claims.run('work', async () => 'never dialed')
+
+    claims.forget('work')
+    expect(claims.inFlight('work')).toBe(false)
+
+    // No three-minute wait on an address nothing serves any more.
+    await expect(old).rejects.toThrow(DIAL_ROUTE_REPLACED)
+    await expect(joined).rejects.toThrow(DIAL_ROUTE_REPLACED)
+
+    const fresh = vi.fn(async () => 'new route')
+
+    await expect(claims.run('work', fresh)).resolves.toBe('new route')
+    expect(fresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('a forgotten dial that settles later does not release the dial that replaced it', async () => {
+    const claims = new BackendDialClaims()
+    let failOld: (error: Error) => void = () => undefined
+
+    const old = claims.run(
+      'work',
+      () =>
+        new Promise<string>((_resolve, reject) => {
+          failOld = reject
+        })
+    )
+
+    claims.forget('work')
+
+    // Dialed in the same tick, before the forgotten claim's own release has run.
+    const replacement = claims.run('work', () => new Promise<string>(() => undefined))
+
+    await expect(old).rejects.toThrow(DIAL_ROUTE_REPLACED)
+    // The old wait runs out long after: nobody is told, and the newer dial keeps its claim.
+    failOld(new Error('old route gone'))
+    await Promise.resolve()
+
+    const third = vi.fn(async () => 'third')
+
+    expect(claims.inFlight('work')).toBe(true)
+    expect(claims.run('work', third)).toBe(replacement)
+    expect(third).not.toHaveBeenCalled()
+  })
+
+  it('a dial nobody forgot answers as before, and forgetting a key with no dial in flight does nothing', async () => {
+    const claims = new BackendDialClaims()
+
+    expect(() => claims.forget('work')).not.toThrow()
+    expect(claims.inFlight('work')).toBe(false)
+
+    const answered = claims.run('work', async () => 'this computer')
+
+    await expect(answered).resolves.toBe('this computer')
+    expect(claims.inFlight('work')).toBe(false)
+    expect(() => claims.forget('work')).not.toThrow()
+  })
+
+  it('a dial nobody forgot gives up its claim the moment it settles, so the next caller dials again', async () => {
+    const claims = new BackendDialClaims()
+    let settle: (value: string) => void = () => undefined
+
+    const first = claims.run(
+      'work',
+      () =>
+        new Promise<string>(resolve => {
+          settle = resolve
+        })
+    )
+
+    settle('first')
+    // One microtask after the dial settled: its claim lasts only while the dial itself is unsettled.
+    await Promise.resolve()
+    expect(claims.inFlight('work')).toBe(false)
+
+    const again = vi.fn(async () => 'second')
+
+    await expect(claims.run('work', again)).resolves.toBe('second')
+    expect(again).toHaveBeenCalledTimes(1)
+    await expect(first).resolves.toBe('first')
+  })
+
+  it('a forgotten or failed dial whose caller walked away is not an unhandled rejection', async () => {
+    const unhandled = vi.fn()
+
+    process.on('unhandledRejection', unhandled)
+
+    try {
+      const claims = new BackendDialClaims()
+
+      void claims.run('work', () => new Promise<string>(() => undefined))
+      claims.forget('work')
+      void claims.run('default', () => Promise.reject(new Error('dial failed')))
+      // Node reports an unhandled rejection once the microtasks have drained.
+      await new Promise(resolve => setTimeout(resolve, 0))
+      await new Promise(resolve => setImmediate(resolve))
+
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+  })
+})
+
 describe('parseBackendScopeKey (#90812/#93910)', () => {
   it('round-trips the composite pool key back to (connectionId, profile)', () => {
     expect(parseBackendScopeKey('conn:office-ssh::default')).toEqual({
@@ -122,81 +223,27 @@ describe('parseBackendScopeKey (#90812/#93910)', () => {
   })
 })
 
-describe('main.ts wiring for #90812', () => {
-  it('routes the profile-scoped dial IPC through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+describe('resolved window routes share one dial claim (#90812)', () => {
+  it.each([null, 'office-ssh'])(
+    'coalesces resolved window routes without absorbing a same-named source (%s)',
+    async connectionId => {
+      const claims = new BackendDialClaims()
+      const source = { connectionId, profile: 'work', registryScoped: connectionId !== null }
+      const route = resolveDesktopConnectionRequest(undefined, source, 'default')
+      const key = backendScopeKey(route.connectionId, route.profile)
+      const dial = vi.fn(async () => ({ baseUrl: 'http://localhost:53150' }))
+      const other = vi.fn(async () => ({ baseUrl: 'http://localhost:53151' }))
 
-    expect(body).toContain('backendDialClaims.run(')
-    expect(body).toContain('ensureBackend(profile)')
-  })
+      const [first, second, separate] = await Promise.all([
+        claims.run(key, dial),
+        claims.run(key, dial),
+        claims.run(backendScopeKey('another-source', route.profile), other)
+      ])
 
-  it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection:for', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_200)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(id, profile)')
-    expect(body).toContain('ensureRegistryBackend(id, profile)')
-  })
-
-  // The four IPC/probe surfaces below call ensureRegistryBackend()/ensureBackend()
-  // directly, bypassing backendDialClaims entirely — so a renderer's guarded
-  // reconnect dial and one of these can independently race the SAME
-  // ensureRegistryBackend() await-before-pool-check window (main.ts) and each
-  // bootstrap its own SSH tunnel / remote dashboard for the same
-  // (connectionId, profile) scope.
-
-  it('routes a media-stream connection resolve through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('resolveRemoteConnection: ({ connectionId, profile }) =>')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 300)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(connectionId, profile)')
-    expect(body).toContain('ensureRegistryBackend(connectionId, profile)')
-    expect(body).toContain('ensureBackend(profile)')
-  })
-
-  it('routes a terminal-pane backend resolve through the single-owner claim on both the registry and local branches', () => {
-    const handlerStart = mainSource.indexOf('async function ensureTerminalBackend(webContentsId: number) {')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(windowRoute.connectionId, windowRoute.profile)')
-    expect(body).toContain('ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)')
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(null, profile)')
-    expect(body).toContain('ensureBackend(profile)')
-  })
-
-  it('routes the roster-enumeration probe through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('async function enumerateRegistryAgentSources')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 3_700)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
-    expect(body).toContain('ensureRegistryBackend(connection.id, null)')
-    expect(body).toContain("getJsonForBackend(descriptor, '/api/profiles'")
-  })
-
-  it('routes the connections update-all dispatch through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connections:update-all',")
-    expect(handlerStart).toBeGreaterThan(-1)
-    // The handler grew on main (renderer-side exclusions + the managed-SSH
-    // dispatch branch) — keep the scan window comfortably past the dial.
-    const body = mainSource.slice(handlerStart, handlerStart + 3_000)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
-    expect(body).toContain('ensureRegistryBackend(connection.id, null)')
-    expect(body).toContain("postJsonForBackend(descriptor, '/api/hermes/update'")
-  })
-
-  it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
-
-    expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toContain('ensureRegistryBackend(registryConnectionId, routeProfile)')
-  })
+      expect(first).toBe(second)
+      expect(first).not.toBe(separate)
+      expect(dial).toHaveBeenCalledTimes(1)
+      expect(other).toHaveBeenCalledTimes(1)
+    }
+  )
 })

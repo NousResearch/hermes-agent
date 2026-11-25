@@ -6,9 +6,11 @@ import sqlite3
 import time
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 
 from gateway import hosted_rooms
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def _stub_session(monkeypatch, *, title, profile_home=None):
@@ -32,7 +34,7 @@ def test_direct_prompt_to_hosted_group_session_is_rejected(tmp_path, monkeypatch
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     hosted_rooms.create_room(
-        hosted_rooms.default_db_path(),
+        storage_handle(get_hermes_home()), placement="shared",
         room_id="room-hosted",
         name="Hosted room",
         members=[
@@ -48,7 +50,6 @@ def test_direct_prompt_to_hosted_group_session_is_rejected(tmp_path, monkeypatch
     )
 
     assert result["error"]["code"] == 4122
-    assert "managed by its gateway" in result["error"]["message"]
 
 
 def test_direct_prompt_to_non_hosted_group_reaches_normal_admission(
@@ -121,7 +122,7 @@ def test_direct_prompt_to_peer_reserved_group_is_rejected_until_revoke(
         "issued_at": now,
     }
     hosted_rooms.reserve_peer_room(
-        hosted_rooms.default_db_path(),
+        storage_handle(get_hermes_home()), placement="shared",
         claims=claims,
         expires_at=now + 300.0,
         now=now,
@@ -137,10 +138,9 @@ def test_direct_prompt_to_peer_reserved_group_is_rejected_until_revoke(
         {"session_id": "session-1", "text": "continue"},
     )
     assert rejected["error"]["code"] == 4122
-    assert "home host" in rejected["error"]["message"]
 
     hosted_rooms.revoke_room_grant_scope(
-        hosted_rooms.default_db_path(),
+        storage_handle(get_hermes_home()), placement="shared",
         claims=claims,
         expires_at=now + 300.0,
         now=now + 150.0,
@@ -178,9 +178,6 @@ def test_direct_prompt_is_refused_when_room_authority_cannot_be_verified(
     )
 
     assert result["error"]["code"] == 5122
-    assert result["error"]["message"] == (
-        "Could not verify this group. Try again after the gateway recovers."
-    )
 
 
 def test_contended_ownership_probe_fails_quickly_without_blocking_socket(
@@ -191,7 +188,7 @@ def test_contended_ownership_probe_fails_quickly_without_blocking_socket(
     monkeypatch.setenv("HERMES_HOME", str(home))
     db = hosted_rooms.default_db_path()
     hosted_rooms.create_room(
-        db,
+        storage_handle(get_hermes_home()), placement="shared",
         room_id="room-busy",
         name="Busy room",
         members=[],

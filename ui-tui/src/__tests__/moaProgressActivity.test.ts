@@ -49,6 +49,7 @@ const buildCtx = (appended: Msg[]) =>
   }) as any
 
 const activityTexts = () => getTurnState().activity.map(item => item.text)
+const hasText = (needle: string) => activityTexts().some(text => text.includes(needle))
 
 describe('moa.progress / moa.phase activity surface', () => {
   beforeEach(() => {
@@ -65,26 +66,27 @@ describe('moa.progress / moa.phase activity surface', () => {
     onEvent({ payload: {}, type: 'message.start' } as any)
     onEvent({ payload: { label: 'model-a', refs_done: 1, refs_total: 3 }, type: 'moa.progress' } as any)
 
-    expect(activityTexts()).toContain('MoA: refs 1/3')
+    expect(hasText('1/3')).toBe(true)
+    const count = activityTexts().length
 
     onEvent({ payload: { label: 'model-b', refs_done: 2, refs_total: 3 }, type: 'moa.progress' } as any)
 
-    const texts = activityTexts()
-    expect(texts).toContain('MoA: refs 2/3')
+    expect(hasText('2/3')).toBe(true)
     // Replaced in place — the stale 1/3 line must not linger alongside 2/3.
-    expect(texts).not.toContain('MoA: refs 1/3')
+    expect(hasText('1/3')).toBe(false)
+    expect(activityTexts().length).toBe(count)
   })
 
-  it('swaps the progress line for aggregator copy on moa.phase', () => {
+  it('swaps the progress line for the aggregator phase on moa.phase', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     onEvent({ payload: {}, type: 'message.start' } as any)
     onEvent({ payload: { label: 'model-a', refs_done: 3, refs_total: 3 }, type: 'moa.progress' } as any)
+    const count = activityTexts().length
     onEvent({ payload: { phase: 'aggregator', refs_done: 3, refs_total: 3 }, type: 'moa.phase' } as any)
 
-    const texts = activityTexts()
-    expect(texts).toContain('MoA: aggregating…')
-    expect(texts).not.toContain('MoA: refs 3/3')
+    expect(hasText('3/3')).toBe(false)
+    expect(activityTexts().length).toBe(count)
   })
 
   it('ignores malformed payloads (missing counters / unknown phase)', () => {

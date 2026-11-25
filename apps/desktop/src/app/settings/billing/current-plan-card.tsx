@@ -1,5 +1,9 @@
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/icons'
+import { cn } from '@/lib/utils'
+
+import { LIST_ROW_COLUMNS } from '../primitives'
 
 import { BillingRefusalInline } from './inline-feedback'
 import { openExternal } from './open-external'
@@ -8,11 +12,13 @@ import type { BillingPlanCardView } from './use-billing-state'
 import { useResumeFlow } from './use-subscription-change'
 
 export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void; plan: BillingPlanCardView }) {
+  const { t } = useI18n()
+  const b = t.settings.billing
   const resumeFlow = useResumeFlow()
 
   return (
     <div className="@container">
-      <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center">
+      <div className={cn('grid gap-3 py-3 @2xl:items-center', LIST_ROW_COLUMNS)}>
         <div className="flex min-w-0 items-center gap-3">
           <TierArt name={plan.tierName} />
           <div className="min-w-0">
@@ -22,7 +28,7 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
               </span>
               {plan.price && (
                 <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {plan.price}/mo
+                  {b.perMonth(plan.price)}
                 </span>
               )}
             </div>
@@ -33,14 +39,14 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
         </div>
         <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 @2xl:justify-end">
           {plan.action && (
-            <Button onClick={onViewPlans} size="sm" type="button" variant="outline">
+            <Button onClick={plan.action.onSelect ?? onViewPlans} size="sm" type="button" variant="outline">
               {plan.action.label}
             </Button>
           )}
           {/* Scheduled downgrade → chargeless undo (subscription.resume), no confirm. */}
           {plan.pending && (
             <Button disabled={resumeFlow.busy} onClick={() => void resumeFlow.resume()} size="sm" type="button">
-              {resumeFlow.busy ? 'Undoing…' : 'Undo'}
+              {resumeFlow.busy ? b.plan.undoing : b.plan.undo}
             </Button>
           )}
           {plan.link && (

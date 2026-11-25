@@ -1,4 +1,13 @@
-export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 45_000
+// Relative, not `@hermes/shared`: esbuild bundles electron/ without tsconfig paths.
+import { isHermesCloudUrl } from '../../shared/src/hermes-cloud'
+
+// A cold backend boot (plugin discovery + route mounting at web_server import
+// time) can take 45-60s on slower hardware. A 45s deadline makes first-boot
+// readiness a coin flip: every lost race tears down a healthy-but-slow backend
+// and re-drives boot, which cascades into minutes of "not connected" and
+// orphaned python processes (#63454). The poll returns the moment the backend
+// responds, so fast machines see no change; 180s is deliberately generous.
+export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 180_000
 export const DEFAULT_BACKEND_READY_POLL_MS = 500
 // A cold backend can stall its event loop for tens of seconds while Windows
 // scans and byte-compiles the gateway import tree. At the default 15s socket
@@ -33,6 +42,19 @@ export interface HermesReadyOptions {
    * two very different meanings of a 401 (see `waitForHermesReady`).
    */
   probeIsCredentialed?: boolean
+  /**
+   * The caller has proof the backend already bound its socket: a spawn-ledger
+   * record is only written after bind, and an attached backend answered once.
+   * A refused connection then means the process is gone, not still starting,
+   * so fail at once instead of polling a dead port for the whole budget.
+   * Remote/SSH callers leave this off: a tunnel that is still coming up
+   * refuses legitimately.
+   */
+  alreadyBound?: boolean
+}
+
+export function isConnectionRefusedError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 'ECONNREFUSED'
 }
 
 export const REMOTE_SESSION_EXPIRED_MESSAGE =
@@ -146,18 +168,12 @@ export function makeNousCloudBackendDownError(baseUrl: string, error: unknown): 
 
 /**
  * True when the backend URL points at a Nous-managed Hermes Cloud instance
- * (e.g. ares-3009.agents.nousresearch.com). These are Fly.io-hosted machines
- * the user cannot restart themselves — a 503 from one means the server is down
- * and the recovery path is Portal/Discord/wait.
+ * (e.g. ares-3009.agents.nousresearch.com, or its staging twin). These are
+ * hosted machines the user cannot restart themselves — a 503 from one means
+ * the server is down and the recovery path is Portal/Discord/wait.
  */
 export function isNousCloudAgentUrl(baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl).hostname
-
-    return host.endsWith('.agents.nousresearch.com')
-  } catch {
-    return false
-  }
+  return isHermesCloudUrl(baseUrl)
 }
 
 export function isMissingHealthEndpointError(error: unknown): boolean {
@@ -206,8 +222,10 @@ export function makeReauthRequiredError(detail?: string): Error {
 
 /**
  * No native token and no live cookie: boot cannot self-heal. Must carry
- * `isReauthRequired` so startHermes latches; `needsOauthLogin` alone only
- * drives Sign in copy and would retry after #88070, hiding the overlay.
+ * `isReauthRequired` so startHermes latches; a bare `needsOauthLogin` (the
+ * IPC-shaped hint) only drives Sign in copy and would retry after #88070,
+ * hiding the overlay. A confirmed ticket-mint 401/403 carries the same tag
+ * (see gatewayTicketFailure, #95701).
  */
 export function makeUnsignedOauthError(): Error {
   const error = new Error(REMOTE_UNSIGNED_OAUTH_MESSAGE) as any
@@ -281,6 +299,10 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
       // through the same credentials.
       if (probeIsCredentialed && isAuthRejectionError(error)) {
         throw makeReauthRequiredError(error instanceof Error ? error.message : String(error))
+      }
+
+      if (options.alreadyBound && isConnectionRefusedError(error)) {
+        throw new Error(`Hermes backend did not become ready: ${(error as Error).message}`)
       }
 
       // An explicitly missing route means the backend predates /api/health.

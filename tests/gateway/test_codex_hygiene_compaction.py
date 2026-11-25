@@ -17,6 +17,7 @@ history and each turn submits only the new user message), so:
 """
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ import pytest
 from agent.conversation_compression import compress_context
 from agent.transports.codex_app_server_session import TurnResult
 from gateway.run import run_codex_hygiene_compaction
+from tests.fixtures.storage_seed import seed_session
 
 
 class FakeCodexSession:
@@ -94,14 +96,27 @@ def _history(n=150):
     ]
 
 
-def _gateway(tmp_path, session_key="tg:123", agent=None):
-    from hermes_state import SessionDB
+# Storage interface handles ``_gateway`` opened; closed after each test.
+_STORAGE_HANDLES = []
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+
+@pytest.fixture(autouse=True)
+def _close_storage_handles():
+    yield
+    while _STORAGE_HANDLES:
+        _STORAGE_HANDLES.pop().close()
+
+
+def _gateway(tmp_path, session_key="tg:123", agent=None):
+    from persistence_assembly import open_persistence, profile_scope
+
+    db = open_persistence(profile_scope(home=tmp_path))
+    _STORAGE_HANDLES.append(db)
     gw = SimpleNamespace(
         _agent_cache={} if agent is None else {session_key: (agent, 0.0)},
         _agent_cache_lock=None,
         _session_db=db,
+        persistence=db,
     )
     return gw, db
 
@@ -115,8 +130,8 @@ def test_hermes_mode_compacts_live_thread_at_rpc_boundary(tmp_path):
     key = "tg:123"
     gw, db = _gateway(tmp_path, key, agent)
     # Pre-arm a persisted failure streak so success provably resets it
-    # through the REAL SessionDB (hygiene path involves the DB).
-    assert db.increment_hygiene_failure_streak(key) == 1
+    # through the real store (hygiene path involves the DB).
+    assert db.coordination.increment_hygiene_failure_streak(session_key=key) == 1
 
     outcome = asyncio.run(
         run_codex_hygiene_compaction(
@@ -139,7 +154,7 @@ def test_hermes_mode_compacts_live_thread_at_rpc_boundary(tmp_path):
     # The live agent is STILL cached — hygiene must not evict the thread owner.
     assert gw._agent_cache[key][0] is agent
     # Success reset the persisted hygiene failure streak.
-    assert db.increment_hygiene_failure_streak(key) == 1  # was cleared to 0
+    assert db.coordination.increment_hygiene_failure_streak(session_key=key) == 1  # was cleared to 0
 
 
 def test_hermes_mode_without_cached_agent_skips_without_local_compression(tmp_path):
@@ -258,7 +273,7 @@ def test_force_without_live_thread_does_not_run_local_compressor(mode):
 
 
 # ---------------------------------------------------------------------------
-# Failure handling: a wedged compaction records a DB cooldown (real SessionDB)
+# Failure handling: a wedged compaction records a DB cooldown (real store)
 # ---------------------------------------------------------------------------
 
 def test_timeout_records_persistent_cooldown(tmp_path):
@@ -267,13 +282,13 @@ def test_timeout_records_persistent_cooldown(tmp_path):
             self.compact_calls += 1
             import time
 
-            time.sleep(3.0)
+            time.sleep(1.5)
             return self.result
 
     agent = LiveCodexAgent(mode="hermes", session=HangingSession())
     key = "tg:123"
     gw, db = _gateway(tmp_path, key, agent)
-    db.create_session(agent.session_id, "gateway")
+    seed_session(db, agent.session_id, "gateway")
 
     outcome = asyncio.run(
         run_codex_hygiene_compaction(
@@ -289,8 +304,9 @@ def test_timeout_records_persistent_cooldown(tmp_path):
     )
 
     assert outcome == "failed:timeout"
-    state = db.get_compression_failure_cooldown(agent.session_id)
-    assert state is not None and state.get("remaining_seconds", 0) > 0
+    now = time.time()
+    state = db.messages.read_compression_cooldown(agent.session_id, now)
+    assert state is not None and state.until - now > 0
     # Even on failure the live agent stays cached — its thread still holds
     # the only real context.
     assert gw._agent_cache[key][0] is agent
@@ -328,15 +344,37 @@ def test_manual_compress_routes_to_live_thread():
     )
 
     assert agent._codex_session.compact_calls == 1
-    assert "compacted" in reply
+    assert reply
 
 
-def test_manual_compress_without_live_thread_reports_honestly():
-    host = _slash_host(None)
-    reply = asyncio.run(
-        host._compress_codex_app_server_session("tg:123", "sess-1")
-    )
-    assert "Nothing to compact" in reply
+@pytest.mark.parametrize("entry", ["hygiene", "manual"])
+def test_codex_compaction_releases_the_live_sessions_read_dedup(tmp_path, entry, monkeypatch):
+    """Both out-of-turn codex compaction entry points reset the read_file dedup under the LIVE
+    session row id — the task_id the main turn hands to run_conversation — not the "default"
+    bucket, so a post-compaction re-read returns content instead of a stub (#98206)."""
+    from tools import file_tools_read_tracking as tracking
+
+    tracker = {
+        "sess-1": {"dedup_generation_reads": {"/live/file.py"}},
+        "default": {"dedup_generation_reads": {"/other/file.py"}},
+    }
+    monkeypatch.setattr(tracking, "_read_tracker", tracker)
+    agent = LiveCodexAgent(mode="hermes")
+
+    if entry == "hygiene":
+        gw, _db = _gateway(tmp_path, "tg:123", agent)
+        outcome = asyncio.run(run_codex_hygiene_compaction(
+            gw, "tg:123", agent.session_id, auto_mode="hermes", history=_history(),
+            approx_tokens=345_000, timeout_seconds=30.0))
+        assert outcome == "compacted"
+    else:
+        reply = asyncio.run(_slash_host(agent)._compress_codex_app_server_session("tg:123", agent.session_id))
+        assert "compacted" in reply
+
+    assert tracker["sess-1"]["dedup_generation_reads"] == set()
+    assert tracker["default"]["dedup_generation_reads"] == {"/other/file.py"}
+
+
 
 
 # ---------------------------------------------------------------------------

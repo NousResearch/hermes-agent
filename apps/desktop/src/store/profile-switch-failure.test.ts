@@ -16,9 +16,8 @@ const gatewayMocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('@/hermes', () => ({
-  setApiRequestProfile: vi.fn(),
-  getProfiles: vi.fn(async () => ({ profiles: [] })),
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   HermesGateway: class {
     connectionState = 'closed'
     close = vi.fn(() => {
@@ -35,14 +34,17 @@ vi.mock('@/hermes', () => ({
     }
   }
 }))
-vi.mock('@/store/session', () => ({
-  setConnection: vi.fn(),
-  setGatewayState: vi.fn()
-}))
-vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
-vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 
-const { ensureGatewayProfile } = await import('./profile')
+// Load after the transport mock is installed; activation must use the real store graph.
+const { $activeGatewayProfile, $freshSessionRequest, ensureGatewayProfile, selectProfile } = await import('./profile')
+
+const { activeGatewayProfileKey, closeSecondaryGateways, setPrimaryGateway, setPrimaryGatewayConnectionId } =
+  await import('./gateway')
+
+const { $profileSwitchFailure, $profileSwitchPending } = await import('./profile-switch-state')
+const { HermesGateway } = await import('@/hermes')
+
+await import('./session-states')
 
 function installDesktop(stub: Record<string, unknown>): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub
@@ -64,7 +66,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  vi.clearAllMocks()
+  closeSecondaryGateways()
+  setPrimaryGateway(null)
+  setPrimaryGatewayConnectionId(null)
+  vi.resetAllMocks()
+  gatewayMocks.connect.mockResolvedValue(undefined)
   vi.useRealTimers()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -79,4 +85,38 @@ describe('ensureGatewayProfile — switch failure surfaces instead of silent fal
 
     await expect(ensureGatewayProfile('work')).rejects.toThrow('backend unreachable')
   })
+})
+
+it('offers Retry after a registry rail switch fails to open its socket without replacing the draft', async () => {
+  const primary = new HermesGateway()
+  await primary.connect('wss://default.invalid/ws')
+  setPrimaryGateway(primary)
+  setPrimaryGatewayConnectionId('remote-test', 'remote')
+  $activeGatewayProfile.set('default')
+  installDesktop({ getConnectionFor: async () => ({ ...descriptorFor('research'), connectionId: 'remote-test' }) })
+  const dial = Promise.withResolvers<void>()
+  gatewayMocks.connect.mockReturnValueOnce(dial.promise)
+
+  selectProfile('research')
+  await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledWith('wss://research.invalid/ws'))
+  expect($profileSwitchPending.get()).toBe('research')
+  const drafts = $freshSessionRequest.get()
+  // Observe the failed attempt before a background reconnect timer can run.
+  const settled = Promise.withResolvers<void>()
+  const unlisten = $profileSwitchPending.listen(() => settled.resolve())
+  dial.reject(new Error('backend unreachable'))
+  await settled.promise
+  unlisten()
+  expect($profileSwitchPending.get()).toBeNull()
+  expect(gatewayMocks.connect.mock.calls.filter(([url]) => url === 'wss://research.invalid/ws')).toHaveLength(1)
+  expect(activeGatewayProfileKey()).toBe('default')
+  const failure = $profileSwitchFailure.get()
+  expect(failure?.profile).toBe('research')
+
+  failure?.retry()
+  await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('research'))
+  expect(gatewayMocks.connect.mock.calls.filter(([url]) => url === 'wss://research.invalid/ws')).toHaveLength(2)
+  expect($profileSwitchPending.get()).toBeNull()
+  expect($profileSwitchFailure.get()).toBeNull()
+  expect($freshSessionRequest.get()).toBe(drafts)
 })

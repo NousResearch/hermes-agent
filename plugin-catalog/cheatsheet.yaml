@@ -1,0 +1,17 @@
+name: cheatsheet
+repo: https://github.com/Bonorinoa/hermes-cheatsheet
+sha: d5a4f0121184ed789e138f423249b5c2f7c57eee
+subdir: ""
+description: "Title-bar cheatsheet. Describe what you want to do and it points to a real command or a cited passage; live slash commands and plugins, plus cited passages from this install's docs. No runtime network. No self-update. Disclosure — reads the Markdown docs shipped with your Hermes install (website/docs next to hermes_cli) through a local dashboard route and lists your commands, plugins and MCP servers via read-only gateway calls; no network at runtime (doc and GitHub links open in your browser only when clicked)."
+maintainer: Bonorinoa
+tier: community
+category: desktop
+docs_url: https://github.com/Bonorinoa/hermes-cheatsheet#readme
+version: "0.2.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

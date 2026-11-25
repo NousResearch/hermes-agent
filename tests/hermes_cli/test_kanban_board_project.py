@@ -86,3 +86,24 @@ def test_create_task_explicit_project_beats_board(fresh_home, tmp_path):
         assert kb.get_task(conn, tid).project_id == task_proj
     finally:
         conn.close()
+
+
+def test_create_task_explicit_scratch_beats_board(fresh_home, tmp_path):
+    """#106342: every surface (CLI --workspace scratch, dashboard workspace_kind,
+    tool) funnels here; an explicit scratch on a project-scoped board must stay
+    scratch, while an omitted kind still inherits the project worktree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as pconn:
+        proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
+
+    kb.create_board("scoped3", name="Scoped3", project_id=proj_id)
+    conn = kbc.connect(board="scoped3")
+    try:
+        scratch = kb.get_task(conn, kb.create_task(
+            conn, title="explicit scratch", board="scoped3", workspace_kind="scratch"))
+        assert (scratch.workspace_kind, scratch.project_id) == ("scratch", None)
+        default = kb.get_task(conn, kb.create_task(conn, title="default", board="scoped3"))
+        assert (default.workspace_kind, default.project_id) == ("worktree", proj_id)
+    finally:
+        conn.close()

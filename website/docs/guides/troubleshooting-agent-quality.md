@@ -18,7 +18,7 @@ Sometimes Hermes seems less sharp than it was yesterday, or forgets something yo
 
 - A plain `/model <name>` switch is **session-only** by default (unless `model.persist_switch_by_default: true` is set), so the model you're on may not match what's in `config.yaml`.
 - Changing the main model from the dashboard's Models page applies to **new sessions only** — an already-open chat keeps running whatever model it started with.
-- If you switched to a faster model for a simple task (a pattern [Tips & Best Practices](/guides/tips#choose-the-right-model) recommends), remember to switch back for complex reasoning work.
+- If you switched to a faster model for a simple task (a pattern [Tips & Best Practices](./tips.md#choose-the-right-model) recommends), remember to switch back for complex reasoning work.
 
 If the model is wrong, `/model <name>` fixes it for this session; add `--global` to persist the change to `config.yaml`. Note that a mid-session switch resets the prompt cache, so the next turn re-reads the conversation at full input price — on a long session it can be cheaper to start fresh on the right model.
 
@@ -72,7 +72,7 @@ providers:
 
 Ollama users: if you set a custom `num_ctx`, set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured. On a running gateway, edits to `model.context_length` or any `compression.*` key take effect on the next message — no restart needed.
 
-See [Context Length Detection](/integrations/providers#context-length-detection) for how auto-detection works and all override options.
+See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
 
 ## 4. "I told it something and it forgot" — the frozen memory snapshot
 
@@ -86,7 +86,7 @@ See [Context Length Detection](/integrations/providers#context-length-detection)
 Frozen snapshot in practice: "remember X" during a session means X is guaranteed available **next** session. Within the current session, the fact still exists in the conversation history itself — the agent forgets it only if that part of the conversation has since been compressed away (see step 7).
 :::
 
-See [Persistent Memory](/user-guide/features/memory#how-memory-appears-in-the-system-prompt) for the full mechanics.
+See [Persistent Memory](../user-guide/features/memory.md#how-memory-appears-in-the-system-prompt) for the full mechanics.
 
 ## 5. Memory is bounded and curated — not a transcript
 
@@ -98,7 +98,7 @@ See [Persistent Memory](/user-guide/features/memory#how-memory-appears-in-the-sy
 
 For "did we discuss X last week?" recall, the agent has a separate mechanism: `session_search` queries all past sessions (stored in SQLite with full-text search) and can find things discussed weeks ago even when they're not in active memory. Just ask — "search our past sessions for the deploy discussion."
 
-You can also help directly: say "remember this for next time" after a productive session, or "clean up your memory" when it's near capacity so the agent consolidates entries. See [Memory & Skills tips](/guides/tips#memory--skills) and [Capacity Management](/user-guide/features/memory#capacity-management).
+You can also help directly: say "remember this for next time" after a productive session, or "clean up your memory" when it's near capacity so the agent consolidates entries. See [Memory & Skills tips](./tips.md#memory--skills) and [Capacity Management](../user-guide/features/memory.md#capacity-management).
 
 ## 6. Check that skills and tools are loaded
 
@@ -128,7 +128,7 @@ You can also help directly: say "remember this for next time" after a productive
 
 If a compressed-away detail matters, ask the agent to search for it (`session_search` reaches the archived turns), or re-paste the key facts into the conversation.
 
-See [Context Compression](/user-guide/configuration#context-compression) for the full settings reference and [Auto-Lineage on Compression](/user-guide/sessions#auto-lineage-on-compression) for how titled sessions chain.
+See [Context Compression](../user-guide/configuration.md#context-compression) for the full settings reference and [Auto-Lineage on Compression](../user-guide/sessions.md#auto-lineage-on-compression) for how titled sessions chain.
 
 ---
 

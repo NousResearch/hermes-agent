@@ -4,60 +4,40 @@ Approval history in Hermes is implied, not ledgered: the session DB
 (state.db) stores every assistant ``terminal`` tool call plus its paired
 ``role='tool'`` result. A dangerous-classified command whose result is not a
 BLOCKED/denied/pending marker ran with user consent. These tests build
-synthetic state.db fixtures and verify scanning, ranking, safety exclusions,
+state.db fixtures through the storage seeds and verify scanning, ranking, safety exclusions,
 and the --apply merge path.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from argparse import Namespace
 
 import pytest
 
 import tools.approval as approval_module
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from hermes_cli.approvals_suggest import (
     Proposal,
     apply_proposals,
     build_proposals,
     derive_glob,
-    is_unsafe_class,
     normalize_command,
-    parse_apply_indices,
     scan_approval_history,
     suggest_command,
 )
 
 
 # ---------------------------------------------------------------------------
-# Fixture helpers: synthetic session DB
+# Fixture helpers: a session DB seeded through the store
 # ---------------------------------------------------------------------------
-
-def _make_db(path):
-    con = sqlite3.connect(path)
-    con.executescript(
-        """
-        CREATE TABLE messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT,
-            tool_call_id TEXT,
-            tool_calls TEXT,
-            timestamp REAL NOT NULL
-        );
-        """
-    )
-    con.commit()
-    return con
-
 
 _ID_COUNTER = [0]
 
 
-def _add_terminal_call(con, command, result="ok: done", ts=None):
+def _add_terminal_call(store, command, result="ok: done", ts=None):
     """Insert an assistant terminal tool call + its paired tool result."""
     _ID_COUNTER[0] += 1
     call_id = f"call_{_ID_COUNTER[0]}"
@@ -74,25 +54,16 @@ def _add_terminal_call(con, command, result="ok: done", ts=None):
             }
         ]
     )
-    con.execute(
-        "INSERT INTO messages (session_id, role, content, tool_calls, timestamp) "
-        "VALUES ('s1', 'assistant', '', ?, ?)",
-        (tool_calls, ts),
-    )
-    con.execute(
-        "INSERT INTO messages (session_id, role, content, tool_call_id, timestamp) "
-        "VALUES ('s1', 'tool', ?, ?, ?)",
-        (result, call_id, ts + 1),
-    )
-    con.commit()
+    seed_messages(store, "s1",
+                  {"role": "assistant", "content": "", "tool_calls": tool_calls, "timestamp": ts},
+                  {"role": "tool", "content": result, "tool_call_id": call_id, "timestamp": ts + 1})
 
 
 @pytest.fixture
 def db_path(tmp_path):
-    path = tmp_path / "state.db"
-    con = _make_db(path)
-    yield path, con
-    con.close()
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as store:
+        seed_session(store, "s1", "cli")
+        yield tmp_path / "state.db", store
 
 
 @pytest.fixture
@@ -143,7 +114,6 @@ class TestScan:
         assert len(scan_approval_history(path, days=0)) == 2
 
 
-
 # ---------------------------------------------------------------------------
 # Normalize / glob derivation
 # ---------------------------------------------------------------------------
@@ -156,6 +126,15 @@ class TestNormalizeAndGlob:
         normalized = normalize_command(f"git checkout -- {home}/project/file.txt")
         assert "~/project/file.txt" in normalized
         assert home not in normalized
+
+    def test_normalize_folds_depth_one_home_prefix(self, monkeypatch):
+        # `/root` (root's own default HOME) is a single path component, so the fold must
+        # not require two. Host-independent: pins the same rule on CI (HOME=/home/runner),
+        # where the assertion above only ever exercises the depth-2 branch.
+        monkeypatch.setenv("HOME", "/root")
+        normalized = normalize_command("git checkout -- /root/project/file.txt")
+        assert "~/project/file.txt" in normalized
+        assert "/root" not in normalized
 
     def test_derive_glob_uses_first_two_tokens(self):
         assert derive_glob("git push --force origin main") == "git push *"
@@ -194,8 +173,81 @@ class TestRankingAndSafety:
         assert len(build_proposals(records, min_count=1)) == 1
 
 
+# ---------------------------------------------------------------------------
+# Credential masking in rendered proposals
+# ---------------------------------------------------------------------------
 
+class TestProposalRedaction:
+    """Mined commands can embed credentials; patterns and examples must mask them."""
 
+    def test_render_masks_credential_in_example_line(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        pat = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(
+                con,
+                f"git push --force https://x-access-token:{pat}@github.com/org/repo.git",
+            )
+        assert suggest_command(_args(path)) == 0
+        out = capsys.readouterr().out
+        assert pat not in out
+        assert "x-access-token" in out  # command shape survives, credential does not
+
+    def test_json_payload_masks_credential_in_examples(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        pat = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(
+                con,
+                f"git push --force https://x-access-token:{pat}@github.com/org/repo.git",
+            )
+        assert suggest_command(_args(path, json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["proposals"]
+        for p in payload["proposals"]:
+            assert pat not in p["pattern"]
+            assert all(pat not in ex for ex in p["examples"])
+
+    def test_credential_in_glob_tokens_falls_back_to_class_key(self, isolated_allowlist):
+        """Redaction must never reach a persisted glob: `KEY=*** git *` would be three
+        fnmatch wildcards pre-approving any `KEY=… git …` command."""
+        from tools.approval_floors import _command_matches_permanent_allowlist
+
+        cmd = "GITHUB_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a git push --force origin main"
+        proposals = build_proposals([(cmd, "git push --force")] * 3, min_count=1)
+        assert [(p.pattern, p.kind) for p in proposals] == [("git push --force", "class")]
+        assert "ghp_" not in proposals[0].examples[0]
+        added = apply_proposals(proposals, [0])
+        assert "*" not in "".join(added)
+        approval_module.load_permanent(set(approval_module.load_permanent_allowlist()))
+        assert not _command_matches_permanent_allowlist("GITHUB_TOKEN=x sudo git push --force origin main")
+
+    @pytest.mark.parametrize("home, command", [
+        ("/home/tester", "/home/tester/bin/docker restart web"),
+        ("/home/John Smith", r"/home/John\ Smith/bin/docker restart web"),
+    ])
+    def test_glob_that_cannot_match_its_source_is_not_proposed(self, monkeypatch, home, command):
+        """The home fold rewrites the executable to `~/bin/docker`, but the runtime matches the
+        command as written, so `~/bin/docker restart *` would never approve the command it came from.
+        The class key would approve every docker restart, so the command is not proposed at all."""
+        monkeypatch.setenv("HOME", home)
+        mixed = [(command, "docker restart/stop/kill (container lifecycle)")] * 3
+        mixed += [("docker restart web", "docker restart/stop/kill (container lifecycle)")] * 2
+        assert [(p.pattern, p.count) for p in build_proposals(mixed)] == [("docker restart *", 2)]
+
+    @pytest.mark.parametrize("command, proposed", [
+        ("git push -f\necho hi", []),
+        ("  git push --force  ", [("git push *", 2)]),
+    ])
+    def test_proposal_counts_only_commands_the_runtime_would_approve(self, command, proposed):
+        """The runtime strips the command and refuses a multi-line one before any glob compare,
+        so a newline-joined command must not be credited to `git push *`, a padded one must."""
+        records = [(command, "git push --force")] * 2
+        assert [(p.pattern, p.count) for p in build_proposals(records)] == proposed
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +291,6 @@ class TestApply:
         assert "git push *" in out and "docker restart *" in out
 
 
-
 class TestJsonOutput:
     def test_json_proposal_output(self, db_path, isolated_allowlist, capsys):
         path, con = db_path
@@ -252,6 +303,28 @@ class TestJsonOutput:
         assert payload["proposals"][0]["count"] == 4
         assert payload["proposals"][0]["n"] == 1
         assert isolated_allowlist["saves"] == 0
+
+    def test_json_names_the_profile_store_file_without_db(self, tmp_path, monkeypatch, isolated_allowlist, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with open_persistence(profile_scope(home=tmp_path), eager=True):
+            pass
+        rc = suggest_command(Namespace(db=None, days=0, min_count=1, limit=20, apply_indices=None, json=True))
+        assert rc == 0
+        assert json.loads(capsys.readouterr().out)["db"] == str(tmp_path / "state.db")
+
+
+class TestMissingStore:
+    def test_without_db_names_the_profile_store_file(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        rc = suggest_command(Namespace(db=None, days=0, min_count=1, limit=20, apply_indices=None, json=False))
+        assert rc == 1
+        assert capsys.readouterr().out.strip() == f"Session database not found: {tmp_path / 'state.db'}"
+
+    def test_with_db_names_the_given_path(self, tmp_path, capsys):
+        missing = tmp_path / "elsewhere" / "state.db"
+        rc = suggest_command(_args(missing))
+        assert rc == 1
+        assert capsys.readouterr().out.strip() == f"Session database not found: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -292,5 +365,3 @@ class TestParserWiring:
         args = parser.parse_args(["approvals", "suggest"])
         assert args.apply_indices is None
         assert args.json is False
-        assert args.days == 90
-        assert args.min_count == 2

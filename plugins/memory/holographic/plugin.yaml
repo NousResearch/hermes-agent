@@ -1,5 +1,0 @@
-name: holographic
-version: 0.1.0
-description: "Holographic memory — local SQLite fact store with FTS5 search, trust scoring, and HRR-based compositional retrieval."
-hooks:
-  - on_session_end

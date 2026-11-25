@@ -15,7 +15,7 @@ import { $sessionListDensity } from '@/store/session-list-density'
 
 import { SidebarDateDivider } from './chrome'
 import { SidebarSessionRow } from './session-row'
-import { sessionRowEstimate } from './session-row-details'
+import { SESSION_CARD_ROW_ESTIMATE_PX, sessionRowEstimate } from './session-row-details'
 
 interface SessionRowCommonProps {
   branchStem?: string
@@ -47,7 +47,9 @@ export interface VirtualSessionListProps {
     open: (key: string) => boolean
   }
   rows: SidebarListRow[]
-  onArchiveSession: (sessionId: string) => void
+  /** `session` is the clicked row: its `archived` flag is what the menu
+   *  showed, so it decides Archive vs Unarchive. */
+  onArchiveSession: (sessionId: string, session?: SessionInfo) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
@@ -60,8 +62,8 @@ export interface VirtualSessionListProps {
 
 // Matches the card's typical rendered height (four lines when a preview
 // exists) so long card lists don't jump under the scroll thumb before
-// self-measurement catches up.
-const CARD_ROW_ESTIMATE_PX = 74
+// self-measurement catches up. Kept at/above the wrapped-title worst case —
+// see SESSION_CARD_ROW_ESTIMATE_PX (#88473).
 const DIVIDER_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 
@@ -96,7 +98,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
         return DIVIDER_ESTIMATE_PX
       }
 
-      return card ? CARD_ROW_ESTIMATE_PX : sessionRowEstimate(density)
+      return card ? SESSION_CARD_ROW_ESTIMATE_PX : sessionRowEstimate(density)
     },
     getItemKey: index => {
       const row = listRows[index]
@@ -109,9 +111,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     overscan: OVERSCAN_ROWS
   })
 
-  // Rows are measured after paint, so changing density must invalidate cached
-  // measurements from the previous mode before off-screen rows re-enter.
-  useEffect(() => virtualizer.measure(), [density, virtualizer])
+  // Rows are measured after paint, so changing density OR toggling Inbox
+  // cards must invalidate cached measurements from the previous mode before
+  // off-screen rows re-enter (#88473).
+  useEffect(() => virtualizer.measure(), [card, density, virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
@@ -163,7 +166,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       card,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
-      onArchive: () => onArchiveSession(session.id),
+      onArchive: () => onArchiveSession(session.id, session),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),

@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
+from agent.secret_scope import get_secret_str
 from hermes_cli.urllib_security import url_origin
 
 # Log-record parity with the origin module.
@@ -116,12 +117,16 @@ def _get_ollama_base_url() -> str:
 
 
 def _api_key_from_provider_config(entry: dict, *env_keys: str) -> str:
-    """``api_key`` from a provider config block, else the env var named by the first set *env_keys*."""
+    """``api_key`` from a provider config block, else the env var named by the first set *env_keys*.
+
+    The variable is read through the profile secret scope (fresh ``.env``, never another
+    profile's process env under multiplexing), like every other credential read (#67935).
+    """
     api_key = str(entry.get("api_key") or "").strip()
     if api_key:
         return api_key
     key_env = str(next((entry.get(k) for k in env_keys if entry.get(k)), "") or "").strip()
-    return os.getenv(key_env, "").strip() if key_env else ""
+    return get_secret_str(key_env, "").strip() if key_env else ""
 
 
 def _drop_authorization(headers: dict[str, str]) -> None:
@@ -152,13 +157,15 @@ def _get_ollama_native_headers(base_url: Optional[str], *, api_key: Optional[str
     *base_url* shares the configured Ollama root; an explicit *api_key* replaces any configured
     Authorization variant rather than inheriting it."""
     configured_base = _configured_ollama_base_url()
-    explicit_key = str(api_key or "").strip()
+    from agent.command_token_source import materialize_probe_api_key
+    explicit_key = materialize_probe_api_key(api_key)
     configured_matches = bool(configured_base and base_url and _same_ollama_native_root(base_url, configured_base))
     if not configured_matches and not explicit_key:
         return {}
     headers = _get_ollama_request_headers() if configured_matches else {}
-    if explicit_key:
+    if explicit_key or callable(api_key):
         _drop_authorization(headers)
+    if explicit_key:
         headers["Authorization"] = f"Bearer {explicit_key}"
     return headers
 
@@ -220,7 +227,8 @@ def probe_ollama_local_models(
     """Probe local Ollama-compatible models from native ``/api/tags`` (Ollama's authoritative local
     catalog; ``/v1/models`` is not required for local servers). ``None`` when the endpoint cannot be
     reached or returns malformed data; a list (possibly empty) when it was reachable."""
-    from hermes_cli.models import _HERMES_USER_AGENT, _get_ollama_base_url, _urlopen_model_catalog_request
+    from hermes_cli.models import _get_ollama_base_url, _urlopen_model_catalog_request
+    from hermes_cli.version_info import hermes_user_agent
     root = _root_for_ollama_native_api(base_url or _get_ollama_base_url())
     if not root:
         return None
@@ -235,7 +243,7 @@ def probe_ollama_local_models(
             return None
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
     try:
-        request_headers = {"User-Agent": _HERMES_USER_AGENT, **(headers or {})}
+        request_headers = {"User-Agent": hermes_user_agent(), **(headers or {})}
         req = urllib.request.Request(root.rstrip("/") + "/api/tags", headers=request_headers)
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             models = _parse_ollama_tags(json.loads(resp.read().decode()))
@@ -365,9 +373,10 @@ def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
 
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """HTTP headers for LM Studio native API requests."""
-    from hermes_cli.models import _HERMES_USER_AGENT
-    token = str(api_key or "").strip()
-    return {"User-Agent": _HERMES_USER_AGENT, **({"Authorization": f"Bearer {token}"} if token else {})}
+    from hermes_cli.version_info import hermes_user_agent
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
+    return {"User-Agent": hermes_user_agent(), **({"Authorization": f"Bearer {token}"} if token else {})}
 
 
 def _lmstudio_fetch_raw_models(
@@ -585,13 +594,13 @@ def ollama_model_supports_thinking(
     import httpx
 
     server_url = (base_url or "").strip().rstrip("/")
-    if server_url.endswith("/v1"):
-        server_url = server_url[:-3]
+    server_url = server_url.removesuffix("/v1")
     bare_model = _strip_ollama_cloud_suffix((model or "").strip())
     if not server_url or not bare_model:
         return None
 
-    token = str(api_key or "").strip()
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
     try:
         with httpx.Client(timeout=timeout, headers={"Authorization": f"Bearer {token}"} if token else {}) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
@@ -653,10 +662,12 @@ def fetch_ollama_cloud_models(
     base_url: Optional[str] = None,
     *,
     force_refresh: bool = False,
+    cache_only: bool = False,
 ) -> list[str]:
     """Ollama Cloud models: fresh disk cache (< 1h, unless force_refresh) → live ``/v1/models``
-    (freshest) merged with models.dev additions (deduped, live first) → stale cache → ``[]``.
-    Never None."""
+    (freshest) merged with models.dev additions (deduped, live first) → stale cache → models.dev
+    only → ``[]``. ``cache_only`` (GUI read path) never runs the 8s network probe and never writes
+    the disk cache. Never None."""
     from hermes_cli.models import fetch_api_models
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
@@ -665,7 +676,9 @@ def fetch_ollama_cloud_models(
 
     api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
     base_url = base_url or os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
-    live_models = (fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else []
+    # cache_only (GUI read path): skip only the network probe. The models.dev additions are a local
+    # cache read, so the row still populates with what is known; the live catalog lands next open.
+    live_models = [] if cache_only else ((fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else [])
     mdev_models: list[str] = []
     try:
         from agent.models_dev import list_agentic_models
@@ -677,9 +690,12 @@ def fetch_ollama_cloud_models(
     for m in [*live_models, *(_strip_ollama_cloud_suffix(m) for m in mdev_models)]:
         if m and m not in merged:
             merged.append(m)
-    if merged:
+    if live_models:
+        # Persist only a result that included the live catalog: writing the models.dev-only list here
+        # (cache_only, or a failed probe) would stamp it fresh, drop the live-only ids, and make the
+        # next non-cache_only call serve that trimmed list for an hour instead of probing.
         _save_ollama_cloud_cache(merged)
         return merged
 
     stale = _load_ollama_cloud_cache(ignore_ttl=True)
-    return stale["models"] if stale is not None else []
+    return stale["models"] if stale is not None else merged

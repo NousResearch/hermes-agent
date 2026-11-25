@@ -71,9 +71,11 @@ def _run_keygen(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
 
 
+@pytest.mark.platforms("linux")
 def test_keygen_creates_env_when_missing(stage2_text: str, tmp_path: Path) -> None:
     """No .env at all (failed/absent first-boot seed) must still yield a key."""
     home = tmp_path / "home"
@@ -116,6 +118,7 @@ def test_keygen_never_overwrites_operator_key(
     assert content == "API_SERVER_KEY=operator-provided-key-123\n"
 
 
+@pytest.mark.require_symlinks
 def test_keygen_refuses_symlinked_env(stage2_text: str, tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -191,13 +194,15 @@ def test_keygen_env_key_drops_stale_empty_assignment(
 def _sed_is_gnu() -> bool:
     try:
         probe = subprocess.run(
-            ["sed", "--version"], capture_output=True, text=True, timeout=10
+            ["sed", "--version"], capture_output=True, text=True, timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
     return probe.returncode == 0 and "GNU sed" in probe.stdout
 
 
+@pytest.mark.platforms("linux")
 def test_keygen_readonly_env_degrades_to_warning_not_boot_abort(
     stage2_text: str, tmp_path: Path
 ) -> None:

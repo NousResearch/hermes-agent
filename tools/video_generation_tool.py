@@ -24,7 +24,7 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 
-VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
+VIDEO_GENERATE_SCHEMA: dict[str, Any] = {
     "name": "video_generate",
     # Placeholder: description AND params are rebuilt at get_tool_definitions() time by
     # _build_dynamic_video_schema() from capabilities() + the model's catalog entry. Optional
@@ -59,14 +59,8 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                 "description": "Output resolution.",
                 "default": DEFAULT_RESOLUTION,
             },
-            "model": {
-                "type": "string",
-                "description": (
-                    "Optional model override; defaults to the configured "
-                    "``video_gen.model``. Unknown models are rejected."
-                ),
-            },
-            # Capability-gated args are added by _build_dynamic_video_schema; never statically.
+            # No ``model`` here: the backend/model is user configuration (``video_gen.model``), never an
+            # agent choice (#83080 ruling). Capability-gated args are added by _build_dynamic_video_schema; never statically.
         },
         # NOTE (schema diet, #95681): image_url / reference_image_urls / negative_prompt / audio / seed /
         # upscale are added per-capability by _build_dynamic_video_schema.
@@ -104,11 +98,8 @@ def _discovered_registry():
 
 def check_video_generation_requirements() -> bool:
     """True when at least one registered provider reports available."""
-    try:
-        registry_mod, _ = _discovered_registry()
-        return any(_provider_call(p, "is_available", False) for p in registry_mod.list_providers())
-    except Exception:
-        return False
+    registry_mod, _ = _discovered_registry()
+    return any(_provider_call(p, "is_available", False) for p in registry_mod.list_providers())
 
 
 def _resolve_active_provider():
@@ -134,7 +125,7 @@ def _missing_provider_error(configured: Optional[str]) -> str:
             error_type="provider_not_registered", provider=configured))
     return json.dumps(error_response(
         error=("No video generation backend is configured. Run `hermes tools` → "
-               "Video Generation to enable one (xAI, FAL, or Google Veo)."),
+               "Video Generation to enable one (xAI, FAL, OpenRouter, or DeepInfra)."),
         error_type="no_provider_configured"))
 
 
@@ -155,7 +146,7 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return _BOOL_WORDS.get(value.strip().lower()) if isinstance(value, str) else None
 
 
-def _normalize_reference_images(value: Any) -> Optional[List[str]]:
+def _normalize_reference_images(value: Any) -> Optional[list[str]]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, (list, tuple)):
@@ -163,7 +154,7 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()] or None
 
 
-def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
+def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
@@ -175,6 +166,22 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         image_url, reference_image_urls, task_id)
     if confine_error is not None:
         return confine_error
+    # No video API reads our disk, so local paths become data: URLs (guarded read) for every
+    # backend; only a provider declaring an inline body budget gets its sources downscaled.
+    sources = ([image_url] if image_url else []) + (reference_image_urls or [])
+    provider = _resolve_active_provider()
+    if sources:
+        from tools.image_generation_tool import _fit_inline_budget, _inline_local_sources
+        try:
+            inlined = _inline_local_sources(sources)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        budget = _provider_call(provider, "capabilities", {}).get("max_inline_image_chars")
+        if budget:
+            inlined = _fit_inline_budget(inlined, int(budget))
+        if image_url:
+            image_url, inlined = inlined[0], inlined[1:]
+        reference_image_urls = inlined or None
     # Coerced BEFORE validation (ordering parity: a bad value raises before a missing prompt).
     optional = {
         "duration": _coerce_int(args.get("duration")),
@@ -184,7 +191,6 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "audio": _coerce_bool(args.get("audio")),
         "seed": _coerce_int(args.get("seed")),
         "upscale": _coerce_bool(args.get("upscale"))}
-    model_override = (args.get("model") or "").strip() or None
 
     # Soft validation — providers do their own; our surface never accepts image-only.
     if not prompt:
@@ -194,15 +200,13 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             "video_generate only supports text-to-video, image-to-video, and "
             "reference-to-video; use a provider-specific tool for video edit/extend")
     configured = _read_configured_video_provider()
-    provider = _resolve_active_provider()
     if provider is None:
         return _missing_provider_error(configured)
 
-    # Explicit arg wins, then config, then provider default.
-    model = model_override or _read_configured_video_model() or provider.default_model()
-    kwargs: Dict[str, Any] = {
-        "model": model, "_model_override_explicit": bool(model_override),
-        "image_url": image_url, "reference_image_urls": reference_image_urls, **optional}
+    # Config, then provider default; a ``model`` in args is ignored (models do not choose models).
+    model = _read_configured_video_model() or provider.default_model()
+    kwargs: dict[str, Any] = {
+        "model": model, "image_url": image_url, "reference_image_urls": reference_image_urls, **optional}
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     pname = getattr(provider, "name", "?")
@@ -255,8 +259,7 @@ _CAPABILITY_PARAMS = (
 )
 
 _GENERIC_DESCRIPTION = (
-    "Generate a video from a text prompt (text-to-video), animate a "
-    "still image (image-to-video), or guide generation with reference images. "
+    "Generate video from text, a still image or reference images (configured model). "
     "Pass `image_url` to animate an image or `reference_image_urls` for "
     "reference-to-video. Video edit/extend workflows are not part of this "
     "unified surface; use a dedicated provider-specific tool when one is "
@@ -264,14 +267,12 @@ _GENERIC_DESCRIPTION = (
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "
     "the call blocks until the video is ready. Returns the result in the "
-    "`video` field — either an HTTP URL or an absolute file path. To show "
-    "it to the user, reference that path/URL in your response using the "
-    "file-delivery convention for the current platform (your platform "
-    "guidance describes how files are delivered here)."
+    "`video` field — either an HTTP URL or an absolute file path; reference "
+    "it in your response using the current platform's file-delivery convention."
 )
 
 
-def _schema(description: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+def _schema(description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "description": description,
         "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
@@ -285,11 +286,11 @@ def _provider_call(provider: Any, method: str, default: Any) -> Any:
         return default
 
 
-def _build_dynamic_video_schema() -> Dict[str, Any]:
+def _build_dynamic_video_schema() -> dict[str, Any]:
     """Description AND params from capabilities() + the model's catalog entry; enums and duration
     bounds tighten to the active model. Unadvertised args are still accepted (replay compat)."""
     static_props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-    parts: List[str] = [_GENERIC_DESCRIPTION]
+    parts: list[str] = [_GENERIC_DESCRIPTION]
     configured_model = _read_configured_video_model()
     provider = _resolve_active_provider()
     if provider is None:
@@ -334,13 +335,13 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             notice = ""
         if notice:
             parts.append(f"- storage: {notice}")
-    properties: Dict[str, Any] = {"prompt": static_props["prompt"]}
+    properties: dict[str, Any] = {"prompt": static_props["prompt"]}
     if can_i2v:
         properties["image_url"] = {
             "type": "string",
             "description": (
-                "Public HTTPS URL of a still image to animate "
-                "(image-to-video). Omit for text-to-video.")}
+                "Still image to animate (image-to-video): a public HTTPS URL "
+                "or a local file path. Omit for text-to-video.")}
         max_refs = int(caps.get("max_reference_images") or 0)
         if max_refs > 0:
             properties["reference_image_urls"] = {
@@ -348,8 +349,8 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
                 "items": {"type": "string"},
                 "maxItems": max_refs,
                 "description": (
-                    f"Up to {max_refs} public HTTPS reference image URLs "
-                    "(style or character refs).")}
+                    f"Up to {max_refs} reference images, as public HTTPS URLs "
+                    "or local file paths (style or character refs).")}
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))
     duration_param = dict(static_props["duration"])
@@ -375,7 +376,6 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             "- audio: native stereo audio is generated with every video "
             "(always on; no toggle) — describe the desired sound in the "
             "prompt")
-    properties["model"] = static_props["model"]
     return _schema("\n".join(parts), properties)
 
 
@@ -388,4 +388,8 @@ registry.register(
     requires_env=[],
     is_async=False,
     emoji="🎬",
-    dynamic_schema_overrides=_build_dynamic_video_schema)
+    dynamic_schema_overrides=_build_dynamic_video_schema,
+    # ``operation``/``video_url`` are refused by the handler (edit/extend unsupported); the
+    # rest are advertised only for backends that support them.
+    compat_args=("operation", "video_url", "image_url", "reference_image_urls", "negative_prompt",
+                 "audio", "seed", "upscale"))

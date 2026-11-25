@@ -4,10 +4,28 @@ import { setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
 import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
 import { $sessions } from '@/store/session'
-import { $attentionSessionIds } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 import type { GatewayRequester } from '../types'
+
+/**
+ * Mirror "any open session is running the agent" into the pet's `busy` flag.
+ *
+ * `toolRunning` / `reasoning` are set only inside the per-session message-stream
+ * hook (`use-message-stream/gateway-event.ts`), which is mounted for the
+ * foreground session alone — so a background session running tools left the pet
+ * stuck in `idle` (#84282). `$workingSessionIds` is a store-level computed over
+ * every session's authoritative `busy` state (the same cross-session source
+ * `$attentionSessionIds` provides for the `waiting` pose), so it stays live
+ * regardless of which session is rendered. `derivePetState` maps `busy` to the
+ * `run` pose, so any working session — foreground or background — now animates
+ * the pet, while the foreground stream's finer `toolRunning` / `reasoning`
+ * signals still refine run-vs-review for the visible session.
+ */
+export function syncPetBusyFromSessions(): void {
+  setPetActivity({ busy: $workingSessionIds.get().length > 0 })
+}
 
 interface PetBridgeParams {
   requestGateway: GatewayRequester
@@ -64,5 +82,13 @@ export function usePetBridge({ requestGateway, resumeSession, submitText }: PetB
     sync()
 
     return $attentionSessionIds.listen(sync)
+  }, [])
+
+  // Mirror "any session is running the agent" into the pet's busy flag so the
+  // pet reacts to background sessions too, not just the foreground one (#84282).
+  useEffect(() => {
+    syncPetBusyFromSessions()
+
+    return $workingSessionIds.listen(syncPetBusyFromSessions)
   }, [])
 }

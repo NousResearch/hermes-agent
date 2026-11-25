@@ -1,31 +1,30 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import logging
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from pathlib import Path
 
 import pytest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
-    MessageEvent,
     SendResult,
-    cache_audio_from_bytes,
     cache_image_from_bytes,
-    cache_video_from_bytes,
-    safe_url_for_log,
     utf16_len,
-    validate_inbound_media_size,
-    _log_safe_path,
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.event import MessageEvent
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     """Encrypted Bitwarden cache is covered by the media credential guard."""
-    import gateway.platforms.base as base
+    from gateway.platforms import base
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -44,24 +43,14 @@ class TestInboundMediaSizeCap:
 
     _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
 
-    def test_default_cap_is_128_mib(self, monkeypatch):
-        # No config override -> default. Patch loader to return empty config.
-        import gateway.platforms.base as base
-        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: base.DEFAULT_INBOUND_MEDIA_MAX_BYTES)
-        assert base.DEFAULT_INBOUND_MEDIA_MAX_BYTES == 128 * 1024 * 1024
 
     def test_image_bytes_rejected_when_oversized(self, monkeypatch):
-        import gateway.platforms.base as base
+        from gateway.platforms import base
         monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
         with pytest.raises(ValueError, match="Inbound image payload is too large"):
             cache_image_from_bytes(self._PNG, ext=".png")
 
 
-class TestSecretCaptureGuidance:
-    def test_gateway_secret_capture_message_points_to_local_setup(self):
-        message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
-        assert "local cli" in message.lower()
-        assert "~/.hermes/.env" in message
 
 
 class TestSafeUrlForLog:
@@ -98,6 +87,35 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="/new")
         assert event.is_command() is True
 
+    def test_slash_command_with_image_ref_prefix(self):
+        """Desktop buildContextText prepends @image: refs before the visible text.
+        is_command() must still detect the slash command after the ref."""
+        event = MessageEvent(text="@image:/tmp/screenshot.png\n\n/moa what is this?")
+        assert event.is_command() is True
+
+    def test_slash_command_with_image_ref_spaces_in_path(self):
+        """Image refs with Windows spaces (e.g. C:\\Users\\John Doe\\img.png) must be correctly stripped."""
+        event = MessageEvent(text="@image:C:\\Users\\John Doe\\My Pictures\\photo.png\n\n/moa what is this?")
+        assert event.is_command() is True
+
+    def test_slash_command_with_file_ref_prefix(self):
+        event = MessageEvent(text="@file:/tmp/report.pdf\n\n/compress")
+        assert event.is_command() is True
+
+    def test_slash_command_with_url_ref_prefix(self):
+        event = MessageEvent(text="@url:https://example.com\n\n/status")
+        assert event.is_command() is True
+
+    def test_slash_command_with_at_in_ref_path(self):
+        """Ref path containing @ (legal on Windows, e.g. john@doe) must be fully stripped."""
+        event = MessageEvent(text="@image:C:\\Users\\john@doe\\photo.png\n\n/moa hi")
+        assert event.is_command() is True
+
+    def test_non_command_with_image_ref(self):
+        """A regular message (no slash command) with an image ref must NOT be detected as a command."""
+        event = MessageEvent(text="@image:/tmp/foo.png\n\nwhat is this?")
+        assert event.is_command() is False
+
 
 class TestMessageEventGetCommand:
     def test_simple_command(self):
@@ -112,11 +130,21 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="hello")
         assert event.get_command() is None
 
+    def test_get_command_with_image_ref_prefix(self):
+        """get_command() must parse the command name even when prefixed with a Desktop media ref."""
+        event = MessageEvent(text="@image:/tmp/foo.png\n\n/moa something interesting")
+        assert event.get_command() == "moa"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
         event = MessageEvent(text="/new session id 123")
         assert event.get_command_args() == "session id 123"
+
+    def test_command_args_preserve_url_ref_in_args(self):
+        """@url: tokens in the middle of command args must NOT be stripped."""
+        event = MessageEvent(text="/status check @url:https://example.com")
+        assert event.get_command_args() == "check @url:https://example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +219,7 @@ class TestExtractMedia:
 
     def test_single_media_tag(self):
         content = "MEDIA:/path/to/audio.ogg"
-        media, cleaned = BasePlatformAdapter.extract_media(content)
+        media, _cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
         assert media[0][0] == "/path/to/audio.ogg"
         assert media[0][1] is False  # no voice tag
@@ -379,9 +407,6 @@ class TestMediaExtensionAllowlistParity:
     MEDIA_DELIVERY_EXTS source of truth, and the strip is anchored to that set.
     """
 
-    DROPPED_BEFORE = ["md", "json", "yaml", "yml", "xml", "html", "htm",
-                      "tsv", "svg"]
-
 
     def test_unknown_extension_not_black_holed_by_cleanup(self):
         """A MEDIA: tag with an unknown extension is NOT stripped from the
@@ -467,6 +492,16 @@ class TestUniversalMediaEgress:
         content = "MEDIA:/nonexistent/report.pdf"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/nonexistent/report.pdf", False)]
+        assert "MEDIA:" not in cleaned
+
+    def test_spaced_known_extension_is_one_attachment(self, tmp_path):
+        """A known-extension path with a space is one file, even when resolving
+        it yields a different string (symlink prefix, or Windows separators)."""
+        report = tmp_path / "my report 2026.pdf"
+        report.write_bytes(b"%PDF")
+        media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{report}")
+        assert len(media) == 1
+        assert os.path.realpath(media[0][0]) == os.path.realpath(report)
         assert "MEDIA:" not in cleaned
 
 
@@ -561,6 +596,8 @@ class TestMediaDeliveryPathValidation:
         secret = ssh_dir / "id_rsa.txt"
         secret.write_bytes(b"-----BEGIN ...")  # mtime = now
         monkeypatch.setenv("HOME", str(fake_home))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -635,6 +672,23 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
+    @pytest.mark.parametrize("rel", ["webapp/session-token", "webapp/native-sign-in-tokens.json"])
+    def test_denylist_blocks_the_webapps_sign_in_files(self, tmp_path, monkeypatch, rel):
+        """The Webapp's browser credential and its listener's grants to native apps under
+        ``~/.hermes/webapp/`` never deliver as native media, as the agent's file tools never read them."""
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        (hermes_dir / "webapp").mkdir(parents=True)
+        secret = hermes_dir / rel
+        secret.write_text("t" * 43 + "\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
 
     def test_denylist_blocks_google_token_default_mode(self, tmp_path, monkeypatch):
         """Integration credentials at the HERMES_HOME root (google_token.json)
@@ -655,6 +709,10 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+        client_secret = hermes_dir / "google_client_secret.json"  # the skill's other credential (#149056)
+        client_secret.write_text('{"installed": {"client_secret": "***"}}')
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")  # fresh mtime must not make it deliverable
+        assert BasePlatformAdapter.validate_media_delivery_path(str(client_secret)) is None
 
 
     def test_denylist_blocks_non_cache_file_under_hermes_home(self, tmp_path, monkeypatch):
@@ -706,6 +764,37 @@ class TestMediaDeliveryDefaultMode:
         assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
         assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
 
+    def test_denylist_covers_every_profile_home_not_just_the_launch_home(self, tmp_path, monkeypatch):
+        """Multiplex: one process serves every ``<root>/profiles/*``. The credential denylist must
+        cover each profile's ``.env`` / ``auth.json`` / ``state.db`` / transcripts whether the emitting
+        turn is the launch (default) profile's or the secondary's own (HERMES_HOME override), while
+        the profile's cache artifacts and plain agent-written files stay deliverable."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        self._patch_roots(monkeypatch)
+        fake_home = tmp_path / "home"
+        hermes_root = fake_home / ".hermes"
+        profile_b = hermes_root / "profiles" / "beta"
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
+
+        denied = [".env", "auth.json", "state.db", "state.db-wal", "config.yaml",
+                  "sessions/20260101_abc.json", "mcp-tokens/server.json"]
+        allowed = ["cache/images/gen.png", "report.pdf"]
+        for rel in denied + allowed:
+            path = profile_b / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SECRET=1\n")
+
+        for scope in (None, profile_b):  # default profile's turn, then beta's own turn
+            token = set_hermes_home_override(scope)
+            try:
+                assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(profile_b / rel))] == []
+                assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(profile_b / rel))] == []
+            finally:
+                reset_hermes_home_override(token)
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is
@@ -737,6 +826,8 @@ class TestMediaDeliveryDefaultMode:
         doc = workdir / "proposal.docx"
         doc.write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("HOME", str(fake_home))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
@@ -786,6 +877,7 @@ class TestMediaDeliveryDefaultMode:
         )
 
 
+    @pytest.mark.require_symlinks
     def test_root_home_workdir_symlink_to_credential_blocked(self, tmp_path, monkeypatch):
         """A symlink in the workdir pointing at a credential is rejected on its
         resolved target, even under the $HOME exception.
@@ -810,6 +902,35 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
 
+def test_windows_drive_letter_host_mount_parses(monkeypatch):
+    """``C:/data:/workspace`` splits on the container colon, not the drive, and keeps the
+    POSIX container root on every gateway (``Path("/workspace").is_absolute()`` is False on
+    Windows; the Windows lanes run the marked twin below)."""
+    import json
+
+    from gateway.platforms import base
+
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/data:/workspace:ro"]))
+    monkeypatch.setattr(base, "_resolve_path", lambda p, **_k: p)
+
+    assert base._parse_docker_volume_mounts() == [(Path("C:/data"), Path("/workspace"))]
+
+
+@pytest.mark.platforms("windows")
+def test_windows_drive_letter_host_mount_parses_on_windows(monkeypatch):
+    """Windows-lane twin of the parse test: there ``Path("/workspace").is_absolute()`` is
+    False, which is the case the fix is for (the lanes only run ``-m platforms``)."""
+    import json
+
+    from gateway.platforms import base
+
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/data:/workspace:ro"]))
+    monkeypatch.setattr(base, "_resolve_path", lambda p, **_k: p)
+
+    assert base._parse_docker_volume_mounts() == [(Path("C:/data"), Path("/workspace"))]
+
+
+@pytest.mark.platforms("linux")
 class TestDockerContainerMediaPathTranslation:
     """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
 
@@ -1122,6 +1243,110 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    def test_split_retreats_before_a_markdown_link(self):
+        # A natural-space split can land inside a link's label
+        # ("…[Mission Control issue|7](…)"), stranding half a link per chunk
+        # (#125885). The split must retreat to before the "[" so one chunk
+        # carries the whole link.
+        adapter = self._adapter()
+        link = "[Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)"
+        prose = "w " * 2024  # 4048 chars: the 4096-10-4 budget lands inside the link
+        chunks = adapter.truncate_message(prose + link, max_length=4096)
+        assert len(chunks) > 1
+        assert any(link in chunk for chunk in chunks), chunks
+        assert all(len(chunk) <= 4096 for chunk in chunks)
+
+    def test_split_treats_escaped_brackets_as_plain_text(self):
+        # MarkdownV2 formatters escape literal brackets, so "\[…\]" is plain text:
+        # an escape must not read as an unclosed link and push the split backwards.
+        adapter = self._adapter()
+        content = "w " * 2035 + r"\[not a link really\] tail text"
+        chunks = adapter.truncate_message(content, max_length=4096)
+        assert len(chunks) == 2
+        assert chunks[0].startswith("w ")  # not retreated to the text start
+        assert all(len(chunk) <= 4096 for chunk in chunks)
+
+    def test_pipe_table_kept_intact_when_split_lands_mid_table(self):
+        """A split that lands BETWEEN data rows must move the whole table
+        (header + separator + all rows) into the next chunk instead of
+        cutting it in half.
+
+        Regression: the 4.0 factor-attribution table in the pre-market
+        briefing (8 rows x 5 cols) was split mid-table — chunk 1 ended on a
+        truncated data row, chunk 2 started with an orphaned row — and
+        neither half rendered as a table in Feishu.
+        """
+        adapter = self._adapter()
+        rows = [
+            "| **反转因子** | 上证5日-0.1% | 中性 | ★★ | 驱动证据文本 |",
+            "| **情绪因子** | 涨跌比3.02 | 过热回落中 | ★★★★ | 驱动证据文本 |",
+            "| **资金流因子** | 全市场净流出-95亿 | 离场 | ★★★★ | 驱动证据文本 |",
+            "| **波动率因子** | 21.09% | 正常偏高 | ★★★ | 驱动证据文本 |",
+            "| **动量因子** | 20日-4.53% | 中性偏弱 | ★★ | 驱动证据文本 |",
+            "| **价值因子** | PE中位数39.8 | 估值偏高 | ★★★ | 驱动证据文本 |",
+            "| **流动性因子** | 量比0.91 | 缩量 | ★★★ | 驱动证据文本 |",
+            "| **板块因子** | 分化度7.69 | 结构性行情 | ★★★★ | 驱动证据文本 |",
+        ]
+        table = (
+            "### 4.0 因子归因\n\n"
+            "| 因子 | 量化值 | 方向 | 强度 | 驱动证据 |\n"
+            "|:----|:-------|:----|:----:|:--------- |\n"
+            + "\n".join(rows)
+            + "\n"
+        )
+        content = (
+            "盘前摘要。\n" * 50
+            + table
+            + "\n\n### 4.1 对账\n\n"
+            + "对账文本。\n" * 50
+        )
+
+        # Sweep max_length so several split points land inside the table.
+        # For every split, the whole table must end up in exactly one chunk.
+        # (max_length must exceed the table's own length — a table bigger
+        # than the chunk budget physically cannot be kept together, same
+        # as any other content.)
+        protected = 0
+        for max_length in range(500, 1000, 25):
+            chunks = adapter.truncate_message(content, max_length=max_length)
+            if len(chunks) < 2:
+                continue
+            table_chunks = [
+                i for i, c in enumerate(chunks) if "| 因子 | 量化值" in c
+            ]
+            assert len(table_chunks) == 1, (
+                f"table header split across chunks at max_length={max_length}"
+            )
+            joined = chunks[table_chunks[0]]
+            for row in rows:
+                assert row in joined, (
+                    f"row {row[:20]!r} separated from header "
+                    f"at max_length={max_length}"
+                )
+            protected += 1
+        assert protected >= 3, "sweep never produced a multi-chunk split"
+
+    def test_pipe_table_kept_intact_when_split_lands_after_separator(self):
+        """A split right after the separator line (header+separator in the
+        current chunk, data rows orphaned in the next) also keeps the whole
+        table together in the next chunk."""
+        adapter = self._adapter()
+        table = (
+            "| 名称 | 数值 |\n"
+            "|:----|:----:|\n"
+            "| A | 1 |\n"
+            "| B | 2 |\n"
+        )
+        content = "说明文字。\n" * 40 + table + "\n" + "后续内容。\n" * 40
+        chunks = adapter.truncate_message(content, max_length=300)
+        assert len(chunks) >= 2
+        owners = set()
+        for ci, c in enumerate(chunks):
+            for marker in ("| 名称 | 数值 |", "| A | 1 |", "| B | 2 |"):
+                if marker in c:
+                    owners.add(ci)
+        assert len(owners) == 1, f"table split across chunks: owners={owners}"
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay
@@ -1129,29 +1354,42 @@ class TestTruncateMessage:
 
 
 class TestGetHumanDelay:
+    """``human_delay`` is per-profile config (#116895): the adapter only consumes the range the
+    runner installed; the bounds are validated in ``GatewayRunner._human_delay_from_config``."""
 
+    @staticmethod
+    def _adapter_with(range_ms):
+        adapter = SimpleNamespace(_human_delay_range_ms=range_ms)
+        adapter._get_human_delay = lambda: BasePlatformAdapter._get_human_delay(adapter)
+        return adapter
 
-    def test_natural_mode_ignores_malformed_custom_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "natural",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
+    def test_off_and_installed_range_never_touch_process_env(self):
+        env = {"HERMES_HUMAN_DELAY_MODE": "custom", "HERMES_HUMAN_DELAY_MIN_MS": "10",
+               "HERMES_HUMAN_DELAY_MAX_MS": "20"}
+        with patch.dict(os.environ, env), patch(
+            "gateway.platforms.base.random.uniform", return_value=1.5
+        ) as uniform:
+            assert self._adapter_with(None)._get_human_delay() == 0.0
+            uniform.assert_not_called()
+            assert self._adapter_with((1000, 2000))._get_human_delay() == 1.5
+            uniform.assert_called_once_with(1.0, 2.0)
 
-
-    def test_custom_mode_tolerates_malformed_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "custom",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            # falls back to the custom-mode defaults instead of crashing
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
+    @pytest.mark.parametrize("cfg, expected, warned_key", [
+        ({"human_delay": {"mode": "off", "min_ms": -5}}, None, None),
+        ({"human_delay": {"mode": "natural", "min_ms": "oops", "max_ms": "bad"}}, (800, 2500), None),
+        ({"human_delay": {"mode": "custom", "min_ms": 1000, "max_ms": 2000}}, (1000, 2000), None),
+        ({"human_delay": {"mode": "custom", "min_ms": "oops", "max_ms": 1000}}, (800, 1000), "human_delay.min_ms"),
+        ({"human_delay": {"mode": "custom", "min_ms": -1, "max_ms": 1000}}, (800, 1000), "human_delay.min_ms"),
+        ({"human_delay": {"mode": "custom", "min_ms": 3000, "max_ms": 1000}}, (800, 2500), "human_delay.max_ms=1000"),
+    ])
+    def test_config_bounds_are_validated_with_a_warning_naming_the_key(self, cfg, expected, warned_key, caplog):
+        from gateway.run import GatewayRunner
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            assert GatewayRunner._human_delay_from_config(cfg) == expected
+        if warned_key is None:
+            assert "human_delay" not in caplog.text
+        else:
+            assert warned_key in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -1217,6 +1455,37 @@ class TestTruncateMessageUtf16:
             assert utf16_len(chunk) <= 4096, (
                 f"Chunk {i} exceeds 4096 UTF-16 units: {utf16_len(chunk)}"
             )
+
+    def test_link_guard_retreat_keeps_backtick_parity(self):
+        # The link guard's retreat can cross the closing backtick of a code span
+        # sitting right before the "[", re-exposing the parity hazard the backtick
+        # guard had already cleared on the longer candidate — both chunks then
+        # carry an unpaired backtick. The guards must settle together so every
+        # chunk stays balanced (AI review fuzz: 207 head-only unpaired cases).
+        import re
+
+        link = "[Mission Control `issue 7](https://example.invalid/i/7)"
+        head = "This synthetic statement is supported by a retained source\\. `code `"
+        content = head * 54 + link + " `tail"
+        chunks = BasePlatformAdapter.truncate_message(content, 3713, len_fn=utf16_len)
+        assert len(chunks) > 1, chunks
+        for i, chunk in enumerate(chunks):
+            body = re.sub(r"\s*\(\d+/\d+\)$", "", chunk)
+            backticks = body.count("`") - body.count("\\`")
+            assert backticks % 2 == 0, f"chunk {i + 1} carries an unpaired backtick: {body[:40]!r}"
+            assert utf16_len(chunk) <= 3713
+
+    def test_utf16_split_keeps_a_formatted_telegram_link_whole(self):
+        # Telegram MarkdownV2 output: prose dots escaped ("source\."), brackets in
+        # the link left raw. The 4096-10-4 UTF-16 budget lands inside the label and
+        # the natural-space split picks a space INSIDE the label (#125885) — the
+        # split must retreat so one chunk carries the complete link.
+        link = "[Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)"
+        content = "This synthetic statement is supported by a retained source\\. " * 66 + link
+        chunks = BasePlatformAdapter.truncate_message(content, 4096, len_fn=utf16_len)
+        assert len(chunks) > 1
+        assert any(link in chunk for chunk in chunks), chunks
+        assert all(utf16_len(chunk) <= 4096 for chunk in chunks)
 
 
 class TestProxyKwargsForAiohttp:
@@ -1356,6 +1625,7 @@ class TestMediaFallbackDoesNotLeakHostPath:
         assert self.SENSITIVE_PATH not in sent_text
 
 
+@pytest.mark.platforms("linux")
 class TestDockerProfileSandboxMediaTranslation:
     """MEDIA from persistent Docker sandboxes must resolve to the host
     directory the profile's container actually bind-mounts (#93950).

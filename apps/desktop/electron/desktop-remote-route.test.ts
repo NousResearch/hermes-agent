@@ -4,7 +4,7 @@ import { test } from 'vitest'
 
 import { normalizeRegistry, REGISTRY_VERSION } from './connection-registry'
 import { backendScopeKey } from './connection-registry'
-import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
+import { registryPrimaryBootRoute, resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 
 const tokenA = { encoding: 'plain', value: 'token-a' }
 const tokenB = { encoding: 'plain', value: 'token-b' }
@@ -432,4 +432,32 @@ test('the v1 global remote still outranks the registry primary', () => {
 
   assert.equal(route?.source, 'settings')
   assert.equal((route as any)?.url, 'https://global.test')
+})
+
+test('launchMode=primary selects the registry SSH primary and ignores a local v1 mode', () => {
+  const route = registryPrimaryBootRoute(
+    registry('spark', [
+      { id: 'spark', kind: 'ssh', label: 'Spark', host: 'spark1', user: 'tek', port: 2222, token: tokenA }
+    ])
+  )
+
+  assert.equal(route?.kind, 'ssh')
+  assert.equal(route?.source, 'registry')
+  assert.equal(route?.connectionId, 'spark')
+})
+
+test('launchMode=last-used does not force the registry primary before a local spawn', () => {
+  const route = registryPrimaryBootRoute(
+    normalizeRegistry({
+      version: REGISTRY_VERSION,
+      primary: 'spark',
+      launchMode: 'last-used',
+      connections: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'spark', kind: 'ssh', label: 'Spark', host: 'spark1', user: 'tek', port: 2222, token: tokenA }
+      ]
+    })
+  )
+
+  assert.equal(route, null)
 })

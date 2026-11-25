@@ -115,7 +115,7 @@ def create_swarm(
     synthesizer_title: str = "Synthesize swarm outputs",
     tenant: Optional[str] = None,
     created_by: str = "swarm-orchestrator",
-    workspace_kind: str = "scratch",
+    workspace_kind: Optional[str] = None,
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
@@ -166,7 +166,7 @@ def _create_swarm_uncommitted(
     conn: sqlite3.Connection, *, goal: str, workers: Iterable[SwarmWorkerSpec],
     verifier_assignee: str, synthesizer_assignee: str, root_title: Optional[str],
     verifier_title: str, synthesizer_title: str, tenant: Optional[str], created_by: str,
-    workspace_kind: str, workspace_path: Optional[str], priority: int, idempotency_key: Optional[str],
+    workspace_kind: Optional[str], workspace_path: Optional[str], priority: int, idempotency_key: Optional[str],
 ) -> SwarmCreated:
     """Create the swarm graph inside the caller's transaction: planning root
     (``blocked`` until the caller activates it), parallel workers, a verifier

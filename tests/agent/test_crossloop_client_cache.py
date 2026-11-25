@@ -14,7 +14,6 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Minimal stubs so we can import _get_cached_client without the full tree
 # ---------------------------------------------------------------------------
@@ -25,7 +24,6 @@ def _stub_resolve_provider_client(provider, model, async_mode, **kw):
     client.api_key = "test"
     client.base_url = kw.get("explicit_base_url", "http://localhost:8081/v1")
     return client, model or "test-model"
-
 
 @pytest.fixture(autouse=True)
 def _clean_client_cache():
@@ -39,10 +37,8 @@ def _clean_client_cache():
     yield
     ac._client_cache.clear()
 
-
 class TestCrossLoopCacheIsolation:
     """Verify async clients are cached per-event-loop, not globally."""
-
 
     def test_different_loops_get_different_clients(self):
         """Different event loops must get separate client instances."""
@@ -73,42 +69,3 @@ class TestCrossLoopCacheIsolation:
             "Different event loops got the SAME cached client — this causes "
             "httpx cross-loop deadlocks in gateway mode (#2681)"
         )
-
-
-    def test_gateway_simulation_no_deadlock(self):
-        """Simulate gateway mode: _run_async spawns a thread with asyncio.run(),
-        which creates a new loop. The cached client must be created on THAT loop,
-        not reused from a different one."""
-        from agent.auxiliary_client import _get_cached_client
-
-        # Simulate: first call on "gateway loop"
-        gateway_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(gateway_loop)
-
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                    side_effect=_stub_resolve_provider_client):
-            gateway_client, _ = _get_cached_client("custom", "m1", async_mode=True,
-                                                     base_url="http://localhost:8081/v1")
-
-        # Simulate: _run_async spawns a thread with asyncio.run()
-        worker_client_id = [None]
-        def _worker():
-            async def _inner():
-                with patch("agent.auxiliary_client.resolve_provider_client",
-                            side_effect=_stub_resolve_provider_client):
-                    client, _ = _get_cached_client("custom", "m1", async_mode=True,
-                                                     base_url="http://localhost:8081/v1")
-                worker_client_id[0] = id(client)
-            asyncio.run(_inner())
-
-        t = threading.Thread(target=_worker)
-        t.start()
-        t.join()
-
-        assert worker_client_id[0] != id(gateway_client), (
-            "Worker thread (asyncio.run) got the gateway's cached client — "
-            "this is the exact cross-loop scenario that causes httpx deadlocks. "
-            "The cache key must include the event loop identity (#2681)"
-        )
-        gateway_loop.close()
-

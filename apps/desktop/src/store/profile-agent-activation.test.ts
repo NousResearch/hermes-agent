@@ -24,6 +24,15 @@ const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  // Both activation doors publish the registry route; the latest call owns it.
+  activeGatewayProfileKey: () => {
+    const profileOrder = ensureGatewayForProfile.mock.invocationCallOrder.at(-1) ?? 0
+    const agentOrder = ensureGatewayForAgent.mock.invocationCallOrder.at(-1) ?? 0
+
+    return agentOrder > profileOrder
+      ? ensureGatewayForAgent.mock.lastCall?.[1]
+      : (ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get())
+  },
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile
@@ -33,7 +42,7 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph }))
 
 const { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } = await import('./profile')
 

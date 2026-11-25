@@ -34,7 +34,7 @@ def test_execute_returns_when_wait_loop_never_returns(monkeypatch):
         "agent.deadline.kill_process_tree",
         lambda pid, **_k: killed.append(("tree", pid)),
     )
-    monkeypatch.setattr(env, "_update_cwd", lambda _result: None)
+    monkeypatch.setattr(env, "_update_cwd", lambda _result, **_k: None)
 
     start = time.monotonic()
     result = env.execute("sleep 30", timeout=1)
@@ -57,7 +57,7 @@ def test_execute_parent_interrupt_still_kills_wait_on_deadline_worker(monkeypatc
 
     seen = {"parent": False}
 
-    def _wait(_proc, timeout=120, *, bounded_capture=False, watch_interrupt_tid=None):
+    def _wait(_proc, timeout=120, *, bounded_capture=False, watch_interrupt_tid=None, output=None):
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             from tools.interrupt import is_thread_interrupted
@@ -70,7 +70,7 @@ def test_execute_parent_interrupt_still_kills_wait_on_deadline_worker(monkeypatc
 
     monkeypatch.setattr(env, "_wait_for_process", _wait)
     monkeypatch.setattr(env, "_kill_process", lambda _proc: None)
-    monkeypatch.setattr(env, "_update_cwd", lambda _result: None)
+    monkeypatch.setattr(env, "_update_cwd", lambda _result, **_k: None)
 
     parent_tid = __import__("threading").get_ident()
 
@@ -80,9 +80,13 @@ def test_execute_parent_interrupt_still_kills_wait_on_deadline_worker(monkeypatc
 
     import threading
 
-    threading.Thread(target=_interrupt_soon, daemon=True).start()
-    result = env.execute("sleep 30", timeout=5)
-    set_interrupt(False, thread_id=parent_tid)
+    interrupter = threading.Thread(target=_interrupt_soon, daemon=True)
+    interrupter.start()
+    try:
+        result = env.execute("sleep 30", timeout=5)
+    finally:
+        interrupter.join(timeout=5)
+        set_interrupt(False, thread_id=parent_tid)
 
     assert seen["parent"] is True
     assert result["returncode"] == 130
@@ -100,7 +104,7 @@ def test_execute_worker_sees_caller_activity_callback(monkeypatch):
         return {"output": "ok", "returncode": 0}
 
     monkeypatch.setattr(env, "_wait_for_process", _wait)
-    monkeypatch.setattr(env, "_update_cwd", lambda _r: None)
+    monkeypatch.setattr(env, "_update_cwd", lambda _r, **_k: None)
 
     def _cb(_msg):
         pass

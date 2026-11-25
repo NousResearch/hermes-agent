@@ -14,6 +14,16 @@ Two behaviors that only show up with more than one profile on disk:
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _uncached_sidebar_endpoints(monkeypatch):
+    """Both sidebar endpoints sit behind ``_sidebar_singleflight_cache`` (5s TTL). Every
+    test here builds a fresh tmp profile set under the same default query params, so a warm
+    entry would answer with another test's payload. TTL 0 makes each request cold."""
+    from hermes_cli.web_routers import profiles as profiles_routes
+
+    monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
+
+
 @pytest.fixture
 def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
     """An isolated default home plus one named profile, each with a state.db."""
@@ -41,47 +51,38 @@ def client(monkeypatch, profiles_on_disk):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
-    from hermes_constants import get_hermes_home
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     return c
 
 
-def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None):
+def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None, pinned=False):
     """One session with a message, so it clears the sidebar's min_messages=1.
 
     ``cwd`` is what attaches it to a project — without one it lands in Home.
     ``tokens`` is an (input, output) pair; both it and ``cost`` are written
     straight to the row, the shape a finished turn leaves behind.
     """
-    import sqlite3
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    from hermes_state import SessionDB
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, session_id, source, cwd=str(cwd) if cwd else None)
+        seed_messages(db, session_id, {"role": "user", "content": "hi"})
+        if pinned:
+            assert db.sessions.set_pinned(session_id, True)
 
-    db = SessionDB(db_path=home / "state.db")
-    try:
-        db.create_session(session_id, source=source, cwd=str(cwd) if cwd else None)
-        db.append_message(session_id=session_id, role="user", content="hi")
-    finally:
-        db.close()
+        if tokens is None and cost is None:
+            return
 
-    if tokens is None and cost is None:
-        return
-
-    conn = sqlite3.connect(home / "state.db")
-    try:
-        conn.execute(
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
             "UPDATE sessions SET input_tokens = ?, output_tokens = ?, estimated_cost_usd = ? WHERE id = ?",
             (*(tokens or (0, 0)), cost or 0.0, session_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        ))
 
 
 def _seed_project(home, name, folder):
@@ -217,6 +218,21 @@ class TestCrossProfileProjectTree:
 
         assert labels == {"Only default", "Only worker"}
 
+    def test_a_named_profile_reads_only_its_own_tree(self, client, profiles_on_disk, tmp_path):
+        # The per-profile read a native grant makes; its caller merges the profiles by mergeKey.
+        for name in profiles_on_disk:
+            (tmp_path / "repos" / f"only-{name}").mkdir(parents=True)
+            _seed_session(profiles_on_disk[name], f"{name}-chat", source="cli")
+            _seed_project(profiles_on_disk[name], f"Only {name}", tmp_path / "repos" / f"only-{name}")
+
+        payload = client.get("/api/profiles/projects/tree", params={"profile": "worker"}).json()
+
+        assert payload["errors"] == []
+        assert {project["label"] for project in payload["projects"] if not project["isNoProject"]} == {"Only worker"}
+        assert all(project["mergeKey"] for project in payload["projects"])
+        sessions = [s for project in payload["projects"] for s in project.get("previewSessions") or []]
+        assert {s["profile"] for s in sessions} == {"worker"}
+
     def test_a_profile_that_cannot_be_read_does_not_sink_the_rest(
         self, client, profiles_on_disk, tmp_path, monkeypatch
     ):
@@ -246,3 +262,57 @@ class TestCrossProfileProjectTree:
         # The healthy profile's tree still lands; only the broken one drops out.
         assert "Healthy" in [project["label"] for project in payload["projects"]]
         assert [project["sessionCount"] for project in payload["projects"] if project["isNoProject"]] == [1]
+
+
+class TestSidebarTruncation:
+
+    def test_pinned_rows_inside_the_window_still_report_more_on_disk(self, client, profiles_on_disk):
+        # Regression for #81484: the window is a LIMIT page by recency, so a
+        # pin among the newest rows takes a slot. Discounting pins reported 18
+        # < 20 and the sidebar never offered "Load more" for the older rows.
+        home = profiles_on_disk["default"]
+        params = {"recents_profile": "default", "recents_limit": 4}
+
+        def window():
+            payload = client.get("/api/profiles/sessions/sidebar", params=params).json()
+            return len(payload["recents"]["sessions"]), payload["recents"]["profiles_truncated"]
+
+        for index in range(3):
+            _seed_session(home, f"s-{index}", source="desktop", pinned=index == 2)
+        # Short list: the pin is already on the page, nothing to back-fill, no "more".
+        assert window() == (3, {"default": False})
+
+        for index in range(3, 6):
+            _seed_session(home, f"s-{index}", source="desktop", pinned=index == 5)
+        # Six on disk, two pins among the newest four: a full window, more below it.
+        assert window() == (4, {"default": True})
+
+
+class TestSidebarShowSubagents:
+    """``sessions.show_subagents`` is read from each profile's OWN config and only widens recents (#97202)."""
+
+    @staticmethod
+    def _seed_subagent(home, parent_id, child_id):
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_messages, seed_session
+
+        _seed_session(home, parent_id, source="desktop")
+        with open_persistence(profile_scope(home=home)) as db:
+            seed_session(db, child_id, "subagent", parent_session_id=parent_id,
+                         model_config={"_delegate_from": parent_id})
+            seed_messages(db, child_id, {"role": "user", "content": "audit billing"})
+
+    def test_recents_list_subagent_runs_only_for_the_profile_that_opted_in(self, client, profiles_on_disk):
+        (profiles_on_disk["worker"] / "config.yaml").write_text("sessions:\n  show_subagents: true\n")
+        self._seed_subagent(profiles_on_disk["default"], "default-parent", "default-sub")
+        self._seed_subagent(profiles_on_disk["worker"], "worker-parent", "worker-sub")
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "all", "recents_exclude": "cron,subagent", "messaging_exclude": "cli,cron,desktop"},
+        ).json()
+
+        assert payload["errors"] == []
+        assert _slice_ids(payload, "recents") == {"default-parent", "worker-parent", "worker-sub"}
+        # The messaging slice keeps its shape: a subagent run is not a platform thread.
+        assert _slice_ids(payload, "messaging") == set()

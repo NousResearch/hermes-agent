@@ -25,7 +25,6 @@ def _clear_approval_state():
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
-    mod._pending.clear()
 
 
 class TestApprovalInterrupt:
@@ -114,7 +113,10 @@ class TestApprovalInterrupt:
         elapsed = time.monotonic() - start
 
         assert not t.is_alive(), "approval wait did not return after interrupt"
-        assert result_holder["result"] == {"resolved": True, "choice": "deny", "reason": None}
+        result = result_holder["result"]
+        assert (result["resolved"], result["choice"], result["reason"]) == (True, "deny", None)
+        # A bare interrupt bit (no cause published) is still reported as a withdrawn prompt.
+        assert result["cancelled"] == "turn interrupted"
         # Must be far below the 300s timeout — the interrupt, not the deadline,
         # is what released the wait.
         assert elapsed < 10, f"interrupt path too slow ({elapsed:.1f}s)"

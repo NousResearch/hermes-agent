@@ -154,5 +154,53 @@ class TestPairingStore(unittest.TestCase):
         self.assertIn("ou_new", approved)
 
 
+class TestRulesFollowActiveProfile(unittest.TestCase):
+    """The multiplexed gateway serves every profile from one process: the rules/pairing files and
+    their mtime caches must follow the context-local HERMES_HOME override, one slot per profile."""
+
+    def test_rules_and_pairing_follow_home_override(self):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from plugins.platforms.feishu import feishu_comment_rules as fcr
+
+        def under(home, fn):
+            token = set_hermes_home_override(str(home))
+            try:
+                return fn()
+            finally:
+                reset_hermes_home_override(token)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prof_a, prof_b = Path(tmp) / "A", Path(tmp) / "B"
+            for home, enabled in ((prof_a, True), (prof_b, False)):
+                home.mkdir()
+                (home / "feishu_comment_rules.json").write_text(json.dumps({"enabled": enabled}))
+            self.assertTrue(under(prof_a, fcr.load_config).enabled)  # warm A's slot
+            self.assertFalse(under(prof_b, fcr.load_config).enabled)
+            self.assertTrue(under(prof_a, fcr.load_config).enabled)  # A's slot survives B
+            self.assertTrue(under(prof_b, lambda: fcr.pairing_add("ou_b")))
+            self.assertTrue((prof_b / "feishu_comment_pairing.json").exists())
+            self.assertFalse((prof_a / "feishu_comment_pairing.json").exists())
+            self.assertNotIn("ou_b", under(prof_a, fcr.pairing_list))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+import pytest
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_pairing_add_refuses_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """An approval on a dead profile is refused, not reported saved, and the home stays gone (#155595 U3)."""
+    import hermes_constants
+    from plugins.platforms.feishu import feishu_comment_rules as rules
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(rules, "get_hermes_home", lambda: home)
+    rules._pairing_cache.invalidate()
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        rules.pairing_add("ou_dead")
+    assert not home.exists()

@@ -10,6 +10,7 @@ import { normalize } from '@/lib/text'
 import type { ComposerAtCompletionSource } from '../contrib'
 import { COMPOSER_AREAS } from '../contrib'
 
+import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
 import { useLiveCompletionAdapter } from './use-live-completion-adapter'
 
@@ -39,7 +40,11 @@ function starterEntries(query: string): CompletionEntry[] {
   }))
 }
 
-function mergeCompletionEntries(preferred: CompletionEntry[], fallback: CompletionEntry[]): CompletionEntry[] {
+function mergeCompletionEntries(
+  preferred: CompletionEntry[],
+  fallback: CompletionEntry[],
+  claimedHandles?: Set<string>
+): CompletionEntry[] {
   const seenHandles = new Set<string>()
 
   return [...preferred, ...fallback].filter(entry => {
@@ -47,6 +52,14 @@ function mergeCompletionEntries(preferred: CompletionEntry[], fallback: Completi
 
     if (!/^@[^:\s]+$/.test(key) || SIMPLE_CONTEXT_REFS.has(key)) {
       return true
+    }
+
+    // A contributed row claimed this handle as another label for a target it
+    // already lists (a bot's raw profile name under its title slug). The
+    // gateway's own row for that name is the same routable identity offered
+    // a second time — keep the contributed row, drop this one.
+    if (claimedHandles?.has(key)) {
+      return false
     }
 
     if (seenHandles.has(key)) {
@@ -125,8 +138,9 @@ export function useAtCompletions(options: {
   // one classify/toItem path renders every row. Provider errors are isolated:
   // a throwing source drops ITS rows, never the popover.
   const contributedEntries = useCallback(
-    (query: string): CompletionEntry[] => {
+    (query: string): { entries: CompletionEntry[]; claimedHandles: Set<string> } => {
       const out: CompletionEntry[] = []
+      const claimedHandles = new Set<string>()
 
       for (const contribution of contributed) {
         const source = contribution.data as ComposerAtCompletionSource | undefined
@@ -141,6 +155,28 @@ export function useAtCompletions(options: {
               continue
             }
 
+            // Handles a source declares as aliases of its own row are the
+            // identity it owns: the gateway lists the same target under one
+            // of them (the raw profile name), and that twin gets dropped in
+            // the merge below.
+            //
+            // A handle that is the row's own text names no alias and claims
+            // nothing. Taken at face value it deleted the row that declared
+            // it, so a bot whose mention tag equals its profile name never
+            // reached the popover — it was listed in the Bots pane and absent
+            // from the one picker that could insert it. The roster emits such
+            // a handle for every local profile, and which rows hit it depends
+            // on the user's naming, so it read as "only the default bot works".
+            const own = normalize(item.insert)
+
+            for (const handle of item.handles || []) {
+              const claimed = normalize(handle)
+
+              if (claimed && claimed !== own) {
+                claimedHandles.add(claimed)
+              }
+            }
+
             out.push({
               text: item.insert,
               display: item.display || item.insert,
@@ -153,23 +189,27 @@ export function useAtCompletions(options: {
         }
       }
 
-      return out
+      return { entries: out, claimedHandles }
     },
     [contributed]
   )
 
   // Cache key: the completion depends on the query AND the directory it's
   // resolved against, so a cwd or session change can't serve another tree's
-  // listing.
-  const cacheKey = useCallback((query: string) => `${cwd ?? ''}|${sessionId ?? ''}|${query}`, [cwd, sessionId])
+  // listing. The owner is part of it too: the listing comes from the session's
+  // owning backend (#141583), and an ambient answer must not stand in for it.
+  const cacheKey = useCallback(
+    (query: string) => `${completionOwnerKey(completionOwner(sessionId))}|${cwd ?? ''}|${sessionId ?? ''}|${query}`,
+    [cwd, sessionId]
+  )
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
       const starters = starterEntries(query)
-      const extras = contributedEntries(query)
+      const { entries: extras, claimedHandles } = contributedEntries(query)
 
       if (!gateway) {
-        return { items: mergeCompletionEntries(extras, starters), query }
+        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
 
       const word = REF_STARTERS.has(query) ? `@${query}:` : `@${query}`
@@ -190,15 +230,15 @@ export function useAtCompletions(options: {
         // `git ls-files` + rank on the backend (~40ms of the ~50ms round trip
         // measured on this repo's 8k files).
         const result = await cachedPathCompletion(cacheKey(query), () =>
-          gateway.request<{ items?: CompletionEntry[] }>('complete.path', params)
+          requestCompletion<{ items?: CompletionEntry[] }>(gateway, completionOwner(sessionId), 'complete.path', params)
         )
 
         const items = result.items ?? []
         const base = items.length > 0 ? items : starters
 
-        return { items: mergeCompletionEntries(extras, base), query }
+        return { items: mergeCompletionEntries(extras, base, claimedHandles), query }
       } catch {
-        return { items: mergeCompletionEntries(extras, starters), query }
+        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
     },
     [cacheKey, contributedEntries, gateway, sessionId, cwd]

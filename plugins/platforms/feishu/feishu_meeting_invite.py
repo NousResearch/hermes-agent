@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class MeetingInvitedPayload:
     invite_time_s: int = 0
 
 
-def _as_dict(value: Any) -> Dict[str, Any]:
+def _as_dict(value: Any) -> dict[str, Any]:
     """Coerce a lark SDK object / dict / JSON string into a plain dict."""
     if isinstance(value, SimpleNamespace) or (value is not None and hasattr(value, "__dict__")):
         value = vars(value)
@@ -51,7 +51,7 @@ def _as_dict(value: Any) -> Dict[str, Any]:
     return {str(k): v for k, v in value.items()} if isinstance(value, dict) else {}
 
 
-def _content_payload(container: Dict[str, Any]) -> Dict[str, Any]:
+def _content_payload(container: dict[str, Any]) -> dict[str, Any]:
     """Unwrap a Feishu ``body.content`` list carrying an application/json payload."""
     content = _as_dict(container.get("body")).get("content")
     for item in map(_as_dict, content if isinstance(content, list) else ()):
@@ -62,7 +62,7 @@ def _content_payload(container: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _str_field(raw: Dict[str, Any], key: str, strip: bool = True) -> str:
+def _str_field(raw: dict[str, Any], key: str, strip: bool = True) -> str:
     return str(raw.get(key) or "").strip() if strip else str(raw.get(key) or "")
 
 

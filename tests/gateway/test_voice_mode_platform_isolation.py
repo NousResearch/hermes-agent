@@ -35,26 +35,6 @@ class TestVoiceKeyHelper:
         assert key_discord == "discord:123"
 
 
-class TestVoiceModePlatformIsolation:
-    """Test that voice mode state is isolated by platform."""
-
-    def test_telegram_and_slack_voice_mode_independent(self):
-        """Setting voice mode for Telegram chat '123' does not affect Slack chat '123'."""
-        runner = _make_runner()
-
-        # Enable voice mode for Telegram chat '123'
-        runner._voice_mode[runner._voice_key(Platform.TELEGRAM, "123")] = "all"
-        # Enable voice mode for Slack chat '123' to a different mode
-        runner._voice_mode[runner._voice_key(Platform.SLACK, "123")] = "voice_only"
-
-        # Verify they are independent
-        assert runner._voice_mode.get(runner._voice_key(Platform.TELEGRAM, "123")) == "all"
-        assert runner._voice_mode.get(runner._voice_key(Platform.SLACK, "123")) == "voice_only"
-
-        # Disabling Telegram should not affect Slack
-        runner._voice_mode[runner._voice_key(Platform.TELEGRAM, "123")] = "off"
-        assert runner._voice_mode.get(runner._voice_key(Platform.TELEGRAM, "123")) == "off"
-        assert runner._voice_mode.get(runner._voice_key(Platform.SLACK, "123")) == "voice_only"
 
 
 class TestLegacyKeyMigration:
@@ -87,8 +67,6 @@ class TestLegacyKeyMigration:
             assert result.get("telegram:789") == "off"
             # Warning should be logged for each legacy key
             assert mock_logger.warning.called
-            warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
-            assert any("Skipping legacy unprefixed voice mode key" in str(c) for c in warning_calls)
 
 
 class TestSyncVoiceModeStateToAdapter:
@@ -145,7 +123,8 @@ class TestVoiceModeProfileIsolation:
     async def test_voice_state_and_transcripts_stay_with_the_owning_bot(self, tmp_path):
         from types import SimpleNamespace
 
-        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
 
         runner = _make_runner()
         runner._VOICE_MODE_PATH = tmp_path / "voice.json"

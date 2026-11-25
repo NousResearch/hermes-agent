@@ -1,4 +1,4 @@
-"""Session expiry / stall / catalog-refresh watcher loops, bound onto ``GatewayRunner`` via the MRO.
+"""Session housekeeping / stall / catalog-refresh watcher loops, bound onto ``GatewayRunner`` via the MRO.
 
 ``gateway.run`` internals are imported lazily inside method bodies (import cycle), so
 ``patch("gateway.run.X")`` keeps intercepting them at call time.
@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 import time
 from collections import Counter
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
+from gateway.run_auto_resume import GatewayAutoResumeMixin
 from gateway.session_stall import (
     format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
@@ -23,13 +25,10 @@ from gateway.session_stall import (
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
-_MAX_FINALIZE_RETRIES = 3
 _SESSION_STORE_PRUNE_INTERVAL = 3600.0  # once per hour
-
-
-def _platform_of_key(key: str, default: str = "") -> str:
-    """Session keys look like ``agent:main:telegram:dm:12345`` — platform is field [2]."""
-    return key.split(":")[2] if key.count(":") > 1 else default
+# Summaries running at once: each is a full-context LLM call, so a burst of due chats must not fan
+# out unbounded, but one slow summary must not hold every other chat past its window either.
+_CACHE_EXPIRY_CONCURRENCY = 3
 
 
 async def _interruptible_sleep(runner, seconds: int) -> None:
@@ -40,98 +39,35 @@ async def _interruptible_sleep(runner, seconds: int) -> None:
         await asyncio.sleep(1)
 
 
-class GatewaySessionWatchersMixin:
-    """Session expiry / stall / catalog-refresh watcher loops for GatewayRunner."""
+def drain_pending_cache_releases(runner) -> None:
+    """Shutdown: release every evicted agent whose release-time cache-edge job never got to release it
+    (cancelled before its first step, or a callback the stopped loop never ran)."""
+    for release in list(vars(runner).get("_pending_cache_releases", {}).values()):
+        release()
 
-    async def _session_expiry_watcher(self, interval: int = 300):
-        """Finalize expired sessions, then run the cache/store sweeps."""
-        await asyncio.sleep(60)  # initial delay — let the gateway fully start
-        finalize_failures: dict[str, int] = {}  # session_id -> consecutive failure count
+
+class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
+    """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner (and, through
+    ``GatewayAutoResumeMixin``, the ``delegation.auto_resume`` scheduler)."""
+
+    async def _session_housekeeping_watcher(self, interval: int = 300):
+        """Reclaim resources without ending durable conversations."""
+        await asyncio.sleep(60)
         while self._running:
             try:
-                store = self.async_session_store
-                await store._ensure_loaded()
-                expired = [
-                    (key, entry) for key, entry in list(self.session_store._entries.items())
-                    if not entry.expiry_finalized and await store._is_session_expired(entry)
-                ]
-                if expired:
-                    await self._finalize_expired_sessions(expired, finalize_failures)
-                await self._expiry_housekeeping()
+                await self._session_housekeeping()
             except Exception as e:
-                logger.debug("Session expiry watcher error: %s", e)
+                logger.debug("Session housekeeping error: %s", e)
             await _interruptible_sleep(self, interval)
 
-    async def _finalize_expired_sessions(self, expired: list, failures: dict[str, int]) -> None:
-        """Finalize each entry; after ``_MAX_FINALIZE_RETRIES`` consecutive failures mark it
-        finalized anyway (without clearing the model override) to stop an infinite retry loop."""
-        platforms = Counter(_platform_of_key(k, "unknown") for k, _ in expired)
-        logger.info(
-            "Session expiry: %d sessions to finalize (%s)",
-            len(expired), ", ".join(f"{p}:{c}" for p, c in sorted(platforms.items())),
-        )
-        for key, entry in expired:
-            sid = entry.session_id
-            try:
-                await self._finalize_expired_session(key, entry)
-            except Exception as e:
-                count = failures[sid] = failures.get(sid, 0) + 1
-                if count < _MAX_FINALIZE_RETRIES:
-                    logger.debug("Session finalize failed (%d/%d) for %s: %s",
-                                 count, _MAX_FINALIZE_RETRIES, sid, e)
-                    continue
-                logger.warning(
-                    "Session finalize gave up after %d attempts for %s: %s. "
-                    "Marking as finalized to prevent infinite retry loop.", count, sid, e,
-                )
-                store = self.async_session_store
-                await store.set_expiry_finalized(entry, clear_model_override=False)
-            failures.pop(sid, None)
-        done = sum(1 for _, e in expired if e.expiry_finalized)
-        if failed := len(expired) - done:
-            logger.info("Session expiry done: %d finalized, %d pending retry", done, failed)
-        else:
-            logger.info("Session expiry done: %d finalized", done)
-
-    async def _finalize_expired_session(self, key: str, entry) -> None:
-        """Run finalize hooks, tear down the cached agent, clear conversation scope, persist."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        # Off-loop + bounded: plugin finalize hooks can block arbitrarily; this is the event loop.
-        with contextlib.suppress(Exception):
-            await self._finalize_session_off_loop(
-                session_id=entry.session_id, platform=_platform_of_key(key),
-                reason="session_expired",
-            )
-        # Idle agents live in _agent_cache (not _running_agents); fall back to the running turn's
-        # agent in case the session is still mid-turn when the expiry fires.
-        agent, cache_lock = None, getattr(self, "_agent_cache_lock", None)  # tests may lack it
-        if cache_lock is not None:
-            with cache_lock:
-                cached = self._agent_cache.get(key)
-            agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
-        if agent is None:
-            state = self._peek_session_state(key)
-            agent = state.turn.agent if state else None
-        if agent and agent is not _AGENT_PENDING_SENTINEL:
-            await self._cleanup_agent_resources_off_loop(agent, context="session expiry")
-        # Evict so the AIAgent (LLM clients, tool schemas, memory refs) can be GC'd, then drop
-        # every conversation-scoped dict AND boundary security state — only finalize, /new, /reset
-        # may (idle-cache eviction must NOT: a resumed turn rebuilds from those overrides). The
-        # persisted flag also drops the /model override: finalization is a conversation boundary.
-        self._evict_cached_agent(key)
-        self._clear_conversation_scope(key, reason="expiry_finalized")
-        # See #9006.
-        await self.async_session_store.set_expiry_finalized(entry)
-        logger.debug("Session expiry finalized for %s", entry.session_id)
-
-    async def _expiry_housekeeping(self) -> None:
+    async def _session_housekeeping(self) -> None:
         """Idle/pressure agent-cache sweeps plus the hourly SessionStore prune."""
-        # Sweep idle agents regardless of reset policy: long/"never" windows would pin memory.
         try:
             if evicted := self._sweep_idle_cached_agents():
                 logger.info("Agent cache idle sweep: evicted %d agent(s)", evicted)
         except Exception as e:
             logger.debug("Idle agent sweep failed: %s", e)
+        await self._compact_idle_sessions_before_cache_expiry()
         # Neither LRU cap nor idle TTL knows what a cached transcript costs in memory.
         try:
             # Neither the LRU cap nor the idle TTL is aware of how much memory a cached transcript costs, so
@@ -151,6 +87,176 @@ class GatewaySessionWatchersMixin:
             except Exception as e:
                 logger.debug("SessionStore prune failed: %s", e)
             self._last_session_store_prune_ts = time.time()
+
+    def _cache_expiry_due_keys(self, skip=()) -> list[tuple[str, object, str]]:
+        """Cached, idle, human-paced sessions at the cache edge as ``(key, agent, action)``: ``compact``
+        at the end of a keep-alive budget, ``offload`` past the cache window. *skip* (keys with a job in
+        flight) is excluded before the claim, which latches the stretch. Runs off the event loop: the
+        claim reads the clock's session generation from state.db."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run_agent_cache import _tuple_agent
+        cache, lock = getattr(self, "_agent_cache", None), getattr(self, "_agent_cache_lock", None)
+        if cache is None or lock is None:
+            return []
+        with lock:
+            entries = [(key, _tuple_agent(entry)) for key, entry in cache.items() if key not in skip]
+        due = []
+        for key, agent in entries:
+            if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
+                continue
+            warmer = getattr(agent, "_prompt_cache_warmer", None)
+            action = warmer.claim_edge() if warmer is not None else None
+            if action:
+                due.append((key, agent, action))
+        return due
+
+    async def _compact_idle_sessions_before_cache_expiry(self) -> None:
+        """Start one compaction job per due session and return without awaiting them: a summary can
+        run for minutes, longer than a later session's fire range and the housekeeping interval, so
+        serial summaries would let later chats go cold and stall the sweeps after this one. Jobs are
+        background tasks (shutdown cancels them), one per session key, at most
+        ``_CACHE_EXPIRY_CONCURRENCY`` summarising at once."""
+        jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
+        slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
+        handoff = self.__dict__.setdefault("_cache_expiry_handoff", {})
+        settled = self.__dict__["_cache_expiry_scan_settled"] = asyncio.Event()
+        try:
+            for key, live_agent, action in await asyncio.to_thread(self._cache_expiry_due_keys, set(jobs)):
+                if key in jobs:  # a release job registered while the scan ran: it runs the action claimed here
+                    handoff[key] = action
+                    continue
+                task = self._retain_background_task(
+                    asyncio.create_task(self._compact_before_cache_expiry(key, live_agent, slots, action)))
+                jobs[key] = task
+                task.add_done_callback(lambda _done, key=key: jobs.pop(key, None))
+        finally:
+            settled.set()
+
+    async def _compact_before_cache_expiry(self, key: str, live_agent, slots: asyncio.Semaphore,
+                                           action: str = "compact") -> None:
+        """Run the claimed cache-edge *action* on one idle chat: ``compact`` through the manual
+        ``/compress`` pipeline (temporary agent, compression lease, persist, evict) with an automatic
+        trigger, ``offload`` through the cold prune; in the chat's profile scope."""
+        claimed_session = getattr(live_agent, "session_id", None)
+        async with slots:
+            try:
+                authority, entry, owner = await asyncio.to_thread(self._cache_expiry_route, key)
+                # /new (or a resume) while this job waited re-routed the key: the claim and the warm
+                # window checked below belong to the old chat, not the one the route now serves.
+                if entry is None or entry.origin is None or entry.session_id != claimed_session:
+                    return
+                with self._profile_scope_for_source(entry.origin):
+                    live = authority.sessions.get(owner) if authority is not None else None
+                    # The FIFO claim waits on ``claim_gate`` (as behind ``/compress``): a message
+                    # arriving mid-summary starts its turn on the compacted history, not the old one.
+                    async with live.claim_gate if live is not None else contextlib.nullcontext():
+                        await self._compact_claimed_session(key, entry, live_agent, action)
+            except Exception as e:
+                logger.warning("Cache-expiry compaction failed for %s: %s", key, e, exc_info=True)
+
+    def _cache_expiry_route(self, key: str):
+        """``(authority, entry, owner session id)`` for *key*. Under an authority the entry may be a
+        detached Desktop conversation's (cached agent, no routing entry of its own)."""
+        from gateway.session_detached import _route_authority, route_entry
+        authority = _route_authority(self, self.session_store, key)
+        if authority is None:
+            return None, self.session_store.lookup_by_session_key(key), None
+        entry = route_entry(authority, key)
+        return authority, entry, authority.logical_owner(entry.session_id) if entry is not None else None
+
+    async def _compact_claimed_session(self, key: str, entry, live_agent, action: str = "compact") -> None:
+        """The compaction runs on a temporary agent and evicts the cached one, so the next turn starts
+        on the compacted history with a cold cache; nothing is sent until that next user message. An
+        ``offload`` claim (the cache is over, nothing compacted it) instead runs the cold prune on the
+        stored transcript through the live agent, which commits it to the session store."""
+        from agent.prompt_cache_lifecycle import TRIGGER
+        from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest
+        if self._is_session_running(key):
+            return
+        history = await self.async_session_store.load_transcript(entry.session_id)
+        if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
+            return
+        if action == "offload":
+            from agent.turn_proactive_prune import offload_cold_history
+            after = await asyncio.to_thread(offload_cold_history, live_agent, history, entry.session_id)
+            if after is not history:
+                logger.info("Cache-expiry offload: session=%s", key)
+            return
+        await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=TRIGGER)
+        logger.info("Cache-expiry compaction: session=%s", key)
+
+    def _compact_then_release(self, key: str, agent) -> bool:
+        """An agent-cache eviction (idle TTL, LRU cap): a budget ends at its keep-alives or at the release,
+        whichever comes first, so a chat whose cache edge is due at release (``claim_edge(releasing=True)``
+        ends the budget: no keep-alive after it) is compacted or offloaded through the cache-expiry job and
+        its evicted agent released after that. True when the gateway loop now owns the release (the LRU cap
+        evicts from a turn thread under the cache lock); False leaves the caller to release as before.
+        Whatever happens to the job (it fails, it is cancelled before its first step, or the loop stops
+        before the callback runs), the agent is released exactly once."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        loop = getattr(self, "_gateway_loop", None)
+        if (agent is None or agent is _AGENT_PENDING_SENTINEL or getattr(agent, "_prompt_cache_warmer", None) is None
+                or loop is None or loop.is_closed() or not getattr(self, "_running", False)):
+            return False
+        release = self._release_once(key, agent)
+        try:
+            loop.call_soon_threadsafe(self._decide_compact_then_release, key, agent, release)
+        except RuntimeError:  # the loop closed between the check and the call
+            release()
+        return True
+
+    def _release_once(self, key: str, agent) -> Callable[[], None]:
+        """The evicted agent's release, idempotent: the job's done-callback, the loop-closed fallback
+        and shutdown (:func:`drain_pending_cache_releases`, for a callback or done-callback the stopped
+        loop never ran) may all reach it."""
+        pending = self.__dict__.setdefault("_pending_cache_releases", {})
+        lock = self.__dict__.setdefault("_pending_cache_releases_lock", threading.Lock())
+
+        def _release(*_args) -> None:
+            with lock:
+                if pending.get(key) is not _release:
+                    return
+                del pending[key]
+            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-release-{key[:24]}",
+                                       inline_fallback=True, session_key=key)
+        previous = pending.get(key)
+        if previous is not None:
+            previous()  # never strand an earlier eviction of the same key
+        with lock:
+            pending[key] = _release
+        return _release
+
+
+    def _decide_compact_then_release(self, key: str, agent, release: Callable[[], None]) -> None:
+        jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
+        if key in jobs:
+            release()
+            return
+        task = self._retain_background_task(asyncio.ensure_future(self._compact_then_release_job(key, agent)))
+        jobs[key] = task
+        task.add_done_callback(lambda _done: jobs.pop(key, None))
+        # A done-callback runs even when the task is cancelled before its first step.
+        task.add_done_callback(release)
+
+    async def _compact_then_release_job(self, key: str, agent) -> None:
+        """Claim the cache edge at release off the loop (the claim reads state.db), then run it. The
+        caller's done-callback releases the agent afterwards."""
+        try:
+            action = await asyncio.to_thread(agent._prompt_cache_warmer.claim_edge, releasing=True)
+        except Exception:
+            logger.debug("release-time compaction check failed for %s", key, exc_info=True)
+            return
+        if action is None:
+            # A due-scan in flight may have latched this chat's claim first: it hands the action over.
+            settled = self.__dict__.get("_cache_expiry_scan_settled")
+            if settled is not None:
+                await settled.wait()
+        handed = self.__dict__.setdefault("_cache_expiry_handoff", {}).pop(key, None)
+        action = action or handed
+        if action is None:
+            return
+        slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
+        await self._compact_before_cache_expiry(key, agent, slots, action)
 
     def _session_stall_timeout_seconds(self) -> float:
         """Return configured stall timeout (seconds); 0 disables the watchdog."""
@@ -172,10 +278,10 @@ class GatewaySessionWatchersMixin:
             return None
         return summary if isinstance(summary, dict) else None
 
-    def _stall_candidates(self) -> Dict[str, tuple[Any, Any]]:
+    def _stall_candidates(self) -> dict[str, tuple[Any, Any]]:
         """session_key -> (adapter, pending event) from every live adapter's pending slot (default
         + multiplex profiles, deduped by identity), then the overflow queues; first one wins."""
-        candidates: Dict[str, tuple[Any, Any]] = {}
+        candidates: dict[str, tuple[Any, Any]] = {}
         maps = (getattr(self, "adapters", {}), *getattr(self, "_profile_adapters", {}).values())
         adapters = {id(a): a for m in maps for a in list(m.values()) if a is not None}
         for adapter in adapters.values():
@@ -183,11 +289,12 @@ class GatewaySessionWatchersMixin:
             for session_key, event in list(pending.items()):
                 if session_key and session_key not in candidates and event is not None:
                     candidates[session_key] = (adapter, event)
-        for session_key, overflow in list((getattr(self, "_queued_events", None) or {}).items()):
+        for session_key, state in list((self.__dict__.get("_sessions") or {}).items()):
+            overflow = state.conversation.queued_events
             if not session_key or session_key in candidates or not overflow:
                 continue
             source = getattr(overflow[0], "source", None)
-            if source is not None and (adapter := self._adapter_for_source(source)) is not None:
+            if source is not None and (adapter := self._delivery_adapter_for(source)) is not None:
                 candidates[session_key] = (adapter, overflow[0])
         return candidates
 
@@ -245,7 +352,8 @@ class GatewaySessionWatchersMixin:
         # See #76354.
         still_pending = (
             (getattr(adapter, "_pending_messages", None) or {}).get(session_key) is not None
-            or bool((getattr(self, "_queued_events", None) or {}).get(session_key))
+            or bool((_queued_state := self._peek_session_state(session_key))
+                    and _queued_state.conversation.queued_events)
         )
         fresh_idle = resolve_session_idle_seconds_from_activity(
             self._session_activity_for_stall(session_key), now=time.time()
@@ -255,19 +363,29 @@ class GatewaySessionWatchersMixin:
                         "fresh_idle=%s", session_key, still_pending, fresh_idle)
             notified_map.pop(session_key, None)  # re-arm so a FUTURE genuine stall notifies again
             return False
+        from gateway.warning_notifications import present_notification
+        from gateway.run import _async_profile_runtime_scope
         try:
             metadata = self._thread_metadata_for_source(source)
             notice = format_session_stall_notification(idle_seconds)
-            # Bound the send: a wedged adapter transport (network hang, dead websocket) must not
-            # block the watcher pass — siblings would go unevaluated and the watcher stop.
-            result = await asyncio.wait_for(
-                adapter.send(str(source.chat_id), notice, metadata=metadata),
-                timeout=_STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
-            )
+            result = None
+            async def send_notice():
+                nonlocal result
+                # Bound the send: a wedged adapter transport (network hang, dead websocket) must not
+                # block the watcher pass — siblings would go unevaluated and the watcher stop.
+                result = await asyncio.wait_for(
+                    adapter.send(str(source.chat_id), notice, metadata=metadata),
+                    timeout=_STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
+                )
+            async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                presented = await present_notification(send_notice, platform=source.platform)
+            if not presented:
+                notified_map[session_key] = True  # suppressed: latch so the stall is not re-evaluated every tick
+                return False
             # Adapters often return SendResult(success=False) instead of raising.
             if result is not None and getattr(result, "success", True) is False:
                 raise RuntimeError(getattr(result, "error", "send returned success=False"))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Session stall notify send timed out after %.0fs for %s; will retry next tick",
                 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS, session_key,

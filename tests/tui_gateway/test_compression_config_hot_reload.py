@@ -8,6 +8,9 @@ the already-open session kept the computed threshold from agent creation.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 from agent.context_compressor import ContextCompressor
 from tui_gateway import server
@@ -114,7 +117,18 @@ def test_unchanged_compression_config_is_noop(monkeypatch):
     assert compressor.threshold_tokens == 99_999
 
 
-def test_clearing_threshold_tokens_restores_ratio_trigger(monkeypatch):
+def _default_cap():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    return DEFAULT_CONFIG["compression"]["threshold_tokens"]
+
+
+def _with_default_cap(trigger: int) -> int:
+    cap = _default_cap()
+    return min(trigger, cap) if cap else trigger
+
+
+def test_clearing_threshold_tokens_restores_default_cap(monkeypatch):
     session, compressor = _session_with_compressor(threshold_tokens_cap=100_000)
     assert compressor.threshold_tokens == 100_000
 
@@ -128,18 +142,47 @@ def test_clearing_threshold_tokens_restores_ratio_trigger(monkeypatch):
     )
     server._sync_agent_compression_with_config("sid-95151", session)
 
+    # Key removal restores what a fresh agent build installs (merged DEFAULT_CONFIG).
+    assert compressor.threshold_tokens_cap == _default_cap()
     assert compressor.threshold_tokens > 100_000
-    assert compressor.threshold_tokens_cap is None
 
 
-def test_prompt_submit_calls_compression_sync_after_model_sync():
-    # Read the module that actually defines the turn (it moved out of server.py).
-    source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()
-    model_idx = source.find("_sync_agent_model_with_config(sid, session)")
-    compression_idx = source.find("_sync_agent_compression_with_config(sid, session)")
-    assert model_idx != -1
-    assert compression_idx != -1
-    assert model_idx < compression_idx
+def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
+    """#117093: the live read is unmerged (missing key = unset), while agent construction reads the
+    merged config. A config.yaml without compression.threshold_tokens must leave the live session on
+    the same cap a fresh build installs, not re-derive a different trigger at the first turn's sync."""
+    compressor = ContextCompressor(
+        model="unset-test-model",
+        threshold_percent=0.85,
+        config_context_length=1_000_000,
+        threshold_tokens_cap=_default_cap(),
+        quiet_mode=True,
+    )
+    agent = SimpleNamespace(
+        model="unset-test-model",
+        provider="",
+        context_compressor=compressor,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    session = {"agent": agent, "session_key": "session-unset"}
+    assert compressor.threshold_tokens == _with_default_cap(850_000)
+
+    # The pin is scoped to the configured default route (#116467); that scoping has its own tests,
+    # this one is about the cap, so keep the 1M window in scope for the bare test runtime.
+    from agent import agent_init
+
+    monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 1_000_000)
+    _sync_with_cfg(monkeypatch, session, {"model": {"context_length": 1_000_000}, "compression": {}})
+
+    assert compressor.threshold_tokens_cap == _default_cap()
+    # threshold is absent too, so the derived 0.50 ratio applies under the default cap.
+    assert compressor.threshold_tokens == _with_default_cap(500_000)
+
+
+
 
 
 # ── Unset semantics (#94724 review finding on #95980) ────────────────────
@@ -163,6 +206,7 @@ def _neutral_session(**compression_ctor):
     agent = SimpleNamespace(
         model="unset-test-model",
         provider="",
+        base_url="",
         context_compressor=compressor,
         compression_enabled=True,
         compression_idle_compact_after_seconds=0,
@@ -177,53 +221,86 @@ def _sync_with_cfg(monkeypatch, session, cfg):
     server._sync_agent_compression_with_config("sid-unset", session)
 
 
-def test_removing_tail_mode_restores_lean_default(monkeypatch):
-    session, compressor = _neutral_session(tail_mode="legacy")
-    assert compressor.tail_mode == "legacy"
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.tail_mode == "lean"
-
-
-def test_removing_target_ratio_restores_default(monkeypatch):
-    session, compressor = _neutral_session(summary_target_ratio=0.60)
-    assert compressor.summary_target_ratio == 0.60
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.summary_target_ratio == 0.20
-
-
-def test_removing_protect_last_n_restores_default(monkeypatch):
-    session, compressor = _neutral_session(protect_last_n=5)
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.protect_last_n == 20
-
-
-def test_removing_proactive_prune_keys_restores_defaults(monkeypatch):
+def test_removing_compressor_keys_restores_fresh_build_values(monkeypatch):
+    """Absent keys must land on exactly what a fresh ContextCompressor installs, not stale values."""
     session, compressor = _neutral_session(
+        tail_mode="legacy",
+        summary_target_ratio=0.60,
+        protect_last_n=5,
         proactive_prune_tokens=48_000,
         proactive_prune_min_result_chars=30_000,
         proactive_prune_min_reclaim_tokens=1,
-    )
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.proactive_prune_tokens == 0
-    assert compressor.proactive_prune_min_result_chars == 8000
-    assert compressor.proactive_prune_min_reclaim_tokens == 4096
-
-
-def test_removing_min_tail_user_messages_restores_default(monkeypatch):
-    session, compressor = _neutral_session(min_tail_user_messages=4)
-    _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.min_tail_user_messages == 1
-
-
-def test_removing_model_thresholds_restores_empty_map(monkeypatch):
-    session, compressor = _neutral_session(
-        model_thresholds={"unset-test-model": 0.95}
+        min_tail_user_messages=4,
+        model_thresholds={"unset-test-model": 0.95},
     )
     assert compressor.threshold_percent == 0.95
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
-    assert compressor.model_thresholds == {}
-    # The stale per-model override must stop steering the live threshold too.
-    assert compressor.threshold_percent == 0.50
+
+    _, fresh = _neutral_session()
+    for attr in (
+        "tail_mode",
+        "summary_target_ratio",
+        "protect_last_n",
+        "proactive_prune_tokens",
+        "proactive_prune_min_result_chars",
+        "proactive_prune_min_reclaim_tokens",
+        "min_tail_user_messages",
+        "model_thresholds",
+        "threshold_percent",  # the stale per-model override must stop steering the live threshold
+    ):
+        assert getattr(compressor, attr) == getattr(fresh, attr), attr
+
+
+def test_boolean_prune_trigger_matches_fresh_build(monkeypatch):
+    """Hot reload parses YAML booleans like agent_init: a bool is never a count (`true` is not a 1-token
+    trigger); it keeps the default."""
+    session, compressor = _session_with_compressor()
+    for raw, expected in ((True, 0), (False, 0)):
+        monkeypatch.setattr(server, "_load_cfg", lambda raw=raw: {"compression": {"proactive_prune_tokens": raw}})
+        server._sync_agent_compression_with_config("sid-bool", session)
+        assert compressor.proactive_prune_tokens == expected
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"proactive_prune_min_reclaim_tokens": True}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.proactive_prune_min_reclaim_tokens == 4_096
+    # Non-prune keys keep their existing reload coercion (protect_last_n: false -> 0, as agent_init's int()).
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"compression": {"protect_last_n": False}})
+    server._sync_agent_compression_with_config("sid-bool", session)
+    assert compressor.protect_last_n == 0
+
+
+@pytest.mark.parametrize("raw", [50, 0])
+def test_live_prune_result_floor_matches_fresh_build(monkeypatch, raw):
+    session, compressor = _neutral_session(proactive_prune_min_result_chars=30_000)
+    _, fresh = _neutral_session(proactive_prune_min_result_chars=raw)
+    _sync_with_cfg(monkeypatch, session, {"compression": {"proactive_prune_min_result_chars": raw}})
+    assert compressor.proactive_prune_min_result_chars == fresh.proactive_prune_min_result_chars
+
+
+@pytest.mark.parametrize("write_fails", [True, False])
+def test_post_archive_noop_names_the_actual_reason(tmp_path, monkeypatch, write_fails):
+    from agent.context_compressor import _estimate_msg_budget_tokens
+    from tests.agent.test_proactive_prune_archive import _compressor, _round
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "read"}]
+    for i in range(8):
+        messages += _round(i, "original output\n" + "x" * 12_000 if i == 0 else "ok")
+    messages.append({"role": "user", "content": "continue"})
+    compressor = _compressor()
+    candidate, count = compressor._prune_old_tool_results(
+        messages, protect_tail_count=compressor.protect_last_n,
+        protect_tail_tokens=None, min_prune_chars=compressor.proactive_prune_min_result_chars)
+    assert count == 1
+    before = sum(map(_estimate_msg_budget_tokens, messages))
+    # The bare stub exactly meets the gate; a successful archive's pointer pushes it below.
+    compressor.proactive_prune_min_reclaim_tokens = before - sum(map(_estimate_msg_budget_tokens, candidate))
+    if write_fails:
+        monkeypatch.setattr("tools.tool_result_storage.write_pruned_original", lambda *args: None)
+    with patch.object(compressor, "_warn_reclamation_no_op") as warn:
+        result, count = compressor.prune_tool_results_only(messages, current_tokens=600_000)
+    assert result is messages and count == 0
+    reason = "prune:archive_write_failed" if write_fails else "prune:reclaim_below_minimum"
+    warn.assert_called_once_with(reason, 600_000, before=before)
 
 
 def test_removing_threshold_restores_derived_default(monkeypatch):
@@ -236,7 +313,8 @@ def test_removing_threshold_restores_derived_default(monkeypatch):
     )
     assert compressor._config_threshold_percent == 0.50
     assert compressor.threshold_percent == 0.50
-    assert compressor.threshold_tokens == int(600_000 * 0.50)
+    # The absent cap key restores DEFAULT_CONFIG's cap on top of the derived ratio trigger.
+    assert compressor.threshold_tokens == _with_default_cap(int(600_000 * 0.50))
 
 
 def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
@@ -253,7 +331,17 @@ def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
     _sync_with_cfg(monkeypatch, session, {"model": {}, "compression": {}})
     assert compressor._config_context_length is None
     assert compressor.context_length == 1_000_000
-    assert compressor.threshold_tokens == int(1_000_000 * 0.50)
+    assert compressor.threshold_tokens == _with_default_cap(int(1_000_000 * 0.50))
+
+
+def test_live_checkpoint_required_reaches_the_prune_gate(monkeypatch):
+    """The proactive prune bypasses the checkpoint hook, so its call-site gate must see a live flip."""
+    session, _ = _neutral_session()
+    session["agent"].compression_checkpoint_required = False
+    _sync_with_cfg(monkeypatch, session, {"compression": {"checkpoint_required": True}})
+    assert session["agent"].compression_checkpoint_required is True
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].compression_checkpoint_required is False
 
 
 def test_removing_idle_compact_after_seconds_restores_zero(monkeypatch):
@@ -282,3 +370,24 @@ def test_removing_codex_native_threshold_restores_default(monkeypatch):
     session["agent"].codex_responses_compact_threshold = 120_000
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].codex_responses_compact_threshold == 200_000
+
+
+def test_apply_live_compression_config_is_self_contained():
+    # Regression for #115572: _apply_live_compression_config referenced
+    # is_truthy_value without importing it, so a direct (non-rebound) call
+    # raised NameError. The module must not depend on server.py injecting the
+    # name via method_ctx.bind_module.
+    from tui_gateway.session_compression import _apply_live_compression_config
+
+    agent = SimpleNamespace(
+        model="unset-test-model",
+        provider="",
+        context_compressor=None,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    _apply_live_compression_config(agent, {"compression": {"enabled": True}})
+    assert agent.compression_enabled is True
+    assert agent.codex_responses_native_compaction is False

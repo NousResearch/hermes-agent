@@ -69,8 +69,15 @@ def _disable_isolation(monkeypatch):
 
 
 class TestSessionIsolationKeying:
-    def test_persistent_true_keeps_shared_default(self, monkeypatch):
+    def test_persistent_true_keeps_shared_default(self, monkeypatch, tmp_path):
         _disable_isolation(monkeypatch)
+        # The default profile's home stays on the shared "default" key (a named-profile
+        # home would take the profile path, so run from a real default root).
+        import hermes_constants
+
+        root = hermes_constants._get_platform_default_hermes_home()  # conftest's per-test native root
+        root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
         assert terminal_tool._resolve_container_task_id("tui:sess-1") == "default"
 
     def test_persistent_false_keys_by_session(self, monkeypatch):
@@ -128,6 +135,54 @@ class TestSessionIsolationKeying:
         terminal_tool.register_container_alias("y", "x")
         # Any terminating answer is fine; the invariant is no infinite loop.
         assert terminal_tool._resolve_container_task_id("x") in {"x", "y"}
+
+
+class TestRoutedScopeQualification:
+    """A routed profile must qualify session-derived keys (#123989): one multiplexed process,
+    two profiles, one colliding session id (header-less API fingerprint, shared DM chat id)
+    → distinct sandboxes and cwd records. No routed home → historical raw key."""
+
+    def test_colliding_session_id_is_isolated_per_routed_profile(self, monkeypatch, tmp_path):
+        from agent import secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        _enable_isolation(monkeypatch)
+        raw = "api-9a5f7809eec0aac1"
+        assert terminal_tool._resolve_container_task_id(raw) == raw  # CLI / standalone: unchanged
+        homes = {}
+        for name in ("research", "default"):
+            homes[name] = tmp_path / "profiles" / name
+            homes[name].mkdir(parents=True)
+        secret_scope.set_multiplex_active(True)
+        try:
+            keys, cwds = {}, {}
+            for name in ("research", "default", "research"):  # A → B → A
+                token = set_hermes_home_override(str(homes[name]))
+                try:
+                    keys[name] = terminal_tool._resolve_container_task_id(raw)
+                    terminal_tool.register_container_alias(f"child-{name}", raw)
+                    assert terminal_tool._resolve_container_task_id(f"child-{name}") == keys[name]
+                    if name not in cwds:
+                        assert terminal_tool.get_session_cwd(raw) is None
+                        terminal_tool.record_session_cwd(raw, f"/workspace/{name}")
+                    cwds[name] = terminal_tool.get_session_cwd(raw)
+                finally:
+                    reset_hermes_home_override(token)
+            assert keys["research"] == f"profile:research:{raw}"
+            assert keys["default"] == f"default:{raw}"
+            assert cwds == {"research": "/workspace/research", "default": "/workspace/default"}
+            token = set_hermes_home_override(str(homes["default"]))
+            try:
+                terminal_tool.clear_session_cwd(raw)
+            finally:
+                reset_hermes_home_override(token)
+            token = set_hermes_home_override(str(homes["research"]))
+            try:
+                assert terminal_tool.get_session_cwd(raw) == "/workspace/research"
+            finally:
+                reset_hermes_home_override(token)
+        finally:
+            secret_scope.set_multiplex_active(False)
 
 
 class TestSessionScopedMountResolution:
@@ -306,7 +361,7 @@ class TestSessionScopedContainerLifecycle:
             task_id="tui:sess-1",
         )
         assert captured["persist_across_processes"] is False
-        assert getattr(env, "_session_scoped") is True
+        assert env._session_scoped is True
 
     def test_create_environment_default_task_not_session_scoped(self, monkeypatch):
         _enable_isolation(monkeypatch)

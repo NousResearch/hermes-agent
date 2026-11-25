@@ -7,6 +7,7 @@ from typing import Callable
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     """Attach the ``update`` subcommand to ``subparsers``."""
+    from hermes_cli.release_channels import validate_name
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies")
@@ -23,6 +24,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "kind (git/docker/nix), every running Hermes service across all "
             "profiles with its supervisor and running code version, and how "
             "each will be restarted. Read-only; safe on a live fleet.")
+    update_parser.add_argument(
+        "--list-venv-holders", action="store_true", default=False,
+        help="Print the processes the Windows venv-holder guard would refuse on as a JSON list "
+            "[{pid, exe, argv, kind}] and exit: 0 when the venv is free, 3 when holders are present. "
+            "Read-only; kind is gateway / backend (Desktop serve) / hermes:<subcommand> / python, so a "
+            "scheduled update can stop exactly those PIDs instead of looping. Always [] off Windows.")
     update_parser.add_argument(
         "--no-backup", action="store_true", default=False,
         help="Skip ALL pre-update backups for this run (both the quick state snapshot and the full zip; overrides updates.pre_update_backup)",
@@ -60,10 +67,54 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "Still refuses to touch a dirty tree.")
     update_parser.add_argument(
         "--force", action="store_true", default=False,
-        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings. Does NOT bypass the venv-process guard (see --force-venv).",
+        help="Linux/macOS: stop every gateway this update owns NOW instead of waiting for in-flight work "
+            "to finish: running turns are interrupted, background subagents and tool/background processes "
+            "are stopped (anything still alive after ~12s is killed), then the update runs and the gateways "
+            "restart on the new code. Choose it when starting the update; it cannot interrupt another update "
+            "that is already waiting. Windows: proceed when another hermes.exe is detected (the Windows "
+            "pause keeps its drain). Does NOT bypass the Windows venv-process guard (see --force-venv).",
     )
     update_parser.add_argument(
         "--force-venv", action="store_true", default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
+    )
+    update_parser.add_argument(
+        "--set-channel",
+        default=None,
+        type=validate_name,
+        metavar="CHANNEL",
+        help=(
+            "Persist the update channel for THIS install (recorded per "
+            "install in config.yaml under update.installs). Names are resolved "
+            "from the release archive, not a built-in list. Official source "
+            "checkouts default to 'stable' (the latest published vX.Y.Z "
+            "release, exact commit); 'main' follows the source branch. "
+            "Package channels are baked into their identities."
+        ),
+    )
+    update_parser.add_argument(
+        "--install-id",
+        action="store_true",
+        default=False,
+        help=(
+            "Print this install's id and path (the id keys its per-install "
+            "channel record in config.yaml) and exit."
+        ),
+    )
+    update_parser.add_argument(
+        "--channel",
+        default=None,
+        type=validate_name,
+        metavar="CHANNEL",
+        help=(
+            "Track CHANNEL for this run only (transient override; "
+            "--set-channel persists). 'stable' and 'canary' select published "
+            "releases, 'main' the branch tip. Source installs only."
+        ),
+    )
+    update_parser.add_argument(
+        "--no-gateway-restart", action="store_true", default=False,
+        help="Update code and dependencies but defer the fleet restart. Use for updates "
+             "running inside a gateway cgroup, then restart gateways separately.",
     )
     update_parser.set_defaults(func=cmd_update)

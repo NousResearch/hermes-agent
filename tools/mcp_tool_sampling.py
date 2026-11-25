@@ -2,12 +2,18 @@
 (sampling/createMessage, text and tool-use results) and elicitation."""
 
 import asyncio
+import functools
 import json
 import logging
+import threading
 import time
-from typing import Callable, List, Optional
-from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, mcp_field, _core
-from tools.mcp_tool_schema import _normalize_mcp_input_schema
+from contextvars import Context
+from typing import TYPE_CHECKING, Callable, List, Optional
+from utils import is_truthy_value
+from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, exact_mcp_identifier, mcp_field, _core
+from tools.mcp_tool_schema import _normalize_mcp_input_schema, strip_schema_annotations
+from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
+
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -24,27 +30,31 @@ def _tool_result_text(block) -> str:
     if content is None:
         return ""
     items = content if isinstance(content, list) else [content]
-    return "\n".join(item.text for item in items if hasattr(item, "text"))
+    return "\n".join(strip_unicode_tags(item.text) for item in items if hasattr(item, "text"))
 
 
 def _content_part(block) -> Optional[dict]:
     """One OpenAI content part for a text/image block; None when unsupported."""
     if hasattr(block, "text"):
-        return {"type": "text", "text": block.text}
+        return {"type": "text", "text": strip_unicode_tags(block.text)}
     mime = mcp_field(block, "mime_type", "mimeType", _MISSING)
     if hasattr(block, "data") and mime is not _MISSING:
-        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{block.data}"}}
+        return {"type": "image_url", "image_url": {"url": f"data:{strip_unicode_tags(str(mime))};base64,{block.data}"}}
     logger.warning("Unsupported sampling content block type: %s (skipped)", type(block).__name__)
     return None
 
 
 def _tool_call_dict(tu, index: int) -> dict:
     args = tu.input
-    return {"id": getattr(tu, "id", f"call_{index}"), "type": "function", "function": {
-        "name": tu.name, "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)}}
+    # Same conversion as the matching tool result's ``tool_call_id``, so the pair still matches. The
+    # name and arguments are what the tool was really called with: they stay exact, like the tool's
+    # schema names and enums, so the history matches the advertised contract.
+    return {"id": strip_unicode_tags(str(getattr(tu, "id", f"call_{index}"))), "type": "function", "function": {
+        "name": exact_mcp_identifier(str(tu.name), "sampling tool name"),
+        "arguments": json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)}}
 
 
-def _convert_sampling_message(msg) -> List[dict]:
+def _convert_sampling_message(msg) -> list[dict]:
     """One MCP SamplingMessage -> OpenAI messages: tool results first, then either an assistant
     tool_calls message or plain content."""
     blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
@@ -53,19 +63,20 @@ def _convert_sampling_message(msg) -> List[dict]:
     others = [b for b in blocks if _tool_use_id(b) is _MISSING]
     tool_uses = [b for b in others if hasattr(b, "name") and hasattr(b, "input")]
     content_blocks = [b for b in others if not (hasattr(b, "name") and hasattr(b, "input"))]
-    out = [{"role": "tool", "tool_call_id": _tool_use_id(tr), "content": _tool_result_text(tr)} for tr in tool_results]
+    role = strip_unicode_tags(str(msg.role))
+    out = [{"role": "tool", "tool_call_id": strip_unicode_tags(str(_tool_use_id(tr))), "content": _tool_result_text(tr)} for tr in tool_results]
     if tool_uses:
-        msg_dict: dict = {"role": msg.role, "tool_calls": [_tool_call_dict(tu, i) for i, tu in enumerate(tool_uses)]}
-        text_parts = [b.text for b in content_blocks if hasattr(b, "text")]
+        msg_dict: dict = {"role": role, "tool_calls": [_tool_call_dict(tu, i) for i, tu in enumerate(tool_uses)]}
+        text_parts = [strip_unicode_tags(b.text) for b in content_blocks if hasattr(b, "text")]
         if text_parts:
             msg_dict["content"] = "\n".join(text_parts)
         out.append(msg_dict)
     elif len(content_blocks) == 1 and hasattr(content_blocks[0], "text"):
-        out.append({"role": msg.role, "content": content_blocks[0].text})
+        out.append({"role": role, "content": strip_unicode_tags(content_blocks[0].text)})
     elif content_blocks:
         parts = [p for p in map(_content_part, content_blocks) if p is not None]
         if parts:
-            out.append({"role": msg.role, "content": parts})
+            out.append({"role": role, "content": parts})
     return out
 
 
@@ -96,10 +107,13 @@ class SamplingHandler:
         self.timeout = _safe_numeric(config.get("timeout", 30), 30, float)
         self.max_tokens_cap = _safe_numeric(config.get("max_tokens_cap", 4096), 4096, int)
         self.max_tool_rounds = _safe_numeric(config.get("max_tool_rounds", 5), 5, int, minimum=0)
+        # Strict MCP servers reject the unknown sampling.tools sub-capability during
+        # initialization, so it is opt-in per server (default: plain sampling). (#5468)
+        self.expose_client_tools = is_truthy_value(config.get("expose_client_tools"), default=False)
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
         self.audit_level = self._LOG_LEVELS.get(str(config.get("log_level", "info")).lower(), logging.INFO)
-        self._rate_timestamps: List[float] = []
+        self._rate_timestamps: list[float] = []
         self._tool_loop_count = 0
         self.metrics = {"requests": 0, "errors": 0, "tokens_used": 0, "tool_use_count": 0}
 
@@ -119,7 +133,7 @@ class SamplingHandler:
         hints = getattr(preferences, "hints", None) or []
         return next((hint.name for hint in hints if getattr(hint, "name", None)), None)
 
-    def _convert_messages(self, params) -> List[dict]:
+    def _convert_messages(self, params) -> list[dict]:
         """MCP SamplingMessages -> OpenAI format (per-block duck-typed dispatch)."""
         return [m for msg in params.messages for m in _convert_sampling_message(msg)]
 
@@ -166,8 +180,13 @@ class SamplingHandler:
 
     def session_kwargs(self) -> dict:
         """Kwargs to pass to ClientSession for sampling support."""
+        sampling_capabilities = (
+            _core.SamplingCapability(tools=_core.SamplingToolsCapability())
+            if self.expose_client_tools
+            else _core.SamplingCapability()
+        )
         return {"sampling_callback": self,
-                "sampling_capabilities": _core.SamplingCapability(tools=_core.SamplingToolsCapability())}
+                "sampling_capabilities": sampling_capabilities}
 
     def _admit(self, params):
         """Rate-limit + allowed_models gate. Returns ``(resolved_model, None)`` or ``(None, ErrorData)``."""
@@ -190,12 +209,14 @@ class SamplingHandler:
         messages = self._convert_messages(params)
         system_prompt = mcp_field(params, "system_prompt", "systemPrompt")
         if system_prompt:
-            messages.insert(0, {"role": "system", "content": system_prompt})
+            messages.insert(0, {"role": "system", "content": strip_unicode_tags(str(system_prompt))})
         max_tokens = min(mcp_field(params, "max_tokens", "maxTokens", self.max_tokens_cap), self.max_tokens_cap)
         server_tools = getattr(params, "tools", None)
         tools = [{"type": "function", "function": {
-            "name": getattr(t, "name", ""), "description": getattr(t, "description", "") or "",
-            "parameters": _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema"))}}
+            "name": exact_mcp_identifier(str(getattr(t, "name", "")), "sampling tool name"),  # tool_calls echo it
+            "description": strip_tool_metadata_text(str(getattr(t, "description", "") or "")),
+            "parameters": strip_schema_annotations(
+                _normalize_mcp_input_schema(mcp_field(t, "input_schema", "inputSchema")), getattr(t, "name", ""))}}
             for t in server_tools] if server_tools else None
         logger.log(self.audit_level, "MCP server '%s' sampling request: model=%s, max_tokens=%d, messages=%d",
                    self.server_name, resolved_model, max_tokens, len(messages))
@@ -210,7 +231,7 @@ class SamplingHandler:
         sync_call = self._build_llm_call(params, resolved_model)  # outside the try: its errors propagate, not _fail
         try:
             response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=self.timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return self._fail(f"Sampling LLM call timed out after {self.timeout}s for server '{self.server_name}'")
         except Exception as exc:
             return self._fail(f"Sampling LLM call failed: {_sanitize_error(_exc_str(exc))}")
@@ -235,49 +256,120 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     for field_name, field_spec in props.items():
         spec = field_spec if isinstance(field_spec, dict) else {}
         field_type, field_desc = str(spec.get("type", "") or ""), str(spec.get("description", "") or "")
-        lines.append(f"  - {field_name}" + (f" ({field_type})" if field_type else "") + (f": {field_desc}" if field_desc else ""))
+        lines.append(f"  - {strip_unicode_tags(str(field_name))}"
+                     + (f" ({strip_unicode_tags(field_type)})" if field_type else "")
+                     + (f": {strip_unicode_tags(field_desc)}" if field_desc else ""))
     return "\n".join(lines)
 
 
+def _accepted_consent_content(schema: dict) -> Optional[dict]:
+    """Translate a binary approval into a safe, schema-valid consent form.
+
+    Hermes' approval surfaces can answer yes/no, not collect arbitrary form
+    fields.  A required single boolean is unambiguous.  A required single
+    enum is only unambiguous when it offers the conventional one-shot
+    ``allow_once`` choice; choosing a session-wide grant would silently
+    broaden the user's approval.  Every other form must be declined rather
+    than submitted with the historical (and invalid) empty object.
+    """
+    if not isinstance(schema, dict):
+        return None
+    props = schema.get("properties")
+    required = schema.get("required")
+    # No required fields: the empty object already satisfies the form.
+    if required in (None, []):
+        return {}
+    if not isinstance(props, dict) or not isinstance(required, list) or len(required) != 1:
+        return None
+    field = required[0]
+    spec = props.get(field)
+    if not isinstance(field, str) or not isinstance(spec, dict):
+        return None
+    if spec.get("type") == "boolean":
+        return {field: True}
+    choices = spec.get("enum")
+    if not isinstance(choices, list):
+        choices = [choice.get("const") for choice in spec.get("oneOf", [])
+                   if isinstance(choice, dict) and "const" in choice]
+    return {field: "allow_once"} if "allow_once" in choices else None
+
+
 class ElicitationHandler:
-    """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
-    (CLI, TUI, Telegram, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
-    state returns decline/cancel, never a silent accept."""
+    """``elicitation_callback`` for one MCP server. Form-mode asks the user for the requested fields on
+    the agent's own surface (CLI, TUI, Desktop, messaging); URL-mode is declined. Fail-closed: any
+    timeout, exception or unexpected state returns decline/cancel, never a silent accept."""
 
     # asyncio-side safety net over the approval's own input() timeout so the MCP loop never blocks
     # indefinitely if the inner timeout is bypassed.
     _OUTER_TIMEOUT_GRACE_SECONDS = 5
-    # consent answer -> (ElicitResult action, metric); anything else declines.
+    # answer -> (ElicitResult action, metric); anything else declines.
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
-    def __init__(self, server_name: str, config: dict, owner: Optional["MCPServerTask"] = None):
+    def __init__(self, server_name: str, config: dict,
+                 call_context: Callable[[], Optional[Context]] = lambda: None,
+                 call_callbacks: Callable[[], tuple] = lambda: ()):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
-        # Back-reference for the agent's contextvars snapshot; optional for isolated unit tests.
-        self.owner = owner
+        # Returns the owning MCPServerTask's contextvars snapshot for the in-flight tool call (None
+        # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
+        # MCPServerTask cannot be named here.
+        self._call_context = call_context
+        # Same-call ``(setter, callback)`` pairs for the turn thread's prompt callbacks
+        # (approval/sudo/vault) — ``asyncio.to_thread`` does not carry ``threading.local``.
+        self._call_callbacks = call_callbacks
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
         """Kwargs to pass to ClientSession for elicitation support."""
         return {"elicitation_callback": self}
 
-    def _result(self, action: str, metric: str):
-        """Count *metric* and return ``ElicitResult(action)`` (accept carries empty content)."""
+    def _result(self, action: str, metric: str, content: Optional[dict] = None):
+        """Count *metric* and return an ``ElicitResult``."""
         self.metrics[metric] += 1
-        return _core.ElicitResult(action=action, **({"content": {}} if action == "accept" else {}))
+        return _core.ElicitResult(action=action, **({"content": content or {}} if action == "accept" else {}))
 
-    def _consent_thunk(self, message: str, description: str) -> Callable[[], str]:
-        """Sync consent call replaying the agent's contextvars snapshot when the owner captured one
-        (the recv-loop task does NOT inherit them; gateway-platform detection needs them).
-        ``Context.run`` runs a context once, so it is copied per elicitation."""
+    def _on_turn_thread(self, fn: Callable[[], object]) -> Callable[[], object]:
+        """*fn* replaying the agent's contextvars snapshot when the owning task captured one (the
+        recv-loop task does NOT inherit them; gateway-platform detection and the bound form asker need
+        them) and installing the captured per-thread prompt callbacks for the duration (the executor
+        thread has none of its own). ``Context.run`` runs a context once, so it is copied per call."""
+        # Outside a tool call (resources/read, prompts/get) nothing was captured: an empty slot.
+        captured, installs = self._call_context(), self._call_callbacks() or ()
+
+        def _invoke():
+            for setter, cb in installs:
+                setter(cb)
+            try:  # executor threads are reused: never leak an install past this call
+                return fn() if captured is None else captured.copy().run(fn)
+            finally:
+                for setter, _cb in installs:
+                    setter(None)
+
+        return _invoke
+
+    def _ask(self, message: str, schema: dict, ended: Callable[[], bool] = lambda: False):
+        """Collect the answer on the agent's own surface: the form through the turn's clarify callback
+        when one is bound and a user can answer, else the yes/no approval prompt (headless sessions
+        decline there) with the consent content that answer can honestly fill."""
+        from tools import approval_context as _ctx
         from tools.approval_prompt import request_elicitation_consent
+        from tools.mcp_elicitation_form import FormOutcome, ask_form, current_form_asker
 
-        kwargs = {"timeout_seconds": int(self.timeout), "surface": f"mcp-elicitation/{self.server_name}"}
-        captured = getattr(self.owner, "_pending_call_context", None) if self.owner else None
-        if captured is None:
-            return lambda: request_elicitation_consent(message, description, **kwargs)
-        return lambda: captured.copy().run(request_elicitation_consent, message, description, **kwargs)
+        asker = current_form_asker()
+        if asker is not None and not _ctx._no_user_can_answer():
+            return ask_form(asker, self.server_name, message, schema, ended)
+        answer = request_elicitation_consent(message, _format_elicitation_schema_summary(schema, self.server_name),
+                                             timeout_seconds=int(self.timeout),
+                                             surface=f"mcp-elicitation/{self.server_name}")
+        if answer != "accept":
+            return FormOutcome("cancel" if answer == "cancel" else "decline")
+        content = _accepted_consent_content(schema)
+        if content is None:
+            logger.warning("MCP server '%s' elicitation requires form input this surface cannot collect; "
+                           "declining", self.server_name)
+            return FormOutcome("decline")
+        return FormOutcome("accept", content)
 
     async def __call__(self, context, params):
         """SDK elicitation callback (``ElicitationFnT``). Returns ElicitResult or ErrorData."""
@@ -287,23 +379,25 @@ class ElicitationHandler:
                         "(URL-mode elicitation not implemented)", self.server_name)
             return self._result("decline", "declined")
 
-        message = getattr(params, "message", "") or f"MCP server '{self.server_name}' is requesting your approval"
+        message = strip_unicode_tags(str(getattr(params, "message", "") or f"MCP server '{self.server_name}' is requesting your approval"))
         # ``requestedSchema`` on mcp 1.x, ``requested_schema`` on 2.0 (aliases don't apply to attribute
         # access) — read both or the user approves without seeing the fields.
         schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
         logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
-        try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
-            invoke_consent = self._consent_thunk(message, _format_elicitation_schema_summary(schema, self.server_name))
-        except Exception as exc:  # pragma: no cover -- defensive
-            logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)
-            return self._result("decline", "errors")
-        try:  # off-thread: inline, the sync consent flow would freeze the MCP loop and every RPC on it
-            answer = await asyncio.wait_for(
-                asyncio.to_thread(invoke_consent), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
-        except asyncio.TimeoutError:
+        # One deadline for the whole form: once this wait ends the worker (which cancellation cannot
+        # stop) opens no further batch or re-ask, so the user is not asked after the server has its answer.
+        ended = threading.Event()
+        ask = self._on_turn_thread(functools.partial(self._ask, message, schema, ended.is_set))
+        try:  # off-thread: inline, the sync prompt would freeze the MCP loop and every RPC on it
+            outcome = await asyncio.wait_for(
+                asyncio.to_thread(ask), timeout=self.timeout + self._OUTER_TIMEOUT_GRACE_SECONDS)
+        except TimeoutError:
             logger.warning("MCP server '%s' elicitation timed out after %ds", self.server_name, int(self.timeout))
             return self._result("cancel", "errors")
         except Exception as exc:
             logger.error("MCP server '%s' elicitation failed: %s", self.server_name, exc, exc_info=True)
             return self._result("decline", "errors")
-        return self._result(*self._ANSWER_RESULTS.get(answer, ("decline", "declined")))
+        finally:
+            ended.set()
+        action, metric = self._ANSWER_RESULTS.get(outcome.action, ("decline", "declined"))
+        return self._result(action, metric, outcome.content)

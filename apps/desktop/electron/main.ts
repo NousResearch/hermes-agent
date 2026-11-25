@@ -365,7 +365,12 @@ import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
-import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
+import {
+  activateWindow,
+  ensureMainWindow,
+  shouldQuitOnLastChatClosed,
+  shouldQuitOnWindowAllClosed
+} from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -502,7 +507,7 @@ import {
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
-import { createQuitFinalization } from './quit-finalization'
+import { createQuitFinalization, shouldArmQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
   backendOwnedByApp,
@@ -11182,14 +11187,17 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   }
 })
 
-const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
-
 const quitFinalization = createQuitFinalization({
-  isWindows: IS_WINDOWS,
+  enabled: shouldArmQuitFinalization(process.platform),
   hardExit: code => {
-    rememberLog(`[quit] forcing Windows process exit after Electron quit finalization stalled`)
+    rememberLog(`[quit] forcing ${process.platform} process exit after Electron quit finalization stalled`)
     app.exit(code)
   }
+})
+
+const quitTeardown = createQuitTeardownCoordinator(() => {
+  quitFinalization.arm()
+  app.quit()
 })
 
 async function teardownSshForQuit(): Promise<void> {
@@ -11754,7 +11762,12 @@ const minimizeToTray = createMinimizeToTray({
   // A tray click is an explicit relaunch gesture (#130810): restore with
   // activation (show + focus), not the ambient showInactive path.
   restoreMainWindow: () =>
-    ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow: activateWindow }),
+    ensureMainWindow(mainWindow, {
+      isReady: app.isReady(),
+      isQuitting: isAppQuitUnderway(),
+      createWindow,
+      focusWindow: activateWindow
+    }),
   isQuittingForHandoff: () => isQuittingForHandoff,
   log: rememberLog
 })
@@ -12109,6 +12122,14 @@ let petOverlayWindow = null
 let appQuitting = false
 // Real quit proceeding; see shouldQuitOnLastChatClosed (#130810).
 let quitInProgress = false
+
+// True once an actual app exit/handoff/shutdown has begun. Deliberately
+// excludes `appQuitting`, which Windows/Linux also sets when closing the
+// primary window while another chat window may still keep the app alive.
+function isAppQuitUnderway(): boolean {
+  return quitInProgress || isQuittingForHandoff || backendShutdown.hasStarted()
+}
+
 // Set while a close is in flight: Electron's close() is async and can be
 // aborted on macOS, so the window may still be alive after closePetOverlay().
 // openPetOverlay must never reuse (or leave) a closing window — otherwise two
@@ -17305,6 +17326,7 @@ if (!isPrimaryInstance) {
     rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
     ensureMainWindow(mainWindow, {
       isReady: app.isReady(),
+      isQuitting: isAppQuitUnderway(),
       createWindow,
       focusWindow: activateWindow,
       // deep-link delivery focuses a live window after its renderer is ready.
@@ -17470,6 +17492,17 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
+    if (isAppQuitUnderway()) {
+      // Never recreate a window on top of a permanently aborted backend
+      // lifecycle; if teardown already finished, re-request the final quit.
+      if (quitTeardown.isFinished()) {
+        quitFinalization.arm()
+        setTimeout(() => app.quit(), 0)
+      }
+
+      return
+    }
+
     // Recreate the primary window if it's gone. Guard on mainWindow directly
     // (not just total window count) so a dock click still restores the main
     // window when only secondary session windows remain open.
@@ -17542,7 +17575,7 @@ function quitStopsBackendWork(): boolean {
 // and the confirmation is on screen; the confirm button re-enters before-quit with
 // the latch set and falls straight through to the teardown below.
 function heldQuitForActiveWork(event: Electron.Event): boolean {
-  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || isQuittingForHandoff) {
+  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || isAppQuitUnderway()) {
     return false
   }
 
@@ -17691,7 +17724,7 @@ app.on('before-quit', event => {
         ...managedConnectionRecoveries.values()
       ]).finally(() => {
         managedUpdateQuitWaitDone = true
-        app.quit()
+        setTimeout(() => app.quit(), 0)
       })
     }
 
@@ -17723,6 +17756,8 @@ app.on('before-quit', event => {
 
   if (quitTeardown.begin(teardownTasks)) {
     event.preventDefault()
+  } else {
+    quitFinalization.arm()
   }
 
   // Clean quit mid-boot should not trip next-launch --no-sandbox (#38216).
@@ -17790,12 +17825,17 @@ app.on('before-quit', event => {
 
 app.on('window-all-closed', () => {
   // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  // the last window. When we're handing off to a detached updater / swap /
+  // uninstall script — or when a real quit is already in progress — the
+  // process MUST exit instead of staying resident with permanently aborted
+  // backend lifecycles.
+  if (
+    shouldQuitOnWindowAllClosed({
+      platform: process.platform,
+      isQuittingForHandoff,
+      quitInProgress
+    })
+  ) {
     app.quit()
   }
 })

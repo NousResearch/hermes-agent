@@ -15,6 +15,7 @@ type ActivatableWindow = MainWindowLike & {
 
 type EnsureMainWindowOptions<T extends MainWindowLike> = {
   isReady: boolean
+  isQuitting?: boolean
   createWindow: () => unknown
   focusWindow: (window: T) => unknown
   focusExisting?: boolean
@@ -22,8 +23,12 @@ type EnsureMainWindowOptions<T extends MainWindowLike> = {
 
 export function ensureMainWindow<T extends MainWindowLike>(
   window: T | null | undefined,
-  { isReady, createWindow, focusWindow, focusExisting = true }: EnsureMainWindowOptions<T>
+  { isReady, isQuitting = false, createWindow, focusWindow, focusExisting = true }: EnsureMainWindowOptions<T>
 ) {
+  if (isQuitting) {
+    return
+  }
+
   if (!window || window.isDestroyed()) {
     // a closed electron window stays truthy, so replace it before invoking native methods.
     if (isReady) {
@@ -36,6 +41,26 @@ export function ensureMainWindow<T extends MainWindowLike>(
   if (focusExisting) {
     focusWindow(window)
   }
+}
+
+/**
+ * Whether `window-all-closed` must call `app.quit()`.
+ *
+ * macOS normally keeps the process in the Dock when the last window closes,
+ * EXCEPT when a real quit or update handoff is already in progress: if all
+ * windows finish closing after a deferred `before-quit` teardown was admitted,
+ * staying alive strands the process with permanently aborted backend lifecycles.
+ */
+export function shouldQuitOnWindowAllClosed({
+  platform,
+  isQuittingForHandoff,
+  quitInProgress
+}: {
+  platform: NodeJS.Platform | string
+  isQuittingForHandoff: boolean
+  quitInProgress: boolean
+}): boolean {
+  return platform !== 'darwin' || isQuittingForHandoff || quitInProgress
 }
 
 /**

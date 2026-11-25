@@ -2,21 +2,28 @@ import assert from 'node:assert/strict'
 
 import { test, vi } from 'vitest'
 
-import { createQuitFinalization } from './quit-finalization'
+import { createQuitFinalization, shouldArmQuitFinalization } from './quit-finalization'
 
 /**
- * #116376: on Windows, closing the last window ran the whole JS quit path
- * (window-all-closed → app.quit → before-quit teardown → will-quit) and the
- * process still stayed resident with 0 windows. The fallback must force the
- * exit once, only on Windows, and only if Electron never reports `quit`.
+ * #116376 (Windows) and macOS deferred-quit stalls: Electron can finish JS
+ * before-quit teardown (or enter will-quit) and still remain resident with
+ * zero windows and permanently aborted backend lifecycles. The fallback must
+ * arm on Windows and macOS, stay disabled on other platforms, force the exit
+ * once after its deadline, and cancel cleanly once Electron emits `quit`.
  */
 
-test('forces a single Windows exit once the admitted quit exceeds its deadline; never arms off Windows', () => {
+test('arms quit finalization on Windows and macOS only', () => {
+  assert.equal(shouldArmQuitFinalization('win32'), true)
+  assert.equal(shouldArmQuitFinalization('darwin'), true)
+  assert.equal(shouldArmQuitFinalization('linux'), false)
+})
+
+test('forces a single exit once the admitted quit exceeds its deadline; never arms when disabled', () => {
   let onTimeout: (() => void) | undefined
   const hardExit = vi.fn()
 
   const finalization = createQuitFinalization({
-    isWindows: true,
+    enabled: true,
     schedule: callback => {
       onTimeout = callback
 
@@ -33,10 +40,10 @@ test('forces a single Windows exit once the admitted quit exceeds its deadline; 
   assert.deepEqual(hardExit.mock.calls, [[0]])
 
   const schedule = vi.fn()
-  const posixExit = vi.fn()
-  createQuitFinalization({ isWindows: false, schedule, hardExit: posixExit }).arm()
+  const disabledExit = vi.fn()
+  createQuitFinalization({ enabled: false, schedule, hardExit: disabledExit }).arm()
   assert.equal(schedule.mock.calls.length, 0)
-  assert.equal(posixExit.mock.calls.length, 0)
+  assert.equal(disabledExit.mock.calls.length, 0)
 })
 
 test('a completed quit cancels the fallback and it never re-arms', () => {
@@ -50,7 +57,7 @@ test('a completed quit cancels the fallback and it never re-arms', () => {
     return 'timer'
   })
 
-  const finalization = createQuitFinalization({ isWindows: true, schedule, cancel, hardExit })
+  const finalization = createQuitFinalization({ enabled: true, schedule, cancel, hardExit })
 
   finalization.arm()
   finalization.cancel()

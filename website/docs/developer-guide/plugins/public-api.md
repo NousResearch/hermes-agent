@@ -181,7 +181,7 @@ with a name allows that one name only.
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
 | `hermes_cli.plugin_session` | `turn_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached |
-| `hermes_cli.plugin_session` | `turn_internal` | user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached |
+| `hermes_cli.plugin_session` | `turn_origin` | user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached |
 | `hermes_cli.plugin_session` | `session_viewers` | user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached |
 | `hermes_cli.plugin_session` | `session_source` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |
 | `hermes_cli.plugin_session` | `in_delegated_child` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |

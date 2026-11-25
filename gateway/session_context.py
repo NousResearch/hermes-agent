@@ -53,8 +53,8 @@ _SESSION_VARS = (
 # (steer, redirect) clears its user in place (``absorb_turn_input``); the worker's copied ACTOR vars
 # cannot change from outside, so ``get_session_env`` re-reads the actor through it.
 _SESSION_TURN_EVENT: ContextVar[Any] = ContextVar("HERMES_SESSION_TURN_EVENT", default=None)
-# ``turn_started_by_hermes`` of an event-less follow-up turn (a late /steer run as the next turn),
-# which runs under the turn event it follows; _UNSET defers to that event.
+# ``bound_turn_origin`` of an event-less follow-up turn (a late /steer run as the next turn), which
+# runs under the turn event it follows; _UNSET defers to that event.
 _SESSION_TURN_ORIGIN: ContextVar[Any] = ContextVar("HERMES_SESSION_TURN_ORIGIN", default=_UNSET)
 _ACTOR_VAR_NAMES = frozenset({"HERMES_SESSION_ACTOR_ID", "HERMES_SESSION_ACTOR_NAME"})
 
@@ -136,11 +136,11 @@ def scoped_turn_actor(event: Any, turn: Any) -> Iterator[None]:
 
 
 @contextmanager
-def scoped_turn_origin(started_by_hermes: bool | None) -> Iterator[None]:
-    """Answer ``turn_started_by_hermes`` with *started_by_hermes* for a follow-up turn that has no event
-    of its own and so runs under the event it follows (a late /steer drained as the next turn: the
-    person's text, not the turn it followed), restoring the outer answer on exit."""
-    token = _SESSION_TURN_ORIGIN.set(started_by_hermes)
+def scoped_turn_origin(origin: str | None) -> Iterator[None]:
+    """Answer ``bound_turn_origin`` with *origin* for a follow-up turn that has no event of its own and
+    so runs under the event it follows (a late /steer drained as the next turn: the person's text, not
+    the turn it followed), restoring the outer answer on exit."""
+    token = _SESSION_TURN_ORIGIN.set(origin)
     try:
         yield
     finally:
@@ -246,15 +246,15 @@ def _bound_session_value(name: str) -> Any:
     return _UNSET if var is None else var.get()
 
 
-def turn_started_by_hermes() -> bool | None:
-    """``MessageEvent.started_by_hermes`` of the turn this context runs, ``None`` with no turn bound
-    (a managed worker, cron, the CLI or a plugin's slash command bind no event); an event-less
+def bound_turn_origin() -> str | None:
+    """``MessageEvent.turn_origin`` of the turn this context runs, ``None`` with no turn bound (a
+    managed worker, cron, the CLI or a plugin's slash command bind no event); an event-less
     follow-up's own answer (``scoped_turn_origin``) wins over the event it runs under."""
     origin = _SESSION_TURN_ORIGIN.get()
     if origin is not _UNSET:
         return origin
     event = _SESSION_TURN_EVENT.get()
-    return event.started_by_hermes() if event is not None else None
+    return event.turn_origin() if event is not None else None
 
 
 def bound_session_env(name: str) -> str:

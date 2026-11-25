@@ -88,6 +88,7 @@ async function freshModule() {
 function restoreGlobals() {
   vi.unstubAllGlobals()
   Reflect.deleteProperty(window.navigator, 'serviceWorker')
+  Reflect.deleteProperty(window, '__HERMES_DASHBOARD_PROFILE__')
 }
 
 describe('showBrowserNotification', () => {
@@ -124,10 +125,31 @@ describe('showBrowserNotification', () => {
     expect(container.register).toHaveBeenCalledWith('/notification-worker.js', { scope: '/' })
     expect(registration.shown).toEqual([
       {
-        options: { body: 'rm -rf build', data: { focusSessionId: 'stored-1' }, tag: 'hermes:approval:stored-1' },
+        options: {
+          body: 'rm -rf build',
+          data: { focusSessionId: 'stored-1', profile: 'default', tab: expect.any(String) },
+          tag: 'hermes:approval:stored-1'
+        },
         title: 'Approval needed'
       }
     ])
+  })
+
+  it("names this tab, and the profile it is on now or else the server's own, for the click", async () => {
+    FakeNotification.permission = 'granted'
+    const registration = new FakeRegistration()
+    stubServiceWorker(registration)
+    Reflect.set(window, '__HERMES_DASHBOARD_PROFILE__', 'work')
+    let profile: null | string = null
+    notifications.installBrowserNotifications('', () => profile)
+
+    await notifications.showBrowserNotification({ focusSessionId: 'stored-1', kind: 'approval', title: 'A' })
+    profile = 'research'
+    await notifications.showBrowserNotification({ focusSessionId: 'stored-2', kind: 'approval', title: 'B' })
+
+    const [first, second] = registration.shown.map(entry => entry.options?.data)
+    expect(first).toEqual({ focusSessionId: 'stored-1', profile: 'work', tab: expect.any(String) })
+    expect(second).toEqual({ focusSessionId: 'stored-2', profile: 'research', tab: first.tab })
   })
 
   it('reports false, and never throws, where neither a worker nor the constructor can show it', async () => {
@@ -215,6 +237,25 @@ describe('installBrowserNotifications', () => {
     notifications.installBrowserNotifications('')
 
     expect(container.register).toHaveBeenCalledWith('/notification-worker.js', { scope: '/' })
+  })
+
+  it("answers the worker's question with the id this tab's notifications carry", async () => {
+    FakeNotification.permission = 'granted'
+    const registration = new FakeRegistration()
+    const container = stubServiceWorker(registration)
+    const opened: string[] = []
+    const off = notifications.onBrowserFocusSession(id => opened.push(id))
+    const port = { postMessage: vi.fn() }
+    notifications.installBrowserNotifications('')
+    await notifications.showBrowserNotification({ focusSessionId: 'stored-1', kind: 'approval', title: 'A' })
+
+    const event = new Event('message')
+    Object.defineProperties(event, { data: { value: { type: 'hermes:tab-query' } }, ports: { value: [port] } })
+    container.dispatchEvent(event)
+
+    expect(port.postMessage.mock.calls).toEqual([[(registration.shown[0].options?.data as { tab: string }).tab]])
+    expect(opened).toEqual([])
+    off()
   })
 
   it('opens the session a notification click routes back through the worker', () => {

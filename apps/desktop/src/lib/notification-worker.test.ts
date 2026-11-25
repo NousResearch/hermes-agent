@@ -7,12 +7,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
  */
 const WORKER_SCRIPT = '../../public/notification-worker.js'
 const SCOPE = 'https://hermes.example/hermes/'
+const TAB_QUERY = 'hermes:tab-query'
 
 class FakeWindowClient {
   focused = 0
   messages: unknown[] = []
+  queries = 0
 
-  constructor(public url: string) {}
+  /** *id*: what the tab answers when the worker asks for the id its notifications carry; null never answers. */
+  constructor(
+    public url: string,
+    public id: null | string = null
+  ) {}
 
   async focus() {
     this.focused += 1
@@ -20,9 +26,27 @@ class FakeWindowClient {
     return this
   }
 
-  postMessage(message: unknown) {
+  postMessage(message: unknown, ports: readonly MessagePort[] = []) {
+    if ((message as { type?: unknown }).type === TAB_QUERY) {
+      this.queries += 1
+
+      if (this.id !== null) {
+        ports[0]?.postMessage(this.id)
+      }
+
+      return
+    }
+
     this.messages.push(message)
   }
+}
+
+/** A message from the worker as the page's container receives it, transferred ports included. */
+function workerMessage(data: unknown, ports: readonly MessagePort[] = []): Event {
+  const event = new Event('message')
+  Object.defineProperties(event, { data: { value: data }, ports: { value: ports } })
+
+  return event
 }
 
 type Listener = (event: unknown) => void
@@ -108,6 +132,67 @@ describe('notification worker', () => {
     expect(otherApp.focused).toBe(0)
   })
 
+  it('asks each open tab which one showed the notification, and opens the session there', async () => {
+    // Both on the same profile by their addresses, and one used since: only the tabs can tell.
+    const other = new FakeWindowClient(SCOPE, 'tab-b')
+    const notifier = new FakeWindowClient(SCOPE, 'tab-a')
+    const worker = await startWorker([other, notifier])
+
+    await worker.click({ focusSessionId: 'stored-1', profile: 'research', tab: 'tab-a' })
+
+    expect([notifier.focused, notifier.messages]).toEqual([
+      1,
+      [{ sessionId: 'stored-1', type: 'hermes:focus-session' }]
+    ])
+    expect([other.focused, other.messages]).toEqual([0, []])
+    expect(worker.clients.openWindow).not.toHaveBeenCalled()
+  })
+
+  it('prefers a tab that does not answer, which may have shown it, then the tab used last', async () => {
+    const other = new FakeWindowClient(SCOPE, 'tab-b')
+    const frozen = new FakeWindowClient(SCOPE, null)
+    const third = new FakeWindowClient(SCOPE, 'tab-c')
+    const worker = await startWorker([other, frozen, third])
+
+    await worker.click({ focusSessionId: 'stored-1', profile: 'research', tab: 'tab-a' })
+    frozen.id = 'tab-d'
+    await worker.click({ focusSessionId: 'stored-2', profile: 'research', tab: 'tab-a' })
+
+    expect(frozen.messages).toEqual([{ sessionId: 'stored-1', type: 'hermes:focus-session' }])
+    expect(other.messages).toEqual([{ sessionId: 'stored-2', type: 'hermes:focus-session' }])
+    expect([third.focused, third.messages]).toEqual([0, []])
+    expect(worker.clients.openWindow).not.toHaveBeenCalled()
+  })
+
+  it('asks no tab when there is no choice to make: a lone tab, or a click that names no session', async () => {
+    const lone = new FakeWindowClient(SCOPE, 'tab-b')
+    const worker = await startWorker([lone])
+
+    await worker.click({ focusSessionId: 'stored-1', profile: 'research', tab: 'tab-a' })
+
+    expect([lone.queries, lone.messages]).toEqual([0, [{ sessionId: 'stored-1', type: 'hermes:focus-session' }]])
+
+    const first = new FakeWindowClient(SCOPE, 'tab-b')
+    const second = new FakeWindowClient(SCOPE, 'tab-a')
+    const sessionless = await startWorker([first, second])
+
+    await sessionless.click({ profile: 'research', tab: 'tab-a' })
+
+    expect([first.focused, first.queries, second.focused, second.queries]).toEqual([1, 0, 0, 0])
+  })
+
+  it("opens the Webapp on the notification's profile when none of its tabs is open", async () => {
+    const worker = await startWorker([new FakeWindowClient('https://hermes.example/other/')])
+
+    await worker.click({ focusSessionId: 'stored 1', profile: 'research' })
+    await worker.click({ profile: 'default' })
+
+    expect(worker.clients.openWindow.mock.calls).toEqual([
+      [`${SCOPE}?profile=research#/stored%201`],
+      [`${SCOPE}?profile=default`]
+    ])
+  })
+
   it('opens the Webapp at its base path when no tab is open and the notification names no session', async () => {
     const worker = await startWorker([])
 
@@ -143,6 +228,38 @@ describe('notification worker', () => {
     await worker.click({ focusSessionId: 'stored-1' })
 
     expect(opened).toEqual(['stored-1'])
+    off()
+  })
+
+  it('brings a click back to the tab that showed the notification', async () => {
+    vi.stubGlobal('Notification', { permission: 'granted' })
+    vi.stubGlobal('isSecureContext', true)
+    const shown: NotificationOptions[] = []
+
+    const registration = {
+      active: {},
+      showNotification: async (_title: string, options: NotificationOptions) => void shown.push(options)
+    }
+
+    const container = Object.assign(new EventTarget(), { register: vi.fn(async () => registration) })
+    Object.defineProperty(window.navigator, 'serviceWorker', { configurable: true, value: container })
+    // This tab, and another Webapp tab used since.
+    const other = new FakeWindowClient(SCOPE, 'another-tab')
+    const tab = new FakeWindowClient(SCOPE)
+    tab.postMessage = (message, ports = []) => container.dispatchEvent(workerMessage(message, ports))
+    const worker = await startWorker([other, tab])
+    const page = await import('./browser-notifications')
+    const opened: string[] = []
+    const off = page.onBrowserFocusSession(id => opened.push(id))
+    page.installBrowserNotifications('/hermes', () => 'research')
+
+    expect(
+      await page.showBrowserNotification({ focusSessionId: 'stored-1', kind: 'approval', title: 'Approval' })
+    ).toBe(true)
+    await worker.click(shown[0].data)
+
+    expect(opened).toEqual(['stored-1'])
+    expect([other.focused, other.messages]).toEqual([0, []])
     off()
   })
 })

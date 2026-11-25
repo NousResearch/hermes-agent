@@ -17,6 +17,9 @@
  * it, a plain-http LAN address does not.
  */
 
+import { randomUuid } from '@hermes/shared'
+
+import { browserLaunchProfileOrDefault } from '@/lib/platform'
 import { flagTabAttention } from '@/store/browser-tab-attention'
 
 export type BrowserNotificationPermission = 'default' | 'denied' | 'granted' | 'insecure' | 'unsupported'
@@ -25,9 +28,20 @@ export type BrowserNotificationPermission = 'default' | 'denied' | 'granted' | '
 const WORKER_SCRIPT = 'notification-worker.js'
 /** What the worker posts to the tab a click brings forward (public/notification-worker.js). */
 const FOCUS_SESSION_MESSAGE = 'hermes:focus-session'
+/** The worker's question, when a click has several tabs to choose from: which id does this tab put in its
+ *  notifications. */
+const TAB_QUERY = 'hermes:tab-query'
 
 let basePath = ''
 let workerRegistration: null | Promise<null | ServiceWorkerRegistration> = null
+/** The profile this tab is on now, from the browser bridge; null when it can't name one. */
+let currentProfile: () => null | string = () => null
+let tabId: null | string = null
+
+/** This tab's id in its notifications, so the worker can bring a click back to the tab that showed it. */
+function thisTab(): string {
+  return (tabId ??= randomUuid())
+}
 
 export function browserNotificationPermission(): BrowserNotificationPermission {
   if (typeof window === 'undefined') {
@@ -120,12 +134,20 @@ function notificationWorker(): Promise<null | ServiceWorkerRegistration> {
 }
 
 /** Wire this tab to the notification worker at *base* (the Webapp's base path): a click it routes here
- *  opens its session, and a tab already allowed to notify registers it now, before any event. */
-export function installBrowserNotifications(base: string): void {
+ *  opens its session, and a tab already allowed to notify registers it now, before any event. *profile*
+ *  names the profile the tab is on now, for a click that finds no Webapp tab open. */
+export function installBrowserNotifications(base: string, profile: () => null | string = () => null): void {
   basePath = base
+  currentProfile = profile
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', event => {
+      if ((event.data as { type?: unknown } | null)?.type === TAB_QUERY) {
+        event.ports[0]?.postMessage(thisTab())
+
+        return
+      }
+
       const sessionId = focusSessionRequest(event.data)
 
       if (sessionId) {
@@ -178,7 +200,9 @@ export async function showBrowserNotification(payload: BrowserNotifyPayload): Pr
 
   const options: NotificationOptions = {
     body: payload.body,
-    data: { focusSessionId },
+    // The worker brings a click back to this tab; with no Webapp tab open, it opens the Webapp on this
+    // tab's profile.
+    data: { focusSessionId, profile: currentProfile() || browserLaunchProfileOrDefault(), tab: thisTab() },
     // One OS entry per session+kind: a replayed event replaces, never stacks.
     tag: `hermes:${payload.kind ?? ''}:${focusSessionId ?? payload.tag ?? ''}`
   }

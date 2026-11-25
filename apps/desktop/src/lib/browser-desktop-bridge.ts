@@ -171,7 +171,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   window.hermesDesktop = bridge
   document.documentElement.dataset.hermesDesktopHost = 'browser'
-  installBrowserNotifications(bootstrap.basePath)
+  installBrowserNotifications(bootstrap.basePath, currentProfile)
 
   return true
 }

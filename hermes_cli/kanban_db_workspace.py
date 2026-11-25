@@ -120,13 +120,34 @@ def _conn_uses_path(
     return False
 
 
-def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
-    """Every other board's ``kanban.db``. Raises ``OSError`` when the set is unknown.
+def _canonical_board_dir(child: Path) -> bool:
+    """True when *child* is a board ``list_boards`` would accept.
 
-    ``kanban_db_path`` follows ``HERMES_KANBAN_DB`` and would collapse every
-    slug onto the pinned file, so the scan uses the on-disk layout: the
-    default board at ``<home>/kanban.db`` and named boards at
+    Reserved names such as ``_archived`` fail the slug rule, and a directory
+    that only contains ``kanban.db`` is a stub (``_dir_holds_board`` requires
+    ``board.json``). Opening those files deferred every workspace cleanup
+    (#160064).
+    """
+    if not child.is_dir():
+        return False
+    try:
+        normed = _kb._normalize_board_slug(child.name)
+    except ValueError:
+        return False
+    return bool(normed) and _kb._dir_holds_board(child)
+
+
+def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
+    """Every other canonical board's ``kanban.db``.
+
+    Raises ``OSError`` when the boards root cannot be listed. ``kanban_db_path``
+    follows ``HERMES_KANBAN_DB`` and would collapse every slug onto the pinned
+    file, so the scan uses the on-disk layout: the default board at
+    ``<home>/kanban.db`` and named boards at
     ``<home>/kanban/boards/<slug>/kanban.db``.
+
+    Only :func:`_canonical_board_dir` entries are included. A real board whose
+    database cannot be read is still returned; the caller fails closed.
     """
     from hermes_cli.kanban_db_connect import _main_db_file  # late: import cycle
 
@@ -136,7 +157,7 @@ def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
     root = _kb.boards_root()
     if root.is_dir():
         for child in root.iterdir():
-            if child.is_dir():
+            if _canonical_board_dir(child):
                 candidates.append(child / "kanban.db")
     found: list[Path] = []
     seen: set[Path] = set()

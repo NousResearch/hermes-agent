@@ -1,7 +1,6 @@
 import { useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { type ProfileScope, setToolsetEnabled } from '@/hermes'
@@ -13,7 +12,6 @@ import type { ToolsetInfo } from '@/types/hermes'
 
 import { asText, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
 import {
-  AgentCapabilityBanner,
   AgentCapabilityMore,
   AgentCapabilityRow,
   AgentCapabilitySection
@@ -104,15 +102,6 @@ export function AgentToolsets({ profile, toolsets, query, onQueryChange }: Agent
 
   return (
     <div className="agent-capability-list">
-      <AgentCapabilityBanner
-        action={
-          <Button onClick={() => navigate('/capabilities?tab=toolsets')} variant="outline">
-            {t.skills.openToolLibrary}
-          </Button>
-        }
-        description={copy.tools.bannerBody}
-        title={copy.tools.bannerTitle}
-      />
       <CapabilitySearch
         onChange={onQueryChange}
         placeholder={t.skills.searchToolsets}

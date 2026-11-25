@@ -1,7 +1,10 @@
+import { toolsRoute } from '@/app/capabilities/tools-route'
 import { getTerminalBackends, selectTerminalBackend } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import { requestRoute } from '@/store/recovery-requests'
+import { $portalShell } from '@/store/shell-variant'
 import type { TerminalBackendInfo } from '@/types/hermes'
 
 /**
@@ -13,7 +16,6 @@ import type { TerminalBackendInfo } from '@/types/hermes'
  * is an older/remote backend, not a broken terminal.
  */
 
-const TERMINAL_TOOLSET_ROUTE = '/capabilities?tab=toolsets'
 const TOAST_ID = 'terminal-backend-unavailable'
 
 /** The active backend row when it is selected but not ready, else null. */
@@ -46,7 +48,7 @@ export async function warnIfTerminalBackendUnavailable(): Promise<boolean> {
     title: translateNow(`${copy}.unavailableTitle`),
     message: translateNow(`${copy}.unavailableMessage`, broken.label),
     detail: broken.detail || undefined,
-    action: { label: translateNow(`${copy}.openBackendSettings`), onClick: () => requestRoute(TERMINAL_TOOLSET_ROUTE) },
+    action: { label: translateNow(`${copy}.openBackendSettings`), onClick: () => requestRoute(toolsRoute($portalShell.get(), $activeGatewayProfile.get())) },
     secondaryAction: {
       label: translateNow(`${copy}.useLocal`),
       onClick: () =>

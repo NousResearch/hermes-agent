@@ -3,13 +3,15 @@ import { beforeEach, expect, test, vi } from 'vitest'
 const getTerminalBackends = vi.fn()
 const selectTerminalBackend = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/hermes', async original => ({
+  ...(await original<object>()),
   getTerminalBackends: (...args: unknown[]) => getTerminalBackends(...args),
   selectTerminalBackend: (...args: unknown[]) => selectTerminalBackend(...args)
 }))
 
 import { $notifications, clearNotifications } from './notifications'
 import { $routeRequest } from './recovery-requests'
+import { $shellChoice } from './shell-variant'
 import { unavailableTerminalBackend, warnIfTerminalBackendUnavailable } from './terminal-backend-warning'
 
 const row = (name: string, status: 'needs_setup' | 'ready' | 'unavailable', active = false) => ({
@@ -22,6 +24,7 @@ const row = (name: string, status: 'needs_setup' | 'ready' | 'unavailable', acti
 })
 
 beforeEach(() => {
+  $shellChoice.set(false)
   clearNotifications()
   getTerminalBackends.mockReset()
   selectTerminalBackend.mockReset()
@@ -58,4 +61,18 @@ test('local or ready backends and probe failures stay silent', async () => {
   getTerminalBackends.mockRejectedValue(new Error('404'))
   expect(await warnIfTerminalBackendUnavailable()).toBe(false)
   expect($notifications.get()).toHaveLength(0)
+})
+
+// The redesign's Capabilities page has no Tools tab: the backend's settings are on the agent's Tools page.
+test('in the redesign, Open settings goes to the agent\'s Tools page, not to a tab that is gone', async () => {
+  $shellChoice.set(true)
+  getTerminalBackends.mockResolvedValue({
+    active: 'docker',
+    backends: [row('local', 'ready'), row('docker', 'unavailable', true)]
+  })
+
+  expect(await warnIfTerminalBackendUnavailable()).toBe(true)
+  $notifications.get()[0]?.action?.onClick()
+
+  expect($routeRequest.get()?.path).toMatch(/^\/settings\?agentProfile=[^&]+&panel=capabilities&tab=toolsets$/)
 })

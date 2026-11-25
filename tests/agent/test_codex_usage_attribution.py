@@ -112,6 +112,10 @@ def _assert_identity(request, account_id="acct-attribution-test"):
     assert request.headers["user-agent"] == f"HermesAgent/{get_version_info().base_version}"
     assert request.headers["chatgpt-account-id"] == account_id
     assert "extra_headers" not in json.loads(request.content)
+    # Every official-endpoint client asks the backend to omit stream fields Hermes never reads.
+    assert request.headers["x-codex-exclude"] == "tools,usage.attribution"
+    assert request.headers["x-codex-exclude-stream-fields"] == (
+        "delta.sequence_number,reasoning.added.encrypted_content")
 
 
 
@@ -229,6 +233,18 @@ def test_auxiliary_raw_and_async_clients_send_expected_headers(
         raw.close()
 
 
+def test_user_stream_exclusion_headers_win_and_empty_opts_out():
+    from agent.codex_headers import apply_required_codex_headers
+
+    kwargs = {"default_headers": {"X-Codex-Exclude": "", "originator": "spoof"}}
+    apply_required_codex_headers(kwargs, access_token=_jwt(), base_url=CODEX_URL)
+    headers = {k.lower(): v for k, v in kwargs["default_headers"].items()}
+
+    assert headers["x-codex-exclude"] == ""  # user opt-out survives
+    assert headers["originator"] == "hermes-agent"  # identity is still enforced
+    assert headers["x-codex-exclude-stream-fields"] == "delta.sequence_number,reasoning.added.encrypted_content"
+
+
 def test_credential_pool_custom_endpoint_keeps_existing_identity(
     wire, monkeypatch,
 ):
@@ -249,6 +265,7 @@ def test_credential_pool_custom_endpoint_keeps_existing_identity(
         assert wire[-1].headers["originator"] == "codex_cli_rs"
         assert wire[-1].headers["user-agent"] == "codex_cli_rs/0.0.0 (Hermes Agent)"
         assert wire[-1].headers["chatgpt-account-id"] == "acct-attribution-test"
+        assert "x-codex-exclude" not in wire[-1].headers  # proxies may not speak the convention
     finally:
         client.close()
 

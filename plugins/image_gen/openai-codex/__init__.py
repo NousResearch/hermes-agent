@@ -201,7 +201,7 @@ def _post_image_request(
     from agent.codex_headers import codex_cloudflare_headers
 
     base_url = base_url.strip().rstrip("/")
-    headers = codex_cloudflare_headers(token, base_url=base_url)
+    headers = codex_cloudflare_headers(token, base_url=base_url, stream_exclusions=False)
     headers.update({
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",

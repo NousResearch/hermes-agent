@@ -108,7 +108,7 @@ def test_system_host_remove_legacy_units_succeeds_and_refuses_on_timeout(tmp_pat
     assert ["reset-failed", "hermes.service"] in host_calls
 
 
-def test_migrate_legacy_and_systemd_install_retain_unit_when_stop_fails(tmp_path, monkeypatch, capsys):
+def test_migrate_legacy_retains_unit_when_stop_fails(tmp_path, monkeypatch, capsys):
     unit_path = _seed_legacy_unit(tmp_path, monkeypatch)
     monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(gw, "is_macos", lambda: False)
@@ -122,14 +122,79 @@ def test_migrate_legacy_and_systemd_install_retain_unit_when_stop_fails(tmp_path
     assert unit_path.exists()
     assert "1 legacy unit(s) still present" in capsys.readouterr().out
 
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize(
+    ("failed_action", "failure"),
+    [
+        ("stop", "timeout"),
+        ("disable", "timeout"),
+        ("stop", "nonzero"),
+        ("disable", "nonzero"),
+    ],
+)
+def test_systemd_install_and_setup_abort_when_legacy_removal_fails(
+    tmp_path, monkeypatch, capsys, failed_action, failure
+):
+    from hermes_cli import gateway_setup_service as setup
+    import hermes_constants
+
+    unit_path = _seed_legacy_unit(tmp_path, monkeypatch)
     new_unit = tmp_path / "hermes-gateway.service"
+    started: list[str] = []
+
+    def fake_systemctl(args, **kw):
+        if args[0] == failed_action:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(args, 90)
+            return CompletedProcess(args, 1)
+        return CompletedProcess(args, 0)
+
+    monkeypatch.setattr(gw, "_run_systemctl", fake_systemctl)
     monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: new_unit)
-    monkeypatch.setattr(gw, "generate_systemd_unit", lambda system=False, run_as_user=None: "[Service]\n")
+    monkeypatch.setattr(gw, "generate_systemd_unit", lambda **kw: "[Service]\n")
+    monkeypatch.setattr(gw, "_prepare_service_launcher", lambda **kw: None)
+    monkeypatch.setattr(gw, "_ensure_linger_enabled", lambda: None)
+    monkeypatch.setattr(gw, "print_systemd_scope_conflict_warning", lambda: None)
+    monkeypatch.setattr(gw, "_is_service_installed", new_unit.exists)
+    monkeypatch.setattr(gw, "_is_service_running", lambda: False)
+    monkeypatch.setattr(gw, "_served_profile_needs_no_service", lambda: False)
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gw, "has_conflicting_systemd_units", lambda: False)
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    monkeypatch.setattr(setup, "record_service_choice", lambda *a: None)
+    monkeypatch.setattr(gw, "systemd_start", lambda **kw: started.append("start"))
+
+    # Setup path must not write the replacement unit or call systemd_start().
+    result = setup.ensure_gateway_service(install=True)
+    assert (result, unit_path.exists(), new_unit.exists(), started) == (False, True, False, [])
+
+    # CLI install path must abort before writing the replacement or calling systemd_start().
+    monkeypatch.setattr(gw, "is_wsl", lambda: False)
+    cli_args = SimpleNamespace(start_now=True, start_on_login=True, force_unit_path=False)
+    with pytest.raises(SystemExit) as excinfo:
+        gw._install_systemd_from_cli(cli_args, force=False, system=False, run_as_user=None)
+    assert excinfo.value.code == 1
+    assert (unit_path.exists(), new_unit.exists(), started) == (True, False, [])
+
+
+@pytest.mark.platforms("linux")
+def test_systemd_install_continues_when_non_root_system_legacy_unit_is_skipped(tmp_path, monkeypatch):
+    system_dir = tmp_path / "system"
+    system_dir.mkdir()
+    sys_unit = system_dir / "hermes.service"
+    sys_unit.write_bytes(_LEGACY_UNIT.encode("utf-8"))
+    new_unit = tmp_path / "hermes-gateway.service"
+
+    monkeypatch.setattr(gw, "_legacy_unit_search_paths", lambda: [(True, system_dir)])
+    monkeypatch.setattr(gw.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: CompletedProcess(args, 0))
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: new_unit)
+    monkeypatch.setattr(gw, "generate_systemd_unit", lambda **kw: "[Service]\n")
     monkeypatch.setattr(gw, "_prepare_service_launcher", lambda **kw: None)
     monkeypatch.setattr(gw, "_ensure_linger_enabled", lambda: None)
     monkeypatch.setattr(gw, "print_systemd_scope_conflict_warning", lambda: None)
 
-    gw.systemd_install(non_interactive=True)
-    assert unit_path.exists()
+    gw.systemd_install(system=False, non_interactive=True)
+    assert sys_unit.exists()
     assert new_unit.exists()
-    assert "1 legacy unit(s) still present" in capsys.readouterr().out

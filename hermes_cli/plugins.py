@@ -46,7 +46,7 @@ from hermes_cli.plugins_discovery import (
     scan_directory,
 )
 from hermes_cli.plugins_loader import (
-    PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
+    PluginHomeMoved, PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
     _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
 from hermes_cli.plugins_dispatch import (
@@ -362,15 +362,23 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """The home this manager's code runs under (discovery, a plugin's calls, the plugin host): the profile's
         name, because a marked profile whose directory is a link out of the Hermes root is found by that name
         only. That is the name it was opened by while it still leads to this manager's directory; after a
-        rename, the name beside it that does. With no such name left, the directory itself.
-        ``home_path`` stays the registries' key."""
+        rename, the name beside it that does. With no such name left, :class:`PluginHomeMoved`: the directory
+        alone reads as an unmarked profile. ``home_path`` stays the registries' key."""
+        home = self._name_leading_here()
+        if home is None:
+            raise PluginHomeMoved(f"no profile name leads to {self.home_path} any more ({self._named_home} was "
+                                  "repointed, renamed or removed): restart Hermes to run this profile's plugins")
+        return home
+
+    def _name_leading_here(self) -> Optional[Path]:
+        """:attr:`owner_home`, or None when no name leads here. The old name is kept then, so a name that leads
+        here later is still found."""
         named = self._named_home
         if named == self.home_path or self._leads_here(named):
             return named
         renamed = next((p for p in self._profile_names_beside(named) if self._leads_here(p)), None)
-        if renamed is None:
-            return self.home_path  # the old name is kept, so a name that leads here later is still found
-        self._named_home = renamed
+        if renamed is not None:
+            self._named_home = renamed
         return renamed
 
     def _leads_here(self, path: Path) -> bool:

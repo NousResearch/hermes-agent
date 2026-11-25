@@ -180,6 +180,13 @@ def _serialized_replacement(method):
     return wrapped
 
 
+class PluginHomeMoved(RuntimeError):
+    """No profile name leads to a plugin manager's directory any more: a linked profile was repointed, renamed out of
+    its root or removed while the process ran (``PluginManager.owner_home``). Its plugin work is refused until a
+    restart opens the profile again: the directory alone reads as an unmarked profile, so a marked profile's
+    run-elsewhere marker would go unseen and its own launcher and files would be used."""
+
+
 @contextmanager
 def _plugin_home_scope(home: Path):
     """Bind discovery and loading to the manager's immutable Hermes home."""

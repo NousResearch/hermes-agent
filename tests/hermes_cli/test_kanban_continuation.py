@@ -56,10 +56,90 @@ def test_explicit_same_owner_continuation_enters_normal_dispatch(board):
 def test_operator_surface_records_authority_without_claiming(board):
     from hermes_cli.kanban import run_slash
     tid, source_run, authority = prior_attempt(board)
-    output = run_slash(f'continue {tid} --profile builder --from-run {source_run} --authority-comment {authority} --reason "Approved amendment"')
+    output = run_slash(f'continue {tid} --owner-profile builder --from-run {source_run} --authority-comment {authority} --reason "Approved amendment"')
     assert "Continuation authorized" in output
     assert kb.get_task(board, tid).status == "ready"
     assert kb.get_task(board, tid).current_run_id is None
+
+
+def run_operator_cli(board, tmp_path, *args, **env_overrides):
+    import os
+    import subprocess
+    import sys
+
+    database = board.execute("PRAGMA database_list").fetchone()[2]
+    assert Path(database).is_relative_to(tmp_path)
+    env = os.environ.copy()
+    env.update(HOME=str(tmp_path), HERMES_KANBAN_DB=database,
+               HERMES_KANBAN_HOME=os.environ["HERMES_HOME"], **env_overrides)
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", *args],
+        cwd=Path(__file__).parents[2], env=env, capture_output=True, text=True,
+        timeout=30, check=False,
+    )
+
+
+@pytest.mark.parametrize("prefix,suffix,actor", [
+    ([], [], "default"),
+    (["--profile", "operator"], [], "operator"),
+    ([], ["--profile", "operator"], "operator"),
+    (["--profile=operator"], [], "operator"),
+])
+def test_top_level_cli_authorizes_owner_without_selecting_it_as_global_profile(
+    board, tmp_path, prefix, suffix, actor,
+):
+    import json
+    import os
+
+    operator_home = Path(os.environ["HERMES_HOME"]) / "profiles" / "operator"
+    operator_home.mkdir(parents=True)
+    (operator_home / "config.yaml").write_text("{}\n")
+    tid, source_run, authority = prior_attempt(board)
+    result = run_operator_cli(
+        board, tmp_path, *prefix, "kanban", "continue", tid,
+        "--owner-profile", "builder", "--from-run", str(source_run),
+        "--authority-comment", str(authority), "--reason", "Approved amendment", *suffix,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Continuation authorized" in result.stdout
+    grant = board.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind='continuation_authorized'",
+        (tid,),
+    ).fetchone()
+    payload = json.loads(grant["payload"])
+    assert payload["profile"] == "builder"
+    assert payload["actor"] == actor
+    assert kb.get_task(board, tid).current_run_id is None
+
+
+@pytest.mark.parametrize("fence,error", [
+    ("HERMES_KANBAN_TASK", "self-authorize"),
+    ("HERMES_DELEGATED_CHILD_CONTEXT", "delegate_task"),
+])
+def test_top_level_owner_option_does_not_bypass_worker_fences(board, tmp_path, fence, error):
+    tid, source_run, authority = prior_attempt(board)
+    result = run_operator_cli(
+        board, tmp_path, "kanban", "continue", tid,
+        "--owner-profile", "builder", "--from-run", str(source_run),
+        "--authority-comment", str(authority), "--reason", "Approved amendment",
+        **{fence: tid if fence == "HERMES_KANBAN_TASK" else "1"},
+    )
+    assert result.returncode == 1
+    assert error in result.stderr
+    assert board.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='continuation_authorized'", (tid,)).fetchone()[0] == 0
+    assert kb.get_task(board, tid).current_run_id is None
+
+
+def test_global_profile_is_not_inferred_as_continuation_owner(board, tmp_path):
+    tid, source_run, authority = prior_attempt(board)
+    result = run_operator_cli(
+        board, tmp_path, "--profile", "default", "kanban", "continue", tid,
+        "--from-run", str(source_run), "--authority-comment", str(authority),
+        "--reason", "Approved amendment",
+    )
+    assert result.returncode == 2
+    assert "required: --owner-profile" in result.stderr
+    assert board.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='continuation_authorized'", (tid,)).fetchone()[0] == 0
 
 
 def test_running_worker_cannot_self_authorize(board, monkeypatch):

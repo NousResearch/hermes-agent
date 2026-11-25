@@ -320,7 +320,7 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
 def _cmd_continue(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         grant = kb.authorize_continuation(
-            conn, args.task_id, profile=args.profile, expected_run_id=args.from_run,
+            conn, args.task_id, profile=args.owner_profile, expected_run_id=args.from_run,
             authority_comment_id=args.authority_comment, reason=args.reason,
             actor=_profile_author(), ttl_seconds=args.ttl,
         )

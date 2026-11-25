@@ -1047,9 +1047,14 @@ instruction and the existing PR, a local operator can explicitly authorize **one
 additional attempt by the same responsible profile:
 
 ```bash
-hermes kanban continue t_example --profile builder --from-run 42 \
+hermes kanban continue t_example --owner-profile builder --from-run 42 \
   --authority-comment 73 --reason "Approved amendment to the existing PR"
 ```
+
+The required `--owner-profile` names the existing task owner; it does not select
+which profile runs the operator command. Use the global `--profile`/`-p` separately
+if needed (for example, `hermes --profile operator kanban continue … --owner-profile builder`).
+Omitting the owner option is an error, even when a global profile is selected.
 
 The exact newest comment is a versioned evidence anchor; its text is never parsed
 as authorization. The explicit operation records actor, reason, task, responsible

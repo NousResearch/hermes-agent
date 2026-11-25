@@ -279,7 +279,7 @@ _SPECS = [
     ], help="Atomically claim a ready task (prints resolved workspace path)"),
     _cmd("continue", [
         _TASK_ID,
-        _arg("--profile", required=True, help="Existing responsible profile (not a reassignment)"),
+        _arg("--owner-profile", required=True, help="Existing responsible profile (not the global --profile selector or a reassignment)"),
         _arg("--from-run", type=int, required=True, help="Exact previous/current owner attempt"),
         _arg("--authority-comment", type=int, required=True, help="Exact newest authority/evidence comment ID"),
         _arg("--reason", required=True, help="Why this explicit continuation is authorized"),

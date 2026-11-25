@@ -48,7 +48,7 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
-def run(tmp_path, spec) -> dict:
+def run(tmp_path, spec, *, env_overrides: dict[str, str] | None = None) -> dict:
     """Run this peer for *spec* in a fresh home under *tmp_path*; returns its receipt."""
     from tests.gateway.fixtures.local_recovery_probe import child_env
 
@@ -59,6 +59,8 @@ def run(tmp_path, spec) -> dict:
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                PYTHONUNBUFFERED="1")
+    if env_overrides:
+        env.update(env_overrides)
     result = subprocess.run([sys.executable, __file__, json.dumps(spec)], cwd=root, env=env,
                             capture_output=True, text=True, timeout=120, check=False)
     receipt = home / "receipt.json"
@@ -290,10 +292,16 @@ async def probe(spec):
         report["start_error"] = f"{type(exc).__name__}: {exc}"
         report["start_traceback"] = traceback.format_exc()
         return report
-    api = runner.session_api
-    origin = api.api_origin
-    report.update(api_origin=origin, status=ask("webapp-status"), launch=ask("webapp-launch"))
+    api = getattr(runner, "session_api", None)
+    report.update(api_origin=None if api is None else api.api_origin,
+                  status=ask("webapp-status"), launch=ask("webapp-launch"))
     report["listening"] = {address: _accepts(address, port) for address in spec.get("report_listening", ())}
+    if api is None:
+        report["native_session_list"] = False
+        if rival is not None:
+            rival.close()
+        return report
+    origin = api.api_origin
     try:
         async with httpx.AsyncClient(base_url=origin, timeout=20) as client:
             loopback = await client.get("/api/status")  # mounts the dashboard on the private listener

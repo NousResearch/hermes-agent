@@ -96,7 +96,8 @@ def test_a_gateway_bound_to_its_own_address_serves_it_behind_sign_in_and_native_
 def test_an_address_no_interface_holds_leaves_the_webapp_unavailable_and_native_clients_a_listener(tmp_path):
     port = free_port()
     report = run(tmp_path, {"webapp": {"enabled": True, "host": "192.0.2.77", "port": port}, "basic_auth": True,
-                            "report_listening": ["127.0.0.1"]})
+                            "report_listening": ["127.0.0.1"]},
+                 env_overrides={"HERMES_WEBAPP_ADDRESS_WAIT": "0"})
     assert report["start_error"] is None, report.get("start_traceback")
     assert report["status"]["state"] == "unavailable"
     assert report["status"]["reason"] == (f"could not listen on 192.0.2.77:{port} "
@@ -116,7 +117,8 @@ def test_an_interface_broadcast_is_not_served_as_a_machine_address(tmp_path):
     if broadcast is None:
         pytest.skip("no IPv4 interface with a directed broadcast")
     port = free_port()
-    report = run(tmp_path, {"webapp": {"enabled": True, "host": broadcast, "port": port}, "basic_auth": True})
+    report = run(tmp_path, {"webapp": {"enabled": True, "host": broadcast, "port": port}, "basic_auth": True},
+                 env_overrides={"HERMES_WEBAPP_ADDRESS_WAIT": "0"})
     assert report["status"]["state"] == "unavailable"
     assert "not assigned to any network interface" in report["status"]["reason"]
     assert report["native_session_list"] is True

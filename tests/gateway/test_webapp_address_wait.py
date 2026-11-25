@@ -51,9 +51,73 @@ def test_an_address_assigned_after_the_first_bind_is_waited_for(fast):
 
 
 def test_a_gateway_without_the_webapp_keeps_its_own_listener_call(fast):
-    api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
+    api, calls = _api([])
     assert _start(api, webapp=None, host="127.0.0.1", port=0) == "handle"
-    assert calls == [{}, {}], "main's listener is started with no address of its own"
+    assert calls == [{}], "main's listener is started with no address of its own"
+
+
+def test_a_gateway_without_the_webapp_does_not_wait_on_eaddrnotavail(fast, caplog):
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
+    with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
+        with pytest.raises(OSError) as caught:
+            _start(api, webapp=None, host="127.0.0.1", port=0)
+    assert caught.value.errno == errno.EADDRNOTAVAIL
+    assert calls == [{}]
+    assert sleeps == []
+    assert not any("not assigned to any interface yet" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost", "0.0.0.0", "::"])
+def test_loopback_and_wildcard_webapp_hosts_do_not_wait_on_eaddrnotavail(fast, caplog, host):
+    sleeps = []
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    api, calls = _api([OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")])
+    with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
+        with pytest.raises(OSError) as caught:
+            _start(api, host=host, port=9119, webapp="mount")
+    assert caught.value.errno == errno.EADDRNOTAVAIL
+    assert len(calls) == 1
+    assert sleeps == []
+    assert not any("not assigned to any interface yet" in r.getMessage() for r in caplog.records)
+
+
+def test_ipv6_loopback_eaddrnotavail_falls_back_immediately_without_retrying(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "webapp:\n  enabled: true\n  host: '::1'\n  port: 9119\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
+    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01, raising=False)
+
+    calls = []
+
+    async def start(runner, *, host="127.0.0.1", port=0, webapp=None):
+        calls.append(host)
+        if host == "::1":
+            raise OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+        return types.SimpleNamespace(api_origin="http://127.0.0.1:50001")
+
+    monkeypatch.setattr(run_api, "start_gateway_api", start)
+    runner = types.SimpleNamespace(
+        session_runtime_descriptor={},
+        session_authorities=[],
+        session_control_server=GatewayControlServer(home),
+    )
+    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    assert calls == ["::1", "127.0.0.1"]
+    assert runner.webapp_status["state"] == "unavailable"
 
 
 def test_the_wait_is_bounded_and_the_last_error_is_raised(fast):
@@ -246,3 +310,121 @@ def test_cancellation_during_bind_propagates_without_retrying(fast):
         _start(api)
     assert len(calls) == 1
     assert sleeps == []
+
+
+def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(monkeypatch, tmp_path):
+    import signal
+
+    from gateway import run_bootstrap, shutdown_forensics, status
+    from gateway.run import GatewayRunner
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "webapp:\n  enabled: true\n  host: 192.0.2.77\n  port: 9119\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
+    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 5.0, raising=False)
+    monkeypatch.setattr(status, "consume_takeover_marker_for_self", lambda: False)
+    monkeypatch.setattr(shutdown_forensics, "snapshot_shutdown_context", lambda sig: None)
+
+    async def run_scenario():
+        shutdown_event = asyncio.Event()
+        completed = asyncio.Event()
+        runner = types.SimpleNamespace(
+            session_runtime_descriptor={},
+            session_authorities=[],
+            session_control_server=GatewayControlServer(home),
+            _stop_task=None,
+            _shutdown_event=shutdown_event,
+            _draining=False,
+            _restart_requested=False,
+            _stop_requested_by_signal=False,
+            _planned_takeover_shutdown=False,
+            _startup_should_abort=lambda: shutdown_event.is_set(),
+        )
+
+        async def teardown(self):
+            self._draining = True
+            self._shutdown_event.set()
+            completed.set()
+
+        monkeypatch.setattr(GatewayRunner, "_stop_impl", teardown)
+        runner.stop = types.MethodType(GatewayRunner.stop, runner)
+        stop_handler = run_bootstrap._start_gateway_make_shutdown_signal_handler(runner, [False])
+
+        calls = []
+
+        async def start(r, *, host="127.0.0.1", port=0, webapp=None):
+            calls.append((host, completed.is_set()))
+            if len(calls) == 1:
+                asyncio.get_running_loop().call_soon(stop_handler, signal.SIGINT)
+                raise OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")
+            return types.SimpleNamespace(api_origin="http://127.0.0.1:50001")
+
+        monkeypatch.setattr(run_api, "start_gateway_api", start)
+        await asyncio.wait_for(run_runtime.start_gateway_runtime_api(runner), timeout=2.0)
+        assert completed.is_set(), "operator stop ran while the address wait was active"
+        assert calls == [("192.0.2.77", False)], "no retry and no private fallback after operator stop"
+        assert runner.session_api is None
+        assert runner.webapp_status["state"] != "serving"
+        assert "api_origin" not in runner.session_runtime_descriptor
+
+    asyncio.run(run_scenario())
+
+
+def test_restart_requested_during_wait_aborts_without_binding(monkeypatch):
+    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
+    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
+
+    async def run_scenario():
+        runner = types.SimpleNamespace(_restart_requested=False)
+        calls = []
+
+        async def start(r, **kwargs):
+            calls.append(kwargs)
+            r._restart_requested = True
+            raise OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")
+
+        api = types.SimpleNamespace(start_gateway_api=start, ListenerAddressError=run_api.ListenerAddressError)
+        result = await run_runtime._start_gateway_api_waiting_for_address(
+            api, runner, host="100.64.0.5", port=9119, webapp="mount"
+        )
+        assert result is None
+        assert len(calls) == 1
+
+    asyncio.run(run_scenario())
+
+
+def test_bootstrap_abort_before_runner_awaits_stop_and_returns_exit_verdict():
+    from gateway import run_bootstrap
+
+    async def run_scenario(signal_initiated: bool):
+        shutdown_event = asyncio.Event()
+        stop_calls = []
+
+        async def stop(*, restart=False, detached_restart=False, service_restart=False):
+            stop_calls.append((restart, detached_restart, service_restart))
+            shutdown_event.set()
+
+        runner = types.SimpleNamespace(
+            _stop_task=None,
+            _shutdown_event=shutdown_event,
+            _restart_requested=False,
+            _restart_detached=False,
+            _restart_via_service=False,
+            should_exit_with_failure=False,
+            exit_code=None,
+            exit_reason=None,
+            _gateway_health_export_runtime=None,
+            stop=stop,
+            wait_for_shutdown=shutdown_event.wait,
+        )
+        verdict = await run_bootstrap._abort_startup_before_runner(runner, [signal_initiated])
+        assert stop_calls == [(False, False, False)]
+        assert shutdown_event.is_set()
+        return verdict
+
+    assert asyncio.run(run_scenario(False)) is True
+    assert asyncio.run(run_scenario(True)) is False

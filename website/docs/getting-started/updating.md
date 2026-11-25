@@ -658,8 +658,9 @@ removes data. `--data` removes user data without deleting package-owned code.
 These modes are destructive; make a backup first.
 
 For MSIX/Store, use Windows Settings → Apps → Installed apps. For macOS,
-quit Hermes and move `Hermes Agent.app` (or `Hermes.app` for a source-built
-desktop) to Trash. Docker, Nix, and Termux use the
+quit Hermes and move the app for your channel to Trash: `Hermes Agent.app`
+(stable), `Hermes Agent Canary.app` (canary), or `Hermes.app` for a
+source-built desktop. Docker, Nix, and Termux use the
 same manager that installed them. Their package files are not removed by the
 source uninstaller. Data deletion is separate from package removal.
 

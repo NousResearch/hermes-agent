@@ -1039,7 +1039,7 @@ with Hermes' stable signing identities it survives every update:
 
 1. System Settings → **Privacy & Security → Full Disk Access** (or run
    `open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`)
-2. Enable your terminal app — and **Hermes Agent.app** (or **Hermes.app** for source-built Desktop) if you use Desktop.
+2. Enable your terminal app — and, if you use Desktop, the app for your channel: **Hermes Agent.app** (stable), **Hermes Agent Canary.app** (canary), or **Hermes.app** (source-built). Each app needs its own grant.
 3. Fully quit and relaunch them once.
 
 `hermes doctor` reports whether the current terminal context already has the

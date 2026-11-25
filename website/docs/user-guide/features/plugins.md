@@ -1083,7 +1083,10 @@ admitted on the gateway's event loop into a session the Hermes process owns.
 A plugin can put a card into a conversation from anywhere, including a timer or its own background
 thread, without starting a model turn. The card is saved in the session's history, so it is still there
 after a reload. A card is display-only: people see it, and the model is told only that the plugin posted
-a card with that id (one line, `[<plugin id> posted a card <card id>]`). The model never reads the card's
+a card with a core-derived opaque reference (one line, `[<plugin id> posted a card <opaque id>]`).
+The reference is stable for that plugin and card id and saved in the row's content beside its display
+metadata, so clients can match them. The plugin-chosen `id` stays in display metadata for rendering and
+deduplication, never in model-facing content. The model never reads the card's
 text, directive or attrs. Hermes also strips those fields before handing transcript rows to memory
 providers through `on_session_end()` or `on_pre_compress()`:
 

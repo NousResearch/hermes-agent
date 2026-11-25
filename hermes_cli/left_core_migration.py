@@ -466,6 +466,7 @@ def _configured_main_provider(home: Path, *, process_env: bool = False) -> str:
     try:
         cfg = config_loader.read_yaml_layers(home)
     except Exception:
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
         cfg = {}
     model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
     if isinstance(model_cfg, dict):

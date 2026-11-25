@@ -250,12 +250,11 @@ voice:
   gpt_live:
     auth: subscription
     subscription_model: gpt-live-1-codex
-    subscription_voice: cove
 ```
 
-The subscription route uses Hermes's existing Codex OAuth credentials and their account identity, both kept on the host. It uses the Codex voice service, so access depends on the signed-in account's voice entitlement and quota. The readiness indicator checks credentials; the service verifies access when you start the call. An authentication, quota, or connection failure stops startup: **it never switches to API billing or chained STT/TTS**. API `model`, `voice`, `api_key`, and `base_url` settings are separate from `subscription_model` and `subscription_voice`. Set `auth: api` explicitly to return to API billing. The Hermes agent turn still uses your selected model/provider independently of voice billing.
+The subscription route uses Hermes's existing Codex OAuth credentials and their account identity, both kept on the host. It uses the Codex voice service, so access depends on the signed-in account's voice entitlement and quota. The readiness indicator checks credentials; the service verifies access when you start the call. An authentication, quota, or connection failure stops startup: **it never switches to API billing or chained STT/TTS**. API `model`, `voice`, `api_key`, and `base_url` settings are separate from `subscription_model`. Set `auth: api` explicitly to return to API billing. The Hermes agent turn still uses your selected model/provider independently of voice billing.
 
-In Desktop, open **Settings → Voice → Conversation** to choose the active route's GPT-Live voice. Subscription mode offers `cove`, `arbor`, `breeze`, `ember`, `juniper`, `maple`, `sol`, `spruce`, and `vale`; API mode keeps its separate API voice list. A new selection applies to the next live session.
+Subscription mode uses the provider-selected voice. The voice picker in Settings → Voice → Conversation applies to API mode only.
 
 Older clients that omit `expected_auth` speak the API protocol. On a subscription profile their calls are rejected before provider contact by default. Upgrade the client, or explicitly set `voice.gpt_live.legacy_client_auth: api` to permit **API-key billing for unpinned clients** with the API model and voice. Restore `reject` to revoke that permission. Clients that pin subscription never switch to the paid API. API profiles retain their existing behavior.
 
@@ -263,7 +262,7 @@ How it works: pressing the voice button opens a WebRTC session from the desktop 
 
 Not supported in this mode: the Nous-managed audio proxy, the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
 
-The subscription transport follows the [public Codex WebRTC implementation](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/codex-api/src/endpoint/realtime_call.rs) and its [frameless context protocol](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_frameless_bidi.rs). Hermes maps actual provider delegation IDs and captured transcript fragments into its existing conversation path. Subscription replies use the protocol's 500-byte UTF-8 context appends; credentials and provider error bodies are never sent to the desktop.
+The subscription transport follows the [public Codex WebRTC implementation](https://github.com/openai/codex/blob/ebd0765aafa255d63ebf690ebdffe0164dc14a0c/codex-rs/codex-api/src/endpoint/realtime_call.rs) and its [frameless context protocol](https://github.com/openai/codex/blob/ebd0765aafa255d63ebf690ebdffe0164dc14a0c/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_frameless_bidi.rs). Hermes maps actual provider delegation IDs and captured transcript fragments into its existing conversation path. Subscription replies use the protocol's 500-byte UTF-8 context appends; credentials and provider error bodies are never sent to the desktop.
 
 ### Voice chat model
 

@@ -947,7 +947,7 @@ export const zhOverrides = {
         autoTts: '朗读回复',
         voiceChatMode: '语音聊天模式',
         gptLive: {
-          subscriptionVoice: 'GPT-Live 音色', voice: 'GPT-Live 音色',
+          voice: 'GPT-Live 音色',
           instructions: 'GPT-Live 人设'
         }
       },
@@ -1125,7 +1125,7 @@ export const zhOverrides = {
         voiceChatMode:
           'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工 OpenAI 语音模型负责听和说，然后将实际工作交给 Hermes，由所选模型和完整工具集处理。API 计费与符合条件的 ChatGPT/Codex 订阅访问是明确分开的选项。',
         gptLive: {
-          subscriptionVoice: 'ChatGPT/Codex 订阅模式使用的音色。', voice: '按 API 计费的 GPT-Live 模式使用的音色，可填写自定义音色 ID。',
+          voice: '按 API 计费的 GPT-Live 模式使用的音色，可填写自定义音色 ID。',
           instructions: '附加到实时语音人设的句子（语气、语速、语言）。Hermes 保留自己的系统提示词。'
         }
       },

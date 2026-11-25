@@ -18,7 +18,7 @@ Division of labour (the Live API has no tools of its own in client mode):
 
 Vendor contract: https://developers.openai.com/api/docs/guides/live (+ live-delegation,
 voice-webrtc). API billing is separate from the Hermes turn. Subscription mode uses the
-Codex frameless WebRTC contract (OpenAI Codex c4017a87aacc7558002b7cb510025e967c1d765e,
+Codex frameless WebRTC contract (OpenAI Codex ebd0765aafa255d63ebf690ebdffe0164dc14a0c,
 realtime_call.rs and realtime_websocket/methods_frameless_bidi.rs); it never falls back to API.
 """
 
@@ -42,7 +42,6 @@ DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
 DEFAULT_LIVE_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_SUBSCRIPTION_MODEL = "gpt-live-1-codex"
-DEFAULT_SUBSCRIPTION_VOICE = "cove"
 CODEX_LIVE_URL = (
     "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
 )
@@ -103,11 +102,16 @@ def voice_live_turn_note(context: str = "") -> str:
 
 def _voice_section() -> dict[str, Any]:
     try:
-        from hermes_cli.config import load_config
-        voice = load_config().get("voice")
+        from hermes_cli.config import FailedConfigRead, load_config
+        config = load_config()
+        if isinstance(config, FailedConfigRead):
+            raise ValueError
+        voice = config.get("voice", {})
+        if not isinstance(voice, dict) or not isinstance(voice.get("gpt_live", {}), dict):
+            raise ValueError
     except Exception:
-        return {}
-    return voice if isinstance(voice, dict) else {}
+        raise ValueError("Cannot read GPT-Live billing configuration; no session was started") from None
+    return voice
 
 
 def _live_section(voice: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -144,13 +148,13 @@ def _live_auth(live: dict[str, Any]) -> str:
 def _live_model_voice(live: dict[str, Any], auth: str) -> tuple[str, str]:
     if auth == "subscription":
         return (str(live.get("subscription_model") or DEFAULT_SUBSCRIPTION_MODEL),
-                str(live.get("subscription_voice") or DEFAULT_SUBSCRIPTION_VOICE))
+                "provider default")
     return str(live.get("model") or DEFAULT_LIVE_MODEL), str(live.get("voice") or DEFAULT_LIVE_VOICE)
 
 
 def _subscription_credentials(*, refresh_if_expiring: bool = True, read_only: bool = False) -> tuple[str, str]:
     from hermes_cli.auth_codex import resolve_codex_runtime_credentials
-    from hermes_cli.auth_constants import AuthError, _decode_jwt_claims
+    from hermes_cli.auth_constants import AuthError, DEFAULT_CODEX_BASE_URL, _decode_jwt_claims
 
     try:
         credentials = resolve_codex_runtime_credentials(
@@ -162,6 +166,8 @@ def _subscription_credentials(*, refresh_if_expiring: bool = True, read_only: bo
             "GPT-Live subscription needs a working Codex sign-in on the Hermes host. "
             "Run `hermes auth` and choose OpenAI Codex. No API fallback was used."
         ) from None
+    if credentials.get("base_url") != DEFAULT_CODEX_BASE_URL:
+        raise ValueError("GPT-Live subscription requires the canonical Codex route; no API fallback was used")
     token = str(credentials.get("api_key") or "").strip()
     claims = _decode_jwt_claims(token).get("https://api.openai.com/auth", {})
     account = claims.get("chatgpt_account_id") if isinstance(claims, dict) else None
@@ -206,9 +212,10 @@ def build_session_config(history: Optional[list] = None, *, live: Optional[dict[
     config: dict[str, Any] = {
         "model": model,
         "instructions": live_instructions(live),
-        "audio": {"output": {"voice": selected_voice}},
         "delegation": {"type": "client"},
     }
+    if auth == "api":
+        config["audio"] = {"output": {"voice": selected_voice}}
     if history:
         config["initial_items" if auth == "subscription" else "input"] = history
     return config

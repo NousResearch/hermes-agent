@@ -1841,7 +1841,6 @@ stt:
 #     auth: subscription       # api (default) | subscription
 #     legacy_client_auth: reject   # api explicitly permits API charges for unpinned clients
 #     subscription_model: gpt-live-1-codex
-#     subscription_voice: cove
 #     model: gpt-live-1         # API mode only
 #     voice: marin             # API mode only
 #     instructions: ""         # optional persona additions for either mode

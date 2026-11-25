@@ -54,3 +54,37 @@ def test_voice_live_session_request_rejects_invalid_expected_auth():
 
     with pytest.raises(ValidationError):
         VoiceLiveSessionRequest.model_validate({"sdp": "v=0 offer\r\n", "expected_auth": "automatic"})
+
+
+@pytest.mark.asyncio
+async def test_named_profiles_keep_billing_policy_in_audio_worker(monkeypatch, tmp_path):
+    import asyncio
+    import json
+    from io import BytesIO
+
+    from fastapi import HTTPException
+    from hermes_cli import profiles
+    from hermes_cli.web_models import VoiceLiveSessionRequest
+    from hermes_cli.web_routers import audio
+    from tools import voice_live
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: tmp_path / "profiles")
+    for name, live in [("old", {"api_key": "old-key"}), ("sub", {"auth": "subscription"})]:
+        home = tmp_path / "profiles" / name
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text(json.dumps({"voice": {"gpt_live": live}}))
+    captured = []
+
+    def respond(req, **kw):
+        captured.append(req.get_header("Authorization"))
+        return BytesIO(b'{}')
+
+    monkeypatch.setattr(voice_live.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(voice_live, "_subscription_credentials", lambda **kw: pytest.fail("OAuth resolver"))
+    payload = VoiceLiveSessionRequest(sdp="offer")
+    old, sub = await asyncio.gather(*(audio.create_voice_live_session(payload, profile=name)
+                                      for name in ["old", "sub"]), return_exceptions=True)
+    assert isinstance(old, dict) and old["auth"] == "api"
+    assert isinstance(sub, HTTPException) and sub.status_code == 503 and "upgrade" in sub.detail
+    assert captured == ["Bearer old-key"]

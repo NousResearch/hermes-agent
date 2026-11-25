@@ -35,7 +35,7 @@ def test_subscription_request_uses_hermes_oauth_and_its_own_wire(monkeypatch, tm
 
     def credentials(**kwargs):
         refresh.append(kwargs["refresh_if_expiring"])
-        return {"api_key": token, "auth_mode": "chatgpt"}
+        return {"api_key": token, "base_url": "https://chatgpt.com/backend-api/codex", "auth_mode": "chatgpt"}
 
     def transport(request):
         requests.append(request)
@@ -63,7 +63,8 @@ def test_subscription_request_uses_hermes_oauth_and_its_own_wire(monkeypatch, tm
     assert payload["session"]["initial_items"] == history and "input" not in payload["session"]
     assert payload["session"]["delegation"] == {"type": "client"}
     assert payload["session"]["model"] == status["model"] == "gpt-live-1-codex"
-    assert payload["session"]["audio"]["output"]["voice"] == status["voice"] == "cove"
+    assert "audio" not in payload["session"]
+    assert status["voice"] == "provider default"
     assert result["session"]["id"] == "rtc_fixture"
     assert result["transport"] == {"type": "webrtc", "sdp": "v=0\r\nanswer"}
     assert token not in json.dumps([status, result])
@@ -79,7 +80,7 @@ def test_subscription_failure_cannot_select_paid_api(monkeypatch, tmp_path, fail
     def credentials(**_kwargs):
         if failure == "missing":
             raise AuthError(provider="openai-codex", message=private, code="codex_auth_missing")
-        return {"api_key": _token(None if failure == "account" else "account-fixture")}
+        return {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": _token(None if failure == "account" else "account-fixture")}
 
     def transport(request):
         attempted.append(request)
@@ -111,7 +112,7 @@ def test_status_is_read_only_and_session_auth_is_pinned(monkeypatch, tmp_path):
 
     def credentials(**kwargs):
         calls.append(kwargs)
-        return {"api_key": _token(), "auth_mode": "chatgpt"}
+        return {"api_key": _token(), "base_url": "https://chatgpt.com/backend-api/codex", "auth_mode": "chatgpt"}
 
     monkeypatch.setattr(auth_codex, "resolve_codex_runtime_credentials", credentials)
     status = voice_live.resolve_gpt_live_status()
@@ -150,3 +151,33 @@ def test_unpinned_client_never_receives_subscription_wire(monkeypatch, tmp_path,
         with pytest.raises(ValueError, match="upgrade"):
             voice_live.create_webrtc_session("offer", history)
         assert not requests
+
+
+@pytest.mark.parametrize("route", [None, "https://relay.invalid/backend-api/codex"])
+def test_subscription_requires_canonical_credential_route(monkeypatch, tmp_path, route):
+    _configure(monkeypatch, tmp_path, auth="subscription", legacy_client_auth="api")
+    monkeypatch.setattr(auth_codex, "resolve_codex_runtime_credentials", lambda **kw: {
+        "api_key": _token(), "base_url": route})
+    monkeypatch.setattr(httpx, "Client", lambda **kw: pytest.fail("voice request"))
+    monkeypatch.setattr(voice_live, "_resolve_credentials", lambda *_: pytest.fail("paid API"))
+    assert not voice_live.resolve_gpt_live_status()["available"]
+    with pytest.raises(ValueError, match="route"):
+        voice_live.create_webrtc_session("offer", expected_auth="subscription")
+
+
+@pytest.mark.parametrize("document", ["voice: [", "voice: false", "voice: {gpt_live: false}", "exception"])
+def test_unreadable_voice_policy_blocks_unpinned_billing(monkeypatch, tmp_path, document):
+    from hermes_cli import config
+
+    monkeypatch.setenv("OPENAI_API_KEY", "available-fixture")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(document)
+    if document == "exception":
+        def fail():
+            raise OSError("private config detail")
+        monkeypatch.setattr(config, "load_config", fail)
+    monkeypatch.setattr(voice_live, "_resolve_credentials", lambda *_: pytest.fail("API resolver"))
+    monkeypatch.setattr(voice_live, "_subscription_credentials", lambda **kw: pytest.fail("OAuth resolver"))
+    for operation in [voice_live.resolve_gpt_live_status, lambda: voice_live.create_webrtc_session("offer")]:
+        with pytest.raises(ValueError, match="configuration"):
+            operation()

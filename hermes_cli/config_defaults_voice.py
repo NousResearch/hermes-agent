@@ -11,7 +11,6 @@ VOICE_DEFAULTS = {
         "auth": "api",
         "legacy_client_auth": "reject",  # subscription profiles: API billing requires explicit opt-in
         "subscription_model": "gpt-live-1-codex",
-        "subscription_voice": "cove",
         "model": "gpt-live-1",
         "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
         # Extra sentences appended to the live model's conversation persona (tone, pacing, language).

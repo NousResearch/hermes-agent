@@ -858,6 +858,7 @@ class SQLiteSessionRepository:
         with refusals(holder):
             rows = list_sessions_rich(holder,
                 sources=_listed(query.sources), exclude_sources=_listed(query.exclude_sources),
+                cwdless_excluded_sources=_listed(query.cwdless_excluded_sources),
                 cwd_prefix=query.cwd_prefix, limit=_sql_limit(window), offset=window.offset,
                 include_children=query.include_children, min_message_count=query.min_message_count,
                 project_compression_tips=query.project_compression_tips,
@@ -929,6 +930,7 @@ class SQLiteSessionRepository:
                 sources=_listed(query.sources), cwd_prefix=query.cwd_prefix, min_message_count=query.min_message_count,
                 include_archived=query.include_archived, archived_only=query.archived_only,
                 exclude_children=query.exclude_children, exclude_sources=_listed(query.exclude_sources),
+                cwdless_excluded_sources=_listed(query.cwdless_excluded_sources),
                 include_subagents=query.include_subagents, local_created_sources=_optional_list(query.local_created_sources),
             ))
 

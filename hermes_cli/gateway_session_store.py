@@ -518,10 +518,11 @@ class SurfaceLabelReader:
             lambda src, lim, off, surfaces: self._list(src, lim, off, surfaces, **kw))
 
     def _list(self, sources, limit, offset, local_created_sources, *, exclude_sources=None,
-              order_by_last_active=False, search_query=None, compact_rows=False, **filters):
+              cwdless_excluded_sources=None, order_by_last_active=False, search_query=None, compact_rows=False, **filters):
         from persistence.conversation.sessions import SessionOrder, SessionQuery
         query = SessionQuery(
             sources=tuple(sources) if sources else None, exclude_sources=tuple(exclude_sources or ()),
+            cwdless_excluded_sources=tuple(cwdless_excluded_sources or ()),
             order=SessionOrder.LAST_ACTIVE if order_by_last_active else SessionOrder.STARTED_AT,
             search_text=search_query,
             local_created_sources=tuple(local_created_sources) if local_created_sources else None, **filters)
@@ -537,10 +538,11 @@ class SurfaceLabelReader:
         live, surfaces = expanded
         return self._count(live, surfaces, **kw)
 
-    def _count(self, sources, local_created_sources, *, exclude_sources=None, **filters):
+    def _count(self, sources, local_created_sources, *, exclude_sources=None, cwdless_excluded_sources=None, **filters):
         from persistence.conversation.sessions import SessionCountQuery
         return self.persistence.sessions.count_sessions(SessionCountQuery(
             sources=tuple(sources) if sources else None, exclude_sources=tuple(exclude_sources or ()),
+            cwdless_excluded_sources=tuple(cwdless_excluded_sources or ()),
             local_created_sources=tuple(local_created_sources) if local_created_sources else None, **filters))
 
     # -- rows and titles -------------------------------------------------------------------

@@ -320,16 +320,18 @@ def _discover_repos_payload(
 
 # Not user conversations; subagent/compression children are dropped by include_children=False.
 # Messaging-platform rows are user conversations, but the desktop lists them in their own
-# per-platform Messaging section. With no workspace cwd they would all fall into Home too, so the
-# same chat showed twice. Keep in step with MESSAGING_SESSION_SOURCE_IDS in
-# apps/desktop/src/lib/session-source.ts: dropping a source the desktop does not render under
-# Messaging would hide its rows from the sidebar entirely.
+# per-platform Messaging section. A messaging row with NO workspace cwd would fall into Home too,
+# so the same chat showed twice — only THOSE rows are hidden here. A messaging row that carries a
+# workspace cwd is a normal workspace session: it belongs to the project owning that folder, and
+# dropping it by source alone hid it from every bucket (#157368). Keep in step with
+# MESSAGING_SESSION_SOURCE_IDS in apps/desktop/src/lib/session-source.ts: dropping a source the
+# desktop does not render under Messaging would hide its rows from the sidebar entirely.
 _MESSAGING_SESSION_SOURCES = (
     "telegram", "discord", "slack", "mattermost", "matrix", "signal", "whatsapp", "bluebubbles",
     "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",
     "yuanbao", "dingtalk", "feishu",
 )
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", *_MESSAGING_SESSION_SOURCES]
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
 
 
 def _project_tree_row(entry) -> dict:
@@ -359,7 +361,12 @@ def _project_tree_inputs(
     from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
     rows = persistence.sessions.list_sessions(
         SessionQuery(order=SessionOrder.LAST_ACTIVE, min_message_count=1, include_children=False,
-                     exclude_sources=tuple(_PROJECT_TREE_EXCLUDED_SOURCES), include_archived=False),
+                     exclude_sources=tuple(_PROJECT_TREE_EXCLUDED_SOURCES),
+                     # A messaging row with no workspace cwd or repo root duplicates the desktop's
+                     # Messaging section; one carrying either workspace anchor is a normal session.
+                     # Filtered in SQL so a dropped row never consumes a window slot.
+                     cwdless_excluded_sources=tuple(_MESSAGING_SESSION_SOURCES),
+                     include_archived=False),
         SessionWindow(limit=session_limit, offset=0), compact_rows=True)
     sessions = [_project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver doesn't cold-probe each cwd in turn.

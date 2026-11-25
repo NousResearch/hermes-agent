@@ -737,3 +737,70 @@ def test_cwdless_session_with_repo_root_stays_in_its_explicit_project():
     assert owned["id"] in explicit["sessionIds"]
     assert owned["id"] in [s["id"] for s in _sessions_of(explicit)]
     assert _home_session_ids(tree) == [detached["id"]]
+
+
+def _query_received_ids(monkeypatch, sessions):
+    """Return rows that the project-tree input stage passes to build_tree()."""
+    from tui_gateway import server as srv
+
+    class _Session:
+        def __init__(self, row):
+            self.session_id = row.get("id")
+            self.parent_session_id = None
+            self.reset_from = None
+            self.branched_from = None
+            self.title = row.get("title")
+            self.started_at = row.get("started_at")
+            self.ended_at = None
+            self.source = row.get("source")
+            self.archived = 0
+            self.message_count = 1
+            self.tool_call_count = 0
+            self.input_tokens = 0
+            self.output_tokens = 0
+            self.actual_cost_usd = None
+            self.estimated_cost_usd = None
+            self.model = None
+            self.cwd = row.get("cwd")
+            self.git_branch = row.get("git_branch")
+            self.git_repo_root = row.get("git_repo_root")
+
+    class _Entry:
+        def __init__(self, row):
+            self.session = _Session(row)
+            self.lineage_root_id = row.get("id")
+            self.lineage_ids = ()
+            self.preview = None
+            self.last_active = row.get("last_active")
+
+    class _Sessions:
+        def list_sessions(self, query, window, **kwargs):
+            excluded = set(getattr(query, "exclude_sources", ()) or ())
+            return [_Entry(row) for row in sessions if row.get("source") not in excluded]
+
+    class _Persistence:
+        sessions = _Sessions()
+
+    monkeypatch.setattr(srv.git_probe, "warm_roots", lambda *a, **k: None)
+    rows, _projects, _discovered, _active = srv._project_tree_inputs(
+        _Persistence(), 500, include_discovered=False)
+    return [row["id"] for row in rows]
+
+
+def test_messaging_session_with_workspace_cwd_survives_the_source_filter(monkeypatch):
+    """A Telegram session with a workspace cwd reaches build_tree()."""
+    placed = _session("/www/app/sub", branch="main", source="telegram")
+    assert placed["id"] in _query_received_ids(monkeypatch, [placed])
+
+
+def test_messaging_session_inside_a_project_folder_stays_in_that_project():
+    """A Telegram row with a workspace cwd belongs to its declared project."""
+    project = _project("p_app", "App", ["/www/app"])
+    resolve = _resolver({"/www/app/sub": ("/www/app/sub", "/www/app/sub")})
+    placed = _session("/www/app/sub", branch="main", source="telegram")
+
+    tree = pt.build_tree([project], [placed], [], resolve, hydrate=True)
+
+    explicit = next(p for p in tree["projects"] if p["id"] == "p_app")
+    assert placed["id"] in explicit["sessionIds"]
+    assert placed["id"] in tree["scoped_session_ids"]

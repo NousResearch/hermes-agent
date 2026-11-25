@@ -126,6 +126,7 @@ _LINEAGE_MESSAGE_FLOOR_SQL = f"""(s.message_count >= ? OR (s.end_reason = 'compr
 def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
+    cwdless_excluded_sources: Sequence[str] | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
     workspace_key: str | None = None,
@@ -154,6 +155,12 @@ def _session_filter_where(
         (source_clause, source_params),
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
+        # Only the cwd-LESS rows of these sources are hidden: one carrying a workspace cwd is a normal
+        # workspace session. TRIM so a whitespace-only cwd counts as no workspace (matches build_tree).
+        (f"(s.source NOT IN ({_session_ids_placeholders(cwdless_excluded_sources or ())})"
+         f" OR ((s.cwd IS NOT NULL AND TRIM(s.cwd) != '')"
+         f" OR (s.git_repo_root IS NOT NULL AND TRIM(s.git_repo_root) != '')))"
+         , cwdless_excluded_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         (_workspace_key_clause(workspace_key) if workspace_key else ("", [])),
         (_LINEAGE_MESSAGE_FLOOR_SQL, [min_message_count] * 2 if min_message_count > 0 else []),
@@ -1290,7 +1297,7 @@ def list_sessions_rich(
     id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
     include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    workspace_key: str | None = None,
+    workspace_key: str | None = None, cwdless_excluded_sources: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
     by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
@@ -1301,7 +1308,8 @@ def list_sessions_rich(
     holder.flush_for_read()  # rows carry token/cost totals
     where_clauses, params = _session_filter_where(
         exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
-        exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
+        exclude_sources=exclude_sources, cwdless_excluded_sources=cwdless_excluded_sources,
+        cwd_prefix=cwd_prefix, min_message_count=min_message_count,
         archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         local_created_sources=local_created_sources, workspace_key=workspace_key,
     )
@@ -1409,7 +1417,8 @@ def list_sessions_rich(
         seen_ids = {s["id"] for s in sessions}
         pinned_clauses, pinned_params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources,
-            session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
+            session_key=session_key, exclude_sources=exclude_sources, cwdless_excluded_sources=cwdless_excluded_sources,
+            cwd_prefix=cwd_prefix,
             min_message_count=min_message_count, archived_only=False, include_archived=True,
             include_subagents=include_subagents, local_created_sources=local_created_sources,
             workspace_key=workspace_key,
@@ -1559,12 +1568,13 @@ def session_count(
     holder: StoreHolder, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
     exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
-    local_created_sources: Sequence[str] | None = None,
+    local_created_sources: Sequence[str] | None = None, cwdless_excluded_sources: Sequence[str] | None = None,
 ) -> int:
     """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
     where_clauses, params = _session_filter_where(
         exclude_children=exclude_children, source=source, sources=sources,
-        exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
+        exclude_sources=exclude_sources, cwdless_excluded_sources=cwdless_excluded_sources,
+        cwd_prefix=cwd_prefix, min_message_count=min_message_count,
         archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
         local_created_sources=local_created_sources,
     )

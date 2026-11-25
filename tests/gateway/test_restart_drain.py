@@ -215,6 +215,96 @@ async def test_request_restart_waits_for_async_delegation(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fails", ["idle_wait", "before_stop", "inside_stop"])
+async def test_restart_that_fails_before_the_stop_is_logged_and_the_next_request_runs(monkeypatch, caplog, fails):
+    """The restart task is held only on the runner, so nothing else logs its failure. Until stop() has
+    begun the gateway keeps serving: the failure is logged, admission reopens and the next request runs.
+    Once stop() has begun, the stop's own guard logs the failure and its watchdog ends the process."""
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+
+    async def stop(**_kwargs):
+        if fails == "inside_stop":
+            runner._stop_task = object()
+        if fails != "idle_wait":
+            raise RuntimeError("stop failed")
+    runner.stop = stop
+    if fails == "idle_wait":
+        def units(_runner):
+            raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+        monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    with caplog.at_level("ERROR", logger="gateway.run"):
+        assert runner.request_restart(detached=False, via_service=True) is True
+        await asyncio.gather(runner._restart_task, return_exceptions=True)
+    failed_before_stop = [r for r in caplog.records if "before the gateway began stopping" in r.getMessage()]
+
+    if fails == "inside_stop":
+        assert failed_before_stop == [] and runner._draining is True
+        return
+    assert len(failed_before_stop) == 1 and failed_before_stop[0].exc_info is not None
+    assert runner._draining is False and runner._restart_requested is False
+    monkeypatch.undo()
+    runner.stop = AsyncMock()
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await runner._restart_task
+    runner.stop.assert_awaited_once_with(restart=True, detached_restart=False, service_restart=True)
+
+
+@pytest.mark.asyncio
+async def test_a_forced_restart_that_fails_before_the_stop_gives_the_drain_budgets_back(monkeypatch):
+    """A force zeroes both drain budgets for the stop it expects. When the restart fails before that
+    stop, the gateway keeps serving, so its later stops drain with the budgets it had before."""
+    from gateway.restart_when_idle import force_restart
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+    runner._restart_drain_timeout, runner._cron_drain_timeout = 180.0, 60.0
+
+    def units(_runner):
+        raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+    monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    assert force_restart(runner) is True
+    await asyncio.gather(runner._restart_task, return_exceptions=True)
+    assert (runner._restart_drain_timeout, runner._cron_drain_timeout) == (180.0, 60.0)
+    assert runner._draining is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restart_keeps_an_external_drain_in_the_status(monkeypatch):
+    """While an operator's external drain refuses new turns, a restart that fails before its stop does
+    not report the gateway as running."""
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+    runner._external_drain_active = True
+
+    def units(_runner):
+        raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+    monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    assert runner.request_restart(detached=False, via_service=True) is True
+    await asyncio.gather(runner._restart_task, return_exceptions=True)
+    assert "running" not in [c.args[0] for c in runner._scale_to_zero_status.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_a_restart_wait_that_fails_while_another_stop_runs_is_still_logged(monkeypatch, caplog):
+    """The restart task returns quietly only for a failure raised inside its own stop() call, which the
+    stop's guard logs; a failure in the idle wait while some other stop runs is logged here."""
+    runner, _adapter = make_restart_runner()
+    runner._stop_task = object()  # a SIGTERM stop is under way
+
+    def units(_runner):
+        raise ImportError("cannot import name 'x' from 'tools.async_delegation'")
+    monkeypatch.setattr("gateway.restart_when_idle.background_units", units)
+
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        assert runner.request_restart(detached=False, via_service=True) is True
+        await asyncio.gather(runner._restart_task, return_exceptions=True)
+    assert [r for r in caplog.records if r.exc_info and isinstance(r.exc_info[1], ImportError)]
+
+
+@pytest.mark.asyncio
 async def test_restart_wait_never_interrupts_a_delegation_at_the_cap(monkeypatch):
     """Ruling 2026-11-13: the cap only warns; a live delegation keeps the restart waiting."""
     runner, _adapter = make_restart_runner()

@@ -56,7 +56,9 @@ _GATE_PUBLIC_ICONS: frozenset[str] = frozenset({"/apple-touch-icon.png"})
 
 
 def _path_is_public(path: str, *, status_auth_required: bool = False) -> bool:
-    """Shared API paths and page icons matched exactly; auth/static prefixes matched below."""
+    """:func:`is_public_api_path` (shared with the legacy middleware; ``/api/status`` drops out when
+    ``status_auth_required``) and :data:`_GATE_PUBLIC_ICONS` matched exactly so ``/api/status`` never
+    exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
     return is_public_api_path(
         path, status_auth_required=status_auth_required,
     ) or path in _GATE_PUBLIC_ICONS or any(

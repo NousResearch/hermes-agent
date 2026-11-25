@@ -994,14 +994,19 @@ def _configure_auth_gate(
     Fails closed (``SystemExit`` with an actionable message) when the gate
     engages but no dashboard auth provider is registered.
     """
+    from hermes_cli.dashboard_auth.prefix import _load_dashboard_section
+    from utils import is_truthy_value
+
+    # dashboard.require_auth_for_status (opt-in) drops /api/status from the
+    # public allowlist on this listener. Read like dashboard.public_url: a
+    # malformed or unloadable config keeps the documented public default, and
+    # a quoted YAML "false" stays false.
+    app.state.status_auth_required = is_truthy_value(
+        _load_dashboard_section().get("require_auth_for_status"), default=False)
     # dashboard.public_url is also the exact Host/Origin trust declaration for
     # reverse-proxy deployments; resolved once so middleware never reloads
     # config. A non-loopback public hostname engages the gate even on a loopback
     # backend, else the SPA's local session token becomes remotely reachable.
-    dashboard_cfg = load_config().get("dashboard") or {}
-    app.state.status_auth_required = bool(
-        dashboard_cfg.get("require_auth_for_status", False)
-    )
     # A listener that declares its own public URL (``listener_public_url``: the
     # gateway's, from webapp.public_url) is judged by that one instead.
     own_url = getattr(app.state, "listener_public_url", None)

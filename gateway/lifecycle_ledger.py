@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from contextlib import closing
@@ -172,8 +173,8 @@ def _heartbeat_oom_baseline(sentinel: dict[str, Any], hb: dict[str, Any]) -> Any
     if written is None:
         return None
     claimed = sentinel.get("start_time")
-    if not isinstance(claimed, (int, float)) or written.timestamp() < claimed:
-        return None
+    if type(claimed) not in (int, float) or not math.isfinite(claimed) or written.timestamp() < claimed:
+        return None  # bool is an int and NaN compares False: neither proves the heartbeat's life
     return hb.get("oom") if 0 <= time.time() - written.timestamp() <= _OOM_WINDOW_S else None
 
 

@@ -24,7 +24,7 @@ from agent.monitoring.gateway_health import (
     build_gateway_health_snapshot,
     source_logger_for_export,
 )
-from agent.monitoring.memory_health import build_memory_health_metrics
+from agent.monitoring.memory_health import MEMORY_PRESSURE_METRIC, PREVIOUS_EXIT_METRIC, build_memory_health_metrics
 from agent.monitoring.otlp_exporter import (
     EmitterStreamer,
     _allowlisted_attrs,
@@ -52,7 +52,7 @@ _OBSERVABLE_METRIC_NAMES = (
     "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
     "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
     "hermes.cron.jobs.overdue", "hermes.cron.store.writable", "hermes.cron.store.skipped_runs",
-    "hermes.gateway.previous_exit", "hermes.gateway.memory_pressure",
+    PREVIOUS_EXIT_METRIC, MEMORY_PRESSURE_METRIC,
 )
 
 

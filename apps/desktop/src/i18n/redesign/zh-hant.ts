@@ -712,6 +712,10 @@ export const zhHantRedesign: RedesignOverlay = {
       switchToMachine: '切換到這台機器',
       restartBody: '這台機器上正在執行的回覆會停止。幾秒後它會恢復並自動重新連線。'
     },
+    approvalMode: {
+      perProfile: '依智慧體',
+      perProfileDescription: '核准模式依智慧體分別設定。開啟對應的智慧體以變更其模式。'
+    },
     statusbar: {
       gateway: '機器',
       messagingStopped: '訊息服務已停止',

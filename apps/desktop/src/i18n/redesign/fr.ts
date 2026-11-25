@@ -819,6 +819,10 @@ export const frRedesign: RedesignOverlay = {
       restartBody:
         'Les réponses en cours sur cette machine s’arrêtent. Hermes revient en quelques secondes et se reconnecte seul.'
     },
+    approvalMode: {
+      perProfile: 'Par agent',
+      perProfileDescription: 'Le mode d’approbation est défini par agent. Ouvrez un agent pour modifier son mode.'
+    },
     statusbar: {
       gateway: 'Ordinateur',
       gatewayRestarting: 'redémarrage de Hermes…',

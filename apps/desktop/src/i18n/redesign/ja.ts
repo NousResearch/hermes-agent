@@ -594,6 +594,10 @@ export const jaRedesign: RedesignOverlay = {
       switchToMachine: 'このマシンに切り替える',
       restartBody: 'このマシンで実行中の応答は停止します。数秒で復帰し、自動で再接続します。'
     },
+    approvalMode: {
+      perProfile: 'エージェントごと',
+      perProfileDescription: '承認モードはエージェントごとに設定されます。変更するには、対象のエージェントを開いてください。'
+    },
     statusbar: {
       gateway: 'マシン',
       gatewayTitle: 'マシン',

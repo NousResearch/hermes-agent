@@ -783,6 +783,10 @@ export const deRedesign: RedesignOverlay = {
       restartBody:
         'Laufende Antworten auf diesem Rechner werden abgebrochen. Hermes ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
     },
+    approvalMode: {
+      perProfile: 'Pro Agent',
+      perProfileDescription: 'Genehmigungsmodi werden pro Agent festgelegt. Öffne einen Agenten, um seinen Modus zu ändern.'
+    },
     statusbar: {
       gateway: 'Rechner',
       gatewayRestarting: 'Hermes wird neu gestartet…',

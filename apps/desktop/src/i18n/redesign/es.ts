@@ -759,6 +759,10 @@ export const esRedesign: RedesignOverlay = {
       switchToMachine: 'Cambiar a esta máquina',
       restartBody: 'Las respuestas en curso en esta máquina se detendrán. Vuelve en unos segundos y se reconecta sola.'
     },
+    approvalMode: {
+      perProfile: 'Por agente',
+      perProfileDescription: 'El modo de aprobación se configura por agente. Abre un agente para cambiar su modo.'
+    },
     statusbar: {
       gateway: 'Máquina',
       gatewayReady: 'lista',

@@ -549,6 +549,10 @@ export const arRedesign: RedesignOverlay = {
       switchToMachine: 'التبديل إلى هذا الجهاز',
       restartBody: 'ستتوقف الردود الجارية على هذا الجهاز. سيعود خلال ثوانٍ ويعيد الاتصال تلقائيًا.'
     },
+    approvalMode: {
+      perProfile: 'حسب الوكيل',
+      perProfileDescription: 'يُضبط وضع الموافقة لكل وكيل على حدة. افتح وكيلًا لتغيير وضعه.'
+    },
     statusbar: {
       gateway: 'الجهاز',
       gatewayNeedsSetup: 'الجهاز يحتاج إعدادا',

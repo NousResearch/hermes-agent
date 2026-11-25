@@ -798,6 +798,10 @@ export const enRedesign: RedesignOverlay = {
       switchToMachine: 'Switch to this machine',
       restartBody: 'Turns running on this machine stop. It comes back in a few seconds and reconnects on its own.'
     },
+    approvalMode: {
+      perProfile: 'Per agent',
+      perProfileDescription: 'Approval modes are set per agent. Open an agent to change its mode.'
+    },
     statusbar: {
       gateway: 'Machine',
       gatewayTitle: 'Machine',

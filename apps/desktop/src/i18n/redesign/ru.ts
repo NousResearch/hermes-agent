@@ -679,6 +679,10 @@ export const ruRedesign: RedesignOverlay = {
       restartBody:
         'Выполняющиеся ответы на этом компьютере остановятся. Через несколько секунд Hermes вернётся и переподключится сам.'
     },
+    approvalMode: {
+      perProfile: 'Для каждого агента',
+      perProfileDescription: 'Режим подтверждения задаётся отдельно для каждого агента. Откройте агента, чтобы изменить его режим.'
+    },
     statusbar: {
       gateway: 'Компьютер',
       messagingStopped: 'обмен сообщениями остановлен',

@@ -765,6 +765,10 @@ export const zhRedesign: RedesignOverlay = {
       switchToMachine: '切换到这台机器',
       restartBody: '这台机器上正在运行的回复会停止。几秒后它会恢复并自动重新连接。'
     },
+    approvalMode: {
+      perProfile: '按智能体设置',
+      perProfileDescription: '审批模式按智能体单独设置。打开对应的智能体以更改其模式。'
+    },
     statusbar: {
       gateway: '机器',
       messagingStopped: '消息服务已停止',

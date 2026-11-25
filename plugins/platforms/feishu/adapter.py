@@ -3609,13 +3609,14 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         return None
 
     async def _send_raw_message(
-        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
+        self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str],
+        metadata: Optional[dict[str, Any]], uuid_value: Optional[str] = None,
     ) -> Any:
-        thread_id = (metadata or {}).get("thread_id")
+        thread_id, message_uuid = (metadata or {}).get("thread_id"), uuid_value or str(uuid.uuid4())
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:
             body = self._build_reply_message_body(
-                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
+                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=message_uuid,
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
@@ -3627,7 +3628,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"
         body = self._build_create_message_body(
-            receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=str(uuid.uuid4()),
+            receive_id=receive_id, msg_type=msg_type, content=payload, uuid_value=message_uuid,
         )
         request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
@@ -3789,12 +3790,12 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
     async def _feishu_send_with_retry(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
     ) -> Any:
-        last_error: Optional[Exception] = None
-        active_reply_to = reply_to
+        send_uuid, active_reply_to = str(uuid.uuid4()), reply_to
 
         async def _raw(reply_target: Optional[str]) -> Any:
             return await self._send_raw_message(
-                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_target, metadata=metadata,
+                chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_target,
+                metadata=metadata, uuid_value=send_uuid,
             )
 
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
@@ -3820,7 +3821,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                         response = await _raw(None)
                 return response
             except Exception as exc:
-                last_error = exc
                 if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
@@ -3831,7 +3831,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
                     attempt + 1, _FEISHU_SEND_ATTEMPTS, chat_id, wait_seconds, describe_proxy_error(exc, env_proxy_for_redaction(_onboard_open_base_url(self._domain_name))) or exc,
                 )
                 await asyncio.sleep(wait_seconds)
-        raise last_error or RuntimeError("Feishu send failed")
+        raise RuntimeError("Feishu send failed")
 
     async def _release_app_lock(self) -> None:
         if not self._app_lock_identity:

@@ -203,6 +203,26 @@ class TestInbound:
 # ===========================================================================
 
 
+class TestQuotedReplyInADm:
+    @pytest.mark.asyncio
+    async def test_the_quoted_message_is_read_as_the_user_and_the_users_own_is_ours(self, monkeypatch):
+        a, user_chat = await _dm_adapter(monkeypatch)
+        me = a._workspace_user.dms.user_id
+        assert me
+        quoted = f"{ALICE_DM}/messages/Q"
+        user_chat.messages.get.return_value.execute.return_value = {
+            "name": quoted, "text": "Shall I run the check?", "sender": {"name": me, "displayName": "Assistant"}}
+        msg = _dm_message(text="yes please", quotedMessageMetadata={
+            "name": quoted, "quoteType": "REPLY",
+            "quotedMessageSnapshot": {"sender": "Assistant", "text": "Shall I run the check?"}})
+        admitted, envelope = a._workspace_user.dms.admit(msg)
+        event = await a._build_message_event(admitted, envelope)
+        assert (event.reply_to_message_id, event.reply_to_text) == (quoted, "Shall I run the check?")
+        assert event.reply_to_is_own_message is True
+        user_chat.messages.get.assert_called_once_with(name=quoted)
+        a._chat_api.spaces.return_value.messages.return_value.get.assert_not_called()
+
+
 class TestOutbound:
     @pytest.mark.asyncio
     async def test_replies_edits_and_deletes_in_a_dm_are_made_as_the_user(self, monkeypatch):

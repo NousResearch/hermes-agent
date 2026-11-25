@@ -1024,15 +1024,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
     _QUOTE_KEEP = 500            # quoted messages remembered
 
     def _own_sender_ids(self) -> set[str]:
-        """``users/{id}`` this adapter posts as: the Chat app, and the Workspace user when configured."""
+        """``users/{id}`` this adapter posts as: the Chat app, and the Workspace user when configured (its
+        listened spaces and its DMs each learn that id)."""
         ids = {self._bot_user_id}
         if self._workspace_user is not None:
-            ids.add(getattr(self._workspace_user.listener, "user_id", None))
+            for part in (self._workspace_user.listener, self._workspace_user.dms):
+                ids.add(getattr(part, "user_id", None))
         return {str(i) for i in ids if i}
 
     def _get_quoted_message(self, name: str) -> dict[str, Any]:
-        """Blocking (run in a thread): ``messages.get`` on a quoted message."""
-        return self._chat_api.spaces().messages().get(name=name).execute(http=self._new_authed_http())
+        """Blocking (run in a thread): ``messages.get`` on a quoted message, as the Workspace user in its DMs
+        (the app is not a member there) and as the app everywhere else."""
+        return self._chat_call(name, lambda api: api.spaces().messages().get(name=name))
 
     async def _fetch_quoted_message(self, name: str) -> Optional[tuple[str, str, str, bool]]:
         """(text, sender display name, sender id, ours?) of a quoted message, or None when it cannot be read

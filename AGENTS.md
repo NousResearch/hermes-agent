@@ -85,7 +85,7 @@ hermes-agent/
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 ├── evals/                # live-model A/B and probe harnesses
-└── apps/docs/            # Fumadocs app; content/en holds the long-form docs
+└── apps/docs/            # Fumadocs docs app
 ```
 
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
@@ -113,7 +113,7 @@ per variant and a name → variant table (`tools/environments/`, its table still
   dispatch by table, not `if name ==` ladders; collaborators are objects, not mixins; no module
   constant kept only for tests to patch.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
-  fixing its docs in the same PR (search `apps/docs/content/en`, `skills/`, every `AGENTS.md`).
+  fixing its docs in the same PR (search `apps/docs`, `skills/`, every `AGENTS.md`).
 
 ## Rules that apply everywhere
 

@@ -107,10 +107,26 @@ def _keepalive_http_client(base_url: str) -> Any:
 
 gemini = GeminiProfile(
     name="gemini", aliases=("google", "google-gemini", "google-ai-studio"), api_mode="chat_completions",
+    display_name="Google AI Studio", description="Google AI Studio (Native Gemini API)",
     env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     base_url="https://generativelanguage.googleapis.com/v1beta", auth_type="api_key",
+    supports_vision=True,
     default_aux_model="gemini-3.6-flash",
     forwards_max_tokens=True,
+    hostnames=("generativelanguage.googleapis.com",),
+    models_dev_id="google",
+    replays_tool_call_signatures=True,
+    static_models=(
+        # Gemini 4 after it: [0] is the silent default when no model is configured, and a flagship never is.
+        "gemini-3.8-flash", "gemini-4-neon", "gemini-4-hydrogen", "gemini-4-carbon", "gemini-4-argon",
+        "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash",
+        "gemini-3.1-flash-lite-preview",
+    ),
+    picker_after="huggingface",
+    picker_group=("google", "Google Gemini", "Google AI Studio (API key)"),
+    catalog_aliases=True,
+    base_url_env_var="GEMINI_BASE_URL",
+    registry_after="lmstudio",
     strict_client=True,
 )
 

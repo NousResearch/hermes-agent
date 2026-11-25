@@ -111,29 +111,34 @@ class TestGeminiAgentInit:
     def test_gemini_agent_uses_chat_completions(self, monkeypatch):
         """Gemini still reports chat_completions even though the transport is native."""
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client:
-            mock_client.return_value = MagicMock()
-            from run_agent import AIAgent
-            agent = AIAgent(
-                model="gemini-2.5-flash",
-                provider="gemini",
-                api_key="test-key",
-                base_url="https://generativelanguage.googleapis.com/v1beta",
-            )
+        from run_agent import AIAgent
+        agent = AIAgent(
+            model="gemini-2.5-flash",
+            provider="gemini",
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        try:
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
+        finally:
+            if hasattr(agent, "client") and hasattr(agent.client, "close"):
+                agent.client.close()
 
 
 
     def test_gemini_resolve_provider_client_uses_native_client(self, monkeypatch):
         """resolve_provider_client('gemini') should build GeminiNativeClient."""
         monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy_TEST_KEY")
-        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            mock_client.return_value = MagicMock()
+        from agent.gemini_native_adapter import GeminiNativeClient
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             from agent.auxiliary_client import resolve_provider_client
-            resolve_provider_client("gemini")
-        assert mock_client.called
+            client, _ = resolve_provider_client("gemini")
+        try:
+            assert isinstance(client, GeminiNativeClient)
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
         mock_openai.assert_not_called()
 
 

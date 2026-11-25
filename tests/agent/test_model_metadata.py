@@ -1705,7 +1705,7 @@ class TestContextLengthCache:
         ``os.replace`` write leaves the previous file byte-for-byte intact
         when the swap fails.
         """
-        import utils
+        import utils.files
         import agent.model_metadata as mm
 
         cache_file = tmp_path / "cache.yaml"
@@ -1719,7 +1719,7 @@ class TestContextLengthCache:
         def _boom(*_args, **_kwargs):
             raise OSError("simulated crash during atomic replace")
 
-        monkeypatch.setattr(utils, "atomic_replace", _boom)
+        monkeypatch.setattr(utils.files, "atomic_replace", _boom)
 
         # save_context_length is best-effort and swallows the error.
         save_context_length("model-b", "http://b", 128000)

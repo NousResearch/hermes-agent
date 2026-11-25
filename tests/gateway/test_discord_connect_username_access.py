@@ -90,7 +90,9 @@ async def test_a_single_profile_reconnect_then_an_unrelated_save_keeps_the_resol
 @pytest.mark.asyncio
 async def test_an_operators_own_list_still_wins_over_the_yaml_on_a_reconnect(connectable, tmp_path, monkeypatch):
     """Only the bridge's own value is swapped for the YAML names on connect(): an operator's
-    DISCORD_ALLOWED_USERS keeps beating config.yaml (#109032), on every connection."""
+    DISCORD_ALLOWED_USERS in ``.env`` keeps beating config.yaml (#109032), on every connection."""
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"DISCORD_ALLOWED_USERS"})
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "333")
     _write(tmp_path, {"allow_from": ["alice"]}, 0)
     adapter = DiscordAdapter(load_gateway_config().platforms[Platform.DISCORD])

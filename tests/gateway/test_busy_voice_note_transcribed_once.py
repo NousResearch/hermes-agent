@@ -1,9 +1,8 @@
 """A voice note that interrupts a busy turn is transcribed and echoed ONCE, though the session
 authority's FIFO runs it from a freshly restored event (#152457).
 
-The busy preempt transcribes the clip for ``agent.interrupt()`` and echoes it; native admission
-then re-captures the clip and the FIFO turn restores a new ``MessageEvent`` without that event's
-STT cache, so the turn's preprocessing used to pay STT and echo the transcript a second time.
+The busy preempt interrupts at once with the media placeholder and pays no STT (#143961); the
+FIFO turn restored from the committed row transcribes and echoes the clip, exactly once.
 """
 import asyncio
 import os
@@ -14,9 +13,8 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
+from gateway.session_authority import SessionAuthority, admission_row, initialize_session_authority
 from gateway.session_envelope import restore_native
-from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
 CHAT = '15551234567@s.whatsapp.net'
@@ -60,8 +58,8 @@ async def _busy_rig(tmp_path, monkeypatch):
 
 
 def _rows(authority):
-    return [row for sid in authority.sessions
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+    return [admission_row(row) for sid in authority.sessions
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 @pytest.mark.asyncio
@@ -82,8 +80,9 @@ async def test_busy_voice_note_is_transcribed_and_echoed_once(tmp_path, monkeypa
             media_urls=[str(clip)], media_types=['audio/ogg'])))
         await async_wait_until(lambda: _rows(authority), timeout=10, what='the voice note admitted')
         task.cancel()
-        # The busy path paid STT once; the note also names the clip (#153054's audio marker).
-        assert [i[0].splitlines()[0] for i in agent.interrupts] == ['"stop and check the logs"']
+        # The interrupt never waits for STT (#143961): it carries the placeholder, no STT paid yet.
+        assert [i[0].startswith('[User sent') for i in agent.interrupts] == [True]
+        assert calls == []
 
         # The FIFO turn: what the drain restores from the committed row, through main's preprocessing.
         restored = restore_native(_rows(authority)[0]['payload'], runner)
@@ -93,7 +92,7 @@ async def test_busy_voice_note_is_transcribed_and_echoed_once(tmp_path, monkeypa
         assert len(calls) == 1, calls
         assert [m for m in sent if 'stop and check the logs' in m] == ['🎙️ "stop and check the logs"']
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 @pytest.mark.asyncio
@@ -118,7 +117,7 @@ async def test_same_voice_note_sent_again_while_idle_is_echoed_again(tmp_path, m
 
         assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 async def _admit_busy_voice(runner, authority, source, clip):
@@ -132,8 +131,8 @@ async def _admit_busy_voice(runner, authority, source, clip):
 
 @pytest.mark.asyncio
 async def test_same_clip_forwarded_to_another_chat_still_echoes_there(tmp_path, monkeypatch):
-    """The "already echoed" hand-off belongs to the busy MESSAGE: the same clip arriving idle in
-    another chat before that message's FIFO turn runs is echoed in that chat, and only once overall."""
+    """The same clip arriving idle in another chat before the busy message's FIFO turn runs is
+    echoed in that chat, and the busy message's own turn echoes it once in its chat."""
     monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {'success': True, 'transcript': 'hi', 'provider': 'f'})
     runner, authority, source, _agent, sent = await _busy_rig(tmp_path, monkeypatch)
@@ -146,19 +145,19 @@ async def test_same_clip_forwarded_to_another_chat_still_echoes_there(tmp_path, 
         forwarded = MessageEvent(text='', message_type=MessageType.VOICE, source=other, message_id='f1',
                                  media_urls=[str(clip)], media_types=['audio/ogg'])
         await runner._prepare_inbound_message_text(event=forwarded, source=other, history=[])
-        assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']  # busy echo + chat B's own
+        assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"']  # chat B's own; the busy pass echoed nothing
         await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
-        assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']  # chat A's turn: already shown
+        assert [m for m in sent if '"hi"' in m] == ['🎙️ "hi"', '🎙️ "hi"']  # chat A's turn: its own echo
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 
 @pytest.mark.asyncio
 async def test_a_forwarded_copy_never_takes_the_busy_messages_transcript(tmp_path, monkeypatch):
-    """The busy message owns the transcript it paid for, not the clip bytes: the same clip arriving
-    idle in another chat first is transcribed for that chat, and the busy message's turn runs on the
-    words it was interrupted and echoed with (a second STT pass could hear different words)."""
+    """The busy pass pays no STT (#143961), so it owns no transcript: the same clip arriving idle in
+    another chat first is transcribed for that chat, and the busy message's turn transcribes its own
+    copy (never reusing the other chat's words)."""
     calls = []
 
     def transcribe(path, model=None, source=None):
@@ -177,10 +176,10 @@ async def test_a_forwarded_copy_never_takes_the_busy_messages_transcript(tmp_pat
         await runner._prepare_inbound_message_text(event=forwarded, source=other, history=[])
         text = await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
     finally:
-        authority.db.close()
-    assert [i[0].splitlines()[0] for i in agent.interrupts] == ['"paid words"']
-    assert '"paid words"' in text and 'different words' not in text
-    assert len(calls) == 2  # the busy pass and the forwarded copy; the restored turn pays nothing
+        authority.persistence.close()
+    assert [i[0].startswith('[User sent') for i in agent.interrupts] == [True]
+    assert '"different words"' in text and 'paid words' not in text
+    assert len(calls) == 2  # the forwarded copy and the restored turn; the busy pass pays nothing
     assert [m for m in sent if m.startswith('🎙️')] == ['🎙️ "paid words"', '🎙️ "different words"']
 
 
@@ -204,7 +203,7 @@ async def test_a_clip_listed_twice_in_one_message_echoes_once(tmp_path, monkeypa
         assert len(calls) == 1
         assert [m for m in sent if '"twice"' in m] == ['🎙️ "twice"']
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 @pytest.mark.asyncio
@@ -231,13 +230,13 @@ async def test_a_refused_busy_echo_is_sent_by_the_turn(tmp_path, monkeypatch):
 
         assert [m for m in shown if '"hi"' in m] == ['🎙️ "hi"']
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 @pytest.mark.asyncio
 async def test_a_partly_refused_busy_echo_repeats_no_shown_clip(tmp_path, monkeypatch):
-    """Three clips, the middle one's busy echo refused: the busy path still echoes the third (a steered
-    message has no later turn), and the turn echoes only the refused clip, never a shown one again."""
+    """Three clips, the middle one's echo refused: the busy interrupt echoes nothing (#143961), and
+    the turn echoes the two accepted clips once; a refused echo is not retried as shown."""
     words = {'a.ogg': 'one', 'b.ogg': 'two', 'c.ogg': 'three'}
     monkeypatch.setattr('tools.transcription_tools.transcribe_audio',
                         lambda path, model=None, source=None: {
@@ -265,11 +264,10 @@ async def test_a_partly_refused_busy_echo_repeats_no_shown_clip(tmp_path, monkey
             media_urls=[str(c) for c in clips], media_types=['audio/ogg'] * 3)))
         await async_wait_until(lambda: _rows(authority), timeout=10, what='the voice note admitted')
         task.cancel()
-        assert echoes() == ['🎙️ "one"', '🎙️ "three"']
-        refuse[0] = False
+        assert echoes() == []
         restored = restore_native(_rows(authority)[0]['payload'], runner)
         await runner._prepare_inbound_message_text(event=restored, source=restored.source, history=[])
 
-        assert echoes() == ['🎙️ "one"', '🎙️ "three"', '🎙️ "two"']
+        assert echoes() == ['🎙️ "one"', '🎙️ "three"']
     finally:
-        authority.db.close()
+        authority.persistence.close()

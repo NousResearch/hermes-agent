@@ -1,0 +1,18 @@
+name: merageo
+title: meraGEO AI Visibility
+repo: https://github.com/Sandeep85Das/merageo-hermes-plugin
+sha: 11b855915cb065f9ffc2763f6c36313ef684aa89
+version: "0.1.0"
+description: "How often ChatGPT, Claude and Gemini mention a website, through meraGEO's official hosted MCP server (Streamable HTTP at https://merageo.com/api/mcp/agent, OAuth 2.1 sign-in with the user's meraGEO account, scope geo:scan, no keys in config): read the latest AI visibility report for a domain (0-100 score, per-model mention counts, top issues), request a new scan, check scan status. Bundles one workflow skill. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Setup after install and enable: add an mcp_servers.merageo entry to ~/.hermes/config.yaml with url https://merageo.com/api/mcp/agent, auth: oauth and trust: untrusted (required; hermes mcp login fails without auth: oauth, and this entry replaces the package's, trust included), then run hermes mcp login merageo. Disclosure: hosted-only connector with no local code; every tool call goes to merageo.com and acts as the signed-in user. start_ai_visibility_scan starts a real scan that fetches the domain's public pages and queries AI models through meraGEO's accounts; the package marks the server untrusted, so Hermes asks before it runs. The other three tools are annotated read-only. OAuth tokens are stored by Hermes, not by the plugin. The plugin sends no telemetry; merageo.com logs requests for operations and abuse prevention. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Okyasoft Pte Ltd
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Sandeep85Das/merageo-hermes-plugin/blob/11b855915cb065f9ffc2763f6c36313ef684aa89/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

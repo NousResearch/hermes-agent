@@ -312,7 +312,7 @@ Without this, `cronjob(action="create", deliver="your_platform", ...)` silently 
 
 ---
 
-## 9. Send Message Tool (`tools/send_message_tool.py`)
+## 9. Send Message Tool (`gateway/outbound/send.py`)
 
 Add to `platform_map` in `send_message_tool()`:
 

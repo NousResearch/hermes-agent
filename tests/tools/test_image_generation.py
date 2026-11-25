@@ -53,6 +53,25 @@ def test_image_25_selection_routes_generation_and_edits(image_tool, monkeypatch,
     assert meta["upscale"] is False
 
 
+@pytest.mark.parametrize("variant", ["flare", "sunburst"])
+def test_image_26_sends_only_keys_its_schema_declares(image_tool, monkeypatch, variant):
+    """2.6 edit declares no input_fidelity (2.5 did); undeclared keys would reach the vendor via the gateway."""
+    declared_edit = {"prompt", "image_urls", "image_size", "quality", "num_images", "output_format",
+                     "background", "output_compression", "sync_mode", "mask_url", "frame_count",
+                     "reasoning_effort", "markup_image_url", "frame_duration_ms", "enable_safety_checker"}
+    model = f"openai/gpt-image-2.6/{variant}/text-to-image"
+    monkeypatch.setenv("FAL_IMAGE_MODEL", model)
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    selected, meta = image_tool._resolve_fal_model()
+    assert selected == model
+    endpoint, payload = image_tool._prepare_fal_request(
+        selected, meta, "a cup", "portrait", 42, {"input_fidelity": "high"}, ["https://example.com/a.png"],
+    )
+    assert endpoint == f"openai/gpt-image-2.6/{variant}/edit"
+    assert set(payload) <= declared_edit
+    assert payload["quality"] == "medium" and payload["image_size"] == "portrait_4_3"
+
+
 class TestFalCatalog:
     """Every FAL_MODELS entry must have a consistent shape."""
 

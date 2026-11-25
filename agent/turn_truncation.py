@@ -555,6 +555,21 @@ _CODEX_REPLAY_KEYS = (
     "codex_reasoning_items", "codex_message_items",
 )
 
+
+def _position_continuation_after_prior(prior: dict, incoming: dict) -> dict:
+    """A merged partial can keep a checkpoint from a different response's index space."""
+    fields = ("codex_reasoning_items", "codex_message_items")
+    last = max((i["_codex_output_index"] for key in fields for i in prior.get(key) or []
+                if isinstance(i, dict) and type(i.get("_codex_output_index")) is int), default=-1)
+    if last < 0:
+        return incoming
+    rebased = incoming.copy()
+    for key in fields:
+        if items := incoming.get(key):
+            rebased[key] = [dict(i, _codex_output_index=i["_codex_output_index"] + last + 1)
+                            if isinstance(i, dict) and type(i.get("_codex_output_index")) is int else i for i in items]
+    return rebased
+
 # Third return value of ``continue_codex_incomplete``: the reasoning-only stall was handed to a
 # fallback provider — the caller re-syncs the system prompt identity and continues the turn.
 CODEX_FALLBACK_ACTIVATED = "codex_fallback_activated"
@@ -623,6 +638,7 @@ def continue_codex_incomplete(
             and same_visible_output
         ):
             # Duplicate: refresh replay state in place, no re-emitted commentary.
+            interim_msg = _position_continuation_after_prior(last_msg, interim_msg)
             for _key in _CODEX_REPLAY_KEYS:
                 if _key not in interim_msg:
                     continue
@@ -793,8 +809,13 @@ def handle_content_policy_refusal(
     # dropped.
     _db = getattr(agent, "_session_db", None)
     if _db is not None:
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
         with suppress(Exception):
-            _db.flush_token_counts()
+            if _store is not None:
+                _store.usage.flush_usage()
+            else:
+                _db.flush_token_counts()
     # Hand back the CLEAN pre-refusal history, not the loop's ``conversation_history``: an in-place
     # compaction this turn rewrote that baseline into ``list(messages)`` — the whole poisoned working
     # set including the refused request + tool rounds — so returning it would re-poison CLI/ACP memory

@@ -101,6 +101,8 @@ def test_slash_and_component_follow_the_edit(_home):
 
 
 def test_operator_env_still_beats_the_edited_yaml(_home, monkeypatch):
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"DISCORD_ALLOWED_ROLES"})  # set in .env
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "2")
     _write(_home, {"allowed_roles": ["2"]})
     adapter, guild, member = _connected_discord()

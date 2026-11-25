@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 class SessionAuthorities:
@@ -110,7 +110,7 @@ class SessionAuthorities:
     def require(self, home):
         authority = self.for_home(home)
         if authority is None:
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         return authority
 
     def active(self):
@@ -194,8 +194,11 @@ def authority_for_home(runner, home):
     registry = getattr(runner, 'session_authorities', None)
     if registry is None:
         authority = getattr(runner, 'session_authority', None)
-        if authority is not None and Path(authority.db.db_path).resolve().parent == Path(home).resolve():
-            return authority
+        if authority is not None:
+            from gateway.session_persistence import authority_persistence
+            store = authority_persistence(authority)
+            if store is not None and store.scope.profile_dir == Path(home).resolve():
+                return authority
         return None
     return registry.for_home(home)
 
@@ -216,15 +219,15 @@ def active_authority(runner):
 def require_active_authority(runner, store=None):
     """The active scope's authority, or a refusal: retryable (``runtime_draining``) while its
     profile is parked, else ``profile_mismatch``. With *store* (a callable returning the caller's
-    SessionDB, called only once an authority exists), that store must be the authority's: an API
-    adapter bound to another profile's SessionDB never admits here."""
+    storage interface handle, called only once an authority exists), that store must be the authority's:
+    an API adapter bound to another profile's store never admits here."""
     authority = active_authority(runner)
     if authority is None:
         from gateway.run_runtime import refuse_parked_scope
         refuse_parked_scope(runner)  # retryable while its profile is parked
-    if authority is None or (store is not None and store() is not authority.db):
-        from hermes_state_runtime import RuntimeStoreError
-        raise RuntimeStoreError('profile_mismatch')
+    if authority is None or (store is not None and store() is not authority.persistence):
+        from persistence.core.errors import AuthorityRefusal
+        raise AuthorityRefusal('profile_mismatch')
     return authority
 
 
@@ -251,29 +254,28 @@ def require_serving(authority):
     """Refuse a verb reached through a stale connection to a retired authority: its ownership is
     released, and until a successor bumps the epoch its own epoch still passes the store fence."""
     if getattr(authority, 'retired', False):
-        raise RuntimeStoreError('runtime_retired')
+        raise AuthorityRefusal('runtime_retired')
 
 
 def admission_owner(authority, session_id):
     """The admission identity a physical store row answers to: its compression root, then the
     local creation id a canonical reset forks under (a reset child is not a compression child, so
     ``logical_owner`` alone stops at the child and misses the conversation's admissions)."""
-    from hermes_state_local import local_lineage_owner
+    from gateway.session_persistence import authority_persistence
     sid = authority.logical_owner(session_id)
     if not sid:
         return sid
-    with authority.db._read_ctx() as conn:
-        return local_lineage_owner(conn, sid)
+    return authority_persistence(authority).bindings.lineage_owner(sid)
 
 
 def holds_admission(authority, session_id) -> bool:
     """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
     retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
     closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
+    from gateway.session_persistence import authority_persistence
     try:
-        return bool(authority.db._read_one(
-            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
-            (session_id, admission_owner(authority, session_id))))
+        return authority_persistence(authority).admissions.has_pending(
+            session_ids=(session_id, admission_owner(authority, session_id)))
     except Exception as exc:
         if not getattr(authority, 'retiring', False):
             raise

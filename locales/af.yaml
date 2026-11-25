@@ -435,6 +435,20 @@ gateway:
       provider_usage_plus_estimate: "verskaffer-gebruik + geskatte nuwe boodskappe"
     source_line: "Bron: {source}; kategorietellings is plaaslike skattings."
     hint_all: "Gebruik /context all vir koste per vaardigheid en per gereedskapstel."
+    cache_warm: "Prompt-kas: warm tot {until} ({remaining} oor; {ttl}, {confidence})."
+    cache_expired: "Prompt-kas: {ago} gelede verval ({ttl}, {confidence}); die volgende boodskap verwerk die volle prompt weer."
+    cache_maybe_warm: "Prompt-kas: mag nog warm wees tot {until} (hoogstens nog {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Prompt-kas: onbekend (die roete, sessie of konteks het sedert die laaste gekaste versoek verander)."
+    cache_unknown_route: "Prompt-kas: onbekend (hierdie verskaffer publiseer nie sy kasretensie nie)."
+    cache_unknown_runtime: "Prompt-kas: onbekend (hierdie looptyd stel sy eie kasopsies wat Hermes nie kan sien nie)."
+    cache_unknown_storage: "Prompt-kas: onbekend (die sessiestoor kon nie gelees word nie)."
+    cache_warming_off: "Lewendhouers: af (twee keer gemis)."
+    cache_tier_pending: "Vlak: 5m tot die eerste pouse langer as 5 minute, dan 1h."
+    cache_learned: "Geleer: {rule}."
+    cache_confidence:
+      proven: "bewys"
+      declared: "verklaar"
+      assumed: "aanvaar"
   status:
     header: "📊 **Hermes Gateway-status**"
     matrix_scope_header: "**Matrix-omvang:**"
@@ -985,6 +999,16 @@ platform:
     denied: "❌ Geweier."
     approval_expired: "⌛ Goedkeuring het verval — die opdrag is nie uitgevoer nie (reeds uitgetel of elders afgehandel)."
   shared:
+    vault_code:
+      title: "🔐 Verifikasiekode vir {site}"
+      body: "{site} vra 'n eenmalige kode (SMS of e-pos). Druk die knoppie en tik dit in die vorm wat oopmaak: dit gaan reguit na die bladsy en word nooit hier geplaas nie."
+      button: "Voer kode in"
+      modal_title: "Kode vir {site}"
+      input_label: "Eenmalige kode"
+      submitted: "Kode ingedien; dit word in die bladsy ingevoer."
+      ended: "Hierdie kodeversoek is verby; niks is ingevoer nie."
+      not_author: "Slegs die persoon wat hierdie versoek begin het, kan die kode invoer."
+      submitted_footer: "✓ Kode ingedien"
     response_as_file: "📎 Lang antwoord: die volledige teks is aangeheg."
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"
@@ -1197,6 +1221,9 @@ platform:
       upload_too_large: "⚠️ Kon nie `{filename}` aanheg nie — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB vir hierdie kanaal. Pers die lêer saam of deel eerder 'n skakel."
       image_skipped_too_large: "⚠️ `{filename}` oorgeslaan — {size_mb} MB oorskry Discord se oplaailimiet van {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Antwoord op hierdie boodskap met die kode. Hermes vee jou antwoord dadelik uit en vul die kode op die bladsy in; die model sien dit nooit."
+      delete_failed: "Kon nie jou antwoord hier uitvee nie. Vee dit asseblief self uit."
     approval:
       action_once: "✅ Eenmalig"
       action_session: "✅ Sessie"
@@ -3315,6 +3342,10 @@ cli:
     total: "📚 {count} vaardigheid(e) beskikbaar"
     added_header: "➕ Bygevoegde Vaardighede:"
     removed_header: "➖ Verwyderde Vaardighede:"
+  gateway_restart:
+    waiting: "Hermes herbegin om 'n opdatering of herbegin te voltooi; wag dat dit terugkom…"
+    timed_out: "Hermes het nie betyds van sy herbegin teruggekom nie. Kyk na `hermes gateway status` en begin `hermes` weer."
+    stopped: "Opgehou wag vir Hermes om te herbegin; niks is begin nie."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Sessiestoor nie beskikbaar nie[/bold yellow] — hierdie gesprek sal [bold]NIE gestoor word NIE[/bold] en kan nie later hervat word nie. Soek in vorige sessies is ook gedeaktiveer.\n  Rede: {reason}.\n  {action}\n  [dim]Besonderhede: {details}[/dim]"
     unavailable_plain: "WAARSKUWING: Sessiestoor nie beskikbaar nie — hierdie gesprek sal NIE gestoor word NIE en kan nie later hervat word nie. Rede: {reason}. {action}"
@@ -3993,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "Groot model: {name} bereik ({resets}), dit sal nie tot dan loop nie."
   large_notice_percent: "Groot model: gebruik meer van jou plan per boodskap. Maandelikse limiet vir groot modelle: {percent} gebruik."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Lêers wat in die ongedane beurte verander is: {files}. Voer /rollback uit om kontrolepunte te lys en een te herstel."
     more: "+{count} meer"

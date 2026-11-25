@@ -65,3 +65,39 @@ def test_model_info_surfaces_the_context_value_when_the_probe_is_fast(monkeypatc
     assert info["model"] == "some-model"
     assert info["auto_context_length"] == 131072
     assert info["effective_context_length"] == 131072
+
+
+def test_model_info_bounds_the_endpoint_key_lookup_behind_a_held_auth_lock(monkeypatch):
+    """Resolving the probe key loads the endpoint's credential pool, which persists config-seeded rows
+    to auth.json and waits for its lock (an OAuth refresh holds it across a network call). That wait
+    is inside the route's budget, not in front of it."""
+    import threading
+
+    from hermes_cli.auth import _auth_store_lock
+    from hermes_cli.config import save_config
+    from hermes_cli.web_routers import models as router
+
+    base = "http://127.0.0.1:47970/v1"
+    save_config({"model": {"default": "qwen-lab", "provider": "custom", "base_url": base},
+                 "providers": {"lab": {"base_url": base, "api_key": "entry-key-1234"}}})
+    monkeypatch.setattr(router, "_MODEL_INFO_PROBE_BUDGET_S", 0.3)
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda **kwargs: 131072)
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with _auth_store_lock():
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert held.wait(5)
+    try:
+        started = time.monotonic()
+        info = router.get_model_info()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join(5)
+    assert info["auto_context_length"] == 0
+    assert elapsed < 1.0

@@ -24,32 +24,32 @@ import pytest
 
 import gateway.mirror as mirror_mod
 from gateway.mirror import _find_session_id, mirror_to_session
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 CHAT = "-1001"  # the reported shape: a Telegram forum group
 
 
 def _thread_session(db, session_id, thread_id, *, user_id="u1"):
-    db.create_session(
-        session_id, "telegram", user_id=user_id,
+    seed_session(
+        db, session_id, "telegram", user_id=user_id,
         session_key=f"agent:main:telegram:forum:{CHAT}:{user_id}:{thread_id}",
         chat_id=CHAT, chat_type="forum", thread_id=thread_id,
     )
 
 
 @pytest.fixture()
-def db(tmp_path):
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    yield session_db
-    session_db.close()
+def db(tmp_path, monkeypatch):
+    """The store of the profile in scope: mirror opens ``profile_scope()``, so the tmp home is the active one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    return storage_handle(tmp_path / "home")
 
 
 @pytest.fixture()
 def wired(db, tmp_path):
-    """Point mirror's lookups at the tmp SessionDB; the sessions.json fallback stays absent."""
-    with patch("hermes_state_registry.acquire", return_value=db), \
-         patch("hermes_state_registry.release_or_close"), \
-         patch.object(mirror_mod, "_SESSIONS_INDEX", tmp_path / "sessions" / "sessions.json"):
+    """Point mirror's lookups at the tmp store; the sessions.json fallback stays absent."""
+    with patch.object(mirror_mod, "_SESSIONS_INDEX", tmp_path / "sessions" / "sessions.json"):
         yield db
 
 
@@ -67,10 +67,10 @@ def test_bare_target_mirror_lands_in_general(wired):
     _thread_session(wired, "sess-newer", "95")
 
     assert mirror_to_session("telegram", CHAT, "🟡 the ask", source_label="cli", user_id="u1") is True
-    general = wired.get_messages("sess-general")
+    general = transcript_rows(wired, "sess-general")
     assert [m["role"] for m in general] == ["assistant"]
     assert "the ask" in general[0]["content"]
-    assert wired.get_messages("sess-newer") == []
+    assert transcript_rows(wired, "sess-newer") == []
 
 
 def test_threaded_chat_without_general_refuses_instead_of_guessing(wired):
@@ -80,14 +80,14 @@ def test_threaded_chat_without_general_refuses_instead_of_guessing(wired):
 
     assert _find_session_id("telegram", CHAT) is None
     assert mirror_to_session("telegram", CHAT, "🟡 the ask", source_label="cli", user_id="u1") is False
-    assert wired.get_messages("sess-newer") == []
-    assert wired.get_messages("sess-other") == []
+    assert transcript_rows(wired, "sess-newer") == []
+    assert transcript_rows(wired, "sess-other") == []
 
 
 def test_flat_chat_still_resolves(wired):
     """Control: DMs / non-threaded chats (no thread_id at all) keep resolving."""
-    wired.create_session("sess-dm", "telegram", user_id="u1",
-                         session_key="agent:main:telegram:dm:u1", chat_id="123", chat_type="dm")
+    seed_session(wired, "sess-dm", "telegram", user_id="u1",
+                 session_key="agent:main:telegram:dm:u1", chat_id="123", chat_type="dm")
 
     assert _find_session_id("telegram", "123") == "sess-dm"
 
@@ -100,7 +100,7 @@ def test_explicit_thread_suffix_still_wins(wired):
     assert _find_session_id("telegram", CHAT, thread_id="95") == "sess-newer"
 
 
-def test_sessions_json_fallback_prefers_thread1(tmp_path):
+def test_sessions_json_fallback_prefers_thread1(tmp_path, monkeypatch):
     """Pre-migration fallback path parity: the same bare-target rule applies there."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -113,20 +113,18 @@ def test_sessions_json_fallback_prefers_thread1(tmp_path):
                   "origin": {"platform": "telegram", "chat_id": CHAT, "thread_id": "95"},
                   "updated_at": "2026-02-01T00:00:00"},
     }), encoding="utf-8")
-    no_rows = type("NoRows", (), {"find_session_by_origin": staticmethod(lambda **kw: None)})()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))  # an empty store: no row matches any probe
 
-    with patch("hermes_state_registry.acquire", return_value=no_rows), \
-         patch("hermes_state_registry.release_or_close"), \
-         patch.object(mirror_mod, "_SESSIONS_INDEX", index):
+    with patch.object(mirror_mod, "_SESSIONS_INDEX", index):
         assert _find_session_id("telegram", CHAT) == "sess-general"
 
 
 def test_bare_discord_thread_channel_resolves_its_own_thread(wired):
     """Discord thread channels key the session on ``chat_id == thread_id``; a send to the
     thread's channel id is bare yet names exactly that conversation."""
-    wired.create_session("sess-thread", "discord", user_id="u1",
-                         session_key="agent:main:discord:thread:777", chat_id="777",
-                         chat_type="thread", thread_id="777")
+    seed_session(wired, "sess-thread", "discord", user_id="u1",
+                 session_key="agent:main:discord:thread:777", chat_id="777",
+                 chat_type="thread", thread_id="777")
 
     assert _find_session_id("discord", "777") == "sess-thread"
 
@@ -134,9 +132,9 @@ def test_bare_discord_thread_channel_resolves_its_own_thread(wired):
 def test_live_db_row_beats_a_stale_sessions_json_general_entry(wired, tmp_path):
     """Every probe runs against state.db before the pre-migration index: an old General entry
     left in sessions.json must not outrank the live flat session."""
-    wired.create_session("sess-live", "telegram", user_id="u1",
-                         session_key=f"agent:main:telegram:group:{CHAT}:u1", chat_id=CHAT,
-                         chat_type="group")
+    seed_session(wired, "sess-live", "telegram", user_id="u1",
+                 session_key=f"agent:main:telegram:group:{CHAT}:u1", chat_id=CHAT,
+                 chat_type="group")
     index = tmp_path / "sessions" / "sessions.json"
     index.parent.mkdir()
     index.write_text(json.dumps({"stale": {

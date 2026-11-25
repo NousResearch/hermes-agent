@@ -31,7 +31,6 @@ GATEWAY_SHUTDOWN = "gateway_shutdown"
 # A record ``action='continue'`` can rebuild from (``claimed`` while a continue is starting, ``running`` live).
 _FINISHED = ("resumable", "completed", "stopped", "superseded")
 _DEFAULT_TTL_HOURS, _DEFAULT_MAX_RESUMABLE = 48.0, 32
-_EXPIRED_RETENTION_S = 7 * 24 * 3600.0
 
 # DESIGN.md per-reason table (agent/error_classifier.py::FailoverReason): mode, and the default delay before an
 # AUTO_AT attempt when the failure carried no reset time.
@@ -76,77 +75,86 @@ def classify(entry: dict[str, Any], stop_cause: Optional[str]) -> tuple[str, Opt
 
 
 # ── storage ────────────────────────────────────────────────────────────────
-def _db_path_for(parent_agent: Any = None) -> Optional[Path]:
-    """The profile store the parent's children write their transcripts to (else this scope's ``state.db``);
-    None in a managed worker, which owns no ledger."""
+# A write computed from a record it read lands only while the row is unchanged; a row that moved is read again.
+_CAS_TRIES = 8
+
+
+def _db_path_for(parent_agent: Any = None) -> Any:
+    """The profile store the parent's children write their transcripts to (its ``state.db`` path, or the scope of a
+    storage handle), else this scope's profile; None in a managed worker, which owns no ledger."""
     from agent.runtime_session_store import is_worker_process
     if is_worker_process():
         return None
-    path = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    from persistence_assembly import Persistence, profile_scope
+    db = getattr(parent_agent, "_session_db", None)
+    if isinstance(db, Persistence):
+        return db.scope
+    path = getattr(db, "db_path", None)
     if isinstance(path, (str, Path)):
         return Path(path)
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "state.db"
+    return profile_scope()
 
 
-def _connect(path: Path):
-    from hermes_cli.sqlite_util import transaction
-    from tools.async_delegation import open_state_db
-    return transaction(open_state_db(path, "state.db (resumable_subagents)"))
-
-
-def _write(path: Optional[Path], fn) -> Any:
-    if path is None:
+def _write(target: Any, fn) -> Any:
+    """``fn(ledger)`` on the subagent records of *target*'s profile store (a ``state.db`` path or a profile scope);
+    None when there is no store to write or the write failed."""
+    if target is None:
         return None
+    from persistence import ProfileScope
+    from persistence_assembly import open_persistence, profile_scope
+    scope = target if isinstance(target, ProfileScope) else profile_scope(home=Path(target).parent)
     try:
-        with _connect(path) as conn:
-            return fn(conn)
+        with open_persistence(scope, eager=True) as store:
+            return fn(store.coordination)
     except FileNotFoundError:  # its profile was removed: a late write must not recreate it
-        logger.debug("resumable subagent record skipped: %s is gone", path.parent)
+        logger.debug("resumable subagent record skipped: %s is gone", scope.profile_dir)
         return None
     except Exception:
-        logger.warning("resumable subagent record write failed (%s)", path, exc_info=True)
+        logger.warning("resumable subagent record write failed (%s)", target, exc_info=True)
         return None
 
 
-def _row(conn, sid: str) -> Optional[dict[str, Any]]:
-    """The record, with the columns a claim moves without rewriting the JSON (state, owner) taken from the row."""
-    got = conn.execute("SELECT record_json, state, stop_cause, owner_pid, owner_started_at FROM resumable_subagents "
-                       "WHERE subagent_id=?", (sid,)).fetchone()
+def _as_record(got: Any) -> Optional[dict[str, Any]]:
+    """The run record of a stored row, with the columns a claim moves without rewriting the record (state, owner)."""
     if got is None:
         return None
-    record = json.loads(got[0] or "{}")
-    return {**record, "state": got[1], "stop_cause": got[2], "owner_pid": got[3], "owner_started_at": got[4]}
+    return {**got.document, "state": got.state.value, "stop_cause": got.stop_cause, "owner_pid": got.owner_pid,
+            "owner_started_at": got.owner_started_at}
 
 
-def _upsert(conn, sid: str, record: dict[str, Any], *, state: str, pinned: bool, expires_at: Optional[float],
-            stop_cause: Optional[str] = None) -> None:
-    now = time.time()
+def _row(ledger, sid: str) -> Optional[dict[str, Any]]:
+    """The record, with the columns a claim moves without rewriting the JSON (state, owner) taken from the row."""
+    return _as_record(ledger.get_subagent(subagent_id=sid))
+
+
+def _limits():
+    from persistence.authority.subagents import SubagentLimits
+    ttl, cap = _settings()
+    return SubagentLimits(ttl_hours=ttl, max_resumable=cap)
+
+
+def _subagent_write(record: dict[str, Any], *, state: str, pinned: bool, expires_at: Optional[float],
+                    stop_cause: Optional[str] = None):
+    from persistence.authority.subagents import SubagentState, SubagentWrite
     # ``auto_claim`` / ``auto_cancel`` mark only a claim no run has started yet: a written run record never carries them.
     record = {k: v for k, v in record.items() if k not in ("state", "stop_cause", "auto_claim", "auto_cancel")}
-    conn.execute(
-        """INSERT INTO resumable_subagents (subagent_id, state, pinned, stop_cause, owner_pid, owner_started_at,
-               record_json, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(subagent_id) DO UPDATE SET state=excluded.state, pinned=excluded.pinned,
-               stop_cause=excluded.stop_cause, owner_pid=excluded.owner_pid,
-               owner_started_at=excluded.owner_started_at, record_json=excluded.record_json,
-               updated_at=excluded.updated_at, expires_at=excluded.expires_at""",
-        (sid, state, int(pinned), stop_cause, record.get("owner_pid"), record.get("owner_started_at"),
-         json.dumps(record, ensure_ascii=False, default=str), now, now, expires_at))
+    document = json.loads(json.dumps(record, ensure_ascii=False, default=str))
+    return SubagentWrite(state=SubagentState(state), pinned=pinned, stop_cause=stop_cause,
+                         owner_pid=record.get("owner_pid"), owner_started_at=record.get("owner_started_at"),
+                         document=document, expires_at=expires_at)
 
 
-def _apply_limits(conn) -> None:
+def _upsert(ledger, sid: str, record: dict[str, Any], *, state: str, pinned: bool, expires_at: Optional[float],
+            stop_cause: Optional[str] = None, expected: Any, limits: Any = None) -> bool:
+    """Write the whole row while the stored one is still *expected* (None: no row yet); False when it moved."""
+    return ledger.put_subagent(subagent_id=sid, write=_subagent_write(
+        record, state=state, pinned=pinned, expires_at=expires_at, stop_cause=stop_cause), expected=expected,
+        limits=limits)
+
+
+def _apply_limits(ledger) -> None:
     """TTL un-pins and retires a record; beyond the cap the oldest pins drop (the row stays continuable)."""
-    ttl, cap = _settings()
-    now = time.time()
-    conn.execute("UPDATE resumable_subagents SET pinned=0, state='expired' WHERE expires_at IS NOT NULL "
-                 "AND expires_at <= ? AND state IN ('resumable','completed','stopped','superseded')", (now,))
-    from tools.delegate_tool_auto_resume import OWED_SQL  # kept until the scheduler delivers its one give-up
-    conn.execute(f"DELETE FROM resumable_subagents WHERE state='expired' AND updated_at < ? AND NOT COALESCE(({OWED_SQL}), 0)",
-                 (now - _EXPIRED_RETENTION_S - ttl * 3600,))
-    conn.execute("""UPDATE resumable_subagents SET pinned=0 WHERE pinned=1 AND subagent_id NOT IN (
-                        SELECT subagent_id FROM resumable_subagents WHERE pinned=1
-                        ORDER BY updated_at DESC LIMIT ?)""", (cap,))
+    ledger.apply_subagent_limits(limits=_limits())
 
 
 # ── worktrees ──────────────────────────────────────────────────────────────
@@ -273,7 +281,7 @@ def record_start(run: Any) -> None:
     owners = {str(getattr(child, "_parent_session_id", "") or "") or str(getattr(run.parent_agent, "session_id", "")
                                                                          or "")}
     # The git probes run before the write transaction (seconds on a slow repo; no state.db lock held through them).
-    earlier = _write(path, lambda conn: _row(conn, sid)) or {}
+    earlier = _write(path, lambda ledger: _row(ledger, sid)) or {}
     start_cwd = earlier.get("start_cwd") or cwd
     start_trees = _worktrees_of(start_cwd)
     # ``lock`` serializes the start-record retries (heartbeat thread vs the stop path) with the terminal write, so a
@@ -290,32 +298,43 @@ def record_start(run: Any) -> None:
                                "auto": auto}
     _note_repo(durable["baselines"], durable["start_main"], cwd)
 
-    def _do(conn):
-        if origin == "auto":  # the parent's last word: a stop, /stop or replacement since the claim cancels it here
-            from tools.delegate_tool_auto_resume import admit_start
-            if cancelled := admit_start(conn, sid):
-                return cancelled
-        prev = _row(conn, sid) or {}
-        with _active_subagents_lock:
-            owners.update((_recent_subagents.get(sid) or {}).get("ancestor_owner_session_ids") or ())
-        owners.update(prev.get("owners") or ())
-        owners.update(_ancestor_sessions(child))
-        owners.discard("")
-        record = {**prev, **spec, **_owner_identity(), "subagent_id": sid,
-                  "delegation_id": getattr(child, "_delegation_id", None), "owners": sorted(owners),
-                  # The async unit whose ledger row reports this run (``<call>-k`` with independent completions).
-                  "unit_id": getattr(child, "_delegation_unit_id", None),
-                  "start_cwd": start_cwd, "cwd": durable["cwd"], "worktree": prev.get("worktree")
-                  or run.worktree_info, "outcome": "running", "resume_mode": None,
-                  # Kept across continues: a tree the child made in an earlier run is still its own.
-                  "worktrees_at_start": prev.get("worktrees_at_start") or start_trees,
-                  # A promise belongs to one stop: this run's own stop (or boot recovery) makes it afresh.
-                  "run_origin": origin, "run_started_at": time.time(), "auto_promised": False, **auto}
-        record["repo_baselines"] = durable["baselines"]
-        # A running record pins too (its paths are resolved at sweep time): a crash before boot recovery ran must
-        # not hand its tree to the sweep. Bounded by the same TTL.
-        _upsert(conn, sid, record, state="running", pinned=True, expires_at=time.time() + _settings()[0] * 3600)
-        return True
+    def _do(ledger):
+        for _ in range(_CAS_TRIES):
+            stored = ledger.get_subagent(subagent_id=sid)
+            prev = _as_record(stored) or {}
+            with _active_subagents_lock:
+                owners.update((_recent_subagents.get(sid) or {}).get("ancestor_owner_session_ids") or ())
+            owners.update(prev.get("owners") or ())
+            owners.update(_ancestor_sessions(child))
+            owners.discard("")
+            record = {**prev, **spec, **_owner_identity(), "subagent_id": sid,
+                      "delegation_id": getattr(child, "_delegation_id", None), "owners": sorted(owners),
+                      # The async unit whose ledger row reports this run (``<call>-k`` with independent completions).
+                      "unit_id": getattr(child, "_delegation_unit_id", None),
+                      "start_cwd": start_cwd, "cwd": durable["cwd"], "worktree": prev.get("worktree")
+                      or run.worktree_info, "outcome": "running", "resume_mode": None,
+                      # Kept across continues: a tree the child made in an earlier run is still its own.
+                      "worktrees_at_start": prev.get("worktrees_at_start") or start_trees,
+                      # A promise belongs to one stop: this run's own stop (or boot recovery) makes it afresh.
+                      "run_origin": origin, "run_started_at": time.time(), "auto_promised": False, **auto}
+            record["repo_baselines"] = durable["baselines"]
+            # A running record pins too (its paths are resolved at sweep time): a crash before boot recovery ran
+            # must not hand its tree to the sweep. Bounded by the same TTL.
+            columns: dict[str, Any] = dict(state="running", pinned=True,
+                                           expires_at=time.time() + _settings()[0] * 3600)
+            if origin == "auto":  # the parent's last word: a stop, /stop or replacement since the claim cancels it
+                from tools.delegate_tool_auto_resume import CANCELLED
+                if stored is None:
+                    return f"{CANCELLED}: the record moved (gone)"
+                started = ledger.start_auto_resumed_run(subagent_id=sid, write=_subagent_write(record, **columns),
+                                                        expected=stored, owner_pid=os.getpid())
+                if started.cancelled:
+                    return started.cancelled
+                if started.written:
+                    return True
+            elif _upsert(ledger, sid, record, **columns, expected=stored):
+                return True
+        return None
 
     outcome = _write(path, _do)
     if isinstance(outcome, str):  # cancelled by the parent before it ran: no run record, the child does not start
@@ -378,10 +397,8 @@ def checkpoint(run: Any) -> None:
     if not _flush(durable):
         return  # the full start record goes first; this cwd rides on its next retry or on the stop record
 
-    def _do(conn):
-        conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.cwd', ?, "
-                     "'$.repo_baselines', json(?)), updated_at=? WHERE subagent_id=? AND state='running'",
-                     (cwd, json.dumps(baselines), time.time(), run.subagent_id))
+    def _do(ledger):
+        ledger.checkpoint_subagent(subagent_id=run.subagent_id, cwd=cwd, repo_baselines=baselines)
     _write(durable.get("db"), _do)
 
 
@@ -440,14 +457,18 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
     # The segment it stopped in: with ``compression.in_place: false`` each rotation moved it to a new session.
     session_id = getattr(run.child, "session_id", None)
 
-    def _do(conn):
-        record = _row(conn, sid) or {}
-        if isinstance(session_id, str) and session_id:
-            record["session_id"] = session_id
-        record["auto_promised"] = bool(durable.get("promised"))
-        if durable.get("gave_up"):
-            record["auto_gave_up"] = record["auto_note"] = durable["gave_up"]
-        _finish(conn, sid, record, entry, live_cause or record.get("stop_cause"), cwd=cwd)
+    def _do(ledger):
+        for _ in range(_CAS_TRIES):
+            stored = ledger.get_subagent(subagent_id=sid)
+            record = _as_record(stored) or {}
+            if isinstance(session_id, str) and session_id:
+                record["session_id"] = session_id
+            record["auto_promised"] = bool(durable.get("promised"))
+            if durable.get("gave_up"):
+                record["auto_gave_up"] = record["auto_note"] = durable["gave_up"]
+            if _finish(ledger, sid, record, entry, live_cause or record.get("stop_cause"), cwd=cwd, expected=stored):
+                return True
+        return None
 
     with durable["lock"]:
         flushed = _flush(durable)
@@ -456,10 +477,17 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
             _write(durable.get("db"), _do)
 
 
-def _finish(conn, sid: str, record: dict[str, Any], entry: dict[str, Any], cause: Optional[str], *,
-            cwd: Optional[str], pins: Optional[list[str]] = None) -> None:
-    """Write the stopped record. *pins*: its pin paths computed BEFORE the caller's write transaction opened (git
-    probes take seconds; boot recovery and the claim reclaim must not hold the state.db write lock through them)."""
+def _finish(ledger, sid: str, record: dict[str, Any], entry: dict[str, Any], cause: Optional[str], *,
+            cwd: Optional[str], expected: Any, pins: Optional[list[str]] = None) -> bool:
+    """Write the stopped record while the row is still *expected*, with the limits in the same write; False when it
+    moved. *pins*: its pin paths computed before the write (git probes take seconds; no write may wait on them)."""
+    document, columns = _stopped(record, entry, cause, cwd=cwd, pins=pins)
+    return _upsert(ledger, sid, document, **columns, expected=expected, limits=_limits())
+
+
+def _stopped(record: dict[str, Any], entry: dict[str, Any], cause: Optional[str], *, cwd: Optional[str],
+             pins: Optional[list[str]] = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(record, columns)`` of the stopped record ``_upsert`` writes."""
     ttl, _cap = _settings()
     state, mode, next_at = classify(entry, cause)
     record = {**record, "cwd": cwd or record.get("cwd"), "outcome": entry.get("status"), "resume_mode": mode,
@@ -471,9 +499,8 @@ def _finish(conn, sid: str, record: dict[str, Any], entry: dict[str, Any], cause
     if isinstance(entry.get("worktree"), dict):
         record["worktree"] = {**(record.get("worktree") or {}), **entry["worktree"]}
     record["pin_paths"] = (_pin_paths(record) if pins is None else pins) if state == "resumable" else []
-    _upsert(conn, sid, record, state=state, pinned=state == "resumable" and bool(record["pin_paths"]),
-            expires_at=time.time() + ttl * 3600, stop_cause=cause)
-    _apply_limits(conn)
+    return record, {"state": state, "pinned": state == "resumable" and bool(record["pin_paths"]),
+                    "expires_at": time.time() + ttl * 3600, "stop_cause": cause}
 
 
 def note_gateway_shutdown() -> int:
@@ -488,9 +515,7 @@ def note_gateway_shutdown() -> int:
             agent._delegate_stop_cause = GATEWAY_SHUTDOWN
     marked = 0
     for db in _profile_dbs():
-        marked += _write(db, lambda conn: conn.execute(
-            "UPDATE resumable_subagents SET stop_cause=? WHERE state='running' AND owner_pid=?",
-            (GATEWAY_SHUTDOWN, os.getpid())).rowcount) or 0
+        marked += _write(db, lambda ledger: ledger.mark_subagents_gateway_shutdown(owner_pid=os.getpid())) or 0
     return marked
 
 
@@ -500,63 +525,76 @@ def _abandoned_entry(record: dict[str, Any]) -> tuple[dict[str, Any], Optional[s
     return {"status": "interrupted" if cause == GATEWAY_SHUTDOWN else "unknown"}, cause
 
 
-def plan_recovery(path: Optional[Path], alive) -> dict[str, tuple[Any, Any, list[str]]]:
-    """Boot, BEFORE the recovery transaction: ``{subagent_id: (owner_pid, owner_started_at, pin_paths)}`` for every
-    ``running``/``claimed`` record whose owner is gone. The git probes behind the pins run here, holding no lock."""
-    rows = _write(path, lambda conn: conn.execute(
-        "SELECT subagent_id, owner_pid, owner_started_at, record_json FROM resumable_subagents "
-        "WHERE state IN ('running','claimed')").fetchall()) or []
-    plan = {}
-    for sid, pid, started, raw in rows:
-        if not alive(pid, started):
-            plan[sid] = (pid, started, _live_pins(json.loads(raw or "{}"), memo=False))
-    return plan
+def plan_recovery(path: Any, alive) -> dict[str, tuple[Any, Any, list[str], Any]]:
+    """Boot, before the recovery write: ``{subagent_id: (owner_pid, owner_started_at, pin_paths, stored row)}`` for
+    every ``running``/``claimed`` record of *path*'s store whose owner is gone."""
+    return recovery_plan(_write(path, lambda ledger: ledger.list_inflight_subagents()) or (), alive)
 
 
-def _begin_immediate(conn) -> None:
-    """Take the write lock now, so the re-check that follows and the write after it are one transaction."""
-    if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+def recovery_plan(rows: Iterable[Any], alive) -> dict[str, tuple[Any, Any, list[str], Any]]:
+    """``plan_recovery`` over stored ``running``/``claimed`` rows. The git probes behind the pins run here, before
+    any write."""
+    return {row.subagent_id: (row.owner_pid, row.owner_started_at, _live_pins(dict(row.document), memo=False), row)
+            for row in rows if not alive(row.owner_pid, row.owner_started_at)}
 
 
-def _still_abandoned(conn, sid: str, pid: Any, started: Any) -> Optional[dict[str, Any]]:
-    """The record, when it is still the same dead owner's ``running``/``claimed`` row (read inside the write lock)."""
-    got = conn.execute("SELECT state, owner_pid, owner_started_at FROM resumable_subagents WHERE subagent_id=?",
-                       (sid,)).fetchone()
-    if got is None or got[0] not in ("running", "claimed") or (got[1], got[2]) != (pid, started):
+def _still_abandoned(stored: Any, pid: Any, started: Any) -> Optional[dict[str, Any]]:
+    """The record, when *stored* is still the same dead owner's ``running``/``claimed`` row."""
+    if stored is None or stored.state.value not in ("running", "claimed") or (
+            stored.owner_pid, stored.owner_started_at) != (pid, started):
         return None
-    return _row(conn, sid)
+    return _as_record(stored)
 
 
-def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]],
-                      records: Optional[dict[str, dict[str, Any]]] = None) -> None:
-    """Boot: each planned record (``plan_recovery``) still held by its dead owner becomes resumable (outcome
-    ``unknown``, or a gateway shutdown when that was marked), pinned on where it last was; *records* collects each
-    recovered record. A row that died after the plan was made is reclaimed by ``claim``."""
-    if not plan:
-        return
-    _begin_immediate(conn)
-    for sid, (pid, started, pins) in plan.items():
-        record = _still_abandoned(conn, sid, pid, started)
+def recovered_records(plan: dict[str, tuple[Any, Any, list[str], Any]]) -> dict[str, tuple[dict[str, Any], Any]]:
+    """Boot: each planned record (``plan_recovery``) still held by its dead owner, ``{subagent_id: (record, write)}``:
+    the record as stored and the resumable record it becomes (outcome ``unknown``, or a gateway shutdown when that
+    was marked), pinned on where it last was. The recovery write lands it only while its dead owner still holds the
+    row; a row that died after the plan was made is reclaimed by ``claim``."""
+    out = {}
+    for sid, (pid, started, pins, stored) in plan.items():
+        record = _still_abandoned(stored, pid, started)
         if record is None:
             continue
         entry, cause = _abandoned_entry(record)
-        _finish(conn, sid, record, entry, cause, cwd=record.get("cwd"), pins=pins)
-        if records is not None:
-            records[sid] = record
+        document, columns = _stopped(record, entry, cause, cwd=record.get("cwd"), pins=pins)
+        out[sid] = (record, (document, columns))
+    return out
 
 
-def continuable_of(conn, unit_id: str) -> list[str]:
-    """Every child of the async unit *unit_id* its parent can continue now: the ones boot recovery just finished,
-    and the ones that recorded their own resumable stop before the owner exited (a gateway restart stops each
-    child cleanly, while the unit's ledger row is left running)."""
-    return [sid for (sid,) in conn.execute(
-        "SELECT subagent_id FROM resumable_subagents WHERE state='resumable' AND COALESCE("
-        "json_extract(record_json, '$.unit_id'), json_extract(record_json, '$.delegation_id'))=? "
-        "ORDER BY created_at", (unit_id,))]
+def subagent_recoveries(recovered: dict[str, tuple[dict[str, Any], Any]], promised: Iterable[str] = ()) -> list[Any]:
+    """The recovery write of each ``recovered_records`` entry, ``auto_promised`` set on the *promised* ids (the
+    scheduler then resumes each of them, or delivers its one give-up)."""
+    from persistence.authority.subagents import SubagentRecovery
+    promised = set(promised)
+    out = []
+    for sid, (record, (document, columns)) in recovered.items():
+        document = {**document, "auto_promised": True} if sid in promised else document
+        out.append(SubagentRecovery(subagent_id=sid, owner_pid=record.get("owner_pid"),
+                                    owner_started_at=record.get("owner_started_at"),
+                                    write=_subagent_write(document, **columns)))
+    return out
 
 
-def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) -> Optional[dict[str, Any]]:
+def continuable_of(ledger, unit_id: str, recovered: dict[str, tuple[dict[str, Any], Any]]) -> list[str]:
+    """Every child of the async unit *unit_id* its parent can continue once the boot recovery lands: the ones it
+    finishes (*recovered*), and the ones that recorded their own resumable stop before the owner exited (a gateway
+    restart stops each child cleanly, while the unit's ledger row is left running); oldest first."""
+    now, rows = time.time(), {}
+    for sid in ledger.list_continuable_subagents(unit_id=unit_id):
+        if sid not in recovered and (got := ledger.get_subagent(subagent_id=sid)) is not None:
+            rows[sid] = (got.created_at, got.expires_at)
+    for sid, (record, (document, columns)) in recovered.items():
+        unit = document.get("unit_id") if document.get("unit_id") is not None else document.get("delegation_id")
+        if columns["state"] == "resumable" and unit == unit_id:
+            stored = ledger.get_subagent(subagent_id=sid)
+            rows[sid] = (stored.created_at if stored is not None else now, columns["expires_at"])
+    # The recovery's limits pass retires a record whose TTL already passed.
+    live = [(created, sid) for sid, (created, expires) in rows.items() if expires is None or expires > now]
+    return [sid for _created, sid in sorted(live)]
+
+
+def _reclaim_dead_owner(path: Any, sid: str, record: dict[str, Any]) -> Optional[dict[str, Any]]:
     """A ``running``/``claimed`` row whose owner process died (after this process's boot recovery ran): finish it
     the way boot recovery would and return the finished record; None while its owner is alive."""
     from tools.async_delegation import _owner_liveness
@@ -566,14 +604,16 @@ def _reclaim_dead_owner(path: Optional[Path], sid: str, record: dict[str, Any]) 
         return None
     pins = _live_pins(record, memo=False)
 
-    def _do(conn):
-        _begin_immediate(conn)
-        current = _still_abandoned(conn, sid, pid, started)
-        if current is None:
-            return None
-        entry, cause = _abandoned_entry(current)
-        _finish(conn, sid, current, entry, cause, cwd=current.get("cwd"), pins=pins)
-        return _row(conn, sid)
+    def _do(ledger):
+        for _ in range(_CAS_TRIES):
+            stored = ledger.get_subagent(subagent_id=sid)
+            current = _still_abandoned(stored, pid, started)
+            if current is None:
+                return None
+            entry, cause = _abandoned_entry(current)
+            if _finish(ledger, sid, current, entry, cause, cwd=current.get("cwd"), pins=pins, expected=stored):
+                return _row(ledger, sid)
+        return None
     return _write(path, _do)
 
 
@@ -583,7 +623,7 @@ def claim(parent_agent: Any, sid: str) -> tuple[Optional[dict[str, Any]], Option
     state flip to ``claimed`` is one guarded UPDATE, so two continues never run one conversation twice."""
     from tools.delegate_tool_registry import _owns_subagent_record
     path = _db_path_for(parent_agent)
-    record = _write(path, lambda conn: (_apply_limits(conn), _row(conn, sid))[1])
+    record = _write(path, lambda ledger: _as_record(ledger.apply_subagent_limits(limits=_limits(), subagent_id=sid)))
     if record is None:
         return None, None
     owned = {"owner_agent_session_id": None, "ancestor_owner_session_ids": record.get("owners") or ()}
@@ -595,41 +635,24 @@ def claim(parent_agent: Any, sid: str) -> tuple[Optional[dict[str, Any]], Option
         return None, (f"Subagent '{sid}' is still running or being continued. Try again shortly; if this persists, "
                       "spawn a new task.") if record.get("state") in ("running", "claimed") else None
     owner = _owner_identity()  # boot recovery must not reclaim a continue this live process is starting
-    from tools.delegate_tool_auto_resume import CANCEL_DEBT  # the parent took it over: no automatic report owed
-    claimed = _write(path, lambda conn: conn.execute(
-        f"UPDATE resumable_subagents SET state='claimed', owner_pid=?, owner_started_at=?, updated_at=?, "
-        f"record_json=json_set(record_json, {CANCEL_DEBT}) WHERE subagent_id=? AND state=?",
-        (owner["owner_pid"], owner["owner_started_at"], time.time(), sid, record["state"])).rowcount)
-    return (record, None) if claimed == 1 else (None, f"Subagent '{sid}' is already being continued.")
+    from persistence.authority.subagents import SubagentState  # the parent took it over: no automatic report owed
+    claimed = _write(path, lambda ledger: ledger.claim_subagent(
+        subagent_id=sid, expected_state=SubagentState(record["state"]), owner_pid=owner["owner_pid"],
+        owner_started_at=owner["owner_started_at"]))
+    return (record, None) if claimed is True else (None, f"Subagent '{sid}' is already being continued.")
 
 
-def _hand_back(conn, sid: str, state: str, *, promised: Optional[bool] = None, owner_pid: Optional[int] = None) -> None:
-    """Return a claimed record no run started to *state* (with *promised* as its debt when given), in one write
-    transaction: a stop that landed during the claim (``$.auto_cancel``) wins over handing a promise back."""
-    _begin_immediate(conn)
-    mine, where = (" AND owner_pid=?", (sid, owner_pid)) if owner_pid is not None else ("", (sid,))
-    got = conn.execute("SELECT json_extract(record_json, '$.auto_cancel.state'), json_extract(record_json, "
-                       f"'$.auto_cancel.note') FROM resumable_subagents WHERE subagent_id=? AND state='claimed'{mine}",
-                       where).fetchone()
-    if got is None:
-        return
-    record_json, params, unpin = "record_json", [], ""
-    if got[0]:  # the parent cancelled it during the claim: no automatic resume, no report
-        promised = False
-        if state == "resumable":
-            state, record_json, params = got[0], "json_set(record_json, '$.auto_note', ?)", [got[1]]
-            unpin = ", pinned=0" if state == "stopped" else ""
-    if promised is not None:
-        record_json, params = f"json_set({record_json}, '$.auto_promised', json(?))", [*params, json.dumps(promised)]
-    conn.execute(f"UPDATE resumable_subagents SET record_json=json_remove({record_json}, '$.auto_claim', "
-                 f"'$.auto_cancel'), state=?{unpin} WHERE subagent_id=? AND state='claimed'{mine}",
-                 (*params, state, *where))
+def _hand_back(ledger, sid: str, state: str, *, promised: Optional[bool] = None, owner_pid: Optional[int] = None) -> None:
+    """Return a claimed record no run started to *state* (with *promised* as its debt when given), in one write:
+    a stop that landed during the claim (``$.auto_cancel``) wins over handing a promise back."""
+    from persistence.authority.subagents import SubagentState
+    ledger.hand_back_subagent(subagent_id=sid, state=SubagentState(state), promised=promised, owner_pid=owner_pid)
 
 
 def release(parent_agent: Any, sid: str, record: dict[str, Any]) -> None:
     """Hand a claimed record back (the continue was refused before anything ran), with the debt it had."""
-    _write(_db_path_for(parent_agent), lambda conn: _hand_back(conn, sid, record["state"],
-                                                               promised=bool(record.get("auto_promised"))))
+    _write(_db_path_for(parent_agent), lambda ledger: _hand_back(ledger, sid, record["state"],
+                                                                 promised=bool(record.get("auto_promised"))))
 
 
 def hold_claim(child: Any, parent_agent: Any, sid: str, record: dict[str, Any]) -> None:
@@ -668,8 +691,8 @@ _PENDING_HAND_BACKS_LOCK = threading.Lock()
 def _hand_back_pending(pending: tuple[Optional[Path], str, str, Optional[bool]]) -> bool:
     """One hand-back attempt; True once it committed (a row no longer ``claimed`` by this process counts)."""
     path, sid, state, promised = pending
-    return _write(path, lambda conn: (_hand_back(conn, sid, state, promised=promised, owner_pid=os.getpid()),
-                                      True)[1]) is True
+    return _write(path, lambda ledger: (_hand_back(ledger, sid, state, promised=promised, owner_pid=os.getpid()),
+                                        True)[1]) is True
 
 
 def retry_hand_backs() -> None:
@@ -685,7 +708,7 @@ def retry_hand_backs() -> None:
 
 def last_workspace(parent_agent: Any, sid: str) -> Optional[dict[str, Any]]:
     """``{cwd, worktree}`` the child stopped in, for a continue to start there instead of the parent's cwd."""
-    record = _write(_db_path_for(parent_agent), lambda conn: _row(conn, sid)) or {}
+    record = _write(_db_path_for(parent_agent), lambda ledger: _row(ledger, sid)) or {}
     cwd = record.get("cwd")
     if not (isinstance(cwd, str) and os.path.isdir(cwd)):
         return None
@@ -694,10 +717,14 @@ def last_workspace(parent_agent: Any, sid: str) -> Optional[dict[str, Any]]:
 
 
 # ── worktree sweep pin ─────────────────────────────────────────────────────
-def _profile_dbs() -> list[Path]:
+def _profile_dbs(*, include_run_elsewhere: bool = False) -> list[Any]:
+    """The scope of every served profile that has a store (with *include_run_elsewhere*, also of the profiles a
+    plugin runs elsewhere)."""
     from hermes_cli.profiles import profiles_to_serve
-    homes = [home for _name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
-    return [Path(home) / "state.db" for home in homes if (Path(home) / "state.db").is_file()]
+    from persistence_assembly import profile_scope, store_exists
+    homes = [home for _name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True,
+                                                       include_run_elsewhere=include_run_elsewhere)]
+    return [scope for scope in (profile_scope(home=Path(home)) for home in homes) if store_exists(scope)]
 
 
 def _settings_of(home: Path) -> tuple[float, int]:
@@ -711,30 +738,22 @@ def _settings_of(home: Path) -> tuple[float, int]:
         return _DEFAULT_TTL_HOURS, _DEFAULT_MAX_RESUMABLE
 
 
-def _read_pins(db: Path, now: float) -> Iterable[tuple[str, dict[str, Any]]]:
-    import sqlite3
-    from hermes_cli.sqlite_safe_read import connect_tracked
-    from hermes_state_holders import read_only_db_uri
-    _ttl, cap = _settings_of(db.parent)
+def _read_pins(scope: Any, now: float) -> Iterable[tuple[str, dict[str, Any]]]:
+    """The pinned records of *scope*'s store, read without opening it for writing."""
+    from persistence import PersistenceError
+    from persistence_assembly import open_persistence_reader
+    _ttl, cap = _settings_of(scope.profile_dir)
     try:
-        conn = connect_tracked(read_only_db_uri(db), tracking_path=db, uri=True, timeout=2.0)
-    except sqlite3.Error:
+        with open_persistence_reader(scope.profile_dir) as store:
+            rows = store.coordination.list_pinned_subagents(max_resumable=cap, now=now)
+    except PersistenceError:  # unreadable here: nothing pinned
         return []
-    try:
-        rows = conn.execute("SELECT subagent_id, record_json, expires_at, state FROM resumable_subagents "
-                            "WHERE pinned=1 AND state IN ('resumable','superseded','running','claimed') "
-                            "AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC LIMIT ?",
-                            (now, cap)).fetchall()
-    except sqlite3.Error:
-        rows = []  # no table yet: nothing pinned
-    finally:
-        conn.close()
     out = []
-    for sid, raw, exp, state in rows:
-        record = {**json.loads(raw or "{}"), "expires_at": exp}
-        if state in ("running", "claimed"):
+    for row in rows:
+        record = {**row.document, "expires_at": row.expires_at}
+        if row.state.value in ("running", "claimed"):
             record["pin_paths"] = _live_pins(record)
-        out.append((sid, record))
+        out.append((row.subagent_id, record))
     return out
 
 
@@ -743,7 +762,8 @@ def pinned_worktrees(now: Optional[float] = None) -> dict[str, str]:
     The startup sweep's only view of the records."""
     now = now or time.time()
     pins: dict[str, str] = {}
-    for db in _profile_dbs():
+    # A profile a plugin runs elsewhere still pins its trees; this only reads its records.
+    for db in _profile_dbs(include_run_elsewhere=True):
         for sid, record in _read_pins(db, now):
             until = time.strftime("%Y-%m-%d %H:%M", time.localtime(record["expires_at"])) if record.get(
                 "expires_at") else "?"

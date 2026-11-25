@@ -108,7 +108,7 @@ class TestBuildSSHCommand:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-forward")
         monkeypatch.setattr(env_passthrough, "get_all_passthrough",
                             lambda: frozenset({"NEXTCLOUD_URL", "NEXTCLOUD_PASS", "OPENAI_API_KEY"}))
-        monkeypatch.setattr(ssh_env, "_load_hermes_env_vars", lambda: {"NEXTCLOUD_PASS": "from-dotenv"})
+        monkeypatch.setattr(ssh_env, "load_hermes_env_vars", lambda: {"NEXTCLOUD_PASS": "from-dotenv"})
 
         captured = self._capture_run_bash(monkeypatch, env)
 

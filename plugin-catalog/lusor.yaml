@@ -1,7 +1,7 @@
 name: lusor
 title: Lusor
 repo: https://github.com/lusor-ai/plugins
-sha: bd9493383d799f0a9dd2065661c8fcc84cce9689
+sha: 7cdc00c3ec2f53578ad226e60d0a374fbd98e43b
 subdir: plugins/lusor
 description: >-
   AI agents on real phones through Lusor's hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic
@@ -11,15 +11,18 @@ description: >-
   configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to
   mcp.lusor.ai, signed in as the user through Lusor's OAuth sign-in, and counts against that
   workspace's Lusor plan. Tool results, including screenshots and screen text, enter the session
-  context and so reach the user's model provider. Write-capable tools: run_task (uses credits, and
-  phone minutes on a Lusor Phone), phone_action, reply_to_task, stop_task, install_app, add_phone
-  (buys Lusor Phones on the workspace's plan after a separate price-quote call), remove_phone and
-  wipe_phone (erases a Lusor Phone; confirmed by typing its name). The package marks the server
-  untrusted, but the required sign-in step writes a config.yaml entry that replaces the package's
-  own, trust included, unless the user adds trust: untrusted to it. Hermes stores and refreshes the
-  OAuth tokens. The tool list comes from Lusor's server at run time, so the pinned commit doesn't
-  cover it. OAuth must be enabled with `hermes mcp add lusor --url https://mcp.lusor.ai/mcp --auth oauth`;
-  the bundled mcp.json alone yields 401.
+  context and so reach the user's model provider. Signing in gives 14 tools: list_phones, get_phone,
+  run_task, get_task, list_tasks, reply_to_task, stop_task, get_screenshot, get_screen_state,
+  phone_action, install_app, list_app_installs, remove_phone and wipe_phone. Write-capable among them:
+  run_task (uses credits, and phone minutes on a Lusor Phone), phone_action, reply_to_task, stop_task,
+  install_app, remove_phone and wipe_phone (erases a Lusor Phone; confirmed by typing its name).
+  add_phone (buys Lusor Phones after a price quote), search and execute need an API key instead of
+  sign-in. The package marks the server untrusted, but the required sign-in step writes a config.yaml
+  entry that replaces the package's own, trust included, unless the user adds trust: untrusted to it.
+  Hermes stores and refreshes the OAuth tokens. The tool list comes from Lusor's server at run time,
+  so the pinned commit doesn't cover it. OAuth must be enabled with
+  `hermes mcp add lusor --url https://mcp.lusor.ai/mcp --auth oauth`; the bundled mcp.json alone
+  yields 401.
 maintainer: Lusor
 tier: community
 category: automation

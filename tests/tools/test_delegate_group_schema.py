@@ -15,7 +15,7 @@ def test_group_schema_tracks_delivery_policy_without_mutating_previous_definitio
     original = json.dumps(DELEGATE_TASK_SCHEMA)
     snapshots = []
     for config in ({}, {"independent_completions": True}, {"independent_completions": False}):
-        monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: config)
+        monkeypatch.setattr(delegate_tool_config, "_load_config", lambda: config)
         definition = registry.get_definitions({"delegate_task"})[0]
         enabled = config.get("independent_completions", False)
         task = definition["function"]["parameters"]["properties"]["tasks"]["items"]
@@ -35,7 +35,7 @@ def test_joined_variant_asks_for_no_delivery_group(monkeypatch):
     from tools import delegate_tool_config
     from tools.delegate_tool import oneshot_delegate_function
 
-    monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {"independent_completions": True})
+    monkeypatch.setattr(delegate_tool_config, "_load_config", lambda: {"independent_completions": True})
     joined = oneshot_delegate_function(registry.get_definitions({"delegate_task"})[0]["function"])
     task = joined["parameters"]["properties"]["tasks"]["items"]
     assert "group" not in task["properties"] and task["required"] == ["goal"]
@@ -52,7 +52,7 @@ def test_legacy_group_replay_remains_accepted_and_delivery_policy_controls_units
     batch = _Batch(**{field.name: None for field in fields(_Batch)})
     batch.children = [(i, task, None) for i, task in enumerate(tasks)]
     for enabled in (False, True):
-        monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {"independent_completions": enabled})
+        monkeypatch.setattr(delegate_tool_config, "_load_config", lambda: {"independent_completions": enabled})
         units = _units_of(batch)
         if enabled:
             assert [[i for i, _, _ in unit.children] for unit in units] == [[0, 1], [2]]

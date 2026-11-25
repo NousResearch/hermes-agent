@@ -14,6 +14,7 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,18 +53,25 @@ def _managed_home(tmp_path, *, teammates=("researcher",), peers=()) -> Path:
     return home
 
 
-class _FakeDB:
-    def __init__(self, home: Path, title: str):
-        self.db_path = str(home / "state.db")
+class _FakeSessions:
+    def __init__(self, title: str):
         self._title = title
 
-    def get_session_title(self, _sid):
+    def get_title(self, _sid):
         return self._title
+
+
+class _FakePersistence:
+    """The agent's storage interface handle: its profile scope and the session title verb."""
+
+    def __init__(self, home: Path, title: str):
+        self.scope = SimpleNamespace(profile_dir=home)
+        self.sessions = _FakeSessions(title)
 
 
 class _FakeAgent:
     def __init__(self, home: Path, title: str = "Bot Chat"):
-        self._session_db = _FakeDB(home, title)
+        self.persistence = _FakePersistence(home, title)
         self.session_id = "sess-1"
         self._session_title_hint = None
         self._bot_mode_protocol = True
@@ -502,6 +510,92 @@ def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
     assert "error" in ambiguous
     assert hijack.get("to") == "@hermes"
     assert [_runner_parts(c["command"])[2][1:3] for c in calls] == [["-p", "default"]]
+
+
+def test_bare_peer_name_shadowing_a_local_teammate_is_ambiguous(tmp_path, monkeypatch):
+    """#145241: a bare target that names both a local profile and a registered peer must
+    not silently take the peer HTTP route — it crosses an identity/privacy boundary the
+    caller never chose. Same fail-closed contract as the friendly-name collision above."""
+    _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("ops",), peers=("ops",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="ops", message="ping", agent=agent))
+
+    assert "error" in result
+    assert "ambiguous" in result["error"]
+    assert "ops/<agent>" in result["error"]
+    assert "@ops" not in result["error"]  # never offer the colliding name as the local route
+    assert result["peers"] == ["ops"]
+
+
+def test_bare_peer_name_shadowing_two_local_friendly_names_is_refused(tmp_path, monkeypatch):
+    """A peer name matching the friendly name of TWO local bots is still a local collision:
+    the local ambiguity must not hand the bare name to the peer route (#145241)."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("aaa", "bbb"), peers=("ops",))
+    _rename(home, "aaa", display_name="Ops")
+    _rename(home, "bbb", title="Ops")
+
+    for target in ("ops", "@ops"):
+        result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="ping",
+                                                           agent=_FakeAgent(home)))
+        assert "ambiguous" in result["error"]
+        assert "@aaa or @bbb" in result["error"]  # the names that reach them, not the colliding one
+    assert calls == []
+
+
+def test_peer_agent_form_still_reaches_the_peer_when_names_collide(tmp_path, monkeypatch):
+    """The explicit '<peer>/<agent>' form is unambiguous even under a name collision —
+    the refusal above must not take it away."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
+    home = _managed_home(tmp_path, teammates=("ops",), peers=("ops",))
+    _rename(home, "ops", title="Ops Researcher")  # slugs to 'ops-researcher': still not a bare name
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="ops/researcher", message="ping", agent=agent)
+    )
+
+    assert result["status"] == "queued"
+    _mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "ops/researcher"]
+
+
+def test_bare_peer_name_without_a_local_collision_still_reaches_the_peer(tmp_path, monkeypatch):
+    """No local profile named like the peer: today's routing is correct and stays."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
+    home = _managed_home(tmp_path, teammates=("researcher",), peers=("ops",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="ops", message="ping", agent=agent))
+
+    assert result["status"] == "queued"
+    _mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "ops"]
+
+
+def test_bare_peer_name_matching_only_the_caller_stays_peer_bound(tmp_path, monkeypatch):
+    """A collision with the caller's own profile is not ambiguous: local delivery to
+    yourself is refused anyway, so the peer is the only sensible reading and keeps
+    today's route."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
+    home = _managed_home(tmp_path, teammates=("ops",), peers=("ops",))
+    agent = _FakeAgent(home / "profiles" / "ops", title="Bot Chat")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target="ops", message="ping", agent=agent))
+
+    assert result["status"] == "queued"
+    _mode, _dm_file, transport_argv, _home = _runner_parts(calls[0]["command"])
+    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "ops"]
 
 
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
@@ -1316,7 +1410,8 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     _canonical_target(monkeypatch, home / "profiles" / "researcher")
     agent = _FakeAgent(home, title="Bot Chat")
     rows = []
-    agent._session_db.append_message = lambda session_id, role, **kw: rows.append((session_id, role, kw)) or 1
+    agent.persistence.messages = SimpleNamespace(
+        append=lambda session_id, message: rows.append((session_id, message)) or 1)
 
     result = json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent))
     assert result["reply_delivery"] == "poll"
@@ -1324,8 +1419,8 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     while not rows and time.monotonic() < deadline:
         time.sleep(0.05)
     assert len(rows) == 1
-    session_id, role, kw = rows[0]
-    assert (session_id, role) == ("sess-1", "user")
-    assert kw["display_kind"] == "process_complete"
-    assert "PAYLOAD_SENTINEL_42" in kw["content"]
-    assert procs[0].id in kw["content"]
+    session_id, message = rows[0]
+    assert (session_id, message.role) == ("sess-1", "user")
+    assert message.display_kind == "process_complete"
+    assert "PAYLOAD_SENTINEL_42" in message.content
+    assert procs[0].id in message.content

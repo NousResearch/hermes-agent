@@ -472,7 +472,7 @@ class TapsManager(_JsonStateFile):
     DEFAULT_PATH = staticmethod(_taps_file)
     _LOCK_HOLDER = threading.local()
 
-    def load(self) -> list[dict]:
+    def list_taps(self) -> list[dict]:
         return self._read().get("taps", [])
 
     def save(self, taps: list[dict]) -> None:
@@ -498,8 +498,6 @@ class TapsManager(_JsonStateFile):
             return len(kept) != len(taps)
 
         return self._update(drop)
-
-    list_taps = load
 
 
 def append_audit_log(action: str, skill_name: str, source: str,

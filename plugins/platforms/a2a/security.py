@@ -17,6 +17,7 @@ from typing import Optional
 from agent.proxy_bypass import is_loopback_host
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import profile_scoped as _profile_scoped
+from gateway.platforms._shared import secrets_match
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +108,9 @@ class A2ASecurityContext:
             return None
         presented = parts[1].strip()
         for token, name in self.peer_tokens:
-            if hmac.compare_digest(presented, token):
+            if secrets_match(presented, token):
                 return name
-        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
+        if secrets_match(presented, self.bearer_token):
             return f"ip:{client_ip or 'unknown'}"
         return None
 
@@ -270,10 +271,9 @@ def post_callback(url: str, body: bytes, headers: dict, *, localhost_mode: bool,
 def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
     """Append an audit record (direction: inbound | outbound | push). Never raises."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home, mkdir_under_hermes_home
         rec = {"ts": time.time(), "direction": direction, "peer": peer, "task_id": task_id, "summary": (summary or "")[:500]}
-        get_hermes_home().mkdir(parents=True, exist_ok=True)
-        with (get_hermes_home() / "a2a_audit.jsonl").open("a", encoding="utf-8") as fh:
+        with (mkdir_under_hermes_home(get_hermes_home()) / "a2a_audit.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)

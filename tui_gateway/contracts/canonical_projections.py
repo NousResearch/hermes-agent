@@ -1,13 +1,13 @@
 """Canonical projections with demonstrated differences from standalone wire."""
 from typing import Literal
 
-from pydantic import model_validator
-
 from .base import JsonValue, Params, Result
 from .common import ProfileParams
 from .canonical_sessions import CanonicalSessionParams
 from .config_free_tier_control import ConfigGetParams, ConfigGetResult, ConfigSetResult
-from .groups_bot_relay import GroupsApproveResult, GroupsCreateResult, GroupsRetryResult, RoomMemberInput, RoomParams
+from .groups_bot_relay import (
+    BotRelayDeliverResult, GroupsApproveResult, GroupsCreateResult, GroupsRetryResult, RoomMemberInput, RoomParams,
+)
 from .prompt_voice import AttachedImageResult, ImageAttachBytesParams
 from .profiles_vault_complete_foreign_subagents import ProfileCanonicalSession, ProfileRow, ProfilesListResult
 from .registry import canonical_method
@@ -75,32 +75,6 @@ class CanonicalBotDeliverParams(Params):
     notification_category: str | None = None
 
 
-class CanonicalBotDeliverResult(Result):
-    """A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the
-    delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``
-    receipt with no admission that the relay settles as the sender's answer."""
-
-    status: str
-    delivery_id: str
-    profile_home: str
-    session_id: str
-    admission_id: str | None = None
-    refused: Literal[True] | None = None
-    message: str
-    reply: str | None = None
-    retry_admission_id: str | None = None
-    error: str | None = None
-    reason: str | None = None
-    # The target Bot Chat's live state at answer time (``gateway/session_bot_state.py``); never stored.
-    target_state: Literal['idle', 'working', 'waiting_approval', 'waiting_clarify', 'paused'] | None = None
-
-    @model_validator(mode='after')
-    def _admitted_or_refused(self):
-        if (self.admission_id is None) != (self.refused is True) or (self.refused and self.status != 'failed'):
-            raise ValueError('a deliver result names its admission, or is a refused failed receipt without one')
-        return self
-
-
 class CanonicalBotCancelParams(Params):
     profile: str | None = None
     id: str
@@ -125,10 +99,10 @@ for _name, _params, _result in (
     ('groups.retry', CanonicalRoomAttemptParams, GroupsRetryResult),
     ('groups.create', CanonicalRoomCreateParams, GroupsCreateResult),
     ('groups.approve', CanonicalRoomApproveParams, GroupsApproveResult),
-    ('bot_relay.deliver', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
+    ('bot_relay.deliver', CanonicalBotDeliverParams, BotRelayDeliverResult),
     # The sender's finalize of a refusal marked ``admitted: false``: the same identity, answered
     # with the id's terminal not-sent receipt or its existing admission (``gateway/session_bot.py``).
-    ('bot_relay.settle', CanonicalBotDeliverParams, CanonicalBotDeliverResult),
+    ('bot_relay.settle', CanonicalBotDeliverParams, BotRelayDeliverResult),
     # The sender's own cancel by delivery id, decided on the owner beside its one retry.
     ('bot_relay.cancel', CanonicalBotCancelParams, CanonicalBotCancelResult),
 ):

@@ -674,6 +674,24 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+def static_catalog_providers() -> list[str]:
+    """Every provider with a static catalog row in the bound home: built-ins plus plugin profiles.
+
+    Plugin profiles are inserted before the earliest built-in that follows them in
+    ``CANONICAL_PROVIDERS`` (else appended) so a first-party plugin keeps precedence over
+    multi-vendor/reseller catalogs that appear after it in the picker."""
+    from providers import list_providers
+    rows = list(_PROVIDER_MODELS)
+    canonical_idx = {p.slug: idx for idx, p in enumerate(CANONICAL_PROVIDERS)}
+    for pp in list_providers():
+        if not pp.static_models or pp.name in rows:
+            continue
+        pos = canonical_idx.get(pp.name)
+        later = [i for i, slug in enumerate(rows) if pos is not None and canonical_idx.get(slug, -1) > pos]
+        rows.insert(later[0], pp.name) if later else rows.append(pp.name)
+    return rows
+
+
 # Plugin profiles with ``aggregator=True`` join at sync time (``sync_plugin_provider_catalog``).
 _AGGREGATOR_PROVIDERS: set[str] = {"nous", "openrouter", "ai-gateway", "kilocode"}
 sync_plugin_provider_catalog()  # every table it extends is defined above

@@ -3981,13 +3981,6 @@ def _worktree_maintenance_repos() -> list[str]:
     """Repos whose ``.worktrees/`` to keep pruned: the hermes checkout, job workdir repo roots and
     every repo this profile created a worktree in (``worktree_registry``), filtered to those that
     actually have a ``.worktrees/`` dir."""
-    from hermes_platform.resolver.git import resolve_usable_git
-
-    git = resolve_usable_git()
-    if git is None:
-        # The prune runs git in every repo found here: with no usable git (missing, or macOS's CLT
-        # stub, whose every launch opens Apple's install dialog) there is nothing to sweep.
-        return []
     repos: set = set()
 
     with contextlib.suppress(Exception):
@@ -4002,16 +3995,16 @@ def _worktree_maintenance_repos() -> list[str]:
 
     with contextlib.suppress(Exception):
         from cron.jobs import load_jobs
+        from hermes_platform.resolver.git import resolve_usable_git
 
-        for job in load_jobs():
+        for job in load_jobs() if (git := resolve_usable_git()) else ():
             workdir = str(job.get("workdir") or "").strip()
             if not workdir or not Path(workdir).is_dir():
                 continue
             try:
                 probe = subprocess.run(
                     [git, "-C", workdir, "rev-parse", "--show-toplevel"],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=5, check=False)
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
                 if probe.returncode == 0 and probe.stdout.strip():
                     repos.add(probe.stdout.strip())
             except Exception:

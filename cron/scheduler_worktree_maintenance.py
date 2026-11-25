@@ -19,6 +19,8 @@ import threading
 import time
 from typing import Callable, Iterable, Optional
 
+from hermes_platform.resolver.git import resolve_usable_git
+
 logger = logging.getLogger(__name__)
 
 # Bounded so a wedged sweep cannot park a profile's thread forever; a normal sweep is one git pass
@@ -63,6 +65,10 @@ def run_sweep(discover: Callable[[], Iterable[str]], *, interval_seconds: float,
     ``discover`` stays in the caller so a per-profile repo lookup (and anything a test patches) is
     read where it is defined. Errors never propagate: GC is hygiene, not scheduling.
     """
+    if resolve_usable_git() is None:
+        # The job-workdir probe and every prune run git: with none usable (missing, or macOS's
+        # CLT stub, whose every launch opens Apple's install dialog) there is nothing to sweep.
+        return
     if not claim_sweep_slot(wait_seconds):
         logger.debug("Cron worktree maintenance skipped: another sweep is still running")
         return

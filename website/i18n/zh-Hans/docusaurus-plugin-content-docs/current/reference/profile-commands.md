@@ -226,7 +226,7 @@ hermes profile alias work --remove
 hermes profile rename <old-name> <new-name>
 ```
 
-重命名 profile，同时更新目录和 shell alias。
+重命名 profile，同时更新目录和 shell alias。以旧名称安装的网关服务（`hermes -p <old-name> gateway install`）无论网关是否在运行都会被移除，因为它会在下次登录时启动旧名称；请用 `hermes -p <new-name> gateway install` 重新安装。在 Docker 镜像内，s6 网关槽位会迁移到新名称。
 
 | 参数 | 描述 |
 |----------|-------------|

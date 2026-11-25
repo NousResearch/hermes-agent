@@ -201,6 +201,7 @@ def test_relative_artifact_path_rejects_windows_reserved_names_without_ntpath(mo
 def test_download_page_keys_and_public_urls():
     assert channel_page_key_for("stable") == "releases/stable/index.html"
     assert channel_page_key_for("canary") == "releases/canary/index.html"
+    assert r2.channel_dmg_key_for("stable") == "releases/darwin/stable/HermesBundled-mac-arm64.dmg"
     commit = "a" * 40
     assert commit_page_key_for(commit) == f"releases/commit/{commit}/index.html"
     assert commit_prefix_for(commit) == f"releases/commit/{commit}/"
@@ -244,6 +245,7 @@ def test_channel_public_base_defaults_to_production(monkeypatch):
     ('releases/canary/index.html', 'text/html; charset=utf-8', False),
     (f'releases/commit/{"a" * 40}/index.html', 'text/html; charset=utf-8', False),
     ('releases/tag/v1.2.3/app.dmg', None, None),
+    ('releases/darwin/stable/HermesBundled-mac-arm64.dmg', None, False),
     ('releases/tag/v1.2.3/latest-mac.yml', None, None),
     ('releases/termux/canary/key.asc', 'text/plain', False),
     ('releases/termux/canary/dists/hermes-canary/InRelease', 'text/plain', False),
@@ -307,11 +309,11 @@ def test_referenced_feed_bundle_filenames_reads_main_package_only():
 def test_feed_referenced_keys_protects_bundle_and_absolute_tag_uris():
     tag_feed = CANARY_FEED_XML.replace(
         'Uri="https://r2.example/releases/win32/canary/HermesBundled-0.27.2.9-win.msixbundle"',
-        'Uri="https://r2.example/releases/tag/v0.27.2+canary.20260829T000000Z/HermesBundled-0.27.2-win-x64.msix"',
+        'Uri="https://r2.example/releases/tag/canary.20260829T000000Z-v0.27.2/HermesBundled-0.27.2-win-x64.msix"',
     )
     keys = feed_referenced_keys("releases/win32/canary", tag_feed)
     assert "releases/win32/canary/HermesBundled-0.27.2-win-x64.msix" in keys
-    assert "releases/tag/v0.27.2+canary.20260829T000000Z/HermesBundled-0.27.2-win-x64.msix" in keys
+    assert "releases/tag/canary.20260829T000000Z-v0.27.2/HermesBundled-0.27.2-win-x64.msix" in keys
 
 
 CANARY_DIR = "releases/win32/canary"
@@ -343,6 +345,17 @@ class _R2StubHandler(BaseHTTPRequestHandler):
         path = unquote(urlsplit(self.path).path)
         return path.split("/", 2)[2] if path.count("/") >= 2 else path.lstrip("/")
 
+    def _stored_metadata(self) -> dict[str, str]:
+        out = {}
+        for name in ("Content-Type", "Cache-Control", "Content-Disposition"):
+            value = self.headers.get(name)
+            if value is not None:
+                out[name] = value
+        for name, value in self.headers.items():
+            if name.lower().startswith("x-amz-meta-"):
+                out[name.lower()] = value
+        return out
+
     def do_GET(self):
         store = self.server.store  # type: ignore[attr-defined]
         self.server.requests.append(("GET", self.path, dict(self.headers)))  # type: ignore[attr-defined]
@@ -353,7 +366,7 @@ class _R2StubHandler(BaseHTTPRequestHandler):
         key = self._key()
         if key in store:
             body, etag = store[key]
-            headers = {"etag": etag}
+            headers = {**self.server.metadata.get(key, {}), "etag": etag}  # type: ignore[attr-defined]
             if self.headers.get("Range"):
                 headers["content-range"] = f"bytes 0-0/{len(body)}"
                 self._send(206, body[:1], headers)
@@ -366,15 +379,58 @@ class _R2StubHandler(BaseHTTPRequestHandler):
         self.server.requests.append(("HEAD", self.path, dict(self.headers)))  # type: ignore[attr-defined]
         key = self._key()
         if key in self.server.store:  # type: ignore[attr-defined]
-            body, _ = self.server.store[key]  # type: ignore[attr-defined]
+            body, etag = self.server.store[key]  # type: ignore[attr-defined]
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("ETag", '"abc"')
+            self.send_header("ETag", etag or '"abc"')
+            for name, value in self.server.metadata.get(key, {}).items():  # type: ignore[attr-defined]
+                self.send_header(name, value)
             self.end_headers()
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")
             self.end_headers()
+
+    def _handle_copy(self, key: str) -> None:
+        from urllib.parse import unquote
+
+        server = self.server  # type: ignore[attr-defined]
+        copy_source = self.headers["x-amz-copy-source"]
+        if not copy_source.startswith("/"):
+            return self._send(400, b"<Error><Code>InvalidArgument</Code></Error>")
+        parts = unquote(copy_source).split("/", 2)
+        dest_bucket = unquote(urlsplit(self.path).path).split("/", 2)[1]
+        if len(parts) < 3 or parts[1] != dest_bucket:
+            return self._send(404, b"<Error><Code>NoSuchBucket</Code></Error>")
+        src_key = parts[2]
+        if src_key not in server.store:
+            return self._send(404, b"<Error><Code>NoSuchKey</Code></Error>")
+        src_body, src_etag = server.store[src_key]
+        if self.headers.get("x-amz-copy-source-if-match") and self.headers["x-amz-copy-source-if-match"] != src_etag:
+            return self._send(412, b"<Error><Code>PreconditionFailed</Code></Error>")
+        server.copy_attempts += 1
+        if server.copy_failure == "unavailable":
+            return self._send(503, b"<Error><Code>ServiceUnavailable</Code></Error>")
+        if server.copy_failure == "dropped" and server.copy_attempts == 1:
+            self.close_connection = True
+            return None
+        if server.copy_failure == "denied" or (server.copy_failure == "transient" and server.copy_attempts == 1):
+            code = "AccessDenied" if server.copy_failure == "denied" else "InternalError"
+            return self._send(200, f"<Error><Code>{code}</Code></Error>")
+        etag = f'"{hashlib.md5(src_body).hexdigest()}"'
+        server.store[key] = (src_body, etag)
+        directive = (self.headers.get("x-amz-metadata-directive") or "COPY").upper()
+        if directive == "REPLACE":
+            server.metadata[key] = self._stored_metadata()
+        else:
+            server.metadata[key] = dict(server.metadata.get(src_key, {}))
+        if key == getattr(server, "corrupt_put", None):
+            server.store[key] = (src_body + b"!", '"corrupt"')
+        self._send(
+            200,
+            f'<CopyObjectResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ETag>{etag}</ETag></CopyObjectResult>',
+            {"content-type": "application/xml"},
+        )
 
     def do_PUT(self):
         server = self.server  # type: ignore[attr-defined]
@@ -387,6 +443,8 @@ class _R2StubHandler(BaseHTTPRequestHandler):
         query = parse_qs(urlsplit(self.path).query)
         if key == getattr(server, 'fail_put', None):
             return self._send(400, b'Interrupted upload')
+        if "x-amz-copy-source" in self.headers:
+            return self._handle_copy(key)
         if "partNumber" in query:
             state = server.multipart
             assert query["uploadId"] == ["a+/="]
@@ -409,6 +467,7 @@ class _R2StubHandler(BaseHTTPRequestHandler):
             self._send(412, b"Precondition Failed")
             return
         server.store[key] = (data, self.headers.get("If-Match", '"new"'))
+        server.metadata[key] = self._stored_metadata()
         if key == getattr(server, 'corrupt_put', None):
             # Keep HEAD size verification valid; only the readback content lies.
             server.store[key] = (b'x' * len(data), '"corrupt"')
@@ -483,9 +542,12 @@ class _R2StubHandler(BaseHTTPRequestHandler):
 def r2_server(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _R2StubHandler)
     server.store = {}
+    server.metadata = {}
     server.requests = []
     server.page_size = 1000
     server.last_modified = {}
+    server.copy_failure = None
+    server.copy_attempts = 0
     server.multipart = SimpleNamespace(parts={}, attempts={}, failure=None, created=0,
                                        completed=0, aborted=0, reject_existing=False)
 
@@ -573,6 +635,7 @@ def test_cli_reuses_an_immutable_multipart_object(r2_server, tmp_path):
     result = subprocess.run(
         [sys.executable, "-c", script, "put", "--tag", "v1.0.0", "--key", path.name, "--file", str(path), "--immutable"],
         cwd=Path(__file__).resolve().parents[2], env=os.environ, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert [method for method, _, _ in r2_server.requests] == ["POST", "GET", "HEAD"]
@@ -621,7 +684,7 @@ def test_put_page_object_carries_html_type_and_no_store(r2_server):
         os.unlink(path)
     stored, _etag = r2_server.store["releases/stable/index.html"]
     assert stored == page.encode("utf-8")
-    headers = [r[2] for r in r2_server.requests if r[0] == "PUT"][0]
+    headers = next(r[2] for r in r2_server.requests if r[0] == "PUT")
     assert headers["Content-Type"] == "text/html; charset=utf-8"
     assert headers["Cache-Control"] == "no-store"
 
@@ -677,13 +740,13 @@ def test_list_cli_paginates_and_decodes_keys(r2_server, capsys):
     b'<Foo Uri="https://x/old.msixbundle" />', b'<MainPackage Uri="https://x/old.msixbundle" />',
     b'<AppInstaller><MainBundle Uri="https://x/old.msixbundle" />'])
 def test_real_prune_retention_and_second_feed_failure(r2_server, capsys, bad_feed):
-    tag_reference = 'releases/tag/v0.27.2+canary.20260801T000000Z/live.msixbundle'
+    tag_reference = 'releases/tag/canary.20260801T000000Z-v0.27.2/live.msixbundle'
     second = f'<AppInstaller><MainBundle Uri="https://cdn.example/{tag_reference}" /></AppInstaller>'
-    doomed = {f'{CANARY_DIR}/old.msixbundle', 'releases/tag/v0.27.2+canary.20260801T000000Z/old.zip'}
+    doomed = {f'{CANARY_DIR}/old.msixbundle', 'releases/tag/canary.20260801T000000Z-v0.27.2/old.zip'}
     kept = {f'{CANARY_DIR}/HermesBundled-0.27.2.9-win.msixbundle', f'{CANARY_DIR}/live.msixbundle',
             f'{CANARY_DIR}/fresh.msixbundle', f'{CANARY_DIR}/unknown.msixbundle', tag_reference,
             'releases/win32/stable/old.msixbundle', 'releases/unknown/old.msixbundle',
-            'releases/tag/v0.28.0/old.zip', 'releases/tag/v0.28.0+canary.20260904T000000Z/today.zip'}
+            'releases/tag/v0.28.0/old.zip', 'releases/tag/canary.20260904T000000Z-v0.28.0/today.zip'}
     r2_server.store.update({key: (b'artifact', '"e"') for key in doomed | kept})
     r2_server.store[f'{CANARY_DIR}/canary.appinstaller'] = (CANARY_FEED_XML.encode(), '"e"')
     r2_server.store[f'{CANARY_DIR}/second.appinstaller'] = (second.encode() if bad_feed is None else bad_feed, '"e"')
@@ -792,11 +855,28 @@ def test_download_streams_verified_bytes_and_preserves_destination_on_failure(r2
     monkeypatch.setattr(r2.time, 'sleep', lambda _: None)
     r2.download_object(**args)
     assert request_times == [NOW, refreshed]
+    # A body corrupted in transit (right length, wrong bytes) is fetched again, not failed on the spot.
+    sent = []
+
+    def corrupt_once(handler):
+        sent.append(1)
+        if len(sent) == 1:
+            handler._send(200, payload[:-1] + bytes([payload[-1] ^ 1]))
+        else:
+            original_get(handler)
+
+    monkeypatch.setattr(_R2StubHandler, 'do_GET', corrupt_once)
+    target.write_bytes(b"previous complete file")
+    r2.download_object(**args)
+    assert target.read_bytes() == payload and len(sent) == 2
     monkeypatch.setattr(_R2StubHandler, 'do_GET', original_get)
 
+    # A stored object that really differs from its receipt still fails, after the bounded attempts.
     r2_server.store[key] = (b"corrupt replacement", '"e"')
+    r2_server.requests.clear()
     with pytest.raises(ValueError, match="checksum mismatch"):
         r2.download_object(**args)
+    assert sum(1 for method, _, _ in r2_server.requests if method == "GET") == 3
     assert target.read_bytes() == payload
     assert list(target.parent.iterdir()) == [target]
     del r2_server.store[key]
@@ -812,3 +892,120 @@ def test_canonical_header_whitespace_is_collapsed():
         "PUT", "/p", "", {"host": "h", "Content-Type": "application/msix   extra\tvalue"}, "x"
     )
     assert "content-type:application/msix extra value" in canon
+
+
+def test_copy_object_sends_signed_server_side_copy_and_verifies_destination(r2_server, monkeypatch):
+    creds, base, bucket = r2.credentials()
+    src_key = "releases/tag/rc.3-v0.22.0/HermesBundled-0.22.0-mac-arm64.dmg"
+    dest_key = r2.channel_dmg_key_for("stable")
+    payload = b"signed dmg bytes for server-side copy"
+    r2_server.store[src_key] = (payload, '"src-etag"')
+    r2_server.metadata[src_key] = {"Cache-Control": "public, max-age=31536000, immutable"}
+    monkeypatch.setattr(r2.time, "sleep", lambda _: None)
+
+    source = r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload))
+    assert source == r2.CopySource(key=src_key, size=len(payload), etag='"src-etag"')
+    r2.copy_object(
+        creds,
+        base,
+        bucket,
+        source,
+        dest_key,
+        NOW,
+        content_type="application/x-apple-diskimage",
+        content_disposition='attachment; filename="HermesBundled-mac-arm64.dmg"',
+        metadata={"sha256": hashlib.sha256(payload).hexdigest(), "release": "v0.22.0"},
+    )
+
+    assert r2_server.store[dest_key][0] == payload
+    put_headers = next(headers for method, _, headers in r2_server.requests if method == "PUT")
+    assert put_headers["x-amz-copy-source"] == f"/{bucket}/{src_key}"
+    assert put_headers["x-amz-copy-source-if-match"] == '"src-etag"'
+    assert put_headers["x-amz-metadata-directive"] == "REPLACE"
+    assert put_headers["Cache-Control"] == "no-store"
+    assert put_headers["Content-Type"] == "application/x-apple-diskimage"
+    assert put_headers["Content-Disposition"] == 'attachment; filename="HermesBundled-mac-arm64.dmg"'
+    assert put_headers["Content-Length"] == "0"
+    assert put_headers["x-amz-content-sha256"] == EMPTY_SHA
+    assert all(headers["authorization"].startswith("AWS4-HMAC-SHA256 ") for _, _, headers in r2_server.requests)
+
+    r2_server.copy_failure = "transient"
+    r2_server.copy_attempts = 0
+    r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+    assert r2_server.copy_attempts == 2
+
+    r2_server.copy_failure = "denied"
+    with pytest.raises(r2.R2RequestError):
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+    r2_server.copy_failure = None
+
+    with pytest.raises(ValueError, match="CopyObject size"):
+        r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=r2.MAX_SINGLE_COPY_SIZE + 1)
+    with pytest.raises(ValueError, match="Invalid release artifact path"):
+        r2.copy_source(creds, base, bucket, "../escape.dmg", NOW, expected_size=len(payload))
+    with pytest.raises(ValueError, match="Invalid release artifact path"):
+        r2.copy_object(creds, base, bucket, source, "../escape.dmg", NOW)
+    with pytest.raises(r2.R2RequestError):
+        r2.copy_source(creds, base, bucket, "releases/tag/v0.0.0/missing.dmg", NOW, expected_size=len(payload))
+    with pytest.raises(ValueError, match="Source artifact size mismatch"):
+        r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload) + 1)
+
+    # An unconditional copy could take a same-size replacement the destination check cannot see.
+    def no_etag(**_request):
+        return r2.Response(200, [("Content-Length", str(len(payload)))], b"")
+
+    with pytest.raises(r2.R2RequestError, match="ETag"):
+        r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload), fetcher=no_etag)
+
+    # The copy is bound to the checked object: a source that changed after copy_source fails.
+    r2_server.store[src_key] = (payload, '"replaced-etag"')
+    with pytest.raises(r2.R2RequestError) as changed:
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+    assert changed.value.status == 412
+    r2_server.store[src_key] = (payload, '"src-etag"')
+
+    r2_server.corrupt_put = dest_key
+    with pytest.raises(r2.R2RequestError, match="size mismatch"):
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+    r2_server.corrupt_put = None
+
+
+def test_copy_object_spends_one_retry_budget(r2_server, monkeypatch):
+    """R2 503s and dropped connections share copy_object's three attempts, not three per attempt."""
+    creds, base, bucket = r2.credentials()
+    src_key = "releases/tag/rc.3-v0.22.0/HermesBundled-0.22.0-mac-arm64.dmg"
+    dest_key = r2.channel_dmg_key_for("stable")
+    payload = b"signed dmg bytes for server-side copy"
+    r2_server.store[src_key] = (payload, '"src-etag"')
+    monkeypatch.setattr(r2.time, "sleep", lambda _: None)
+    source = r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(payload))
+
+    r2_server.copy_failure = "unavailable"
+    with pytest.raises(r2.R2RequestError):
+        r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+    assert r2_server.copy_attempts == 3
+    assert dest_key not in r2_server.store
+
+    r2_server.copy_failure = "dropped"
+    r2_server.copy_attempts = 0
+    r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+    assert r2_server.copy_attempts == 2
+    assert r2_server.store[dest_key][0] == payload
+
+def test_copy_object_stays_inside_disposable_scope(r2_server, monkeypatch):
+    monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765")
+    monkeypatch.setenv("GITHUB_REPOSITORY_ID", "12345")
+    scope = R2Scope.configured()
+    creds, base, bucket = r2.credentials()
+    src_key = "releases/tag/rc.1-v1.0.0/HermesBundled-1.0.0-mac-arm64.dmg"
+    dest_key = r2.channel_dmg_key_for("stable")
+    r2_server.store[dest_key] = (b"production dmg sentinel", '"prod"')
+    r2_server.store[scope.key(src_key)] = (b"disposable dmg payload", '"disp"')
+
+    source = r2.copy_source(creds, base, bucket, src_key, NOW, expected_size=len(b"disposable dmg payload"))
+    r2.copy_object(creds, base, bucket, source, dest_key, NOW)
+
+    assert r2_server.store[dest_key][0] == b"production dmg sentinel"
+    assert r2_server.store[scope.key(dest_key)][0] == b"disposable dmg payload"
+    put_headers = next(headers for method, _, headers in r2_server.requests if method == "PUT")
+    assert put_headers["x-amz-copy-source"] == f"/{bucket}/{scope.key(src_key)}"

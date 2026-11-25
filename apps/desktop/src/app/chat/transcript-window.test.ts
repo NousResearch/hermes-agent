@@ -9,6 +9,7 @@ import {
   alignToBranchGroup,
   MAX_SESSION_WINDOWS,
   selectTranscriptWindow,
+  type SessionWindowMemo,
   TRANSCRIPT_WINDOW_BUDGET,
   TRANSCRIPT_WINDOW_MIN_MESSAGES,
   TRANSCRIPT_WINDOW_SLACK
@@ -214,9 +215,46 @@ describe('advanceTranscriptWindow', () => {
     expect(next.window.messages).toBe(grown)
     expect(next.window.windowed).toBe(false)
   })
+
+  // #133569: `windowed` means "store holds older messages than this window"
+  // (transcript-window.ts:41-42). Once the sticky cut's anchor IS the store's
+  // first message, the window is the whole store and olderAvailable must fall
+  // through to the tail flag instead of staying true on a stale anchor —
+  // otherwise "Show earlier" keeps offering pages the REST branch (index.tsx
+  // requires !windowed) can never fetch, and every click is a no-op.
+  it('reports windowed:false when the sticky cut sits at the store head', () => {
+    const messages = transcript(400, RENDER_WEIGHT_CHARS * 50)
+    const cut = advanceTranscriptWindow(null, messages, 1)
+
+    expect(cut.anchorId).not.toBeNull()
+    expect(cut.window.windowed).toBe(true)
+
+    // Everything older than the anchor is gone from the store: the window now
+    // starts at messages[0] and covers the entire store.
+    const anchorIndex = messages.findIndex(candidate => candidate.id === cut.anchorId)
+    const trimmed = messages.slice(anchorIndex)
+    const next = advanceTranscriptWindow(cut, trimmed, 1)
+
+    expect(next.window.messages).toBe(trimmed)
+    expect(next.window.messages[0]).toBe(trimmed[0])
+    expect(next.window.windowed).toBe(false)
+  })
 })
 
 describe('advanceSessionTranscriptWindow', () => {
+  it('keeps the store head on screen on the flush after the cut reaches it', () => {
+    const memos = new Map<string, SessionWindowMemo>()
+    const messages = transcript(400, RENDER_WEIGHT_CHARS * 50)
+    const cut = advanceSessionTranscriptWindow(memos, 'runtime', messages, 1)
+    const trimmed = messages.slice(messages.findIndex(message => message.id === cut.anchorId))
+
+    expect(advanceSessionTranscriptWindow(memos, 'runtime', trimmed, 1).window.windowed).toBe(false)
+
+    const next = advanceSessionTranscriptWindow(memos, 'runtime', [...trimmed, ...transcript(1, 10)], 1)
+
+    expect(next.window.messages[0]).toBe(trimmed[0])
+  })
+
   const heavyChars = RENDER_WEIGHT_CHARS * 40
 
   it('matches a fresh walk on first visit', () => {
@@ -311,5 +349,54 @@ describe('alignToBranchGroup', () => {
   it('clamps out-of-range indices', () => {
     expect(alignToBranchGroup(messages, -5)).toBe(0)
     expect(alignToBranchGroup(messages, 99)).toBe(messages.length)
+  })
+})
+
+// Regression guard for #90473 / #96606 / #96875: for a LIGHT transcript (the
+// reported shape — a long chat of short messages, e.g. 142 turns), the store
+// window must surface messages[0] (the opening user greeting) as the first
+// rendered message. The 30-message floor and the weight budget both keep a
+// light transcript uncut, so paging to the top can never drop the oldest user
+// turn through the window slice.
+describe('opening user message is the first rendered message (light transcript)', () => {
+  const light = (count: number): ChatMessage[] => transcript(count, 20)
+
+  it('selectTranscriptWindow keeps messages[0] first when the whole transcript is light', () => {
+    const messages = light(142)
+
+    const window = selectTranscriptWindow(messages)
+
+    expect(window.windowed).toBe(false)
+    expect(window.messages[0]).toBe(messages[0])
+  })
+
+  it('growing the window terminates at the full transcript with messages[0] still first', () => {
+    const messages = light(142)
+
+    let pages = 1
+    let window = selectTranscriptWindow(messages, pages)
+
+    while (window.windowed && pages < 100) {
+      window = selectTranscriptWindow(messages, ++pages)
+    }
+
+    expect(window.windowed).toBe(false)
+    expect(window.messages).toHaveLength(messages.length)
+    // The first user message is the head of the fully-rendered transcript.
+    expect(window.messages[0]).toBe(messages[0])
+  })
+
+  it('advanceTranscriptWindow also surfaces messages[0] once pages cover the transcript', () => {
+    const messages = light(142)
+
+    let pages = 1
+    let state = advanceTranscriptWindow(null, messages, pages)
+
+    while (state.window.windowed && pages < 100) {
+      state = advanceTranscriptWindow(state, messages, ++pages)
+    }
+
+    expect(state.window.windowed).toBe(false)
+    expect(state.window.messages[0]).toBe(messages[0])
   })
 })

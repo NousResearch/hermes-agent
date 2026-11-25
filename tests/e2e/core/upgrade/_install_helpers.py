@@ -7,13 +7,14 @@ of that this module stages what a real user machine looks like to the installer 
   the official clone URLs are rewritten to by the sandbox's own ``~/.gitconfig``, plus a ``git``
   wrapper that reports the official URL for ``remote get-url origin`` (``insteadOf`` would
   otherwise expose the local path and send the updater down the fork path);
-* the real host uv on PATH as an optional warm-cache shortcut; the installer
-  still rejects a version below its PM pin and provisions the pinned artifact;
+* the real host uv on PATH, which the installer must ignore: it always provisions the pinned
+  PM artifact;
 * ``TMPDIR`` inside the sandbox root (the host's is not writable in the sandbox).
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -38,7 +39,7 @@ def real_uv() -> str | None:
 
 def git(*args: str, cwd: Path, check: bool = True, env: dict | None = None) -> str:
     cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
-                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False)
     if check and cp.returncode != 0:
         raise AssertionError(f"git {args} failed in {cwd}: {cp.stderr}")
     return cp.stdout.strip()
@@ -48,6 +49,79 @@ def head_sha() -> str:
     """The commit the sandbox installs: HEAD, or HERMES_E2E_INSTALL_REF (a patched commit object,
     used to prove a scenario red against a sabotaged install without moving the branch)."""
     return git("rev-parse", os.environ.get("HERMES_E2E_INSTALL_REF") or "HEAD", cwd=H.WORKTREE)
+
+
+# Release tags only: ``v<calver>`` (to v2026.9.24) and ``v0.<minor>.<patch>`` (from v0.21.6). Canary
+# builds (``+canary.*``), release candidates (``rc.*``) and abandoned candidates are not releases.
+_RELEASE_TAG_EXCLUDES = ("*+*", "rc.*", "abandoned-*")
+# The updater generation a release ships, by the first file of that generation present in its tree;
+# newest first. A start version of each is the set an update has to survive from.
+UPDATER_GENERATIONS = (
+    ("by-path", "hermes_cli/update_completion.py"),
+    ("handoff", "hermes_cli/update_handoff.py"),
+    ("pre-handoff", None),
+)
+
+
+def updater_generation(tag: str) -> str:
+    """Which updater ``tag`` ships: the newest generation whose marker file its tree contains."""
+    for name, marker in UPDATER_GENERATIONS:
+        if marker is None or subprocess.run(["git", "cat-file", "-e", f"{tag}:{marker}"], cwd=str(H.WORKTREE),
+                                            capture_output=True, check=False).returncode == 0:
+            return name
+    raise AssertionError(f"no updater generation matches {tag}")
+
+
+def release_tags(ref: str = "HEAD", *, before: bool = False) -> list[str]:
+    """Release tags reachable from ``ref``, newest first; none when ``ref`` is absent (a depth-1 checkout).
+
+    ``before``: only the releases behind ``ref``, not on it. They are taken from every parent, so a
+    release cut as a merge (v0.22.2: first parent the release branch tip, second parent the published
+    v0.22.1) still has its predecessor, which ``ref~1``'s history does not hold. The depth-1 guard is
+    then on ``ref~1``: a depth-1 checkout has ``ref`` but none of its history.
+    """
+    probe = f"{ref}~1" if before else ref
+    if git("rev-parse", "--verify", "--quiet", f"{probe}^{{commit}}", cwd=H.WORKTREE, check=False) == "":
+        return []
+    scope = ["--merged", ref, "--no-contains", ref] if before else ["--merged", ref]
+    out = git("tag", *scope, "--sort=-creatordate", "--list", "v[0-9]*", cwd=H.WORKTREE)
+    return [t for t in out.split() if not any(Path(t).match(p) for p in _RELEASE_TAG_EXCLUDES)]
+
+
+@dataclass(frozen=True)
+class UpgradeBase:
+    """Where an update starts: the commit, and the tag or ref it was chosen by."""
+    ref: str
+    commit: str
+
+
+@functools.cache
+def upgrade_base(generation: str | None = None) -> UpgradeBase | None:
+    """The start version of the upgrade suites; None when no release is reachable (a tagless checkout).
+
+    ``generation`` is for a scenario that only exists for one updater (``by-path``, ``handoff``,
+    ``pre-handoff``): the newest release that ships it. Otherwise ``HERMES_E2E_UPGRADE_BASE`` picks
+    it: a tag, a commit, or a generation name. Unset, it is N-1, the newest release before HEAD.
+    ``HERMES_E2E_N1_REF`` is an older name for the same variable.
+
+    No release on CI raises instead: the e2e-upgrade job checks out full history and tags, so an
+    empty answer there is a broken checkout, and returning None would skip every suite green.
+    """
+    override = os.environ.get("HERMES_E2E_UPGRADE_BASE") or os.environ.get("HERMES_E2E_N1_REF") or ""
+    chosen = generation or override
+    generations = {name for name, _ in UPDATER_GENERATIONS}
+    if chosen and chosen not in generations:
+        return UpgradeBase(chosen, git("rev-parse", f"{chosen}^{{commit}}", cwd=H.WORKTREE))
+    releases = release_tags(before=True)
+    tags = [t for t in releases if updater_generation(t) == chosen] if chosen else releases
+    if not tags:
+        if releases:
+            raise AssertionError(f"{chosen}: no release before HEAD ships that updater")
+        if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+            raise AssertionError(f"no release tag reachable before HEAD in {H.WORKTREE} on CI: "
+                                 "the e2e-upgrade job needs full history and tags (fetch-depth: 0)")
+        return None
+    return UpgradeBase(tags[0], git("rev-parse", f"{tags[0]}^{{commit}}", cwd=H.WORKTREE))
 
 
 def make_origin(root: Path, ref: str) -> Path:
@@ -67,8 +141,11 @@ def make_origin(root: Path, ref: str) -> Path:
     return origin
 
 
-def publish_commit(origin: Path, scratch: Path, message: str, files: dict[str, str]) -> str:
-    """Add one upstream commit on origin/main (a new release the user updates to); returns its sha."""
+def publish_commit(origin: Path, scratch: Path, message: str, files: dict[str, str],
+                   moves: dict[str, str] | None = None) -> str:
+    """Add one upstream commit on origin/main (a new release the user updates to); returns its sha.
+
+    ``moves`` renames tracked files (``{old: new}``), the shape a layout change ships in."""
     work = scratch / f"publish-{hashlib.sha1(message.encode()).hexdigest()[:8]}"
     if work.exists():
         shutil.rmtree(work)
@@ -76,6 +153,10 @@ def publish_commit(origin: Path, scratch: Path, message: str, files: dict[str, s
            "GIT_COMMITTER_NAME": "e2e", "GIT_COMMITTER_EMAIL": "e2e@example.invalid"}
     git("clone", "-q", "--shared", "--no-checkout", "-b", "main", str(origin), str(work), cwd=scratch, env=env)
     git("reset", "-q", "main", cwd=work, env=env)
+    for old, new in (moves or {}).items():
+        (work / new).parent.mkdir(parents=True, exist_ok=True)
+        git("checkout", "-q", "main", "--", old, cwd=work, env=env)
+        git("mv", old, new, cwd=work, env=env)
     for rel, text in files.items():
         p = work / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -121,8 +202,9 @@ class Sandbox:
         return str(python)
 
     def run(self, argv: list[str], *, timeout: float = 600, cwd: Path | None = None,
-            input: str | None = None) -> subprocess.CompletedProcess:
-        return H.run(argv, env=self.env, cwd=cwd or self.root, writable=[self.root], timeout=timeout, input=input)
+            input: str | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        return H.run(argv, env=env or self.env, cwd=cwd or self.root, writable=[self.root], timeout=timeout,
+                     input=input)
 
     def cli(self, *args: str, timeout: float = 600) -> subprocess.CompletedProcess:
         return self.run([self.hermes, *args], timeout=timeout)
@@ -157,12 +239,35 @@ def new_sandbox(root: Path, origin: Path | None = None, *, pythonpath: Path | No
     return Sandbox(root=root, env=env)
 
 
-def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.CompletedProcess:
-    """HEAD's scripts/install.sh, non-interactive, as the documented `curl | bash` run does it."""
+def run_installer(sb: Sandbox, *, timeout: float = 1800, ref: str | None = None) -> subprocess.CompletedProcess:
+    """``scripts/install.sh`` of ``ref`` (None: HEAD's), non-interactive, as the documented `curl | bash` run does it."""
     script = sb.root / "install.sh"
-    shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
-    return sb.run(["bash", str(script), "--non-interactive"],
-                  timeout=timeout, input="")
+    if ref is None:
+        shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
+    else:
+        script.write_text(git("show", f"{ref}:scripts/install.sh", cwd=H.WORKTREE) + "\n", encoding="utf-8")
+    return sb.run(["bash", str(script), "--non-interactive"], timeout=timeout, input="",
+                  env=fresh_install_env(sb))
+
+
+def fresh_install_env(sb: Sandbox) -> dict[str, str]:
+    """The sandbox env, plus `main` as the channel for a FRESH install: sandbox origins publish
+    commits on main and no release tags, so the stable default has nothing to install. The
+    install saves the choice, which carries every rerun (a rerun passes nothing, as users do)."""
+    if sb.checkout.exists():
+        return sb.env
+    return {**sb.env, "HERMES_INSTALL_CHANNEL": "main"}
+
+
+def pin_main_channel(sb: Sandbox) -> None:
+    """Follow every commit on main, as `hermes update --set-channel main` records it.
+
+    An official-origin source checkout defaults to the stable channel (the latest published GitHub
+    release). These sandboxes publish commits on main and no releases, and their subject is moving
+    between commits; channel resolution has its own suites (test_release_channel_records,
+    tests/hermes_cli/test_source_release_channels.py)."""
+    cp = sb.cli("update", "--set-channel", "main", timeout=120)
+    assert cp.returncode == 0 and "Update channel for" in cp.stdout, "could not pin the main channel:\n" + describe(cp)
 
 
 def provider_config(base_url: str, version: int | None, extra: str = "") -> str:

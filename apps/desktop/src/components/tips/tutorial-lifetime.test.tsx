@@ -6,7 +6,19 @@ const { request } = vi.hoisted(() => ({ request: vi.fn(async () => undefined) })
 vi.mock('@/store/gateway', async () => {
   const { atom } = await import('nanostores')
 
-  return { $gateway: atom<unknown>(null), activeGateway: () => ({ request }) }
+  // display-toggles routes config.set to the active route (#125969 class); the
+  // assertions below read the (method, params) tail of that call.
+  return {
+    $gateway: atom<unknown>(null),
+    activeGateway: () => ({ request }),
+    activeGatewayConnectionId: () => null,
+    activeGatewayProfileKey: () => 'default',
+    activeGatewayRoute: () => ({ connectionId: null, profile: 'default' }),
+    requestGatewayForAgent: (_connection: unknown, _profile: string, ...call: unknown[]) =>
+      (request as (...args: unknown[]) => unknown)(...call),
+    requestGatewayForProfile: (_profile: string, ...call: unknown[]) =>
+      (request as (...args: unknown[]) => unknown)(...call)
+  }
 })
 vi.mock('@/store/session', async () => {
   const { atom } = await import('nanostores')
@@ -14,7 +26,6 @@ vi.mock('@/store/session', async () => {
   return { $awaitingResponse: atom(false), $busy: atom(false) }
 })
 vi.mock('react-router', () => ({ useNavigate: () => vi.fn() }))
-vi.mock('./local-setup-offer', () => ({ offerLocalSetupTip: () => false }))
 vi.mock('./local-runtime-update-offer', () => ({ offerLocalRuntimeUpdateTip: () => false }))
 
 import { en } from '@/i18n/en'
@@ -65,8 +76,8 @@ it('retires both tutorial features after 30 days across launches, then keeps a m
   expect(tips.$tipsEnabled.get()).toBe(false)
   expect(tours.$toursEnabled.get()).toBe(false)
   expect(tips.$activeTip.get()).toBeNull()
-  expect(request).toHaveBeenCalledWith('config.set', { key: 'display.in_app_tips', value: 'false' })
-  expect(request).toHaveBeenCalledWith('config.set', { key: 'display.in_app_tours', value: 'false' })
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'display.in_app_tips', profile: 'default', value: 'false' })
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'display.in_app_tours', profile: 'default', value: 'false' })
 
   act(() => {
     tips.setTipsEnabled(true)

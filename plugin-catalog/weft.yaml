@@ -1,0 +1,17 @@
+name: weft
+title: Weft — edit-time coordination
+repo: https://github.com/celador/weft
+sha: fe30e497b924fb22aa95a67c0d81d938fab94fc4
+subdir: packages/adapters/hermes/plugin/weft
+description: "Catch conflicts between coding agents while they edit, before Git merge time. Disclosure — In a checkout linked with `/weft setup` (a `.weft/space.json` plus the saved agent token), every file edit the agent makes is sent to the Weft gateway that checkout names: file paths, symbol keys, full diffs, agent and change ids, the Hermes model name and the Kanban task title. The gateway is local (127.0.0.1) by default, Weft's hosted `https://weft-hosted.elier.ai` when chosen or named by a checkout, or a gateway you add with `/weft trust`. Gateway diagnostics are appended to tool results, and `mode: enforce` blocks conflicting edits, `git commit` and task completion. `/weft setup` and `/weft feed` run `npx -y @celador/weft@0.3.0`, which installs `wrangler@4` from npm, starts a background local gateway that outlives the chat, creates a paired Git worktree and installs Git hooks in the repository. Activity snapshots and logs are kept in `~/.cache/weft-hermes`, shared across profiles."
+maintainer: celador
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.4.0"
+platforms: [linux, macos]
+readme: true
+docs_url: https://github.com/celador/weft/blob/fe30e497b924fb22aa95a67c0d81d938fab94fc4/packages/adapters/hermes/plugin/weft/README.md
+screenshots:
+  - https://raw.githubusercontent.com/celador/weft/fe30e497b924fb22aa95a67c0d81d938fab94fc4/docs/hackathon/screenshots/weft-conflict.png
+  - https://raw.githubusercontent.com/celador/weft/fe30e497b924fb22aa95a67c0d81d938fab94fc4/docs/hackathon/screenshots/weft-empty.png

@@ -28,6 +28,17 @@ from agent.context_compressor import (
     ContextCompressor,
     _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES,
 )
+import itertools
+
+from agent.conversation_compression_archive import held_message
+from persistence.conversation.messages import (
+    ConversationRequest, NewMessage, PrunedRowChange, TranscriptRead, TranscriptView,
+)
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _compressor(summary="ROLLING SUMMARY") -> ContextCompressor:
@@ -523,7 +534,7 @@ class TestMicroCompaction:
         survive repair untouched, and no summary text leaks into real user
         messages.
         """
-        from agent.agent_runtime_helpers import repair_message_sequence
+        from session_rules.turns import repair_message_sequence
 
         class _DummyAgent:
             session_id = "probe"
@@ -572,7 +583,7 @@ class TestMicroCompaction:
 
         for _ in range(4):
             msgs = cc._micro_compact(msgs)
-            for a, b in zip(msgs, msgs[1:]):
+            for a, b in itertools.pairwise(msgs):
                 ra, rb = a.get("role"), b.get("role")
                 assert not (ra == rb and ra in ("user", "assistant")), (
                     f"consecutive {ra} messages after micro-compaction"
@@ -825,18 +836,17 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
     history as compacted rows, so no display projection (resume, REST page, legacy page, prompt
     timeline) may also paint the merged row. The model view still holds each input exactly once."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from hermes_state import SessionDB
-    from hermes_state_timeline import get_session_timeline
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s", source="cli")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "s", "cli")
     messages = _conversation(exchanges=8)
     for i, msg in enumerate(messages):
         msg["timestamp"] = 1000.0 + i
-        msg["_row_id"] = db.append_message("s", role=msg["role"], content=msg["content"], timestamp=msg["timestamp"])
+        msg["_row_id"] = seed_messages(db, "s", {"role": msg["role"], "content": msg["content"],
+                                                 "timestamp": msg["timestamp"]})[0]
         msg[_DB_PERSISTED_MARKER] = True
     cc = _compressor()
-    cc._session_db, cc._session_id = db, "s"
+    cc._session_db, cc._persistence, cc._session_id = db, db, "s"
     for _ in range(4):
         messages = cc._micro_compact(messages)
     assert len(_summary_markers(messages)) == 1
@@ -846,32 +856,43 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
         return sorted(t for m in msgs if m.get("role") == "user" for t in str(m["content"]).split("\n\n"))
 
     typed = sorted(m["content"] for m in _conversation(exchanges=8) if m["role"] == "user")
-    model, display = db.get_resume_conversations("s")
+    model, display = _resume(db)
     assert shown(display) == typed
     assert shown(model) == typed
-    assert shown(db.get_messages("s", include_compacted=True)) == typed
-    timeline = [e["preview"] for e in get_session_timeline(db, "s")["entries"]]
+    assert shown(transcript_rows(db, "s", TranscriptRead(view=TranscriptView.DISPLAY))) == typed
+    timeline = [e.preview for e in db.messages.read_session_timeline("s").entries]
     assert sorted(timeline) == typed
     # Legacy stores (no display index, read-only so no backfill) take the payload-bounded page.
-    db._execute_write(lambda conn: conn.execute("UPDATE messages SET display_order = NULL"))
-    legacy = SessionDB(db_path=tmp_path / "state.db", read_only=True)
+    raw_holder(db)._execute_write(lambda conn: conn.execute("UPDATE messages SET display_order = NULL"))
     try:
-        assert shown(legacy.get_messages("s", include_compacted=True)) == typed
-        assert sorted(e["preview"] for e in get_session_timeline(legacy, "s")["entries"]) == typed
+        with open_persistence_reader(tmp_path / "state.db") as legacy:
+            assert shown(transcript_rows(legacy, "s", TranscriptRead(view=TranscriptView.DISPLAY))) == typed
+            assert sorted(e.preview for e in legacy.messages.read_session_timeline("s").entries) == typed
     finally:
-        legacy.close()
         db.close()
 
 
-def _held_session(tmp_path, mode: str):
-    """A real SessionDB session plus the compressor and the history it holds (as a resume restores it:
-    row ids and persisted markers included) for a prune or a micro-compaction pass."""
-    from hermes_state import SessionDB
+def _resume(db):
+    """The model and display histories a resume of ``s`` loads, as replay dicts."""
+    resumed = db.messages.read_resume_conversations("s")
+    return [m.as_openai_message() for m in resumed.model], [m.as_openai_message() for m in resumed.display]
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s", source="cli")
+
+def _rewrite_in_place(db, original, replacement):
+    """Another surface's in-place prune of the row ``original`` names."""
+    db.messages.rewrite_pruned_rows("s", [PrunedRowChange(
+        held_message(original), NewMessage.from_live(replacement), NewMessage.from_live(original))])
+
+
+def _held_session(tmp_path, mode: str):
+    """A real store session plus the compressor and the history it holds (as a resume restores it:
+    row ids and persisted markers included) for a prune or a micro-compaction pass."""
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "cli")
     cc = _compressor()
     cc._session_db, cc._session_id = db, "s"
+    # An owner's compressor writes through the storage interface handle beside its store.
+    cc._persistence = db
     if mode == "prune":
         cc.proactive_prune_tokens, cc.proactive_prune_min_result_chars = 48_000, 8_000
         cc.proactive_prune_min_reclaim_tokens, cc.protect_first_n, cc.protect_last_n = 4_096, 2, 4
@@ -882,8 +903,8 @@ def _held_session(tmp_path, mode: str):
             history.append({"role": "tool", "tool_call_id": f"call_{i}", "content": chr(65 + i) * 24_000 if i < 3 else "ok"})
     else:
         history = _conversation(exchanges=8)
-    db.append_messages_batch("s", history)
-    return db, cc, db.get_resume_conversations("s")[0]
+    db.messages.append_batch("s", [NewMessage.from_live(m) for m in history])
+    return db, cc, _resume(db)[0]
 
 
 def _run_pass(cc, mode: str, held: list) -> list:
@@ -899,12 +920,12 @@ def test_a_turn_another_surface_appended_after_load_is_kept_exactly_once(tmp_pat
     summarized away though no summary holds it: still displayed and searchable, gone from the model's view."""
     db, cc, held = _held_session(tmp_path, mode)
     foreign = "[from Telegram] the vault code is 7741"
-    db.append_message("s", "user", foreign)
+    seed_messages(db, "s", {"role": "user", "content": foreign})
 
     result = _run_pass(cc, mode, held)
 
     assert result is not held  # a pass ran and committed
-    live = [str(m["content"]) for m in db.get_messages_as_conversation("s")]
+    live = [str(m["content"]) for m in conversation(db, "s")]
     assert live[-1] == foreign
     assert sum(foreign in content for content in live) == 1
 
@@ -933,12 +954,12 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
 
         def _watermark_read_fails(_session_id):
             raise RuntimeError("database is locked")
-        db.get_active_message_watermark = _watermark_read_fails
+        cc._persistence.messages.active_watermark = _watermark_read_fails
     elif race == "before":
-        db.archive_and_compact("s", winner)
+        db.messages.compact("s", [NewMessage.from_live(m) for m in winner])
     else:
         def _summary_while_another_surface_compacts(_text):
-            db.archive_and_compact("s", winner)
+            db.messages.compact("s", [NewMessage.from_live(m) for m in winner])
             return "STALE ROLLING SUMMARY"
         cc._micro_summarize_one = _summary_while_another_surface_compacts
     summary = cc._micro_compact_rolling_summary
@@ -946,9 +967,205 @@ def test_a_stale_generation_aborts_leaving_the_winner_the_only_live_version(tmp_
     result = _run_pass(cc, mode, held)
     for msg in result:  # what finalize_turn's _persist_session flush appends: every unpersisted dict
         if not msg.get(_DB_PERSISTED_MARKER):
-            db.append_message("s", msg["role"], msg.get("content"))
+            seed_messages(db, "s", {"role": msg["role"], "content": msg.get("content")})
 
     assert result is held
     assert cc._micro_compact_rolling_summary == summary  # the stale summary is not carried into the next pass
-    live = [m["content"] for m in db.get_messages_as_conversation("s")]
+    live = [m["content"] for m in conversation(db, "s")]
     assert live == [m["content"] for m in winner]  # exactly one live generation
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_a_generation_rewritten_in_place_aborts_a_lease_less_pass(tmp_path, mode):
+    """An in-place prune keeps every row id and activity flag, so the id/activity staleness check is
+    blind to it. A second lease-less surface still holding the pre-prune bodies must abort anyway:
+    publishing them archives rows it never compared and republishes the pruned-away text over the
+    winner, undoing the prune (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, held = _held_session(tmp_path, mode)
+    # Another surface commits a prune in place: same ids, same activity, different bodies.
+    rewritten = [m for m in _resume(db)[0] if m.get("role") == "tool"][:1] or [
+        m for m in _resume(db)[0] if m.get("role") == "assistant"][:1]
+    assert rewritten, "fixture has no rewritable row"
+    original = dict(rewritten[0])
+    _rewrite_in_place(db, original, {**original, "content": "[pruned by the other surface]"})
+    before = [m["content"] for m in conversation(db, "s")]
+
+    result = _run_pass(cc, mode, held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            seed_messages(db, "s", {"role": msg["role"], "content": msg.get("content")})
+
+    assert result is held
+    assert [m["content"] for m in conversation(db, "s")] == before
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_a_freshly_resumed_unchanged_history_is_not_a_stale_generation(tmp_path, mode):
+    """The held history's user/assistant strings load sanitized and stripped; that lens is not a rewrite.
+
+    The pre-repair guard compared raw stored bytes against the loaded view, so an unchanged padded row read
+    back as stale and silently disabled both lease-less passes (#124102). Through the loader lens the same
+    unchanged history must still be reclaimed."""
+    db, cc, held = _held_session(tmp_path, mode)
+    # Pad a durable user row; the resume projection loads it stripped.
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE messages SET content = '  padded start \n' WHERE session_id = 's' AND role = 'user'"))
+    held = _resume(db)[0]
+
+    result = _run_pass(cc, mode, held)
+
+    assert result is not held  # the pass ran and committed: no false stale
+    live = [m["content"] for m in conversation(db, "s")]
+    assert "padded start" in " ".join(str(c) for c in live)
+
+
+@pytest.mark.parametrize("mode", ["prune", "micro"])
+def test_an_unstamped_trailing_row_does_not_suppress_the_stale_check(tmp_path, mode):
+    """An exact persisted prefix plus an unstamped trailing message is the live-turn shape. The trailing
+    row may cap the watermark, but the durable prefix the caller holds exactly must still be compared —
+    a rewritten prefix aborts the pass instead of republishing the pre-rewrite text (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, held = _held_session(tmp_path, mode)
+    rewritten = [m for m in _resume(db)[0] if m.get("role") == "tool"][:1] or [
+        m for m in _resume(db)[0] if m.get("role") == "assistant"][:1]
+    assert rewritten, "fixture has no rewritable row"
+    original = dict(rewritten[0])
+    _rewrite_in_place(db, original, {**original, "content": "[pruned by the other surface]"})
+    held = held + [{"role": "user", "content": "live turn not yet flushed"}]
+    before = [m["content"] for m in conversation(db, "s")]
+
+    result = _run_pass(cc, mode, held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            seed_messages(db, "s", {"role": msg["role"], "content": msg.get("content")})
+
+    assert result is held
+    # The pass is a no-op on the durable prefix; the trailing row this process authored still flushes once.
+    live = [m["content"] for m in conversation(db, "s")]
+    assert live == before + ["live turn not yet flushed"]
+
+
+def test_a_stale_generation_held_without_row_ids_aborts_the_micro_compact(tmp_path):
+    """The unaddressed live-replay projection (ACP restore, OpenAI session continuation:
+    ``get_messages_as_conversation`` without ``include_row_ids=True``) is the lease-less shape with
+    no ``_row_id``. It loads with the persist marker, durable identity and the stored-row CAS digest,
+    so the fence must still name its rows by ``message_uid``: after another surface pruned in place,
+    micro-compaction from that stale held history must be a no-op — the pruned stubs stay the only
+    live generation and the pre-prune bodies are not republished (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, _held = _held_session(tmp_path, "micro")
+    held = conversation(db, "s", ConversationRequest(repair_alternation=True))
+    from agent.message_metadata import DB_ROW_SNAPSHOT
+    assert held and not any(m.get("_row_id") for m in held)
+    assert all(m.get(_DB_PERSISTED_MARKER) and isinstance(m.get(DB_ROW_SNAPSHOT), str) for m in held)
+    # Another surface commits a prune in place: same ids, same activity, different bodies.
+    # Rewrite an assistant row in place (micro sessions hold plain user/assistant turns, no tool rows).
+    original = next(m for m in _resume(db)[0]
+                    if m.get("role") == "assistant" and m.get("content"))
+    _rewrite_in_place(db, dict(original), {**original, "content": "[pruned by the other surface]"})
+    before = [m["content"] for m in conversation(db, "s")]
+
+    result = cc._micro_compact(held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            seed_messages(db, "s", {"role": msg["role"], "content": msg.get("content")})
+
+    assert result is held
+    assert [m["content"] for m in conversation(db, "s")] == before
+
+
+def _uid_rows(db, uid: str):
+    """Every active physical row currently sharing *uid*, oldest first (a carried or concurrent
+    compaction can clone a row back beside its archived twin, so one logical message_uid may have
+    several live rows; the loader's ``_active_logical_message_row`` always stamps the newest)."""
+    return raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "SELECT id, content FROM messages WHERE session_id = ? AND active = 1 AND message_uid = ? ORDER BY id",
+        ("s", uid)).fetchall())
+
+
+def test_the_uid_fence_cas_against_the_newest_active_copy(tmp_path):
+    """A held id-less dict is resolved by its logical ``message_uid``, and one uid can name several
+    active physical rows. The fence must CAS against the NEWEST active copy — the row the loader
+    would have stamped the held digest from — never whichever row the uid index returns first: a
+    bare ``fetchone()`` that lands on an older unchanged duplicate clears the held digest as
+    current while another writer rewrote the newest, and the lease-less fallback then republishes
+    the stale held payload over that newer generation (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, _held = _held_session(tmp_path, "micro")
+    held = conversation(db, "s", ConversationRequest(repair_alternation=True))
+    assert held and not any(m.get("_row_id") for m in held)
+    target = next(m for m in held if m.get("role") == "assistant" and m.get("content"))
+    uid = target["message_uid"]
+
+    # Another surface's carried compaction clones the row back beside its twin: two active rows,
+    # same uid, same payload. The clone is the newest (AUTOINCREMENT id).
+    newest = _uid_rows(db, uid)[-1]
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tool_name, "
+        "effect_disposition, timestamp, token_count, finish_reason, reasoning, reasoning_content, "
+        "reasoning_details, codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+        "_compressed_summary, active, api_content, display_kind, display_metadata, message_uid, "
+        "absorbed_message_uids, tool_call_uids, tool_call_uid) "
+        "SELECT session_id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "timestamp, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, "
+        "codex_reasoning_items, codex_message_items, platform_message_id, observed, _compressed_summary, "
+        "active, api_content, display_kind, display_metadata, message_uid, absorbed_message_uids, "
+        "tool_call_uids, tool_call_uid FROM messages WHERE id = ?", (newest["id"],)))
+    original_id, clone_id = (row["id"] for row in _uid_rows(db, uid))
+    assert clone_id > original_id and len(_uid_rows(db, uid)) == 2
+
+    # Then that surface prunes the NEWEST copy in place (the row-addressed projection materializes
+    # both active rows; its dict for the clone is the one its own pass rewrote). The older duplicate
+    # still holds the payload the held dict was stamped from.
+    resume = conversation(db, "s", ConversationRequest(include_row_ids=True))
+    original = next(m for m in resume if m.get("message_uid") == uid and m["_row_id"] == clone_id)
+    _rewrite_in_place(db, dict(original), {**original, "content": "[pruned by the other surface]"})
+
+    # The fence names the newest row: the held digest is stale even though an older duplicate
+    # still matches it, so publishing the held generation must be refused.
+    assert db.messages.rewritten_held_row_ids("s", [held_message(m) for m in held]) == (clone_id,)
+    before = [m["content"] for m in conversation(db, "s")]
+    result = cc._micro_compact(held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            seed_messages(db, "s", {"role": msg["role"], "content": msg.get("content")})
+    assert result is held
+    assert [m["content"] for m in conversation(db, "s")] == before
+
+
+def test_the_uid_fence_lets_a_held_digest_stay_current_when_only_an_older_duplicate_moved(tmp_path):
+    """The newest-active rule cuts both ways: when the newest active copy still holds the payload
+    the held digest was stamped from, the held generation is the live winner even if an older
+    duplicate of the same uid was rewritten. The fence must report no mismatch there — resolving
+    whichever row the uid index happens to return first would false-abort a current generation
+    and refuse a legitimate compaction pass (#124102)."""
+    db, _cc, _held = _held_session(tmp_path, "micro")
+    held = conversation(db, "s", ConversationRequest(repair_alternation=True))
+    target = next(m for m in held if m.get("role") == "assistant" and m.get("content"))
+    uid = target["message_uid"]
+
+    newest = _uid_rows(db, uid)[-1]
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, tool_name, "
+        "effect_disposition, timestamp, token_count, finish_reason, reasoning, reasoning_content, "
+        "reasoning_details, codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+        "_compressed_summary, active, api_content, display_kind, display_metadata, message_uid, "
+        "absorbed_message_uids, tool_call_uids, tool_call_uid) "
+        "SELECT session_id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "timestamp, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, "
+        "codex_reasoning_items, codex_message_items, platform_message_id, observed, _compressed_summary, "
+        "active, api_content, display_kind, display_metadata, message_uid, absorbed_message_uids, "
+        "tool_call_uids, tool_call_uid FROM messages WHERE id = ?", (newest["id"],)))
+    original_id, _clone_id = (row["id"] for row in _uid_rows(db, uid))
+
+    # Only the OLDER duplicate is rewritten in place; the newest (the one the loader stamps and the
+    # fence must compare against) still holds the held payload.
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE messages SET content = ? WHERE id = ?", ("[edited in place by another writer]", original_id)))
+
+    assert db.messages.rewritten_held_row_ids("s", [held_message(m) for m in held]) == ()

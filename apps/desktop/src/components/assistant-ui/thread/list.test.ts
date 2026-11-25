@@ -490,3 +490,51 @@ describe('resolveThreadScrollTarget while selecting', () => {
     expect(resolveThreadScrollTarget(999, contextFor())).toBe(999)
   })
 })
+
+// Regression guard for #90473 / #96606 / #96875: after "Show earlier" has paged
+// a session to its very top, the opening user message must still be rendered
+// and head the visible set — it must never be swallowed by the hidden-slice
+// cut. The store window keeps at least TRANSCRIPT_WINDOW_MIN_MESSAGES (30) and
+// the DOM budget only hides a contiguous prefix, so for a light transcript that
+// fits the budget the first user message is the first visible group.
+describe('first user message is never swallowed (Show-earlier paging)', () => {
+  it('keeps the opening user greeting visible when the render budget covers the whole transcript', () => {
+    const groups = buildGroups(
+      signature([
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 4],
+        ['a2', 'assistant', 2],
+        ['u2', 'user', 1],
+        ['a3', 'assistant', 3]
+      ])
+    )
+
+    // A render budget at or above the total weight hides nothing — the state
+    // after "Show earlier" has paged to the top of a light session.
+    const totalWeight = groups.reduce((sum, g) => sum + g.weight, 0)
+    const hidden = firstVisibleGroupIndex(groups, totalWeight)
+
+    expect(hidden).toBe(0)
+    // The first user message is the head of the visible set, not dropped.
+    expect(groups[0]?.id).toBe('u1')
+  })
+
+  it('a leading assistant message (tool-only opening turn) does not hide the first user message', () => {
+    const groups = buildGroups(
+      signature([
+        ['a0', 'assistant', 2],
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 4],
+        ['u2', 'user', 1],
+        ['a2', 'assistant', 3]
+      ])
+    )
+
+    const totalWeight = groups.reduce((sum, g) => sum + g.weight, 0)
+    const hidden = firstVisibleGroupIndex(groups, totalWeight)
+
+    expect(hidden).toBe(0)
+    // The first user message survives as a distinct visible group.
+    expect(groups.some(g => g.id === 'u1')).toBe(true)
+  })
+})

@@ -58,6 +58,7 @@ def _run_waiter(home, envelope):
     return subprocess.run(
         [bash, "-c", cmd],
         capture_output=True, text=True, timeout=30, env=env, cwd=home,
+        check=False,
     )
 
 

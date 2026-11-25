@@ -1,0 +1,17 @@
+name: comfyrizz
+title: Comfyrizz
+repo: https://github.com/mojomast/comfyrizz-hermes
+sha: 756feefcca4bee415b3bc950ad7fb40eff60c60d
+description: "Chat-as-frontend for the Comfyrizz film pipeline: brief, plan, revise, explicit accept, generate, CPU assemble, export, and retake. Portable Agent Plugins v1 package (plugin.json, stdio mcp.json, comfyrizz-film skill) with the MCP server in-tree. Disclosure — the stdio server launches local Node that talks only to a loopback Comfyrizz engine URL (COMFYRIZZ_ENGINE_URL); optional Streamable HTTP binds 127.0.0.1 only when deliberately enabled and has no authentication, so any local process or web page in your browser can call its tools while it runs. Paid generation (Google Colab, Comfy API, or ComfyUI) is dispatched by the agent with an approval id it reads from the engine's spend card; the bundled skill tells the model to get your explicit yes first, but Hermes itself does not prompt before paid generation or retakes. Env vars are forwarded as ${VAR} from the user environment (COMFYRIZZ_ENGINE_URL, COMFYRIZZ_MCP_HTTP, COMFYRIZZ_TOKEN, and optional provider keys); no credentials are stored in the package. No self-updater."
+maintainer: mojomast
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.1.0"
+docs_url: https://github.com/mojomast/comfyrizz-hermes#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,19 @@
+name: aitrainingdatabroker
+title: AI Training Data Broker
+repo: https://github.com/aitrainingdatabroker/blog-mcp-server
+sha: f7433e126a80980924f9638be56a996a300c9578
+subdir: hermes
+version: "1.0.0"
+description: "Ask how much AI labs pay for company data, whether it is legal to sell, how de-identification and exclusivity work, and what RL data is. Agent Plugins v1 package (plugin.json + mcp.json + one skill), configuration only. Disclosure: every tool call goes to the public read-only MCP server at aitrainingdatabroker.com, which only reads published blog posts; no sign-in, no key, nothing written, no local commands. The package marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: AI Training Data Broker
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/aitrainingdatabroker/blog-mcp-server/tree/main/hermes#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

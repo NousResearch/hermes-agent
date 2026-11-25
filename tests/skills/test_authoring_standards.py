@@ -15,13 +15,15 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
+
 REPO = Path(__file__).resolve().parents[2]
 MARKETING = re.compile(
     r"\b(powerful|comprehensive|seamless|revolutionary|cutting-edge|state-of-the-art)\b",
-    re.I,
+    re.IGNORECASE,
 )
 MACHINE_LOCAL = re.compile(r"/home/(?!runner\b)[a-z0-9_-]+/|[A-Z]:\\+Users\\+(?!<)")
-SHELL_FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})\s*(bash|sh|shell|zsh|console)\b", re.I)
+SHELL_FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})\s*(bash|sh|shell|zsh|console)\b", re.IGNORECASE)
 # A line-continuation backslash must be the last character on its line: a
 # comment after it voids the continuation and the flags below run as a
 # separate command when the snippet is pasted (#113448).
@@ -103,7 +105,9 @@ def test_description_hardline(p):
     desc = str(fm.get("description") or "")
     if _grandfathered(p, "description"):
         return
-    assert len(desc) <= 60, f"{_rel(p)}: description {len(desc)} chars (hardline 60)"
+    # The index's clip width: a shipped description over it would reach the prompt clipped.
+    assert len(desc) <= SKILL_PROMPT_DESC_LIMIT, (
+        f"{_rel(p)}: description {len(desc)} chars (hardline {SKILL_PROMPT_DESC_LIMIT})")
     assert desc.rstrip().endswith("."), f"{_rel(p)}: description must end with a period"
     m = MARKETING.search(desc)
     assert not m, f"{_rel(p)}: marketing word in description: {m.group(0)!r}"

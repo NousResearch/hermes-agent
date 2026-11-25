@@ -35,7 +35,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import (  # noqa: E402
+from _common import (
     DEFAULT_LOCAL_HOST, ENV_API_KEY, log, new_client_id, resolve_api_key, is_cloud_host,
 )
 
@@ -151,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
         preview_dir.mkdir(parents=True, exist_ok=True)
         log(f"Saving previews to {preview_dir}")
 
-    log(f"Connecting to {ws_url} (client_id={client_id})")
+    # The real URL can carry the Cloud token and --host userinfo; stderr lands in
+    # the agent transcript, so the diagnostic names only scheme, host and path.
+    host_part = netloc.rpartition("@")[2]
+    log(f"Connecting to {scheme}://{host_part}{base_path}/ws (client_id={client_id})")
     if args.prompt_id:
         log(f"Filtering messages to prompt_id={args.prompt_id}")
 

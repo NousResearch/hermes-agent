@@ -317,7 +317,7 @@ ctx.register_platform(
 )
 ```
 
-为何需要此 hook：内置平台（Telegram、Discord、Slack 等）在 `tools/send_message_tool.py` 中内置了直接 REST 辅助函数，使 cron 无需在同一进程中持有 gateway 即可投递。Plugin 平台历史上依赖 `_gateway_runner_ref()`，该函数在 gateway 进程外返回 `None`，因此若没有 `standalone_sender_fn`，cron 端发送会失败并报 `No live adapter for platform '<name>'`。
+为何需要此 hook：内置平台（Telegram、Discord、Slack 等）在 `gateway/outbound/send.py` 中内置了直接 REST 辅助函数，使 cron 无需在同一进程中持有 gateway 即可投递。Plugin 平台历史上依赖 `_gateway_runner_ref()`，该函数在 gateway 进程外返回 `None`，因此若没有 `standalone_sender_fn`，cron 端发送会失败并报 `No live adapter for platform '<name>'`。
 
 该函数接收与实时适配器相同的 `pconfig` 和 `chat_id`，以及可选的 `thread_id`、`media_files` 和 `force_document` 关键字参数。返回 `{"success": True, "message_id": ...}` 视为成功投递；返回 `{"error": "..."}` 会将消息记录到 cron 的 `delivery_errors` 中。函数内抛出的异常由调度器捕获并报告为 `Plugin standalone send failed: <reason>`。参考实现位于 `plugins/platforms/{irc,teams,google_chat}/adapter.py`。
 
@@ -560,7 +560,7 @@ await self.handle_message(event)
 
 ### 7. 工具
 
-1. **`tools/send_message_tool.py`** — 将 `"newplat": Platform.NEWPLAT` 添加到平台映射
+1. **`gateway/outbound/send.py`** — 将 `"newplat": Platform.NEWPLAT` 添加到平台映射
 2. **`tools/cronjob_tools.py`** — 将 `newplat` 添加到投递目标描述字符串
 
 ### 8. Toolset
@@ -570,16 +570,13 @@ await self.handle_message(event)
 
 ### 9. 可选：平台提示
 
-**`agent/prompt_builder.py`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在 `_PLATFORM_HINTS` 字典中添加条目。这会将平台专属指导注入系统 prompt：
+**`ctx.register_platform` 的 `platform_hint=`** — 如果你的平台有特定渲染限制（不支持 markdown、消息长度限制等），在其注册表条目上声明提示（文本可放在 `adapter_hint.py` 这类轻量同级模块中）。它会被注入系统 prompt；`agent/prompt_builder.py::PLATFORM_HINTS` 只保留核心界面：
 
 ```python
-_PLATFORM_HINTS = {
-    # ...
-    "newplat": (
-        "You are chatting via NewPlat. It supports markdown formatting "
-        "but has a 4000-character message limit."
-    ),
-}
+PLATFORM_HINT = (
+    "You are chatting via NewPlat. It supports markdown formatting "
+    "but has a 4000-character message limit."
+)
 ```
 
 并非所有平台都需要提示 — 仅在 agent 行为应有所不同时添加。
@@ -680,7 +677,7 @@ async def disconnect(self):
 
 | 适配器 | 模式 | 复杂度 | 适合参考的场景 |
 |---------|---------|------------|-------------------|
-| `bluebubbles.py` | REST + webhook | 中 | 简单 REST API 集成 |
-| `weixin.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
+| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
+| `plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
 | `wecom_callback.py` | 回调/webhook | 中 | HTTP 服务器、AES 加密、多应用 |
 | `plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |

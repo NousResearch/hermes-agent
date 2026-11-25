@@ -210,7 +210,7 @@ def test_migration_preserves_manual_system_prompt(tmp_path):
 def test_migration_noop_when_nothing_stale(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
-    raw, results = _run_migration(home, {"_config_version": 33})
+    _raw, results = _run_migration(home, {"_config_version": 33})
     assert not any("personality" in item for item in results["config_added"])
 
 

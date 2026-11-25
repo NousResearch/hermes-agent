@@ -32,6 +32,8 @@ vi.mock('@/components/assistant-ui/thread/status', () => ({
 }))
 
 vi.mock('@/i18n', () => ({
+  // Boot state, which the transcript reads to know whether the tab is signed out, labels itself.
+  translateNow: (key: string) => key,
   useI18n: () => ({
     t: {
       assistant: {

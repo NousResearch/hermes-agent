@@ -32,7 +32,7 @@ def _make_stream_response(content: bytes = b"\xff\xd8\xff fake media"):
 
     Exposes ``raise_for_status``, an empty ``headers`` mapping (no
     Content-Length), and an ``aiter_bytes`` async iterator yielding the body
-    in one chunk — matching how ``_read_httpx_body_with_limit`` consumes it.
+    in one chunk — matching how ``read_httpx_body_with_limit`` consumes it.
     """
     resp = MagicMock()
     resp.raise_for_status = MagicMock()
@@ -98,6 +98,22 @@ class TestCacheImageFromBytes:
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"<!DOCTYPE html><html><title>Slack</title></html>", ".png")
 
+    @pytest.mark.parametrize("brand,ext", [(b"heic", ".heic"), (b"mif1", ".heif"), (b"avif", ".avif")])
+    def test_caches_isobmff_stills(self, tmp_path, monkeypatch, brand, ext):
+        """iPhone photos sent as files are HEIC; image_routing transcodes them for vision."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        data = b"\x00\x00\x00\x18ftyp" + brand + b"\x00\x00\x00\x00mif1heic" + b"\x00" * 64
+        path = cache_image_from_bytes(data, ext)
+        assert path.endswith(ext)
+
+    def test_rejects_isobmff_video(self, tmp_path, monkeypatch):
+        """An MP4 shares the ftyp container but is not an image."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64, ".heic")
+
 
 # ---------------------------------------------------------------------------
 # cache_image_from_url (base.py)
@@ -148,7 +164,7 @@ class TestCacheImageFromUrlConnectGuard:
         # through ``urllib.request.getproxies``, which on macOS falls back to the System
         # Configuration (``scutil --proxy``) when no proxy env var is set — so on a runner
         # with a system-wide proxy the request would dial the proxy, not the rebinding host.
-        monkeypatch.setattr("httpx._utils.getproxies", lambda: {})
+        monkeypatch.setattr("httpx._utils.getproxies", dict)
 
         answers = [
             [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
@@ -311,11 +327,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
+from gateway.config import PlatformConfig
 
 
 def _make_slack_adapter():
@@ -338,6 +354,9 @@ def _make_slack_adapter():
 # SlackAdapter._download_slack_file
 # ---------------------------------------------------------------------------
 
+# files.slack.com resolves from a fixture: the SSRF check before each download used to look it up
+# on the live resolver.
+@pytest.mark.usefixtures("public_dns")
 class TestSlackDownloadSlackFile:
     """Tests for SlackAdapter._download_slack_file"""
 
@@ -400,6 +419,7 @@ class TestSlackDownloadSlackFile:
 # SlackAdapter._download_slack_file_bytes
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("public_dns")
 class TestSlackDownloadSlackFileBytes:
     """Tests for SlackAdapter._download_slack_file_bytes"""
 

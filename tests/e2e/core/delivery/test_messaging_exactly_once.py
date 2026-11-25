@@ -68,9 +68,9 @@ class Director:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.scripts: Dict[str, List] = {}
-        self.turns: Dict[str, int] = {}
-        self.resumes: Dict[str, int] = {}
+        self.scripts: dict[str, list] = {}
+        self.turns: dict[str, int] = {}
+        self.resumes: dict[str, int] = {}
 
     def script(self, token: str, *responses) -> None:
         with self._lock:
@@ -139,7 +139,7 @@ def gw(tmp_path_factory, llm):
     proc.stop()
 
 
-def ledger_rows(db_path: Path, chat: str) -> List[tuple]:
+def ledger_rows(db_path: Path, chat: str) -> list[tuple]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     try:
         return conn.execute("SELECT state, attempts, content FROM delivery_obligations WHERE chat_id=?",
@@ -265,7 +265,7 @@ STREAM_ACK_LOST_SIGNATURE = r"^\d+ unmarked copies of A-fk_(tg|dc)\.ack_lost \(s
 XFAILED_TOKENS: set = set()
 
 
-def faults_fired(gw: GatewayProcess, aid: str) -> List[dict]:
+def faults_fired(gw: GatewayProcess, aid: str) -> list[dict]:
     chat = "m-" + aid[2:].replace(".", "-", 1)
     return [f for f in read_jsonl(gw.spool / "faults_fired.jsonl") if f.get("chat_id") == chat]
 
@@ -358,6 +358,43 @@ def test_slow_turn_interrupted_by_followup(gw, director, platform):
     assert len(persisted_user_rows(gw.db_path, f"[in:{t1}]")) == 1, dump(gw, platform, chat)
     copies = visible_copies(gw.platform_view().visible(platform, chat), f"A-{t1}")
     assert len([c for c in copies if c.complete]) <= 1, dump(gw, platform, chat)
+
+
+@pytest.mark.parametrize("platform", ["fk_tg", "fk_dc"])
+def test_interim_ack_lost_then_clean_final(gw, director, platform):
+    """Only the commentary before a tool call is sent-but-ack-lost; the final answer after the tool
+    lands cleanly. Its delivery was never unclear, so it shows once and is never resent marked."""
+    token = f"{platform}.interim-ack-lost"
+    chat = f"ia-{platform}"
+    aid = f"A-{token}"
+    director.script(token, ToolCall("terminal", {"command": "echo hi"}, text="Let me check that first. "),
+                    Director.answer(aid, "the final answer after the tool."))
+    gw.fault(platform=platform, op="send", kind="ack_lost", contains="Let me check", chat_id=chat)
+    gw.inject(platform, f"[in:{token}] please answer", message_id=f"in-{token}", chat_id=chat)
+    gw.wait_idle([chat], f"{token} turn to finish")
+    wait_until(lambda: ledger_quiescent(gw.db_path, chat), f"{token} ledger to settle", proc=gw.proc, log=gw.log)
+    fired = [f for f in read_jsonl(gw.spool / "faults_fired.jsonl") if f.get("chat_id") == chat]
+    assert fired, f"injected ack_lost never hit the commentary send\n{dump(gw, platform, chat)}"
+    assert_exactly_once(gw, director, platform, chat, token, aid)
+
+
+@pytest.mark.parametrize("platform", ["fk_tg", "fk_dc"])
+def test_clean_interim_then_final_ack_lost(gw, director, platform):
+    """The commentary before a tool call lands cleanly; the final answer's send after the tool is
+    sent-but-ack-lost. That copy may be on screen, so no second unmarked copy may follow it: at most
+    the ledger's one marked "may be a duplicate" resend."""
+    token = f"{platform}.final-ack-lost"
+    chat = f"fa-{platform}"
+    aid = f"A-{token}"
+    director.script(token, ToolCall("terminal", {"command": "echo hi"}, text="Let me check that first. "),
+                    Director.answer(aid, "the final answer after the tool."))
+    gw.fault(platform=platform, op="any", kind="ack_lost", contains=footer(aid), chat_id=chat)
+    gw.inject(platform, f"[in:{token}] please answer", message_id=f"in-{token}", chat_id=chat)
+    gw.wait_idle([chat], f"{token} turn to finish")
+    wait_until(lambda: ledger_quiescent(gw.db_path, chat), f"{token} ledger to settle", proc=gw.proc, log=gw.log)
+    fired = [f for f in read_jsonl(gw.spool / "faults_fired.jsonl") if f.get("chat_id") == chat]
+    assert fired, f"injected ack_lost never hit the final answer's send\n{dump(gw, platform, chat)}"
+    assert_exactly_once(gw, director, platform, chat, token, aid, marked_duplicates_allowed=True)
 
 
 def test_parallel_threads_are_independent(gw, director):
@@ -546,7 +583,7 @@ def test_zz_whole_run_audit(gw, director):
                if m.group(1) in (f"A-{token}",) or m.group(1).startswith((f"R-{token}-", f"{token}-extra"))}
         unmarked = 0
         for aid in ids:
-            by_chat: Dict[str, list] = {}
+            by_chat: dict[str, list] = {}
             for v in visible:
                 by_chat.setdefault((v.platform, v.chat_id), []).append(v)
             for msgs in by_chat.values():
@@ -592,7 +629,7 @@ def test_zzz_unclean_restart_reruns_nothing(gw, director):
 
 
 
-def all_ledger_rows(db_path: Path) -> List[tuple]:
+def all_ledger_rows(db_path: Path) -> list[tuple]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     try:
         return conn.execute("SELECT state, attempts, chat_id FROM delivery_obligations").fetchall()

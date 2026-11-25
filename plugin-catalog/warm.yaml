@@ -1,0 +1,31 @@
+name: warm
+title: Warm
+repo: https://github.com/jasonstockman/warm-agent-plugin
+sha: 82d6d84f1a3f1c6248d58ce5f1ff376da6a6fde9
+version: "1.0.0"
+description: >-
+  Personal finance dashboard and hosted Streamable HTTP MCP server at https://app.warm.io/mcp
+  for reviewing bank balances, spending, recurring bills, budgets, goals, net worth, findings,
+  and confirmed credit card benefits, plus preparing transaction and budget updates you approve
+  in Warm. Bundles three workflow skills: financial-checkin, organize-finances, and card-benefits.
+  Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Requires a
+  Warm account and OAuth 2.1 sign-in (hermes mcp login warm); no API key or client secret is
+  stored in the plugin. Disclosure — hosted-only connector with no local executable code,
+  binaries, hooks, telemetry, or self-updater; every tool call goes over HTTPS to app.warm.io/mcp.
+  Warm's bank connections are read-only via Plaid and cannot move money. Read-and-write grants
+  expose write tools (describe_operation, invoke_operation, request_handoff) that preview changes
+  and require explicit approval in Warm by default; the package marks the server untrusted
+  (trust: untrusted), so Hermes asks before running non-read-only tools and refuses them in
+  unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha.
+maintainer: Warm
+tier: community
+category: tools
+docs_url: https://warm.io/financial-mcp-server/
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

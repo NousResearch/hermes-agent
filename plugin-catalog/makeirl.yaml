@@ -1,0 +1,18 @@
+name: makeirl
+title: MakeIRL
+repo: https://github.com/MelMayssonOwen/hermes-plugins
+sha: f203c3f897784d731ef48bc0974104a4d08cf5f8
+subdir: makeirl
+description: "Run ERC, DRC, schematic-to-PCB parity, BOM and export checks on KiCad 9 boards before manufacturing through MakeIRL's hosted MCP server, with a release-gate skill bundled. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure — every tool call goes to https://makeirl.com/api/mcp and needs a MakeIRL account; uploading a release sends the user's KiCad project files to MakeIRL. OAuth must be enabled with `hermes mcp add makeirl --url https://makeirl.com/api/mcp --auth oauth`; the bundled mcp.json alone returns 401, and Hermes stores the OAuth tokens. That command's config.yaml entry replaces the package's server entry, so the package's untrusted setting (Hermes asks before write-capable calls) applies only if the user also sets `mcp_servers.makeirl.trust: untrusted`. Checkout tools create a payment link and payment happens in the browser. The tool list comes from the server at run time and is not covered by the pinned sha. Reports check rules and do not prove that a circuit works."
+maintainer: MelMayssonOwen
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/MelMayssonOwen/hermes-plugins/blob/f203c3f897784d731ef48bc0974104a4d08cf5f8/makeirl/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

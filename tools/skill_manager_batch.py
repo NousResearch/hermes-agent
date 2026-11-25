@@ -90,6 +90,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
+    creates = 0
     for i, op in enumerate(operations):
         if not isinstance(op, dict) or not op.get("action"):
             return fail(i, " needs an 'action'.")
@@ -111,7 +112,8 @@ def _validate_batch_ops(operations, default_name, tool_error):
         names.append(nm)
         if act == "create" and nm in names[:-1]:
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")
-        if (preflight := _background_review_preflight(act, nm)) is not None:
+        creates += act == "create"
+        if (preflight := _background_review_preflight(act, nm, creates=creates)) is not None:
             return None, json.dumps(preflight, ensure_ascii=False)
     # Clobber guard: a DESTRUCTIVE op (create/write_file/remove_file/full rewrite) on
     # a file an earlier op touched would SILENTLY discard its work — reject it.

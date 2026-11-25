@@ -253,11 +253,46 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
         return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
     return None
 
-def _background_review_preflight(action: str, name: str) -> Optional[dict[str, Any]]:
+# Set (token-scoped) by the curator consolidation pass: the umbrellas it creates absorb and shrink
+# the library, so they are never counted against the cap. Tool workers copy the context.
+_cap_exempt: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_exempt", default=False)
+
+
+def _agent_created_cap_guard(creates: int) -> Optional[dict[str, Any]]:
+    """Refuse a background-review create that would push the curator-managed library past
+    ``curator.max_agent_created`` (0 = no cap). Updates and absorbs stay allowed at the cap, so the
+    fork must improve an existing skill or retire one before adding another: an index of every
+    auto-written skill rides each session's prompt, and an unbounded library buries the useful ones.
+    Inspired by Perplexity Brain's per-user cap on automatically created skills."""
+    if not _is_background_review() or _cap_exempt.get():
+        return None
+    try:
+        from agent.curator import get_max_agent_created
+        from tools import skill_usage
+        if (cap := get_max_agent_created()) <= 0:
+            return None
+        have = len([n for n in skill_usage.list_agent_created_skill_names() if not skill_usage.is_bundled(n)])
+    except Exception:
+        logger.debug("agent-created skill cap lookup failed", exc_info=True)
+        return None
+    if have + creates <= cap:
+        return None
+    return _refusal(
+        f"Refusing background create: {have} agent-created skills already exist and "
+        f"curator.max_agent_created is {cap}. Put the lesson into an existing skill (skill_view, then "
+        f"patch), or retire a less useful agent-created skill first (fold its content into another, "
+        f"then delete it with absorbed_into=<that skill>) and say in your summary why the new skill is "
+        f"worth more.", _cap_reached=True)
+
+
+def _background_review_preflight(action: str, name: str, creates: int = 1) -> Optional[dict[str, Any]]:
     """Guards that run on the bare action/name before any handler, for the single-op AND the
-    batch path: the content lock (every mutating action) and the ownership delete guard."""
+    batch path: the content lock (every mutating action), the agent-created skill cap (create;
+    ``creates`` = creates so far in a batch) and the ownership delete guard."""
     if (locked := _locked_guard(name, action)) is not None:
         return locked
+    if action == "create":
+        return _agent_created_cap_guard(creates)
     if action != "delete":
         return None
     from tools import skill_manager_tool as _smt

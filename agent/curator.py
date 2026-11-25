@@ -44,6 +44,8 @@ DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 14, 30
 # The LLM consolidation fork is opt-in; the deterministic inactivity prune
 # (apply_automatic_transitions) always runs when the curator is enabled.
 DEFAULT_CONSOLIDATE = False
+# 0 = unlimited (legacy). > 0 caps how many agent-created skills the unattended review may hold.
+DEFAULT_MAX_AGENT_CREATED = 0
 
 
 # --- .curator_state — persistent scheduler + status ---
@@ -157,6 +159,11 @@ def get_archive_after_days() -> int:
 def get_consolidate() -> bool:
     """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
     return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
+
+
+def get_max_agent_created() -> int:
+    """``curator.max_agent_created``: most skills the unattended review may hold at once (0 = no cap)."""
+    return max(0, _config_number("max_agent_created", DEFAULT_MAX_AGENT_CREATED, int))
 
 
 # --- Idle / interval check ---
@@ -1157,10 +1164,17 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
             from tools.skill_manager_guards import _reset_background_review_read_marks
 
             _reset_background_review_read_marks()
+        # Umbrellas the consolidation pass creates absorb skills, so it is never capped; token-scoped
+        # so a synchronous `hermes curator run` does not leave the caller's context exempt.
+        from tools.skill_manager_guards import _cap_exempt
+        cap_token = _cap_exempt.set(True)
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
-        with open(os.devnull, "w", encoding="utf-8") as devnull, \
-             contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            conv_result = review_agent.run_conversation(user_message=prompt)
+        try:
+            with open(os.devnull, "w", encoding="utf-8") as devnull, \
+                 contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                conv_result = review_agent.run_conversation(user_message=prompt)
+        finally:
+            _cap_exempt.reset(cap_token)
         final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
         result_meta["final"] = final
         result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")

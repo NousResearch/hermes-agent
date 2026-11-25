@@ -1574,3 +1574,36 @@ def test_index_desc_limit_sets_the_skill_manage_description_budget(tmp_path, mon
     created = json.loads(skill_manage(action="create", name="market-data", content=content))
     assert created["success"] is True, created
     assert "max 160 chars" in schema_desc()
+
+
+def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(tmp_path, monkeypatch):
+    """At curator.max_agent_created the unattended review cannot add a skill (single op or batch)
+    but can still patch one it has read, and a user-directed create is never capped."""
+    from tools.skill_manager_guards import _reset_background_review_read_marks, mark_background_review_skill_read
+    from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("curator:\n  max_agent_created: 1\n", encoding="utf-8")
+
+    def skill(name):
+        return f"---\nname: {name}\ndescription: Use when testing the cap.\n---\n\nStep one.\n"
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        _reset_background_review_read_marks()
+        first = json.loads(skill_manage(action="create", name="one", content=skill("one")))
+        second = json.loads(skill_manage(action="create", name="two", content=skill("two")))
+        batch = json.loads(skill_manage(action="", name="", operations=[
+            {"action": "create", "name": "three", "content": skill("three")}]))
+        mark_background_review_skill_read(tmp_path / "skills" / "one" / "SKILL.md")
+        patched = json.loads(skill_manage(action="patch", name="one", old_string="Step one.",
+                                          new_string="Step one, then two."))
+    finally:
+        reset_current_write_origin(token)
+    user = json.loads(skill_manage(action="create", name="mine", content=skill("mine")))
+
+    assert first["success"] is True, first
+    assert second["success"] is False and second.get("_cap_reached") is True, second
+    assert batch["success"] is False and batch.get("_cap_reached") is True, batch
+    assert not (tmp_path / "skills" / "two").exists() and not (tmp_path / "skills" / "three").exists()
+    assert patched["success"] is True, patched
+    assert user["success"] is True, user

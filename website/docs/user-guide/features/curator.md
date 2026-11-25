@@ -59,9 +59,14 @@ curator:
   archive_after_days: 30
   consolidate: false           # LLM umbrella-building pass — opt-in (prune-only by default)
   prune_builtins: false        # opt in to archiving unused bundled built-in skills too (hub skills always exempt)
+  max_agent_created: 0         # cap on skills the background review may create; 0 = no cap
 ```
 
 To disable entirely, set `curator.enabled: false`. To keep the always-on pruning but opt into LLM consolidation, set `curator.consolidate: true`.
+
+### Capping the auto-written library (`max_agent_created`)
+
+Every skill the background review writes adds a line to the skill index in every session's system prompt. A long-lived agent that creates a skill for each new workflow ends up with an index so long that the useful entries get harder to find. Set `curator.max_agent_created: N` to keep it small. Once N agent-created skills exist, a `skill_manage create` from the background review is refused, and the refusal tells the review to put the lesson into an existing skill instead, or to retire a weaker agent-created skill first (merge its content into another skill, then `delete` it with `absorbed_into`). Patches, edits and support files are never capped. Skills you create in a normal conversation (including `/learn`) are not counted and are never refused. `hermes curator status` shows the cap. A cap of about 10 to 20 keeps the auto-written part of the index short.
 
 ### Running the review on a cheaper aux model
 

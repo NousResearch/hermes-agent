@@ -26,6 +26,7 @@ import os
 import sys
 import threading
 import types
+from collections import abc
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -213,6 +214,8 @@ class HostRuntime:
 
     def ctx_call(self, plugin_key: str, method: str, *args: Any, **kwargs: Any) -> Any:
         from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+        args = tuple(_items_of(a) for a in args)
+        kwargs = {k: _items_of(v) for k, v in kwargs.items()}
         return self._send_call("ctx", plugin_key, {"method": method, "args": args, "kwargs": kwargs},
                                allow_objects=method in HOST_OBJECT_BASES)
 
@@ -492,6 +495,12 @@ def _provider_base(value: Any) -> Optional[type]:
             if isinstance(base, type) and isinstance(value, base):
                 return base
     return None
+
+
+def _items_of(value: Any) -> Any:
+    """An iterator (generator, ``iter(...)``) or dict view as a list: the wire carries neither, so it would
+    otherwise reach the ctx method as an opaque placeholder instead of the items it reads in-process."""
+    return list(value) if isinstance(value, (abc.Iterator, abc.KeysView, abc.ValuesView, abc.ItemsView)) else value
 
 
 def _is_provider_object(value: Any) -> bool:

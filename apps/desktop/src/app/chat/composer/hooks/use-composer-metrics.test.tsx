@@ -132,6 +132,27 @@ describe('useComposerMetrics — published clearance survives an effect replay',
     expect(fitAt(60)).toMatchObject({ minimal: true, singleColumn: false })
   })
 
+  it('keeps one unstacked row and folds voice on a short viewport (phone keyboard up)', () => {
+    const fitWith = (short: boolean) => {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: short && query === '(max-height: 520px)',
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {}
+      }))
+
+      const { getByTestId, unmount } = render(<Harness dockHeight={200} surfaceHeight={120} width={640} />)
+      const fit = JSON.parse(getByTestId('fit').textContent!) as Record<string, boolean>
+
+      unmount()
+
+      return fit
+    }
+
+    expect(fitWith(true)).toMatchObject({ short: true, stacked: false, foldVoice: true, compactPill: true })
+    expect(fitWith(false)).toMatchObject({ short: false, foldVoice: false, compactPill: false })
+  })
+
   it('uses a single control column below the two-touch-target budget', () => {
     window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     vi.spyOn(window, 'getComputedStyle').mockReturnValue({ getPropertyValue: () => '44px' } as unknown as CSSStyleDeclaration)

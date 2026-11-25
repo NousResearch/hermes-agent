@@ -282,7 +282,8 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
   return (
     <div
       className={cn(
-        'pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 transition-opacity',
+        'pointer-events-none absolute z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 transition-opacity',
+        touch ? 'right-1 bottom-1' : 'right-2 bottom-2',
         touch
           ? 'opacity-100'
           : 'opacity-0 group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100'
@@ -292,7 +293,7 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
       {showStop ? (
         <button
           aria-label={copy.stop}
-          className={cn('pointer-events-auto', touch ? 'size-11' : 'size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+          className={cn('pointer-events-auto', touch ? 'size-8' : 'size-5', USER_ACTION_ICON_BUTTON_CLASS)}
           onClick={event => {
             event.preventDefault()
             event.stopPropagation()
@@ -306,7 +307,7 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
         <Tip label={copy.restoreFromHere}>
           <button
             aria-label={copy.restoreCheckpoint}
-            className={cn('pointer-events-auto', touch ? 'size-11' : 'size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+            className={cn('pointer-events-auto', touch ? 'size-8' : 'size-6', USER_ACTION_ICON_BUTTON_CLASS)}
             onClick={event => {
               event.preventDefault()
               event.stopPropagation()
@@ -342,10 +343,10 @@ interface TouchUserBubbleProps {
 }
 
 /** Touch bubble: the prose stays plain selectable text, so a long press keeps
- *  the platform's selection handles and Copy, and editing is an explicit button
- *  below it instead of a tap on the bubble. A clamped prompt gets an explicit
- *  expand toggle in the same row. The row leaves room for the Stop/Restore
- *  cluster pinned over its end. */
+ *  the platform's selection handles and Copy. A tap on a clamped prompt expands
+ *  or collapses it (never edits). Edit is a small button in the bubble's top-right
+ *  corner and Stop/Restore sits in its bottom-right corner, both inside a reserved
+ *  right gutter, so the pinned prompt costs no extra row below the bubble. */
 function TouchUserBubble({
   children,
   className,
@@ -357,43 +358,56 @@ function TouchUserBubble({
   showStop
 }: TouchUserBubbleProps) {
   const copy = useI18n().t.assistant.thread
+  const corner = editable || showStop || showRestore
 
   return (
-    <>
-      <div className={cn(className, 'cursor-text')} data-selectable-text="true">
-        {children}
-      </div>
-      <div className={cn('flex justify-end', (showStop || showRestore) && 'pr-11')}>
-        {expandable && (
+    <div
+      aria-expanded={expandable ? expanded : undefined}
+      aria-label={expandable ? copy.expandMessage : undefined}
+      className={cn(
+        className,
+        'cursor-text',
+        corner && '!pr-10',
+        corner && (editable && (showStop || showRestore) ? 'min-h-[4.25rem]' : 'min-h-10')
+      )}
+      data-selectable-text="true"
+      onClick={event => {
+        // Expand / collapse on a plain tap; a selection, a link or a button wins.
+        if (!expandable || hasTextSelection() || (event.target as Element).closest('a,button')) {
+          return
+        }
+
+        triggerHaptic('selection')
+        onToggleExpanded()
+      }}
+      onKeyDown={event => {
+        if (expandable && event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault()
+          onToggleExpanded()
+        }
+      }}
+      role={expandable ? 'button' : undefined}
+      tabIndex={expandable ? 0 : undefined}
+    >
+      {children}
+      {editable && (
+        <ActionBarPrimitive.Edit asChild>
           <Button
-            aria-expanded={expanded}
-            aria-label={copy.expandMessage}
-            data-slot="aui_user-touch-expand"
-            onClick={() => {
-              triggerHaptic('selection')
-              onToggleExpanded()
+            aria-label={copy.editMessage}
+            className="absolute top-1 right-1 size-8"
+            data-slot="aui_user-touch-edit"
+            onClick={event => {
+              event.stopPropagation()
+              notifyThreadEditOpen()
             }}
             size="icon"
             variant="ghost"
           >
-            <Codicon name={expanded ? 'chevron-up' : 'chevron-down'} />
+            <Codicon name="edit" />
           </Button>
-        )}
-        {editable && (
-          <ActionBarPrimitive.Edit asChild>
-            <Button
-              aria-label={copy.editMessage}
-              data-slot="aui_user-touch-edit"
-              onClick={notifyThreadEditOpen}
-              size="icon"
-              variant="ghost"
-            >
-              <Codicon name="edit" />
-            </Button>
-          </ActionBarPrimitive.Edit>
-        )}
-      </div>
-    </>
+        </ActionBarPrimitive.Edit>
+      )}
+    </div>
   )
 }
 

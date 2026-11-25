@@ -1831,3 +1831,126 @@ def test_thread_count_store_skips_a_deleted_or_renamed_profile_home(tmp_path, mo
     assert store.incr("spaces/a", "spaces/a/threads/t") == 0  # never raises
     assert store.incr("spaces/a", "spaces/a/threads/t") == 1
     assert not home.exists()
+
+class TestOAuthIdentityIsOneKey:
+    """/setup-files stores a token under the sender's identity; an outbound attachment must look it up under the SAME
+    identity (regression: setup used the ``users/<id>`` resource name, _send_file the email, so a completed
+    authorization was never found and every attachment fell back to the /setup-files notice)."""
+
+    @staticmethod
+    def _msg(name, email, text="hi"):
+        return {"name": "spaces/S/messages/M", "text": text, "sender": {"name": name, "email": email, "displayName": "X", "type": "HUMAN"},
+                "space": {"name": "spaces/S", "type": "DM"}}
+
+    @pytest.mark.asyncio
+    async def test_the_key_setup_files_uses_is_the_key_the_attachment_lookup_uses(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat import oauth as helper
+        event = await adapter._build_message_event(self._msg("users/111", "alice@example.com"), {})
+        setup_key = _gc_mod._oauth_identity(event.raw_message)
+        assert adapter._last_sender_by_chat["spaces/S"] == setup_key == "users/111"
+        # authorization stores the token under that key (as setup_files does) ...
+        users_dir = tmp_path / "google_chat_user_tokens"
+        users_dir.mkdir(parents=True)
+        (users_dir / (helper._sanitize_email(setup_key) + ".json")).write_text("{}")
+        # ... and the outbound lookup finds it and uses it (no fallback notice)
+        api = MagicMock()
+        api.media.return_value.upload.return_value.execute.return_value = {"attachmentDataRef": {"resourceName": "r"}}
+        api.spaces.return_value.messages.return_value.create.return_value.execute.return_value = {"name": "spaces/S/messages/N"}
+        adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
+        adapter._post_attachment_fallback = AsyncMock()
+        with patch.object(helper, "load_user_credentials", return_value=MagicMock(valid=True)) as load, \
+                patch.object(helper, "build_user_chat_service", return_value=api):
+            f = tmp_path / "shot.png"
+            f.write_bytes(b"\x89PNG")
+            res = await adapter._send_file("spaces/S", str(f), caption=None, mime_hint="image/png")
+        assert res.success is True and load.call_args.args[0] == "users/111"
+        adapter._post_attachment_fallback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_distinct_users_never_share_credentials(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat import oauth as helper
+        await adapter._build_message_event(self._msg("users/111", "alice@example.com"), {})
+        users_dir = tmp_path / "google_chat_user_tokens"
+        users_dir.mkdir(parents=True)
+        (users_dir / "users_111.json").write_text("{}")                      # only alice authorized
+        seen = []
+
+        def load(identity=None):
+            seen.append(identity)
+            return MagicMock(valid=True) if identity == "users/111" else None
+        adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
+        adapter._post_attachment_fallback = AsyncMock(return_value=MagicMock(success=False))
+        adapter._user_chat_api = None
+        f = tmp_path / "x.png"
+        f.write_bytes(b"1")
+        with patch.object(helper, "load_user_credentials", side_effect=load), patch.object(helper, "build_user_chat_service", return_value=MagicMock()):
+            await adapter._build_message_event(self._msg("users/222", "bob@example.com"), {})   # bob speaks last in the space
+            res = await adapter._send_file("spaces/S", str(f), caption=None, mime_hint="image/png")
+        assert res.success is False and seen == ["users/222", "bob@example.com"], "only bob's own keys are tried, never alice's"
+        adapter._post_attachment_fallback.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_or_invalid_credentials_fall_back_to_the_notice_not_to_another_user(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat import oauth as helper
+        await adapter._build_message_event(self._msg("users/333", "c@example.com"), {})
+        adapter._user_chat_api = None
+        adapter._post_attachment_fallback = AsyncMock(return_value=MagicMock(success=False))
+        f = tmp_path / "x.png"
+        f.write_bytes(b"1")
+        for creds in (None,):                                                   # no token file / refresh refused
+            with patch.object(helper, "load_user_credentials", return_value=creds):
+                res = await adapter._send_file("spaces/S", str(f), caption=None, mime_hint="image/png")
+            assert res.success is False
+        assert adapter._post_attachment_fallback.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_identity_falls_back_to_email_only_when_the_resource_name_is_absent_and_is_consistent(self, adapter):
+        assert _gc_mod._oauth_identity({"sender": {"email": " A@B.com "}}) == "a@b.com"
+        assert _gc_mod._oauth_identity({"sender": {}}) is None and _gc_mod._oauth_identity({}) is None
+        event = await adapter._build_message_event(self._msg("", "a@b.com"), {})
+        assert adapter._last_sender_by_chat["spaces/S"] == _gc_mod._oauth_identity(event.raw_message) == "a@b.com"
+
+    @pytest.mark.asyncio
+    async def test_a_token_an_earlier_version_stored_under_the_email_is_still_found_for_that_same_sender(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat import oauth as helper
+        await adapter._build_message_event(self._msg("users/111", "alice@example.com"), {})
+        adapter._user_chat_api = None
+        tried = []
+
+        def load(identity=None):
+            tried.append(identity)
+            return MagicMock(valid=True) if identity == "alice@example.com" else None
+        with patch.object(helper, "load_user_credentials", side_effect=load), patch.object(helper, "build_user_chat_service", return_value=MagicMock()):
+            api, who = await adapter._acquire_user_chat_api(adapter._last_sender_by_chat["spaces/S"], adapter._last_sender_email_by_chat["spaces/S"])
+        assert api is not None and who == "alice@example.com" and tried == ["users/111", "alice@example.com"]
+
+    @pytest.mark.asyncio
+    async def test_dispatching_setup_files_hands_the_same_identity_the_attachment_lookup_will_use(self, adapter):
+        seen = {}
+
+        async def handler(**kw):
+            seen.update(kw)
+            return True
+        adapter._handle_setup_files_command = handler
+        adapter._is_sender_authorized = lambda *args, **kw: True            # upstream gates the intercept on the runner's allowlist
+        await adapter._dispatch_message(self._msg("users/111", "alice@example.com", text="/setup-files start"), {})
+        assert seen["sender_email"] == "users/111" == adapter._last_sender_by_chat["spaces/S"]
+
+    @pytest.mark.asyncio
+    async def test_the_last_sender_survives_a_restart_so_a_proactive_attachment_finds_the_token(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        await adapter._build_message_event(self._msg("users/111", "alice@example.com"), {})
+        stored = json.loads((tmp_path / "google_chat_last_senders.json").read_text())
+        assert stored == {"spaces/S": {"identity": "users/111", "email": "alice@example.com"}}, "only identity keys, no credential"
+        adapter._last_sender_by_chat.clear()                                     # a restarted gateway: memory is empty
+        adapter._last_sender_email_by_chat.clear()
+        adapter._recall_last_sender("spaces/S")
+        assert adapter._last_sender_by_chat["spaces/S"] == "users/111" and adapter._last_sender_email_by_chat["spaces/S"] == "alice@example.com"
+        (tmp_path / "google_chat_last_senders.json").write_text("{not json")     # a damaged file is ignored, never trusted or fatal
+        adapter._last_sender_by_chat.clear()
+        adapter._recall_last_sender("spaces/S")
+        assert "spaces/S" not in adapter._last_sender_by_chat

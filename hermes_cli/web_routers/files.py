@@ -953,10 +953,13 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
                 authority = await asyncio.to_thread(capture)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="File ticket profile is unavailable") from exc
+    from hermes_cli.webapp_sign_in import sign_in_of
+
     query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
     ticket = file_tickets.mint(
         payload.route, {key: value for key, value in query.items() if value is not None}, authority=authority,
         session_token=file_tickets.session_token_of(request),
+        sign_in=sign_in_of(request),
     )
     return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
 

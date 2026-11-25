@@ -366,6 +366,8 @@ async def _loopback_webapp_cookie_middleware(
     gateway = webapp_sign_in.cookie_gateway(request)
     at, rt = read_session_cookies(request, gateway)
     if not at and not rt:
+        if path.startswith("/api/") and list_interactive_providers():
+            return _unauth_response(request, reason="no_cookie")
         return await call_next(request)
     refusal = _cookie_write_refusal(
         request, own_origin=True, other_page=False, has_cookies=True)

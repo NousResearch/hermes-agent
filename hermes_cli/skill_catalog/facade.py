@@ -62,6 +62,9 @@ class ContextMutations:
         try:
             pending = call(entry, 'operation', dict(operation_id=operation_id))
         except CatalogError as exc:
+            if exc.code == 'invalid_request':
+                raise CatalogError('invalid_response',
+                    'Catalog provider must return not_found for an unknown operation.') from None
             if exc.code != 'not_found':
                 raise
             pending = None

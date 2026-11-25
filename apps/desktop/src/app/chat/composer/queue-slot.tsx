@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { HermesGateway } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { useStoresSelector } from '@/lib/use-session-slice'
-import { type QueuedPromptEntry, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { type QueuedPromptEntry, enqueueQueuedPrompt, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
@@ -22,6 +22,7 @@ export interface ComposerQueueSlotInputs {
   queueEdit: QueueEditState | null
   queueParked: boolean
   queuedPrompts: QueuedPromptEntry[]
+  redirectQueuedText: (text: string) => Promise<boolean>
   sendQueuedNow: (id: string) => unknown
   sessionId: null | string | undefined
   steerQueuedNow: (id: string) => unknown
@@ -78,6 +79,7 @@ export function renderComposerQueueSlot({
   queueEdit,
   queueParked,
   queuedPrompts,
+  redirectQueuedText,
   sendQueuedNow,
   sessionId,
   steerQueuedNow,
@@ -131,7 +133,40 @@ export function renderComposerQueueSlot({
           void drainNextQueued()
         }
       }}
-      onSendNow={id => void sendQueuedNow(id)}
+      onSendNow={id => {
+        const serverStatus = queuedPrompts.find(entry => entry.id === id)?.serverStatus
+
+        // A server-owned row must NOT ride send-now: that path ends in the hard Stop and the
+        // withdrawn row is already gone by then, which silently lost the words (2026-10-20).
+        // Withdraw the admission first (so the gateway never runs a second copy), then deliver
+        // the captured text as a redirect: the gateway restarts the live request with it, so the
+        // wrong turn is corrected now and the rest of the queue keeps its place.
+        if (serverStatus && serverStatus !== 'unknown') {
+          const text = queuedPrompts.find(entry => entry.id === id)?.text ?? ''
+
+          if (!gateway || !text.trim()) {
+            notifyError(new Error('queued redirect unavailable'), t.composer.queueStuckTitle)
+            return
+          }
+
+          cancelQueuedPrompt(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway))
+            .then(() => redirectQueuedText(text))
+            .then(delivered => {
+              if (delivered) {
+                return
+              }
+
+              // The turn settled before the redirect landed: put the words back in the queue
+              // instead of dropping them, and say why.
+              enqueueQueuedPrompt(activeQueueSessionKey, { attachments: [], text })
+              notifyError(new Error('queued redirect refused'), t.composer.queueStuckTitle)
+            })
+            .catch((error: unknown) => notifyError(error, t.composer.queueCancelFailed))
+          return
+        }
+
+        void sendQueuedNow(id)
+      }}
       onSteerNow={id => {
         // A server row is steered by its owner, which consumes the admission so it never also runs;
         // the pending fanout retires the card.

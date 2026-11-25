@@ -815,6 +815,50 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
     assert env == original_env
 
 
+def test_apply_adopts_a_completed_generation_built_for_the_same_inputs(locked_project, tmp_path, monkeypatch):
+    """One eviction applies the same union more than once — a successful probe, then the
+    same set again at commit — and each apply used to mint a fresh uuid generation, orphaning
+    the previous ~209 MB tree (the storm's churn). An apply must adopt an unleased, unpublished
+    generation whose recorded fingerprint matches instead of rebuilding, and must never adopt
+    the generation something selected."""
+    from pm.lock import Facts
+    from pm.environments import runtime_facts_path
+    from pm.packages import Venv
+    import pm.paths
+
+    source, uv, env = locked_project
+    metadata = source / "pyproject.toml"
+    metadata.write_text(metadata.read_text(encoding="utf-8-sig").replace('[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
+    _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
+    monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: source)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))
+
+    member = source / "member"
+    first = Venv().apply(["chosen"], plugin_dirs=[member])
+    generations = first["environment"].parent.parent
+    assert len([g for g in generations.iterdir() if g.is_dir()]) == 1
+    second = Venv().apply(["chosen"], plugin_dirs=[member])
+    assert second == first, "identical inputs must adopt the unleased generation, not re-mint"
+    assert len([g for g in generations.iterdir() if g.is_dir()]) == 1
+
+    # A changed member is a different fingerprint: a fresh generation, the old one untouched.
+    (member / "extra.py").write_text("VALUE = 2\n", encoding="utf-8")
+    third = Venv().apply(["chosen"], plugin_dirs=[member])
+    assert third["environment"] != first["environment"]
+    assert first["environment"].is_dir()
+    assert len([g for g in generations.iterdir() if g.is_dir()]) == 2
+
+    # The recorded selection is somebody's running environment: adoption never touches it,
+    # even when the fingerprint still matches (facts here claim the second union's tree).
+    (member / "extra.py").unlink()
+    Facts(runtime_facts_path(source), strict=False).record_state("venv", "fixture-stamp", ["chosen"], **third)
+    fourth = Venv().apply(["chosen"], plugin_dirs=[member])
+    assert fourth["environment"] != third["environment"]
+    assert third["environment"].is_dir()
+
+
 def test_no_config_drops_bridged_index_settings_from_child_env(tmp_path):
     """no_config must isolate the pinned runtime builder from ambient INDEX
     redirection: --no-config covers config files, but PM's pip-mirror bridge

@@ -551,6 +551,14 @@ class Venv(StatePackage):
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
         members = [] if repair else (build_member_dirs(extras, environment.python) if plugin_dirs is None
                                      else plugin_dirs)
+        # What this exact build serves — lock digest, extras, interpreter pins, member tree
+        # hashes — recorded beside the generation so a later apply of the same union adopts
+        # the finished tree instead of minting another one (see _reuse_completed_generation).
+        fingerprint = None if repair else self.expected_stamp(extras, plugin_dirs=members)
+        if fingerprint is not None:
+            adopted = _reuse_completed_generation(project, fingerprint)
+            if adopted is not None:
+                return adopted
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()
@@ -588,7 +596,73 @@ class Venv(StatePackage):
             shutil.rmtree(generation, ignore_errors=True)
             raise
         (generation / ".lease-managed").touch()
+        if fingerprint is not None:
+            # Written only now — after create, lock, sync and pip check all passed: the
+            # record is proof of a complete tree, and an interrupted build never claims it.
+            (generation / _GENERATION_FINGERPRINT).write_text(fingerprint, encoding="utf-8")
         return {"environment": candidate, "resolved_lock": resolved_lock}
+
+
+# The fingerprint of the exact inputs a completed build served, recorded inside the
+# generation so a later apply of the same union adopts the tree instead of minting another.
+_GENERATION_FINGERPRINT = ".fingerprint"
+# Generations this process adopted: the lease pinning each one is held for the process, so
+# the collector can never sweep a tree this apply handed back — and a second apply in the
+# same process still sees its own first probe's tree as adoptable despite that lease.
+_adopted_generations: dict[Path, object] = {}
+
+
+def _reuse_completed_generation(project: Path, fingerprint: str) -> Optional[dict]:
+    """Adopt a finished, unused generation already built for exactly these inputs.
+
+    One eviction applies the same union more than once — each fitting member probe, then
+    the commit applies the same set again — and every apply minted a fresh uuid generation,
+    orphaning the previous ~209 MB tree whenever the caller could not publish it (56 such
+    trees across four storm syncs). A completed build records its input fingerprint beside
+    its tree; a later apply asked for that fingerprint adopts it instead of rebuilding.
+
+    Only a tree nobody can be using is adoptable: never the recorded selection (that is
+    somebody's running environment), and never a tree whose lease another process holds —
+    adoption takes the lease itself, so no collector can sweep between adoption and the
+    caller's publication. A tree that fails its re-check was ours the moment we leased it:
+    dead claimed garbage is removed, never published. Repair never adopts; it replays
+    recorded inputs, not the ones named here.
+    """
+    from hermes_cli.runtime_state import lease_directory, leases_held
+    from pm.environment import managed_environment  # noqa: TID251
+    from pm.environments import install_state_dir, runtime_facts_path
+    from pm.lock import Facts
+    from pm.native_build import source_build_environment
+
+    generations = install_state_dir(project) / "environments"
+    if not generations.is_dir():
+        return None
+    selected = (Facts(runtime_facts_path(project), strict=False).get("venv") or {}).get("environment")
+    selected = Path(selected).resolve().parent if selected else None
+    ordered = []
+    for entry in generations.iterdir():
+        try:
+            ordered.append((entry.stat().st_mtime, entry))
+        except OSError:
+            continue  # a concurrent collector removed it mid-scan
+    for _, directory in sorted(ordered, key=lambda row: row[0], reverse=True):
+        record = directory / _GENERATION_FINGERPRINT
+        if (directory == selected or not record.is_file() or record.read_text(encoding="utf-8") != fingerprint
+                or not (directory / "venv").is_dir() or not (directory / "workspace" / "uv.lock").is_file()
+                or directory not in _adopted_generations
+                and (directory / ".leases").is_dir() and leases_held(directory)):
+            continue
+        if directory not in _adopted_generations:
+            _adopted_generations[directory] = lease_directory(directory)
+        probe = managed_environment(directory / "venv", env=source_build_environment(project),
+                                    output=sys.stderr)
+        try:
+            probe.check(directory / "workspace" / "uv.lock")
+        except InstallError:
+            shutil.rmtree(directory, ignore_errors=True)
+            return None
+        return {"environment": directory / "venv", "resolved_lock": directory / "workspace" / "uv.lock"}
+    return None
 
 
 @register

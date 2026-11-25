@@ -533,6 +533,77 @@ def test_update_sync_disables_later_plugin_of_unresolvable_union(admission_env):
     assert venv_is_current(project_root=tmp_path / "core") is True
 
 
+def test_duplicate_buildable_clone_evicts_once_without_generation_storm(admission_env, monkeypatch):
+    """The generation-storm incident: two homes each enabled their own clone of a buildable
+    plugin, so the union declared one package name twice. uv failed every sync from inside
+    `uv lock`, and the eviction machinery retried the poison twice and re-minted a fresh
+    generation at every step. The union must instead be refused as a verdict before staging:
+    the poisoned set tried once (never retried), the later home's clone disabled, and the
+    commit adopts the fitting probe's completed generation instead of building a third."""
+    from pm.environments import install_state_dir
+    from pm.install import sync_venv, venv_is_current
+    from pm.packages import Venv
+
+    trials: list[int] = []
+    real_apply = Venv.apply
+
+    def counting_apply(self, extras, *, plugin_dirs=None, **kwargs):
+        if plugin_dirs is not None:
+            trials.append(len(plugin_dirs))
+        return real_apply(self, extras, plugin_dirs=plugin_dirs, **kwargs)
+
+    monkeypatch.setattr(Venv, "apply", counting_apply)
+
+    tmp_path, home = admission_env
+    core = tmp_path / "core"
+    backend = (
+        "import zipfile\nfrom pathlib import Path\n\n"
+        "def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):\n"
+        "    name = 'hermes_custodian_plugin-1-py3-none-any.whl'\n"
+        "    dist = 'hermes_custodian_plugin-1.dist-info'\n"
+        "    entries = {\n"
+        "        'custodian_plugin.py': 'VALUE = 1\\n',\n"
+        "        dist + '/METADATA': 'Metadata-Version: 2.1\\nName: hermes-custodian-plugin\\nVersion: 1\\n',\n"
+        "        dist + '/WHEEL': 'Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',\n"
+        "    }\n"
+        "    entries[dist + '/RECORD'] = ''.join(path + ',,\\n' for path in entries)\n"
+        "    with zipfile.ZipFile(Path(wheel_directory) / name, 'w') as archive:\n"
+        "        for path, body in entries.items():\n"
+        "            info = zipfile.ZipInfo(path, date_time=(1980, 1, 1, 0, 0, 0))\n"
+        "            info.external_attr = 0o644 << 16\n"
+        "            archive.writestr(info, body)\n"
+        "    return name\n\n"
+        "def build_editable(wheel_directory, config_settings=None, metadata_directory=None):\n"
+        "    return build_wheel(wheel_directory, config_settings, metadata_directory)\n"
+    )
+    for tree in (home / "plugins" / "custodian", home / "profiles" / "bones" / "plugins" / "custodian"):
+        tree.mkdir(parents=True)
+        (tree / "plugin.yaml").write_text("name: custodian\n", encoding="utf-8")
+        (tree / "pyproject.toml").write_text(
+            '[project]\nname="hermes-custodian-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
+            '[build-system]\nrequires=[]\nbuild-backend="local_backend"\nbackend-path=["."]\n',
+            encoding="utf-8")
+        (tree / "local_backend.py").write_text(backend, encoding="utf-8")
+    _write_enabled(home, ["custodian"])
+    _write_enabled(home / "profiles" / "bones", ["custodian"])
+
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    # Full poisoned union (2) refused once, core alone (0), the kept clone (1) joined, the
+    # clone pair (2) refused once more — a verdict, not retried — and the commit (1) adopted.
+    assert trials == [2, 0, 1, 2, 1]
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["plugins"]["enabled"] == ["custodian"] and "disabled" not in cfg["plugins"]
+    bones = yaml.safe_load((home / "profiles" / "bones" / "config.yaml").read_text(encoding="utf-8"))
+    assert bones["plugins"]["disabled"] == ["custodian"]
+    assert "hermes-custodian-plugin" in bones["plugins"]["disabled_by_update"]["custodian"]["reason"]
+    # Core-alone (what eviction could not know would keep) plus the published generation the
+    # commit adopted: one build per distinct union, not one per apply.
+    generations = install_state_dir(core) / "environments"
+    assert len([g for g in generations.iterdir() if g.is_dir()]) == 2
+    assert venv_is_current(project_root=core) is True
+
+
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_update_sync_survives_unreadable_secondary_profile(admission_env):
     """A secondary profile's broken config.yaml cannot fail an update: its plugins sit out

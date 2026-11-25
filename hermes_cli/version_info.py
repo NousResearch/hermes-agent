@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,14 +62,24 @@ def _derived_version(
 
 def _run_git(repo_dir: Path, *args: str) -> str | None:
     try:
-        result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
-            check=False,
-        )
+        # Inherited pipes can keep Windows communicate() waiting after git exits.
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as output:
+            process = subprocess.Popen(
+                ["git", *args], stdout=output, stderr=subprocess.DEVNULL, cwd=str(repo_dir),
+            )
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+                return None
+            if process.returncode != 0:
+                return None
+            output.seek(0)
+            value = output.read().strip()
     except (OSError, subprocess.SubprocessError):
         return None
-    value = (result.stdout or "").strip()
-    return value if result.returncode == 0 and value else None
+    return value or None
 
 
 def _resolve_repo_dir() -> Path | None:
@@ -215,28 +226,11 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     commit_date: int | None = None
     if commit_date_raw and commit_date_raw.isdigit():
         commit_date = int(commit_date_raw)
-    try:
-        # -uno: skip the untracked-file scan. This runs on the startup-banner
-        # path, and a full working-tree walk costs real time on large or cold
-        # checkouts. Same semantics as write_install_stamp.py.
-        # The 3 s timeout kills a slow status (a partial clone lazily fetching a tree, a cold or
-        # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
-        # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
-        # no optional lock.
-        status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
-        if not include_untracked:
-            status_command.append("-uno")
-        dirty_result = subprocess.run(
-            status_command,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=3,
-            cwd=str(repo_dir),
-            check=False,
-        )
-        dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
-    except (OSError, subprocess.SubprocessError):
-        dirty = False
+    # Skip untracked scans on startup and never take an optional index lock.
+    status_args = ["--no-optional-locks", "status", "--porcelain"]
+    if not include_untracked:
+        status_args.append("-uno")
+    dirty = bool(_run_git(repo_dir, *status_args))
 
     tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
     releases = [

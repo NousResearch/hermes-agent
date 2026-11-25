@@ -109,7 +109,9 @@ describe('notification worker', () => {
   it.each([
     ['https://hermes.example/hermes', true],
     ['https://hermes.example/hermes?profile=p2', true],
-    ['https://hermes.example/hermes/login', true],
+    ['https://hermes.example/hermes/index.html?profile=p2', true],
+    ['https://hermes.example/hermes/login', false],
+    ['https://hermes.example/hermes/webapp/launch', false],
     ['https://hermes.example/hermesx/', false],
     ['https://hermes.example/', false]
   ])('counts %s as a Webapp tab: %s', async (url, webapp) => {
@@ -130,6 +132,17 @@ describe('notification worker', () => {
 
     expect(worker.clients.openWindow).toHaveBeenCalledWith(`${SCOPE}#/stored%201`)
     expect(otherApp.focused).toBe(0)
+  })
+
+  it('passes over a sign-in page used since for the Webapp tab', async () => {
+    const signIn = new FakeWindowClient('https://hermes.example/hermes/login?next=%2Fhermes%2F')
+    const tab = new FakeWindowClient(SCOPE)
+    const worker = await startWorker([signIn, tab])
+
+    await worker.click({ focusSessionId: 'stored-1' })
+
+    expect([tab.focused, tab.messages]).toEqual([1, [{ sessionId: 'stored-1', type: 'hermes:focus-session' }]])
+    expect([signIn.focused, signIn.messages]).toEqual([0, []])
   })
 
   it('asks each open tab which one showed the notification, and opens the session there', async () => {

@@ -23,12 +23,14 @@ self.addEventListener('notificationclick', event => {
   event.waitUntil(openHermes(event.notification.data ?? {}))
 })
 
-/** Whether *url* is a page of this Webapp: its base path, with or without the trailing slash. */
+/** Whether *url* is a Webapp tab: its base path, with or without the trailing slash, or its index.html. The
+ *  app routes in the hash, so its address never leaves that path; the sign-in and launch pages under it
+ *  can't open a chat. */
 function isWebappPage(url) {
   const base = new URL(self.registration.scope).pathname.replace(/\/$/, '')
   const { pathname } = new URL(url)
 
-  return pathname === base || pathname.startsWith(`${base}/`)
+  return pathname === base || pathname === `${base}/` || pathname === `${base}/index.html`
 }
 
 /** The id *tab* puts in its notifications, or null when it does not answer in time (a frozen tab). */

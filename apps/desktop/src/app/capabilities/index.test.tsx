@@ -149,6 +149,57 @@ afterEach(() => {
 // right against the global 15s per-test budget, so slow runners cascade-fail
 // all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
 // Give this file headroom; the tests are not slow individually.
+describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
+  async function tabsAt(path: string) {
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[path]}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    const tabs = await screen.findAllByRole('tab')
+
+    return {
+      order: tabs.map(tab => tab.textContent?.replace(/\d+$/, '')),
+      selected: tabs.find(tab => tab.getAttribute('aria-selected') === 'true')?.textContent?.replace(/\d+$/, '')
+    }
+  }
+
+  it('leads with Connectors in the redesign, and opens there', async () => {
+    expect(await tabsAt('/capabilities')).toEqual({
+      order: ['Connectors', 'Plugins', 'Skills', 'Tools'],
+      selected: 'Connectors'
+    })
+  })
+
+  it('still lands on the tab a link names', async () => {
+    expect((await tabsAt('/capabilities?tab=skills')).selected).toBe('Skills')
+  })
+
+  it('keeps classic order and its Skills default', async () => {
+    $shellChoice.set(false)
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    // Classic's row is plain buttons, named for a tour by tab id.
+    const tabs = [...document.querySelectorAll<HTMLElement>('[data-tour^="tab-"]')]
+
+    expect(tabs.map(tab => tab.dataset.tour)).toEqual(['tab-skills', 'tab-plugins', 'tab-connectors', 'tab-toolsets'])
+    expect(tabs.filter(tab => tab.dataset.active === 'true').map(tab => tab.dataset.tour)).toEqual(['tab-skills'])
+  })
+})
+
 describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
   it('renders when the browser has no idle callback APIs', async () => {
     vi.stubGlobal('requestIdleCallback', undefined)

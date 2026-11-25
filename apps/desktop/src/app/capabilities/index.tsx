@@ -56,6 +56,10 @@ const CAPABILITY_MODES = ['skills', 'plugins', 'connectors', 'toolsets'] as cons
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
+// The redesign's page leads with what Hermes is connected to, then what extends it, then what it
+// knows how to do; it opens on the first. Classic keeps its own order above.
+const PORTAL_CAPABILITY_MODES = ['connectors', 'plugins', 'skills', 'toolsets'] as const satisfies readonly CapabilityMode[]
+
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
   /** Embedded mode (plugin dialogs — e.g. Bot Mode's Advanced section): tab
@@ -96,8 +100,9 @@ export function CapabilitiesView({
   const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
-  const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
-  const localTab = useState<CapabilityMode>('skills')
+  const modes: readonly CapabilityMode[] = redesign ? PORTAL_CAPABILITY_MODES : CAPABILITY_MODES
+  const routeTab = useRouteEnumParam('tab', modes, modes[0])
+  const localTab = useState<CapabilityMode>(modes[0])
   const [selectedMode, setMode] = embedded ? localTab : routeTab
   const mode = fixedMode ?? selectedMode
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
@@ -221,7 +226,7 @@ export function CapabilitiesView({
     searchTrailingAction: presentation.headerScope
       ? mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />
       : !agentControls && <CapabilityInventoryScope onOpenAgentSettings={openAgentSettings} scope={scope} />,
-    tabs: fixedMode ? [] : capabilityTabs(t, skills, toolsets),
+    tabs: fixedMode ? [] : capabilityTabs(modes, t, skills, toolsets),
     tabsAlign: 'start',
     children: (
       // An agent editor scrolls as one page, so its capability list sizes to content.
@@ -398,13 +403,20 @@ function useReloadsOwnerChat(): boolean {
 }
 
 /** The page's tabs; the two installed lists count on theirs (`null` reserves a count still loading). */
-function capabilityTabs(t: Translations, skills?: unknown[], toolsets?: Parameters<typeof visibleToolsetCount>[0]): PageShellTab[] {
-  return [
-    { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
-    { id: 'plugins', label: t.skills.tabPlugins },
-    { id: 'connectors', label: t.connectorsPage.title },
-    { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
-  ]
+function capabilityTabs(
+  modes: readonly CapabilityMode[],
+  t: Translations,
+  skills?: unknown[],
+  toolsets?: Parameters<typeof visibleToolsetCount>[0]
+): PageShellTab[] {
+  const tabs: Record<CapabilityMode, Omit<PageShellTab, 'id'>> = {
+    skills: { label: t.skills.tabSkills, meta: skills?.length ?? null },
+    plugins: { label: t.skills.tabPlugins },
+    connectors: { label: t.connectorsPage.title },
+    toolsets: { label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
+  }
+
+  return modes.map(id => ({ id, ...tabs[id] }))
 }
 
 /** Plugins rides the settings request: the active gateway, or inside an agent's own settings that

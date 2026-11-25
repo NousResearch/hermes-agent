@@ -23,9 +23,9 @@ session's event stream (a background process outlives the turn that started it).
 are installed per turn on the cached agent and restored with the other turn sinks.
 
 ``desktop_project`` create/switch (``tools/project_tools.py``) moves the chat like the user's Move to
-project: the tool thread re-points this turn's terminal cwd record at once (the next ``pwd`` runs
-there), and the session's ``workspace`` mutation (policy cwd, state.db row, terminal drop, ``session.info``)
-is committed at the turn boundary, where a policy mutation is allowed (``apply_pending_workspace``).
+project: the tool records the folder (``moved: pending``) and the running turn keeps its own; the
+session's ``workspace`` mutation (policy cwd, state.db row, terminal drop, ``session.info``) is
+committed at the turn boundary, where a policy mutation is allowed (``apply_pending_workspace``).
 
 Card for ``manage_connections``: ``connection_callback`` publishes ``connection.request`` on the turn, and each later change of an operation is published as ``connection.update`` on the session that owns it (looked up by its session key, the route); the card answers through ``connection.respond`` (``gateway/session_connections.py``).
 """

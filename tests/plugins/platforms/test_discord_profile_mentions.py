@@ -361,6 +361,48 @@ def test_custom_handles_collisions_and_invalid_handles(served, monkeypatch, tmp_
     assert plan.profiles == ("agent-one",) and plan.prompt == "costs $5, ask a$a1"
 
 
+# --- the prompt: only the handles are removed, the formatting survives ------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_code_block_after_the_handle_reaches_the_profile_intact(adapter):
+    """Only the handle token is stripped: the fenced block keeps its fences, newlines and
+    indentation (the review's probe arrived squashed onto one line)."""
+    code = "review this:\n```python\ndef f():\n    if x:\n        return  1\n```"
+    events = await _dispatched(adapter, f"$agent-one {code}")
+
+    assert [(e.source.profile, e.text) for e in events] == [("agent-one", code)]
+
+
+@pytest.mark.asyncio
+async def test_multi_paragraph_prompts_keep_their_lines_and_spacing(adapter):
+    """Paragraphs, list indentation and inner runs of spaces survive wherever the handles sit; a
+    line that held only handles goes, and so do the spaces flanking a mid-line handle."""
+    body = "First paragraph.\n\n- item  one\n    - nested\n\nLast line."
+    for content in (f"$agent-one\n\n{body}", f"{body}\n$agent-one", f"$agent-one $agent-two {body}"):
+        events = await _dispatched(adapter, content)
+        assert {e.text for e in events} == {body}, content
+
+    (event,) = await _dispatched(adapter, "Line one.\nplease $agent-one   look\n  indented  text")
+    assert event.text == "Line one.\nplease look\n  indented  text"
+
+
+def test_stripping_a_handle_touches_only_the_text_around_it():
+    """The spots a removed handle could leave odd spacing are tidied; nothing else is."""
+    handles = {"a1": "agent-one", "a2": "agent-two"}
+    for text, prompt in {
+        "$a1 what's the status?": "what's the status?",
+        "hey $a1, any update?": "hey, any update?",
+        "$a1: $a2 do it": "do it",
+        "status? $a1": "status?",
+        "  $a1 keep  this ,spacing": "keep  this ,spacing",
+        "a\n$a1\n\tb": "a\n\tb",
+        "$a1": "",
+        "$a1\n\n  ": "",
+    }.items():
+        assert profile_mentions.plan_mentions(text, handles).prompt == prompt, text
+
+
 # --- live: flipping the flag in a profile's own config.yaml, no restart ------------------------
 
 

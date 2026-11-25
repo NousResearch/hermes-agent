@@ -54,7 +54,8 @@ MENTIONABLE_KEY = "mentionable"
 HANDLE_KEY = "mention_handle"
 
 _HANDLE = re.compile(r"(?<![\w$])\$([A-Za-z0-9][A-Za-z0-9_-]{0,63})(?![\w-])")
-_SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.;:!?])")
+_HSPACE = " \t"
+_BLANK_LEAD = re.compile(r"\A(?:[ \t]*\n)+")  # blank lines a removed leading handle line leaves
 
 #: Per gateway runner: ``(platform, message id, profile)`` -> a weak ref to the bot that dispatched
 #: it, oldest first, capped at ``_CLAIMS_MAX`` (Discord message ids never repeat).
@@ -155,9 +156,44 @@ def plan_mentions(text: str, handles: dict[str, str]) -> Optional[MentionPlan]:
             logger.info("Discord profile mention: %d unknown $handle(s), none mentionable; not dispatched", len(unknown))
             logger.debug("Discord profile mention: unknown handles %s", unknown)
         return None
-    prompt = _HANDLE.sub(lambda m: "" if m.group(1).lower() in handles else m.group(0), text)
-    prompt = _SPACE_BEFORE_PUNCT.sub(r"\1", " ".join(prompt.split())).lstrip(",;: ").strip()
-    return MentionPlan(tuple(profiles), prompt, tuple(unknown))
+    spans = [m.span() for m in _HANDLE.finditer(text) if m.group(1).lower() in handles]
+    return MentionPlan(tuple(profiles), _strip_handles(text, spans), tuple(unknown))
+
+
+def _handle_runs(text: str, spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """*spans* with the handles that only spaces separate (``$a $b``) merged into one run."""
+    runs: list[tuple[int, int]] = []
+    for start, end in spans:
+        if runs and not text[runs[-1][1]:start].strip(_HSPACE):
+            start = runs.pop()[0]
+        runs.append((start, end))
+    return runs
+
+
+def _strip_handles(text: str, spans: list[tuple[int, int]]) -> str:
+    """*text* without the handle tokens at *spans*; everything else (newlines, indentation, code
+    fences, inner spacing) is kept byte for byte. Only what a removed run leaves behind goes with
+    it: its flanking spaces, a ``:``/``,``/``;`` right after a leading handle, a line that held
+    nothing but handles, and the blank edges that leaves (no global whitespace normalization)."""
+    out, pos = "", 0
+    for start, end in _handle_runs(text, spans):
+        gap = text[pos:start]
+        out += gap.rstrip(_HSPACE)
+        spaced_left = gap != gap.rstrip(_HSPACE)
+        rest = text[end:].lstrip(_HSPACE)
+        spaced_right = len(rest) < len(text) - end
+        pos = len(text) - len(rest)
+        before, after = out[-1:] or "\n", rest[:1] or "\n"
+        if before == "\n" and after == "\n":  # the line held only handles: drop the whole line
+            if rest:
+                pos += 1
+            else:
+                out = out[:-1]
+        elif before == "\n" and after in ",;:":  # "$a1: do X" -> "do X"
+            pos = len(text) - len(rest[1:].lstrip(_HSPACE))
+        elif before != "\n" and after not in "\n,.;:!?" and spaced_left and spaced_right:
+            out += " "  # "ask $a1 now" -> "ask now" (but "hey $a1, hi" -> "hey, hi")
+    return _BLANK_LEAD.sub("", out + text[pos:]).rstrip()
 
 
 def _active_handles(adapter: Any, text: str) -> dict[str, str]:

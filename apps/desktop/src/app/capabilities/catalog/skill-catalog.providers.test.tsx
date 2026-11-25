@@ -263,6 +263,9 @@ it('recovers a lost confirm response with the original token and no second revie
   fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
   fireEvent.click(await screen.findByRole('checkbox'))
   fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await screen.findByRole('button', { name: 'Recover original operation' })
+  fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0])
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
   const recover = await screen.findByRole('button', { name: 'Recover original operation' })
   confirmResponse = completed
   fireEvent.click(recover)
@@ -355,24 +358,37 @@ it('shows a terminal outcome while finalizing and performs read-only status reco
 })
 
 it.each([
-  { preview_complete: false },
-  { scan: { ...review.scan, complete: false } },
-  { acknowledgements_required: ['unshown-finding'] },
-  { review_token: null },
-  { confirmable: false },
-  { version: null },
-  { content_digest: null },
-  { policy_revision: null },
-  { expires_at_ms: 1 }
-])('does not confirm an incomplete or expired plan %j', async delta => {
+  { reason: 'preview incomplete', delta: { preview_complete: false } },
+  { reason: 'scan incomplete', delta: { scan: { ...review.scan, complete: false } } },
+  { reason: 'unshown acknowledgement', delta: { acknowledgements_required: ['unshown-finding'] } },
+  { reason: 'duplicate required ids', delta: { acknowledgements_required: ['network-access', 'network-access'] } },
+  { reason: 'duplicate finding ids', delta: { scan: { ...review.scan, findings: [...review.scan.findings, ...review.scan.findings] } } },
+  { reason: 'duplicate finding hides a required id', delta: { acknowledgements_required: ['network-access', 'other-finding'], scan: { ...review.scan, findings: [...review.scan.findings, ...review.scan.findings] } } },
+  { reason: 'duplicate ids in both sets', delta: { acknowledgements_required: ['network-access', 'network-access'], scan: { ...review.scan, findings: [...review.scan.findings, ...review.scan.findings] } } },
+  { reason: 'missing token', delta: { review_token: null } },
+  { reason: 'not confirmable', delta: { confirmable: false } },
+  { reason: 'missing version', delta: { version: null } },
+  { reason: 'missing digest', delta: { content_digest: null } },
+  { reason: 'missing policy revision', delta: { policy_revision: null } },
+  { reason: 'missing expiry', delta: { expires_at_ms: null } }
+])('offers no confirmation for an incomplete plan: $reason', async ({ delta }) => {
   reviewResponse = { ...review, ...delta }
   setup()
   fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
-  await screen.findByText('Review the finding.')
-  const confirm = screen.queryByRole<HTMLButtonElement>('button', { name: 'Confirm install' })
+  await screen.findByText('The review is incomplete or the provider policy does not allow confirmation.')
+  expect(screen.queryByRole('button', { name: 'Confirm install' })).toBeNull()
+  expect(api.mock.calls.some(([request]) => request.path.endsWith('/confirm'))).toBe(false)
+})
 
-  if (confirm) { expect(confirm.disabled).toBe(true) }
-  else { expect(screen.getByText('The review is incomplete or the provider policy does not allow confirmation.')).toBeTruthy() }
+it('keeps confirmation disabled after acknowledging an expired review', async () => {
+  reviewResponse = { ...review, expires_at_ms: 1 }
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  const confirm = screen.getByRole<HTMLButtonElement>('button', { name: 'Confirm install' })
+  expect(confirm.disabled).toBe(true)
+  fireEvent.click(confirm)
+  expect(api.mock.calls.some(([request]) => request.path.endsWith('/confirm'))).toBe(false)
 })
 
 it('does not carry a foreign response into the requested review', async () => {

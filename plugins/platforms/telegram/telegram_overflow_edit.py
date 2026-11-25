@@ -56,11 +56,16 @@ async def edit_overflow_split(
         reply_to_id = int(prev_id) if prev_id else None
         thread_kwargs = adapter._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id)
         sent_msg = await adapter._send_overflow_continuation(chat_id, chunk, reply_to_id, thread_kwargs, thread_id, metadata, finalize)
-        flood = sent_msg if isinstance(sent_msg, SendResult) else None  # flood-refused: the caller holds off
-        if sent_msg is None or flood:
+        # A lost send may already be in the chat. It is a SendResult too, but not a flood refusal.
+        lost = sent_msg if isinstance(sent_msg, SendResult) and isinstance(sent_msg.raw_response, dict) and sent_msg.raw_response.get("delivery_uncertain") else None
+        flood = sent_msg if isinstance(sent_msg, SendResult) and lost is None else None  # flood-refused: the caller holds off
+        if sent_msg is None or flood or lost:
             # Partial delivery: do NOT report success — the consumer would treat it as final delivery.
             logger.warning("[%s] Overflow split: stopped at %d/%d chunks delivered", adapter.name, 1 + len(continuation_ids), len(chunks))
-            delivered_prefix = "".join(re.sub(r" \(\d+/\d+\)$", "", delivered) for delivered in raw_chunks[:len(delivered_chunks)])
+            # Count a lost continuation in the prefix (a guess the ledger owns) so fallback does not post
+            # that chunk again. Chunks after it never left and stay outside the prefix.
+            shown = len(delivered_chunks) + (1 if lost and len(raw_chunks) > len(delivered_chunks) else 0)
+            delivered_prefix = "".join(re.sub(r" \(\d+/\d+\)$", "", delivered) for delivered in raw_chunks[:shown])
             raw = {
                 "partial_overflow": True, "delivered_chunks": 1 + len(continuation_ids),
                 "total_chunks": len(chunks), "last_message_id": prev_id, "delivered_prefix": delivered_prefix,
@@ -71,9 +76,11 @@ async def edit_overflow_split(
                 raw["undelivered_chunks"] = tuple(
                     separate_chunk_indicator_from_fence(adapter.format_message(rest)) for rest in chunks[len(delivered_chunks):])
                 raw["delivered_message_ids"] = (str(message_id), *continuation_ids)
+            if lost:
+                raw["delivery_uncertain"] = True
             return SendResult(
-                success=False, message_id=prev_id, retryable=True, retry_after=flood and flood.retry_after,
-                error=flood.error if flood else "overflow_continuation_failed", raw_response=raw,
+                success=False, message_id=prev_id, retryable=lost is None, retry_after=flood and flood.retry_after,
+                error=(lost or flood).error if (lost or flood) else "overflow_continuation_failed", raw_response=raw,
                 continuation_message_ids=tuple(continuation_ids))
         new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
         if finalize and new_id != prev_id:

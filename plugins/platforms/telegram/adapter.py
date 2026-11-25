@@ -3665,9 +3665,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _send_overflow_continuation(
         self, chat_id: str, chunk: str, reply_to_id: Optional[int], thread_kwargs: dict[str, Any],
         thread_id: Optional[str], metadata: Optional[dict[str, Any]], finalize: bool):
-        """Send one continuation chunk (MarkdownV2 then plain on finalize; raw when streaming); drops the
-        reply anchor once on 'reply message not found'. Returns the sent message, the flood-cap result on
-        a flood refusal, or None."""
+        """Send one continuation chunk (MarkdownV2, then plain only if Telegram refused the entities; raw when
+        streaming). Drops the reply anchor once on 'reply message not found'. Returns the sent message, the
+        flood-cap result, a delivery-uncertain result when the send may already be in the chat, or None."""
         base = {**self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
         for use_markdown in (True, False) if finalize else (False,):
             try:
@@ -3699,8 +3699,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                         return None
                 if getattr(send_err, "retry_after", None) is not None or "retry after" in str(send_err).lower():
                     return _flood_cap_result(float(getattr(send_err, "retry_after", None) or 30.0))  # no plain retry into the penalty (#76494)
-                if use_markdown:
-                    continue  # try plain text on next loop iteration
+                if use_markdown and is_entity_parse_error(send_err):
+                    continue  # entity refusal posted nothing; plain text can still land
+                if send_error_kind(send_err) == LOST:  # may already be in the chat: another format would duplicate it
+                    return _maybe_delivered_result(send_err, _redact_telegram_error_text(send_err))
                 logger.warning("[%s] Overflow continuation send failed: %s", self.name, _redact_telegram_error_text(send_err))
                 return None
         return None

@@ -947,10 +947,15 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
-  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
-  // new credentials right away (no gateway restart needed).
+  // `live.applied` (mirrored by `hot_served`): the running gateway started, restarted or stopped the
+  // platform's adapter itself, so no restart is needed; older backends send only `hot_served`.
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
+    fetchJSON<{
+      ok: boolean;
+      platform: string;
+      hot_served?: boolean;
+      live?: { applied: boolean; state?: string | null; detail?: string };
+    }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",

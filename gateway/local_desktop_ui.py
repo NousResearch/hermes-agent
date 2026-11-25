@@ -163,8 +163,9 @@ def _install_connection_hook() -> None:
 
 def _move_workspace(task_id, path):
     """``desktop_project``'s move for a turn of ours: None when *task_id* is not one (another host's
-    session), False when it cannot move, else ``"pending"``: the folder is committed at the end of
-    the turn, as the user's Move to project, so the running turn keeps its own."""
+    session), False when its chat is gone, else ``"pending"``: the folder is committed at the end of
+    the turn, as the user's Move to project, so the running turn keeps its own. A folder that does
+    not exist raises, so the tool reports why."""
     import os
     from tools.terminal_tool import _resolve_container_alias
     key = str(task_id or "")
@@ -175,9 +176,11 @@ def _move_workspace(task_id, path):
         return None
     authority, session_id, _session_key, _publish = route
     live = authority.sessions.get(session_id)
-    resolved = os.path.abspath(os.path.expanduser(str(path)))
-    if live is None or not os.path.isdir(resolved):
+    if live is None:
         return False
+    resolved = os.path.abspath(os.path.expanduser(str(path)))
+    if not os.path.isdir(resolved):
+        raise FileNotFoundError(f"folder does not exist: {resolved}")
     live.pending_workspace = resolved
     return "pending"
 

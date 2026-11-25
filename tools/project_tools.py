@@ -94,7 +94,7 @@ def _activated(proj, task_id: Optional[str]) -> str:
         result["not_moved_reason"] = reason
     if moved == "pending":
         result["note"] = (f"This chat moves to {primary} when this turn ends; commands in this turn still "
-                          "run in the current folder.")
+                          "run in the current folder. If the folder is gone by then, the chat stays put.")
     return json.dumps(result)
 
 

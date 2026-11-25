@@ -9,6 +9,24 @@ export function isSessionGoneError(err: unknown): boolean {
 }
 
 /**
+ * Whether a failed `session.activate` may degrade to the warm cache instead of
+ * falling through to a cold resume.
+ *
+ * A transport error is not proof the session is dead, so a warm cache that can
+ * still PAINT is a better outcome than re-reading everything. A cache with no
+ * messages paints nothing, though: `publishDegradedWarmCache` publishes and
+ * never arms a latch, so binding it leaves a runtime attached to an empty
+ * thread with no retry — the loader spins until the user sends a message. The
+ * warm-entry guard only drops such a cache when the sessions-list row already
+ * reports history; a row that still lags at message_count 0 reaches the catch.
+ * Those fall through to the cold path, whose REST prefetch is the transcript
+ * authority and whose empty result arms the bounded retry.
+ */
+export function shouldDegradeWarmCache(err: unknown, warmMessages: readonly unknown[]): boolean {
+  return !isSessionGoneError(err) && warmMessages.length > 0
+}
+
+/**
  * What to do when a resume's RPC and REST fallback BOTH came back
  * gone-looking (#88540).
  *

@@ -94,6 +94,26 @@ def test_macos_clt_stub_rejects_empty_or_nonexecutable_developer_dir(tmp_path):
 
 
 @pytest.mark.platforms("posix")
+def test_macos_developer_dir_may_name_the_xcode_app_bundle(tmp_path):
+    """xcode-select(1): DEVELOPER_DIR may be the Xcode application directory; the shims use its
+    Contents/Developer."""
+    stub = _make_exe(tmp_path / "usr_bin" / "git")
+    xcode_app = tmp_path / "Xcode.app"
+    _make_exe(xcode_app / "Contents" / "Developer" / "usr" / "bin" / "git")
+    empty_app = tmp_path / "Empty.app"
+    (empty_app / "Contents" / "Developer").mkdir(parents=True)
+
+    def usable(dev_dir: Path) -> bool:
+        return is_usable_git_executable(
+            stub, {"DEVELOPER_DIR": str(dev_dir)}, platform="darwin", apple_stub_path=str(stub),
+        )
+
+    assert usable(xcode_app)
+    assert usable(xcode_app / "Contents" / "Developer")
+    assert not usable(empty_app)
+
+
+@pytest.mark.platforms("posix")
 def test_macos_symlink_to_apple_stub_is_still_classified_as_stub(tmp_path):
     stub = _make_exe(tmp_path / "usr_bin" / "git")
     alias_dir = tmp_path / "alias_bin"

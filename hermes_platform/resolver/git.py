@@ -125,8 +125,12 @@ def _has_developer_git(dev_dir: str) -> bool:
     if not dev_dir:
         return False
     # A leftover empty developer dir after a macOS upgrade is not usable (mirrors scripts/install.sh).
-    candidate = os.path.join(dev_dir, "usr", "bin", "git")
-    return os.path.isfile(candidate) and os.access(candidate, os.X_OK)
+    # xcode-select(1): DEVELOPER_DIR may also name the Xcode app, whose shims use Contents/Developer.
+    for root in (dev_dir, os.path.join(dev_dir, "Contents", "Developer")):
+        candidate = os.path.join(root, "usr", "bin", "git")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return True
+    return False
 
 
 def _probe_xcode_select_developer_dir(

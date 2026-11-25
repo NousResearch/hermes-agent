@@ -110,7 +110,8 @@ def legacy_model_line(plugin_id: str, card_id: str) -> str:
     """The line a row admitted before the opaque reference carries: the plugin's own card id. That
     line is part of the row's durable payload digest, so an unchanged retry of such a card matches
     its row only under this text. ``post`` sends it only after the ``model_line`` admission met an
-    existing row with another digest: it replays a durable row or is refused, never queues one."""
+    existing row with another digest, and only as an existing-only admission: the store answers it
+    with that row or refuses it inside the one write that decides, so it never queues a row."""
     return f"[{plugin_id} posted a card {card_id}]"
 
 
@@ -206,9 +207,12 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
                 if exc.reason != "admission_conflict":
                     raise
                 # The row this card id already has was digested under another line: a card admitted
-                # before the opaque reference carries its legacy line. Replay under that durable
-                # identity; the admission still digests everything else, so changed content stays a
-                # conflict, and the row exists, so this never queues a line that names the plugin's id.
+                # before the opaque reference carries its legacy line. Replay it under that durable
+                # identity as an existing-only admission. The store decides in one write, on the
+                # conversation the route resolves to then: an exact legacy row is returned (duplicate),
+                # another digest is still a conflict, and no row there (the chat's route moved to
+                # another conversation since the conflict) is refused. The legacy line is never queued.
+                replay = AdmissionReplay(existing_only=True)
                 admitted = await _admit(runner, adapter, source, plugin_home,
                                         legacy_model_line(plugin_id, normalized["card_id"]),
                                         metadata, request_id=request_id, replay=replay)

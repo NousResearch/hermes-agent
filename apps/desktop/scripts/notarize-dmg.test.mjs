@@ -107,8 +107,23 @@ async function createBuilderFixture({
   }
 }
 
+/** Sign the fixture's app through createMacSigner, as electron-builder does before afterSign and the DMG hook. */
+async function signAppWith(f, identity = IDENTITY_HASH) {
+  const appPath = path.join(f.outDir, 'Hermes Fixture.app')
+  fs.mkdirSync(path.join(appPath, 'Contents', 'Resources', 'agent-payload'), { recursive: true })
+  const signer = createMacSigner(
+    { hardenedRuntime: true, entitlements: 'ent.plist', entitlementsInherit: 'ent.plist', ignore: () => false },
+    { env: {}, sign: vi.fn(async () => {}) }
+  )
+  await signer(
+    { app: appPath, platform: 'darwin', type: 'distribution', identity, keychain: f.keychainFile },
+    Object.assign(f.packager, { helper: { getOptionsForFile: async () => () => ({}) } })
+  )
+}
+
 test('signed and notarized DMG signs with timestamp, retries notary/stapler/validate, verifies Gatekeeper, and updates blockmap and stable-mac.yml to post-staple bytes', async () => {
   const f = await createBuilderFixture()
+  await signAppWith(f)
   const signedTrailer = Buffer.from('\n--CODESIGN-CMS-TIMESTAMP-SIGNATURE--')
   const ticketTrailer = Buffer.from('\n--APPLE-NOTARIZATION-STAPLED-TICKET--')
   const calls = []
@@ -221,6 +236,7 @@ test('signed and notarized DMG signs with timestamp, retries notary/stapler/vali
 
 test('signed local build without Apple notary credentials signs DMG and refreshes blockmap/updateInfo without notarizing', async () => {
   const f = await createBuilderFixture()
+  await signAppWith(f)
   const signedTrailer = Buffer.from('\n--LOCAL-SIGN-ONLY--')
   const calls = []
   const run = vi.fn(async (command, args) => {
@@ -314,6 +330,7 @@ test('DMG reuses the exact identity and keychain recorded by createMacSigner whe
 
 test('DMG notarization shares the remaining combined budget after app notarization and reserves verify headroom', async () => {
   const f = await createBuilderFixture()
+  await signAppWith(f)
   const appOutDir = path.join(f.root, 'mac-arm64')
   fs.mkdirSync(path.join(appOutDir, `${f.packager.appInfo.productFilename}.app`), { recursive: true })
   let elapsed = 0
@@ -357,6 +374,32 @@ test('DMG notarization shares the remaining combined budget after app notarizati
   ).rejects.toThrow(/exceeded the wait budget/)
 })
 
+test('a build electron-builder left unsigned never signs its DMG with another keychain certificate', async () => {
+  const cases = [
+    { name: 'default keychain, no notary credentials', keychainFile: null, env: {}, expected: 'unsigned' },
+    { name: 'default keychain, notary credentials', keychainFile: null, env: 'signed', expected: /without a Developer ID Application signing identity/ },
+    { name: 'CSC_LINK keychain', keychainFile: undefined, env: {}, expected: /electron-builder did not sign the app/ }
+  ]
+  for (const scenario of cases) {
+    const f = await createBuilderFixture({ keychainFile: scenario.keychainFile })
+    const run = vi.fn(async command => {
+      if (command === 'security') return { stdout: TWO_IDENTITY_LIST, stderr: '' }
+      return { stdout: '', stderr: '' }
+    })
+    const done = notarizeDmg(
+      { file: f.dmgPath, target: f.dmgTarget, packager: f.packager },
+      { run, env: scenario.env === 'signed' ? f.signedEnv : scenario.env, sleep: vi.fn(), log: vi.fn() }
+    )
+    if (scenario.expected === 'unsigned') {
+      await done
+    } else {
+      await expect(done, scenario.name).rejects.toThrow(scenario.expected)
+    }
+    expect(run.mock.calls.some(([command]) => command === 'codesign'), scenario.name).toBe(false)
+    expect(fs.readFileSync(f.dmgPath).equals(f.preStapleBytes), scenario.name).toBe(true)
+  }
+})
+
 test('non-DMG artifacts and non-darwin packagers are ignored', async () => {
   const f = await createBuilderFixture()
   const run = vi.fn()
@@ -371,6 +414,7 @@ test('non-DMG artifacts and non-darwin packagers are ignored', async () => {
 
 test('APPLE_NOTARY_PROFILE auth signs, notarizes, staples, and verifies DMG with --keychain-profile', async () => {
   const f = await createBuilderFixture()
+  await signAppWith(f)
   const calls = []
   const run = vi.fn(async (command, args) => {
     calls.push([command, ...args])
@@ -416,12 +460,13 @@ test('misconfigured signing or Gatekeeper/stapler validation failures fail loudl
   await expect(
     resolveDmgSigningIdentity(
       { codeSigningInfo: { value: Promise.resolve({ keychainFile: path.join(f.root, 'missing.keychain') }) } },
-      { run: noIdentityRun, env: {} }
+      { env: {} }
     )
-  ).rejects.toThrow(/no matching Developer ID Application identity/)
+  ).rejects.toThrow(/electron-builder did not sign the app/)
 
   for (const failAt of ['codesign-verify', 'stapler-validate-permanent', 'spctl']) {
     const f2 = await createBuilderFixture()
+    await signAppWith(f2)
     const sleep = vi.fn()
     const run = vi.fn(async (command, args) => {
       if (command === 'security') return { stdout: IDENTITY_LIST, stderr: '' }

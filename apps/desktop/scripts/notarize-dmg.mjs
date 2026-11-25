@@ -3,9 +3,8 @@ import { setTimeout } from 'node:timers/promises'
 
 import { getAppSigningResult } from './mac-sign.mjs'
 import { remainingNotaryBudgetMs, resolveNotaryAuth, runCommand, submitAndStaple, validateStapled } from './notarize.mjs'
-import { parseDeveloperId } from './sign-nested-chromium.mjs'
 
-export async function resolveDmgSigningIdentity(packager, { run = runCommand, env = process.env } = {}) {
+export async function resolveDmgSigningIdentity(packager, { env = process.env } = {}) {
   const platformOptions = packager?.platformOptions
   const signConfig = platformOptions?.sign
   if (
@@ -25,6 +24,7 @@ export async function resolveDmgSigningIdentity(packager, { run = runCommand, en
     return { identity: null, keychain: null }
   }
 
+  // Only the certificate electron-builder signed the app with may sign its DMG; never pick another one.
   const recorded = getAppSigningResult(packager)
   if (recorded) {
     return {
@@ -35,16 +35,12 @@ export async function resolveDmgSigningIdentity(packager, { run = runCommand, en
 
   const info = await packager?.codeSigningInfo?.value
   const keychain = info?.keychainFile || env.CSC_KEYCHAIN || null
-  const args = ['find-identity', '-v', '-p', 'codesigning']
-  if (keychain) args.push(keychain)
-  const { stdout } = await run('security', args)
-  const identity = parseDeveloperId(stdout, qualifier)
-  if (!identity && (keychain || qualifier)) {
+  if (keychain || qualifier) {
     throw new Error(
-      `notarize-dmg: no matching Developer ID Application identity in ${keychain || 'the default keychain'}`
+      `notarize-dmg: signing is configured (${keychain || qualifier}), but electron-builder did not sign the app`
     )
   }
-  return { identity, keychain }
+  return { identity: null, keychain: null }
 }
 
 async function refreshDmgBlockmap(dmgPath, event, buildBlockMap, log) {
@@ -87,7 +83,7 @@ export default async function notarizeDmg(
 
   const notaryAuth = resolveNotaryAuth(env)
   try {
-    const { identity, keychain } = await resolveDmgSigningIdentity(event.packager, { run, env })
+    const { identity, keychain } = await resolveDmgSigningIdentity(event.packager, { env })
     if (!identity) {
       if (notaryAuth) {
         throw new Error(`Cannot notarize DMG without a Developer ID Application signing identity: ${dmgPath}`)

@@ -1189,7 +1189,7 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read text files with line numbers and pagination. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files; chunks exceeding ~100K characters are truncated at line boundaries and return a next_offset for continuation. Auto-extracts: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF, OpenDocument, RTF, EPUB, SQLite. Do NOT use to read images or binary files — use vision_analyze instead. For terminal line extraction, prefer terminal.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1203,7 +1203,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Writes content to a file, completely replacing its contents. Creates parent directories automatically. Use instead of echo/cat heredoc in terminal. OVERWRITES entire file — use patch for targeted edits. For existing files, call read_file first; write_file refuses if no full read/write or the file changed on disk (refusal: read, merge, retry). Auto-runs syntax checks on .py/.json/.yaml/.toml; only NEW errors are surfaced. verified:true confirms on-disk hash — do NOT re-read to verify the write. Do NOT use for targeted edits or shell commands (use patch and terminal respectively).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1230,10 +1230,7 @@ PATCH_SCHEMA = {
     # from any model regardless (replay compat + strong models that know
     # V4A anyway): mode defaults to 'replace' when omitted.
     "description": (
-        "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
-        "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
-        "Returns a unified diff. Auto-runs syntax checks after editing. "
-        "Finds a unique string and replaces it."
+        "Targeted find-and-replace edits in files. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff and auto-runs syntax checks after editing. Finds a unique string and replaces it. Do NOT use for interactive shell-level text manipulation or complex regex transformations across multiple files without a patch file (use sed/awk instead)."
     ),
     "parameters": {
         "type": "object",

@@ -2090,14 +2090,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
     async def _stop_impl(self) -> None:
         """Run every ``_stop_*`` phase under the thread-based shutdown watchdog."""
         from gateway.run import GatewayRunner
-        # Thread-based watchdog (asyncio timeouts cannot recover a frozen loop): dumps stacks and
-        # os._exit past drain+grace so the service manager revives us. Skipped under pytest.
-        # Arm a plain OS thread at the start of stop(); if teardown never finishes within drain+grace it
-        # dumps faulthandler stacks and os._exit so KeepAlive/systemd can revive. Skip under pytest so
-        # stop()-driving unit tests don't get a delayed hard-exit in the worker. See #66892.
+        # A retry can inherit a pre-guard recovery timer. Retire it only after its replacement starts.
+        earlier = getattr(self, "_restart_failure_watchdog", None)
         _watchdog_done = threading.Event()
         self._shutdown_watchdog_done = _watchdog_done
-        # Shutdown-path doubles may lack the deferred-worker counter.
         ctx = GatewayShutdownMixin._StopContext(
             deferred_count=getattr(self, "_active_deferred_agent_worker_count", lambda: 0)
         )
@@ -2105,7 +2101,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             arm_shutdown_watchdog(
                 _effective_watchdog_leash(self), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
+                required=earlier is not None or (self._draining and self._restart_via_service),
             )
+            if earlier is not None:
+                earlier.set()
+                self._restart_failure_watchdog = None
         with disarm_after_teardown(_watchdog_done, getattr(self, "_shutdown_event", None), owner=self):
             await GatewayRunner._stop_begin_teardown(self, ctx)
             timeout = effective_stop_drain_timeout(self)

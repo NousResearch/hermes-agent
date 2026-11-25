@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket
+from fastapi import APIRouter, HTTPException, Request, WebSocket, status
 from fastapi.responses import JSONResponse, Response
 
 from hermes_cli import kanban_db, kanban_db_connect as kbc
@@ -30,6 +30,11 @@ _SIGNAL_AUTH_QUERY_KEYS = frozenset({"token", "ticket", "internal"})
 # fetchJSON/authedFetch/buildWsUrl append it to every /api/plugins/ URL). Known
 # here only so the allowlist accepts it; it never selects or shapes signal data.
 _SIGNAL_SCOPE_QUERY_KEYS = frozenset({"profile"})
+
+
+class SignalUnavailable(RuntimeError):
+    """The board exists but its signal state cannot be served: a legacy schema
+    without the persisted event generation, or a database not readable now."""
 
 
 def supports_signal_view() -> bool:
@@ -81,7 +86,54 @@ def _resolve_signal_board(raw: str | None) -> str:
         raise ValueError("board must be a canonical slug")
     if not kanban_db.board_exists(board):
         raise FileNotFoundError(f"board {board!r} does not exist")
+    # An archived board leaves a tombstone board.json at its slug; like the
+    # plugin's _resolve_board it is gone, never reopened or recreated (#43243).
+    if kanban_db.read_board_metadata(board).get("archived"):
+        raise FileNotFoundError(f"board {board!r} is archived")
+    if not kanban_db.kanban_db_path(board=board).is_file():
+        raise FileNotFoundError(f"board {board!r} has no database")
     return board
+
+
+def _open_signal_connection(board: str) -> sqlite3.Connection:
+    """Existing-only, query-only connection whose signal state is materialized.
+
+    Missing databases raise ``FileNotFoundError``; a schema an older binary
+    wrote (no ``kanban_metadata``) raises ``SignalUnavailable``. Neither path
+    creates, initializes, or migrates anything.
+    """
+    try:
+        conn = kbc._connect_existing_query_only(board=board)
+    except FileNotFoundError:
+        raise
+    except (RuntimeError, sqlite3.DatabaseError) as exc:
+        raise SignalUnavailable(f"board {board!r} signal state is unavailable") from exc
+    try:
+        present = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kanban_metadata'"
+        ).fetchone()
+        if present is None:
+            raise SignalUnavailable(
+                f"board {board!r} signal state is not materialized"
+            )
+        return conn
+    except BaseException:
+        conn.close()
+        raise
+
+
+def _signal_generation(conn: sqlite3.Connection) -> str:
+    try:
+        return kanban_db.event_generation(conn)
+    except RuntimeError as exc:
+        raise SignalUnavailable("event generation is not materialized") from exc
+
+
+def _signal_close_code(exc: BaseException) -> int:
+    """WebSocket close code for a signal stream that cannot continue."""
+    if isinstance(exc, FileNotFoundError):
+        return status.WS_1008_POLICY_VIOLATION
+    return status.WS_1011_INTERNAL_ERROR
 
 
 def _signal_int(value: Any) -> int | None:
@@ -123,7 +175,7 @@ def _signal_task(row: sqlite3.Row) -> dict:
 
 
 def _build_signal_read_model(board: str) -> dict:
-    conn = kbc._connect_existing_query_only(board=board)
+    conn = _open_signal_connection(board)
     try:
         # Keep generation, cursor, tasks, links, and runs on one WAL snapshot.
         # A concurrent GC must not rotate generation between SELECT statements.
@@ -159,7 +211,7 @@ def _build_signal_read_model(board: str) -> dict:
         cursor_row = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events"
         ).fetchone()
-        generation = kanban_db.event_generation(conn)
+        generation = _signal_generation(conn)
         cursor = int(cursor_row["cursor"])
         truncated = (
             len(task_rows) > _SIGNAL_TASK_LIMIT
@@ -211,10 +263,26 @@ def _signal_http_response(request: Request):
         )
         board = _resolve_signal_board(values["board"])
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404, detail=str(exc), headers=_no_store_headers()
+        ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    model = _build_signal_read_model(board)
+        raise HTTPException(
+            status_code=400, detail=str(exc), headers=_no_store_headers()
+        ) from exc
+    try:
+        model = _build_signal_read_model(board)
+    except FileNotFoundError as exc:
+        # The board was archived or removed after validation.
+        raise HTTPException(
+            status_code=404, detail=str(exc), headers=_no_store_headers()
+        ) from exc
+    except (SignalUnavailable, sqlite3.OperationalError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="kanban signal state is unavailable",
+            headers=_no_store_headers(),
+        ) from exc
     headers = _no_store_headers(
         generation=model["generation"], cursor=model["cursor"]
     )
@@ -287,7 +355,7 @@ def _signal_event_frame(
         # read transaction ends with every poll so the reused connection
         # never pins an old snapshot (or blocks checkpoints) between polls.
         conn.execute("BEGIN")
-        generation = kanban_db.event_generation(conn)
+        generation = _signal_generation(conn)
         bounds = conn.execute(
             "SELECT MIN(id) AS min_id, COALESCE(MAX(id), 0) AS max_id "
             "FROM task_events"
@@ -348,7 +416,7 @@ class _SignalEventReader:
         self, cursor: int, initial: bool, expected_generation: str | None
     ) -> dict:
         if self._conn is None:
-            self._conn = kbc._connect_existing_query_only(board=self._board)
+            self._conn = _open_signal_connection(self._board)
         return _signal_event_frame(
             self._conn,
             cursor,

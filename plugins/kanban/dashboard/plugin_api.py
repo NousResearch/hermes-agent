@@ -1833,9 +1833,11 @@ async def stream_events(ws: WebSocket):
         except (WebSocketDisconnect, asyncio.CancelledError):
             return
         except Exception as exc:
+            # 1008: the board is gone (archived/removed); 1011: its signal
+            # state is unavailable (legacy schema, unreadable database).
             log.warning("Kanban signal event stream error: %s", exc)
             try:
-                await ws.close()
+                await ws.close(code=signal_api._signal_close_code(exc))
             except Exception:
                 pass
         return

@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 import sys
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -834,5 +835,124 @@ def test_signal_ws_reuses_one_query_only_connection_per_socket(signal_client, mo
 
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        opened[0].in_transaction  # noqa: B018 - property raises once closed
+        opened[0].in_transaction  # the property raises once the connection is closed
     assert not has_live_connection(db_path)
+
+
+# ---------------------------------------------------------------------------
+# Unavailable boards: stable status/close codes, no file creation
+# ---------------------------------------------------------------------------
+
+_LEGACY_SCHEMA = (
+    "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, status TEXT, priority INTEGER,"
+    " assignee TEXT, created_at INTEGER, started_at INTEGER, completed_at INTEGER,"
+    " current_run_id INTEGER, block_kind TEXT);"
+    "CREATE TABLE task_links (parent_id TEXT, child_id TEXT);"
+    "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, profile TEXT, status TEXT,"
+    " started_at INTEGER, ended_at INTEGER, outcome TEXT);"
+    "CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,"
+    " run_id INTEGER, kind TEXT, payload TEXT, created_at INTEGER);"
+)
+
+
+def _snapshot_tree(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*")) if root.exists() else []
+
+
+def _ws_close_code(client, query: str) -> int:
+    """The close code of a signal socket, whether refused before or after accept."""
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/api/plugins/kanban/events{query}") as websocket:
+            websocket.receive_json()
+    return exc.value.code
+
+
+def _archived_board(slug: str) -> None:
+    kb.create_board(slug)
+    kb.remove_board(slug, archive=True)
+    assert kb.board_exists(slug)
+    assert kb.read_board_metadata(slug).get("archived")
+
+
+def _board_without_db(slug: str) -> None:
+    kb.write_board_metadata(slug, name=slug)
+    assert kb.board_exists(slug)
+    assert not kb.kanban_db_path(board=slug).exists()
+
+
+def _legacy_board(slug: str, *, metadata_table: bool = False) -> None:
+    kb.write_board_metadata(slug, name=slug)
+    path = kb.kanban_db_path(board=slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(path)
+    try:
+        legacy.executescript(_LEGACY_SCHEMA + (
+            "CREATE TABLE kanban_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            if metadata_table else ""
+        ))
+        legacy.commit()
+    finally:
+        legacy.close()
+
+
+@pytest.mark.parametrize("make,status_code,close_code", [
+    (_archived_board, 404, 1008),
+    (_board_without_db, 404, 1008),
+    (_legacy_board, 503, 1011),
+    (partial(_legacy_board, metadata_table=True), 503, 1011),
+], ids=["archived-tombstone", "db-missing", "legacy-no-metadata", "legacy-no-generation"])
+def test_signal_unavailable_board_answers_stably_without_creating_files(
+    signal_client, make, status_code, close_code,
+):
+    make("observed")
+    root = kb.kanban_home()
+    before = _snapshot_tree(root)
+
+    for method in ("GET", "HEAD"):
+        response = signal_client.request(method, "/api/plugins/kanban/read-model/signal?board=observed")
+        assert response.status_code == status_code, response.text
+        assert response.headers["cache-control"] == "private, no-store"
+    assert _ws_close_code(signal_client, "?view=signal&board=observed&since=0&token=test") == close_code
+
+    assert _snapshot_tree(root) == before
+
+
+def test_signal_default_board_without_database_is_404_and_not_created(signal_client):
+    db_path = kb.kanban_db_path(board="default")
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+    root = kb.kanban_home()
+    before = _snapshot_tree(root)
+
+    response = signal_client.get("/api/plugins/kanban/read-model/signal?board=default")
+    assert response.status_code == 404, response.text
+    assert _ws_close_code(signal_client, "?view=signal&board=default&since=0&token=test") == 1008
+
+    assert not db_path.exists()
+    assert _snapshot_tree(root) == before
+
+
+def test_signal_stream_failure_closes_1011_and_releases_connection(signal_client, monkeypatch):
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    module = sys.modules["hermes_dashboard_plugin_kanban_signal_test"]
+    monkeypatch.setattr(module, "_EVENT_POLL_SECONDS", 0.01)
+    opened = _counting_signal_opens(monkeypatch)
+    real_frame = module.signal_api._signal_event_frame
+    calls = []
+
+    def failing_after_initial(conn, cursor, **kwargs):
+        calls.append(cursor)
+        if len(calls) > 1:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return real_frame(conn, cursor, **kwargs)
+
+    monkeypatch.setattr(module.signal_api, "_signal_event_frame", failing_after_initial)
+    path = "/api/plugins/kanban/events?view=signal&board=default&since=0&token=test"
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with signal_client.websocket_connect(path) as websocket:
+            assert websocket.receive_json()["initial"] is True
+            websocket.receive_json()
+    assert exc.value.code == 1011
+    assert len(opened) == 1
+    assert not has_live_connection(kb.kanban_db_path(board="default"))

@@ -13,7 +13,7 @@ import shlex
 import time
 from typing import Any
 
-from tools.environments.command_context import command_context
+from tools.environments.command_context import command_context, exact_command
 from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 
 
@@ -70,9 +70,9 @@ class ProcessEnvScopeMixin:
             time.sleep(2)
             try:
                 # Read only the bytes written since the last poll, plus the process status.
-                raw = env.execute(  # absolute paths only: "/" survives the job deleting its cwd
-                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
-                    cwd="/", timeout=10).get("output", "")
+                poll = log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path))
+                with exact_command(poll):  # absolute paths only: "/" survives the job deleting its cwd
+                    raw = env.execute(poll, cwd="/", timeout=10).get("output", "")
                 reply = parse_log_delta_reply(raw)
                 delta = reply.delta if reply else ""
                 if reply:

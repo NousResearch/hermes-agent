@@ -1289,7 +1289,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
         with command_context("background_spawn", job_id=session.id, task_id=task_id or None,
                              session_key=session_key or None, inner_command=command,
-                             approval=approval):
+                             approval=approval, command=bg_command):
             result = env.execute(
                 bg_command, cwd=cwd or "", timeout=timeout,
                 rewrite_compound_background=False, allow_cwd_fallback=allow_cwd_fallback)
@@ -2197,9 +2197,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
+            kill_command = f"kill {session.pid} 2>/dev/null"
             with command_context("background_kill", job_id=session.id, task_id=session.task_id,
-                                 session_key=session.session_key):
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", cwd="/", timeout=5)
+                                 session_key=session.session_key, command=kill_command):
+                session.env_ref.execute(kill_command, cwd="/", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

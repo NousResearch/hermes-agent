@@ -216,6 +216,7 @@ not opted in, your own calls included):
 | `inner_command` | the command a background wrapper carries (the one the gate approved) |
 | `task_id`, `session_key` | the owning task and session, when known |
 | `approval` | `CommandApproval(command, kind)`, or `None` |
+| `command` | the exact text Hermes's own code sends in this block, for its job traffic (the background wrapper, each poll and status read, the kill) and `execute_code`'s removal of its own folder; `None` otherwise |
 
 `kind` is how the dangerous-command gate let the command through:
 
@@ -242,6 +243,12 @@ background spawn when `inner_command` matches it. Anything else is provenance
 only: an `execute_code` script is gated as a whole and stamped
 `execute_code:<kind>` (with `origin == "execute_code"` on the command that ships
 the script), which says nothing about the commands inside it.
+
+**Treat a command as Hermes's own only when** the context's `command` is
+exactly the `command` your `execute()` received. A backend that runs a job's
+poll or kill where the job started, or runs Hermes's cleanup without asking,
+should require this match too: anything else that runs inside the same block
+then gets no special treatment.
 
 You can read the context, not set it: only Hermes stamps one, so a plugin cannot
 forge an approval.

@@ -654,8 +654,9 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         if rpc_thread is not None:
             rpc_thread.join(timeout=5)
         try:
-            with command_context("execute_code_rpc", task_id=effective_task_id):
-                env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15)
+            cleanup = f"rm -rf {quoted_sandbox_dir}"
+            with command_context("execute_code_rpc", task_id=effective_task_id, command=cleanup):
+                env.execute(cleanup, cwd="/", timeout=15)
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,

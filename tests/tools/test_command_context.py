@@ -350,3 +350,61 @@ def test_a_plugin_can_read_the_context_but_not_set_it():
     assert "command_context" not in provider.__all__
     assert not hasattr(provider, "command_context")
 
+
+
+# ---- the exact command Hermes's own code sends (a backend's second check on Hermes-owned work) ----
+
+def _exact(env):
+    return [(c.command if c is not None else None) for c in env.contexts]
+
+
+def test_background_spawn_names_the_exact_wrapper_it_sends(monkeypatch):
+    env = RecordingEnv(output="4242\n")
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_track_started", lambda *a, **k: None)
+    registry.spawn_via_env(env, "python job.py", task_id="t1")
+    assert _exact(env) == env.commands
+
+
+def test_every_poll_and_status_read_names_its_own_exact_text():
+    """The poller's combined read, and the two separate reads it sends when a reply is unreadable, each carry
+    exactly the text sent: a command run inside the poller's block with other text would not match."""
+    replies = iter(["garbled", "1", "0"])
+    env = RecordingEnv(responder=lambda command: next(replies, "0 0 exit:0\n"))
+    registry = ProcessRegistry()
+    session = ProcessSession(id="proc_exact", command="sleep 5", task_id="t1",
+                             started_at=time.time(), output_buffer="")
+    session.exited = False
+    with patch("tools.process_registry_env_scope.time.sleep", return_value=None), \
+            patch.object(registry, "_move_to_finished"):
+        registry._env_poller_loop(session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit")
+    assert len(env.commands) >= 3                       # the combined read, then kill -0 and the exit-file read
+    assert _exact(env) == env.commands
+    assert env.origins() == ["background_poll"] * len(env.commands)
+    assert all(c.job_id == session.id for c in env.contexts)
+
+
+def test_a_stop_names_its_exact_kill():
+    registry = ProcessRegistry()
+    session = ProcessSession(id="proc_kill", command="sleep 5", task_id="t1",
+                             started_at=time.time(), output_buffer="")
+    killed = RecordingEnv()
+    session.env_ref, session.pid, session.pid_scope = killed, 4242, "sandbox"
+    registry._signal_kill(session, consume_output=False)
+    assert _exact(killed) == ["kill 4242 2>/dev/null"]
+
+
+def test_execute_code_cleanup_names_only_its_own_folder(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    env = RecordingEnv(output="OK")
+    _run_execute_code(env, "print('hi')", {"approved": True, "user_approved": True})
+    cleanups = [(cmd, ctx) for cmd, ctx in zip(env.commands, env.contexts) if cmd.startswith("rm -rf ")]
+    assert len(cleanups) == 1
+    command, ctx = cleanups[0]
+    assert ctx.origin == "execute_code_rpc" and ctx.command == command
+
+
+def test_a_command_without_a_fixed_text_names_none():
+    """A terminal call's text is the model's: the stamp names no Hermes-owned command for it."""
+    with command_context("terminal", approval=CommandApproval("ls", "user")):
+        assert current_command_context().command is None

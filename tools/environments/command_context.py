@@ -22,6 +22,12 @@ from inside execute_code's RPC replaces ``"execute_code"`` for the duration of i
 ``execute()`` and the reset on return puts it back, so no stamp leaks into a later poll or a
 nested call.
 
+Hermes's own commands: for its job and cleanup traffic (``background_spawn``, ``background_poll``,
+``background_kill``, execute_code's removal of its own script folder) the stamp's ``command`` is the exact
+text Hermes's code sends in that block. A backend that treats such a command specially (runs it where the
+job started, or without asking) should also require ``command`` to equal what ``execute()`` received, so
+anything else that runs inside the block is judged as an ordinary command.
+
 Reading an approval: trust ``approval`` only when ``origin == "terminal"`` and ``approval.command``
 is exactly the ``command`` argument ``execute()`` received (the gate saw that string before
 ``execute()`` rewrote anything), or for ``origin == "background_spawn"`` when ``inner_command``
@@ -33,7 +39,7 @@ from __future__ import annotations
 
 import contextvars
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterator, Optional
 
 
@@ -73,6 +79,10 @@ class CommandContext:
     Nothing judged it for ``"bypass"`` (yolo or ``approvals.mode: off``), ``"unattended"`` (no
     reviewer present under an approve policy), ``"forced"`` (the caller's ``force`` skipped the gate)
     and ``"gate_skipped"`` (the gate did not run, e.g. an isolated backend). ``"execute_code:<kind>"`` is a whole-script gate with one of those kinds.
+
+    ``command`` is the exact text Hermes's own code sends in this block when it sends one fixed command
+    (a background wrapper, poll, status read or kill; execute_code's removal of its own folder), else
+    ``None`` (a model's command, or traffic Hermes does not pin).
     """
 
     origin: str
@@ -81,6 +91,7 @@ class CommandContext:
     task_id: Optional[str] = None
     session_key: Optional[str] = None
     approval: Optional[CommandApproval] = None
+    command: Optional[str] = None
 
 
 _COMMAND_CONTEXT: contextvars.ContextVar[Optional[CommandContext]] = contextvars.ContextVar(
@@ -91,6 +102,20 @@ _COMMAND_CONTEXT: contextvars.ContextVar[Optional[CommandContext]] = contextvars
 def current_command_context() -> Optional[CommandContext]:
     """The context of the command in flight, or ``None`` when the caller is unknown."""
     return _COMMAND_CONTEXT.get()
+
+
+@contextmanager
+def exact_command(command: str) -> Iterator[Optional[CommandContext]]:
+    """The context in flight, naming *command* as the exact text sent in this block (unchanged when none)."""
+    current = _COMMAND_CONTEXT.get()
+    if current is None:
+        yield None
+        return
+    token = _COMMAND_CONTEXT.set(replace(current, command=command))
+    try:
+        yield _COMMAND_CONTEXT.get()
+    finally:
+        _COMMAND_CONTEXT.reset(token)
 
 
 @contextmanager

@@ -673,7 +673,7 @@ def _fixed_temperature_for_model(
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
-    from agent.gemini_native_adapter import gemini_sampling_deprecated
+    from agent.gemini_model_family import gemini_sampling_deprecated
     if _is_openai_default_temperature_only(model) or gemini_sampling_deprecated(_bare_model(model)):
         logger.debug("Omitting temperature for %r (default-only, or Gemini 3.6+ ignores sampling)", model)
         return OMIT_TEMPERATURE
@@ -6356,11 +6356,8 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
         return True
     if not effective_base:
         return False
-    try:
-        from agent.gemini_native_adapter import is_native_gemini_base_url
-        return is_native_gemini_base_url(effective_base)
-    except Exception:
-        return False
+    from agent.gemini_urls import is_native_gemini_base_url
+    return is_native_gemini_base_url(effective_base)
 
 
 def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:

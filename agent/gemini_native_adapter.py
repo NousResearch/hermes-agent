@@ -19,6 +19,24 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
+from agent.gemini_model_family import (
+    GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+    effective_gemini_max_output_tokens as _effective_gemini_max_output_tokens,
+    gemini_requires_tool_call_ids,
+    gemini_sampling_deprecated,
+    gemini_uses_thinking_level,
+    gemini_version as _gemini_version,
+    normalize_gemini_thinking_config as _normalize_thinking_config,
+    thinking_requests_output_headroom as _thinking_requests_output_headroom,
+)
+from agent.gemini_urls import (
+    DEFAULT_GEMINI_BASE_URL,
+    VERTEX_EXPRESS_BASE_URL,
+    gemini_accepts_parameters_json_schema,
+    is_native_gemini_base_url,
+    is_vertex_express_base_url,
+    normalize_gemini_base_url,
+)
 from agent.bounded_response import read_streaming_error_body
 from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
 from agent.retry_utils import parse_retry_after_seconds
@@ -32,18 +50,6 @@ from hermes_cli.version_info import hermes_user_agent
 
 def _api_client() -> str:
     return hermes_user_agent("hermes-agent")  # client context per Gemini's partner-integration guidance
-
-DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-# A Vertex AI express-mode base, when the user configures one explicitly: aiplatform serves the
-# same native API under ``{version}/publishers/google/models/…``; the base carries that prefix so
-# every ``{base}/models/{model}:…`` builder (chat, tier probe, TTS) needs no path branching.
-# The key itself never decides routing — Google now issues ``AQ.…`` keys for BOTH Google AI Studio
-# and Vertex express mode (#115306), so an express key reaches aiplatform only via this base config.
-VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1/publishers/google"
-
-# Published max output-token ceiling shared by every current Gemini text model; used
-# for max_tokens=None because the native API's low internal default truncates output.
-GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
 
 _FREE_TIER_GUIDANCE = (
     "\n\nYour Google API key is on the free tier (a few hundred requests/day for Gemini Flash models). "
@@ -95,96 +101,6 @@ _MISSING_KEY_ERROR = (
     "environment / ~/.hermes/.env (get one at https://aistudio.google.com/app/apikey), or run `hermes setup` to "
     "configure the Google provider."
 )
-
-
-def gemini_requires_tool_call_ids(model: str) -> bool:
-    """Gemini 3+ needs explicit functionCall/functionResponse ids so replayed parallel tool calls
-    pair with their responses; 2.x rejects the field.
-
-    Gemini 3+ models require explicit tool call IDs in replayed history — without them, multi-tool turns can
-    be rejected or mismatched. Older Gemini models (2.x) reject unexpected ``id`` fields, so this is gated
-    on the major version. Mirrors earendil-works/pi#7494 (their fix for the same class of bug in the
-    google-shared converter).
-    """
-    return _gemini_version(model) >= (3, 0)
-
-
-def _gemini_version(model: str) -> tuple[int, int]:
-    """(major, minor) of a Gemini model id: ``gemini-4-argon`` -> (4, 0), ``google/gemini-3.8-flash`` ->
-    (3, 8); (0, 0) for non-Gemini and unversioned ids (``gemini-flash-latest``, ``gemini-exp-1206``)."""
-    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", bare_gemini_model_id(model).lower())
-    return (int(match.group(1)), int(match.group(2) or 0)) if match else (0, 0)
-
-
-def gemini_uses_thinking_level(model: str) -> bool:
-    """Gemini 3 and every later generation steer thinking with the ``thinkingLevel`` enum (``thinkingBudget``
-    is deprecated there), as do the ``gemini-*-latest`` aliases, which Google hot-swaps to the newest
-    release of each variant. A version-number gate, not a ``gemini-3`` prefix, so a new generation
-    (``gemini-4-argon``) isn't silently treated as legacy."""
-    bare = bare_gemini_model_id(model).lower()
-    return (bare.startswith("gemini-") and bare.endswith("-latest")) or _gemini_version(bare) >= (3, 0)
-
-
-def gemini_sampling_deprecated(model: str) -> bool:
-    """Gemini 3.6+ (Gemini 4 Argon included) ignores ``temperature``/``top_p``/``top_k`` and Google
-    slated them for removal; older families (2.x, 3.0-3.5) keep them."""
-    return _gemini_version(model) >= (3, 6)
-
-
-_API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
-
-
-def is_vertex_express_base_url(base_url: str) -> bool:
-    """An aiplatform host speaking the native API with an API key: the bare express surface, or its
-    ``…/projects/{p}/locations/{l}`` form, which reaches models served only in ``global`` (Gemini 4).
-    The OAuth Vertex provider's ``…/endpoints/openapi`` base is OpenAI-compatible and must stay off
-    the native adapter."""
-    normalized = str(base_url or "").strip().lower()
-    return "aiplatform.googleapis.com" in normalized and "/endpoints/" not in normalized
-
-
-def normalize_gemini_base_url(base_url: Optional[str]) -> str:
-    """Gemini native base URL with the API version segment guaranteed. Google's own client treats the
-    base as a host root and appends the version itself, so users configure ``GEMINI_BASE_URL`` (or a
-    proxy root like ``http://localhost:4000/gemini``) that way; our request builders expect
-    ``{base}/models/{model}:generateContent`` — without ``/v1beta`` that is a guaranteed 404. Trailing
-    slashes and an ``/openai`` suffix are stripped; an existing version segment (``v1``, ``v1beta``,
-    ``v1alpha``, ...) is kept; empty input returns ``DEFAULT_GEMINI_BASE_URL``. Only the LAST path
-    segment is inspected, so ``.../v1beta/extra`` still gets ``/v1beta`` appended; this does not
-    decide routing (see ``is_native_gemini_base_url``).
-
-    A Vertex express base (``aiplatform.googleapis.com``, ``…/v1beta1`` or the full
-    ``…/v1beta1/publishers/google``) is completed to the ``publishers/google`` form. The key never
-    decides routing: Google issues ``AQ.…`` keys for both AI Studio and Vertex express mode
-    (#115306), so an express key reaches aiplatform only through this explicit base configuration."""
-    trimmed = str(base_url or "").strip().rstrip("/")
-    trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
-    if not trimmed:
-        trimmed = DEFAULT_GEMINI_BASE_URL
-    if is_vertex_express_base_url(trimmed):
-        if trimmed.lower().endswith("/publishers/google"):
-            return trimmed
-        if "/projects/" not in trimmed.lower() and not _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
-            trimmed = f"{trimmed}/v1beta1"
-        return f"{trimmed}/publishers/google"
-    if _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
-        return trimmed
-    return f"{trimmed}/v1beta"
-
-
-def is_native_gemini_base_url(base_url: str) -> bool:
-    """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
-    normalized = str(base_url or "").strip().rstrip("/").lower()
-    if normalized.endswith("/openai"):
-        return False
-    return "generativelanguage.googleapis.com" in normalized or is_vertex_express_base_url(normalized)
-
-
-def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
-    """``FunctionDeclaration.parametersJsonSchema`` exists only in the ``v1beta`` surface of
-    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
-    unknown proxies get the legacy ``parameters`` subset."""
-    return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
 
 
 def probe_gemini_tier(
@@ -481,51 +397,6 @@ def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[dict[str, Any
         return {"functionCallingConfig": {"mode": _TOOL_CHOICE_MODES[tool_choice]}}
     name = (tool_choice.get("function") or {}).get("name") if isinstance(tool_choice, dict) else None
     return {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": [name]}} if isinstance(name, str) and name else None
-
-
-# (camelCase key, snake_case alias, accepted types, normalizer)
-_THINKING_KEYS = (
-    ("thinkingBudget", "thinking_budget", (int, float), int),
-    ("includeThoughts", "include_thoughts", bool, lambda v: v),
-    ("thinkingLevel", "thinking_level", str, lambda v: v.strip().lower()),
-)
-
-
-def _normalize_thinking_config(config: Any) -> Optional[dict[str, Any]]:
-    if not isinstance(config, dict):
-        return None
-    values = {key: config.get(key, config.get(alias)) for key, alias, _, _ in _THINKING_KEYS}
-    normalized = {key: norm(values[key]) for key, _, types, norm in _THINKING_KEYS
-                  if isinstance(values[key], types) and (values[key].strip() if isinstance(values[key], str) else True)}
-    return normalized or None
-
-
-def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
-    """True when Gemini will spend output tokens on thinking: thought tokens bill against ``maxOutputTokens``,
-    so a global 4096/16384 cap can be consumed entirely by high thinking (``finishReason=MAX_TOKENS``, no answer)."""
-    normalized = _normalize_thinking_config(thinking_config) or {}
-    if normalized.get("includeThoughts") is False:
-        # Hidden thoughts = reasoning disabled/minimised: never ask for headroom, or a small
-        # caller budget (title generation's 64 tokens) balloons to the model ceiling. Gemini 3
-        # still carries a "low" thinkingLevel here (no off-switch), which must not re-enable the
-        # bump. (#91927)
-        return False
-    budget = normalized.get("thinkingBudget")
-    has_level = "thinkingLevel" in normalized
-    return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
-
-
-def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any) -> int:
-    """Native ``maxOutputTokens``: an omitted/invalid cap becomes the published ceiling (Gemini
-    truncates on its low internal default); an explicit cap is raised to the ceiling when
-    thinking is enabled so thoughts don't starve the answer."""
-    try:
-        requested = int(max_tokens)
-    except (TypeError, ValueError):
-        requested = 0
-    if requested <= 0 or _thinking_requests_output_headroom(thinking_config):
-        return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
-    return requested
 
 
 def _long_decode_cap(max_tokens: Optional[int], extra_body: dict[str, Any]) -> Optional[int]:

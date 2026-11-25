@@ -482,7 +482,8 @@ class Projection:
         # them, but only overlapping skill paths exclude each other.
         with FileLease(self.directory / "mutation.lock", shared=True, deadline=deadline, root=self.home):
             if self._absent():
-                with writer_hold(self.home, targets, deadline=deadline, root_exclusive=not targets):
+                with writer_hold(self.home, targets, deadline=deadline, root_exclusive=not targets,
+                                 validate_redirects=False):
                     yield
                 return
         with self.transaction(deadline=deadline) as doc:

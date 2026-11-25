@@ -191,6 +191,34 @@ def test_stock_unrelated_edits_do_not_share_exclusive_admission(home):
     assert (b / 'SKILL.md').read_text() == 'independent'
 
 
+@pytest.mark.platforms('posix')
+@pytest.mark.parametrize('action', ['edit', 'write_file', 'remove_file', 'delete'])
+@pytest.mark.parametrize('shape', ['home-link', 'var-prefix'])
+def test_stock_mutators_preserve_symlinked_home_and_unrelated_admission(tmp_path, monkeypatch, action, shape):
+    from hermes_cli.skill_catalog import admission
+    real = tmp_path / 'private/var/home'
+    real.mkdir(parents=True)
+    if shape == 'home-link':
+        home = tmp_path / 'home'
+        home.symlink_to(real, target_is_directory=True)
+    else:
+        (tmp_path / 'var').symlink_to(tmp_path / 'private/var', target_is_directory=True)
+        home = tmp_path / 'var/home'
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    target = skill(home, 'cat/mine')
+    unrelated = skill(home, 'other', 'other')
+    with admission.generic(unrelated, unrelated / 'SKILL.md'):
+        assert MUTATORS[action](home) is True
+    if action == 'delete':
+        assert not target.exists()
+    elif action == 'remove_file':
+        assert not (target / 'references/note.md').exists()
+    elif action == 'write_file':
+        assert (target / 'references/new.md').read_text() == 'new'
+    else:
+        assert 'changed' in (target / 'SKILL.md').read_text()
+
+
 def test_stock_no_provider_mutators_succeed_inside_gate(home, monkeypatch):
     import shutil
     import tools.skill_manager_tool as manager

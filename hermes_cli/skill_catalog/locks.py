@@ -105,6 +105,9 @@ def _posix_open(path, root=None):
 
 def _open_file(path, root=None):
     path = path.absolute()
+    if root is not None:
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(root)
     fd = _windows_open(path, root) if os.name == "nt" else _posix_open(path, root)
     try:
         info = os.fstat(fd)
@@ -170,11 +173,11 @@ class FileLease:
         self.close()
 
 
-def _target_modes(home, targets):
+def _target_modes(home, targets, *, validate_redirects=True):
     modes = {}
     try:
         root = home / "skills"
-        if root.exists() and _redirect(root) or root.is_symlink():
+        if validate_redirects and (root.exists() and _redirect(root) or root.is_symlink()):
             raise ValueError("Redirected skills root")
         for target in targets:
             _path(target)
@@ -184,7 +187,7 @@ def _target_modes(home, targets):
                 if part.startswith("."):
                     raise ValueError("Reserved target")
                 current /= part
-                if current.is_symlink() or current.exists() and _redirect(current):
+                if validate_redirects and (current.is_symlink() or current.exists() and _redirect(current)):
                     raise ValueError("Redirected target")
                 key = "/".join(parts[:depth])
                 modes[key] = modes.get(key, False) or depth == len(parts)
@@ -194,10 +197,15 @@ def _target_modes(home, targets):
 
 
 @contextmanager
-def writer_hold(home: Path, targets: Iterable[str] = (), *, deadline=None, root_exclusive=False):
-    """Acquire root, then coalesced ancestors/endpoints in depth/exact-UTF8 order."""
+def writer_hold(home: Path, targets: Iterable[str] = (), *, deadline=None, root_exclusive=False,
+                validate_redirects=True):
+    """Acquire root, then coalesced ancestors/endpoints in depth/exact-UTF8 order.
+
+    Empty-provider stock admission uses lexical keys and leaves path policy to
+    the stock mutator. Provider writers always reject redirected skill paths.
+    """
     home = Path(home).resolve()
-    modes = _target_modes(home, targets)
+    modes = _target_modes(home, targets, validate_redirects=validate_redirects)
     deadline = time.monotonic() + 3 if deadline is None else deadline
     directory = home / "cache/skill-catalog/live-v1"
     with ExitStack() as stack:

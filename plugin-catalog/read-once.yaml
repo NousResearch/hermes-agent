@@ -1,0 +1,39 @@
+name: read-once
+title: Read Once
+repo: https://github.com/batmnnn/read-once
+sha: e75af1680ab2ebe12b539fdcbe9f6f2431f6270d
+version: "0.2.0"
+description: >-
+  On a repeated identical local read_file, tells the model to answer from
+  the earlier result when READ_ONCE_HITS=1, the file bytes are unchanged,
+  and that exact result is still in the latest model request. Observe-only
+  otherwise. /read-once stats shows hits. Disclosure —
+  reads and SHA-256-hashes regular files under READ_ONCE_ROOT (1 MiB max),
+  inspects the model request in memory for that result digest, and keeps
+  ephemeral metadata only. No network, no telemetry, no disk cache, and no
+  background watcher. It does not hash dotenv names, auth.json, or paths
+  under vault, mcp-tokens, browser-profile, webapp, or pairing. Hits stay
+  off unless READ_ONCE_HITS=1. A repeat of the same read can be Hermes's
+  unchanged-stub rather than the file bytes.
+maintainer: batmnnn
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+known_issues:
+  - "Tested on Hermes 0.23.0 only."
+  - "A terminal backend cached inside Hermes and not visible as TERMINAL_ENV or the hermes_terminal_scope context var can still be treated as local."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - post_compaction
+    - on_session_end
+    - on_session_reset
+    - on_session_finalize
+    - on_session_delete
+  provides_middleware:
+    - tool_execution
+    - llm_execution
+  requires_env: []

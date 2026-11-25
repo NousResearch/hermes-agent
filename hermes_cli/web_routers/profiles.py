@@ -31,13 +31,16 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
+from hermes_cli.isolated_scope import scope_to_launch_profile
 from hermes_cli.profiles import ProfileIdentitySettlementPending
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name,
 )
-from hermes_cli.web_server_sessions import _open_session_db_at_path
-from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_cli.web_server_sessions import _open_session_db_at_path, _session_rows
+from persistence import StorageState
+from persistence.conversation.sessions import SessionCountQuery
+from persistence_assembly import profile_scope, storage_health, store_location
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
@@ -91,6 +94,8 @@ def _profile_to_dict(info) -> dict[str, Any]:
         "description_auto": bool(attr("description_auto", False)),
         "display_name": attr("display_name", "") or "",
         "bot_title": attr("bot_title", "") or "",
+        # The Desktop's roster of a SECONDARY connection takes Bot Mode sections from here.
+        "ui_meta": attr("ui_meta", {}) or {},
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
@@ -161,7 +166,7 @@ def _profile_targets(log_label: str) -> list[tuple[str, Path]]:
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
-    return targets
+    return scope_to_launch_profile(targets, lambda target: target[0])
 
 
 def _scoped_profile_targets(log_label: str, profile: Optional[str]) -> list[tuple[str, Path]]:
@@ -202,38 +207,39 @@ def _recency(s: dict[str, Any]) -> Any:
 
 def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
                      fn: Callable[[Any], Any]) -> Any:
-    """``fn(db)`` against the profile's read-only state.db; None when the file is missing,
-    the open fails or ``fn`` raises (warned once, recorded in ``errors`` when given).
+    """``fn(store)`` against a storage interface reader on the profile's state.db; None when the file is
+    missing, the open fails or ``fn`` raises (warned once, recorded in ``errors`` when given).
 
     Read-only on the healthy path: this runs on every sidebar refresh, so it must not
     routinely DDL/write-lock another profile's live DB. A store that predates a schema addition
     gets the missing declared tables/columns ONCE from the open helper, and only while no gateway
     owns it; an owned store is reported in ``errors`` with the restart remedy (#140315)."""
-    db_path = Path(home) / "state.db"
+    db_path = _profile_state_db(home)
+    if db_path is None:
+        _no_store_file(name, errors)
+        return None
     if not db_path.exists():
         return None
-    db = None
+    store = None
     try:
-        db = _open_session_db_at_path(db_path, read_only=True)
-        return fn(db)
+        store = _open_session_db_at_path(db_path, read_only=True)
+        return fn(store)
     except Exception as exc:
-        # An open that dies on a damaged file never reaches SessionDB's read helpers.
-        note_storage_error(db_path, exc)
         _warn_profile_read_error(name, exc)
         if errors is not None:
             errors.append({"profile": name, "error": str(exc)})
         return None
     finally:
-        if db is not None:
-            db.close()
+        if store is not None:
+            store.close()
 
 
 def _corrupt_profile_stores(targets) -> dict[str, str]:
     """``{profile: "corrupt"}`` for every scanned profile whose state.db this process has latched
-    as structurally corrupt (``hermes_state_health``). Lets Desktop tell an empty or partial list
+    as structurally corrupt (the store's health latch). Lets Desktop tell an empty or partial list
     from a damaged store, including when some reads still succeed (#72046)."""
-    return {name: STORAGE_CORRUPT for name, home in targets
-            if storage_state(Path(home) / "state.db") == STORAGE_CORRUPT}
+    return {name: StorageState.CORRUPT.value for name, home in targets
+            if storage_health(profile_scope(home=Path(home))).storage_state() is StorageState.CORRUPT}
 
 
 # Sidebar scan cache TTL: short enough that the UI never shows meaningfully stale data, long
@@ -288,8 +294,14 @@ def _sidebar_profile_cache_clear():
         _SIDEBAR_PROFILE_CACHE.clear()
 
 
-def _profile_state_db(home) -> Path:
-    return Path(home) / "state.db"
+def _profile_state_db(home) -> Optional[Path]:
+    return store_location(profile_scope(home=Path(home)))
+
+
+def _no_store_file(name: str, errors: Optional[list[dict[str, str]]]) -> None:
+    if errors is not None:
+        errors.append({"profile": name, "error": "the sidebar reads a profile's session store file, and this "
+                                                 "profile's store has no file"})
 
 
 def _slice_has_rows(slices: dict[str, Any]) -> bool:
@@ -420,16 +432,20 @@ def get_profiles_sessions(
     errors: list[dict[str, str]] = []
     now = time.time()
     for name, home in targets:
-        def _read(db, name=name, home=home):
+        def _read(store, name=name, home=home):
             include_subagents, exclude = subagent_listing_scope(
                 home, source=filters["source"], sources=filters["sources"],
                 exclude_sources=filters["exclude_sources"])
             scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
-            rows = db.list_sessions_rich(
-                limit=per_profile, offset=0, order_by_last_active=order == "recent",
+            rows = _session_rows(
+                store, limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
                 compact_rows=not full, include_pinned=True, **scoped)
-            totals[name] = db.session_count(exclude_children=True, **scoped)
+            sources_in = [filters["source"]] if filters["source"] else (filters["sources"] or [])
+            totals[name] = store.sessions.count_sessions(SessionCountQuery(
+                sources=tuple(sources_in) or None, exclude_sources=tuple(exclude or ()),
+                min_message_count=filters["min_message_count"], include_archived=filters["include_archived"],
+                archived_only=filters["archived_only"], exclude_children=True, include_subagents=include_subagents))
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
 
@@ -482,23 +498,25 @@ def get_profiles_sessions_sidebar(
     errors: list[dict[str, str]] = []
     now = time.time()
 
-    def _slice(db, key, recents_subagents=(False, None)):
+    def _slice(store, key, recents_subagents=(False, None)):
         source, exclude = slice_scope[key]
         # Only recents takes subagent runs (sessions.show_subagents); cron/messaging keep shape.
         include_subagents, exclude = recents_subagents if key == "recents" else (False, exclude)
         # include_pinned: a pinned conversation must reach the sidebar even when it has aged
         # past the window, or its Pinned row renders empty.
-        return db.list_sessions_rich(
-            source=source, exclude_sources=exclude or None, limit=cap[key], offset=0,
+        return _session_rows(
+            store, source=source, exclude_sources=exclude or None, limit=cap[key], offset=0,
             min_message_count=1, include_archived=False, archived_only=False,
             order_by_last_active=True, compact_rows=True, include_pinned=True,
             include_subagents=include_subagents)
 
-    def _build_slices(db, cache_key, recents_subagents):
+    def _build_slices(store, cache_key, recents_subagents):
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
         # page, and a total that shrank when you scrolled would be worse than no total at all.
-        slices = {"recents": _slice(db, "recents", recents_subagents), "usage": db.usage_totals(),
-                  "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
+        recents = _slice(store, "recents", recents_subagents)
+        usage = store.usage.usage_totals()
+        slices = {"recents": recents, "usage": {"tokens": usage.tokens, "cost_usd": usage.cost_usd},
+                  "cron": _slice(store, "cron"), "messaging": _slice(store, "messaging")}
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
@@ -509,6 +527,9 @@ def get_profiles_sessions_sidebar(
             continue
         scanned.append((name, home))
         db_path = _profile_state_db(home)
+        if db_path is None:
+            _no_store_file(name, errors)
+            continue
         if not db_path.exists():
             continue
         recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
@@ -519,7 +540,7 @@ def get_profiles_sessions_sidebar(
         if slices is None:
             slices = _read_profile_db(
                 name, home, errors,
-                lambda db: _build_slices(db, profile_cache_key, recents_subagents))
+                lambda store: _build_slices(store, profile_cache_key, recents_subagents))
             if slices is None:
                 continue
         if _slice_has_rows(slices):
@@ -666,11 +687,11 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     errors: list[dict[str, str]] = []
 
     for name, home in _scoped_profile_targets("GET /api/profiles/projects/tree", profile):
-        def _read(db, name=name, home=home):
+        def _read(store, name=name, home=home):
             with _hermes_home_scope(home):
                 tree, _active_id = gateway_server._build_project_tree(
-                    db, preview_limit=preview_limit, hydrate=False,
-                    session_limit=session_limit, include_discovered=False)
+                    None, preview_limit=preview_limit, hydrate=False, session_limit=session_limit,
+                    include_discovered=False, persistence=store)
                 _merge_profile_tree(merged, tree["projects"], name, preview_limit)
                 scoped_session_ids.extend(tree["scoped_session_ids"])
         _read_profile_db(name, home, errors, _read)
@@ -710,12 +731,12 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody, profile: Optio
 
     found: dict[str, dict[str, Any]] = {}
 
-    def _read(db):
-        for pr in db.find_pr_url_messages(wanted):
-            parsed = _pr_url_from_tool_output(pr["content"])
+    def _read(store):
+        for pr in store.messages.find_pr_url_hits(wanted):
+            parsed = _pr_url_from_tool_output(pr.content)
             if parsed:
                 # Oldest-first, so a later `gh pr create` (the replacement PR) wins.
-                found[pr["session_id"]] = {"number": parsed[0], "url": parsed[1]}
+                found[pr.session_id] = {"number": parsed[0], "url": parsed[1]}
 
     for name, home in _scoped_profile_targets("POST /api/profiles/sessions/pull-requests", profile):
         _read_profile_db(name, home, None, _read)
@@ -729,11 +750,11 @@ def _read_profiles():
     from hermes_cli import profiles as profiles_mod
     try:
         # Polled by the Desktop on every focus/roster tick: never walk skill trees in-request.
-        profiles = profiles_mod.list_profiles(lazy_skill_count=True)
-        return {"profiles": [_profile_to_dict(p) for p in profiles]}
+        profiles = [_profile_to_dict(p) for p in profiles_mod.list_profiles(lazy_skill_count=True)]
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        profiles = _fallback_profile_dicts(profiles_mod)
+    return {"profiles": scope_to_launch_profile(profiles, lambda row: row.get("name"))}
 
 
 @router.get("/api/profiles")
@@ -753,7 +774,7 @@ async def create_profile_endpoint(body: ProfileCreate):
     else:
         clone_from = "default" if body.clone_from_default else None
         clone_config = body.clone_from_default
-    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    from hermes_cli.profile_provision import CREATE_REFUSALS, ProfileCreateRequest, provision_profile
     provider = (body.provider or "").strip()
     model = (body.model or "").strip()
     request = ProfileCreateRequest(
@@ -764,7 +785,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         mcp_servers=tuple(body.mcp_servers), keep_skills=tuple(body.keep_skills),
         mirror_credentials=body.mirror_credentials, share_auth=body.share_auth)
     with _profile_errors("POST /api/profiles failed", not_found=(),
-                         bad_request=(ValueError, FileExistsError, FileNotFoundError)):
+                         bad_request=CREATE_REFUSALS):
         # Off the loop: creation asks a live multiplexer to serve the profile now over its control
         # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
         result = await asyncio.to_thread(provision_profile, request)
@@ -774,7 +795,7 @@ async def create_profile_endpoint(body: ProfileCreate):
     # skills_hub.SKILLS_DIR at import). PIDs go back for the UI to poll.
     def _spawn_install(ident: str):
         return _spawn_hermes_action(["-p", body.name, "skills", "install", ident, "--yes"],
-                                    _hub_action_name("install", ident)).pid
+                                    _hub_action_name("install", ident, body.name)).pid
 
     hub_installs: list[dict[str, Any]] = [
         {"identifier": ident, "pid": _best_effort(
@@ -963,8 +984,9 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
     model = (body.model or "").strip()
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model are required")
+    from hermes_cli.model_assignment import ModelAssignmentRejected
     with _profile_errors("PUT /api/profiles/%s/model failed", name,
-                         not_found=(), bad_request=()):
+                         not_found=(), bad_request=(ModelAssignmentRejected,)):
         await run_in_threadpool(_write_profile_model, profile_dir, provider, model)
     return {"ok": True, "provider": provider, "model": model}
 

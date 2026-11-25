@@ -148,6 +148,28 @@ def build_gateway_parser(
                                 help="Start deadline in seconds for --start/--recover (default: 60)")
     gateway_attach.set_defaults(func=cmd_gateway_attach)
 
+    from hermes_cli.gateway_runtime_tickets import cmd_gateway_tickets
+    gateway_tickets = gateway_subparsers.add_parser(
+        "tickets",
+        help="Mint single-use HTTP and WebSocket tickets for a client that reaches the gateway over SSH",
+        description="For a client that forwards the gateway's loopback port (for example over SSH) and "
+                    "calls its HTTP API. --probe prints what this host can mint and touches no gateway. "
+                    "--serve prints a hello line with the running gateway's endpoint, then answers each "
+                    'stdin line {"id": ..., "purpose": "native-http"} with one stdout line holding a '
+                    'single-use ticket, until stdin closes. A line may add "profile": "<name>" for '
+                    'another profile the same gateway serves. Purpose "interactive" is the WebSocket\'s '
+                    "ticket for every profile that gateway serves. It never starts a gateway: use "
+                    "`hermes gateway attach --start` for that. Tickets are credentials: they are printed "
+                    "for the calling process only and never logged.",
+        epilog="Exit codes: 0 probe printed, or --serve ended at stdin EOF; 2 invalid invocation; "
+               "otherwise (--serve with no gateway to use) the exit code `hermes gateway ensure` "
+               "gives the same verdict.")
+    _flag(gateway_tickets, "--json", help="Emit JSON lines (default)")
+    tickets_mode = gateway_tickets.add_mutually_exclusive_group(required=True)
+    _flag(tickets_mode, "--probe", help="Print the protocol version and the ticket purposes; start nothing")
+    _flag(tickets_mode, "--serve", help="Answer ticket requests on stdin until it closes")
+    gateway_tickets.set_defaults(func=cmd_gateway_tickets)
+
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")
     _add_system_flag(gateway_start)
@@ -231,6 +253,33 @@ def build_gateway_parser(
     _flag(gateway_migrate, "--multiplex", dest="multiplex", help="Converge onto the one host gateway (default)")
     _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
     _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
+    _flag(gateway_migrate, "--backends", dest="backends",
+        help="Report serve/dashboard background services and their ownership; "
+        "changes no service (normal Hermes startup bookkeeping still runs)")
+    _flag(gateway_migrate, "--json", dest="json",
+        help="With --backends: machine-readable output (the report, the plan, a run's result, --status)")
+    _flag(gateway_migrate, "--apply", dest="apply",
+        help="With --backends: move this home from the old dashboard/serve backend to the gateway's Webapp "
+        "on the same address (with --dry-run: print the plan and blockers only)")
+    _flag(gateway_migrate, "--restore", dest="restore",
+        help="With --backends: undo a finished backend migration from its manifest")
+    _flag(gateway_migrate, "--status", dest="status",
+        help="With --backends: state of the last or ongoing backend migration")
+    gateway_migrate.add_argument("--address", dest="address", metavar="HOST:PORT",
+        help="With --backends --apply: the old backend on this address (several found: the others still block)")
+    _flag(gateway_migrate, "--keep-webapp-address", dest="keep_webapp_address",
+        help="With --backends --apply: retire the old backend but keep the Webapp on its current address")
+    _flag(gateway_migrate, "--force-interrupt", dest="force_interrupt",
+        help="With --backends --apply: proceed although a turn is running on the old backend (it is interrupted) "
+        "or a gateway of this home runs outside its service (it is stopped)")
+    gateway_migrate.add_argument("--expect", dest="expect", metavar="TOKEN",
+        help="With --backends --apply: change nothing (exit 8) unless the backend found now is the one whose "
+        "expect_token the --dry-run --json plan printed")
+    _flag(gateway_migrate, "--detach", dest="detach",
+        help="With --backends --apply or --restore: run outside this process group / systemd cgroup and "
+        "return at once (follow it with --status)")
+    _flag(gateway_migrate, "--detached-run", dest="detached_run", help=argparse.SUPPRESS)
+    gateway_migrate.add_argument("--detached-ack", dest="detached_ack", help=argparse.SUPPRESS)
 
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
     # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.

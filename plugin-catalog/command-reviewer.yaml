@@ -1,14 +1,14 @@
 name: command-reviewer
 repo: https://github.com/spideysri2802/command-reviewer
-sha: 5c07dcf3f400ac1ecc0b074278e8f77098163f00
+sha: c26beaa2099b3e35e9a1a08b0b019a31d638fb63
 subdir: ''
-description: "Reviews every terminal/execute_code call before execution: deterministic hard rules block credential reads and destructive patterns, script contents are ingested and judged (not just filenames), an LLM reviewer with an injection-resistant prompt issues SAFE/SUSPICIOUS/MALICIOUS verdicts, and operator approve/deny decisions are recorded content-hash-bound so an unchanged script is never re-asked. Disclosure - the reviewer reads the contents of script files referenced by reviewed commands and sends them to your configured LLM provider; it shells out to docker exec to read sandbox files when the in-process environment is unavailable; reviewer failures fail closed to a human approval prompt; nothing is auto-approved. Disclosure — reviews every terminal/execute_code call before it runs; reads the contents of script files the command names (inside the Docker sandbox via `docker exec` when available, otherwise from the host path) and sends them, with the command text, to your configured auxiliary LLM; keeps an audit log and a precedent database of your approval decisions under $HERMES_HOME/plugin-data/command-reviewer/ and reads config.yaml (read-only) to see whether you answered \"Always\" to one of its prompts; can only block or escalate to the approval prompt, never auto-approves; ships in shadow mode (log only) until you set `mode: enforce`."
+description: 'Reviews every `terminal` and `execute_code` call before execution: deterministic hard rules block credential reads and destructive patterns, script contents are ingested and judged (not just filenames), an LLM reviewer with an injection-resistant prompt issues SAFE/SUSPICIOUS/MALICIOUS verdicts, and operator approve/deny decisions are recorded content-hash-bound so an unchanged script is never re-asked. Disclosure - the reviewer reads the contents of script files the command names (inside the Docker sandbox via `docker exec` when available, otherwise from the host path), with the command text, and sends both to your configured auxiliary LLM; keeps an audit log, a precedent database of your approval decisions, and verdict caches keyed by script content hash and by command+content combination — the reviewer''s own SAFE and MALICIOUS verdicts are reused for identical commands and scripts with no LLM call, while SUSPICIOUS is never cached and always reaches the approval prompt — all under $HERMES_HOME/plugin-data/command-reviewer/; reads config.yaml (read-only) to see whether you answered \"Always\" to one of its prompts, and — for terminal commands only — whether your own approvals.deny globs will refuse it before spending LLM tokens on it; can only block or escalate to the approval prompt, never auto-approves; ships in shadow mode (log only) until you set `mode: enforce`.'
 maintainer: spideysri2802
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/spideysri2802/command-reviewer#readme
-version: '0.2.9'
+version: '0.2.10'
 platforms: []
 capabilities:
   provides_tools: []

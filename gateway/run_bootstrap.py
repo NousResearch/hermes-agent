@@ -205,6 +205,9 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
         if planned_takeover:
+            # The replacing gateway serves this home on: telling its home chats "shutting down" is
+            # false, and two services fighting over one home would repeat it every few seconds.
+            runner._planned_takeover_shutdown = True
             logger.info("Received %s as a planned --replace takeover — exiting cleanly", sig_name or "SIGTERM")
         elif planned_stop:
             logger.info("Received %s as a planned gateway stop — exiting cleanly", sig_name or "SIGTERM/SIGINT")
@@ -315,18 +318,22 @@ async def _start_gateway_start_control_socket(runner):
         # manager) relaunches after the code swap.
         _main_loop = asyncio.get_running_loop()
 
-        def _pause_for_update_handler() -> dict:
+        def _pause_for_update_handler(params: dict) -> dict:
+            # ``{"force": true}`` (hermes update --force): stop live work now instead of waiting for idle.
+            force = params.get("force") is True
             try:
                 from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                _drain = 0.0 if force else float(_get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
-            accepted_box: list[bool] = []
+            accepted_box: list = []
             _done = threading.Event()
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    from gateway.restart_when_idle import force_restart, request_service_restart
+                    accepted_box.append(force_restart(runner) if force else request_service_restart(runner))
+                    accepted_box.append(runner._describe_active_work())
                 finally:
                     _done.set()
 
@@ -335,7 +342,8 @@ async def _start_gateway_start_control_socket(runner):
             accepted = bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
-                "pid": os.getpid(), "drain_timeout": _drain}
+                "pid": os.getpid(), "drain_timeout": _drain, "force": force,
+                "waiting_on": accepted_box[1] if len(accepted_box) > 1 else []}
 
         def _rescan_profiles_handler() -> dict:
             """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
@@ -389,6 +397,18 @@ async def _start_gateway_start_control_socket(runner):
     return _control_server
 
 
+def _cron_registry_profile_count(ticked: list) -> int:
+    """How many profiles one external provider's registry would hold: the *ticked* ones, plus the profiles
+    a plugin runs elsewhere, which are not ticked here but whose backend may arm its jobs in that registry.
+    By name, as a union: a standalone launch profile is ticked but not listed, a marked default the reverse."""
+    from hermes_cli.profiles import profiles_to_serve
+    try:
+        listed = profiles_to_serve(multiplex=True, include_run_elsewhere=True)
+    except OSError:
+        listed = []
+    return len({name for name, _home in [*ticked, *listed]})
+
+
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
@@ -408,7 +428,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         cron_profile_homes = []
     # External providers own one unscoped remote registry, so they can only serve a single home.
     cron_provider = scheduler_for_profile_mode(
-        resolve_cron_scheduler(), multiplex_profiles=len(cron_profile_homes) > 1)
+        resolve_cron_scheduler(), multiplex_profiles=_cron_registry_profile_count(cron_profile_homes) > 1)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
     if isinstance(cron_provider, InProcessCronScheduler) and cron_profile_homes:
@@ -583,6 +603,21 @@ def _reload_config_keeping_multiplex_verdict(first: GatewayConfig) -> GatewayCon
     return reloaded
 
 
+def _refuse_profile_run_elsewhere() -> None:
+    """Exit 78 before reading any config when a plugin runs this profile's backend elsewhere
+    (``hermes_cli.profiles_run_elsewhere``). The host gateway runs as the default profile, so a
+    marked ``default`` keeps it down; a marked named profile is also left out of its served set."""
+    from gateway.run import get_hermes_home
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    elsewhere = run_elsewhere_for_home(get_hermes_home())
+    if elsewhere is None:
+        return
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    logger.error("Refusing to start the gateway: %s", elsewhere.message())
+    print(elsewhere.message())
+    raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+
 def _start_gateway_resolve_terminal_cwd() -> None:
     """Messaging-only defaults belong to startup, not incidental imports by the TUI."""
     import os
@@ -604,12 +639,12 @@ def _start_gateway_resolve_terminal_cwd() -> None:
 
 
 # A browse that catches a lagging state.db up holds the profile's gateway.lock only for the drift
-# re-check and the additive DDL, cut off at hermes_state_reconcile.BROWSE_RECONCILE_BUDGET_S by a
+# re-check and the additive DDL, cut off at persistence.core.admin.BROWSE_RECONCILE_BUDGET_S by a
 # sqlite progress handler. Its integrity scan (which scales with file size) runs BEFORE the lock, so
 # a large store never extends this window. A gateway booting in it waits it out, with margin for lock
 # publication and the drift probes, instead of exiting as if another gateway owned the profile.
 def _browse_reconcile_reserve_wait_s() -> float:
-    from hermes_state_reconcile import BROWSE_RECONCILE_BUDGET_S
+    from persistence.core.admin import BROWSE_RECONCILE_BUDGET_S
     return BROWSE_RECONCILE_BUDGET_S + 2.0
 
 
@@ -760,6 +795,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         os,
         threading,
     )
+    _refuse_profile_run_elsewhere()
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
     from hermes_cli.update_proxy_env import restore_user_proxy_env

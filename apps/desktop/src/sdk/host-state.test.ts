@@ -4,6 +4,8 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $gatewayState } from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
+import { clearProfileBackend, profileBackendFeatures, setProfileBackend } from './profile-backend'
+
 import { host } from './index'
 
 // Plugins read app state exclusively through host.state — and before this
@@ -248,5 +250,13 @@ describe('host.state busy vs gateway', () => {
     dropSessionState('runtime-a')
     expect(host.state.busyBySession.get()['runtime-a']).toBeUndefined()
     expect(host.state.gateway.get()).toBe('open')
+  })
+})
+
+describe('host profile-backend entries', () => {
+  it('carries both calls and the record of what this build supports', () => {
+    expect(host.setProfileBackend).toBe(setProfileBackend)
+    expect(host.clearProfileBackend).toBe(clearProfileBackend)
+    expect(host.profileBackendFeatures).toBe(profileBackendFeatures)
   })
 })

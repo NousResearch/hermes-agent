@@ -249,6 +249,27 @@ export function buildSidebarSessionSliceParams(searchParams: URLSearchParams): S
   }
 }
 
+export type ProfileSessionAggregateRoute = 'global-remote' | 'primary'
+
+export interface ProfileSessionAggregateRouteOptions {
+  globalRemote: boolean
+  primaryProfileRemoteOverride: boolean
+}
+
+export interface ProfileSessionAggregateFetchOptions extends ProfileSessionAggregateRouteOptions {
+  fetchJsonForGlobalRemote: FetchJsonForProfile
+}
+
+// The primary backend normally owns aggregate profile reads. In mixed remote
+// mode, however, the active profile's explicit override owns that backend while
+// the app-global remote remains the authority for inherited/default profiles.
+export function resolveProfileSessionAggregateRoute({
+  globalRemote,
+  primaryProfileRemoteOverride
+}: ProfileSessionAggregateRouteOptions): ProfileSessionAggregateRoute {
+  return globalRemote && primaryProfileRemoteOverride ? 'global-remote' : 'primary'
+}
+
 interface SessionScanError {
   profile: string
   error: string
@@ -267,8 +288,14 @@ function errorsOf(data: unknown): SessionScanError[] | undefined {
 export async function fetchPrimaryProfileSessions(
   searchParams: URLSearchParams,
   fetchJsonForProfile: FetchJsonForProfile,
-  options: { prefixForMerge?: boolean } = {}
+  options: { prefixForMerge?: boolean; aggregate?: ProfileSessionAggregateFetchOptions } = {}
 ): Promise<ProfileSessionsResponse> {
+  const aggregate = options.aggregate
+  const fetchJson =
+    aggregate && resolveProfileSessionAggregateRoute(aggregate) === 'global-remote'
+      ? aggregate.fetchJsonForGlobalRemote
+      : fetchJsonForProfile
+
   try {
     if (options.prefixForMerge) {
       const url = new URL(`/api/profiles/sessions?${searchParams}`, 'http://desktop.local')
@@ -277,11 +304,11 @@ export async function fetchPrimaryProfileSessions(
       const profile = (searchParams.get('profile') || 'all').trim() || 'all'
 
       return (await readProfileSessionRows(url, profile, limit + offset, (_profile, path) =>
-        fetchJsonForProfile(null, path)
+        fetchJson(null, path)
       )) as ProfileSessionsResponse
     }
 
-    return (await fetchJsonForProfile(null, `/api/profiles/sessions?${searchParams}`)) as ProfileSessionsResponse
+    return (await fetchJson(null, `/api/profiles/sessions?${searchParams}`)) as ProfileSessionsResponse
   } catch (error) {
     const profile = (searchParams.get('profile') || '').trim() || 'all'
 

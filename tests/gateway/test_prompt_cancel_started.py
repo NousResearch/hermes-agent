@@ -84,6 +84,6 @@ async def test_prompt_cancel_of_a_transferred_steer_is_refused_and_leaves_its_re
         await _drained(authority)
         await async_wait_until(lambda: len(ran) == 2, timeout=30, what='the returned admission ran')
         await _drained(authority)
+        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
     assert agent.stops == [], 'cancelling the transferred prompt stopped the turn it was steered into'
     assert reply.get('error', {}).get('data', {}).get('reason') == 'stale_generation', reply
-    assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]

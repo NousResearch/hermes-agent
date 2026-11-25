@@ -16,7 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from hermes_cli.dashboard_auth import InvalidCodeError, LoginStart, ProviderError, Session, listener_client
+from hermes_cli.dashboard_auth import (
+    InvalidCodeError, LoginStart, ProviderError, Session, TokenPrincipal, listener_client)
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JwtOAuthProvider,
@@ -47,6 +48,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
 
     name = "nous"
     display_name = "Nous Research"
+    supports_peer_pass = True
 
     def __init__(self, *, client_id: str, portal_url: str, token_leeway: float = DEFAULT_TOKEN_LEEWAY_SECONDS) -> None:
         # Defense-in-depth: register() filters too, but a malformed id must never construct a provider.
@@ -98,6 +100,25 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
 
 
     def _claims_for(self, access_token: str) -> dict[str, Any]:
+        # Every dashboard grant mints ``agent_dashboard:access``. A token for this agent without it,
+        # a peer pass or one minted for another purpose with no ``scope`` claim, is no dashboard session.
+        claims = self._agent_claims(access_token)
+        if _SCOPE not in _scopes(claims):
+            raise InvalidCodeError(f"token does not grant {_SCOPE}")
+        return claims
+
+    def verify_peer_pass(self, *, token: str) -> Optional[TokenPrincipal]:
+        try:
+            claims = self._agent_claims(token)
+        except InvalidCodeError:
+            return None
+        user_id = str(claims.get("sub") or "")
+        if not user_id:
+            return None
+        return TokenPrincipal(principal=user_id, provider=self.name, scopes=tuple(sorted(_scopes(claims))))
+
+    def _agent_claims(self, access_token: str) -> dict[str, Any]:
+        """Claims of a Portal access token minted for this agent, whatever it grants."""
         claims = verify_jwt(
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
@@ -126,6 +147,11 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         # Contract C4: no email / display_name in tokens.
         return session_from_claims(
             self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))
+
+
+def _scopes(claims: dict[str, Any]) -> set[str]:
+    raw = claims.get("scope")
+    return set(raw.split()) if isinstance(raw, str) else set()
 
 
 # ---- Plugin entry point ----

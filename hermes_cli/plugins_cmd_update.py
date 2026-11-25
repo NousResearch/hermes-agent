@@ -159,7 +159,10 @@ def cmd_update(name: str, *, interactive: bool = True, force: bool = False) -> N
     console = _pc()._console()
     target = _pc()._require_installed_plugin(name, _pc()._plugins_dir(), console)
     try:
-        update_one(name, target, console, interactive=interactive, force=force)
+        if update_one(name, target, console, interactive=interactive, force=force):
+            # Like install/enable: load it in the running gateway and say what is live (#153300).
+            from hermes_cli.plugins_activation import report_activation
+            report_activation(console, target.name)
     except RepinConsentRequired as exc:
         _pc()._fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
     except _pc().PluginScanBlocked as exc:
@@ -288,6 +291,7 @@ def cmd_trust_update_url(name: str) -> None:
 def cmd_check_updates(args: Any | None = None) -> None:
     """Read-only: is any installed plugin outdated? NEVER mutates."""
     from rich.console import Console
+    from rich.markup import escape
     from rich.table import Table
 
     console = Console()
@@ -321,7 +325,7 @@ def cmd_check_updates(args: Any | None = None) -> None:
         elif r.update_available is False:
             status = "[dim]up to date[/dim]"
         else:
-            status = f"[yellow]unknown[/yellow]\n[dim]{r.reason}[/dim]"
+            status = f"[yellow]unknown[/yellow]\n[dim]{escape(r.reason or '')}[/dim]"
         table.add_row(
             r.name, r.klass, (r.current or "-")[:12], r.latest or "-", status
         )

@@ -1,0 +1,24 @@
+name: gpu-monitor
+title: "GPU Monitor"
+repo: https://github.com/Lazzdaycod/hermes-lang-it
+sha: 77e4eadbe49c0dfb59c084b567380208b96fe97d
+subdir: plugins/gpu-monitor
+description: >-
+  Live GPU utilization, dedicated VRAM and temperature chip in the Hermes Desktop
+  status bar, read from Windows performance counters (PDH) and the D3DKMT
+  adapter query. Click the chip (or run the palette command) for the busiest GPU
+  engines; the get_gpu_usage agent tool returns the same snapshot as JSON.
+  English/Italian UI. Reads in-process: no external process, port or network.
+  Windows only.
+maintainer: Lazzdaycod
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/gpu-monitor
+platforms: [windows]
+capabilities:
+  provides_tools: [get_gpu_usage]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

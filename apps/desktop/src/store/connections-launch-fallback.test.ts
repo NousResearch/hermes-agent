@@ -11,6 +11,7 @@ import { deferred } from '../test/deferred'
 
 const $activeGatewayProfile = atom('default')
 const $freshSessionRequest = atom(0)
+let newChatIntent = 0
 
 const $connection = atom<null | {
   connectionId?: string
@@ -47,8 +48,8 @@ vi.mock('@/store/profile', () => ({
   $newChatProfile: atom(null),
   $newChatRoute: atom(null),
   $showAllProfiles: atom(false),
-  captureNewChatSource: vi.fn(),
-  currentNewChatIntent: () => 0,
+  captureNewChatSource: vi.fn(() => { newChatIntent += 1 }),
+  currentNewChatIntent: () => newChatIntent,
   ensureGatewayAgent,
   isLegacyNewChatProfile: () => false,
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
@@ -89,6 +90,7 @@ beforeEach(() => {
   localStorage.clear()
   _resetConnectionsForTests()
   _resetFleetRosterForTests()
+  newChatIntent = 0
   $connection.set({ connectionId: 'local', mode: 'local', registryScoped: true })
   $activeGatewayProfile.set('default')
   ensureGatewayAgent.mockClear()
@@ -177,6 +179,28 @@ describe('launch restore onto the last-used gateway', () => {
     expect($connection.get()?.connectionId).toBe('local')
     expect(setLastUsed).not.toHaveBeenCalled()
   })
+
+  it('does not roll a newer profile draft back when a launch restore is abandoned', async () => {
+    const profile = await import('./profile')
+    const report = deferred<DesktopAgentRoster>()
+    const dial = deferred<void>()
+    stubBridge(() => report.promise)
+    ensureGatewayAgent.mockImplementationOnce(async (_connectionId, _profile, options) => {
+      options?.beforeActivate?.()
+      await dial.promise
+    })
+    const boot = initializeConnectionsRegistry()
+    await vi.waitFor(() => expect(ensureGatewayAgent).toHaveBeenCalled())
+    profile.$newChatProfile.set('beta')
+    profile.captureNewChatSource('local')
+    report.resolve(roster({ reachable: false, error: 'offline' }))
+    await vi.waitFor(() => expect($pendingConnectionId.get()).toBeNull())
+    dial.resolve()
+    await boot
+    expect(profile.$newChatProfile.get()).toBe('beta')
+    expect($connection.get()?.connectionId).toBe('local')
+  })
+
   it('a cached down row never cancels a profile repair on the gateway already in front', async () => {
     // The window is already on homelab with a profile it does not serve; the
     // fresh profile reads just succeeded there, so an older failed roster row

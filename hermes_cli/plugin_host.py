@@ -40,6 +40,7 @@ from hermes_cli.plugin_host_wire import (
     Channel, Opaque, PluginHostUnavailable, PluginHostUnsupported, declared_return, decode, encode, restore,
     signature_from,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -126,14 +127,20 @@ class PluginHost:
 
     def _argv(self) -> list:
         from hermes_cli.plugin_isolation import host_launcher
-        return [*host_launcher(), sys.executable, "-m", _HOST_MODULE]
+        # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
+        # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
+        return [*host_launcher(home=self._manager.owner_home), sys.executable, "-P", "-m", _HOST_MODULE]
 
     def _env(self) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True)
         env.update(self._base_context.run(_hosted_ambient_credentials, self._home))
-        repo_root = str(Path(__file__).resolve().parents[1])
-        env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
+        repo_root = project_root_str()
+        # Absolute entries only: the host starts in the profile home, where an empty or relative entry
+        # (``PYTHONPATH=:/x``) would put that home back on the import path that -P keeps it off.
+        inherited = env.get("PYTHONPATH")
+        entries = [os.path.abspath(p or os.curdir) for p in inherited.split(os.pathsep)] if inherited else []
+        env["PYTHONPATH"] = os.pathsep.join([repo_root, *entries])
         env.setdefault("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING")
         from hermes_cli.plugin_isolation import HOST_PROCESS_ENV
         env[HOST_PROCESS_ENV] = "1"

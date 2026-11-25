@@ -1,0 +1,40 @@
+name: remedigenius
+repo: https://github.com/RajaRenga/RemediGenius-CE
+subdir: profiles/remedigenius/plugins/rg-triage
+sha: b35dac39c036db9e38249b13d1bf7c02be7ec6fd
+version: "0.9.3"
+title: RemediGenius — AWS Security Triage Desk
+description: >-
+  Read-only AWS security triage desk on Hermes: prioritizes what Security Hub, GuardDuty and
+  Inspector already found, verifies with read-only calls, and drafts IaC fixes a human approves.
+  Disclosure — runs the rgtriage engine locally (subprocess or local socket), which reads AWS with
+  your configured read-only credentials and keeps state in a per-profile home under your Hermes
+  home (existing ~/.rgtriage installs keep it); Terraform validation needs your approval and
+  installs only providers already in the module's lock file or an operator-vetted plugin dir;
+  findings and chat go to the model provider you configure; local execution traces are on by
+  default (RGTRIAGE_TRACES=off disables); no telemetry, no self-update.
+maintainer: RajaRenga
+tier: community
+category: tools
+docs_url: https://github.com/RajaRenga/RemediGenius-CE/tree/b35dac39c036db9e38249b13d1bf7c02be7ec6fd/profiles/remedigenius/plugins/rg-triage#readme
+image: https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/b35dac39c036db9e38249b13d1bf7c02be7ec6fd/docs/media/marketplace-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/b35dac39c036db9e38249b13d1bf7c02be7ec6fd/docs/media/spot-v091/board-overview.png
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/b35dac39c036db9e38249b13d1bf7c02be7ec6fd/docs/media/spot-v091/knowledge.png
+  - https://raw.githubusercontent.com/RajaRenga/RemediGenius-CE/b35dac39c036db9e38249b13d1bf7c02be7ec6fd/docs/media/hermes-triage/coverage-response.png
+requires_hermes: ">=0.23.1"
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools:
+    - rg_triage
+    - rg_analytics
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_skill_lifecycle
+    - post_api_request
+    - post_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

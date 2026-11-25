@@ -94,7 +94,8 @@ def _tui_command(home: Optional[Path]) -> str:
 
 def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optional[Path] = None) -> str:
     """Multi-line progress block: what the gateway is waiting on plus how to stop waiting."""
-    lines = [f"  ⏳ still draining — {max(remaining_s, 0):.0f}s left before the forced restart"]
+    lines = [f"  ⏳ still waiting for idle — {max(remaining_s, 0):.0f}s left of this wait "
+             "(live work is never interrupted; past it the gateway keeps its restart pending)"]
     if work is None:
         lines.append("     (gateway did not report what it is waiting on — pre-update gateway or unreadable state file)")
     elif not work:
@@ -107,8 +108,8 @@ def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optio
             # approval/clarify is answered from a client, not waited out.
             lines.append("     a chat turn waiting on an approval or clarify question can be answered now: "
                          f"open it with `{_tui_command(home)}` (resume the session)")
-        lines.append("     finish or kill the work above to release the drain now; "
-                     "agent.restart_after_turn_timeout in config.yaml caps this wait")
+        lines.append("     finish or kill the work above to restart now, or `hermes update --force` "
+                     "to stop it now")
     return "\n".join(lines)
 
 
@@ -128,3 +129,47 @@ def drain_progress_reporter(home: Optional[Path] = None, *, budget_s: float,
         emit(format_drain_report(read_active_work(home), remaining_s=budget_s - (now - started), home=home))
 
     return _tick
+
+
+def restart_left_pending(pid: int, home: Optional[Path] = None, *, start_time: Optional[int]) -> bool:
+    """True when gateway *pid* outlived the wait still holding the restart SIGUSR1 asked for: the
+    same process (``start_time``, read when it was signalled: a PID recycled during a 30-minute wait
+    is someone else, who asked nothing), reachable by that signal (one that could not be sent asked
+    nothing) and not provably wedged (a dead loop is not live work; its caller keeps the bounded
+    escalation). Such a gateway restarts itself at its first idle moment, so nothing may stop it on
+    the wait's account. An unknown start time proves no identity: not pending."""
+    import os
+    import signal
+    if not hasattr(signal, "SIGUSR1") or pid <= 0 or start_time is None:
+        return False
+    try:
+        # Signal 0 probes, and fails exactly where SIGUSR1 could not have been delivered.
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX only (SIGUSR1-guarded above)
+    except OSError:
+        return False
+    from gateway.status import get_process_start_time
+    if get_process_start_time(pid) != start_time:
+        return False
+    from hermes_cli.gateway import GATEWAY_LOOP_WEDGED, probe_gateway_loop_liveness
+    return probe_gateway_loop_liveness(pid, home=home) != GATEWAY_LOOP_WEDGED
+
+
+def leave_restart_pending(pid: int, label: str, home: Optional[Path] = None, *, start_time: Optional[int],
+                          supervised: bool = True) -> bool:
+    """When :func:`restart_left_pending` holds, say so (:func:`report_restart_left_pending`) and return
+    True: the caller must not stop, kill or force-restart *pid*."""
+    if not restart_left_pending(pid, home, start_time=start_time):
+        return False
+    report_restart_left_pending(label, home, supervised=supervised)
+    return True
+
+
+def report_restart_left_pending(label: str, home: Optional[Path] = None, *, supervised: bool = True,
+                                emit: Callable[[str], None] = print) -> None:
+    """The one line a caller prints instead of stopping a gateway whose wait ran out."""
+    work = read_active_work(home)
+    what = "; ".join(describe_active_work_unit(u, home) for u in work if isinstance(u, dict)) if work else ""
+    after = ("restarts itself on the new code once idle" if supervised else
+             "exits once idle (start it again with `hermes gateway run` if nothing relaunches it)")
+    emit(f"  ↻ {label}: still running live work{f' ({what})' if what else ''} — left running; it {after}. "
+         "`hermes update --force` stops it now.")

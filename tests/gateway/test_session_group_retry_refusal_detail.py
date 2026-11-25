@@ -14,14 +14,15 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class RoomService:
     """The retry/discard surface ``_execution_control`` drives, recording the exact kwargs."""
 
-    def __init__(self, path):
-        self.db_path = path
+    def __init__(self, store):
+        self.placement = 'profile'
+        self.store = store
         self.calls = []
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})
 
@@ -43,10 +44,10 @@ class RoomService:
 def _connection(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     (tmp_path / 'config.yaml').write_text(json.dumps({}))
-    db = SessionDB(tmp_path / 'state.db')
-    authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
-    service = authority.hosted_room_service = RoomService(db.db_path)
-    return AuthorityConnection(authority, object(), {'user_id': 'alice'}), service, db
+    store = storage_handle(tmp_path)
+    authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', persistence=store, events={})
+    service = authority.hosted_room_service = RoomService(store)
+    return AuthorityConnection(authority, object(), {'user_id': 'alice'}), service, store
 
 
 def _dispatch(connection, method, **params):
@@ -58,42 +59,39 @@ def _dispatch(connection, method, **params):
 @pytest.mark.parametrize('method', ['groups.retry', 'groups.discard'])
 def test_an_unpinned_attempt_names_the_keys_the_row_publishes(method, tmp_path, monkeypatch):
     """The Retry row carries all three keys; a request without the pair says which it lacked."""
-    connection, service, db = _connection(tmp_path, monkeypatch)
-    with db:
-        result = _dispatch(connection, method, room_id='owned', task_id='prepare:owned')
-        assert result['error']['message'] == 'invalid_params', result
-        data = result['error']['data']
-        assert data['field'] == 'member_id', data
-        assert 'missing: member_id, execution_generation' in data['detail'], data
-        assert service.calls == []
+    connection, service, _store = _connection(tmp_path, monkeypatch)
+    result = _dispatch(connection, method, room_id='owned', task_id='prepare:owned')
+    assert result['error']['message'] == 'invalid_params', result
+    data = result['error']['data']
+    assert data['field'] == 'member_id', data
+    assert 'missing: member_id, execution_generation' in data['detail'], data
+    assert service.calls == []
 
 
 def test_a_malformed_coordinate_names_its_own_field(tmp_path, monkeypatch):
-    connection, service, db = _connection(tmp_path, monkeypatch)
-    with db:
-        for params, field in (
-                ({'member_id': 'one', 'execution_generation': 0}, 'execution_generation'),
-                ({'member_id': 'one', 'execution_generation': '2'}, 'execution_generation'),
-                ({'member_id': '', 'execution_generation': 1}, 'member_id')):
-            result = _dispatch(connection, 'groups.retry', room_id='owned',
-                               task_id='task-exact', **params)
-            assert result['error']['message'] == 'invalid_params', (params, result)
-            assert result['error']['data']['field'] == field, (params, result)
-        # A value of the wrong TYPE never reaches the handler: the declared contract refuses it
-        # with the field path, which is the other half of the same diagnosis.
-        result = _dispatch(connection, 'groups.retry', room_id='owned', task_id='task-exact',
-                           member_id=7, execution_generation=1)
-        assert result['error']['data'] == {'reason': 'invalid_params', 'fields': ['member_id']}, result
-        assert service.calls == []
+    connection, service, _store = _connection(tmp_path, monkeypatch)
+    for params, field in (
+            ({'member_id': 'one', 'execution_generation': 0}, 'execution_generation'),
+            ({'member_id': 'one', 'execution_generation': '2'}, 'execution_generation'),
+            ({'member_id': '', 'execution_generation': 1}, 'member_id')):
+        result = _dispatch(connection, 'groups.retry', room_id='owned',
+                           task_id='task-exact', **params)
+        assert result['error']['message'] == 'invalid_params', (params, result)
+        assert result['error']['data']['field'] == field, (params, result)
+    # A value of the wrong TYPE never reaches the handler: the declared contract refuses it
+    # with the field path, which is the other half of the same diagnosis.
+    result = _dispatch(connection, 'groups.retry', room_id='owned', task_id='task-exact',
+                       member_id=7, execution_generation=1)
+    assert result['error']['data'] == {'reason': 'invalid_params', 'fields': ['member_id']}, result
+    assert service.calls == []
 
 
 def test_the_published_attempt_still_retries_exactly(tmp_path, monkeypatch):
-    connection, service, db = _connection(tmp_path, monkeypatch)
-    with db:
-        result = _dispatch(connection, 'groups.retry', room_id='owned',
-                           task_id='task-exact', member_id='one', execution_generation=2)
-        assert result['result']['retried'] is True, result
-        assert service.calls == [('retry', 'owned', 'task-exact', 'one', 2)]
+    connection, service, _store = _connection(tmp_path, monkeypatch)
+    result = _dispatch(connection, 'groups.retry', room_id='owned',
+                       task_id='task-exact', member_id='one', execution_generation=2)
+    assert result['result']['retried'] is True, result
+    assert service.calls == [('retry', 'owned', 'task-exact', 'one', 2)]
 
 
 def test_both_wire_models_require_the_same_attempt_keys():

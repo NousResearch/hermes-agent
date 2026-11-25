@@ -49,6 +49,7 @@ platforms:
       routes:
         github-pr-review:
           secret: "your-webhook-secret-here"   # 必须与 GitHub webhook secret 完全一致
+          signature: github                    # 此路由仅接受 X-Hub-Signature-256
           events:
             - pull_request
 
@@ -206,6 +207,7 @@ platforms:
       routes:
         github-pr-review:
           secret: "your-webhook-secret-here"
+          signature: github
           events: [pull_request]
           prompt: |
             A pull request event was received (action: {action}).
@@ -256,11 +258,12 @@ deliver_extra:
 
 ## GitLab 支持
 
-同一适配器也适用于 GitLab。GitLab 使用 `X-Gitlab-Token` 进行认证（纯字符串匹配，非 HMAC）——Hermes 会自动处理两者。
+同一适配器也适用于 GitLab。GitLab 使用 `X-Gitlab-Token` 进行认证（纯字符串匹配，非 HMAC），配置了签名令牌时则使用 Standard Webhooks 的 `webhook-signature`。请把路由的 pin 改为 `signature: gitlab`：仍为 `signature: github` 的路由会以 `404` 拒绝所有 GitLab 投递，即使 secret 正确。
 
 对于事件过滤，GitLab 将 `X-GitLab-Event` 设置为 `Merge Request Hook`、`Push Hook`、`Pipeline Hook` 等值。在 `events` 中使用精确的请求头值：
 
 ```yaml
+signature: gitlab
 events:
   - Merge Request Hook
 ```
@@ -283,8 +286,7 @@ GitLab 的 payload 字段与 GitHub 不同——例如，MR 标题使用 `{objec
 
 | 现象 | 检查项 |
 |---|---|
-| `401 Invalid signature` | config.yaml 中的 secret 与 GitHub webhook secret 不匹配 |
-| `404 Unknown route` | URL 中的路由名称与 `routes:` 中的键不匹配 |
+| `404 Unknown route` | URL 中的路由名称与 `routes:` 中的键不匹配，或 config.yaml 中的 secret 与 GitHub webhook secret 不匹配（签名错误返回同样的 404，防止探测路由名；gateway 日志会显示 `Invalid signature`） |
 | `429 Rate limit exceeded` | 每条路由每分钟 30 次请求已超出——在 GitHub UI 中重新投递测试事件时常见；等待一分钟或提高 `extra.rate_limit` |
 | 未发布评论 | `gh` 未安装、不在 PATH 中，或未完成认证（`gh auth login`） |
 | Agent 运行但无评论 | 检查 gateway 日志——如果 agent 输出为空或仅为"SKIP"，投递仍会被尝试 |

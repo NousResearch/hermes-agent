@@ -31,6 +31,18 @@ def normalize_arch(raw: str | None) -> str:
     return _ARCH_NAMES.get((raw or "").strip().lower(), "unknown")
 
 
+def has_interface_address(host: str) -> bool:
+    """Does an interface currently own this numeric IP (not just its network or broadcast)?"""
+    import ipaddress
+    import socket
+    import psutil
+
+    wanted = ipaddress.ip_address(host)
+    return any(ipaddress.ip_address(row.address.partition("%")[0]) == wanted
+               for rows in psutil.net_if_addrs().values() for row in rows
+               if row.family in (socket.AF_INET, socket.AF_INET6))
+
+
 @functools.cache
 def os_family() -> str:
     """Return the current platform identifier."""
@@ -394,17 +406,37 @@ def nvidia_gpus() -> tuple[NvidiaGpu, ...]:
     return _linux_nvidia_gpus() if sys.platform.startswith("linux") else ()
 
 
-def _windows_interactive_session() -> bool:
+def _windows_session_id() -> int | None:
     import ctypes
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    process_id = kernel32.GetCurrentProcessId()
     session_id = wintypes.DWORD()
-    if not kernel32.ProcessIdToSessionId(process_id, ctypes.byref(session_id)) or session_id.value == 0:
+    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session_id)):
+        return None
+    return session_id.value
+
+
+def windows_session_id() -> int | None:
+    """This process's Windows session id; None off Windows or when it cannot be read. Session 0
+    holds services and Win32-OpenSSH logins, never a user's desktop."""
+    if sys.platform != "win32":
+        return None
+    try:
+        return _windows_session_id()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _windows_interactive_session() -> bool:
+    import ctypes
+
+    session_id = _windows_session_id()
+    if not session_id:
         return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     active_session = kernel32.WTSGetActiveConsoleSessionId()
-    if active_session != 0xFFFFFFFF and active_session == session_id.value:
+    if active_session != 0xFFFFFFFF and active_session == session_id:
         return True
     return bool(kernel32.GetProcessWindowStation())
 

@@ -5,12 +5,12 @@ The operation lives in ``tools/connectors/live.py`` under the turn's session key
 import asyncio
 from functools import partial
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 METHODS = ('connection.respond', 'connectors.operation.status', 'connectors.operation.wake', 'connectors.connect')
 
 
-class ConnectorRefusal(RuntimeStoreError):
+class ConnectorRefusal(AuthorityRefusal):
     """A refusal on the legacy connector handlers' wire shape: their code, their human message, their ``ConnectorErrorReason`` as ``data.reason``."""
 
     def __init__(self, code, reason, message):
@@ -71,7 +71,7 @@ async def _handle(connection, method, _ref, params):
     # Capability before existence, as every authority verb: a refused caller learns nothing about the id.
     authorize(connection, ref, params, 'session:read' if method == 'connectors.operation.status' else 'session:control')
     if ref.session_id not in authority.sessions:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     route = authority.sessions[ref.session_id].route
     if method == 'connectors.connect':
         operation = live.current(route, profile_home=authority.profile_id)
@@ -117,7 +117,7 @@ def _retry(authority, ref, operation, request):
         _require_connectors(authority, ref)
         try:
             reason = run.reissue(operation, request.connectors)
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             raise
         except GatewayAuthError as exc:
             raise ConnectorRefusal(*auth_refusal(exc)) from exc

@@ -1,9 +1,8 @@
 """Shared ``OAuthClientProvider`` customizations for Hermes MCP OAuth.
 
-Two code paths build an SDK provider — ``tools.mcp_oauth.build_oauth_auth`` (legacy public
-API) and ``tools.mcp_oauth_manager.MCPOAuthManager`` — and both need the same real-world
-fixes and config → constructor-kwargs plumbing. This module holds that core once; the origin
-modules keep their own subclass (logger name, disk-watch hooks) on top of it.
+``tools.mcp_oauth_manager.MCPOAuthManager`` builds the SDK provider; this module holds its
+real-world fixes and config → constructor-kwargs plumbing, and the manager keeps its own
+subclass (logger name, disk-watch hooks) on top of it.
 """
 
 from __future__ import annotations

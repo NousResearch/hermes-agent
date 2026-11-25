@@ -1,0 +1,25 @@
+name: palate
+repo: https://github.com/Gens-ai/palate
+sha: cfe7b49575a19a82185ff55d8ca07fdcd6aa6dde
+description: "A palate is the instrument that does the matching, and it sharpens as the record fills. Now working for Hermes. It keeps your own local record of what you watched, what you turned down, and the reason in each case, then picks from that: mood is held separately from taste, so something can suit you and still be wrong for tonight and be offered for another night with the blocker named. It reports an affinity only when the evidence supports one, and says so plainly when it does not. Picks are spread across the works you liked rather than six neighbours of whichever one came first, and each one says how strong the match is, so the best of a thin pool is never dressed up as a recommendation. Suggestions can come from what you liked, from widely-seen titles you have no verdict on, or from what is free on your own services, because similarity alone cannot reach a classic that sits next to nothing in your record. Availability covers subscriptions, free ad-supported tiers, library access and your own files, and rentals are opt in per storefront, so Amazon can count while others do not; every suggestion names what it would cost, and since the data carries no prices, none is invented. No account and no hosted service. Disclosure: calls only api.themoviedb.org, sending the titles and ids you ask about plus discovery filters (search, keywords, credits, runtimes and JustWatch-licensed watch-provider availability), never your verdicts, reasons, ratings or services; reads your TMDB key only from plugins.entries.palate.settings.tmdb_api_key; palate_import reads only the single CSV path you name, honours Hermes' read denylist and refuses anything that is not a Letterboxd or Trakt export; stores its ledger and TMDB cache in the plugin's own data folder; palate_export writes one JSON file to the path you choose, refusing paths on Hermes' write denylist, paths inside the Hermes home, names not ending in .json and any existing file that is not an earlier Palate export; no hooks, background work, subprocesses or telemetry."
+maintainer: Gens-ai
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Gens-ai/palate#readme
+version: "0.5.0"
+image: https://raw.githubusercontent.com/Gens-ai/palate/cfe7b49575a19a82185ff55d8ca07fdcd6aa6dde/assets/marketplace.png
+readme: true
+title: Palate
+capabilities:
+  provides_tools:
+    - palate_pick
+    - palate_verdict
+    - palate_seen
+    - palate_services
+    - palate_profile
+    - palate_import
+    - palate_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -97,7 +97,19 @@ class Lockfile:
             found = artifacts.get("any")
         if found is None:
             return []
-        return list(found) if isinstance(found, list) else [found]
+        entries = list(found) if isinstance(found, list) else [found]
+        for artifact in entries:
+            # Only termux-docker's docker:// registry digest has no archive
+            # bytes. Other rows must have a sha256 before install reads it
+            # as a store-cache key (#138359).
+            if (not isinstance(artifact, dict) or not isinstance(artifact.get("url"), str)
+                    or not artifact["url"]
+                    or ("sha256" not in artifact
+                        and not (name == "termux-docker" and artifact["url"].startswith("docker://")))
+                    or ("sha256" in artifact and (not isinstance(artifact["sha256"], str)
+                                                  or not re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"])))):
+                raise ValueError(f"malformed artifact pin for {name}/{target}: {artifact!r}")
+        return entries
 
     def pinned_artifacts(self, name: str) -> dict:
         """Return the complete pin table, including targets without discovery."""
@@ -158,6 +170,17 @@ class Facts:
 
     def get(self, name: str) -> dict | None:
         return self._packages.get(name)
+
+    def variants(self, name: str) -> tuple[dict, ...]:
+        """Selected tool fact followed by still-published facts for other pins."""
+        return _tool_rows(self.get(name))
+
+    def selected(self, name: str, fact: dict) -> Facts:
+        """Return a per-install view without changing the shared selection."""
+        view = Facts.__new__(Facts)
+        view.path = self.path
+        view._packages = {**self._packages, name: {k: v for k, v in fact.items() if k != "previous"}}
+        return view
 
     def refresh_digests(self, store_root: Path) -> int:
         """Publish all tool digests after packaging finishes changing their bytes."""
@@ -234,6 +257,8 @@ class Facts:
         on_disk = _read(self.path, strict=True)["packages"]
         for key, value in self._packages.items():
             on_disk.setdefault(key, value)
+        if "entry" in fact:
+            fact = _with_history(fact, on_disk.get(name))
         self._packages = on_disk
         self._packages[name] = fact
         _write(self.path, {"schema": SCHEMA, "packages": self._packages})
@@ -291,8 +316,97 @@ class Facts:
         packages = _read(self.path, strict=True)["packages"]
         self.retain(set(packages) - set(names))
 
+    def drop_dead_pins(self, live) -> None:
+        """Forget tool rows ``live(name, row)`` rejects, so gc reclaims their entries.
+
+        A dead selection gives way to the first live pin in its history, and a tool left with
+        no live pin loses its fact."""
+        packages = _read(self.path, strict=True)["packages"]
+        changed = False
+        for name, fact in list(packages.items()):
+            rows = _tool_rows(fact)
+            if not rows:
+                continue
+            rows = [{k: v for k, v in row.items() if k != "previous"} for row in rows]
+            kept = [row for row in rows if live(name, row)]
+            if kept == rows:
+                continue
+            changed = True
+            if kept:
+                packages[name] = {**kept[0], "previous": kept[1:]} if kept[1:] else kept[0]
+            else:
+                del packages[name]
+        if changed:
+            _write(self.path, {"schema": SCHEMA, "packages": packages})
+        self._packages = packages
+
     def entries_in_use(self) -> set[str]:
-        return {f["entry"] for f in self._packages.values() if "entry" in f}
+        return {fact["entry"] for name in self._packages
+                for fact in self.variants(name)}
+
+
+def _tool_rows(fact) -> tuple[dict, ...]:
+    if not isinstance(fact, dict) or "entry" not in fact:
+        return ()
+    previous = fact.get("previous") if isinstance(fact.get("previous"), list) else []
+    return (fact, *(row for row in previous if isinstance(row, dict) and "entry" in row))
+
+
+def install_owner() -> str:
+    """The key of the checkout recording a tool pin (its ``installs/<key>`` state dir)."""
+    from pm.environments import install_key
+    from pm.paths import repo_root
+
+    return install_key(repo_root())
+
+
+def _record_install_state() -> None:
+    """Leave this checkout's ``installs/<key>`` state record behind every pin it claims.
+
+    gc keeps a claimed pin while that state dir exists, and only the orphan sweep removes it,
+    once it proves the checkout deleted. A checkout that only ever ran ``ensure`` (a sealed or
+    resident runtime commits no dependency state) would otherwise own pins no state dir backs,
+    and another checkout's gc reclaimed them while it still ran on them."""
+    from pm.environments import installs_root
+    from pm.paths import repo_root
+
+    record = installs_root() / install_owner() / "inputs" / ".project-root"
+    if record.is_file():
+        os.utime(record.parent)  # a use, for the orphan sweep's retention clock
+    else:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(str(repo_root().resolve()), encoding="utf-8")
+
+
+def _with_history(fact: dict, old) -> dict:
+    """Keep other installs' pins beside the new selection; drop this install's superseded one.
+
+    Every checkout on a machine shares one store, so the top-level row (what older readers see)
+    is the last writer's selection and ``previous`` holds the entries other checkouts still pin
+    (#149497). Each row names the checkouts that pinned it: re-recording moves this checkout's
+    claim, so its own upgrade leaves no history behind and gc can reclaim the old entry."""
+    owner = install_owner()
+    _record_install_state()
+    rows = [old, *(old.get("previous") or [])] if isinstance(old, dict) and "entry" in old else []
+    owners: list[str] = [owner]
+    history: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("entry"), str):
+            continue
+        claims = row.get("owners")
+        if row["entry"] == fact["entry"]:
+            owners += [o for o in claims or [] if o not in owners]
+            continue
+        # An unclaimed row (written before per-install history) cannot prove any install
+        # still pins it: drop it, as before, and its install re-records on its next setup.
+        claims = [o for o in claims if o != owner] if isinstance(claims, list) else []
+        if claims:
+            history.setdefault(row["entry"], {**{k: v for k, v in row.items() if k != "previous"},
+                                              "owners": claims})
+    fact = {**fact, "owners": owners}
+    if history:
+        fact["previous"] = list(history.values())
+    return fact
 
 
 def _templatize(env: dict, store_root: Path) -> dict:

@@ -198,7 +198,10 @@ probes (default 3), housekeeping, the cron scheduler and the embedded kanban
 dispatcher have all frozen with it, so the watchdog dumps every thread's stack
 to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
 `exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
-supervisor restarts the process. `hermes gateway status` renders that record as
+supervisor restarts the process. The dump and the stamp are best effort: if
+writing them stalls (a full stderr pipe, a wedged log handler or disk), the
+watchdog still exits within about 5 seconds, and the next boot then reports an
+unclean exit instead. `hermes gateway status` renders that record as
 `⚠ Gateway exited degraded: event loop stopped dispatching …` until a new
 gateway process overwrites it, and the dashboard's gateway badge shows
 **Degraded** with the same reason. Set `gateway.loop_watchdog: false` in

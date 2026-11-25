@@ -59,6 +59,11 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="One- or two-sentence description of what this profile is good at. "
              "Used by the kanban decomposer to route tasks based on role instead "
              "of profile name alone. Skip and add later via `hermes profile describe`.")
+    profile_create.add_argument(
+        "--discord-mention", nargs="?", const="", default=None, metavar="HANDLE",
+        help="Let a multiplexed gateway's Discord bot hand `$<profile>` messages to this profile: writes "
+             "discord.mentionable (and, with =HANDLE, discord.mention_handle; default: the profile name) "
+             "into the new profile's own config.yaml.")
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
     profile_delete.add_argument("profile_name", help="Profile to delete")

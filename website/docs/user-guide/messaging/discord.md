@@ -372,7 +372,8 @@ discord:
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
-  profile_mentions: []            # Profiles a `$<profile>` message is handed to (multiplex only)
+  mentionable: false              # Opt THIS profile in to `$<profile>` messages (multiplex only)
+  mention_handle: ""              # Its `$<handle>` (default: the profile name)
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
@@ -997,15 +998,25 @@ This is the preferred pattern when the moderation team churns — new moderators
 
 **Editing the lists in `config.yaml` takes effect on the next message.** `discord.allowed_roles`, `discord.allow_from` and the channel lists are re-read when `config.yaml` changes, with no gateway restart: a role or user you remove is refused from their next message, slash command or button click. This holds for every profile a multiplexed gateway (`gateway.multiplex_profiles`) serves, including the host profile it was started with. A value set in `.env` or an external secret source still wins over `config.yaml`; one only inherited from the gateway's process environment does not. Adding the *first* role or username to a bot connected without the Server Members intent still needs a restart, because the intent is chosen at connect. A username added later is matched only after the next reconnect resolves it to an ID.
 
-### Addressing a profile by name (`$<profile>`)
+### Addressing a profile by name (`$<profile>`) {#profile-mentions}
 
-When one gateway serves several profiles (`gateway.multiplex_profiles: true`), a single Discord bot can hand a message to a specific profile by name, without a bot application per profile. List the profiles it may address under `discord.profile_mentions` in the config of the profile that owns the bot:
+When one gateway serves several profiles (`gateway.multiplex_profiles: true`), a single Discord bot can hand a message to a specific profile by name, without a bot application per profile. No profile is reachable this way by default. Each profile opts itself in, in its **own** `config.yaml`, not in the config of the profile that owns the bot:
 
 ```yaml
+# ~/.hermes/profiles/agent-one/config.yaml
 discord:
-  profile_mentions: [agent-one, agent-two]   # handles $agent-one, $agent-two
-  # or pick shorter handles: {agent-one: a1, agent-two: a2}  ->  $a1, $a2
+  mentionable: true      # reachable as $agent-one
+  mention_handle: a1     # optional: reachable as $a1 instead
 ```
+
+Or opt a new profile in when you create it:
+
+```bash
+hermes profile create agent-one --discord-mention        # $agent-one
+hermes profile create agent-two --discord-mention=a2     # $a2
+```
+
+The bot answers to the handles of the profiles this gateway serves whose own config sets `mentionable: true`. Only a real YAML boolean counts: `"true"` in quotes or `1` leaves the profile unreachable. If two profiles claim the same handle, neither gets it, and a WARNING names both. Editing the flag needs no restart. The gateway re-scans a served profile whose `config.yaml` changed (within about 30 seconds) and re-reads the bot's own profile on its next message. A profile created or deleted while the gateway runs is picked up the same way. One exception: when the bot belongs to a different profile, the profile the gateway was started from re-reads its own flag only on the next gateway restart.
 
 | Message | What happens |
 |---|---|
@@ -1013,12 +1024,12 @@ discord:
 | `hey $agent-one, any update?` | Same: the handle can appear anywhere in the message. |
 | `$agent-one $agent-two compare your dependency staleness` | Each profile gets the same prompt as its own independent turn and replies separately. There is no turn-taking between them. |
 | `anyone know if CI is green?` | No handle: the message follows the normal `require_mention` / free-response rules. |
-| `$not-a-real-profile ping` | Not a configured handle: nothing is dispatched, an INFO line is logged, and the message follows the normal rules. |
+| `$not-a-real-profile ping` | No served profile opted in to that handle: nothing is dispatched, an INFO line is logged, and the message follows the normal rules. |
 | `$agent-one` (nothing else) | Ignored, like a bare `@mention` with no text. |
 
 - The handles are removed from the prompt the profile sees. Each reply ends with a `— <profile>` line naming the profile that wrote it. A configured runtime footer follows on the same line.
-- A handle counts as addressing the bot, so it works in channels where `require_mention` is on. `allowed_channels`, `ignored_channels` and the user/role allowlists still apply: the bot that received the message decides who may use it.
-- A configured profile that this gateway does not serve is refused with a WARNING in the gateway log. The message is never run under another profile.
+- A handle counts as addressing the bot, so it works in channels where `require_mention` is on. `allowed_channels`, `ignored_channels` and the user/role allowlists still apply: the bot that received the message decides who may use it. Opting a profile in therefore makes it reachable by everyone that bot already accepts messages from.
+- A profile this gateway does not serve is never reachable, even if its config opts in (for example, a profile that still runs its own gateway). The message is never run under another profile.
 - Handles use `$`, not `@`, on purpose: `@name` would ping real users or roles.
 - Each turn is an ordinary turn in that profile's session for the channel. A later message without a handle goes back to the channel's normal profile. A turn started this way is not remembered across restarts as belonging to that profile, so a background notification that arrives after a restart may not be delivered back to the channel.
 

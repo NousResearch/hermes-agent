@@ -373,6 +373,21 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
             save_config(cfg)
 
 
+def write_profile_discord_mention(profile_dir: Path, handle: str = "") -> None:
+    """Opt ``profile_dir`` in to Discord ``$<profile>`` mentions in its OWN config.yaml:
+    ``discord.mentionable: true``, plus ``discord.mention_handle`` when *handle* is set (else the
+    handle is the profile name). The Discord plugin reads these keys from each profile a gateway
+    serves (``plugins/platforms/discord/adapter_profile_mentions.py``)."""
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+    from tui_gateway.launch_profile_policy import profile_config_scope
+    with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:
+        cfg = load_config()
+        discord = cfg.get("discord") if isinstance(cfg.get("discord"), dict) else {}
+        cfg["discord"] = {**discord, "mentionable": True, **({"mention_handle": handle} if handle else {})}
+        save_config(cfg)
+
+
 def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
     """Write ``hermes_cli.web_models.MCPServerCreate`` entries into ``profile_dir``'s config.yaml.
 

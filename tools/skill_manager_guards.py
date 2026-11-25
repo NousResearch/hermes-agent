@@ -261,11 +261,13 @@ _cap_held: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_he
 
 
 def _count_agent_created() -> int:
-    """One rule: a curator-managed record takes a slot iff ``_find_skill`` (the resolver every skill_manage
-    call uses, in catalog precedence, refusing ambiguous names) resolves its key to a skill on disk, and
-    each resolved directory counts once, unless that directory's OWN record (keyed by its directory name,
-    what ``record_created`` writes) says it is not curator-managed: a user skill never borrows a slot from
-    another record that resolves to it by display name. Strict read: raises on a damaged sidecar."""
+    """One rule: a curator-managed record takes a slot for the skill ``_find_skill`` (the resolver every
+    skill_manage call uses, catalog precedence, ambiguous names refused) addresses with it, each skill
+    directory once. A record naming the directory itself (what ``record_created`` writes) counts in any
+    state, since the skill is on disk (a ``curator rollback`` restore leaves it marked archived). A record
+    reaching the skill only through its frontmatter name (what ``curator adopt <display name>`` writes)
+    counts while it is not archived, so a stale record never hands its slot to an unrelated user skill
+    that later took the same display name. Strict read: raises on a damaged sidecar."""
     from tools import skill_manager_tool as _smt
     from tools import skill_usage
     usage, bundled = skill_usage._load_usage_strict(), skill_usage._read_bundled_names()
@@ -273,8 +275,7 @@ def _count_agent_created() -> int:
     for name, rec in usage.items():
         if not skill_usage._is_curator_managed_record(rec) or name in bundled or not (found := _smt._find_skill(name)):
             continue
-        own = usage.get(found["path"].name)
-        if own is None or skill_usage._is_curator_managed_record(own):
+        if found["path"].name == name or rec.get("state") != skill_usage.STATE_ARCHIVED:
             owned.add(found["path"].resolve())
     return len(owned)
 

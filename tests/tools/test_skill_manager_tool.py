@@ -1670,10 +1670,15 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
 
 
 def test_max_agent_created_two_concurrent_reviews_cannot_share_the_last_slot(tmp_path, monkeypatch):
-    """Two review forks racing for the one free slot: exactly one create lands."""
+    """A user skill adopted by its display name (real `curator adopt`) takes one of two slots; two review
+    forks then race for the last one: exactly one create lands."""
     from tools.skill_provenance import BACKGROUND_REVIEW, set_current_write_origin
+    from tools.skill_usage import adopt_skill
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text("curator:\n  max_agent_created: 1\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("curator:\n  max_agent_created: 2\n", encoding="utf-8")
+    report = "---\nname: weekly-report\ndescription: Use when testing the cap.\n---\n\nStep.\n"
+    assert json.loads(skill_manage(action="create", name="weekly", content=report))["success"]
+    assert adopt_skill("weekly-report")[0]
     import tools.skill_manager_tool as smt
     real_create, gate = smt._create_skill, threading.Barrier(2, timeout=2)
 

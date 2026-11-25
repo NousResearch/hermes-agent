@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -107,19 +107,46 @@ describe('Appearance overview', () => {
     expect($toursEnabled.get()).toBe(true)
   })
 
-  it('keeps advanced controls collapsed until requested and retains custom size presets', () => {
+  it('keeps advanced controls collapsed until requested and never repeats the overview text size', () => {
     const { container } = renderPage('general')
     const advanced = container.querySelector('details')!
     expect(advanced.open).toBe(false)
 
     fireEvent.click(advanced.querySelector('summary')!)
     expect(advanced.open).toBe(true)
-    fireEvent.click(screen.getAllByRole('button', { name: '175%' })[1]!)
-    expect($chatTextScale.get()).toBe(175)
-    // Advanced repeats neither half of the overview's one "Tips & guided tours" switch.
+    // The overview's "Text size" row is the one chat text-size control; Advanced repeats neither
+    // it nor either half of the overview's one "Tips & guided tours" switch.
+    expect(screen.queryByText('Chat Text Size')).toBeNull()
     expect(screen.queryByRole('switch', { name: 'In-App Tips' })).toBeNull()
     expect(screen.queryByRole('switch', { name: 'Guided Tours' })).toBeNull()
     expect(screen.getAllByRole('switch', { name: 'Tips & guided tours' })).toHaveLength(1)
+  })
+
+  it('renders one text-size control in the redesign and keeps the classic percentage row', () => {
+    // Redesign: the single text-size control is the overview's three named steps.
+    const redesign = renderPage()
+    const redesignRow = redesign.container.ownerDocument.getElementById(
+      settingElementId(SETTING_IDS.appearance.chatTextScale)
+    )!
+    const redesignOptions = within(redesignRow)
+      .getAllByRole('button')
+      .map(button => button.textContent)
+    expect(redesignOptions).toEqual(['Small', 'Default', 'Large'])
+    fireEvent.click(redesign.container.querySelector('details summary')!)
+    expect(screen.queryByText('Chat Text Size')).toBeNull()
+    redesign.unmount()
+
+    // Classic: the same deep-link id lands on ChatTextScaleRow with the full percentage presets.
+    $shellChoice.set(false)
+    const classic = renderPage('typography')
+    const classicRow = classic.container.ownerDocument.getElementById(
+      settingElementId(SETTING_IDS.appearance.chatTextScale)
+    )!
+    const classicOptions = within(classicRow)
+      .getAllByRole('button')
+      .map(button => button.textContent)
+    expect(within(classicRow).getByText('Chat Text Size')).toBeTruthy()
+    expect(classicOptions).toEqual(['90%', '100%', '110%', '125%', '150%', '175%'])
   })
 
   it('lands the tips and tours deep links on the one tips switch', () => {

@@ -27,7 +27,7 @@ export interface ChatItemsCopy {
 
 const en: ChatItemsCopy = {
   pane: 'Items',
-  tabs: { all: 'All', artifacts: 'Artifacts', files: 'Files', web: 'Web' },
+  tabs: { all: 'All', artifacts: 'Library', files: 'Files', web: 'Web' },
   tabsLabel: 'Chat items',
   seeAll: section => `See all ${section}`,
   seeAllShort: 'See all',
@@ -44,7 +44,7 @@ const en: ChatItemsCopy = {
 
 const fr: ChatItemsCopy = {
   pane: 'Éléments',
-  tabs: { all: 'Tout', artifacts: 'Artefacts', files: 'Fichiers', web: 'Web' },
+  tabs: { all: 'Tout', artifacts: 'Bibliothèque', files: 'Fichiers', web: 'Web' },
   tabsLabel: 'Éléments de la discussion',
   seeAll: section => `Tout voir : ${section}`,
   seeAllShort: 'Tout voir',
@@ -62,7 +62,7 @@ const fr: ChatItemsCopy = {
 
 const de: ChatItemsCopy = {
   pane: 'Elemente',
-  tabs: { all: 'Alle', artifacts: 'Artefakte', files: 'Dateien', web: 'Web' },
+  tabs: { all: 'Alle', artifacts: 'Bibliothek', files: 'Dateien', web: 'Web' },
   tabsLabel: 'Elemente des Chats',
   seeAll: section => `Alle ${section} anzeigen`,
   seeAllShort: 'Alle anzeigen',
@@ -80,7 +80,7 @@ const de: ChatItemsCopy = {
 
 const es: ChatItemsCopy = {
   pane: 'Elementos',
-  tabs: { all: 'Todo', artifacts: 'Artefactos', files: 'Archivos', web: 'Web' },
+  tabs: { all: 'Todo', artifacts: 'Biblioteca', files: 'Archivos', web: 'Web' },
   tabsLabel: 'Elementos del chat',
   seeAll: section => `Ver todo: ${section}`,
   seeAllShort: 'Ver todo',
@@ -98,7 +98,7 @@ const es: ChatItemsCopy = {
 
 const ja: ChatItemsCopy = {
   pane: 'アイテム',
-  tabs: { all: 'すべて', artifacts: 'アーティファクト', files: 'ファイル', web: 'Web' },
+  tabs: { all: 'すべて', artifacts: 'ライブラリ', files: 'ファイル', web: 'Web' },
   tabsLabel: 'チャットのアイテム',
   seeAll: section => `${section}をすべて表示`,
   seeAllShort: 'すべて表示',
@@ -116,7 +116,7 @@ const ja: ChatItemsCopy = {
 
 const zh: ChatItemsCopy = {
   pane: '项目',
-  tabs: { all: '全部', artifacts: '作品', files: '文件', web: '网页' },
+  tabs: { all: '全部', artifacts: '资源库', files: '文件', web: '网页' },
   tabsLabel: '对话项目',
   seeAll: section => `查看全部${section}`,
   seeAllShort: '查看全部',
@@ -133,7 +133,7 @@ const zh: ChatItemsCopy = {
 
 const zhHant: ChatItemsCopy = {
   pane: '項目',
-  tabs: { all: '全部', artifacts: '作品', files: '檔案', web: '網頁' },
+  tabs: { all: '全部', artifacts: '資源庫', files: '檔案', web: '網頁' },
   tabsLabel: '對話項目',
   seeAll: section => `查看全部${section}`,
   seeAllShort: '查看全部',
@@ -150,7 +150,7 @@ const zhHant: ChatItemsCopy = {
 
 const ru: ChatItemsCopy = {
   pane: 'Элементы',
-  tabs: { all: 'Все', artifacts: 'Артефакты', files: 'Файлы', web: 'Веб' },
+  tabs: { all: 'Все', artifacts: 'Библиотека', files: 'Файлы', web: 'Веб' },
   tabsLabel: 'Элементы чата',
   seeAll: section => `Показать все: ${section}`,
   seeAllShort: 'Показать все',
@@ -168,7 +168,7 @@ const ru: ChatItemsCopy = {
 
 const ar: ChatItemsCopy = {
   pane: 'العناصر',
-  tabs: { all: 'الكل', artifacts: 'المخرجات', files: 'الملفات', web: 'الويب' },
+  tabs: { all: 'الكل', artifacts: 'المكتبة', files: 'الملفات', web: 'الويب' },
   tabsLabel: 'عناصر المحادثة',
   seeAll: section => `عرض كل ${section}`,
   seeAllShort: 'عرض الكل',

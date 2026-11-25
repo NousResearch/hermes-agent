@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef } from 'react'
 
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
@@ -19,6 +19,53 @@ import { PageToolbar } from './page-toolbar'
 // overlay (settings, system, agents, cron, …) — change it here, not per-surface.
 // Main content sits *under* the X (top-right) and keeps its own taller pad.
 export const OVERLAY_TOP_CLEARANCE = 'pt-[calc(var(--titlebar-height)/2-0.4375rem)]'
+
+/** A redesign page overlay takes keyboard focus on mount so Tab enters the page's own controls. The
+ *  live global-nav rail sits earlier in the DOM (the layout tree beside it is inert), so without
+ *  this the first Tab after a background element is blurred would land on the rail behind the page.
+ *  Focus goes back to whatever held it outside the overlay when the page closes, unless that element
+ *  is gone or now inert. Classic's floating card dims the shell it leaves interactive, so it must not
+ *  move focus — gate the whole thing on `page`. */
+function usePageOverlayFocus(page: boolean) {
+  const ref = useRef<HTMLDivElement>(null)
+  const restoreTo = useRef<HTMLElement | null>(null)
+
+  useLayoutEffect(() => {
+    const root = ref.current
+
+    if (!page || !root) {
+      return
+    }
+
+    const active = document.activeElement
+
+    if (active instanceof HTMLElement && active !== document.body && !root.contains(active)) {
+      restoreTo.current = active
+    }
+
+    // A descendant that already autofocused itself owns focus; don't yank it back to the container.
+    if (!root.contains(document.activeElement)) {
+      root.focus({ preventScroll: true })
+    }
+
+    return () => {
+      const target = restoreTo.current
+      restoreTo.current = null
+
+      // Hand focus back unless the user has since moved it somewhere real. The overlay's own
+      // container counts as ours to give up: browsers drop focus to `<body>` when the focused node is
+      // removed, and jsdom may leave the (now detached) node named.
+      const active = document.activeElement
+      const ours = !active || !active.isConnected || active === document.body || root.contains(active)
+
+      if (target?.isConnected && !target.closest('[inert]') && ours) {
+        target.focus({ preventScroll: true })
+      }
+    }
+  }, [page])
+
+  return ref
+}
 
 interface OverlayViewProps {
   children: ReactNode
@@ -48,6 +95,7 @@ export function OverlayView({
 }: OverlayViewProps) {
   const page = usePortalShell()
   const titlebarHeight = useTitlebarHeight()
+  const surfaceRef = usePageOverlayFocus(page)
 
   const closeOverlay = () => {
     triggerHaptic('close')
@@ -87,7 +135,7 @@ export function OverlayView({
         // since the card top already sits below them, the left needs no extra
         // inset — keeping all sides equal so the card is ~full-width at any size.
         page
-          ? 'bottom-0 start-(--global-nav-width) end-0 top-(--titlebar-height) bg-background'
+          ? 'bottom-0 start-(--global-nav-width) end-0 top-(--titlebar-height) bg-background outline-none'
           : 'inset-0 bg-black/22 p-[calc(var(--titlebar-height)+0.625rem)] backdrop-blur-[0.125rem] sm:p-[calc(var(--titlebar-height)+0.875rem)]'
       )}
       // Every OverlayView-based overlay (settings, command-center, agents, cron,
@@ -103,6 +151,7 @@ export function OverlayView({
           closeOverlay()
         }
       }}
+      ref={surfaceRef}
       role="presentation"
       // Window-level chrome: overlays always clear the real titlebar. The
       // contrib shell zeroes --titlebar-height for CONTENT areas (panes sit
@@ -111,6 +160,9 @@ export function OverlayView({
       // the edges. Re-pin the real height at the overlay root.
       // Classic's card insets from its compact band on every host, as on main.
       style={{ '--titlebar-height': `${page ? titlebarHeight : TITLEBAR_HEIGHT}px` } as CSSProperties}
+      // A redesign page's container is programmatically focused (usePageOverlayFocus) so Tab enters
+      // the page; it is not a control, so it stays out of the tab order and draws no focus ring.
+      tabIndex={page ? -1 : undefined}
     >
       {page && (
         <div className="absolute inset-x-0 bottom-full h-(--titlebar-height) bg-background [-webkit-app-region:drag]" data-slot="page-toolbar">

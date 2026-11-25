@@ -5,6 +5,7 @@ import type * as HermesApi from '@/hermes'
 import { getLogs } from '@/hermes'
 import { en } from '@/i18n/en'
 import { setInterfaceMode } from '@/store/interface-mode'
+import { setDocumentHidden } from '@/test/window-state'
 
 const mocks = vi.hoisted(() => ({
   notifyError: vi.fn(),
@@ -45,6 +46,8 @@ const renderPanel = (gatewayState: string) =>
       statusSnapshot={null}
     />
   )
+
+const flushAsync = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
 
 describe('GatewayMenuPanel reconnect action', () => {
   beforeEach(() => {
@@ -115,5 +118,65 @@ describe('GatewayMenuPanel reconnect action', () => {
       <GatewayMenuPanel {...props} inferenceStatus={{ ...props.inferenceStatus, source: 'runtime_check' }} />
     )
     expect(screen.getByText('Inference not ready')).toBeTruthy()
+  })
+})
+
+describe('GatewayMenuPanel log tail polling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    setDocumentHidden(false)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    setInterfaceMode('advanced')
+    vi.mocked(getLogs).mockClear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.mocked(document.hasFocus).mockRestore()
+    setDocumentHidden(false)
+    setInterfaceMode('advanced')
+  })
+
+  it('pauses the 3s tail while unfocused or hidden, and catches up on return', async () => {
+    renderPanel('open')
+    await flushAsync()
+    expect(getLogs).toHaveBeenCalledOnce()
+
+    // Another app in front (or an occluded window macOS still calls visible).
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000 * 3) })
+    expect(getLogs).toHaveBeenCalledOnce()
+
+    setDocumentHidden(true)
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000 * 3) })
+    expect(getLogs).toHaveBeenCalledOnce()
+
+    // Back on screen: one catch-up read, without waiting out the interval.
+    setDocumentHidden(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushAsync()
+    expect(getLogs).toHaveBeenCalledTimes(2)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+    expect(getLogs).toHaveBeenCalledTimes(3)
+  })
+
+  it('catches up on focus while the window stays visible', async () => {
+    renderPanel('open')
+    await flushAsync()
+    expect(getLogs).toHaveBeenCalledOnce()
+
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+    expect(getLogs).toHaveBeenCalledOnce()
+
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    window.dispatchEvent(new Event('focus'))
+    await flushAsync()
+    expect(getLogs).toHaveBeenCalledTimes(2)
   })
 })

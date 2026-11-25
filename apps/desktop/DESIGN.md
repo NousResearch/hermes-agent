@@ -937,15 +937,14 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-frame-inset` | `1.25rem` | ″ | The page-frame contract: a page's content column sits centred in its stage (the frame past the page's sidebar panel, where it has one), as the chat column does, and never closer to the stage's edges than this inset. Figma left-anchors the column; the owner centres it. `(max-width: 639.98px)`: `1rem`. |
 | `--portal-workspace-inset-end` | `0.9375rem` | ″ | The workspace frame's gaps, where the artwork shows (Content 16292:14463): 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). Beside a rail there is none: the frame starts at the rail's own edge, not Figma's 5px past it, so a rail's buttons stand as far from the frame as from the window's edge. |
 | `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
-| `--portal-status-bar-rest-opacity` | `0.85` | ″ | The status bar ("status bar", rev 11/16: Frame 403 1262:39850) stands in the floor under the frame: 20px chips 9px apart, 12px off the window's floor and 8px under the frame, whose floor gap grows to 40px while the bar is open. Collapsed (1264:40699), its toggle floats 7px inside the frame's end corner. Open, it rests a step back so the floor stays quiet, and comes to full under the pointer or the keyboard. The step is small: at half ink the readouts could not be read over the artwork until the pointer found them. |
+| `--portal-status-bar-rest-opacity` | `0.95` | ″ | The status bar ("status bar", rev 11/16: Frame 403 1262:39850) stands in the floor under the frame: 20px chips 9px apart, 12px off the window's floor and 8px under the frame, whose floor gap grows to 40px while the bar is open. Collapsed (1264:40699), its toggle floats 7px inside the frame's end corner. Open, it rests a step back so the floor stays quiet, and comes to full under the pointer or the keyboard. The step is small: at half ink the readouts could not be read over the artwork until the pointer found them. |
 | `--portal-status-bar-height` | `1.25rem` | ″ |  |
 | `--portal-status-bar-gap` | `0.5625rem` | ″ |  |
 | `--portal-status-bar-floor` | `0.75rem` | ″ |  |
 | `--portal-status-bar-open-inset` | `2.5rem` | ″ |  |
 | `--portal-status-bar-corner` | `0.4375rem` | ″ |  |
 | `--portal-status-bar-glyph` | `0.8125rem` | ″ |  |
-| `--portal-welcome-glyph` | `1rem` | ″ | The first-time splash's glyphs (Onboarding 18695:17165, 18695:18477): 16 on a place's row and in its seen tile, 20 on a starter idea. |
-| `--portal-idea-glyph` | `1.25rem` | ″ |  |
+| `--portal-welcome-glyph` | `1rem` | ″ | The first-time splash's glyph (Onboarding 18695:17165, 18695:18477): 16 on a place's row and in its seen tile. |
 | `--portal-notice-strip-height` | `1.5rem` | ″ | The notice strip (app/shell/butterbar.tsx: the terms) is one 24px row at the window's floor, under the frame; while it shows, the status bar stands on it rather than over it. |
 | `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer: as wide as its stage allows, up to 960. The composer's card is the column's width and the turns stand inside it by the card's own inset, so a reply starts where the composer's text does and a prompt ends inside the card's far edge. Figma draws 440 (chat 16292:16175) and the column was 640; at either, a wide window left most of the stage empty beside a narrow column, and dragging the sidebar narrower gave the chat nothing. It now takes the room there is, as classic's does, with a cap so a line never runs the width of a wide monitor. |
 | `--portal-column-conversation` | `60rem` | ″ |  |
@@ -1381,21 +1380,20 @@ the composer card, the sidebar's agent slabs) and the skin's own primary (`--dt-
 shared component's default button outside pages and dialogs still paints) stay as they are. Every
 accent keeps the blue's AA duties in both modes (`tokens/portal-accent-contrast.test.ts`).
 
-A newcomer's empty chat is headed like the splash ("Welcome to Hermes", Figma 18695:18388) and lays four
-fixed starter ideas, each with its glyph, in two rows under the composer, then Hide
-(`app/discovery/starter-ideas.tsx`); after two chats in which a task finished, or Hide, they give way to
-Show ideas, and the composer asks for a task instead of rotating starters. Where the visitor must sign
-up before anything runs (`store/visitor-access.ts`; no page served today asks it), the composer's model
+A newcomer's empty chat is headed like the splash ("Welcome to Hermes", Figma 18695:18388) and the
+composer asks for a task instead of rotating starters (`app/discovery/starter-ideas.tsx`). The
+starter-idea strip the spec drew under it (four ideas with their glyphs, then Hide) was removed
+(HADESK-65). Where the visitor must sign up before anything runs (`store/visitor-access.ts`; no page
+served today asks it), the composer's model
 row is "Sign up to start", the chat sidebar's foot is "Create an Account" (before the usage-stats card,
 which waits for it), and what they send is held, not sent: the chat shows their message and Hermes'
 local answer with the way to sign up (`held-exchange.tsx`, 18695:18570), never as a transcript, and the
 held message runs first once they are signed in.
 
 As a newcomer settles in (Figma Onboarding 03, `$landingMoment` in `store/starter-ideas.ts`), the
-heading follows: "Welcome back." after a first finished task (C4), its line asking what to work on
-once the ideas are put away (C5: two finished chats, or Hide ideas, which stays until Show ideas),
-and "Good to see you again." when their newest chat has been still for 30 days (C8: Continue a recent
-chat and Show ideas in place of the chips; the next finished task settles it). At two finished chats
+heading follows: "Welcome back." after a first finished task (C4, C5), and "Good to see you again."
+when their newest chat has been still for 30 days (C8; the next finished task settles it). At two
+finished chats
 "How's Hermes going so far?" (`check-in.tsx`, C7) takes the heading's place until it is answered or
 dismissed; Dismiss puts it in the tray. Someone in Simple whose chat produced a code artifact is
 offered the developer view (`developer-view-offer.tsx`, C6: Advanced, previewed while its row is

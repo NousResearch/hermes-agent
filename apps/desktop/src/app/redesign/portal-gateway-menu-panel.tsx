@@ -87,11 +87,27 @@ function useGatewayLogTail() {
     }
 
     void load()
-    const timer = window.setInterval(load, LOG_POLL_MS)
+
+    // Only poll while this document is actually being looked at: macOS commonly
+    // leaves an occluded BrowserWindow `visible`, and a 3s tail then drains the
+    // machine's log file for a panel nobody can see. The same check doubles as
+    // the return path — focus/visibility fires it, so coming back takes one
+    // catch-up fetch instead of waiting out the interval.
+    const pollWhileViewed = () => {
+      if (document.visibilityState === 'visible' && document.hasFocus()) {
+        void load()
+      }
+    }
+
+    const timer = window.setInterval(pollWhileViewed, LOG_POLL_MS)
+    document.addEventListener('visibilitychange', pollWhileViewed)
+    window.addEventListener('focus', pollWhileViewed)
 
     return () => {
       cancelled = true
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', pollWhileViewed)
+      window.removeEventListener('focus', pollWhileViewed)
     }
   }, [])
 

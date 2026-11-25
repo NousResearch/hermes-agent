@@ -718,14 +718,14 @@ button.portal-section-title:hover {
   color: var(--ui-text-primary);
 }
 
-.portal-session-item:is(:hover, :focus-within, [data-state='open'], :has(.portal-row-action[data-state='open']))
+.portal-session-item:is(:hover, :has(:focus-visible), [data-state='open'], :has(.portal-row-action[data-state='open']))
   > .portal-row-action {
   opacity: 1;
 }
 
 .portal-session-item[data-actions]:is(
     :hover,
-    :focus-within,
+    :has(:focus-visible),
     [data-state='open'],
     :has(.portal-row-action[data-state='open'])
   )
@@ -1073,7 +1073,7 @@ button.portal-section-title:hover {
 }
 
 .portal-sidebar
-  [data-slot='agent-heading']:is(:hover, :focus-within, :has(.portal-agent-menu-trigger[data-state='open']))
+  [data-slot='agent-heading']:is(:hover, :has(:focus-visible), :has(.portal-agent-menu-trigger[data-state='open']))
   :is(.portal-agent-new, .portal-agent-menu-trigger),
 .portal-sidebar .portal-agent-collapse {
   opacity: 1;
@@ -1179,7 +1179,7 @@ button.portal-section-title:hover {
 }
 
 .portal-agent-sessions
-  .portal-session-item:is(:hover, :focus-within, [data-state='open'], :has(.portal-row-action[data-state='open']))
+  .portal-session-item:is(:hover, :has(:focus-visible), [data-state='open'], :has(.portal-row-action[data-state='open']))
   > .portal-session-row,
 .portal-agent-sessions .portal-session-row:is([aria-current='page'], :has(> .portal-row-mark[data-state='unread'])) {
   color: var(--portal-sidebar-row-selected-ink);
@@ -1475,12 +1475,12 @@ button.portal-section-title:hover {
   pointer-events: none;
 }
 
-.portal-hidden-row[data-attention]:is(:hover, :focus-within) .portal-hidden-show {
+.portal-hidden-row[data-attention]:is(:hover, :has(:focus-visible)) .portal-hidden-show {
   opacity: 1;
   pointer-events: auto;
 }
 
-.portal-hidden-row[data-attention]:is(:hover, :focus-within) > .portal-hidden-dot {
+.portal-hidden-row[data-attention]:is(:hover, :has(:focus-visible)) > .portal-hidden-dot {
   opacity: 0;
 }
 

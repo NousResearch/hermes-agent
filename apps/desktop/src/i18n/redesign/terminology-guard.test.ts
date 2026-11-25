@@ -9,6 +9,7 @@ import { useAgentSettingsEditorCopy } from '@/app/agent-settings/settings-copy'
 import { useAgentSettingsLayoutCopy } from '@/app/agent-settings/settings-layout-copy'
 import { useCapabilitiesPageDescription } from '@/app/capabilities/page-copy'
 import { agentCapabilityCopy } from '@/app/capabilities/ui/agent-capability-copy'
+import { chatItemsCopy } from '@/app/chat/items/chat-items-copy'
 import { useHiddenAgentCopy } from '@/app/chat/sidebar/hidden-agent-copy'
 import { useNewSessionCopy } from '@/app/chat/sidebar/simplified-new-session-copy'
 import { discoveryCopy } from '@/app/discovery/discovery-copy'
@@ -189,6 +190,7 @@ function redesignCopyModules(): Record<string, unknown> {
     appearanceAdvanced: appearanceAdvancedCopy('en'),
     appearanceOverview: appearanceOverviewCopy('en'),
     capabilitiesPage: hook(useCapabilitiesPageDescription),
+    chatItems: chatItemsCopy('en'),
     designSystem: designSystemCopy('en'),
     discovery: discoveryCopy('en'),
     firstTime: firstTimeCopy('en'),

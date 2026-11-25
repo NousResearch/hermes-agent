@@ -64,3 +64,43 @@ it('dismisses a nested dialog before the page and restores its trigger focus', a
   fireEvent.keyDown(trigger, { key: 'Escape' })
   expect(close).toHaveBeenCalledOnce()
 })
+
+it('moves keyboard focus into the page on mount and hands it back on close (redesign)', () => {
+  $shellChoice.set(true)
+  // Stand in for the background the page covers: the chat composer and the live global-nav rail.
+  const background = render(<button>Background</button>).getByRole('button')
+  background.focus()
+  expect(document.activeElement).toBe(background)
+
+  const { container, unmount } = render(<OverlayView onClose={() => undefined}>Settings</OverlayView>)
+  const surface = container.querySelector('[data-overlay-surface]')!
+
+  expect(document.activeElement).toBe(surface)
+  expect(surface.getAttribute('tabindex')).toBe('-1')
+
+  unmount()
+  expect(document.activeElement).toBe(background)
+})
+
+it('leaves focus on a control that autofocused itself inside the page (redesign)', () => {
+  $shellChoice.set(true)
+  render(
+    <OverlayView onClose={() => undefined}>
+      <input aria-label="Search" autoFocus />
+    </OverlayView>
+  )
+
+  expect(document.activeElement).toBe(screen.getByLabelText('Search'))
+})
+
+it('never moves focus in the classic card', () => {
+  $shellChoice.set(false)
+  const background = render(<button>Background</button>).getByRole('button')
+  background.focus()
+
+  const { container } = render(<OverlayView onClose={() => undefined}>Settings</OverlayView>)
+  const surface = container.querySelector('[data-overlay-surface]')!
+
+  expect(document.activeElement).toBe(background)
+  expect(surface.getAttribute('tabindex')).toBeNull()
+})

@@ -624,8 +624,8 @@ function UiScaleRow({ copy }: RowProps) {
   )
 }
 
-/** `linked`: this row is the deep-link target; the redesigned overview owns that id instead. */
-function ChatTextScaleRow({ linked }: { linked: boolean }) {
+/** Classic typography's chat text size; the redesigned overview owns this row ("Text size"). */
+function ChatTextScaleRow() {
   const { t } = useI18n()
   const a = t.settings.appearance
   const chatTextScale = useStore($chatTextScale)
@@ -643,7 +643,7 @@ function ChatTextScaleRow({ linked }: { linked: boolean }) {
         />
       }
       description={a.chatTextScaleDesc}
-      id={linked ? settingElementId(ids.chatTextScale) : undefined}
+      id={settingElementId(ids.chatTextScale)}
       title={a.chatTextScaleTitle}
     />
   )
@@ -653,7 +653,7 @@ function AppearanceTypographySettings() {
   return (
     <>
       <UiScaleRow />
-      <ChatTextScaleRow linked />
+      <ChatTextScaleRow />
       <div id={settingElementId(ids.chatFont)}>
         <ChatFontSetting />
       </div>
@@ -1331,7 +1331,6 @@ export function AppearanceAdvancedSettings() {
       </AdvancedGroup>
       <AdvancedGroup title={copy.groups.device}>
         <AppearanceThemeSettings compact query={query} setQuery={setQuery} />
-        <ChatTextScaleRow linked={false} />
         <div id={settingElementId(ids.terminalFont)}>
           <TerminalFontSetting />
         </div>

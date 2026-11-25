@@ -261,7 +261,7 @@ function EmptyItems({ copy, sessionId }: { copy: ChatItemsCopy; sessionId: null 
 
 /** The chat items pane (Figma "Dev · chat panel" 1083:8348, "Non-dev · chat panel" 1095:9308): the
  *  focused chat's artifacts, files and links, under the routines of its agent (rev 11/16, 1264:40927).
- *  Developer mode tabs them (All / Routines / Artifacts / Files / Web); simple mode lists them under one "All items" head and closes from it. An artifact opens
+ *  Developer mode tabs them (All / Routines / Library / Files / Web); simple mode lists them under one "All items" head and closes from it. An artifact opens
  *  inside the pane (05 "Item from list"); a file opens in the preview, a link through the app's link
  *  rules. Only what the transcript and the item index really hold is shown. */
 export function ChatItemsPane() {

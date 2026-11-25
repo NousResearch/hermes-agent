@@ -14,6 +14,25 @@
   --composer-fill: var(--portal-composer-fill);
 }
 
+/* Floating Composer, still docked: a 6px transparent grab band along the card's top edge. Without
+   it the only draggable target is the 5px margin around the card, which reads as part of the card
+   and is a graze to hit; the band gives the drag-out gesture a real target, and hovering it lights
+   the grab hatch (styles.css paints it at .33 — docked states the affordance louder, at .55).
+   Floating Composer off (no drag region to :has) and popped out: neither rule matches, the card is
+   byte-for-byte what it was. */
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  [data-slot='composer-root']:not([data-popped-out]):has(> [data-slot='composer-drag-region']) {
+  padding-block-start: 0.375rem;
+}
+
+:root[data-shell='portal']
+  [data-redesigned-composer]
+  [data-slot='composer-root']:not([data-popped-out]):has(> [data-slot='composer-drag-region'])
+  [data-slot='composer-drag-region']:is(:hover, [data-dragging]) {
+  opacity: 0.55;
+}
+
 /* The resting prompt is the card's heading line (16292:15681), in an ink a step back from typed
    text so it never reads as entered. The shared composer pins its hint's ink with !important
    (styles.css), so the redesign's line must too. */

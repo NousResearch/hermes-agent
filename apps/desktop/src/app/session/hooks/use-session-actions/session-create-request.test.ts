@@ -2,12 +2,22 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const requestGatewayForAgent = vi.fn()
+const ensureGatewayProfile = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@/store/gateway', () => ({
   requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
 }))
 
-import { createGatewaySession } from './session-create-request'
+vi.mock('@/store/profile', () => ({
+  ensureGatewayProfile: (...args: unknown[]) => ensureGatewayProfile(...args),
+  ensureGatewayAgent: vi.fn(),
+  normalizeProfileKey: (value: string) => value,
+  resolveNewChatOwnerRoute: () => null
+}))
+
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+
+import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
 
 // Verbatim admission rejections from older backends (tui_gateway/contracts/registry.py).
 const rejection = (field: string, suffix = '') =>
@@ -68,6 +78,7 @@ describe('createGatewaySession', () => {
       [new Error('request timed out'), params],
       [new Error('handler error: could not resolve cwd_explicit workspace'), params],
       [rejection('some_newer_field', OUT_OF_SYNC), params],
+      [rejection('desktop_project_id', OUT_OF_SYNC), { ...params, desktop_project_id: 'p_host-project-1' }],
       // The flag was never sent, so a resend would be identical.
       [PRE_122899_REJECTION, { cwd: '/work/repo' }]
     ]
@@ -78,5 +89,25 @@ describe('createGatewaySession', () => {
       await expect(createGatewaySession(null, sentParams, requestGateway)).rejects.toBe(failure)
       expect(requestGateway).toHaveBeenCalledTimes(1)
     }
+  })
+})
+
+describe('desktopSessionCreateParams', () => {
+  it('binds an entered Host Project by structured id, but ignores path-only project scopes', async () => {
+    $projectScope.set('p_host-project-1')
+    const enteredProject = await desktopSessionCreateParams('/inherited', null, 'default', false, false)
+
+    expect(enteredProject).toMatchObject({
+      source: 'desktop',
+      cwd: '/inherited',
+      desktop_project_id: 'p_host-project-1'
+    })
+
+    $projectScope.set('D:/work/local-folder-project')
+    const localFolder = await desktopSessionCreateParams('/inherited', null, 'default', false, false)
+
+    expect(localFolder).not.toHaveProperty('desktop_project_id')
+    expect(localFolder.cwd).toBe('/inherited')
+    $projectScope.set(ALL_PROJECTS)
   })
 })

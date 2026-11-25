@@ -1016,8 +1016,7 @@ _NONRETRYABLE_LABELS = {
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
 }
-# Extra guidance keyed by reason, emitted without a branch so the ladder above stays flat.
-_REASON_EXTRA_LINES = {FailoverReason.region_blocked: (
+_REASON_EXTRA_LINES = {FailoverReason.region_blocked: (  # Extra guidance without branching the ladder below.
     "   💡 The provider doesn't serve this region for this model — the key itself was accepted.",
     "      Switch providers (or egress from a supported region) with /model.")}
 
@@ -1106,8 +1105,7 @@ def nonretryable_client_error_result(
             "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry,",
             "      or check the proxy/WAF rules and your network.",
         )
-    # #148727: a region refusal accepted the key, so the guidance points at another provider.
-    _vlines(agent, *_REASON_EXTRA_LINES.get(classified.reason, ()))
+    _vlines(agent, *_REASON_EXTRA_LINES.get(classified.reason, ()))  # #148727: key accepted, pick another provider
     # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
     # or another model, not key/retry advice.
     if classified.reason == FailoverReason.content_policy_blocked:
@@ -1778,6 +1776,8 @@ def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bo
         return False
     agent._buffer_diagnostic_status(
         _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
+    from agent.fallback_notice import record_fallback_trigger
+    record_fallback_trigger(agent, classified.reason, str(error))
     if not agent._try_activate_fallback(reason=classified.reason):
         return False
     # The status above is dropped once the fallback answers: log the trigger (#152101).

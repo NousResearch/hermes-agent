@@ -13,7 +13,10 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli.active_sessions import try_acquire_active_session
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 
@@ -29,12 +32,12 @@ def resident(monkeypatch):
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    db = open_persistence(profile_scope(home=get_hermes_home()))
     monkeypatch.setattr(server, "_db", db)
     records, competitors = [], []
 
     def add(sid: str) -> dict:
-        db.create_session(sid, source="desktop")
+        seed_session(db, sid, "desktop")
         ready = threading.Event()
         ready.set()
         long_ago = time.time() - 3600
@@ -69,13 +72,13 @@ def resident(monkeypatch):
 def _seed(db, sid: str) -> list[int]:
     ids = []
     for n in range(3):
-        ids.append(db.append_message(sid, "user", f"question {n}"))
-        db.append_message(sid, "assistant", f"answer {n}")
+        ids.append(seed_messages(db, sid, {"role": "user", "content": f"question {n}"})[0])
+        seed_messages(db, sid, {"role": "assistant", "content": f"answer {n}"})
     return ids
 
 
 def _active_contents(db, sid: str) -> list[str]:
-    return [m["content"] for m in db.get_messages_as_conversation(sid)]
+    return [m["content"] for m in conversation(db, sid)]
 
 
 @pytest.mark.parametrize("path", ["prompt.submit rewind", "session.undo"])
@@ -83,15 +86,15 @@ def test_idle_released_record_never_rewinds_the_new_owners_transcript(resident, 
     sid = path.replace(" ", "-").replace(".", "-")
     record = resident.add(sid)
     ids = _seed(resident.db, sid)
-    record["history"] = resident.db.get_messages_as_conversation(sid, include_row_ids=True)
+    record["history"] = conversation(resident.db, sid, ConversationRequest(include_row_ids=True))
 
     def other_surface_takes_the_chat(*, writes: bool = True):
         server._reap_idle_sessions()  # the real idle tick releases the lease
         lease, _refusal = resident.compete(sid)
         assert lease is not None, "precondition: the idle release freed the chat"
         if writes:
-            resident.db.append_message(sid, "user", "telegram message")
-            resident.db.append_message(sid, "assistant", "telegram answer")
+            seed_messages(resident.db, sid, {"role": "user", "content": "telegram message"},
+                          {"role": "assistant", "content": "telegram answer"})
 
     if path == "session.undo":
         # The new owner has claimed the chat but not written yet: the warm history still matches the store.

@@ -70,9 +70,10 @@ _SELF_UPDATE_WRITE = (r"writeTextFile|renamePath|writeFile\(|writeFileSync|renam
                       r"|cpSync|createWriteStream")
 _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*.cts")
 # Maintainer-reviewed exceptions to the self-updater gate: a file that downloads a THIRD-PARTY tool
-# pinned by checksum (not the plugin's own code) and unpacks it into its cache. Keyed by repo +
-# pinned sha + path + the file's sha256, so a re-pin or any edit to the file is gated again. It
-# lives under scripts/ci/, which an entry PR may not touch (catalog_changed_entries.py).
+# pinned by checksum (not the plugin's own code) and unpacks it into its cache, or a file the grep
+# misreads because it fetches nothing (a URL it only records, a test with a fake fetch). Keyed by
+# repo + pinned sha + path + the file's sha256, so a re-pin or any edit to the file is gated
+# again. It lives under scripts/ci/, which an entry PR may not touch (catalog_changed_entries.py).
 _SELF_UPDATER_ALLOWLIST = Path(__file__).resolve().with_name("catalog_self_updater_allowlist.json")
 # 600s: listed repos reach >1 GB (hermes-jackal-verified 1.43 GB, hindsight 741 MB); 120s would
 # false-fail a re-pin on a slow runner.

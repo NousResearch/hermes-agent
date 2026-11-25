@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 def test_terminal_and_config_secret_projections_recover_without_durable_values(tmp_path, monkeypatch):
     from gateway.session_policy import build_policy, bind_launch_key, policy_scope
+    from persistence_assembly import profile_scope
     from tools.terminal_scope import terminal_env
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     secret = 'opaque-terminal-header-secret'
@@ -16,6 +17,7 @@ def test_terminal_and_config_secret_projections_recover_without_durable_values(t
     policy = build_policy({'cwd': str(tmp_path), 'model': 'frozen'}, cfg, private_secrets=private)
     def owner():
         return SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / 'state.db'),
+                               persistence=SimpleNamespace(scope=profile_scope(home=tmp_path)),
                                profile_id='owned', instance_id='instance', epoch=1)
     policy = bind_launch_key(owner(), 'session', policy, None, config_secrets=private)
     assert secret not in json.dumps(asdict(policy))

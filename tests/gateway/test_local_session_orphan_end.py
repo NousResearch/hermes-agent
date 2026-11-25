@@ -6,11 +6,13 @@ receipt, ended or not, was restored into the live registry on each boot. The tur
 running (#106742); the row ends once it settles, through the epoch-fenced viewer-close path.
 """
 import asyncio
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.waiting import async_wait_until
 
 
@@ -29,7 +31,7 @@ async def _owner(tmp_path, monkeypatch):
         finalized.append(kwargs['reason'])
         return []
 
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
                              _finalize_session_off_loop=finalize)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
@@ -51,9 +53,9 @@ async def _attach(authority, sid):
 def _create(authority, text='earlier turn'):
     from gateway.session_local import create_local_session
     ref = create_local_session(authority, _viewer(authority).actor, {
-        'request_id': text, 'source': 'gui', 'cwd': str(Path(authority.db.db_path).parent), 'model': 'm',
+        'request_id': text, 'source': 'gui', 'cwd': str(authority.persistence.scope.profile_dir), 'model': 'm',
         'toolsets': []})
-    authority.db.append_message(ref.session_id, 'user', text)
+    seed_messages(authority.persistence, ref.session_id, {'role': 'user', 'content': text})
     return ref
 
 
@@ -76,19 +78,17 @@ def _stale_rows(monkeypatch):
 
 
 def _stored_close(db, sid):
-    from gateway.session_viewer_close import CLOSE_PREFIX
-    return db.get_meta(CLOSE_PREFIX + sid)
+    return db.state_meta.get('gateway.viewer_close.v1:' + sid)
 
 
 @pytest.mark.asyncio
 async def test_a_dropped_viewer_ends_the_session_after_its_turn_settles(tmp_path, monkeypatch):
     import gateway.session_finite as finite
     import tools.async_delegation as delegation
-    from hermes_state_runtime import admit_session_input, list_session_admissions
 
     armed = _capture_timers(monkeypatch)
     authority, finalized = await _owner(tmp_path, monkeypatch)
-    db, ref = authority.db, _create(authority)
+    db, ref = authority.persistence, _create(authority)
     sid, user = ref.session_id, authority.sessions[ref.session_id].source.user_id
     viewer, _ = await _attach(authority, sid)
     started, release, executed, refused = asyncio.Event(), asyncio.Event(), [], []
@@ -101,7 +101,7 @@ async def test_a_dropped_viewer_ends_the_session_after_its_turn_settles(tmp_path
     monkeypatch.setattr(finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(delegation, 'refuse_for_session', lambda *a, **k: refused.append(a))
     monkeypatch.setattr(delegation, 'interrupt_for_session', lambda *a, **k: refused.append(k))
-    admit_session_input(db, epoch=authority.epoch, principal_id=user, session_id=sid,
+    db.admissions.admit(epoch=authority.epoch, principal_id=user, session_id=sid,
                         request_id='r1', payload={'text': 'long turn'})
     authority._schedule(ref)
     await asyncio.wait_for(started.wait(), 10)
@@ -111,19 +111,19 @@ async def test_a_dropped_viewer_ends_the_session_after_its_turn_settles(tmp_path
     armed[0][1]()
     await async_wait_until(lambda: _stored_close(db, sid) is not None)
     # The turn keeps running and nothing it started is refused; the row stays open meanwhile.
-    assert db.get_session(sid)['ended_at'] is None and executed == [] and refused == []
+    assert session_row(db, sid)['ended_at'] is None and executed == [] and refused == []
 
     release.set()
     await async_wait_until(lambda: finalized == ['ws_orphan_reap'])  # the end hooks run after the stamp
-    assert db.get_session(sid)['end_reason'] == 'ws_orphan_reap'
+    assert session_row(db, sid)['end_reason'] == 'ws_orphan_reap'
     assert executed == ['long turn'] and _stored_close(db, sid) is None
 
-    admit_session_input(db, epoch=authority.epoch, principal_id=user, session_id=sid,
+    db.admissions.admit(epoch=authority.epoch, principal_id=user, session_id=sid,
                         request_id='r2', payload={'text': 'next turn'})
     authority._schedule(ref)
     await async_wait_until(lambda: executed == ['long turn', 'next turn'])
-    await async_wait_until(lambda: not list_session_admissions(db, session_id=sid))
-    assert db.get_session(sid)['ended_at'] is None  # reopened on the same id
+    await async_wait_until(lambda: not db.admissions.list(session_id=sid))
+    assert session_row(db, sid)['ended_at'] is None  # reopened on the same id
 
 
 @pytest.mark.asyncio
@@ -138,41 +138,37 @@ async def test_a_viewer_back_within_the_grace_keeps_the_session_open(tmp_path, m
 
     armed[0][1]()  # a timer that fired anyway finds the viewer back
     await asyncio.sleep(0)
-    assert authority.pending_closes == {} and _stored_close(authority.db, sid) is None
-    assert authority.db.get_session(sid)['ended_at'] is None and finalized == []
+    assert authority.pending_closes == {} and _stored_close(authority.persistence, sid) is None
+    assert session_row(authority.persistence, sid)['ended_at'] is None and finalized == []
 
 
 @pytest.mark.asyncio
 async def test_an_orphan_end_leaves_an_unknown_turn_for_its_user(tmp_path, monkeypatch):
     """Nobody closed the session, so nobody decided to drop the turn a hard-killed owner lost."""
-    from hermes_state_runtime import admit_session_input, claim_session_input, get_session_admission
-
     armed = _capture_timers(monkeypatch)
     first, _ = await _owner(tmp_path, monkeypatch)
     sid = _create(first).session_id
-    admit_session_input(first.db, epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,
-                        session_id=sid, request_id='r1', payload={'text': 'mid-turn'})
-    row = claim_session_input(first.db, epoch=first.epoch, session_id=sid)
+    first.persistence.admissions.admit(epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,
+                                       session_id=sid, request_id='r1', payload={'text': 'mid-turn'})
+    row = first.persistence.admissions.claim(epoch=first.epoch, session_id=sid)
     authority, finalized = await _owner(tmp_path, monkeypatch)  # SIGKILL, then the next owner
-    assert get_session_admission(authority.db, admission_id=row['admission_id'])['status'] == 'unknown'
+    assert authority.persistence.admissions.get(admission_id=row.admission_id).status == 'unknown'
 
     viewer, _ = await _attach(authority, sid)
     await viewer.close()
     armed[-1][1]()
     from gateway.session_runtime_workers import mutation_tasks
     await asyncio.gather(*mutation_tasks(authority))  # the close is stored and its settle has run
-    assert _stored_close(authority.db, sid) is not None
-    assert get_session_admission(authority.db, admission_id=row['admission_id'])['status'] == 'unknown'
-    assert authority.db.get_session(sid)['ended_at'] is None and finalized == []
+    assert _stored_close(authority.persistence, sid) is not None
+    assert authority.persistence.admissions.get(admission_id=row.admission_id).status == 'unknown'
+    assert session_row(authority.persistence, sid)['ended_at'] is None and finalized == []
 
 
 @pytest.mark.asyncio
 async def test_boot_restores_only_open_sessions_and_an_ended_one_on_first_touch(tmp_path, monkeypatch):
-    from hermes_state_local import end_idle_local_session
-
     first, _ = await _owner(tmp_path, monkeypatch)
     ended, live = _create(first, 'finished').session_id, _create(first, 'ongoing').session_id
-    assert end_idle_local_session(first.db, epoch=first.epoch, session_id=ended, target_id=ended, reason='cli_close')
+    assert first.persistence.bindings.end_idle(epoch=first.epoch, session_id=ended, target_id=ended, reason='cli_close')
 
     authority, _ = await _owner(tmp_path, monkeypatch)
     assert live in authority.sessions and ended not in authority.sessions
@@ -185,7 +181,6 @@ async def test_boot_restores_only_open_sessions_and_an_ended_one_on_first_touch(
 @pytest.mark.parametrize('producer', ['delegation', 'process'])
 async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_session(tmp_path, monkeypatch, producer):
     """Boot leaves ended sessions unrestored, but not one whose background work has not reported yet."""
-    from hermes_state_local import end_idle_local_session
     from tests.gateway.test_completion_admission import pending
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _delegation_note, _process_event, _restart, _target
@@ -198,8 +193,8 @@ async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_sess
         evt = dict(pending(route, 'deleg_late'), parent_session_id=target)
     else:
         evt = _process_event(authority, ref, target, 'proc_late')
-    assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                  target_id=target, reason='cli_close')
+    assert authority.persistence.bindings.end_idle(epoch=authority.epoch, session_id=ref.session_id,
+                                                  target_id=target, reason='cli_close')
     runner, authority = await _restart(tmp_path, monkeypatch, authority)
     try:
         if producer == 'delegation':
@@ -208,9 +203,9 @@ async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_sess
             assert await runner._deliver_completion_notification('[finished] RESULT_proc_late', evt) is True
         await authority._drain(ref)
         assert len(_delegation_note(authority, target, evt.get('delegation_id', 'proc_late'))) == 1
-        assert authority.db.get_session(target)['end_reason'] == 'cli_close'
+        assert session_row(authority.persistence, target)['end_reason'] == 'cli_close'
     finally:
-        authority.db.close()
+        authority.persistence.close()
         delegation._reset_for_tests()
 
 
@@ -233,10 +228,10 @@ async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path,
     armed[0][1]()
     if viewer_returns:
         await asyncio.sleep(0)
-        assert authority.db.get_session(sid)['ended_at'] is None and finalized == []
+        assert session_row(authority.persistence, sid)['ended_at'] is None and finalized == []
     else:
         await async_wait_until(lambda: finalized == ['startup_orphan_reap'])
-        assert authority.db.get_session(sid)['end_reason'] == 'startup_orphan_reap'
+        assert session_row(authority.persistence, sid)['end_reason'] == 'startup_orphan_reap'
 
 
 @pytest.mark.asyncio
@@ -257,7 +252,7 @@ async def test_a_session_active_before_the_restart_is_kept_for_its_idle_classic_
 
 
 def test_the_startup_idle_probe_does_not_nest_its_read_context(tmp_path, monkeypatch):
-    """``_idle_s`` runs on the boot thread, and a SessionDB read must not open inside another.
+    """``_idle_s`` runs on the boot thread, and a store read must not open inside another.
 
     A read that lands on the degraded path (no WAL: DELETE journal / NFS fallback) waits on the
     writer's non-reentrant lock. Resolving the session id inside ``_idle_s``'s own read context
@@ -267,27 +262,28 @@ def test_the_startup_idle_probe_does_not_nest_its_read_context(tmp_path, monkeyp
     """
     from contextlib import contextmanager
     from gateway.session_viewer_close import _idle_s
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session(session_id='s1', source='cli', model='m')
-    original = db._read_ctx
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, 's1', 'cli', model='m')
+    holder = raw_holder(db)
+    original = holder._read_ctx
     depth = 0
 
     @contextmanager
-    def guarded_read_ctx():
+    def guarded_read_ctx(*args, **kwargs):
         nonlocal depth
         assert depth == 0, '_idle_s opened a read context inside another read context'
         depth += 1
         try:
-            with original() as conn:
+            with original(*args, **kwargs) as conn:
                 yield conn
         finally:
             depth -= 1
 
-    monkeypatch.setattr(db, '_read_ctx', guarded_read_ctx)
+    monkeypatch.setattr(holder, '_read_ctx', guarded_read_ctx)
     try:
-        assert _idle_s(SimpleNamespace(db=db), 's1') >= 0
+        assert _idle_s(SimpleNamespace(persistence=db), 's1') >= 0
     finally:
         db.close()
 
@@ -307,7 +303,7 @@ async def test_the_legacy_reap_opt_outs_hold_until_the_new_key_is_set(tmp_path, 
     first, _ = await _owner(tmp_path, monkeypatch)
     sid = _create(first).session_id
     await _attach(first, sid)
-    (Path(first.db.db_path).parent / 'config.yaml').write_text(config)
+    (first.persistence.scope.profile_dir / 'config.yaml').write_text(config)
 
     authority, _ = await _owner(tmp_path, monkeypatch)
     recover_local_sessions(authority, schedule=True)
@@ -321,14 +317,13 @@ async def test_the_legacy_reap_opt_outs_hold_until_the_new_key_is_set(tmp_path, 
 async def test_a_session_left_with_queued_input_ends_after_boot_once_it_drains(tmp_path, monkeypatch):
     import gateway.session_finite as finite
     from gateway.session_local_recovery import recover_local_sessions
-    from hermes_state_runtime import admit_session_input, list_session_admissions
 
     armed = _capture_timers(monkeypatch)
     _stale_rows(monkeypatch)
     first, _ = await _owner(tmp_path, monkeypatch)
     sid = _create(first).session_id
-    admit_session_input(first.db, epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,
-                        session_id=sid, request_id='r1', payload={'text': 'queued'})
+    first.persistence.admissions.admit(epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,
+                                       session_id=sid, request_id='r1', payload={'text': 'queued'})
     executed = []
 
     async def execute(authority, ref, row):
@@ -339,11 +334,11 @@ async def test_a_session_left_with_queued_input_ends_after_boot_once_it_drains(t
     authority, finalized = await _owner(tmp_path, monkeypatch)  # the gateway stopped before running it
     recover_local_sessions(authority, schedule=True)
     await async_wait_until(lambda: executed == ['queued']
-                           and not list_session_admissions(authority.db, session_id=sid))
+                           and not authority.persistence.admissions.list(session_id=sid))
     assert [delay for delay, _ in armed] == [300.0]
     armed[0][1]()
     await async_wait_until(lambda: finalized == ['startup_orphan_reap'])
-    assert authority.db.get_session(sid)['end_reason'] == 'startup_orphan_reap'
+    assert session_row(authority.persistence, sid)['end_reason'] == 'startup_orphan_reap'
 
 
 @pytest.mark.asyncio
@@ -351,7 +346,7 @@ async def test_a_dropped_viewer_expands_the_grace_against_its_own_profile(tmp_pa
     """The socket's close detaches outside the RPC's owner scope; the launch env must not answer."""
     armed = _capture_timers(monkeypatch)
     authority, _ = await _owner(tmp_path, monkeypatch)
-    home = Path(authority.db.db_path).parent
+    home = authority.persistence.scope.profile_dir
     (home / 'config.yaml').write_text('sessions:\n  orphan_end_grace_s: ${ORPHAN_GRACE}\n')
     (home / '.env').write_text('ORPHAN_GRACE=7\n')
     monkeypatch.setenv('ORPHAN_GRACE', '900')
@@ -389,12 +384,12 @@ async def test_a_sibling_torn_down_with_the_shared_socket_reads_its_own_grace(tm
 async def test_a_zero_grace_never_ends_a_detached_session(tmp_path, monkeypatch):
     armed = _capture_timers(monkeypatch)
     authority, _ = await _owner(tmp_path, monkeypatch)
-    (Path(authority.db.db_path).parent / 'config.yaml').write_text('sessions:\n  orphan_end_grace_s: 0\n')
+    (authority.persistence.scope.profile_dir / 'config.yaml').write_text('sessions:\n  orphan_end_grace_s: 0\n')
     sid = _create(authority).session_id
     viewer, _ = await _attach(authority, sid)
     await viewer.close()
     assert armed == [] and authority.orphan_closes == {}
-    assert authority.db.get_session(sid)['ended_at'] is None
+    assert session_row(authority.persistence, sid)['ended_at'] is None
 
 
 @pytest.mark.asyncio
@@ -421,7 +416,6 @@ async def test_a_session_the_tui_keeps_live_is_only_orphaned_when_its_connection
 @pytest.mark.asyncio
 async def test_a_watch_match_after_close_and_restart_is_noted_on_the_ended_session(tmp_path, monkeypatch):
     import queue
-    from hermes_state_local import end_idle_local_session
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _delegation_note, _restart, _target
 
@@ -429,8 +423,8 @@ async def test_a_watch_match_after_close_and_restart_is_noted_on_the_ended_sessi
     route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
     evt = {'type': 'watch_match', 'session_id': 'proc_watch', 'event_id': 'evt-1', 'command': 'serve',
            'pattern': 'READY', 'output': 'READY_proc_watch', 'session_key': route, 'parent_session_id': target}
-    assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                  target_id=target, reason='cli_close')
+    assert authority.persistence.bindings.end_idle(epoch=authority.epoch, session_id=ref.session_id,
+                                                  target_id=target, reason='cli_close')
     runner, authority = await _restart(tmp_path, monkeypatch, authority)
     try:
         completion_queue = queue.Queue()
@@ -439,6 +433,6 @@ async def test_a_watch_match_after_close_and_restart_is_noted_on_the_ended_sessi
         assert completion_queue.empty()  # admitted, not requeued
         await authority._drain(ref)
         assert len(_delegation_note(authority, target, 'READY_proc_watch')) == 1
-        assert authority.db.get_session(target)['end_reason'] == 'cli_close'
+        assert session_row(authority.persistence, target)['end_reason'] == 'cli_close'
     finally:
-        authority.db.close()
+        authority.persistence.close()

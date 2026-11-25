@@ -556,12 +556,12 @@ def _resolve_chat_argv(
     env["HERMES_TUI_DASHBOARD"] = "1"
 
     if resume:
-        _resume_db = _open_session_db_for_profile(
-            requested if profile_dir is not None else None, read_only=True)
+        resume_profile = requested if profile_dir is not None else None
+        store = _open_session_db_for_profile(resume_profile, read_only=True)
         try:
-            latest_resume, _latest_path = _session_latest_descendant(resume, _resume_db)
+            latest_resume, _latest_path = _session_latest_descendant(resume, store)
         finally:
-            _resume_db.close()
+            store.close()
         if latest_resume:
             resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume

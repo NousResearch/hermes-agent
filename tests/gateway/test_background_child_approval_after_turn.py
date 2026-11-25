@@ -90,7 +90,6 @@ def gate(monkeypatch):
     approval.unregister_gateway_notify(SESSION)
     with approval._lock:
         approval._gateway_queues.pop(SESSION, None)
-        approval._pending.pop(SESSION, None)
 
 
 def _turn(platform: Platform, adapter: _Adapter, loop: asyncio.AbstractEventLoop) -> TurnRunner:
@@ -215,7 +214,6 @@ def test_child_without_a_chat_fails_closed_instead_of_pending(gate):
         assert decisions[0]["outcome"] == "notify_failed"
         assert adapter.calls == []
         assert not approval.has_blocking_approval(SESSION)
-        assert SESSION not in approval._pending
     finally:
         ask.set()
         loop.call_soon_threadsafe(loop.stop)

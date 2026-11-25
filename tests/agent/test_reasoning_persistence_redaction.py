@@ -11,7 +11,9 @@ import pytest
 
 from agent.anthropic_thinking_replay import strip_rejected_thinking
 from agent.chat_completion_helpers import build_assistant_message
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 _SECRET = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 _THOUGHT = f"I will use the token {_SECRET} to call the API."
@@ -64,13 +66,12 @@ def _assistant_message():
 
 def _persist(tmp_path, msg):
     db_path = tmp_path / "state.db"
-    db = SessionDB(db_path=db_path)
-    db.create_session("s1", source="test")
-    db.append_message("s1", "assistant", msg["content"], reasoning=msg.get("reasoning"),
-                      reasoning_content=msg.get("reasoning_content"),
-                      reasoning_details=msg.get("reasoning_details"))
-    history = db.get_messages_as_conversation("s1")
-    db.close()
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "s1", "test")
+        seed_messages(db, "s1", {"role": "assistant", "content": msg["content"], "reasoning": msg.get("reasoning"),
+                                 "reasoning_content": msg.get("reasoning_content"),
+                                 "reasoning_details": msg.get("reasoning_details")})
+        history = conversation(db, "s1")
     con = sqlite3.connect(db_path)
     rows = con.execute("SELECT reasoning, reasoning_content, reasoning_details FROM messages").fetchall()
     con.close()

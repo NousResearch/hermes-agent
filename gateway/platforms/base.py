@@ -4135,15 +4135,15 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: dict[str, Any], human_delay: float,
         record_delivery: Callable) -> None:
-        """Batch-send images; a failure is logged (never raised) so other attachments still go.
-        The batch result feeds ``record_delivery`` so media-only turns report their real
-        outcome instead of FAILURE."""
+        """Batch-send images; a failure is logged (never raised) and recorded, so other attachments still go."""
         try:
             result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             result = SendResult(success=False, error=str(batch_err))
+        if result is not None and not result.success:
+            logger.warning("[%s] %d image(s) not delivered: %s", self.name, len(images), result.error)
         record_delivery(result)  # a footer the captioned photo lost goes out on its own (#74547):
         await send_footer_unless_captioned(self, event.source.chat_id, images, result, metadata, record_delivery)
 
@@ -4221,15 +4221,15 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def _deliver_attachments(self, event: MessageEvent, extracted: _ExtractedResponse,
                                    metadata: dict[str, Any], *, anything_sent: bool,
                                    record_delivery: Callable) -> None:
-        """Send extracted image URLs, MEDIA files and bare local files (human-paced),
-        then fail loudly if a non-empty response produced nothing deliverable. Attachment
-        results feed ``record_delivery`` so the turn outcome reflects them."""
-        human_delay = self._get_human_delay()
+        """Send image URLs, MEDIA files and bare local files (human-paced) on the CURRENT transport,
+        like the final text: a reconnect can retire this adapter mid-turn. Results feed ``record_delivery``."""
+        live = self._final_delivery_adapter(event.source)
+        human_delay = live._get_human_delay()
         images, media_files, local_files = extracted.images, extracted.media_files, extracted.local_files
         if images:
             logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-            await self._send_image_batch(event, images, metadata, human_delay, record_delivery)
-        await self._deliver_media_attachments(
+            await live._send_image_batch(event, images, metadata, human_delay, record_delivery)
+        await live._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
             human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)

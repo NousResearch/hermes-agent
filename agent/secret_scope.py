@@ -388,7 +388,7 @@ def _parse_env_text(text: str) -> dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> dict[str, str]:
+def load_env_file(env_path: Path, *, for_overwrite_check: bool = False) -> dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
@@ -396,11 +396,20 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
     into ``os.environ``. Absent/unreadable → ``{}``.
 
+    A file in the home of a profile a plugin runs elsewhere (``hermes_cli.profiles_run_elsewhere``) also
+    reads as ``{}`` and is not opened: that backend writes the file, so no reader on this host takes a
+    value from it. Hermes's own ``.env`` writers do not read through here and still write it.
+    *for_overwrite_check* is for a writer that asks what a file holds before it replaces the file: it
+    reads a marked home's file too, because "not read here" must not pass for "holds nothing".
+
     Memoised per path on the file's exact bytes (see the cache comment above). Always
     returns a fresh dict: callers mutate what they get back (``build_profile_secret_scope`` layers
     external secrets over it).
     """
     key = str(env_path)
+    from hermes_cli.profiles_run_elsewhere import home_runs_elsewhere
+    if not for_overwrite_check and home_runs_elsewhere(Path(env_path).parent):
+        return {}
     try:
         with open(env_path, "rb") as handle:
             raw = handle.read()
@@ -499,16 +508,24 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
     A scope is frozen when installed, but a fire can learn of new values afterwards: a routed cron
     fire's first agent build discovers plugin secret sources, and under multiplex semantics the
     reload that follows is hydrate-only (never ``os.environ``), so nothing else would carry those
-    values into the scope this fire already holds. The caller names the home the installed scope
-    was built for. True when a scope was updated; False when none is installed."""
+    values into the scope this fire already holds. True when a scope was updated; False when none
+    is installed, or when the installed scope belongs to another home than *hermes_home* (its stamp;
+    unstamped means the process home): another home's secrets never replace it."""
     bound = _bound_secrets()
     scope = bound.mapping if bound is not None else None
     if not isinstance(scope, dict):
         return False
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    owner = bound.profile_home or get_routing_process_hermes_home()
+    if hermes_home_key(owner) != hermes_home_key(hermes_home):
+        return False
     # REPLACE, don't merge: the rebuild is the profile's current truth, so a name a source has
     # stopped supplying (rotated, revoked, source removed) must disappear from the fire's scope
-    # rather than survive as the stale value dict.update() would keep.
-    rebuilt = build_profile_secret_scope(hermes_home)
+    # rather than survive as the stale value dict.update() would keep. Rebuilt through
+    # ``owner_secret_scope``: the process home's scope also carries the env frozen at activation
+    # (systemd / ``op run`` / docker ``-e`` keys, YAML-bridged allowlists) that no file can rebuild.
+    from tui_gateway.launch_profile_policy import owner_secret_scope
+    rebuilt = owner_secret_scope(hermes_home)
     # Update first, then drop what is gone: a concurrent reader never sees an emptied scope.
     scope.update(rebuilt)
     for name in [n for n in scope if n not in rebuilt]:

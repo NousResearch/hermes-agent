@@ -408,25 +408,43 @@ def test_handle_cancel_and_timeout(forks, consented):
     assert _settled(handle).outcome == "cancelled"
 
 
-def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented):
-    """``_loop_aux_task`` marks the fork's requests as auxiliary while it runs, and is cleared on
-    a clean finish and on an error exit alike."""
+def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented, monkeypatch):
+    """The run and error hook see the same single fork identity; the auxiliary mark clears."""
+    from contextvars import copy_context
+
+    from hermes_cli.plugin_session import fork_origin
+
+    origin = f"plugin_fork:{PLUGIN}"
     parent = _agent()
     during: list = []
+    closing: list = []
+
+    def observe_origin():
+        return fork_origin(), list(copy_context().values()).count(origin)
+
+    monkeypatch.setattr('agent.auxiliary_hooks.finish_aux_call_hooks',
+                        lambda *_a, **_kw: closing.append(observe_origin()))
 
     def _ok(fork):
-        during.append(fork._loop_aux_task)
+        during.append((fork._loop_aux_task, observe_origin()))
         return {"final_response": "done", "messages": []}
 
     def _boom(fork):
-        during.append(fork._loop_aux_task)
+        during.append((fork._loop_aux_task, observe_origin()))
+        fork._turn_origin = origin  # normally stamped by the builder
+        fork._loop_aux_hooks = object()  # provider failed before finishing its open hook pair
         raise RuntimeError("provider down")
 
-    for script in (_ok, _boom):
+    for script, outcome in ((_ok, "ok"), (_boom, "error")):
         forks.script = script
-        _settled(_ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q"))
-    assert during == [("plugin_fork", {"plugin_id": PLUGIN})] * 2
+        token = issue_side_question_token(parent, [], "turn-1")
+        assert token is not None
+        handle = _settled(_ctx(consented).fork_session(token, "q"))
+        assert handle.outcome == outcome
     assert [built["fork"]._loop_aux_task for built in forks.built] == [None, None]
+    assert closing == [(origin, 1)]
+    assert during == [(("plugin_fork", {"plugin_id": PLUGIN}), (origin, 1))] * 2
+    assert fork_origin() == ""
 
 
 def test_budget_exhaustion_and_errors_settle_the_handle(forks, consented):
@@ -646,13 +664,13 @@ def _call(call_id, name, arguments="{}"):
     return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments=arguments))
 
 
-def _run_turn_with_fork(monkeypatch, *, attempts=(["cw_offer"],), fork_replies=None, **fork_kwargs):
+def _run_turn_with_fork(monkeypatch, *, attempts=None, fork_replies=None, **fork_kwargs):
     """Live turn: calls cw_offer, answers. Its plugin forks the session from post_llm_call; the
     fork (by default) calls cw_other (not whitelisted) and cw_offer, then answers."""
     from run_agent import AIAgent
 
     probe = SimpleNamespace(calls=[], events=[], handles=[], prompt="Worth sharing with the team?",
-                            attempts=list(attempts), fork_kwargs=fork_kwargs)
+                            attempts=list(attempts or (["cw_offer"],)), fork_kwargs=fork_kwargs)
     monkeypatch.setitem(sys.modules, "_fork_probe", probe)
     _install_plugin(PLUGIN, declares=True, body=_E2E_PLUGIN)
     _load([PLUGIN], granted=[PLUGIN])

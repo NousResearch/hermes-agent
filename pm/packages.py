@@ -96,7 +96,7 @@ class BinaryPackage(Package):
         binary = self.binary(entry, target)
         if binary is None:
             return "no binary_rel for this target"
-        reason = self._binary_reason(binary, entry, target)
+        reason = self._binary_reason(binary, entry, target) or self.native_abi_reason(target)
         if reason:
             return reason
         if not self.probe_version or target != current_target():
@@ -866,9 +866,13 @@ class Git(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         tag, build = version.split("+")
         arch = "arm64" if target.endswith("arm64") else "64-bit"
+        # Git for Windows drops the revision from the artifact name on the
+        # first build of a tag (PortableGit-2.56.0, not 2.56.0.1); the
+        # release directory keeps it (v2.56.0.windows.1).
+        file_rev = "" if build == "1" else f".{build}"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
+            f"v{tag}.windows.{build}/PortableGit-{tag}{file_rev}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -1129,7 +1133,14 @@ class CuaDriver(BinaryPackage):
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v")
+        # trycua flags EVERY cua-driver-rs-v* release as a GitHub prerelease,
+        # including its stable channel (verified 2026-09-28: all 19
+        # stable-shaped tags carry prerelease=true, and the repo's
+        # /releases/latest points at sandbox releases instead), so the
+        # default filter would return [] and freeze the pin forever. The
+        # nightly-*/sandbox tags still never survive the version-shape
+        # filter in github_release_tags.
+        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v", include_prereleases=True)
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         flatten_single_dir(staged)
@@ -1407,6 +1418,7 @@ class LlamaCppCuda(LlamaCpp):
 
     name = "llamacpp-cuda"
     backend = "cuda"
+    minimum_glibc = {"linux-x64": (2, 38)}
     assets = {
         "win32-x64": "win-cuda-{toolkit}-x64",
         "win32-arm64": "win-cuda-{toolkit}-arm64",
@@ -1456,6 +1468,7 @@ class LlamaCppVulkan(LlamaCpp):
 class LlamaCppHip(LlamaCpp):
     name = "llamacpp-hip"
     backend = "hip"
+    minimum_glibc = {"linux-x64": (2, 38)}
     # Upstream renamed the ROCm archives to 10.0 at b10767 (cff184438e).
     assets = {
         "win32-x64": "win-rocm-10.0-x64",

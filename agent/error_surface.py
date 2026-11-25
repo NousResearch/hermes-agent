@@ -141,7 +141,7 @@ def auth_kind(provider: Optional[str]) -> str:
 
 def _disk_full(candidate: Any) -> bool:
     try:
-        from hermes_state_errors import is_disk_full_error
+        from storage_errors import is_disk_full_error
 
         return bool(is_disk_full_error(candidate))
     except Exception:  # pragma: no cover - defensive import guard
@@ -170,7 +170,7 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         if not error_text and not reason:
             return None
         # Disk-full wins outright: the fix (free space) is unrelated to the
-        # provider stack; hermes_state owns the pattern list.
+        # provider stack; storage_errors owns the pattern list.
         if error_text and _disk_full(error_text):
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
@@ -196,6 +196,11 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             if message := str(free_tier.get("message") or ""):
                 surface["message"] = message
             return surface
+        # The primary's login lapsed at route time and the fallback was refused too: signing the primary
+        # back in is the fix, so the card names it. A fallback rate limit or overflow keeps its own card.
+        if (reason in ("auth", "auth_permanent") and isinstance(primary := result.get("primary_auth_failure"), dict)
+                and primary.get("provider")):
+            return _surface(LAYER_AUTH, "auth", False, str(primary["provider"]))
         if not reason:  # failed result without a classified reason (legacy paths)
             drop = _looks_like_stream_drop(error_text)
             return _surface(LAYER_STREAMING if drop else LAYER_PROVIDER, "stream_drop" if drop else "unknown", True, provider, model)

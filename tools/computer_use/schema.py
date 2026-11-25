@@ -202,7 +202,3 @@ COMPUTER_USE_SCHEMA: dict[str, Any] = {
     ),
     "parameters": {"type": "object", "properties": _PROPERTIES, "required": ["action"]},
 }
-
-def get_computer_use_schema() -> dict[str, Any]:
-    """Return the generic OpenAI function-calling schema."""
-    return COMPUTER_USE_SCHEMA

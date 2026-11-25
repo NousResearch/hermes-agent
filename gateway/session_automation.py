@@ -14,6 +14,7 @@ from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session_contract import SessionRef
 from gateway.session_persistence import authority_persistence
+from persistence.authority.admissions import GateRefusal
 from persistence.core.errors import AuthorityRefusal
 from session_rules.automation import automation_descriptor as _descriptor
 
@@ -25,8 +26,18 @@ class AdmissionReplay:
     """A producer's created-versus-existing outcome (``admit_route_wake(..., request_id=...)``), stamped
     inside the admission's own write as ``TranscriptRewrite.applied`` is: None until the write ran, True
     when this call queued the row, False when an exact earlier admission already had. The idempotency
-    receipt a plugin card reports comes from here, never from a read before the admission."""
+    receipt a plugin card reports comes from here, never from a read before the admission.
+
+    ``existing_only``: the admission may only answer with a row an earlier admission of this identity
+    committed. The store decides that inside its one write, on the conversation the wake resolves to
+    there: an exact replay returns the row, another digest is ``admission_conflict``, and no row is
+    refused as the gate ``_EXISTING_ONLY`` (``not_found``) at the point a new row would be written,
+    so such a wake never queues its text anywhere."""
     created: bool | None = None
+    existing_only: bool = False
+
+
+_EXISTING_ONLY = GateRefusal('not_found', field='request_id', detail='no admission of this identity exists to replay')
 
 
 def producer_identity(runner, event):
@@ -736,10 +747,14 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
     def admit():
         # A replaced tick is cancelled in this admission's own transaction; one claimed or settled first
         # (its output already ran) refuses the replacement. A folded completion must also still be the
-        # queued tail but for the finishing process's ticks.
+        # queued tail but for the finishing process's ticks. An existing-only replay's gate refuses the
+        # new write the store would otherwise make; the gate is bypassed only by an exact existing row.
+        gate = authority.gate_refusal()
+        if gate is None and replay is not None and replay.existing_only:
+            gate = _EXISTING_ONLY
         row, created = store.admissions.admit(
             epoch=authority.epoch, principal_id='automation:' + entry.session_key, session_id=ref.session_id,
-            request_id=identity, payload=payload, gate=authority.gate_refusal(),
+            request_id=identity, payload=payload, gate=gate,
             supersedes=replaces if fold is None else None,
             fold=None if fold is None else QueuedFold(replaces, frozenset(fold)))
         replaced[:] = [replaces] if created and replaces is not None else []

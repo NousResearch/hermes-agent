@@ -3,11 +3,12 @@ while A's gateway stays up: A is asked for that exact turn's Stop. Its "holds no
 turn, a live hold keeps it (and gets the Stop), and Retry never starts another generation while A
 could still run the old one."""
 import json
-import sqlite3
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway import test_hosted_room_attempt_home_moves as _moves
 from tests.gateway.test_hosted_room_attempt_home_moves import _HOMES, _gone
 
@@ -19,11 +20,12 @@ def _legacy_move(homes):
     then point the profile at B."""
     homes.submit(homes.a)
     homes.defer(homes.a)
-    with sqlite3.connect(homes.source.db.db_path) as conn:
+    def forget_attempt_homes(conn):
         for (key,) in conn.execute('SELECT key FROM state_meta WHERE substr(key, 1, ?)=?',
                                    (len(_HOMES), _HOMES)).fetchall():
             if len(json.loads(key[len(_HOMES):])) == 4:
                 conn.execute('DELETE FROM state_meta WHERE key=?', (key,))
+    raw_holder(homes.source.db)._execute_write(forget_attempt_homes)
     homes.source.homes['other'] = str(homes.b)
     homes.calls.clear()
 
@@ -57,7 +59,7 @@ def test_retry_waits_for_a_live_older_home_that_may_run_the_turn(homes):
     _legacy_move(homes)
     homes.claim(homes.a)
     generation = homes.task['execution_generation']
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         _retry(homes)
     assert refused.value.reason == 'session_busy'
     assert refused.value.field == 'home'  # the detail names the older home
@@ -72,7 +74,6 @@ def test_an_older_home_restarted_mid_turn_settles_like_a_live_stop(homes):
     # reads inactive, as a live Stop's acknowledgement does, and Disband no longer waits on A.
     _legacy_move(homes)
     row = homes.claim(homes.a)
-    db = homes.targets[homes.a].db
-    db._execute_write(lambda conn: conn.execute(
+    raw_holder(authority_persistence(homes.targets[homes.a]))._execute_write(lambda conn: conn.execute(
         "UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],)))
     assert 'tombstone' in homes.disband()

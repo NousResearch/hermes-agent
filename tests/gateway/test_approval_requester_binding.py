@@ -29,7 +29,6 @@ def _runner(extra=None):
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
-    runner._pending_approvals = {}
     runner._running_agents = {}
     runner._background_tasks = set()
     return runner
@@ -51,7 +50,8 @@ def write_approvers(approvers):
 
 
 def pending_from(user_id, user_name, session_key, platform="telegram"):
-    """Enqueue an approval the way the agent thread does, inside the requester's turn."""
+    """Enqueue an approval the way the agent thread does, inside the requester's turn, with its card
+    shown whole (the Deny-only mark lifted)."""
     from gateway.session_context import clear_session_vars, set_session_vars
     from tools import approval as approval_mod
     from tools.approval_gateway_wait import _ApprovalEntry
@@ -62,6 +62,7 @@ def pending_from(user_id, user_name, session_key, platform="telegram"):
     finally:
         clear_session_vars(tokens)
     approval_mod._gateway_queues.setdefault(session_key, []).append(entry)
+    approval_mod.restrict_gateway_approval_card_to_deny(session_key, entry.data["request_id"], restricted=False)
     return entry
 
 

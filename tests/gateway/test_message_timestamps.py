@@ -236,8 +236,9 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     from gateway.config import GatewayConfig
     from gateway.run import _build_gateway_agent_history
     from gateway.session import SessionStore
-    from hermes_state import SessionDB
     from hermes_time import get_timezone
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_seed import seed_session
 
     sent_at = _epoch(2026, 4, 28, 13, 40, 53)
     messages = [{"role": "system", "content": "sys"},
@@ -260,18 +261,16 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     pasted = f"{_INFLIGHT_TASK_REPLAY_HEADER}\nthis is a pasted log"
     sent += [{"role": "user", "content": pasted, "timestamp": sent_at}, {"role": "assistant", "content": "ok"}]
 
-    db = SessionDB(db_path=tmp_path / "state.db")
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    store._db = db
+    db = store.persistence
     try:
-        db.create_session("room", source="matrix")
-        db.archive_and_compact("room", sent)
+        seed_session(db, "room", "matrix")
+        db.messages.compact("room", [NewMessage.from_live(m) for m in sent])
         first, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
         # A later in-session prune re-persists the replayed view; the next reload must still know the row.
-        db.archive_and_compact("room", first)
+        db.messages.compact("room", [NewMessage.from_live(m) for m in first])
         replay, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
     finally:
-        db.close()
         store.close_all_db_handles()
 
     def restatement(rows):
@@ -291,7 +290,8 @@ def test_compaction_summary_stays_unstamped_across_real_prune(tmp_path):
     from gateway.config import GatewayConfig
     from gateway.run import _build_gateway_agent_history
     from gateway.session import SessionStore
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_seed import seed_session
 
     summary = {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] retained summary",
                "_compressed_summary": True}
@@ -301,20 +301,18 @@ def test_compaction_summary_stays_unstamped_across_real_prune(tmp_path):
                      {"id": f"c{i}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
                  {"role": "tool", "tool_call_id": f"c{i}", "content": f"file {i} " + f"unique output {i} " * 5000}]
     rows += [{"role": "user", "content": "new task"}, {"role": "assistant", "content": "working"}]
-    db = SessionDB(db_path=tmp_path / "state.db")
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    store._db = db
+    db = store.persistence
     try:
-        db.create_session("room", source="matrix")
-        db.archive_and_compact("room", rows)
+        seed_session(db, "room", "matrix")
+        db.messages.compact("room", [NewMessage.from_live(m) for m in rows])
         first, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
         compressor = ContextCompressor(model="m", quiet_mode=True, config_context_length=100_000, protect_first_n=1,
                                        protect_last_n=2, proactive_prune_tokens=1, proactive_prune_min_reclaim_tokens=1)
-        compressor._session_db, compressor._session_id = db, "room"
+        compressor._session_db, compressor._persistence, compressor._session_id = db, db, "room"
         _, pruned = compressor.prune_tool_results_only(first, current_tokens=100_000)
         replay, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
     finally:
-        db.close()
         store.close_all_db_handles()
     assert pruned
     assert first[0]["content"] == replay[0]["content"] == summary["content"]

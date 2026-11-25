@@ -11,18 +11,20 @@ module whose helper tests monkeypatch there.
 from __future__ import annotations
 
 import importlib
-import sys
 from typing import Any
 
 WEB_SERVER = "hermes_cli.web_server"
 
 
 def _server(module: str = WEB_SERVER):
-    """Return the live ``module`` (imported on demand)."""
-    mod = sys.modules.get(module)
-    if mod is None:  # pragma: no cover - routers are only mounted by web_server
-        mod = importlib.import_module(module)
-    return mod
+    """Return the live ``module``, importing it on first use.
+
+    Not a ``sys.modules`` lookup: a module is listed there while another thread still runs its
+    body (router helpers also run in worker threads of processes that never imported their
+    module). ``import_module`` returns a loaded module directly and waits for one that another
+    thread is still importing.
+    """
+    return importlib.import_module(module)
 
 
 def late(name: str, module: str = WEB_SERVER):

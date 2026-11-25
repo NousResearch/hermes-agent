@@ -7,7 +7,7 @@ between the two halves, B has no row yet, and treating it as deleted hands the r
 the chat's next message continues the conversation the user just left. ``/resume`` has the same
 window: the resumed row is reopened only after the route names it.
 
-Real GatewayRunner, SessionAuthority, SessionStore and SessionDB; the commands run through their own
+Real GatewayRunner, SessionAuthority, SessionStore and store; the commands run through their own
 handlers. The window is held open at the real SQL statement that ends the predecessor row.
 """
 import asyncio
@@ -24,7 +24,10 @@ from gateway.run_runtime import initialize_gateway_runtime
 from gateway.runtime_ownership import process_ownership
 from gateway.session import SessionSource
 from gateway.session_ingress_context import register_transport_home
+from gateway.session_persistence import authority_persistence
+from persistence_assembly import close_stores_under
 from tests.waiting import async_wait_until
+from tests.fixtures.storage_holder import raw_holder
 
 
 class _Adapter:
@@ -37,15 +40,13 @@ def served(tmp_path, monkeypatch):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     config = GatewayConfig()
     config._runtime_profile_homes = (('default', root),)
     runner = GatewayRunner(config)
     process_ownership.reserve([root])
     yield runner, root
     for served_authority in list(getattr(runner, 'session_authorities', []) or []):
-        served_authority.db.close()
+        close_stores_under(served_authority.persistence.scope.profile_dir)
     process_ownership.release(root)
 
 
@@ -76,8 +77,8 @@ class _HoldPredecessorEnd:
     """Parks the route transition at the SQL that ends the route's previous row: the route already
     names the new conversation, and nothing of it is in state.db yet."""
 
-    def __init__(self, db):
-        self.conn, self.reached, self.release = db._conn, threading.Event(), threading.Event()
+    def __init__(self, store):
+        self.conn, self.reached, self.release = raw_holder(store)._conn, threading.Event(), threading.Event()
 
     def _trace(self, sql):
         if 'SET ended_at' in sql and not self.reached.is_set():
@@ -100,13 +101,13 @@ async def test_a_turn_finishing_mid_transition_leaves_the_chat_on_the_conversati
     store, chat = runner.session_store, _chat(adapter)
     key = runner._session_key_for_source(chat)
     a = authority.register(chat).session_id  # the chat's first message
-    authority.db.set_session_title(a, 'First chat')
+    authority.persistence.sessions.set_title(a, 'First chat')
     if command.startswith('/resume'):
         await _command(runner, chat, '/new')
         authority.register(chat)  # the chat talks in its second conversation, then resumes the first
     before = store.peek_session_id(key)
 
-    with _HoldPredecessorEnd(authority.db) as hold:
+    with _HoldPredecessorEnd(authority_persistence(authority)) as hold:
         transition = asyncio.create_task(_command(runner, chat, command))
         await async_wait_until(hold.reached.is_set, what='the transition reaches state.db')
         named = store.lookup_by_session_key(key)
@@ -128,4 +129,4 @@ async def test_a_turn_finishing_mid_transition_leaves_the_chat_on_the_conversati
     assert label(store.peek_session_id(key), 'a fresh one') == 'the conversation the command named'
     # Where the chat's next message lands.
     assert label(authority.register(chat).session_id, 'a fresh one') == 'the conversation the command named'
-    assert authority.db.get_session(before)['end_reason'] is not None
+    assert authority.persistence.sessions.get(before).end_reason is not None

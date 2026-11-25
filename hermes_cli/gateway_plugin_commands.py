@@ -347,7 +347,7 @@ def observe(cli, name, arg, *, runs=True):
     try:
         connection.call("command.observe", session_id=cli.session_id, name=name, arg=arg)
     except GatewayRPCError as exc:
-        if exc.code != -32601 and str(exc) != "unknown_method":
+        if not exc.unknown_method:
             logger.debug("command.observe /%s refused: %s", name, exc)
             return True
         cli._observe_unsupported = (connection, epoch)
@@ -375,7 +375,7 @@ def loaded(cli):
     try:
         rows = (connection.call("plugins.list") or {}).get("plugins") or []
     except GatewayRPCError as exc:
-        older = exc.code == -32601 or str(exc) == "unknown_method"
+        older = exc.unknown_method
         _cprint("  This gateway doesn't report its loaded plugins (it predates this CLI); restart it for load details."
                 if older else f"  The gateway's plugin list is unavailable ({exc}).")
         return {}

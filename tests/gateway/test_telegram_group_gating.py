@@ -823,6 +823,56 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("is_voice, from_bot", [(True, False), (True, True), (False, False)])
+def test_typed_reply_to_a_voice_note_keeps_its_type_and_reaches_stt(is_voice, from_bot):
+    """A typed reply to a person's voice note stays TEXT (no voice-mode auto-TTS) with the
+    attachment still STT input (retyped AUDIO it silently skipped STT), and the typed text stays
+    the answer to a pending clarify. The bot's own voice note and a replied-to audio file are
+    never transcribed."""
+    spoken = is_voice and not from_bot
+    async def _run():
+        from gateway.platforms.event import MessageEvent
+        from gateway.run import GatewayRunner, _event_media_is_stt_input
+
+        adapter = _make_adapter()
+        cached = SimpleNamespace(
+            path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        media = SimpleNamespace(file_name="voice.ogg")
+        msg = SimpleNamespace(reply_to_message=SimpleNamespace(
+            voice=media if is_voice else None, audio=None if is_voice else media,
+            from_user=SimpleNamespace(is_bot=from_bot)))
+        event = MessageEvent(
+            text="continue", message_type=MessageType.TEXT, media_urls=[], media_types=[],
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="111"))
+
+        await adapter._cache_replied_media(msg, event)
+
+        assert event.message_type == (MessageType.TEXT if spoken else MessageType.AUDIO)
+        assert _event_media_is_stt_input(event, 0) is spoken
+        assert ("not this message" in event.text) is spoken
+        runner = object.__new__(GatewayRunner)
+        runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["replied-to speech"]))
+        assert not spoken or await runner._prepare_clarify_reply_text(event) == "continue"
+
+    asyncio.run(_run())
+
+
+def test_captioned_own_audio_still_answers_a_clarify_with_its_transcript():
+    """Only a replied-to voice note makes the typed text the answer: a TEXT event carrying the
+    sender's own audio and a caption (Google Chat keeps TEXT for that) is answered by its speech."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+
+    event = MessageEvent(
+        text="answer attached", message_type=MessageType.TEXT, media_urls=["cache/audio/a.ogg"], media_types=["audio/ogg"],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="111"))
+    runner = object.__new__(GatewayRunner)
+    runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", ["2"]))
+
+    assert asyncio.run(runner._prepare_clarify_reply_text(event)) == "2"
+
+
 # ---------------------------------------------------------------------------
 # Observed-media caching (unmentioned group attachments)
 # ---------------------------------------------------------------------------
@@ -1300,3 +1350,26 @@ def test_rich_message_handle_inside_code_span_does_not_wake_the_bot():
     assert adapter._should_process_message(plain) is False
     assert adapter._should_process_message(in_code) is False
     assert adapter._should_process_message(outside) is True
+
+
+def _channel_post(text, *, chat_id, mention):
+    entities = [_mention_entity(text)] if mention else []
+    return SimpleNamespace(
+        message_id=44, text=text, caption=None, entities=entities, caption_entities=[],
+        message_thread_id=None, is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="channel", title="Broadcast", is_forum=False),
+        from_user=None, sender_chat=SimpleNamespace(id=chat_id, type="channel"), reply_to_message=None, date=None)
+
+
+@pytest.mark.parametrize("guest_mode", [False, True])
+def test_channel_posts_run_the_group_gates(guest_mode):
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], guest_mode=guest_mode)
+    # Outside allowed_chats a channel post is dropped even when it mentions the bot: guest mode is
+    # a group affordance, and anyone who can post in a channel would otherwise cross the allowlist.
+    assert adapter._should_process_message(_channel_post("hi @hermes_bot", chat_id=-200, mention=True)) is False
+    # Allowlisted channel: require_mention holds, an explicit mention triggers.
+    assert adapter._should_process_message(_channel_post("ordinary post", chat_id=-100, mention=False)) is False
+    assert adapter._should_process_message(_channel_post("hi @hermes_bot", chat_id=-100, mention=True)) is True
+    # Guest mode still lets a group mention cross the allowlist.
+    group = _group_message("hi @hermes_bot", chat_id=-200, entities=[_mention_entity("hi @hermes_bot")])
+    assert adapter._should_process_message(group) is guest_mode

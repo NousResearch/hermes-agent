@@ -56,6 +56,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     from gateway.session_cron import owner_for_home, operation
     from hermes_cli.gateway_client import connect_gateway
     from hermes_constants import get_hermes_home
+    from storage_user_copy import error_type_name
     from utils import atomic_json_write
 
     request_id = execution_id or job.get('execution_id')
@@ -73,14 +74,19 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     attempted = journal.exists()
     owner = owner_for_home(get_hermes_home())
 
-    def save():
+    def write_journal():
         root.mkdir(parents=True, exist_ok=True)
         atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+
+    async def save():
+        # ``observe`` runs on the owner loop when this process owns the profile: the fsynced journal
+        # write (file and directory) waits in a worker, and still completes before the next step.
+        await asyncio.to_thread(write_journal)
 
     async def observe(call):
         nonlocal attempted
         attempted = True
-        save()
+        await save()
         try:
             receipt = await call('submit', params)
         except Exception as exc:
@@ -90,11 +96,11 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             if owner is not None or isinstance(exc, GatewayRPCError):
                 state = await call('recover', params)
                 if state['status'] == 'missing':
-                    error = f'{type(exc).__name__}: {exc}'
+                    error = f'{error_type_name(exc)}: {exc}'
                     result = [False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error]
                     record['refusal'] = result
                     record['job'] = dict(job)
-                    save()
+                    await save()
                     return tuple(result)
                 if state['status'] not in {'queued', 'started', 'terminal'}:
                     raise
@@ -103,7 +109,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             else:
                 raise
         record['receipt'] = receipt
-        save()
+        await save()
         delay, progress = .1, None
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -143,7 +149,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     except Exception as exc:
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
-        error = f'{type(exc).__name__}: {exc}'
+        error = f'{error_type_name(exc)}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
 
 def reconcile_pending(*, allow_connect=True):

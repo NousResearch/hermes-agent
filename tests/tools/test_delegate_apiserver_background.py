@@ -104,7 +104,7 @@ def _patch_delegate(monkeypatch):
 
     monkeypatch.setattr(dt, "_build_child_agent", clobbering_build_child)
     monkeypatch.setattr(dt, "_run_single_child", fast_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     return dt
 
 

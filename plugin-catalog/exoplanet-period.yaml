@@ -1,0 +1,16 @@
+name: exoplanet-period
+repo: https://github.com/TakeshiTGAL/hermes-plugin-exoplanet-period
+sha: bb0077aa452c9571e368132eec6144fc41dc05e1
+description: 'exoplanet_lookup returns the name, disposition, period (days), year and facility. Disclosure — sends the planet name you pass, and after an exact match the official name, to exo.mast.stsci.edu (STScI), and the official name of a confirmed planet to exoplanetarchive.ipac.caltech.edu (Caltech/IPAC), over HTTPS only; the lookup writes no file; `watch add` keeps up to 20 official names with MAST modified dates in plugin-data/exoplanet-period/watch.json; `hermes exoplanet-period schedule` writes scripts/exoplanet-period-watch.py and one daily 08:00 cron job (local delivery, no agent) that repeats those lookups, updates watch.json when a date moves, and prints a line per planet whose date moves or cannot be read; enable installs no packages.'
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-exoplanet-period#readme
+version: 0.1.0
+requires_hermes: '>=0.21.4'
+platforms: []
+title: Exoplanet Period
+capabilities:
+  provides_tools:
+  - exoplanet_lookup
+  provides_hooks: []

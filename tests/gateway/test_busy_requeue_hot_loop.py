@@ -56,9 +56,7 @@ def _runner_with_running_agent(adapter, *, compression_in_flight):
     store.has_any_sessions.return_value = True
     runner.session_store = store
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -69,7 +67,6 @@ def _runner_with_running_agent(adapter, *, compression_in_flight):
     runner._set_session_env = lambda _context: None
     runner._should_send_voice_reply = lambda *_a, **_k: False
     runner._send_voice_reply = AsyncMock()
-    runner._capture_gateway_honcho_if_configured = lambda *a, **k: None
     runner._emit_gateway_run_progress = AsyncMock()
     runner._draining = False
     runner._busy_input_mode = "interrupt"
@@ -80,7 +77,7 @@ def _runner_with_running_agent(adapter, *, compression_in_flight):
         "seconds_since_activity": 0.0, "last_activity_desc": "api_call",
         "api_call_count": 1, "max_iterations": 60}
     runner._running_agents[sk] = agent
-    runner._running_agents_ts[sk] = time.time() - 120
+    runner._session_state(sk).turn.started_ts = time.time() - 120
     return runner, agent, sk
 
 

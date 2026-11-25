@@ -1,0 +1,23 @@
+name: decision-brief
+repo: https://github.com/LaRoyBot/decision-brief
+sha: 1722b6dce11a5bd5f2f36bef6b2e2e382c61c11b
+subdir: ""
+description: Decision Brief MVP - a human decision layer for consequential agent and creative decisions.
+maintainer: LaRoyBot
+tier: community
+category: general
+version: "0.2.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_stream_delta
+    - on_interim_message
+    - on_stream_end
+  provides_middleware: []
+  requires_env: []
+image: https://raw.githubusercontent.com/LaRoyBot/decision-brief/94aaeba39275e857e953d321b5c1add52f3d9623/assets/decision-brief-hero.png
+screenshots:
+  - https://raw.githubusercontent.com/LaRoyBot/decision-brief/94aaeba39275e857e953d321b5c1add52f3d9623/assets/decision-brief-hero.png

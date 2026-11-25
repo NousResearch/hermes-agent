@@ -1,0 +1,24 @@
+name: jalancost
+repo: https://github.com/Apihpih96/hermes-jalancost
+sha: aa3f8f9254de3366c442996ca4d12b6760206fe4
+subdir: jalancost
+description: Offline Malaysian road-trip fuel and toll estimates with per-person splits, calculated only from user-supplied values.
+maintainer: Apihpih96
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/Apihpih96/hermes-jalancost
+version: "0.1.0"
+readme: true
+platforms: []
+title: JalanCost
+onboarding: false
+known_issues:
+  - "Validated on Linux with Hermes v0.22.7; Android/Termux support has not been validated."
+  - "The recorded demonstration is a direct tool invocation, not a model-issued call."
+capabilities:
+  provides_tools:
+    - estimate_road_trip_cost
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

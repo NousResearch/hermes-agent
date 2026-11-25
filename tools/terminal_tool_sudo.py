@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 
+from tools.terminal_tool_sudo_askpass import SUDO_ASKPASS_PREFIX, SUDO_ASKPASS_SUFFIX
 from utils import env_var_enabled
 
 # Log-record parity with the origin module.
@@ -320,11 +321,14 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         i = end
 
 
-def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
+def _rewrite_real_sudo_invocations(command: str, askpass: bool = False) -> tuple[str, int]:
     """Rewrite literal sudo executable words, preserving their spelling and arguments.
 
     Follow ordinary env options/assignments, not shell payloads or env split strings:
     interpreting those requires a second parser and rewriting inside another quoting layer.
+    Each counted sudo gets `` -S -p ''`` appended; with ``askpass=True`` it is instead prefixed
+    with ``SUDO_ASKPASS="$__hermes_sudo_dir/a"`` and gets an option word the askpass prologue
+    sets to ``-A``, or to ``-S -p ''`` when its setup fails (see ``terminal_tool_sudo_askpass``).
     """
     out: list[str] = []
     sudo_count = 0
@@ -374,7 +378,10 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
         in_env = executable == "env"
         env_options = in_env
         if executable == "sudo":
-            out[-1] += " -S -p ''"
+            if askpass:
+                out[-1] = SUDO_ASKPASS_PREFIX + out[-1] + SUDO_ASKPASS_SUFFIX
+            else:
+                out[-1] += " -S -p ''"
             sudo_count += 1
     return "".join(out), sudo_count
 
@@ -449,6 +456,8 @@ def _no_sudo_user() -> bool:
 def _transform_sudo_command(
     command: str | None,
     sudo_nopasswd_check: Callable[[], bool] | None = None,
+    *,
+    askpass_supported: Callable[[], bool] | None = None,
 ) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
@@ -460,7 +469,12 @@ def _transform_sudo_command(
     is required". Password sources, in order: configured SUDO_PASSWORD, the session cache, then
     an interactive prompt (45s timeout, cached on success) when a UI is reachable.
     ``sudo_nopasswd_check`` (supplied by ``BaseEnvironment``) runs ``sudo -n true`` inside the
-    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely."""
+    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely.
+    ``askpass_supported`` (also from ``BaseEnvironment``) is asked only once a password is
+    available: when it returns True and no counted sudo carries its own stdin/askpass option,
+    the result is ``terminal_tool_sudo_askpass.build_prologue`` + the askpass rewrite, with ONE
+    password line as ``sudo_stdin``; the prologue reads that line so the rest of stdin reaches
+    the command untouched, and hands the password to each sudo through an askpass helper."""
     from tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
@@ -496,6 +510,20 @@ def _transform_sudo_command(
             _set_cached_sudo_password(sudo_password)
 
     if has_configured_password or sudo_password:
+        from tools.terminal_tool_sudo_askpass import (
+            SUDO_ASKPASS_TIMEOUT_TOKEN, build_prologue, has_background_sudo, has_own_stdin_or_askpass,
+            sudo_command_words,
+        )
         # sudo -S reads one line per invocation: compound `sudo a && sudo b` needs one line each.
-        return transformed, (sudo_password + "\n") * sudo_count
+        # The askpass form gets the same lines: its prologue takes them off stdin once the helper
+        # is set up, and leaves them for ``-S`` when setup fails at run time.
+        password_lines = (sudo_password + "\n") * sudo_count
+        if askpass_supported is not None and not has_own_stdin_or_askpass(command) and askpass_supported():
+            sudo_words = sudo_command_words(command)  # None: a word cannot be checked, stdin form
+            if sudo_words is not None:
+                askpass_command = _rewrite_real_sudo_invocations(command, askpass=True)[0]
+                prologue = build_prologue(sudo_count, SUDO_ASKPASS_TIMEOUT_TOKEN, has_background_sudo(command),
+                                          sudo_words=sudo_words)
+                return prologue + askpass_command, password_lines
+        return transformed, password_lines
     return command, None

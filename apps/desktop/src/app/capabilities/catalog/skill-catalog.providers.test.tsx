@@ -3,6 +3,7 @@ import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } f
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { queryClient } from '@/lib/query-client'
+import { $providerActions } from '@/store/provider-actions'
 import type { SkillInfo } from '@/types/hermes'
 
 import { parseCatalog } from './catalog-data'
@@ -27,6 +28,7 @@ const profile = { connectionId: 'local', profile: 'alice' }
 beforeEach(() => {
   configure({ asyncUtilTimeout: 1000 })
   $catalogCardView.set(true)
+  $providerActions.set({})
   queryClient.clear()
   queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
     { name: 'Example skill', description: 'Public lookalike', source: 'github', identifier: 'github:org/example', installIdentifier: 'github:org/example' }
@@ -269,6 +271,77 @@ it('recovers a lost confirm response with the original token and no second revie
   expect(confirms).toHaveLength(2)
   expect(confirms[0][0]).toEqual(confirms[1][0])
   expect(api.mock.calls.filter(([request]) => request.path === '/api/skills/hub/review')).toHaveLength(1)
+})
+
+it.each(['remount', 'profile', 'connectionId'] as const)('recovers the exact confirmation after %s without a fresh review', async transition => {
+  confirmResponse = { ok: false, error: { code: 'outcome_unknown', message: 'Response lost' } }
+  const view = setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await screen.findByRole('button', { name: 'Recover original operation' })
+  const originalConfirm = api.mock.calls.find(([request]) => request.path.endsWith('/confirm'))![0]
+
+  if (transition === 'remount') { view.unmount(); setup() }
+  else {
+    const other = { ...profile, [transition]: 'other' }
+    view.rerender(<QueryClientProvider client={queryClient}><SkillCatalog profile={other} renderInstalledDetail={() => null} skills={[]} /></QueryClientProvider>)
+    await teamCard()
+    expect(screen.queryByRole('dialog', { name: 'Review install' })).toBeNull()
+    view.rerender(<QueryClientProvider client={queryClient}><SkillCatalog profile={profile} renderInstalledDetail={() => null} skills={[]} /></QueryClientProvider>)
+  }
+
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  const recover = await screen.findByRole('button', { name: 'Recover original operation' })
+  confirmResponse = completed
+  fireEvent.click(recover)
+  await screen.findByText('installed', { selector: '[role="status"]' })
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/review'))).toHaveLength(1)
+  const confirms = api.mock.calls.filter(([request]) => request.path.endsWith('/confirm'))
+  expect(confirms).toHaveLength(2)
+  expect(confirms[1][0]).toEqual(originalConfirm)
+})
+
+it.each(['pending', 'unknown'] as const)('remount resumes the same %s operation id through read-only recovery', async state => {
+  confirmResponse = { ...completed, state, outcome: null, settlement: 'reconciling' }
+  let settled = false
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => request.path.includes('/operation') ? Promise.resolve(settled ? { ...completed, settlement: 'settled' } : confirmResponse) : original(request))
+  const view = setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await screen.findByText('Finalizing local status…')
+  view.unmount()
+  queryClient.removeQueries({ queryKey: ['skill-provider-operation'] })
+  settled = true
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  await screen.findByText('installed', { selector: '[role="status"]' })
+  const polls = api.mock.calls.filter(([request]) => request.path.includes('/operation'))
+  expect(polls.length).toBeGreaterThanOrEqual(2)
+  expect(polls.every(([request]) => new URL(request.path, 'http://fixture').searchParams.get('operation_id') === completed.operation_id)).toBe(true)
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/review'))).toHaveLength(1)
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/confirm'))).toHaveLength(1)
+})
+
+it('keeps a confirmation that settles after unmount bound to its original profile', async () => {
+  let resolve!: (value: unknown) => void
+  const original = api.getMockImplementation()!
+  api.mockImplementation((request: { path: string }) => request.path.endsWith('/confirm') ? new Promise(done => { resolve = done }) : original(request))
+  const view = setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm install' }))
+  await waitFor(() => expect(resolve).toBeTruthy())
+  view.unmount()
+  await act(async () => resolve({ ...completed, state: 'unknown', outcome: null, settlement: 'reconciling' }))
+  setup()
+  fireEvent.click(within(await teamCard()).getByRole('button', { name: 'Install Example skill' }))
+  await screen.findByText('installed', { selector: '[role="status"]' })
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/review'))).toHaveLength(1)
+  expect(api.mock.calls.filter(([request]) => request.path.endsWith('/confirm'))).toHaveLength(1)
+  expect(api.mock.calls.find(([request]) => request.path.includes('/operation'))?.[0]).toMatchObject(profile)
 })
 
 it('shows a terminal outcome while finalizing and performs read-only status recovery', async () => {

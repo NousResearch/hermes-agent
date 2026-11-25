@@ -173,6 +173,10 @@ export interface ConfigDisplayConfig {
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
+  /** Quiet idle (default false): an idle TUI writes nothing to the terminal —
+   *  status clocks tick only mid-turn, the live-session count holds, and the
+   *  composer ignores focus changes. Stops activity flags on idle tabs. */
+  tui_quiet_idle?: boolean
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
   // Forward-compat: backend may send styles this client doesn't know yet —

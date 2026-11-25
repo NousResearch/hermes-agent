@@ -61,6 +61,10 @@ const SUPPORTS_SUSPEND = false
 // but short enough that the first scroll after reattach works.
 const STDIN_RESUME_GAP_MS = 5000
 
+// True when a stdin chunk carries nothing but DECSET 1004 focus-out reports.
+const isFocusOutOnly = (chunk: unknown): boolean =>
+  typeof chunk === 'string' && chunk.length > 0 && chunk.split(FOCUS_OUT).join('') === ''
+
 // Mouse-mode watchdog cadence. The stdin-gap re-assert above needs a
 // KEYSTROKE to fire — a mouse-only user whose terminal dropped the DEC
 // mouse modes (e.g. the terminal's own "disable mouse reporting" toggle,
@@ -600,20 +604,31 @@ export default class App extends PureComponent<Props, State> {
   handleReadable = (): void => {
     // Detect long stdin gaps (tmux attach, ssh reconnect, laptop wake).
     // The terminal may have reset DEC private modes; re-assert mouse
-    // tracking. Checked before the read loop so one Date.now() covers
-    // all chunks in this readable event.
+    // tracking. One Date.now() covers all chunks in this readable event.
+    //
+    // A chunk that is only a DECSET 1004 focus-out report (`CSI O`) neither
+    // fires the re-assert nor resets the gap clock: it arrives exactly when
+    // the user switches AWAY from this tab, so re-asserting there writes
+    // bytes into a now-hidden tab — which terminals with activity monitoring
+    // (Konsole, tmux monitor-activity) flag as fresh output. The matching
+    // focus-in re-asserts modes anyway (Ink.handleTerminalFocusChange).
     const now = Date.now()
-
-    if (now - this.lastStdinTime > STDIN_RESUME_GAP_MS) {
-      this.props.onStdinResume?.()
-    }
-
-    this.lastStdinTime = now
+    const gapElapsed = now - this.lastStdinTime > STDIN_RESUME_GAP_MS
+    let resumeChecked = false
 
     try {
       let chunk
 
       while ((chunk = this.props.stdin.read() as string | null) !== null) {
+        if (!resumeChecked && !isFocusOutOnly(chunk)) {
+          resumeChecked = true
+          this.lastStdinTime = now
+
+          if (gapElapsed) {
+            this.props.onStdinResume?.()
+          }
+        }
+
         // Process the input chunk
         this.processInput(chunk)
       }

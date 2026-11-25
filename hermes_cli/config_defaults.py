@@ -889,9 +889,9 @@ DEFAULT_CONFIG = {
         "tui_status_indicator": "kaomoji",
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
         # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
-        # fights terminal auto-scroll in non-fullscreen mode.
-        # See #45592.
+        # fights terminal auto-scroll in non-fullscreen mode (#45592).
         "cli_refresh_interval": 1.0,
+        "tui_quiet_idle": False,  # True: idle TUI writes nothing (no Konsole/tmux tab activity)
         # Vi/vim keybindings in the CLI input composer (config-only, no slash command).
         # Off by default, preserving prompt_toolkit's standard emacs bindings.
         "vim_mode": False,

@@ -19,8 +19,13 @@ export const requestLiveSessions = (gw: Pick<GatewayClient, 'isCanonical' | 'req
  * poll re-renders the whole TUI (idle flicker). */
 export function applyLiveSessionRoster(sessions: SessionActiveItem[]) {
   const prev = getUiState()
-  const liveSessionCount = sessions.length
   const sessionTitle = sessions.find(s => s.current || s.id === prev.sid)?.title?.trim() ?? ''
+  // display.tui_quiet_idle: an idle TUI must write nothing, so the
+  // count holds between turns (other sessions starting/ending would repaint
+  // it) and catches up on the first poll of the next turn. The initial
+  // hydrate (count still 0) always lands.
+  const holdCount = prev.quietIdle && !prev.busy && prev.liveSessionCount > 0
+  const liveSessionCount = holdCount ? prev.liveSessionCount : sessions.length
 
   if (prev.liveSessionCount !== liveSessionCount || prev.sessionTitle !== sessionTitle) {
     patchUiState({ liveSessionCount, sessionTitle })

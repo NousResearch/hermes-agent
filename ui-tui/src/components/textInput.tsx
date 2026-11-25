@@ -1,8 +1,10 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
+import { $uiQuietIdle } from '../app/uiStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
@@ -786,6 +788,17 @@ const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
+// display.tui_quiet_idle: ignore terminal focus changes. Konsole/tmux send a focus-out on every
+// tab switch, and restyling the cursor for it repaints the composer into the tab the user just
+// LEFT — fresh output that flags an idle tab as active. The terminal then draws its own unfocused
+// cursor at the declared position instead.
+function useComposerTerminalFocus(): boolean {
+  const terminalFocused = useTerminalFocus()
+  const quietIdle = useStore($uiQuietIdle)
+
+  return terminalFocused || quietIdle
+}
+
 export function TextInput({
   columns = 80,
   value,
@@ -819,7 +832,7 @@ export function TextInput({
   const postSubmitKeys = useRef<null | Parameters<InputHandler>[]>(null)
   const handleInputRef = useRef<InputHandler>(() => {})
   const fwdDel = useFwdDelete(focus)
-  const termFocus = useTerminalFocus()
+  const termFocus = useComposerTerminalFocus()
   const { stdout } = useStdout()
   const noteCursorAdvance = useCursorAdvance()
 

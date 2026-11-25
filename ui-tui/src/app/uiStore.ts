@@ -20,6 +20,7 @@ const buildUiState = (): UiState => ({
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
   focusView: false,
+  quietIdle: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
   liveSessionCount: 0,
@@ -50,6 +51,7 @@ export const $uiState = atom<UiState>(buildUiState())
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
 export const $uiInlineImages = computed($uiState, state => state.inlineImages)
+export const $uiQuietIdle = computed($uiState, state => state.quietIdle)
 
 export const getUiState = () => $uiState.get()
 

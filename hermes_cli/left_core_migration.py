@@ -1277,6 +1277,9 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
                 logger.info("%s: the '%s' plugin was installed for %s by another Hermes process meanwhile",
                             feature.label, feature.plugin, home)
                 _record_installed(home, feature)
+                # Loaded here as this process's own install would load it (its platform starts in this start).
+                from hermes_cli.plugins_activation import activate_plugin_now
+                activate_plugin_now(feature.plugin)
                 return True
             return _install_locked(home, feature, install=install, say=say, process_env=process_env)
     except TimeoutError:  # never stamped a failure: nothing was tried

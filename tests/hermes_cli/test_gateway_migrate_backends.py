@@ -215,8 +215,8 @@ def test_headless_shell_populates_dbus_address_to_avoid_duplicate_user_unit(host
     offline, missing bus env made the running user unit appear twice (manual + installed unit)."""
     uid = os.getuid()  # windows-footgun: ok — linux-only test
     expected_bus = f"unix:path=/run/user/{uid}/bus"
-    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
-    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    env = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    monkeypatch.setattr(os, "environ", env)
     monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
     monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: str(path) == f"/run/user/{uid}/bus")
     fake_run = host.run

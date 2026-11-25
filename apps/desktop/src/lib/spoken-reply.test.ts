@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { SessionMessage } from '@/types/hermes'
 
-import { assistantTextPart, type ChatMessage, lastTextPartText, toChatMessages } from './chat-messages'
+import { assistantTextPart, type ChatMessage, collectUnspokenTurnSpeech, lastTextPartText, toChatMessages } from './chat-messages'
 import {
   absorbSpokenReplyRewrite,
   adoptSpokenReplySession,
   assistantReplyOrdinal,
+  assistantTurnIndex,
+  assistantTurnKey,
   clearSpokenRepliesForTests,
   isLiveTailReplyId,
   markAssistantIdSpoken,
@@ -191,5 +193,107 @@ describe('spokenSegmentKey across a hydration fold', () => {
 
     expect(spokenSegmentKey('s1:0', lastTextPartText(folded))).toBe(spokenSegmentKey('s1:0', lastTextPartText(live)))
     expect(spokenSegmentKey('s1:0', lastTextPartText(folded))).not.toBe(spokenSegmentKey('s1:0', 'Looking into it.'))
+  })
+})
+
+// An internal notification that ran a turn (`display_kind: internal_notification`
+// without `completion_admission`) is a turn boundary like a user row: its reply
+// is a new turn, not a live-id rewrite of the human turn before it. A recorded
+// note is filed between turns and starts none. Rows come from real hydration so
+// the provenance is the one the thread actually carries.
+describe('notification turn identity', () => {
+  const human = (content: string, timestamp: number): SessionMessage => ({ role: 'user', content, timestamp })
+  const reply = (content: string, timestamp: number): SessionMessage => ({ role: 'assistant', content, timestamp })
+  const notice = (content: string, timestamp: number): SessionMessage => ({
+    role: 'user',
+    content,
+    display_kind: 'internal_notification',
+    timestamp
+  })
+  const note = (content: string, timestamp: number): SessionMessage => ({
+    ...notice(content, timestamp),
+    display_metadata: { completion_admission: 'note-id' }
+  })
+  const replies = (messages: readonly ChatMessage[]) => messages.filter(m => m.role === 'assistant')
+
+  it('gives a notification reply its own turn after the human turn that says the same thing', () => {
+    const messages = toChatMessages([human('First question', 1), reply('Done.', 2), notice('Plugin notice', 3), reply('Done.', 4)])
+    const [first, second] = replies(messages)
+
+    expect(messages[2].internalNotification).toBe('turn')
+    expect(assistantTurnIndex(messages, first.id)).toBe(0)
+    expect(assistantTurnIndex(messages, second.id)).toBe(1)
+    expect(spokenSegmentKey(assistantTurnKey('s', messages, second.id), 'Done.')).not.toBe(
+      spokenSegmentKey(assistantTurnKey('s', messages, first.id), 'Done.')
+    )
+  })
+
+  it('separates successive notification turns, even with identical reply text', () => {
+    const messages = toChatMessages([
+      human('First question', 1),
+      reply('Done.', 2),
+      notice('Cron fired', 3),
+      reply('Done.', 4),
+      notice('Cron fired', 5),
+      reply('Done.', 6)
+    ])
+    const [, second, third] = replies(messages)
+
+    expect(assistantTurnIndex(messages, second.id)).toBe(1)
+    expect(assistantTurnIndex(messages, third.id)).toBe(2)
+    expect(spokenSegmentKey(assistantTurnKey('s', messages, third.id), 'Done.')).not.toBe(
+      spokenSegmentKey(assistantTurnKey('s', messages, second.id), 'Done.')
+    )
+  })
+
+  it('does not count a recorded note as a turn boundary', () => {
+    const messages = toChatMessages([human('First question', 1), reply('Done.', 2), note('Recorded note', 3), reply('Done.', 4)])
+    const [first, second] = replies(messages)
+
+    expect(messages[2].internalNotification).toBe('note')
+    expect(assistantTurnIndex(messages, first.id)).toBe(0)
+    expect(assistantTurnIndex(messages, second.id)).toBe(0)
+  })
+
+  it('still counts a hidden human row as a turn boundary', () => {
+    const messages = [user('u1'), assistant('a1'), { hidden: true, id: 'u2', role: 'user' as const }, assistant('a2')]
+
+    expect(assistantTurnIndex(messages, 'a1')).toBe(0)
+    expect(assistantTurnIndex(messages, 'a2')).toBe(1)
+  })
+
+  it('does not absorb the next notification reply as the rewrite of a stale human-turn live id', () => {
+    const before = toChatMessages([human('First question', 1), reply('Done.', 2)])
+    before[1].id = 'assistant-stream-first'
+    markAssistantIdSpoken('s', before, 'assistant-stream-first')
+
+    const after = toChatMessages([human('First question', 1), reply('Done.', 2), notice('Plugin notice', 3), reply('Done.', 4)])
+    const last = after.findLast(m => m.role === 'assistant')!
+    const spoken = resolveSpokenReply('s', after)
+
+    expect(spoken?.id).toBe('assistant-stream-first')
+    expect(spoken?.id).not.toBe(last.id)
+    expect(collectUnspokenTurnSpeech(after, spoken?.id ?? null)).toEqual({ id: last.id, pending: false, text: 'Done.' })
+  })
+
+  it('does not replay the human turn when nothing was spoken before a notification turn', () => {
+    const after = toChatMessages([human('First question', 1), reply('Earlier reply', 2), notice('Plugin notice', 3), reply('Current reply', 4)])
+    const last = after.findLast(m => m.role === 'assistant')!
+
+    expect(resolveSpokenReply('s', after)).toBeNull()
+    expect(collectUnspokenTurnSpeech(after, null)).toEqual({ id: last.id, pending: false, text: 'Current reply' })
+  })
+
+  it("follows a notification turn's own live-id rewrite onto its durable id", () => {
+    const before = toChatMessages([human('First question', 1), reply('Done.', 2), notice('Plugin notice', 3), reply('Done.', 4)])
+    before[3].id = 'assistant-stream-notice'
+    markAssistantIdSpoken('s', before, 'assistant-stream-notice')
+
+    const after = toChatMessages([human('First question', 1), reply('Done.', 2), notice('Plugin notice', 3), reply('Done.', 4)])
+    const last = after.findLast(m => m.role === 'assistant')!
+
+    expect(spokenReplyOf('s')?.turnIndex).toBe(1)
+    expect(resolveSpokenReply('s', after)?.id).toBe(last.id)
+    expect(collectUnspokenTurnSpeech(after, last.id)).toBeNull()
   })
 })

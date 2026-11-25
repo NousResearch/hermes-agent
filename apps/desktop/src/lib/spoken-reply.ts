@@ -7,11 +7,11 @@
  * edge. A content fingerprint would swallow a later distinct turn that happens
  * to say the same thing ("Done.").
  *
- * Anchor on the user turn that owns the bubble, not the assistant-role
- * ordinal. Hydration rewrites the live id and folds tool segments into one
- * bubble, so the ordinal moves; the owning user turn does not. A later turn
- * has a new user row and stays unspoken. Text is not identity — two turns
- * that both say "Done." are different turns.
+ * Anchor on the turn that owns the bubble, not the assistant-role ordinal.
+ * Hydration rewrites the live id and folds tool segments into one bubble, so
+ * the ordinal moves; the owning turn does not. A later turn has a new user
+ * row — or a new internal notification that ran a turn — and stays unspoken.
+ * Text is not identity — two turns that both say "Done." are different turns.
  */
 
 export interface SpokenReplyAnchor {
@@ -24,6 +24,8 @@ export interface SpokenReplyAnchor {
 export interface SpokenReplyMessage {
   hidden?: boolean
   id: string
+  /** Typed machine notice provenance: a `turn` ran the agent, a `note` was only recorded. */
+  internalNotification?: 'note' | 'turn'
   role: string
 }
 
@@ -61,15 +63,18 @@ function lastVisibleAssistant(messages: readonly SpokenReplyMessage[]): SpokenRe
   return messages.findLast(message => message.role === 'assistant' && !message.hidden)
 }
 
-/** Index of the user turn that owns `id`, or -1 when no user row precedes it.
- *  Hidden user rows count: a widget intent is a real turn boundary. Tool and
- *  assistant rows do not, so a fold that changes the assistant ordinal keeps
- *  this index. */
+/** Index of the turn that owns `id`, or -1 when no turn row precedes it.
+ *  Hidden user rows count: a widget intent is a real turn boundary. An
+ *  internal notification that ran a turn counts too — its reply is a new turn,
+ *  not a rewrite of the human turn before it. A recorded note
+ *  (`completion_admission`) does not: it is filed between turns and runs
+ *  nothing. Tool and assistant rows do not, so a fold that changes the
+ *  assistant ordinal keeps this index. */
 export function assistantTurnIndex(messages: readonly SpokenReplyMessage[], id: string): number {
   let turnIndex = -1
 
   for (const message of messages) {
-    if (message.role === 'user') {
+    if (message.role === 'user' || message.internalNotification === 'turn') {
       turnIndex += 1
     }
 

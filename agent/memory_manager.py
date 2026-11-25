@@ -155,7 +155,6 @@ def _without_provider_invisible_display_data(messages: Any) -> Any:
         }
         if (
             isinstance(row, dict)
-            and row.get("display_kind") == "plugin_card"
             and isinstance(row.get("display_metadata"), dict)
         )
         else row

@@ -94,3 +94,22 @@ def test_a_marked_profiles_container_mode_file_is_not_used(home, tmp_path, monke
     _runs_here_again(home)
     _hermes(monkeypatch, "config", "path")
     assert ran.exists() and Path(handed_over[0][0]).name == program.name and handed_over[0][-2:] == ["config", "path"]
+
+
+@pytest.mark.parametrize("left", ["bytes that are not text", "a folder"])
+def test_a_marked_profiles_container_mode_file_is_not_opened(home, monkeypatch, capsys, left):
+    """What the backend leaves under ``<home>/.container-mode`` need not be a file the host can read: bytes
+    that are not UTF-8, or a folder of that name. In a marked home the host does not open it, so the command
+    runs to its normal end."""
+    import hermes_constants
+
+    ops = home / "profiles" / "ops"
+    if left == "a folder":
+        (ops / ".container-mode").mkdir()
+    else:
+        (ops / ".container-mode").write_bytes(b"backend=\xff\xfe\n")
+    monkeypatch.delenv("HERMES_DEV", raising=False)
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    _mark(home)
+    assert _hermes(monkeypatch, "config", "path") == 0
+    assert str(ops / "config.yaml") in capsys.readouterr().out

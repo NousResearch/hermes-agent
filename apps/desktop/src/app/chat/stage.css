@@ -97,8 +97,10 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0.75rem;
-  /* Its end stands where a prompt's does: the column's edge on the stage (centred, capped, never
-     nearer than the gutter), then the turns' inset. */
+  /* The row ends where a prompt does: the column's edge on the stage (centred, capped, never nearer
+     than the gutter), then the turns' inset. Whatever is last in the row stands there: the label
+     alone, or a button with the label before it. The row is the stage's, outside the chat surface,
+     so it cannot read that surface's own column. */
   padding-inline: 1.25rem
     calc(
       (100% - min(var(--portal-column-conversation), 100% - 2 * var(--portal-column-conversation-gutter))) / 2 +

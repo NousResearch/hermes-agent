@@ -481,8 +481,8 @@ page in the stage instead, so every section stays reachable.
 Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
 following the Figma conversation (`491:40346`; width from "Prod - Desktop" chat 16292:16175): one
 centred column shared with the docked composer, as wide as the stage allows up to 960px (`--portal-column-conversation`, read as
-`--portal-conversation-*` in `app/chat/stage.css`), prose flush with the composer's edges
-(`--portal-column-conversation-inset`), 30px turn gaps and 20px output gaps. User bubbles hug their text at
+`--portal-conversation-*` in `app/chat/stage.css`), the turns 20px inside the composer's edges
+(`--portal-composer-inset`, which is also the composer's own padding, so a reply's text and the composer's text share a left edge), 30px turn gaps and 20px output gaps. User bubbles hug their text at
 the right edge up to 380px, with 6px corners, 6/10px insets and a 5% (light 2%)
 fill and no border; their time and restore actions sit beside the bubble. Base text
 is 13px at 1.6 leading before user scaling. A pinned prompt keeps 12px of clearance

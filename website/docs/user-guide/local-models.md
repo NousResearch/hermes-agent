@@ -158,7 +158,14 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   detect_ports: [8081]  # extra ports to probe for a llama-server you run
                         # yourself (the default probe is :8080 only)
+  preload: false     # true = start loading your selected model when you
+                     # begin typing in a new chat, so the first reply
+                     # doesn't wait for it
 ```
+
+By default a model loads when you send the first message. With `preload: true`
+the desktop asks the managed server to load it as soon as you start typing,
+starting the server first if it is not running (this needs `enabled: true`).
 
 Running `llama-server` yourself on a fixed port works with the same
 `model.provider: llamacpp` selection — either list the port in

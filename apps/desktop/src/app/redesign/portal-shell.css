@@ -533,6 +533,14 @@
   background-color: var(--portal-surface-selected);
 }
 
+/* The one ring in brand ink, not the legacy accent outline the primitive carries (--ui-accent, which
+   the redesign never repaints). The strip's tab list scrolls (overflow-x: auto), whose clip an outset
+   ring does not survive, so the ring sits inside the pill, as a page tab's does. */
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tab']:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
 /* A side panel's tab (Browser, a file preview, Files, Review, Terminal, Items) rides the band above
    its panel, away from the content it names, and its close and the panel's fold only showed under
    the pointer: nothing at rest said the panel could be closed. Both always show there, the close

@@ -322,14 +322,13 @@
 }
 
 /* A dialog is capped at 85% of the window. The web app's UI scale enlarges a viewport unit with
-   everything else, so under a scale the cap is divided back to the window. Only then
-   (redesign/layout-scale.ts marks the document): these rules outrank a dialog's own `max-h-*`. */
-:root[data-shell='portal'][data-layout-scaled] [data-slot='dialog-content'] {
-  max-height: calc(85vh / var(--browser-ui-scale, 1));
-}
-
-:root[data-shell='portal'][data-layout-scaled] [data-slot='dialog-banner-body'] {
-  max-height: calc(85vh / var(--browser-ui-scale, 1) - 5rem);
+   everything else, so under a scale the default cap is divided back to the window via
+   `--dialog-max-h` (which `components/ui/dialog.tsx` reads in its default `max-h-*` utility, so any
+   caller passing its own `max-h-*` class still replaces it cleanly through `tailwind-merge`). */
+@layer components {
+  :root[data-shell='portal'][data-layout-scaled] {
+    --dialog-max-h: calc(85vh / var(--browser-ui-scale, 1));
+  }
 }
 
 /* Compact (breakpoints.ts: max-width 639.98px): a dialog is the whole window, its actions pinned to

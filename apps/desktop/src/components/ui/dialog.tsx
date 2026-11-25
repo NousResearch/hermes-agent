@@ -208,7 +208,7 @@ function DialogContent({
             // The same split as the plain variant. The shell must not clip,
             // because it crops the popovers that portal into it. The banner
             // below has its own `overflow-hidden`, which rounds its corners.
-            'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+            'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[var(--dialog-max-h,85vh)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             widthClass,
             layerClass,
             className,
@@ -228,7 +228,7 @@ function DialogContent({
             <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
               <div
                 className={cn(
-                  'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--dialog-body-gap,0.75rem)] overflow-y-auto p-[var(--dialog-body-padding,1rem)]',
+                  'grid max-h-[calc(var(--dialog-max-h,85vh)-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--dialog-body-gap,0.75rem)] overflow-y-auto p-[var(--dialog-body-padding,1rem)]',
                   bodyClassName
                 )}
                 data-slot="dialog-banner-body"
@@ -267,7 +267,7 @@ function DialogContent({
           // a clipping ancestor crops them. The body box below owns the scroll,
           // so a tall dialog scrolls and a Select or Popover can still paint
           // past the edge of that box.
-          'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[var(--dialog-max-h,85vh)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           widthClass,
           layerClass,
           className

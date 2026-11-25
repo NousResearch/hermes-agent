@@ -313,12 +313,14 @@ def interaction_error(errors: Any, *, fallback: str = "Gemini interaction failed
     )
 
 
-def http_error(response: Any, *, body_text: Optional[str], api_key: str, base_url: str) -> GeminiAPIError:
+def http_error(response: Any, *, body_text: Optional[str], api_key: str, base_url: str,
+               key_guidance: bool = True) -> GeminiAPIError:
     """An Interactions HTTP error. Its body is ``{"error": {"code": "too_many_requests", "message": ...}}``
     (a snake_case string code, no ``status``), and some front-end rejections come as a one-element list of the
     generateContent body; both are normalized so ``gemini_http_error`` keeps its status mapping, Retry-After
     and key guidance. Interactions words free-tier exhaustion "on Free Tier", which the generateContent check
-    (``free_tier``) misses, so that guidance is added here."""
+    (``free_tier``) misses, so that guidance is added here. ``key_guidance=False`` (an OAuth bearer) drops
+    every API-key remedy, as on ``gemini_http_error``."""
     text = (_response_text(response) if body_text is None else body_text) or ""
     try:
         parsed = json.loads(text) if text else None
@@ -331,9 +333,9 @@ def http_error(response: Any, *, body_text: Optional[str], api_key: str, base_ur
         parsed = {"error": {**err, "status": err["code"]}}
     if isinstance(parsed, dict):
         text = json.dumps(parsed)
-    error = gemini_http_error(response, body_text=text, api_key=api_key, base_url=base_url)
+    error = gemini_http_error(response, body_text=text, api_key=api_key, base_url=base_url, key_guidance=key_guidance)
     message = str((err or {}).get("message") or "") if isinstance(err, dict) else ""
-    if error.status_code == 429 and "free tier" in message.lower() and _FREE_TIER_GUIDANCE not in str(error):
+    if key_guidance and error.status_code == 429 and "free tier" in message.lower() and _FREE_TIER_GUIDANCE not in str(error):
         return GeminiAPIError(str(error) + _FREE_TIER_GUIDANCE, code=error.code, status_code=error.status_code,
                               response=error.response, retry_after=error.retry_after, details=error.details)
     return error

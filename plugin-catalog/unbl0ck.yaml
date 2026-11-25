@@ -1,23 +1,28 @@
 name: unbl0ck
 title: UNBL0CK
 repo: https://github.com/KyaniteLabs/unbl0ck
-sha: cea69470241cd57aee35eaa970325104c555e8bc
-version: "0.4.5"
-description: "One queue of everything blocked on you: live agent prompts, pairing requests, blocked Kanban cards and chats on any platform that ask you something. Answer Kanban cards in place; optional one-line summaries and Ask send item text to your configured model through ctx.llm (both can be turned off). Disclosure — reads every local profile's chat history (state.db, read-only), profile titles and pending pairing requests (through Hermes's PairingStore, never the codes) to build one queue, records live clarify/approval prompt text in its plugin data, and can comment on and unblock Kanban cards when you answer one; by default sends each new queue item's text (other profiles' chats included) to the configured model for a one-line summary, and card data on Ask (turn off with `bluf_enabled: false` / `ask_enabled: false`); on messaging platforms `/unbl0ck` replies with a count only; uses Hermes's internal Kanban modules, so a Hermes update can break it; no network of its own, no shell, no credentials."
+sha: e1b21daa89386d1cba865d5ef6f6364c03edc40e
+version: "0.6.2"
+description: "One queue of what is blocked on you: live prompts, pairing requests, Kanban cards, chats and agent-filed items or watched-folder drafts and notes. Search, read, answer and recover in place. Disclosure — reads every local profile's chat history (read-only), profile titles and pending pairing requests (through Hermes's PairingStore, never the codes), Kanban boards and any folders you configure to build one queue; records live clarify/approval prompt text and agent-filed items in its plugin data; comments on and can unblock Kanban cards through Hermes's public unblock call only when you answer one; by default sends each new or changed queue item's text (other profiles' chats and watched-folder items included) to your configured model for a one-line summary, and card context when you click TL;DR or Ask (turn off with `bluf_enabled: false` / `ask_enabled: false`); watched folders and recursive reading are off by default and read-only; on messaging platforms `/unbl0ck` replies with counts only; on hosts without /proc it runs `ps` to check process start times; an optional owner-run security-review script contacts GitHub and a gateway you configure, and installing the plugin does not activate it; uses Hermes's Kanban and pairing modules, so a Hermes update can break it; no telemetry or self-updater."
 maintainer: KyaniteLabs
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/KyaniteLabs/unbl0ck/blob/cea69470241cd57aee35eaa970325104c555e8bc/README.md
-image: https://raw.githubusercontent.com/KyaniteLabs/unbl0ck/cea69470241cd57aee35eaa970325104c555e8bc/assets/banner.png
+docs_url: https://github.com/KyaniteLabs/unbl0ck/blob/e1b21daa89386d1cba865d5ef6f6364c03edc40e/README.md
+image: https://raw.githubusercontent.com/KyaniteLabs/unbl0ck/e1b21daa89386d1cba865d5ef6f6364c03edc40e/assets/banner.png
 screenshots: []
 readme: true
 platforms: []
 known_issues:
-  - "Uses Hermes's internal Kanban modules; a Hermes release that changes them can break the queue until UNBL0CK is updated."
-  - "With no principal_name set, only the generic words CEO, principal and human are detected."
+  - "Queue detection has known missed asks and false positives: initially blocked cards, natural decision wording, staged manual commands and other-owner mentions. See https://github.com/KyaniteLabs/unbl0ck/issues/90 through /93."
+  - "Uses Hermes Kanban and pairing modules (no private _ helpers); revalidate after Hermes upgrades."
+  - "With no principal_name set, detection uses the configured role words plus principal and human."
+  - "Windows and macOS state-lock tests run in CI; Ask journal and recovery retain POSIX-dependent limits. See issues #43, #35 and #48."
+  - "Typed answer recovery is session-only, expires after 30 minutes and does not survive reload."
+  - "Watched folders select at most the newest 200 eligible files per folder and read 256 KiB per file."
+  - "Packaged Desktop, real export fixtures, live-provider and install/rollback acceptance remain unverified; no independent Security acceptance for this exact release is claimed."
 capabilities:
-  provides_tools: []
+  provides_tools: [unbl0ck_file]
   provides_hooks: [on_human_input_request, on_human_input_resolved]
   provides_middleware: []
   requires_env: []

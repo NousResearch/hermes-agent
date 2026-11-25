@@ -131,6 +131,7 @@ REQUIRED_NAMES: dict[str, str] = {
     "tools.env_passthrough": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:322@v0.23.0
     "tools.environments": "module",  # v0.22.7..v0.23.0: tools/environments/local_pythonpath.py:24@v0.23.0
     "tools.environments.local": "module",  # v0.21.6..v0.23.0: hermes_cli/update_cmd_posix_pause.py:527@v0.23.0
+    "tools.plugin_guard": "module",  # v0.21.6..v0.23.1: hermes_cli/plugins_cmd.py:209@v0.23.1
     "toolsets": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "hermes_cli/_launchers.py": "by-path",  # v0.21.6..v0.23.0: scripts/install.ps1:1393
     "hermes_cli/_update_takeover.py": "by-path",  # v0.21.6..v0.23.0: hermes_cli/_old_updater.py:137@v0.23.0

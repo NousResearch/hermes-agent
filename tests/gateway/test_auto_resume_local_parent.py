@@ -5,14 +5,14 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_an_unrestored_local_parent_is_restored_before_its_stand_in_is_built(tmp_path, monkeypatch):
-    from hermes_state_local import end_idle_local_session
+    from persistence_assembly import close_stores_under
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _restart, _target
     from gateway import run_auto_resume
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
-    assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                  target_id=target, reason="agent_close")  # automatic: not a cancel
+    assert authority.persistence.bindings.end_idle(epoch=authority.epoch, session_id=ref.session_id,
+                                                   target_id=target, reason="agent_close")  # automatic: not a cancel
     runner, authority = await _restart(tmp_path, monkeypatch, authority)
     policies = []
 
@@ -26,4 +26,4 @@ async def test_an_unrestored_local_parent_is_restored_before_its_stand_in_is_bui
                                                   {"session_key": route, "session_id": target}, "go on")
         assert "stop here" in out["error"] and len(policies) == 1 and policies[0] is not None
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

@@ -272,18 +272,15 @@ def recorded_gateway_home_conflicts(
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
-# stays import-light (hermes_constants + stdlib only).
-_PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-
-
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort label: ``<root>/profiles/<name>`` -> name, root home -> "default", else None."""
+    from hermes_constants import PROFILE_ID_RE
+
     try:
         canonical = _canonical_hermes_home(home)
     except Exception:
         return None
-    if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
+    if canonical.parent.name == "profiles" and PROFILE_ID_RE.match(canonical.name):
         return canonical.name
     import hermes_constants
     default_homes = (hermes_constants.get_default_hermes_root, _get_platform_default_hermes_home)
@@ -297,10 +294,12 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
 def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
     """Profile label of a scoped-lock owner (None: PID-only wording): the validated ``profile``
     field stamped by :func:`acquire_scoped_lock`, else inferred from ``hermes_home`` (old locks)."""
+    from hermes_constants import PROFILE_ID_RE
+
     if not isinstance(record, dict):
         return None
     profile = record.get("profile")
-    if isinstance(profile, str) and _PROFILE_LABEL_RE.match(profile.strip()):
+    if isinstance(profile, str) and PROFILE_ID_RE.match(profile.strip()):
         return profile.strip()
     home = record.get("hermes_home")
     return _profile_label_for_home(home) if isinstance(home, str) and home.strip() else None
@@ -375,6 +374,10 @@ def normalize_updated_at(value: Any) -> Optional[str]:
 # ``exit_reason`` values the out-of-loop watchdogs (gateway/shutdown_watchdog.py) stamp together with
 # ``gateway_state: degraded`` right before they hard-exit a wedged process (#113372).
 WATCHDOG_EXIT_REASONS = frozenset({"loop_liveness_watchdog", "shutdown_watchdog"})
+
+
+def is_watchdog_exit_reason(reason: Any) -> bool:  # str check first: an unhashable one would raise
+    return isinstance(reason, str) and reason in WATCHDOG_EXIT_REASONS
 
 
 def retained_gateway_state(runtime: Any) -> str:
@@ -777,7 +780,7 @@ def _record_argv() -> list[str]:
 
 
 def _build_pid_record() -> dict:
-    from hermes_state_pidns import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
+    from process_identity import pid_namespace_id  # ``pid`` is relative to its PID namespace (#123081)
     return {
         "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),
@@ -1395,9 +1398,7 @@ def resolve_gateway_liveness(
         if alive:
             # Display-only PID: it belongs to the remote container.
             remote_pid = health_body.get("pid") if health_body else None
-            return GatewayLiveness(
-                running=True, pid=remote_pid, source="health", health_body=health_body
-            )
+            return GatewayLiveness(running=True, pid=remote_pid, source="health", health_body=health_body)
     if runtime is _UNSET:
         reader_kwargs = {"path": profile_dir / "gateway_state.json"} if scoped else {}
         runtime = guarded(_runtime_reader, **reader_kwargs)
@@ -1407,9 +1408,7 @@ def resolve_gateway_liveness(
     probe_kwargs = {"expected_home": profile_dir} if scoped else {}
     runtime_pid = guarded(_runtime_pid_probe, {} if (scoped and runtime is None) else runtime, **probe_kwargs)
     if runtime_pid is not None:
-        return GatewayLiveness(
-            running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
-        )
+        return GatewayLiveness(running=True, pid=runtime_pid, source="runtime_status", health_body=health_body)
     # (4) A named profile served by the live default multiplexer: no identity files of its own, but
     # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`). Unscoped, the
     # question is about the process's OWN home — which is a named profile inside a pooled

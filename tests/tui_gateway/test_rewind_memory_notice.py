@@ -19,7 +19,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import storage_handle
 
 
 @pytest.fixture()
@@ -54,15 +56,19 @@ def server(hermes_home):
 
 @pytest.fixture()
 def db(hermes_home):
-    return SessionDB(db_path=hermes_home / "state.db")
+    return storage_handle(hermes_home)
 
 
-def _seed(db: SessionDB, session_key: str, turns: int = 3) -> list[dict]:
-    db.create_session(session_key, source="tui")
+def _seed(db, session_key: str, turns: int = 3) -> list[dict]:
+    seed_session(db, session_key, "tui")
     for i in range(1, turns + 1):
-        db.append_message(session_key, "user", f"question {i}")
-        db.append_message(session_key, "assistant", f"answer {i}")
-    return db.get_messages_as_conversation(session_key)
+        seed_messages(
+            db,
+            session_key,
+            {"role": "user", "content": f"question {i}"},
+            {"role": "assistant", "content": f"answer {i}"},
+        )
+    return conversation(db, session_key)
 
 
 @pytest.fixture()
@@ -154,3 +160,74 @@ def test_a_session_without_a_key_or_agent_is_not_notified(server, db):
     without_key = {"history": list(history), "history_lock": threading.Lock(), "history_version": 0, "agent": agent}
     assert _rewind_active_session_history(without_key, 2)[2]
     assert agent._memory_manager.on_session_switch.call_args_list == []
+
+
+def test_a_session_without_a_memory_manager_does_not_enter_provider_scope(server, live_session):
+    _sid, _key, _session, agent = live_session
+    agent._memory_manager = None
+    with patch.object(server, "_session_profile_runtime_scope", wraps=server._session_profile_runtime_scope) as scope:
+        server._notify_memory_providers_rewound(_session, _key)
+    scope.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["session.undo", "undo", "retry"])
+def test_rewind_hook_failure_keeps_the_committed_result(server, live_session, db, command):
+    sid, session_key, session, agent = live_session
+    agent._memory_manager.on_session_switch.side_effect = RuntimeError("provider unavailable")
+    if command == "session.undo":
+        resp = server._methods[command](1, {"session_id": sid})
+    else:
+        resp = server._methods["command.dispatch"](1, {"session_id": sid, "name": command, "arg": ""})
+    assert "result" in resp, resp
+    assert len(session["history"]) == 4
+    assert len(conversation(db, session_key)) == 4
+    if command == "undo":
+        agent._invalidate_system_prompt.assert_called_once_with()
+        assert agent._last_flushed_db_idx == 4
+    assert len(_rewind_calls(agent)) == 1
+
+
+def test_rewind_notifies_only_the_owning_profiles_real_provider(server, live_session, hermes_home, tmp_path):
+    from agent.memory_manager import MemoryManager
+    from agent.memory_provider import MemoryProvider
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    class RecordingProvider(MemoryProvider):
+        name = "recording"
+
+        def __init__(self):
+            self.calls = []
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_session_switch(self, new_session_id, **kwargs):
+            self.calls.append((new_session_id, str(get_hermes_home()), kwargs))
+
+    sid, session_key, session, agent = live_session
+    session["profile_home"] = str(hermes_home)
+    foreign_home = tmp_path / "foreign"
+    foreign_home.mkdir()
+    own, foreign = MemoryManager(), MemoryManager()
+    own_provider, foreign_provider = RecordingProvider(), RecordingProvider()
+    for manager, provider, home in ((own, own_provider, hermes_home), (foreign, foreign_provider, foreign_home)):
+        with server._session_profile_runtime_scope({"profile_home": str(home)}):
+            manager.add_provider(provider)
+            manager.initialize_all(session_id=session_key, hermes_home=str(home))
+    agent._memory_manager = own
+    token = set_hermes_home_override(str(foreign_home))
+    try:
+        resp = server._methods["session.undo"](1, {"session_id": sid})
+        assert str(get_hermes_home()) == str(foreign_home)
+    finally:
+        reset_hermes_home_override(token)
+    assert "result" in resp, resp
+    assert own_provider.calls == [(session_key, str(hermes_home), {
+        "parent_session_id": "", "reset": False, "rewound": True})]
+    assert foreign_provider.calls == []

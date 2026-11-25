@@ -35,7 +35,7 @@ def test_gateway_replay_keeps_the_addressed_turn_after_the_restore_repair():
 
 
 def test_rows_of_the_same_class_still_merge():
-    from agent.agent_runtime_helpers import _merge_consecutive_users
+    from session_rules.turns import _merge_consecutive_users
 
     tail = {"role": "assistant", "content": "ok"}
     merged, repairs = _merge_consecutive_users([

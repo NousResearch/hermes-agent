@@ -347,12 +347,14 @@ class CLIModalMixin:
                 "selected": 0,
                 "response_queue": response_queue}
             self._slash_confirm_deadline = _time.monotonic() + timeout
+            self._sync_program_status()  # repaints via the throttled path, not _paint_now
             self._invalidate()
 
         def _teardown_modal() -> None:
             self._slash_confirm_state = None
             self._slash_confirm_deadline = 0
             self._restore_modal_input_snapshot()
+            self._sync_program_status()
             self._invalidate()
 
         def _run_on_app_loop(fn) -> bool:

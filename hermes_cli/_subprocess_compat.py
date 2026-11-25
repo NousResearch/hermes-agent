@@ -846,11 +846,15 @@ def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
     env: Mapping[str, str] | None = None, cwd: str | os.PathLike[str] | None = None,
-    raise_on_spawn_failure: bool = False, input: str | None = None,
+    raise_on_spawn_failure: bool = False, input: str | None = None, owned: bool = False,
 ) -> subprocess.CompletedProcess[str] | None:
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
     ``input`` is written to the child's stdin (closed afterwards); without it stdin is ``DEVNULL``.
+
+    ``owned=True`` (POSIX) hands the probe's process group to the owner-death supervisor until it
+    finishes, so a probe still running when this process exits (one started from a daemon thread,
+    abandoned by a ``/exit``) dies with it instead of reparenting to init with its helpers.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
     ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
@@ -883,6 +887,11 @@ def bounded_probe_run(
         if raise_on_spawn_failure:
             raise
         return None
+    owned = owned and not IS_WINDOWS
+    if owned:
+        from hermes_cli.process_identity import own_process_groups, release_process_group_once_empty
+
+        own_process_groups([proc.pid])
     try:
         stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except Exception:
@@ -890,9 +899,14 @@ def bounded_probe_run(
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
         _close_job(job)
         kill_and_drain(proc, 1)
+        if owned:
+            release_process_group_once_empty(proc.pid, proc=proc)
         return None
     # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
     _close_job(job)
+    if owned:
+        # A member it left running keeps the group covered, so it still dies with us.
+        release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
 
 

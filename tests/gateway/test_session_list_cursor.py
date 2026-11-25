@@ -17,19 +17,18 @@ async def _stored(tmp_path, monkeypatch, rows, cwd=None):
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     for sid, title, offered in rows:
-        db.create_session(sid, source='cli', model='m', cwd=cwd or str(tmp_path),
-                          profile_name=None if offered else 'other')
-        if title:
-            db.set_session_title(sid, title)
-        db.append_message(sid, 'user', f'{sid} question')
-        db.end_session(sid, 'cli_exit')
-    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+        seed_session(db, sid, 'cli', title=title or None, model='m', cwd=cwd or str(tmp_path),
+                     profile_name=None if offered else 'other')
+        seed_messages(db, sid, {'role': 'user', 'content': f'{sid} question'})
+        db.sessions.end(sid, 'cli_exit')
+    runner = SimpleNamespace(session_store=store, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')

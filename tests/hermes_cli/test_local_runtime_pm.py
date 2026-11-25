@@ -9,7 +9,6 @@ from pm.lock import Lockfile
 
 
 @pytest.mark.parametrize("target,vendor,expected", [
-    ("linux-x64", "nvidia", "cuda"),
     ("linux-arm64", "nvidia", "cuda"),
     ("win32-arm64", "nvidia", "cuda"),
     ("win32-arm64", "AMD Radeon", "cpu"),

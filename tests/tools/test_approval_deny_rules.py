@@ -149,7 +149,7 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
     assert approval_floors._match_user_deny_rule('env printf "a  b"')
     assert approval_floors._match_user_deny_rule('env printf "a b"') is None
     # The argv projection must retain GNU escapes as data, not shell syntax.
-    from tools.approval_detection import _split_env_string
+    from tools.approval_env_split import _split_env_string
 
     for literal, expected in (
         (r'a\_b', ['a', 'b']), (r'"a\_b"', ['a b']),

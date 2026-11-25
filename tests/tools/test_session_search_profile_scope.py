@@ -11,19 +11,17 @@ import pytest
 
 from gateway.session_policy import _ACTIVE_POLICY, SURFACES, LocalSessionPolicy
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tools.session_search_tool import session_search
 
 
 def _seed(home: Path, sid: str, text: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")
-    db = SessionDB(home / "state.db")
-    try:
-        db.create_session(sid, source="telegram")
-        db.append_message(sid, role="user", content=text)
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, sid, "telegram")
+        seed_messages(db, sid, {"role": "user", "content": text})
 
 
 @pytest.fixture

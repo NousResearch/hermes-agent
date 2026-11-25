@@ -817,6 +817,40 @@ class TestCustomMcpRows:
         assert "my-custom" in out
         assert "custom" in out  # The status badge
 
+    @pytest.mark.parametrize("display", ["catalog", "picker-text", "picker-curses"])
+    def test_custom_mcp_display_redacts_credentials(
+        self, display, catalog_dir, capsys, monkeypatch
+    ):
+        from hermes_cli import mcp_picker
+        from hermes_cli.config import load_config, save_config
+
+        query_value = "fixture-query-value"
+        header_value = "fixture-header-value"
+        url = f"https://example.com/mcp?access_token={query_value}&region=west"
+        server = {"url": url, "headers": {"X-API-Key": header_value}}
+        cfg = load_config()
+        cfg["mcp_servers"] = {"custom-http": server}
+        save_config(cfg)
+
+        choices = []
+        if display == "catalog":
+            mcp_picker.show_catalog()
+        else:
+            monkeypatch.setattr(mcp_picker.sys.stdin, "isatty", lambda: display == "picker-curses")
+
+            def capture_choices(title, labels):
+                choices.extend(labels)
+
+            monkeypatch.setattr(mcp_picker, "curses_single_select", capture_choices)
+            mcp_picker.run_picker()
+
+        output = "\n".join(choices) if display == "picker-curses" else capsys.readouterr().out
+        assert "custom-http" in output
+        assert query_value not in output
+        assert header_value not in output
+        assert "https://example.com/mcp?access_token=***&region=west" in output
+        assert load_config()["mcp_servers"]["custom-http"] == server
+
 
 # ---------------------------------------------------------------------------
 # Git install — SHA ref detection

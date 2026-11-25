@@ -178,7 +178,11 @@ export function NarrowOverlays() {
     const active = narrow && !solo && reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
     const zone = active && tree ? findGroupOfPane(tree, active.id) : null
     const visible = active ? collapsibles.filter(p => (zone ? zone.panes.includes(p.id) : p.id === active.id)) : []
-    $narrowOverlayPaneIds.set(new Set(visible.flatMap(p => [p.id, ...(paneChrome(p).revealAliases ?? [])])))
+    // The REVEALED pane's ids lead, its zone mates and aliases behind (the set's readers name the
+    // sheet on screen from its first entry: closeOpenSheet, the band's side buttons). Only the
+    // revealed pane's own id closes the overlay on a native window, so the order is load-bearing.
+    const ordered = active ? [active, ...visible.filter(p => p.id !== active.id)] : []
+    $narrowOverlayPaneIds.set(new Set(ordered.flatMap(p => [p.id, ...(paneChrome(p).revealAliases ?? [])])))
 
     return () => $narrowOverlayPaneIds.set(new Set())
   }, [narrow, solo, reveal, collapsibles, tree])

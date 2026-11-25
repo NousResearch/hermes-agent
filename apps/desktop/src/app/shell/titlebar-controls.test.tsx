@@ -17,6 +17,7 @@ import {
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
 import { $chromiumAppWindow } from '@/lib/keybinds/app-window'
+import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -277,10 +278,11 @@ describe('titlebar app-action cluster', () => {
     delete window.document.documentElement.dataset.hermesDesktopHost
   })
 
-  // A narrow native window keeps main's titlebar: the side buttons read the
-  // docked sides and flip the overlay through the shared ⌘B/⌘J toggle, whatever
-  // the overlay shows, and carry no aria-expanded.
-  it('names and toggles the sides from docked state in a narrow native window, as on main', () => {
+  // A narrow native CLASSIC window keeps main's titlebar: the side buttons read
+  // the docked sides and flip the overlay through the shared ⌘B/⌘J toggle,
+  // whatever the overlay shows, and carry no aria-expanded.
+  it('names and toggles the sides from docked state in a narrow native classic window, as on main', () => {
+    $shellChoice.set(false)
     vi.stubGlobal(
       'matchMedia',
       vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
@@ -306,6 +308,63 @@ describe('titlebar app-action cluster', () => {
       expect(intents).toEqual([
         { id: CHAT_SIDEBAR_PANE_ID, mode: 'toggle' },
         { id: FILE_BROWSER_PANE_ID, mode: 'toggle' }
+      ])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
+  })
+
+  // HADESK-90: the redesign shows its narrow panes as sheets on every host, so
+  // its NATIVE window's sides read and drive the overlay too — docked state names
+  // panes those sheets never show, and the sheet on screen keeps its labelled Hide.
+  it('reads and drives the narrow sheets in a native redesign window', () => {
+    $shellChoice.set(true)
+    $narrowViewport.set(true)
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+
+      // The chat sidebar's sheet names the left button (first revealed pane, whether sessions or a
+      // left-zone mate such as bots); the right side stays clear.
+      act(() => $narrowOverlayPaneIds.set(new Set(['sessions', CHAT_SIDEBAR_PANE_ID, 'bots'])))
+      expect(screen.getByRole('button', { name: 'Hide sidebar' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
+
+      act(() => $narrowOverlayPaneIds.set(new Set(['bots', 'sessions', CHAT_SIDEBAR_PANE_ID])))
+      fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
+      // The band publishes the tool zone's ids revealed-first (narrow-overlays.tsx), so the set
+      // below is Review fronted, then the whole zone: the right button names Review, and Hide closes
+      // the sheet rather than switching the panel to Files.
+      act(() => $narrowOverlayPaneIds.set(new Set([REVIEW_PANE_ID, 'files', FILE_BROWSER_PANE_ID, 'terminal'])))
+      expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+      // A tool without an id of its own in the band (Terminal) still names itself.
+      act(() => $narrowOverlayPaneIds.set(new Set(['terminal', 'files', FILE_BROWSER_PANE_ID, REVIEW_PANE_ID])))
+      fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+      // The chat's items dock in a zone of their own: the button names and closes that sheet.
+      act(() => $narrowOverlayPaneIds.set(new Set([CHAT_ITEMS_PANE_ID])))
+      fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+      // Both sides clear: the labelled Show reveals the sheet's Files.
+      act(() => $narrowOverlayPaneIds.set(new Set()))
+      expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+      expect(intents).toEqual([
+        { id: 'sessions', mode: 'close' },
+        { id: 'bots', mode: 'close' },
+        { id: REVIEW_PANE_ID, mode: 'close' },
+        { id: 'terminal', mode: 'close' },
+        { id: CHAT_ITEMS_PANE_ID, mode: 'close' },
+        { id: FILE_BROWSER_PANE_ID, mode: 'open' }
       ])
     } finally {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)

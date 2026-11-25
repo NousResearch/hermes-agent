@@ -35,7 +35,6 @@ import {
   toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
-import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { usePortalShell } from '@/store/shell-variant'
 import { $titlebarAppActionsSide, type BandToolId, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
@@ -178,19 +177,27 @@ interface SidebarEdge {
 /** The titlebar's two sidebar buttons. The browser-hosted Desktop's narrow layout has no hover to
  * reveal by, so there the buttons read and drive the overlay itself, and they send an explicit open
  * or close: a visible hover reveal is not pinned, and a generic toggle would pin it rather than
- * perform the labelled Hide. A narrow native window keeps the docked toggles, which already route
- * through the overlay's toggle. */
+ * perform the labelled Hide. A narrow native CLASSIC window keeps the docked toggles, which already
+ * route through the overlay's toggle. The redesign shows its narrow panes as sheets on every host,
+ * so its native narrow window reads and drives the overlay too: docked state names panes those
+ * sheets never show, and the button sat out of sync with the side on screen (HADESK-90). */
 function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const leftSideOpen = useStore($leftSideOpen)
   const narrow = useStore($narrowViewport)
   const overlayPanes = useStore($narrowOverlayPaneIds)
   const browserHost = hostHas('narrowOverlayChrome')
-  const overlayChrome = narrow && browserHost
   const portal = usePortalShell()
+  const overlayChrome = narrow && (browserHost || portal)
   const toolShown = useStore($developerToolShown)
-  const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
-
+  // The right side's sheet. The set is one side at a time (the revealed pane plus its zone mates
+  // and aliases), so the chat sidebar's id means the LEFT sheet is up and any other id names the
+  // right one — whatever tool stands in it (Files, Review, Terminal, the chat's items). The band's
+  // one right button then names what Hide closes, instead of switching the panel to Files. Files
+  // stands in while the right side is clear: the tool a Show reveals.
+  const [shownOverlayId = FILE_BROWSER_PANE_ID] = overlayPanes
+  const leftOverlayId = overlayPanes.has(CHAT_SIDEBAR_PANE_ID) ? shownOverlayId : CHAT_SIDEBAR_PANE_ID
+  const rightOverlayId = overlayPanes.has(CHAT_SIDEBAR_PANE_ID) ? FILE_BROWSER_PANE_ID : shownOverlayId
   const edge = (id: string, dockedOpen: boolean, toggleDocked: () => void): SidebarEdge => {
     const open = overlayChrome ? overlayPanes.has(id) : dockedOpen
     const revealMode = open ? 'close' : 'open'
@@ -205,7 +212,7 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   }
 
   return {
-    left: edge(CHAT_SIDEBAR_PANE_ID, leftSideOpen, toggleLeftSide),
+    left: edge(leftOverlayId, leftSideOpen, toggleLeftSide),
     // The redesign's right side is its one tool panel, whichever zone stands outermost.
     right:
       portal && !narrow

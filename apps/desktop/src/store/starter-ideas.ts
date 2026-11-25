@@ -1,10 +1,11 @@
 /**
- * A newcomer's starter ideas under the empty chat's composer (Figma 479:4114 → 486:4227 → 486:5035).
+ * A newcomer's landing state (Figma 479:4114 → 486:4227 → 486:5035); the starter-idea strip that spec
+ * drew under the empty chat's composer is gone (HADESK-65), so nothing shows an idea.
  *
  * - Who: newcomers only ({@link $newcomer}); everyone else's empty chat is unchanged.
- * - Shown until the person has {@link FINISHED_TASK_CHATS_KEPT} chats in which a task finished, then
- *   they leave on their own; Hide leaves them sooner; Show ideas brings them back for good (until the
- *   next Hide). The four ideas never change while they are shown.
+ * - {@link $starterIdeas} says whether a newcomer's ideas are still in play: `ideas` until
+ *   {@link FINISHED_TASK_CHATS_KEPT} chats have had a task finish (or a `hidden` mark left by the
+ *   strip retired them). The landing's greeting and the composer's placeholder read it.
  * - "A chat in which a task finished": a turn of that chat ended `complete` (the gateway's
  *   `message.complete` status; not `error`, not `interrupted`) with an answer in it. Sending a message
  *   is not enough, and the same chat counts once.
@@ -19,19 +20,13 @@ import {
   $finishedTaskChats,
   $guidanceLedger,
   FINISHED_TASK_CHATS_KEPT,
-  markGuidance,
   noteFinishedTaskChat
 } from './guidance-ledger'
 import { recordIaAction } from './ia-metrics'
 import { $sessions } from './session'
 
-/** The ideas, by their content-free metric code, in the order they show. */
-export const STARTER_IDEAS = ['morning_briefing', 'research_options', 'summarize_document', 'clean_inbox'] as const
-
-export type StarterIdea = (typeof STARTER_IDEAS)[number]
-
-/** `ideas`: the four are shown. `retired`: a newcomer's ideas are gone (Show ideas brings them back).
- *  `none`: not a newcomer; the empty chat is the ordinary one. */
+/** `ideas`: still in play. `retired`: two chats have had a task finish, or a persisted `hidden` mark
+ *  retired them. `none`: not a newcomer; the empty chat is the ordinary one. */
 export type StarterIdeasState = 'ideas' | 'none' | 'retired'
 
 export const $starterIdeas = computed(
@@ -66,7 +61,7 @@ export const $lastChatActivityMs = computed($sessions, sessions => {
 /**
  * What a newcomer's empty chat says above the composer (Onboarding 01 18695:18388, 03 C4–C8):
  * - `first`: no task has finished yet: "Welcome to Hermes".
- * - `back`: one has (C4, C5): "Welcome back.", its line following whether the ideas are out.
+ * - `back`: one has (C4, C5): "Welcome back.".
  * - `away`: they have used Hermes and their newest chat has been still for {@link AWAY_AFTER_MS} (C8):
  *   "Good to see you again." The next task they finish makes that chat the newest, so the landing
  *   settles back to `back` on its own.
@@ -102,27 +97,4 @@ export function noteTaskFinished(chatId: string): void {
   if (noteFinishedTaskChat(chatId) && showing && $starterIdeas.get() === 'retired') {
     recordIaAction('ia.starter_chips.hidden_auto', 'state')
   }
-}
-
-export function hideStarterIdeas(): void {
-  if ($starterIdeas.get() !== 'ideas') {
-    return
-  }
-
-  markGuidance('starterIdeas', 'hidden')
-  recordIaAction('ia.starter_chips.hidden_user')
-}
-
-export function showStarterIdeas(): void {
-  if ($starterIdeas.get() !== 'retired') {
-    return
-  }
-
-  markGuidance('starterIdeas', 'wanted')
-  recordIaAction('ia.starter_chips.shown_again')
-}
-
-/** The person picked an idea: counted by its code before it is sent like a typed message. */
-export function noteStarterIdeaPicked(idea: StarterIdea): void {
-  recordIaAction(`ia.starter_chip.${idea}`)
 }

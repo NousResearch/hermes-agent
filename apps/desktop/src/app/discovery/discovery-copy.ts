@@ -24,7 +24,7 @@ export interface DiscoveryCopy {
     /** A row's ×: takes it out of the tray until it has news again. */
     dismiss: string
     footnote: string
-    /** Reopens the rename splash. */
+    /** Reopens the welcome screen (the rename splash, or the first-time one for a newcomer). */
     openIntroduction: string
   }
   renameItem: { title: string; description: string; action: string }

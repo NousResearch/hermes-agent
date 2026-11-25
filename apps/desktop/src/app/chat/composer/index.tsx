@@ -416,7 +416,6 @@ export function ChatBar({
   // conversation change.
   const { placeholder, sessionCreated } = useComposerPlaceholder({
     disabled,
-    ideasBelow: Boolean(landing),
     profile,
     reconnecting,
     scope: activeQueueSessionKey,
@@ -1485,7 +1484,6 @@ export function ChatBar({
           <div className={cn(composerFloatingStrip, 'px-[5px] pt-1.5 empty:hidden')}>
             <ContribSlot area={COMPOSER_AREAS.underside} />
           </div>
-          {landing?.below}
         </div>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
 

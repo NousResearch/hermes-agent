@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tip } from '@/components/ui/tooltip'
+import { $firstTimeSplashReopenable, reopenFirstTimeSplash } from '@/store/first-time-splash'
 import { $renameSplashReopenable, reopenRenameSplash } from '@/store/rename-splash'
 
 import { useRailMenuCollisionPadding } from '../redesign/portal-status-menu'
@@ -28,7 +29,8 @@ export function NotificationBell() {
   const { pathname, search } = useLocation()
   const listed = useStore(notificationTray.$listed)
   const unseen = useStore(notificationTray.$unseen)
-  const reopenable = useStore($renameSplashReopenable)
+  const renameReopenable = useStore($renameSplashReopenable)
+  const firstTimeReopenable = useStore($firstTimeSplashReopenable)
   const [open, setOpen] = useState(false)
   // What was new when the tray opened: seeing it clears the bell, not the cards' marks.
   const [newOnOpen, setNewOnOpen] = useState(NOTHING_UNSEEN)
@@ -59,8 +61,15 @@ export function NotificationBell() {
   }
 
   const hasNews = unseen.size > 0
-  // The introduction's button stands for its row: cleared with it.
-  const introduction = reopenable && listed.some(item => item.id === 'rename-splash')
+  const hasUnseenListed = listed.some(({ id }) => newOnOpen.has(id))
+  // leaves this button, so a dismissal never strands the person without the introduction. A
+  // returning user gets the rename splash, a newcomer the first-time one; the two are mutually
+  // exclusive, so whichever the ledger can reopen is the one this opens.
+  const openIntroduction = renameReopenable
+    ? reopenRenameSplash
+    : firstTimeReopenable
+      ? reopenFirstTimeSplash
+      : null
 
   return (
     <Popover onOpenChange={onOpenChange} open={open}>
@@ -101,43 +110,41 @@ export function NotificationBell() {
         {listed.length === 0 ? (
           <p className="discovery-tray-empty">{copy.tray.empty}</p>
         ) : (
-          <>
-            <ul className="discovery-welcome-card discovery-tray-items">
-              {listed.map(({ Card, id }) => (
-                <li key={id}>
-                  <TrayItemClearContext value={() => clearItem(id)}>
-                    <Card close={handOff} dismiss={() => setOpen(false)} unseen={newOnOpen.has(id)} />
-                  </TrayItemClearContext>
-                </li>
-              ))}
-            </ul>
-            {(introduction || newOnOpen.size > 0) && (
-              <div className="discovery-welcome-actions">
-                {introduction && (
-                  <Button
-                    className="discovery-welcome-action"
-                    onClick={() => {
-                      handOff()
-                      reopenRenameSplash()
-                    }}
-                  >
-                    {copy.tray.openIntroduction}
-                  </Button>
-                )}
-                {newOnOpen.size > 0 && (
-                  <Button
-                    className="discovery-welcome-action"
-                    onClick={() => setNewOnOpen(NOTHING_UNSEEN)}
-                    variant="secondary"
-                  >
-                    {copy.tray.markAllRead}
-                  </Button>
-                )}
-              </div>
-            )}
-            <p className="discovery-welcome-footnote">{copy.tray.footnote}</p>
-          </>
+          <ul className="discovery-welcome-card discovery-tray-items">
+            {listed.map(({ Card, id }) => (
+              <li key={id}>
+                <TrayItemClearContext value={() => clearItem(id)}>
+                  <Card close={handOff} dismiss={() => setOpen(false)} unseen={newOnOpen.has(id)} />
+                </TrayItemClearContext>
+              </li>
+            ))}
+          </ul>
         )}
+        {(openIntroduction || hasUnseenListed) && (
+          <div className="discovery-welcome-actions">
+            {openIntroduction && (
+              <Button
+                className="discovery-welcome-action"
+                onClick={() => {
+                  handOff()
+                  openIntroduction()
+                }}
+              >
+                {copy.tray.openIntroduction}
+              </Button>
+            )}
+            {hasUnseenListed && (
+              <Button
+                className="discovery-welcome-action"
+                onClick={() => setNewOnOpen(NOTHING_UNSEEN)}
+                variant="secondary"
+              >
+                {copy.tray.markAllRead}
+              </Button>
+            )}
+          </div>
+        )}
+        <p className="discovery-welcome-footnote">{copy.tray.footnote}</p>
       </PopoverContent>
     </Popover>
   )

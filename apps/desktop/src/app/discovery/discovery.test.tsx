@@ -223,7 +223,7 @@ describe('the notifications tray', () => {
     expect(splash()).not.toBeNull()
   })
 
-  it('dismisses a notification from its row: it leaves the tray, and the introduction\'s button with it', () => {
+  it('dismisses a notification from its row: it leaves the tray, while the introduction\'s button stays', () => {
     renderShell()
     act(() => {
       $guidanceLedger.set({ renameSplash: 'seen' })
@@ -237,11 +237,29 @@ describe('the notifications tray', () => {
     const intro = within(tray).getByText(copy.renameItem.title).closest('article')!
     fireEvent.click(within(intro).getByRole('button', { name: copy.tray.dismiss }))
     expect(within(tray).queryByText(copy.renameItem.title)).toBeNull()
-    expect(within(tray).queryByRole('button', { name: copy.tray.openIntroduction })).toBeNull()
+    // The row is gone, but its button stands for it: the introduction stays one click away.
+    expect(within(tray).getByRole('button', { name: copy.tray.openIntroduction })).toBeTruthy()
     expect(within(tray).getAllByRole('article')).toHaveLength(1)
 
     fireEvent.click(within(tray).getByRole('button', { name: copy.tray.dismiss }))
     expect(within(tray).getByText(copy.tray.empty)).toBeTruthy()
+  })
+
+  it('still reopens the introduction from its button once its row is cleared and nothing is listed', () => {
+    renderShell()
+    act(() => $guidanceLedger.set({ renameSplash: 'seen' }))
+    fireEvent.click(screen.getByRole('button', { name: copy.tray.title }))
+
+    const tray = screen.getByRole('dialog', { name: copy.tray.title })
+    const intro = within(tray).getByText(copy.renameItem.title).closest('article')!
+    fireEvent.click(within(intro).getByRole('button', { name: copy.tray.dismiss }))
+
+    // The splash's row is cleared to an empty tray: the way back must not go with it.
+    expect(within(tray).queryByText(copy.renameItem.title)).toBeNull()
+    expect(within(tray).getByText(copy.tray.empty)).toBeTruthy()
+    fireEvent.click(within(tray).getByRole('button', { name: copy.tray.openIntroduction }))
+    expect($renameSplash.get()).toBe('reopened')
+    expect(splash()).not.toBeNull()
   })
 
   it('says a newer build in the chat without reloading; Later puts it away and the tray keeps it', () => {

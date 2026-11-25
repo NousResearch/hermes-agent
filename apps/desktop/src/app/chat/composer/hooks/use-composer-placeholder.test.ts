@@ -23,7 +23,7 @@ interface Props {
 function renderPlaceholder(initialProps: Props = { scope: fresh, sessionId: null }) {
   return renderHook(
     ({ scope, sessionId }: Props) =>
-      useComposerPlaceholder({ disabled: false, ideasBelow: false, reconnecting: false, scope, sessionId }),
+      useComposerPlaceholder({ disabled: false, reconnecting: false, scope, sessionId }),
     {
       initialProps
     }
@@ -98,32 +98,28 @@ describe('classic', () => {
 describe('a newcomer’s new chat in the redesign', () => {
   const copy = firstTimeCopy('en').landing
 
-  function renderNewcomer(ideasBelow: boolean, scope = fresh) {
+  function renderNewcomer(scope = fresh) {
     $shellChoice.set(true)
     $guidanceLedger.set({ renameSplash: 'not_applicable' })
 
-    return renderHook(() => useComposerPlaceholder({ disabled: false, ideasBelow, reconnecting: false, scope, sessionId: null }))
+    return renderHook(() => useComposerPlaceholder({ disabled: false, reconnecting: false, scope, sessionId: null }))
   }
 
-  it('points at the ideas under it while they are there, and asks for a task once they are gone', () => {
-    const { result } = renderNewcomer(true)
+  it('says to give Hermes a task before a first finished one, else to give the agent one', () => {
+    const { result } = renderNewcomer()
     expect(result.current.placeholder).toBe(copy.placeholderIdeas)
 
     act(() => $guidanceLedger.set({ renameSplash: 'not_applicable', starterIdeas: 'hidden' }))
     expect(result.current.placeholder).toBe(copy.placeholderRetired)
   })
 
-  it('never points at ideas that are not under it', () => {
-    expect(renderNewcomer(false).result.current.placeholder).toBe(copy.placeholderRetired)
-  })
-
   it('keeps an open conversation’s follow-up, and everyone else’s rotating starters', () => {
-    expect(followUps).toContain(renderNewcomer(true, 'stored-a').result.current.placeholder)
+    expect(followUps).toContain(renderNewcomer('stored-a').result.current.placeholder)
 
     act(() => $guidanceLedger.set({ renameSplash: 'seen' }))
 
     const { result } = renderHook(() =>
-      useComposerPlaceholder({ disabled: false, ideasBelow: true, reconnecting: false, scope: fresh, sessionId: null })
+      useComposerPlaceholder({ disabled: false, reconnecting: false, scope: fresh, sessionId: null })
     )
 
     expect(starters).toContain(result.current.placeholder)
@@ -134,7 +130,6 @@ type PlaceholderOptions = Parameters<typeof useComposerPlaceholder>[0]
 
 const stored = (options: Partial<PlaceholderOptions>): PlaceholderOptions => ({
   disabled: false,
-  ideasBelow: false,
   reconnecting: false,
   scope: 's1',
   sessionId: 's1',

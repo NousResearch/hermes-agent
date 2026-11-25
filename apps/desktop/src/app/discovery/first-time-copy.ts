@@ -2,13 +2,12 @@ import { isBundledLocale, useI18n } from '@/i18n'
 import type { BundledLocale } from '@/i18n/types'
 import type { FirstTimeSplashPlace } from '@/store/first-time-splash'
 import type { PortalAccent } from '@/store/portal-accent'
-import type { StarterIdea } from '@/store/starter-ideas'
 
 import type { Artwork } from '../redesign/artwork'
 
 /** The redesign's first-run surfaces for someone new to Hermes (Figma "Prod - Desktop" › Onboarding,
  *  01 Discover & sign in): the first-time splash and its "Make it yours" step, its tray entries, the
- *  empty chat's heading and starter ideas, the sidebar's sign-up card, and the reply to a message held
+ *  empty chat's heading, the sidebar's sign-up card, and the reply to a message held
  *  until sign up. Only the redesign renders them. The destinations' names (Chats, Agents, ...) are the
  *  rail's own labels (renamed-names.ts). */
 export interface FirstTimeCopy {
@@ -52,24 +51,17 @@ export interface FirstTimeCopy {
      *  the splash's own eyebrow elsewhere. */
     eyebrowPortal: string
     title: string
-    subtitle: string
     /** In the composer while sign up is required. */
     signUp: string
-    /** The ideas' group, for assistive tech. */
-    ideasLabel: string
-    ideas: Record<StarterIdea, string>
-    hide: string
-    showIdeas: string
     /** The composer's resting text before a first task, and after. */
     placeholderIdeas: string
     placeholderRetired: string
-    /** After a first finished task (C4, C5): the heading, and its line once the ideas are put away. */
+    /** After a first finished task (C4, C5): the heading; the line every newcomer's heading carries. */
     back: string
     subtitleRetired: string
     /** Back after a long stay away (C8). */
     awayTitle: string
     awayLine: string
-    continueChat: string
   }
   /** "How's Hermes going so far?" (Onboarding C7 18677:28705) on the new chat's landing. */
   checkIn: {
@@ -230,24 +222,13 @@ const en: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: 'Welcome to Hermes',
-    subtitle: 'Assign a task, or pick an idea below.',
     signUp: 'Sign up to start',
-    ideasLabel: 'Ideas to start with',
-    ideas: {
-      morning_briefing: 'Send me a morning briefing',
-      research_options: 'Research and compare options',
-      summarize_document: 'Summarise a long document',
-      clean_inbox: 'Clean up my inbox'
-    },
-    hide: 'Hide ideas',
-    showIdeas: 'Show ideas',
     placeholderIdeas: 'Give Hermes a task',
     placeholderRetired: 'Give your agent a task',
     back: 'Welcome back.',
     subtitleRetired: 'What would you like your agent to work on?',
     awayTitle: 'Good to see you again.',
     awayLine: 'Your chats and Library are here whenever you need them.',
-    continueChat: 'Continue a recent chat'
   },
   account: {
     title: 'Create an Account',
@@ -401,24 +382,13 @@ const fr: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: 'Bienvenue dans Hermes',
-    subtitle: 'Confiez une tâche, ou choisissez une idée ci-dessous.',
     signUp: 'S’inscrire pour commencer',
-    ideasLabel: 'Des idées pour commencer',
-    ideas: {
-      morning_briefing: 'Envoie-moi un point du matin',
-      research_options: 'Compare plusieurs options',
-      summarize_document: 'Résume un long document',
-      clean_inbox: 'Fais le tri dans ma boîte mail'
-    },
-    hide: 'Masquer les idées',
-    showIdeas: 'Afficher des idées',
     placeholderIdeas: 'Confiez une tâche à Hermes',
     placeholderRetired: 'Confiez une tâche à votre agent',
     back: 'Bon retour.',
     subtitleRetired: 'Sur quoi votre agent doit-il travailler ?',
     awayTitle: 'Ravi de vous revoir.',
     awayLine: 'Vos discussions et votre Bibliothèque sont là quand vous en avez besoin.',
-    continueChat: 'Reprendre une discussion récente'
   },
   account: {
     title: 'Créer un compte',
@@ -572,24 +542,13 @@ const de: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: 'Willkommen bei Hermes',
-    subtitle: 'Gib eine Aufgabe oder wähle unten eine Idee.',
     signUp: 'Registrieren und loslegen',
-    ideasLabel: 'Ideen für den Anfang',
-    ideas: {
-      morning_briefing: 'Schick mir ein Morgen-Briefing',
-      research_options: 'Optionen recherchieren und vergleichen',
-      summarize_document: 'Ein langes Dokument zusammenfassen',
-      clean_inbox: 'Mein Postfach aufräumen'
-    },
-    hide: 'Ideen ausblenden',
-    showIdeas: 'Ideen zeigen',
     placeholderIdeas: 'Gib Hermes eine Aufgabe',
     placeholderRetired: 'Gib deinem Agenten eine Aufgabe',
     back: 'Willkommen zurück.',
     subtitleRetired: 'Woran soll dein Agent arbeiten?',
     awayTitle: 'Schön, dich wiederzusehen.',
     awayLine: 'Deine Chats und deine Bibliothek sind da, wann immer du sie brauchst.',
-    continueChat: 'Einen letzten Chat fortsetzen'
   },
   account: {
     title: 'Konto erstellen',
@@ -744,24 +703,13 @@ const es: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: 'Te damos la bienvenida a Hermes',
-    subtitle: 'Encarga una tarea o elige una idea de abajo.',
     signUp: 'Regístrate para empezar',
-    ideasLabel: 'Ideas para empezar',
-    ideas: {
-      morning_briefing: 'Envíame un resumen matutino',
-      research_options: 'Investiga y compara opciones',
-      summarize_document: 'Resume un documento largo',
-      clean_inbox: 'Ordena mi bandeja de entrada'
-    },
-    hide: 'Ocultar ideas',
-    showIdeas: 'Mostrar ideas',
     placeholderIdeas: 'Dale una tarea a Hermes',
     placeholderRetired: 'Dale una tarea a tu agente',
     back: 'Hola de nuevo.',
     subtitleRetired: '¿En qué quieres que trabaje tu agente?',
     awayTitle: 'Qué bueno verte de nuevo.',
     awayLine: 'Tus chats y tu Biblioteca están aquí cuando los necesites.',
-    continueChat: 'Seguir un chat reciente'
   },
   account: {
     title: 'Crear una cuenta',
@@ -915,24 +863,13 @@ const ja: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: 'Hermes へようこそ',
-    subtitle: 'タスクを任せるか、下のアイデアを選んでください。',
     signUp: '登録して始める',
-    ideasLabel: '最初のアイデア',
-    ideas: {
-      morning_briefing: '朝のブリーフィングを送って',
-      research_options: '選択肢を調べて比較して',
-      summarize_document: '長いドキュメントを要約して',
-      clean_inbox: '受信トレイを整理して'
-    },
-    hide: 'アイデアを非表示',
-    showIdeas: 'アイデアを表示',
     placeholderIdeas: 'Hermes にタスクを任せる',
     placeholderRetired: 'エージェントにタスクを任せる',
     back: 'おかえりなさい。',
     subtitleRetired: 'エージェントに何を任せますか？',
     awayTitle: 'またお会いできてうれしいです。',
     awayLine: 'チャットとライブラリはいつでもここにあります。',
-    continueChat: '最近のチャットを続ける'
   },
   account: {
     title: 'アカウントを作成',
@@ -1086,24 +1023,13 @@ const zh: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: '欢迎使用 Hermes',
-    subtitle: '布置一个任务，或从下方选一个灵感。',
     signUp: '注册并开始',
-    ideasLabel: '入门灵感',
-    ideas: {
-      morning_briefing: '给我发一份晨间简报',
-      research_options: '调研并比较几个选项',
-      summarize_document: '总结一份长文档',
-      clean_inbox: '整理我的收件箱'
-    },
-    hide: '隐藏灵感',
-    showIdeas: '显示灵感',
     placeholderIdeas: '给 Hermes 布置任务',
     placeholderRetired: '给你的智能体布置任务',
     back: '欢迎回来。',
     subtitleRetired: '你想让智能体做些什么？',
     awayTitle: '很高兴再次见到你。',
     awayLine: '你的聊天和资料库随时都在这里。',
-    continueChat: '继续最近的聊天'
   },
   account: {
     title: '创建账户',
@@ -1257,24 +1183,13 @@ const zhHant: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: '歡迎使用 Hermes',
-    subtitle: '交辦一項任務，或從下方選一個靈感。',
     signUp: '註冊並開始',
-    ideasLabel: '入門靈感',
-    ideas: {
-      morning_briefing: '給我一份晨間簡報',
-      research_options: '研究並比較幾個選項',
-      summarize_document: '摘要一份長文件',
-      clean_inbox: '整理我的收件匣'
-    },
-    hide: '隱藏靈感',
-    showIdeas: '顯示靈感',
     placeholderIdeas: '交辦任務給 Hermes',
     placeholderRetired: '交辦任務給你的代理',
     back: '歡迎回來。',
     subtitleRetired: '你想讓代理做些什麼？',
     awayTitle: '很高興再次見到你。',
     awayLine: '你的聊天和資料庫隨時都在這裡。',
-    continueChat: '繼續最近的聊天'
   },
   account: {
     title: '建立帳戶',
@@ -1428,24 +1343,13 @@ const ru: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: 'Добро пожаловать в Hermes',
-    subtitle: 'Поручите задачу или выберите идею ниже.',
     signUp: 'Зарегистрироваться',
-    ideasLabel: 'Идеи для начала',
-    ideas: {
-      morning_briefing: 'Присылай мне утреннюю сводку',
-      research_options: 'Изучи и сравни варианты',
-      summarize_document: 'Кратко перескажи длинный документ',
-      clean_inbox: 'Разбери мою почту'
-    },
-    hide: 'Скрыть идеи',
-    showIdeas: 'Показать идеи',
     placeholderIdeas: 'Дайте Hermes задачу',
     placeholderRetired: 'Дайте агенту задачу',
     back: 'С возвращением.',
     subtitleRetired: 'Над чем поработать вашему агенту?',
     awayTitle: 'Рады видеть вас снова.',
     awayLine: 'Ваши чаты и Библиотека здесь, когда понадобятся.',
-    continueChat: 'Продолжить недавний чат'
   },
   account: {
     title: 'Создать аккаунт',
@@ -1599,24 +1503,13 @@ const ar: FirstTimeCopy = {
   landing: {
     eyebrowPortal: 'Hermes Portal',
     title: 'مرحبًا بك في Hermes',
-    subtitle: 'كلّف بمهمة، أو اختر فكرة أدناه.',
     signUp: 'سجّل للبدء',
-    ideasLabel: 'أفكار للبدء',
-    ideas: {
-      morning_briefing: 'أرسل لي موجزًا صباحيًا',
-      research_options: 'ابحث في الخيارات وقارن بينها',
-      summarize_document: 'لخّص مستندًا طويلًا',
-      clean_inbox: 'نظّم صندوق بريدي'
-    },
-    hide: 'إخفاء الأفكار',
-    showIdeas: 'عرض الأفكار',
     placeholderIdeas: 'أعطِ Hermes مهمة',
     placeholderRetired: 'أعطِ وكيلك مهمة',
     back: 'مرحبًا بعودتك.',
     subtitleRetired: 'على ماذا تريد أن يعمل وكيلك؟',
     awayTitle: 'سعداء برؤيتك مجددًا.',
     awayLine: 'محادثاتك ومكتبتك هنا متى احتجت إليها.',
-    continueChat: 'تابع محادثة حديثة'
   },
   account: {
     title: 'أنشئ حسابًا',

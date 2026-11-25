@@ -1,6 +1,7 @@
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
+import { $guidanceLedger } from '@/store/guidance-ledger'
 import { holdPrompt, takeHeldPrompt } from '@/store/held-prompt'
 import { $shellChoice } from '@/store/shell-variant'
 import { $visitorAccess } from '@/store/visitor-access'
@@ -11,6 +12,7 @@ import { useChatLanding, useComposerLanding } from './landing'
 
 afterEach(() => {
   cleanup()
+  $guidanceLedger.set({})
   $shellChoice.set(null)
 })
 
@@ -53,4 +55,33 @@ it('gives the composer no ideas to point at while a held message takes the new c
 
   takeHeldPrompt()
   $visitorAccess.set({ kind: 'open' })
+})
+
+it('lays the newcomer’s greeting above the redesign landing, and nothing under it', () => {
+  $shellChoice.set(true)
+  $guidanceLedger.set({ renameSplash: 'not_applicable' })
+
+  const { result } = renderHook(() => useComposerLanding(true, true, 'main', true))
+  const around = result.current.around
+
+  // The landing carries the greeting and nothing else: the composer's `below` slot — the three-item
+  // prompt-snippet / starter-ideas strip (HADESK-65) — is gone, so nothing is laid under the composer.
+  expect(Object.keys(around ?? {})).toEqual(['above'])
+
+  const { container } = render(<>{around?.above}</>)
+
+  expect(container.querySelector('.discovery-landing-greeting')).toBeTruthy()
+  expect(container.querySelector('[data-slot="starter-ideas"], .discovery-ideas')).toBeNull()
+})
+
+it('lays nothing on the landing in the classic shell', () => {
+  $shellChoice.set(false)
+
+  const { result } = renderHook(() => {
+    const { centered } = useChatLanding(true, false, false)
+
+    return useComposerLanding(centered, true, 'main', true)
+  })
+
+  expect(result.current.around).toBeUndefined()
 })

@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useMemo } from 'react'
 
-import { LandingGreeting, StarterIdeas } from '@/app/discovery/starter-ideas'
+import { LandingGreeting } from '@/app/discovery/starter-ideas'
 import { $introHoldsThread } from '@/components/onboarding/first-run/intro'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $introView } from '@/store/onboarding-intro'
@@ -37,8 +37,8 @@ export function useChatLanding(
 }
 
 interface ComposerLanding {
-  /** What the landing lays above and below the composer (a newcomer's greeting and starter ideas). */
-  around?: { above: ReactNode; below: ReactNode }
+  /** What the landing lays above the composer: a newcomer's greeting. */
+  around?: { above: ReactNode }
   /** The composer waits for a connection, except a visitor's who must sign up: what they send is
    *  held, never sent. */
   disabled: boolean
@@ -55,8 +55,7 @@ export function useComposerLanding(
   const landing = centered && primary
 
   const around = useMemo(
-    () =>
-      landing ? { above: <LandingGreeting target={target} />, below: <StarterIdeas target={target} /> } : undefined,
+    () => (landing ? { above: <LandingGreeting target={target} /> } : undefined),
     [landing, target]
   )
 

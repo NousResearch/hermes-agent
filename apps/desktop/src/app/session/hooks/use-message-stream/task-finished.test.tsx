@@ -5,7 +5,7 @@ import { $guidanceLedger } from '@/store/guidance-ledger'
 
 import { type GatewayFrame, playFrames } from './test-harness'
 
-// A newcomer's starter ideas leave after two chats in which a task finished (store/starter-ideas.ts).
+// A newcomer's ideas state retires after two chats in which a task finished (store/starter-ideas.ts).
 // "Finished" is the gateway's own verdict on the turn: `message.complete` with status `complete` and
 // an answer. Sending a message, a failed turn, a stopped turn or an empty one is not a finished task.
 

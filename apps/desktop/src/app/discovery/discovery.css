@@ -728,45 +728,6 @@
   line-height: 1.43;
 }
 
-/* Four chips in two rows under the composer, 16 apart (18695:18475). */
-:root[data-shell='portal'] .discovery-ideas {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1rem;
-  padding-block-start: 1.5rem;
-  padding-inline: 5px;
-}
-
-:root[data-shell='portal'] .discovery-ideas-list {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 1rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-/* A chip: ink 5, no rim, 9 radius, 12 / 16 padding, a 20px glyph 12 before Nous/Compact SemiBold
-   (at the 14px body). */
-:root[data-shell='portal'] .discovery-ideas-list .discovery-idea[data-size][data-variant] {
-  gap: 0.75rem;
-  min-block-size: 2.75rem;
-  padding: 0.75rem 1rem;
-  border-radius: var(--portal-radius-panel);
-  box-shadow: none;
-  font-size: var(--portal-type-body-size);
-  font-weight: 600;
-}
-
-:root[data-shell='portal'] .discovery-idea-glyph {
-  flex: none;
-  inline-size: var(--portal-idea-glyph);
-  block-size: var(--portal-idea-glyph);
-  font-size: var(--portal-idea-glyph);
-}
-
 /* "Sign up to start" at the composer's top end (18695:18460): Nous/Metadata underlined, in full ink. */
 :root[data-shell='portal'] .discovery-composer-sign-up {
   padding: 0;
@@ -797,9 +758,9 @@
   color: var(--portal-text-primary);
 }
 
-/* Touch: every idea and toggle is a 44px target. */
+/* Touch: every quiet text action (Hide / Show ideas, Dismiss) is a 44px target. */
 @media (hover: none), (pointer: coarse) {
-  :root[data-shell='portal'] :is(.discovery-idea, .discovery-ideas-toggle) {
+  :root[data-shell='portal'] .discovery-ideas-toggle {
     min-block-size: var(--portal-touch-target);
   }
 }
@@ -829,7 +790,7 @@
 /* Section 03's own buttons (Onboarding / Button 18677:32714): 36px, 12 across, 6 corners, Nous/Compact
    SemiBold at the 14px body; the primary in the accent, the secondary ink 5 with no rim. */
 :root[data-shell='portal']
-  :is(.discovery-landing-actions, .discovery-check-in-answers)
+  .discovery-check-in-answers
   .discovery-landing-action[data-size][data-variant] {
   min-block-size: 2.25rem;
   padding-block: 0;
@@ -845,8 +806,8 @@
   color: var(--portal-text-on-brand);
 }
 
-/* C8: Continue a recent chat and Show ideas, 10 apart, under the composer. */
-:root[data-shell='portal'] :is(.discovery-landing-actions, .discovery-check-in-answers) {
+/* The check-in's answers, 10 apart, under its heading. */
+:root[data-shell='portal'] .discovery-check-in-answers {
   display: flex;
   flex-wrap: wrap;
   gap: 0.625rem;

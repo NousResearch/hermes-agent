@@ -13,15 +13,7 @@ import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-lo
 import { $guidanceLedger, GUIDANCE_LEDGER_KEY } from './guidance-ledger'
 import { $sessions } from './session'
 import { $shellChoice } from './shell-variant'
-import {
-  $landingMoment,
-  $starterIdeas,
-  AWAY_AFTER_MS,
-  hideStarterIdeas,
-  noteStarterIdeaPicked,
-  noteTaskFinished,
-  showStarterIdeas
-} from './starter-ideas'
+import { $landingMoment, $starterIdeas, AWAY_AFTER_MS, noteTaskFinished } from './starter-ideas'
 
 function recorded(): string {
   return Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '')
@@ -47,7 +39,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('a newcomer’s starter ideas', () => {
+describe('a newcomer’s ideas state', () => {
   it('show until two chats have had a task finish, then leave on their own', () => {
     expect($starterIdeas.get()).toBe('ideas')
     expect($landingMoment.get()).toBe('first')
@@ -63,22 +55,6 @@ describe('a newcomer’s starter ideas', () => {
     expect($landingMoment.get()).toBe('back')
   })
 
-  it('leave sooner with Hide, come back with Show ideas, and leave again with Hide', () => {
-    hideStarterIdeas()
-    expect($starterIdeas.get()).toBe('retired')
-
-    showStarterIdeas()
-    expect($starterIdeas.get()).toBe('ideas')
-
-    // Brought back on purpose: finishing more tasks does not take them away again.
-    noteTaskFinished('chat-a')
-    noteTaskFinished('chat-b')
-    expect($starterIdeas.get()).toBe('ideas')
-
-    hideStarterIdeas()
-    expect($starterIdeas.get()).toBe('retired')
-  })
-
   it('are not there for anyone who used Hermes before, whose finished tasks are not counted', () => {
     $guidanceLedger.set({ renameSplash: 'seen' })
 
@@ -88,34 +64,25 @@ describe('a newcomer’s starter ideas', () => {
     expect($guidanceLedger.get().finishedTaskChats).toBeUndefined()
   })
 
-  it('keep their count and marks in the guidance ledger, the seam that moves to the account', () => {
+  it('keep their count in the guidance ledger, the seam that moves to the account', () => {
     noteTaskFinished('chat-a')
-    hideStarterIdeas()
 
     expect(JSON.parse(window.localStorage.getItem(GUIDANCE_LEDGER_KEY) ?? '{}')).toEqual({
       ...NEWCOMER,
-      starterIdeas: 'hidden',
       finishedTaskChats: ['chat-a']
     })
   })
 
-  it('record content-free codes only behind consent: the idea picked, leaving on their own once, Hide, Show', async () => {
-    noteStarterIdeaPicked('clean_inbox')
+  it('record content-free codes only behind consent: the ideas leaving on their own once', async () => {
+    noteTaskFinished('chat-a')
     expect(recorded()).toBe('')
 
     await setMetricsGate(captureDesktopMetricsGate, 'on')
-    noteStarterIdeaPicked('research_options')
-    noteTaskFinished('chat-a')
     noteTaskFinished('chat-b')
     noteTaskFinished('chat-c')
-    showStarterIdeas()
-    hideStarterIdeas()
 
     const state = recorded()
-    expect(state).toContain('ia.starter_chip.research_options|click')
     expect(state).toContain('"ia.starter_chips.hidden_auto|state":1')
-    expect(state).toContain('ia.starter_chips.shown_again|click')
-    expect(state).toContain('ia.starter_chips.hidden_user|click')
     expect(state).not.toContain('"other')
   })
 })

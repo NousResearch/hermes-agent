@@ -12,7 +12,7 @@ import { $guidanceLedger } from '@/store/guidance-ledger'
 import { holdPrompt, takeHeldPrompt } from '@/store/held-prompt'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { $newVersionReady } from '@/store/new-version'
-import { $traySeen } from '@/store/notification-tray'
+import { $trayCleared, $traySeen } from '@/store/notification-tray'
 import { $portalAccent } from '@/store/portal-accent'
 import { $renameSplash } from '@/store/rename-splash'
 import { $sessions, $sessionsLoadError, $sessionsLoading } from '@/store/session'
@@ -31,7 +31,7 @@ import { firstTimeCopy } from './first-time-copy'
 import { HeldExchange } from './held-exchange'
 import { NotificationBell } from './notification-tray'
 import { SplashCoveredRoutes } from './splash-layer'
-import { LandingGreeting, StarterIdeas } from './starter-ideas'
+import { LandingGreeting } from './starter-ideas'
 
 const copy = firstTimeCopy('en')
 const tray = discoveryCopy('en').tray
@@ -76,6 +76,7 @@ beforeEach(() => {
   $shellChoice.set(true)
   $guidanceLedger.set({})
   $traySeen.set([])
+  $trayCleared.set([])
   $renameSplash.set(null)
   $firstTimeSplash.set(null)
   $newVersionReady.set(false)
@@ -304,6 +305,23 @@ describe('the tray for a first-timer', () => {
     expect($firstTimeSplash.get()).toBe('reopened')
   })
 
+  it('keeps a way back to Meet Hermes after its row is cleared', () => {
+    renderShell()
+    settle([])
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByRole('button', { name: tray.title }))
+
+    const panel = screen.getByRole('dialog', { name: tray.title })
+    const meet = within(panel).getByText(copy.tray.meet.title).closest('article')!
+    fireEvent.click(within(meet).getByRole('button', { name: tray.dismiss }))
+
+    // The row is cleared to an empty tray, but the welcome screen is still reachable from here.
+    expect(within(panel).queryByText(copy.tray.meet.title)).toBeNull()
+    expect(within(panel).getByText(tray.empty)).toBeTruthy()
+    fireEvent.click(within(panel).getByRole('button', { name: tray.openIntroduction }))
+    expect($firstTimeSplash.get()).toBe('reopened')
+  })
+
   it('has no sign up for anyone who can already run things', () => {
     renderShell()
     fireEvent.click(screen.getByRole('button', { name: tray.title }))
@@ -321,100 +339,26 @@ describe('the tray for a first-timer', () => {
   })
 })
 
-describe('the starter ideas', () => {
-  const NEWCOMER = { renameSplash: 'not_applicable' } as const
-
-  function renderIdeas() {
-    const sent = vi.fn()
-    const listener = (event: Event) => sent((event as CustomEvent<{ text: string }>).detail.text)
-    window.addEventListener('hermes:composer-submit', listener)
-
-    render(
-      <MemoryRouter>
-        <div data-composer-surface-id="surface-1" data-composer-target="main">
-          <StarterIdeas target="main" />
-        </div>
-      </MemoryRouter>
-    )
-
-    return { sent, stop: () => window.removeEventListener('hermes:composer-submit', listener) }
-  }
-
-  it('are four fixed ideas, each sent through the composer as the person’s own message', () => {
-    $guidanceLedger.set(NEWCOMER)
-    const { sent, stop } = renderIdeas()
-
-    const list = screen.getByRole('list', { name: copy.landing.ideasLabel })
-    const ideas = Object.values(copy.landing.ideas)
-    expect(
-      within(list)
-        .getAllByRole('button')
-        .map(button => button.textContent)
-    ).toEqual(ideas)
-    expect(screen.getByRole('button', { name: copy.landing.hide })).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: copy.landing.ideas.clean_inbox }))
-    expect(sent).toHaveBeenCalledWith(copy.landing.ideas.clean_inbox)
-    stop()
-  })
-
-  it('Hide ideas takes them away and leaves Show ideas focused; Show ideas brings them back, focused', async () => {
-    $guidanceLedger.set(NEWCOMER)
-    const { stop } = renderIdeas()
-
-    fireEvent.click(screen.getByRole('button', { name: copy.landing.hide }))
-    expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
-    const show = screen.getByRole('button', { name: copy.landing.showIdeas })
-    await vi.waitFor(() => expect(show.ownerDocument.activeElement).toBe(show))
-
-    fireEvent.click(show)
-    const first = screen.getByRole('button', { name: copy.landing.ideas.morning_briefing })
-    await vi.waitFor(() => expect(first.ownerDocument.activeElement).toBe(first))
-    stop()
-  })
-
-  it('are not there for someone who used Hermes before', () => {
-    $guidanceLedger.set({ renameSplash: 'seen' })
-    const { stop } = renderIdeas()
-
-    expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
-    expect(screen.queryByRole('button', { name: copy.landing.showIdeas })).toBeNull()
-    stop()
-  })
-})
-
 describe('a newcomer’s landing as they settle in (Onboarding 03)', () => {
   function renderLanding() {
     return render(
       <MemoryRouter>
         <LandingGreeting target="main" />
-        <StarterIdeas target="main" />
       </MemoryRouter>
     )
   }
 
   const heading = () => screen.getByRole('heading', { level: 1 }).textContent
 
-  it('says Welcome back after a first task, with the ideas still out (C4)', () => {
+  it('says Welcome back after a first task (C4, C5)', () => {
     $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a'] })
     renderLanding()
 
     expect(heading()).toBe(copy.landing.back)
-    expect(screen.getByText(copy.landing.subtitle)).toBeTruthy()
-    expect(screen.getByRole('button', { name: copy.landing.hide })).toBeTruthy()
-  })
-
-  it('asks what to work on once the ideas are put away, and keeps them away (C5)', () => {
-    $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a'], starterIdeas: 'hidden' })
-    renderLanding()
-
-    expect(heading()).toBe(copy.landing.back)
     expect(screen.getByText(copy.landing.subtitleRetired)).toBeTruthy()
-    expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
-    expect(screen.getByRole('button', { name: copy.landing.showIdeas })).toBeTruthy()
   })
 
-  it('after a month away offers the newest chat and the ideas, without the tour (C8)', () => {
+  it('after a month away says hello again, without the tour (C8)', () => {
     $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a'] })
     const longAgo = Date.now() / 1000 - 40 * 24 * 60 * 60
     $sessions.set([{ ...chat, id: 'old', last_active: longAgo } as SessionInfo])
@@ -422,20 +366,14 @@ describe('a newcomer’s landing as they settle in (Onboarding 03)', () => {
 
     expect(heading()).toBe(copy.landing.awayTitle)
     expect(screen.getByText(copy.landing.awayLine)).toBeTruthy()
-    expect(screen.getByRole('button', { name: copy.landing.continueChat })).toBeTruthy()
-    expect(screen.queryByRole('list', { name: copy.landing.ideasLabel })).toBeNull()
     expect($firstTimeSplash.get()).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: copy.landing.showIdeas }))
-    expect(screen.getByRole('list', { name: copy.landing.ideasLabel })).toBeTruthy()
   })
 
-  it('puts the check-in in the heading’s place at two finished chats, the ideas following C5 (C7)', () => {
+  it('puts the check-in in the heading’s place at two finished chats (C7)', () => {
     $guidanceLedger.set({ renameSplash: 'not_applicable', finishedTaskChats: ['a', 'b'] })
     renderLanding()
 
     expect(screen.getByRole('region', { name: copy.checkIn.title })).toBeTruthy()
-    expect(screen.getByRole('button', { name: copy.landing.showIdeas })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.checkIn.dismiss) }))
     expect(screen.queryByRole('region', { name: copy.checkIn.title })).toBeNull()

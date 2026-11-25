@@ -14,8 +14,6 @@ import { pickPlaceholder } from '../composer-utils'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
-  /** The redesign's empty-chat landing lays a newcomer's starter ideas under this composer. */
-  ideasBelow: boolean
   /** The composer's profile; the active gateway profile when absent. */
   profile?: null | string
   reconnecting: boolean
@@ -65,12 +63,11 @@ function movedConversation(prev: Identity, next: Identity, created: null | strin
  * mid-stream) or the user opening an existing chat from the landing (re-roll);
  * only the send's create handoff, reporting the scope it created through
  * `sessionCreated`, tells them apart. While the transport is down, it swaps to a reconnecting / starting
- * message instead. A newcomer's new chat in the redesign says one fixed thing instead of rotating: that
- * a task can be picked from the ideas below it while they are there, else to give the agent a task.
+ * message instead. A newcomer's new chat in the redesign says one fixed thing instead of rotating: to
+ * give Hermes a task before their first finished one, else to give the agent a task.
  */
 export function useComposerPlaceholder({
   disabled,
-  ideasBelow,
   profile,
   reconnecting,
   scope,
@@ -92,7 +89,7 @@ export function useComposerPlaceholder({
 
   const newcomerPlaceholder =
     redesign && ideas !== 'none' && !inConversation(identity, redesign)
-      ? moment === 'first' && ideas === 'ideas' && ideasBelow
+      ? moment === 'first' && ideas === 'ideas'
         ? newcomerCopy.placeholderIdeas
         : newcomerCopy.placeholderRetired
       : null

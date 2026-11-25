@@ -86,7 +86,7 @@ it('the rename splash seen in one browser is not shown again in another', async 
   expect(second.renameSplash.$renameSplashReopenable.get()).toBe(true)
 })
 
-it('a newcomer’s first-time splash, finished tasks and hidden ideas carry to their other browsers', async () => {
+it('a newcomer’s first-time splash and finished tasks carry to their other browsers', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ui-guidance-'))
   dirs.push(dir)
   const file = path.join(dir, 'ui-preferences.json')

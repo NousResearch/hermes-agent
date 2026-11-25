@@ -1,6 +1,6 @@
 /**
  * What the redesign's discovery surfaces have already settled for this person: one mark per topic,
- * and the chats in which a task of theirs finished (the starter ideas leave after two).
+ * and the chats in which a task of theirs finished (the ideas state retires after two).
  *
  * This module is the ONLY place that knows where those marks live. Today that is one machine-level
  * UI preference (`lib/ui-preferences/keys.ts`), so a splash seen in the desktop app or in one
@@ -16,8 +16,8 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 /** Each topic's marks:
  *  - a splash is `seen` (shown and acknowledged) or `not_applicable` (settled without showing: a new
  *    install never sees the rename splash), so a later visit does not reconsider it;
- *  - the starter ideas are `hidden` (by the person) or `wanted` (brought back with Show ideas); with
- *    no mark they follow the finished-chat count;
+ *  - the ideas state is `hidden` or `wanted` (written by the starter-idea strip before it was
+ *    removed); with no mark it follows the finished-chat count;
  *  - the usage-stats offer's sidebar card is `deferred` (its × moved it to the tray) or `cleared`
  *    (cleared from the tray too); with no mark an unanswered offer shows as the card. Answering
  *    is the backend's, never a mark here;

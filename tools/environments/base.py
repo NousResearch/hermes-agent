@@ -312,7 +312,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
     # Docker drops its container id, so the old object can't poll the job). Teardown then
     # settles them as lost so their pollers stop. A backend whose processes outlive cleanup()
     # and stay reachable through the same object (SSH reconnects) sets False so the poller keeps
-    # collecting the real result. Plugin contract: website/docs/developer-guide/terminal-environment-plugin.md.
+    # collecting the real result. Plugin contract: apps/docs/content/en/developer-guide/terminal-environment-plugin.md.
     cleanup_stops_processes: bool = True
 
     # Local and Docker override this because they resolve allowlisted values

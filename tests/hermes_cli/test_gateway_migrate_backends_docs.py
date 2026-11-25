@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_GUIDE = Path(__file__).resolve().parents[2] / "website" / "docs" / "user-guide" / "features" / "web-dashboard.md"
+_GUIDE = Path(__file__).resolve().parents[2] / "apps" / "docs" / "content" / "en" / "user-guide" / "features" / "web-dashboard.md"
 
 
 def test_the_dry_run_section_no_longer_says_apply_is_unavailable():

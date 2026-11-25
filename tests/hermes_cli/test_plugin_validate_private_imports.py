@@ -178,7 +178,7 @@ def test_plugin_guide_file_safety_and_yaml_example_validates_clean(tmp_path):
     module imported whole still warns."""
     import re
 
-    guide = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/plugins/index.md"
+    guide = Path(__file__).resolve().parents[2] / "apps/docs/content/en/developer-guide/plugins/index.md"
     [block] = [b for b in re.findall(r"```python\n(.*?)```", guide.read_text(encoding="utf-8"), re.DOTALL)
                if "get_read_block_error" in b]
     clean = _plugin(tmp_path / "guide", {"example.py": block})

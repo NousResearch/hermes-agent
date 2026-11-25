@@ -25,7 +25,7 @@ _DIFFS = (
     "plugin-catalog/memtomem.yaml",
     "apps/desktop/AGENTS.md",
     "apps/desktop/src/lib/agent-transfer.ts",
-    "website/src/components/RouteLink.tsx",
+    "apps/docs/src/components/document-link.tsx",
     "run_agent.py",
 )
 _STEP_STATUS = {"always": True, "success": True, "failure": False, "cancelled": False}

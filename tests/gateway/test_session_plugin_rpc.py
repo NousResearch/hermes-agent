@@ -29,7 +29,7 @@ def register(ctx):
 def _documented_chart_plugin():
     """The plugin RPC handler ``plugin-llm-access.md`` teaches, taken verbatim from the page."""
     from pathlib import Path
-    page = (Path(__file__).resolve().parents[2] / 'website' / 'docs' / 'developer-guide'
+    page = (Path(__file__).resolve().parents[2] / 'apps' / 'docs' / 'content' / 'en' / 'developer-guide'
             / 'plugin-llm-access.md').read_text(encoding='utf-8')
     section = page[page.index("#### From the plugin's frontend"):]
     return section[section.index('```python\n') + len('```python\n'):section.index('\n```\n')] + '\n'

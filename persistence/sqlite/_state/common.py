@@ -49,7 +49,7 @@ _RESET_END_REASONS = ("session_reset", "session_switch", "idle", "daily", "suspe
 # never heal one of these (#106459); tools/session_search_tool.py derives its fresh-reset set from it.
 _BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
-# Accidental end reasons recovery treats as resumable (website/docs/developer-guide/gateway-session-lifecycle.md); single source of truth for
+# Accidental end reasons recovery treats as resumable (apps/docs/content/en/developer-guide/gateway-session-lifecycle.md); single source of truth for
 # recovery SQL and the session store's RECOVERABLE_END_REASONS.  superseded_by_resume = sentinel-parked runtime replaced
 # by a fresh session.resume; startup_orphan_reap = dead-gateway sweep, same class as ws_orphan_reap but kept
 # distinct for forensics.

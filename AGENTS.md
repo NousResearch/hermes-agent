@@ -3,7 +3,7 @@
 This root file is a hub: what applies everywhere, then a routing table. Each area's `AGENTS.md`
 loads automatically when you work in that directory; read it before editing there.
 `python scripts/check` caps this file at 12k chars and every root-to-area chain at 30k: long form
-goes in `website/docs/developer-guide/`.
+goes in `apps/docs/content/en/developer-guide/`.
 
 **Never give up on the right solution.**
 
@@ -166,7 +166,7 @@ per variant and a name → variant table (`tools/environments/`, its table still
 | `tests/` | `tests/AGENTS.md` | runner, placement, OS markers, `wine2e`, banned test shapes |
 | `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, release-age rule |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
-| `acp_adapter/` | `website/docs/developer-guide/acp-internals.md` | ACP server for editors |
+| `acp_adapter/` | `apps/docs/content/en/developer-guide/acp-internals.md` | ACP server for editors |
 | `providers/` | `providers/README.md` | `ProviderProfile` registry and ABC |
 
 PR workflow: `CONTRIBUTING.md` (maintainers: the `hermes-agent-dev` skill, not shipped here).

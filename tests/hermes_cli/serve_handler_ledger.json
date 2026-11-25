@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 349
+   "undecided": 352
   },
   "rpc": {
    "authority": 113,
@@ -174,6 +174,7 @@
   {"current_path": "hermes_cli.web_routers.skills:get_skills", "decision": "undecided", "handler": "GET /api/skills", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:get_skill_content", "decision": "undecided", "handler": "GET /api/skills/content", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:list_official_skills", "decision": "undecided", "handler": "GET /api/skills/hub/official", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.skill_catalog.http:missing_extension", "decision": "undecided", "handler": "GET /api/skills/hub/operation", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:preview_skill_hub", "decision": "undecided", "handler": "GET /api/skills/hub/preview", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:scan_skill_hub", "decision": "undecided", "handler": "GET /api/skills/hub/scan", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:search_skills_hub", "decision": "undecided", "handler": "GET /api/skills/hub/search", "kind": "http", "ref": ""},
@@ -323,7 +324,9 @@
   {"current_path": "hermes_cli.web_routers.sessions:backfill_session_owner_profiles", "decision": "undecided", "handler": "POST /api/sessions/owner-backfill", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.sessions:prune_sessions_endpoint", "decision": "undecided", "handler": "POST /api/sessions/prune", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:create_skill", "decision": "undecided", "handler": "POST /api/skills", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.skill_catalog.http:missing_extension", "decision": "undecided", "handler": "POST /api/skills/hub/confirm", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:install_skill_hub", "decision": "undecided", "handler": "POST /api/skills/hub/install", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.skill_catalog.http:missing_extension", "decision": "undecided", "handler": "POST /api/skills/hub/review", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:uninstall_skill_hub", "decision": "undecided", "handler": "POST /api/skills/hub/uninstall", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.skills:update_skills_hub", "decision": "undecided", "handler": "POST /api/skills/hub/update", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.tools:grant_computer_use_permissions", "decision": "undecided", "handler": "POST /api/tools/computer-use/permissions/grant", "kind": "http", "ref": ""},

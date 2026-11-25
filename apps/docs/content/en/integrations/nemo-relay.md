@@ -371,5 +371,5 @@ For more detail, enable [Relay operational logging](https://docs.nvidia.com/nemo
 - [Relay observability](https://docs.nvidia.com/nemo/relay/v0.11.1/configure-plugins/observability/about)
 - [Relay plugin development](https://docs.nvidia.com/nemo/relay/v0.11.1/build-plugins/about)
 - [Hermes environment variables](../reference/environment-variables.md#nemo-relay)
-- [Hermes sessions](../user-guide/sessions.md)
+- [Hermes sessions](../user-guide/sessions.mdx)
 - [Hermes delegation](../user-guide/features/delegation.md)

@@ -48,10 +48,13 @@ def default_entries() -> list:
     return [entry for entry in load_catalog_live() if entry.default and entry.tier in DEFAULT_TIERS and runs_here(entry)]
 
 
-def _recorded(home: Path) -> set[str]:
-    from hermes_cli.left_core_migration import _read_config
-    done = _read_config(home).get(_INSTALLED_KEY)
-    return set(map(str, done)) if isinstance(done, list) else set()
+def _recorded(home: Path, *, own_only: bool = False) -> set[str]:
+    """Plugins *home* already got automatically: this installer's marker, plus (unless *own_only*)
+    the left-core migrator's, so a plugin either one installed and the user removed stays removed."""
+    from hermes_cli.left_core_migration import _INSTALLED_KEY as _LEFT_CORE_KEY, _read_config
+    config = _read_config(home)
+    keys = (_INSTALLED_KEY,) if own_only else (_INSTALLED_KEY, _LEFT_CORE_KEY)
+    return {str(n) for key in keys if isinstance(config.get(key), list) for n in config[key]}
 
 
 def _record(home: Path, names: set[str]) -> None:
@@ -61,7 +64,7 @@ def _record(home: Path, names: set[str]) -> None:
     from hermes_cli.config_backend import config_exists, write_config_key
     from hermes_cli.left_core_migration import _stamp_created
     path = home / "config.yaml"
-    done = _recorded(home)
+    done = _recorded(home, own_only=True)
     marker = sorted(done | names)
     if config_exists(path):
         write_config_key(path, _INSTALLED_KEY, marker)
@@ -208,7 +211,7 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
         summary["owed"].append("live catalog")
     if not entries:
         return summary
-    with _machine_lock(wait):  # never two installers in one home (an update tail beside a detached child)
+    with installer_lock(wait):  # never two installers in one home (an update tail beside a detached child)
         for home in homes:
             try:
                 outcome = install_defaults(home, say=say, entries=entries)
@@ -220,9 +223,11 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
     return summary
 
 
-def _machine_lock(wait: float):
-    """The OS-held lock every installer of the default set holds (the kernel frees it when its holder dies).
-    Raises ``TimeoutError`` when another holder keeps it past *wait* seconds."""
+def installer_lock(wait: float):
+    """The OS-held lock every unattended plugin installer holds: this default set, the left-core migrator
+    and the gateway-start catalog platform install (the kernel frees it when its holder dies). Raises
+    ``TimeoutError`` when another holder keeps it past *wait* seconds. Not reentrant: hold it around one
+    pass, never around a call that takes it again."""
     from hermes_cli.auth import _file_lock
     from pm.environments import dependency_home_root
     return _file_lock(_state(Path(dependency_home_root()), "lock"), threading.local(), wait,

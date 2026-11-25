@@ -8,13 +8,20 @@ reuses; memory is not a row because its plugin name comes from ``memory.provider
 
 * ``hermes update`` installs the plugin for every profile home sharing the venv that uses the feature.
 * Agent start and gateway start retry once per process for the active home (Desktop users update
-  through the app and never run ``hermes update``), honouring ``security.allow_lazy_installs``.
-* After a failed attempt (catalog miss or unreachable, failed install) starts skip the row for
+  through the app and never run ``hermes update``), honouring ``security.allow_lazy_installs``, and
+  again in that process when the home's ``.env`` or config.yaml changed since (credentials added to a
+  served profile after boot).
+* After a failed attempt (catalog miss or unreachable, failed install) agent starts skip the row for
   an hour, doubling with each further failure up to a week, so an offline
   machine pays the network round trip once, not on every ``hermes chat``, and a home whose install
-  cannot succeed stops failing every hour; ``hermes update`` always retries.
-* A home gets the plugin automatically at most once (``_left_core_installed`` in its config.yaml):
-  ``hermes plugins remove`` afterwards is the user's choice and sticks.
+  cannot succeed stops failing every hour. ``hermes update`` and a gateway start (the user starting or
+  restarting the gateway to serve the platform) always retry.
+* A home gets the plugin automatically at most once, by this migrator or the default-plugin installer
+  (``_left_core_installed`` / ``_default_plugins_installed`` in its config.yaml): ``hermes plugins remove``
+  afterwards is the user's choice and sticks.
+* Installs hold the default-plugin installer's machine lock (``default_plugins.installer_lock``) and
+  re-check the home after taking it, so a gateway start beside the detached default-plugin child installs
+  a plugin once and never reports the other installer's tree as a failure.
 
 Installs go through the normal catalog install path at the reviewed pin (kill list, dependency
 constraints, enable). Unattended dependency consent covers only these rows: the feature shipped in
@@ -899,6 +906,10 @@ def moved_plugin_hint(name: str) -> str:
 
 
 _attempted: set[str] = set()
+# The :func:`settings_fingerprint` each home in ``_attempted`` was last tried with.
+_attempted_with: dict[str, str] = {}
+# A start waits this long for another installer (the detached default-plugin child) to finish.
+_STARTUP_LOCK_WAIT = 300.0
 _installs_held: ContextVar[bool] = ContextVar("left_core_installs_held", default=False)
 
 
@@ -1004,6 +1015,8 @@ _SCOPED_KEY = "_left_core_scoped"  # config.yaml: rows whose toolset scope this 
 # config.yaml: rows this home has had installed (by the migration, or by the user before it ran).
 # Never written before the plugin dir exists, so a home whose install never succeeded keeps retrying.
 _INSTALLED_KEY = "_left_core_installed"
+# ``hermes_cli.default_plugins``' marker for the same one-time install of a ``default: true`` plugin.
+_DEFAULT_INSTALLED_KEY = "_default_plugins_installed"
 
 
 # config.yaml: rows whose ``left_at`` config step found the core feature in use in this home.
@@ -1154,12 +1167,18 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
-        if _marked(_read_config(home), _INSTALLED_KEY, feature):
-            continue
+        config = _read_config(home)
+        if _marked(config, _INSTALLED_KEY, feature) or any(f.plugin == feature.plugin for f in out):
+            continue  # one install per plugin: two rows may name the same one
         if not feature_in_use(feature, home, process_env=process_env):
             continue
+        # One automatic install per plugin and home, by either installer: a default plugin
+        # (``default_plugins``) the user removed after it installed stays removed. Its core-era
+        # toolset scope is still kept below, so only the install and the "not installed" notice are skipped.
+        placed_by_default = _marked(config, _DEFAULT_INSTALLED_KEY, feature)
         if not _predates_split(home, feature):
-            _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
+            if not placed_by_default:
+                _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
             continue
         present = plugin_present(feature.plugin, home)
         try:
@@ -1169,7 +1188,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
                 f"toolset selection could not be kept ({exc}). Check `hermes tools`"
                 + ("." if present else f" and run `{_install_command(feature.plugin, home)}`."))
             continue
-        if present:
+        if present or placed_by_default:
             continue
         if backoff and _failed_recently(home, feature.plugin):
             logger.info("%s plugin install failed recently for %s; retrying later or on `hermes update`",
@@ -1229,26 +1248,67 @@ def _first_cause(error: str) -> str:
     return (cause or (lines[0] if lines else "unknown error")).rstrip(". ")
 
 
+def _ships_by_default(feature: LeftCoreFeature) -> bool:
+    """*feature*'s catalog entry is a default plugin (every home gets it, official/verified tier): its arrival
+    is no news of a move, since a user who never ran the core feature gets it too."""
+    from hermes_cli.plugin_catalog import DEFAULT_TIERS, get_live_catalog_entry
+    entry = get_live_catalog_entry(feature.plugin)
+    return entry is not None and entry.default and entry.tier in DEFAULT_TIERS
+
+
+def _record_installed(home: Path, feature: LeftCoreFeature) -> None:
+    from providers import refresh_bound_home
+    refresh_bound_home()  # a provider plugin resolves in this same call, not after the stamp TTL
+    try:
+        _record_migration(home, feature)
+    except Exception as exc:  # health: allow BLE001 -- unreadable/unwritable config: the next run sees the dir and records it
+        logger.debug("left-core install marker not written for %s: %s", home, exc)
+
+
 def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str], dict],
-                 say: Callable[[str], None], process_env: bool = False) -> bool:
+                 say: Callable[[str], None], process_env: bool = False, wait: float = 900.0) -> bool:
+    """Install *feature*'s plugin into *home* under the installer lock (:func:`default_plugins.installer_lock`).
+    True when the plugin is in *home* afterwards, also when another installer placed it while this one waited
+    (recorded, nothing reported: that installer reports its own outcome)."""
+    from hermes_cli.default_plugins import installer_lock
+    try:
+        with installer_lock(wait):
+            if plugin_present(feature.plugin, home):
+                logger.info("%s: the '%s' plugin was installed for %s by another Hermes process meanwhile",
+                            feature.label, feature.plugin, home)
+                _record_installed(home, feature)
+                return True
+            return _install_locked(home, feature, install=install, say=say, process_env=process_env)
+    except TimeoutError:  # never stamped a failure: nothing was tried
+        say(_noticed(f"  ⚠ {feature.label}: another Hermes process is still installing plugins, so the "
+                     f"'{feature.plugin}' plugin was not installed now. Hermes retries at the next start; "
+                     f"`{_install_command(feature.plugin, home)}` installs it now.", home, feature, process_env))
+        return False
+
+
+def _install_locked(home: Path, feature: LeftCoreFeature, *, install: Callable[[str], dict],
+                    say: Callable[[str], None], process_env: bool) -> bool:
     try:
         result = install(feature.plugin)
-    except Exception as exc:  # network, uv, kill list — report, do not raise
+    except Exception as exc:  # health: allow BLE001 -- network, uv, kill list: reported to the user, never raised
         result = {"ok": False, "error": str(exc)}
+    default = _ships_by_default(feature)
     if result.get("ok"):
-        from providers import refresh_bound_home
-        refresh_bound_home()  # a provider plugin resolves in this same call, not after the stamp TTL
-        try:
-            _record_migration(home, feature)
-        except Exception as exc:  # the next run sees the plugin dir and records it then
-            logger.debug("left-core install marker not written for %s: %s", home, exc)
-        say(_noticed(f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
+        _record_installed(home, feature)
+        say(_noticed(f"  ✓ Installed the '{feature.plugin}' plugin from the catalog for {feature.label}, which this "
+                     f"profile is set up for ({feature.unchanged})." if default else
+                     f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
                      f"catalog ({feature.unchanged}).", home, feature, process_env))
         return True
     _note_failure(home, feature.plugin)
     error = _first_cause(str(result.get("error") or ""))
-    say(_noticed(f"  ⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin could not be installed "
-                 f"automatically: {error}. Run `{_install_command(feature.plugin, home)}`.", home, feature, process_env))
+    subject = (f"{feature.label} is set up in this profile, but its" if default
+               else f"{feature.label} moved out of core and its")
+    say(_noticed(f"  ⚠ {subject} '{feature.plugin}' plugin could not be installed automatically: {error}. "
+                 f"Hermes retries at the next gateway start; `{_install_command(feature.plugin, home)}` installs "
+                 "it now." if feature.platform else
+                 f"  ⚠ {subject} '{feature.plugin}' plugin could not be installed automatically: {error}. "
+                 f"Run `{_install_command(feature.plugin, home)}`.", home, feature, process_env))
     return False
 
 
@@ -1321,8 +1381,43 @@ def _gateway_serves(home: Path) -> bool:
         return False
 
 
+def settings_fingerprint(home: Path) -> str:
+    """Digest of *home*'s ``.env`` and config.yaml (missing files hash as empty): a process that already
+    tried this home tries again once either changed (credentials added while the gateway runs)."""
+    import hashlib
+    digest = hashlib.sha256()
+    for name in (".env", "config.yaml"):
+        try:
+            digest.update((home / name).read_bytes())
+        except OSError:
+            pass
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _running_gateway_serves(home: Path, platform: str, *, wait: float = 10.0) -> bool:
+    """Ask the gateway serving *home* to load the plugin just installed (``reload-plugins``), then whether it
+    reports *platform* among its adapters within *wait* seconds: only then does a restart apply to nothing."""
+    import time
+    from gateway.status import multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, read_runtime_status
+    from hermes_cli.plugins_activation import reload_running_gateway
+    from hermes_constants import profile_name_for_home
+    reload_running_gateway()
+    deadline = time.monotonic() + wait
+    while True:
+        own = (read_runtime_status(home / "gateway_state.json") or {}).get("platforms") or {}
+        served = multiplexer_liveness_for_profile(home)
+        mux = profile_platforms_from_multiplexer(served[1], profile_name_for_home(home) or "") if served else {}
+        if platform in own or platform in mux:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
 def recover_at_startup(*, say: Optional[Callable[[str], None]] = None, gateway_start: bool = False) -> list[str]:
-    """Agent/gateway start hook for the active home: one attempt per process per home. With *say* (a
+    """Agent/gateway start hook for the active home: one attempt per process per home and
+    :func:`settings_fingerprint`. With *say* (a
     terminal's sink) outcomes are delivered now, together with any an earlier attempt or boot maintenance
     (:func:`defer_startup_notice`) kept for this home in any process; without it they are logged and kept in
     the home (:func:`_queue_notice`) for its next turn someone sees (:func:`claim_kept_notices`), in
@@ -1357,9 +1452,17 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None, gateway_s
     if say is not None:
         for message in _claim_notices(home):
             deliver(message)
-    if key in _attempted:
+    if key in _attempted and _attempted_with.get(key) == settings_fingerprint(home):
         return []
     _attempted.add(key)
+    try:
+        return _attempt(home, deliver=deliver, gateway_start=gateway_start)
+    finally:  # after the attempt: its own config.yaml writes (the markers) are no change by the user
+        _attempted_with[key] = settings_fingerprint(home)
+
+
+def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool) -> list[str]:
+    """One :func:`recover_at_startup` attempt for *home*; outcomes go to *deliver* (and the log)."""
 
     def report(message: str) -> None:
         message = message.strip()
@@ -1367,24 +1470,30 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None, gateway_s
         deliver(message)
 
     try:
-        features = _pending(home, say=report, process_env=True, backoff=True)
+        # A gateway start is the user starting (or restarting) the gateway to serve the platform: it retries
+        # inside the failure backoff, which only spares the frequent agent starts the network round trip.
+        features = _pending(home, say=report, process_env=True, backoff=not gateway_start)
         if not features:
             return []
         from pm.install import lazy_installs_allowed
         if not lazy_installs_allowed():
             for feature in features:
-                report(_noticed(f"⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin is not "
-                                f"installed, so it is off. security.allow_lazy_installs is off, so Hermes did not "
-                                f"fetch it: run `{_install_command(feature.plugin, home)}`.", home, feature, True))
+                subject = (f"{feature.label} is set up in this profile, but its" if _ships_by_default(feature)
+                           else f"{feature.label} moved out of core and its")
+                report(_noticed(f"⚠ {subject} '{feature.plugin}' plugin is not installed, so it is off. "
+                                f"security.allow_lazy_installs is off, so Hermes did not fetch it: run "
+                                f"`{_install_command(feature.plugin, home)}`.", home, feature, True))
             return []
         installed = []
         # Agent init cannot answer a dependency prompt: under the CLI the chat input owns the terminal,
         # so the question hangs at "Initializing agent...". Every row shipped in core, so its users
         # already accepted its dependencies (as memory_provider_migration.recover_at_startup does).
         for feature in features:
-            if _install_one(home, feature, install=_install_into(home, consent=True), say=report, process_env=True):
+            if _install_one(home, feature, install=_install_into(home, consent=True), say=report, process_env=True,
+                            wait=_STARTUP_LOCK_WAIT):
                 installed.append(feature.plugin)
-                if not gateway_start and feature.platform and _gateway_serves(home):
+                if not gateway_start and feature.platform and _gateway_serves(home) \
+                        and not _running_gateway_serves(home, feature.platform):
                     report(f"Restart the gateway (`hermes gateway restart`) so it serves {feature.label}.")
         return installed
     except Exception as exc:  # never take agent/gateway start down

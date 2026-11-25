@@ -43,13 +43,15 @@ _HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "su
 
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
-    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
-    *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
-    Returns the installed plugin names. Blocking: call it off the event loop."""
+    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, and every
+    catalog platform plugin whose credentials *home* has (:mod:`hermes_cli.catalog_platforms`), in *home*'s
+    runtime scope (its config, secrets and allow_lazy_installs); once per process per home and settings
+    fingerprint. Returns the installed plugin names. Blocking: call it off the event loop."""
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.left_core_migration import recover_at_startup
+    from hermes_cli.catalog_platforms import recover_in
+    from hermes_cli.left_core_migration import defer_startup_notice, recover_at_startup
     with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
-        return recover_at_startup(gateway_start=True)
+        return recover_at_startup(gateway_start=True) + recover_in(Path(home), report=defer_startup_notice)
 
 
 def recover_left_core_at_gateway_start() -> bool:
@@ -67,7 +69,8 @@ def recover_left_core_at_gateway_start() -> bool:
     root = Path(get_default_hermes_root())
     if root.resolve() != launch.resolve():
         installed += recover_left_core_in(root)
-    return any(feature.platform and feature.plugin in installed for feature in LEFT_CORE)
+    moved = {feature.plugin for feature in LEFT_CORE if not feature.platform}
+    return any(name not in moved for name in installed)  # every catalog platform install ships one
 
 
 

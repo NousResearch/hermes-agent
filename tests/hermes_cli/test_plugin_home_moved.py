@@ -53,6 +53,43 @@ def test_a_marked_profile_link_repointed_after_its_key_was_remembered_runs_no_pl
 
 
 @pytest.mark.platforms("posix")  # a directory symlink
+@pytest.mark.parametrize("target", ["opened_before", "opened_after"])
+def test_a_link_repointed_at_another_homes_directory_is_refused_and_leaves_that_homes_plugins_alone(
+        target, tmp_path, monkeypatch):
+    """A request through a profile link repointed while the process runs is refused, whether the directory it now
+    leads to was opened as its own home before the repoint or after it, and that home's plugins still load."""
+    from hermes_cli.plugins_loader import PluginHomeMoved
+    from hermes_constants import hermes_home_key
+
+    old = _home_with_plugins(tmp_path / "old", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {"tiny": "def register(ctx):\n    pass\n"},
+                               isolation="in_process")
+    link = tmp_path / "root" / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(old, target_is_directory=True)
+    plugins_mod._reset_plugin_managers_for_tests()
+
+    def manager_for(home):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return plugins_mod.get_plugin_manager()
+
+    try:
+        manager_for(link)  # the process opens ops at the old directory
+        hermes_home_key(link)  # and serves it under this name
+        if target == "opened_before":
+            manager_for(other).discover_and_load()
+        link.unlink()
+        link.symlink_to(other, target_is_directory=True)
+        with pytest.raises(PluginHomeMoved):
+            manager_for(link).discover_and_load()
+        others = manager_for(other)
+        others.discover_and_load()
+        assert "tiny" in others._plugins and others.owner_home == other
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # a directory symlink
 @pytest.mark.parametrize("link", ["kept", "removed"])
 def test_unloading_runs_under_the_profile_name_or_under_the_directory_once_no_name_leads_there(
         link, tmp_path, monkeypatch):

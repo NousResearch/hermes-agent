@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
-from agent.message_sanitization import _sanitize_surrogates
+from agent.message_sanitization import _sanitize_surrogates, malformed_finish_reason
 from agent.turn_context_compaction import _refund_api_call
 from agent.turn_recovery import interruptible_backoff_sleep
 
@@ -30,6 +30,15 @@ _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 # async delegation results). Mirrors gateway.response_filters.MACHINERY_DISPLAY_KINDS;
 # agent/ cannot import gateway/.
 _MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete", "async_delegation_complete"})
+
+# Corrected retries for a Gemini MALFORMED_* reply before fallback / terminal; each one re-bills
+# the whole context. The hint rides only on the outgoing tail (add_empty_response_retry_hint).
+MALFORMED_RESPONSE_RETRIES = 3
+MALFORMED_RESPONSE_RETRY_HINT = (
+    "[System: Your previous response was malformed and could not be parsed (finish reason "
+    "{reason}), so it was discarded. Please try again: answer in plain text or make a "
+    "well-formed tool call. Retries remaining: {remaining}.]"
+)
 
 # Loop exit stamped when a machinery turn ends with the model adding nothing.
 NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
@@ -290,6 +299,37 @@ def recover_empty_response(
             api_call_count=api_call_count,
         )
 
+    def _fallback_or_terminal(*, truly_empty: bool, retries: Optional[int] = None) -> EmptyResponseVerdict:
+        """Retries exhausted — try the next provider in the chain before "(empty)"."""
+        nonlocal active_system_prompt, _preflight_compression_blocked, api_call_count
+        nonlocal _turn_exit_reason, final_response
+        if truly_empty and agent._fallback_chain:
+            logger.warning(
+                "Empty response after %d retries — attempting fallback (model=%s, provider=%s)",
+                agent._empty_content_retries if retries is None else retries, agent.model, agent.provider,
+            )
+            agent._buffer_diagnostic_status("⚠️ Model returning empty responses — " "switching to fallback provider...")
+            if agent._try_activate_fallback():
+                active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
+                agent._empty_content_retries = 0
+                agent._malformed_response_retries = 0
+                agent._buffer_diagnostic_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
+                logger.info(
+                    "Fallback activated after empty responses: now using %s on %s",
+                    agent.model, agent.provider,
+                )
+                # OUTER loop: `continue` re-runs preflight against the fallback's window;
+                # `break` would end the turn without calling the fallback.
+                _preflight_compression_blocked = False
+                # The fallback hop is a provider switch, not a model turn: refund the empty
+                # call so a mid-turn fallback doesn't eat the iteration budget (#77305).
+                api_call_count = _refund_api_call(agent, api_call_count)
+                return _verdict("continue")
+
+        _turn_exit_reason = "empty_response_exhausted"
+        final_response = _terminal_empty(agent, assistant_message, finish_reason, messages)
+        return _verdict("break")
+
     # Partial stream recovery: content streamed before the connection died becomes the
     # final response instead of fallback or retries.
     if (_recovered := _partial_stream_reply(agent)) is not None:
@@ -312,6 +352,33 @@ def recover_empty_response(
         agent._empty_content_retries = 0
         final_response = final
         return _verdict("break")
+
+    # Gemini MALFORMED_*: the model's own output broke. Say so on the outgoing tail and retry, a
+    # bounded number of times — Antigravity's agent treats a bad generation the same way ("There
+    # was a problem ... Retries remaining: N"), and an unchanged resend of the same long context
+    # tends to break again. After the quiet exits above (a machinery turn may still end silently);
+    # exhausted: straight to fallback / terminal, skipping the generic empty ladder below, since
+    # every attempt re-bills the whole context.
+    if (_malformed := malformed_finish_reason(response)) is not None:
+        n = getattr(agent, "_malformed_response_retries", 0) + 1
+        if n <= MALFORMED_RESPONSE_RETRIES:
+            agent._malformed_response_retries = n
+            logger.warning(
+                "Model finished with %s — retrying with a correction %d/%d (model=%s provider=%s)",
+                _malformed.upper(), n, MALFORMED_RESPONSE_RETRIES, agent.model, agent.provider,
+            )
+            agent._buffer_diagnostic_status(
+                f"⚠️ Model returned a malformed response — asking it to try again ({n}/{MALFORMED_RESPONSE_RETRIES})"
+            )
+            agent._empty_response_retry_hint = MALFORMED_RESPONSE_RETRY_HINT.format(
+                reason=_malformed.upper(), remaining=MALFORMED_RESPONSE_RETRIES - n)
+            final_response = None
+            return _verdict("continue")
+        agent._buffer_diagnostic_status(
+            f"⚠️ Model kept returning malformed responses (Gemini {_malformed.upper()}) after "
+            f"{MALFORMED_RESPONSE_RETRIES} corrected retries"
+        )
+        return _fallback_or_terminal(truly_empty=True, retries=MALFORMED_RESPONSE_RETRIES)
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
@@ -377,29 +444,4 @@ def recover_empty_response(
             "to avoid repeat charges"
         )
 
-    # Exhausted retries — try the next provider in the chain before "(empty)".
-    if _truly_empty and agent._fallback_chain:
-        logger.warning(
-            "Empty response after %d retries — attempting fallback (model=%s, provider=%s)",
-            agent._empty_content_retries, agent.model, agent.provider,
-        )
-        agent._buffer_diagnostic_status("⚠️ Model returning empty responses — " "switching to fallback provider...")
-        if agent._try_activate_fallback():
-            active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
-            agent._empty_content_retries = 0
-            agent._buffer_diagnostic_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
-            logger.info(
-                "Fallback activated after empty responses: now using %s on %s",
-                agent.model, agent.provider,
-            )
-            # OUTER loop: `continue` re-runs preflight against the fallback's window;
-            # `break` would end the turn without calling the fallback.
-            _preflight_compression_blocked = False
-            # The fallback hop is a provider switch, not a model turn: refund the empty
-            # call so a mid-turn fallback doesn't eat the iteration budget (#77305).
-            api_call_count = _refund_api_call(agent, api_call_count)
-            return _verdict("continue")
-
-    _turn_exit_reason = "empty_response_exhausted"
-    final_response = _terminal_empty(agent, assistant_message, finish_reason, messages)
-    return _verdict("break")
+    return _fallback_or_terminal(truly_empty=_truly_empty)

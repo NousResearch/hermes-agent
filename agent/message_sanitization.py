@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from functools import partial
-from typing import Any, Callable, Iterable, NamedTuple
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 from agent.message_metadata import DB_ROW_SNAPSHOT
@@ -346,6 +346,35 @@ def normalize_finish_reason(raw: Any) -> Any:
         return raw
     lowered = raw.lower()
     return _FINISH_REASON_ALIASES.get(lowered, lowered)
+
+
+# Gemini ``MALFORMED_RESPONSE`` / ``MALFORMED_FUNCTION_CALL``: the model's own generation broke (often
+# a candidate with no parts, on long agent contexts), not a policy block. Nondeterministic, so a
+# corrected retry can succeed where the same request already failed.
+MALFORMED_NATIVE_FINISH_REASONS = frozenset({"malformed_response", "malformed_function_call"})
+
+
+def native_finish_reason(choice: Any) -> Optional[str]:
+    """The upstream finish reason a gateway keeps beside the OpenAI one, lowercased, or None.
+
+    CLIProxyAPI sends it as ``choices[].native_finish_reason`` (the OpenAI SDK parks the
+    unknown key in ``model_extra``); the native Gemini adapter sets the attribute directly."""
+    value = getattr(choice, "native_finish_reason", None)
+    if value is None:
+        extra = getattr(choice, "model_extra", None)
+        value = extra.get("native_finish_reason") if isinstance(extra, dict) else None
+    return value.lower() if isinstance(value, str) and value else None
+
+
+def malformed_finish_reason(response: Any) -> Optional[str]:
+    """The upstream MALFORMED_* reason when the model's output itself was malformed, else None."""
+    choices = getattr(response, "choices", None)
+    reason = native_finish_reason(choices[0]) if choices else None
+    return reason if reason in MALFORMED_NATIVE_FINISH_REASONS else None
+
+
+def is_malformed_response(response: Any) -> bool:
+    return malformed_finish_reason(response) is not None
 
 
 def serialized_messages_bytes(messages: list) -> int:

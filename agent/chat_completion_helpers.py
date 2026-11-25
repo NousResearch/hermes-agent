@@ -44,7 +44,7 @@ from agent.process_transport import waits_like_local
 from session_rules.turns import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
-    _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
+    _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments, native_finish_reason,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import (append_streamed_reasoning_detail, redact_reasoning_fields,
@@ -2973,7 +2973,7 @@ class _StreamingCall(StreamingWaitMonitor):
         tool_calls_acc = tool_calls.acc
         from agent.reasoning_carriers import StreamCarriers
         carriers = StreamCarriers()
-        finish_reason = model_name = usage_obj = None
+        finish_reason = model_name = usage_obj = native_finish = None  # native: a gateway's upstream reason
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
         _diag = self._new_diag()
@@ -3043,9 +3043,9 @@ class _StreamingCall(StreamingWaitMonitor):
 
             choice = chunk.choices[0]
             delta = choice.delta
-            # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
-            # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
+            # Read finish reasons/usage BEFORE any content-shape `continue` (SSE-echo guard eats vLLM ':' chunks).
             finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
+            native_finish = native_finish_reason(choice) or native_finish
             self._mark_finish_seen(_diag, finish_reason)
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
@@ -3145,7 +3145,7 @@ class _StreamingCall(StreamingWaitMonitor):
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
-            refusal_parts=refusal_parts)
+            refusal_parts=refusal_parts, native_finish=native_finish)
         carriers.apply(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
@@ -3227,7 +3227,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
         model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
-        refusal_parts=None):
+        refusal_parts=None, native_finish=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -3282,7 +3282,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # look a request up. Fabricated only when the stream never sent one.
         response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
-            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
+            choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason, native_finish_reason=native_finish)])
         # A held router timeout shim (#68396) is rejected by validate_response and retried;
         # releasing its text here would show the provider failure as assistant output.
         if not is_router_timeout_shim(response):

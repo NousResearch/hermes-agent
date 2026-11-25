@@ -12,6 +12,7 @@ import logging
 from typing import Any, Callable, Dict, Optional
 
 from agent.message_metadata import append_message
+from agent.message_sanitization import is_malformed_response
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.stream_delivery import publish_held_final_row
@@ -150,6 +151,7 @@ def finish_text_response(
     _promoted = None
     if (
         finish_reason == "stop"
+        and not is_malformed_response(response)  # a broken generation's reasoning is no answer
         and not assistant_message.tool_calls
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
         and not any(

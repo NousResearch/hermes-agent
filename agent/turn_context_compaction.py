@@ -58,6 +58,7 @@ def _clear_overflow_warn(agent: Any) -> None:
 def _reset_retry_state_after_compaction(agent: Any) -> None:
     """Give the compacted request a fresh chance: clear retry/empty-response state."""
     agent._empty_content_retries = 0
+    agent._malformed_response_retries = 0
     agent._thinking_prefill_retries = 0
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False

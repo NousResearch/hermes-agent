@@ -45,6 +45,12 @@ export function acknowledgedTranscriptBoundary(next: ChatMessage[], previous: Ch
   for (let localIndex = previous.length - 1; localIndex >= 0; localIndex -= 1) {
     const local = previous[localIndex]
 
+    // A carried fallback/btw notice is renderer state, not proof that the
+    // preceding prompt or reply was committed. Stored notices still have ids.
+    if (local.role === 'system' && transcriptRowIds(local).length === 0) {
+      continue
+    }
+
     if (local.role === 'assistant' && (local.pending || local.interim || local.persistedTurn?.complete === false)) {
       continue
     }

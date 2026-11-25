@@ -62,6 +62,58 @@ def test_config_round_trip_uses_canonical_settings_namespace(
     assert ctx.get_config("retry.policy") == {"attempts": 3, "enabled": True}
 
 
+
+def _saved_settings(home: Path, plugin: str = "fixture-plugin") -> dict:
+    raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    return raw["plugins"]["entries"][plugin]["settings"]
+
+
+def test_config_dict_setting_is_replaced_not_merged(isolated_home: Path) -> None:
+    """A saved dict replaces the old one, so removed keys are gone (#160040)."""
+    ctx = _context()
+    ctx.set_config("rules", {"keep": 1, "remove": 2})
+
+    ctx.set_config("rules", {"keep": 3})
+
+    assert _saved_settings(isolated_home)["rules"] == {"keep": 3}
+    assert ctx.get_config("rules") == {"keep": 3}
+
+
+@pytest.mark.parametrize("cleared", [{}, None])
+def test_config_dict_setting_can_be_cleared(isolated_home: Path, cleared) -> None:
+    ctx = _context()
+    ctx.set_config("rules", {"keep": 1, "remove": 2})
+
+    ctx.set_config("rules", cleared)
+
+    assert _saved_settings(isolated_home)["rules"] == cleared
+
+
+def test_config_dict_replace_keeps_siblings_other_plugins_and_sections(
+    isolated_home: Path,
+) -> None:
+    ctx = _context()
+    other = _context(name="other-plugin")
+    ctx.set_config("endpoint", "https://example.test")
+    ctx.set_config("retry.policy", {"attempts": 3, "backoff": 2})
+    ctx.set_config("retry.enabled", True)
+    other.set_config("rules", {"a": 1})
+    config_path = isolated_home / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["display"] = {"skin": "mono"}
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    ctx.set_config("retry.policy", {"attempts": 5})
+
+    assert _saved_settings(isolated_home) == {
+        "endpoint": "https://example.test",
+        "retry": {"policy": {"attempts": 5}, "enabled": True},
+    }
+    assert _saved_settings(isolated_home, "other-plugin") == {"rules": {"a": 1}}
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["display"] == {"skin": "mono"}
+
+
 def test_config_reads_legacy_config_namespace_until_canonical_value_is_set(
     isolated_home: Path,
 ) -> None:

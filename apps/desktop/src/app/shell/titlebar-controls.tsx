@@ -10,12 +10,20 @@ import { PortalBandAgentSettings } from '@/app/redesign/portal-agent-settings'
 import { togglePaneReveal } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import { $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { paneChrome } from '@/components/pane-shell/tree/renderer/track-model'
+import {
+  $dismissedPanes,
+  $hiddenTreePanes,
+  $narrowViewport,
+  resetLayoutTree,
+  restoreTreePane
+} from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
@@ -180,7 +188,11 @@ interface SidebarEdge {
  * perform the labelled Hide. A narrow native CLASSIC window keeps the docked toggles, which already
  * route through the overlay's toggle. The redesign shows its narrow panes as sheets on every host,
  * so its native narrow window reads and drives the overlay too: docked state names panes those
- * sheets never show, and the button sat out of sync with the side on screen (HADESK-90). */
+ * sheets never show, and the button sat out of sync with the side on screen (HADESK-90). A Show
+ * heals the two states the overlay's reveal event refuses: a dismissed pane, which has left the
+ * tree, and a chrome-hidden one, which the event skips outright — Files' DEFAULT closed state is
+ * the latter (`$fileBrowserOpen === false`), so without the heal the labelled Show opened no sheet
+ * on a medium/narrow redesign window. */
 function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const leftSideOpen = useStore($leftSideOpen)
@@ -206,7 +218,26 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
       open,
       expanded: browserHost ? open : undefined,
       toggle: overlayChrome
-        ? () => togglePaneReveal(id, revealMode)
+        ? () => {
+            // A dismissed pane leaves the tree and a chrome-hidden one is skipped, and the overlay's
+            // reveal event only matches panes the tree holds and does not hide (narrow-overlays.tsx)
+            // — so the labelled Show pressed on nothing and the sheet never appeared (HADESK-90).
+            // Resolve the pane the overlay id names (the pane's own id, or the pane declaring it a
+            // reveal alias) and heal it first, the same restore the developer rail's tiles make, then
+            // send the reveal. `restoreTreePane` runs the owning store's opener ahead of the reveal,
+            // so `bindPaneVisibility` clears the hide instead of re-applying it.
+            if (revealMode === 'open') {
+              const pane = registry
+                .getArea('panes')
+                .find(c => c.id === id || paneChrome(c).revealAliases?.includes(id))
+
+              if (pane && ($dismissedPanes.get().has(pane.id) || $hiddenTreePanes.get().has(pane.id))) {
+                restoreTreePane(pane.id)
+              }
+            }
+
+            togglePaneReveal(id, revealMode)
+          }
         : toggleDocked
     }
   }

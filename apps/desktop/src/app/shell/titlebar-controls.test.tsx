@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import { group, split } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import {
   $collapsedTreeSides,
+  $dismissedPanes,
   $hiddenTreePanes,
   $layoutTree,
   $narrowViewport,
+  dismissTreePane,
   isPaneVisible
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
@@ -368,6 +370,103 @@ describe('titlebar app-action cluster', () => {
       ])
     } finally {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
+  })
+
+  // HADESK-90: a dismissed Files pane has LEFT the tree (dismissal = removed + remembered), so the
+  // overlay's reveal event had nothing to match and the labelled Show opened no sheet. The button
+  // heals the dismissal, the same restore the developer rail's tiles make, before revealing.
+  it('restores a dismissed Files pane from the narrow right-sidebar Show', () => {
+    const dispose = registry.register({
+      area: 'panes',
+      data: {
+        collapsible: true,
+        dock: { pane: 'workspace', pos: 'right' },
+        placement: 'right',
+        revealAliases: [FILE_BROWSER_PANE_ID]
+      },
+      id: 'files',
+      render: () => null,
+      title: 'files'
+    })
+    $shellChoice.set(true)
+    $narrowViewport.set(true)
+    $narrowOverlayPaneIds.set(new Set())
+    $layoutTree.set(split('row', [group(['workspace']), group(['files'])]))
+    act(() => dismissTreePane('files'))
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      expect($dismissedPanes.get().has('files')).toBe(true)
+      expect(findGroupOfPane($layoutTree.get()!, 'files')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+      expect($dismissedPanes.get().has('files')).toBe(false)
+      expect(findGroupOfPane($layoutTree.get()!, 'files')).not.toBeNull()
+      expect(intents).toEqual([{ id: FILE_BROWSER_PANE_ID, mode: 'open' }])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+      dispose()
+      $dismissedPanes.set(new Set())
+      $layoutTree.set(null)
+    }
+  })
+
+  // HADESK-90: Files' DEFAULT closed state is `$fileBrowserOpen === false`, which
+  // `bindPaneVisibility` records as a chrome HIDE, not a dismissal. The pane stays in the tree, so
+  // the dismissal-only heal skipped it — and the overlay's reveal event refuses a hidden pane
+  // outright (narrow-overlays.tsx), leaving the labelled Show opening no sheet. The button heals the
+  // hide first, through the same restore (owning store's opener, then reveal) the dismissed case uses.
+  it('restores a chrome-hidden Files pane from the narrow right-sidebar Show', () => {
+    const dispose = registry.register({
+      area: 'panes',
+      data: {
+        collapsible: true,
+        dock: { pane: 'workspace', pos: 'right' },
+        placement: 'right',
+        revealAliases: [FILE_BROWSER_PANE_ID]
+      },
+      id: 'files',
+      render: () => null,
+      title: 'files'
+    })
+    $shellChoice.set(true)
+    $narrowViewport.set(true)
+    $narrowOverlayPaneIds.set(new Set())
+    $collapsedTreeSides.set(new Set())
+    $layoutTree.set(split('row', [group(['workspace']), group(['files'])]))
+    // Closed the normal way: chrome-hidden, still in the tree and never dismissed.
+    $hiddenTreePanes.set(new Set(['files']))
+    const hiddenAtReveal: boolean[] = []
+    const intents: unknown[] = []
+    const listener = (event: Event) => {
+      // The overlay's matcher reads the hidden set synchronously as the event fires.
+      hiddenAtReveal.push($hiddenTreePanes.get().has('files'))
+      intents.push((event as CustomEvent).detail)
+    }
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      expect($dismissedPanes.get().has('files')).toBe(false)
+      expect(findGroupOfPane($layoutTree.get()!, 'files')).not.toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+      expect(hiddenAtReveal).toEqual([false])
+      expect($hiddenTreePanes.get().has('files')).toBe(false)
+      expect(isPaneVisible('files')).toBe(true)
+      expect(intents).toEqual([{ id: FILE_BROWSER_PANE_ID, mode: 'open' }])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+      dispose()
+      $hiddenTreePanes.set(new Set())
+      $collapsedTreeSides.set(new Set())
+      $layoutTree.set(null)
     }
   })
 

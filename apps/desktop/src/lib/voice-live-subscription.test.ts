@@ -1,18 +1,17 @@
-// @vitest-environment node
+// @vitest-environment jsdom
+import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { hermesApi } from '@/hermes'
+import { useVoiceLiveConversation } from '@/app/chat/composer/hooks/use-voice-live-conversation'
 import { fetchVoiceLiveStatus, resolveVoiceConversationStart, VoiceLiveSession } from '@/lib/voice-live'
 
-const { ownerScoped } = vi.hoisted(() => ({
-  ownerScoped: vi.fn((owner?: unknown) => ({ owner }))
-}))
+const { hermesApi, hermesApiAs } = vi.hoisted(() => {
+  const hermesApi = vi.fn<(request: { body?: unknown }) => Promise<unknown>>()
 
-vi.mock('@/api/client', () => ({
-  ownerScoped,
-  profileScoped: () => ({ profile: 'test' })
-}))
-vi.mock('@/hermes', () => ({ hermesApi: vi.fn() }))
+  return { hermesApi, hermesApiAs: vi.fn((_owner: unknown, request: { body?: unknown }) => hermesApi(request)) }
+})
+
+vi.mock('@/api/client', () => ({ hermesApiAs, resolveOwnerNow: () => ({ connectionId: null, profile: null }) }))
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -103,7 +102,7 @@ describe('native Live explicit billing', () => {
                 id: 'provider-delegation',
                 type: 'delegation',
                 target: 'client',
-                content: [{ type: 'input_text', text: 'Read the project status.' }]
+                content: [{ type: 'input_text', text: 'Read the pro' }, { type: 'input_text', text: 'ject status.' }]
               }
             }
           : {
@@ -199,6 +198,29 @@ describe('native Live explicit billing', () => {
     wire.receive({ type: 'session.closed', reason: 'closed' })
   })
 
+  it.each([true, false])('submits only the handoff and retains the earlier user turn (turn.done: %s)', async done => {
+    const wire = media()
+    hermesApi.mockResolvedValueOnce({ ok: true, auth: 'subscription', transport: { sdp: 'answer' } })
+    const onSubmit = vi.fn()
+
+    const hook = renderHook(() => useVoiceLiveConversation({
+      busy: false, enabled: true, expectedAuth: 'subscription', consumePendingResponse: vi.fn(),
+      onSubmit, pendingResponse: () => null, seedHistory: () => []
+    }))
+
+    await act(async () => { await hook.result.current.start() })
+    act(() => {
+      wire.receive({ type: 'input_transcript.added', item: { text: 'no' } })
+
+      if (done) {wire.receive({ type: 'turn.done', turn: { role: 'user', transcript: 'no' } })}
+      wire.receive({ type: 'delegation.created', item: { type: 'delegation', target: 'client', id: 'd',
+        content: [{ type: 'input_text', text: 'play pia' }, { type: 'input_text', text: 'no' }] } })
+    })
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith('play piano', 'User: no\nUser: play piano')
+    act(() => { wire.receive({ type: 'session.closed' }) })
+    hook.unmount()
+  })
+
   it('uses delegation content when transcript events are absent', async () => {
     const wire = media()
     const onDelegation = vi.fn()
@@ -263,7 +285,7 @@ describe('native Live explicit billing', () => {
       voice: 'cove'
     })
     await expect(pending).resolves.toEqual({ mode: 'gpt-live', auth: 'subscription', fallbackReason: null })
-    expect(ownerScoped).toHaveBeenCalledWith(owner)
+    expect(hermesApiAs).toHaveBeenCalledWith(owner, expect.objectContaining({ path: expect.stringContaining("status") }))
 
     const unavailable = {
       ok: true,

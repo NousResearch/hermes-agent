@@ -78,11 +78,13 @@ describe('GPT-Live owner routing', () => {
 
     // Ownerless chats keep the active scope verbatim (the old bare profileScoped()).
     const ownerless = new VoiceLiveSession(handlers, null)
+    setApiRequestConnection('gw-new')
+    setApiRequestProfile('other')
     await ownerless.start([])
     const plain = api.mock.calls[1][0] as { connectionId?: string; path: string; priority?: string; profile?: string }
     expect(plain.path).toBe('/api/audio/voice-live/session')
     expect(plain.profile).toBe('research')
     expect(plain.connectionId).toBe('gw-active')
-    expect(plain.priority).toBeUndefined()
+    expect(plain.priority).toBe('foreground')
   })
 })

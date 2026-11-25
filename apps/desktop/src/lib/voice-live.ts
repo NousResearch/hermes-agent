@@ -1,5 +1,4 @@
-import { type OwnerScope, ownerScoped } from '@/api/client'
-import { hermesApi } from '@/hermes'
+import { hermesApiAs, type ResolvedOwner, resolveOwnerNow } from '@/api/client'
 
 /**
  * GPT-Live voice chat: the full-duplex voice frontend that DELEGATES to Hermes.
@@ -44,6 +43,7 @@ interface LiveServerEvent {
   start_ms?: number
   end_ms?: number
   delegation?: { id: string; type: string; target: string }
+  turn?: { role?: string; transcript?: string }
   item?: {
     id?: string
     type?: string
@@ -64,6 +64,8 @@ export interface LiveTranscriptFragment {
   startMs: number
   endMs: number
   /** Frameless timing is local arrival, not provider audio timestamps. */
+  startsTurn?: boolean
+  endsTurn?: boolean
   timestampSource?: 'arrival'
 }
 
@@ -184,10 +186,9 @@ function normalizeVoiceLiveStatus(response: unknown): VoiceLiveStatus {
   }
 }
 
-export async function fetchVoiceLiveStatus(owner?: OwnerScope): Promise<null | VoiceLiveStatus> {
+export async function fetchVoiceLiveStatus(owner: ResolvedOwner = resolveOwnerNow()): Promise<null | VoiceLiveStatus> {
   try {
-    const response = await hermesApi<unknown>({
-      ...ownerScoped(owner),
+    const response = await hermesApiAs<unknown>(owner, {
       path: '/api/audio/voice-live/status'
     })
 
@@ -205,7 +206,7 @@ export async function fetchVoiceLiveStatus(owner?: OwnerScope): Promise<null | V
 }
 
 /** Resolve billing before opening any microphone or selecting a voice engine. */
-export async function resolveVoiceConversationStart(owner?: OwnerScope): Promise<{
+export async function resolveVoiceConversationStart(owner: ResolvedOwner = resolveOwnerNow()): Promise<{
   auth: null | VoiceLiveAuth
   mode: VoiceChatMode
   fallbackReason: null | string
@@ -402,9 +403,8 @@ function normalizeSubscriptionEvent(event: LiveServerEvent): LiveServerEvent | n
 
   const text = (item.content ?? [])
     .filter(part => part.type === 'input_text' && typeof part.text === 'string')
-    .map(part => part.text?.trim() ?? '')
-    .filter(Boolean)
-    .join(' ')
+    .map(part => part.text)
+    .join('')
 
   const arrivedAt = performance.now()
 
@@ -414,7 +414,7 @@ function normalizeSubscriptionEvent(event: LiveServerEvent): LiveServerEvent | n
     ...(text
       ? {
           delegationContext: [
-            { startMs: arrivedAt, endMs: arrivedAt, speaker: 'user', text, timestampSource: 'arrival' }
+            { startMs: arrivedAt, endMs: arrivedAt, speaker: 'user', text, startsTurn: true, timestampSource: 'arrival' }
           ]
         }
       : {})
@@ -426,7 +426,7 @@ export class VoiceLiveSession {
   /** Whose (connection, profile) this session dials; null → the active scope.
    *  A Bot chat runs its GPT-Live session on the Bot's own profile, so the
    *  voice configured there is the voice that answers. */
-  private readonly owner: null | OwnerScope
+  private readonly owner: ResolvedOwner
   private readonly expectedAuth: null | VoiceLiveAuth
   private readonly handlers: VoiceLiveHandlers
   private peer: null | RTCPeerConnection = null
@@ -450,11 +450,11 @@ export class VoiceLiveSession {
 
   constructor(
     handlers: VoiceLiveHandlers,
-    owner: null | OwnerScope = null,
+    owner: null | ResolvedOwner = null,
     expectedAuth: null | VoiceLiveAuth = null
   ) {
     this.handlers = handlers
-    this.owner = owner
+    this.owner = owner ?? resolveOwnerNow()
     this.expectedAuth = expectedAuth
     this.audio = new Audio()
     this.audio.autoplay = true
@@ -550,13 +550,12 @@ export class VoiceLiveSession {
       throw new Error('Missing local SDP offer')
     }
 
-    const response = await hermesApi<{
+    const response = await hermesApiAs<{
       ok: boolean
       auth?: string
       session?: { id: string }
       transport?: { sdp: string; type: string }
-    }>({
-      ...ownerScoped(this.owner ?? undefined),
+    }>(this.owner, {
       body: { history, sdp, ...(this.expectedAuth ? { expected_auth: this.expectedAuth } : {}) },
       method: 'POST',
       path: '/api/audio/voice-live/session',
@@ -648,6 +647,13 @@ export class VoiceLiveSession {
         this.recordTranscript(event)
 
         break
+      case 'turn.done': {
+        const last = this.transcript.at(-1)
+
+        if (this.subscription && last && last.speaker === event.turn?.role) {last.endsTurn = true}
+
+        break
+      }
 
       case 'session.delegation.created':
         this.dispatchDelegation(event)
@@ -671,6 +677,7 @@ export class VoiceLiveSession {
       endMs: event.end_ms ?? 0,
       speaker: event.type === 'session.input_transcript.delta' ? 'user' : 'assistant',
       startMs: event.start_ms ?? 0,
+      ...(this.transcript.at(-1)?.endsTurn ? { startsTurn: true } : {}),
       text: event.delta ?? '',
       ...(this.subscription ? { timestampSource: 'arrival' as const } : {})
     }
@@ -701,15 +708,22 @@ export class VoiceLiveSession {
     let start = context.length
     let suffix = ''
 
-    while (providedText && start > 0 && context[start - 1].speaker === 'user') {
-      const candidate = context[start - 1].text + suffix
+    for (let i = context.length - 1; providedText && i >= 0; i--) {
+      const part = context[i]
 
-      if (!providedText.endsWith(candidate.trim())) {
-        break
-      }
+      if (part.speaker !== 'user' || (part.endsTurn && i !== context.length - 1)) {break}
+      suffix = part.text + suffix
+      const copy = suffix.trim()
 
-      suffix = candidate
-      start--
+      if (!providedText.endsWith(copy)) {break}
+      // A completed turn must match as a whole. For partial ASR, only replace
+      // a word-aligned suffix, never an unrelated "no" at the end of "piano".
+      const exact = providedText === copy
+      const partial = !context.at(-1)?.endsTurn && /\s/.test(providedText.charAt(providedText.length - copy.length - 1))
+
+      if (exact || partial) {start = i}
+
+      if (part.startsTurn) {break}
     }
 
     const delegationContext = providedText ? [...context.slice(0, start), ...provided] : context

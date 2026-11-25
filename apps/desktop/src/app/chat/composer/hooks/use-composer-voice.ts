@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { $apiRequestScope, type ResolvedOwner, resolveOwnerNow } from '@/api/client'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech, lastTextPartText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
@@ -97,6 +98,16 @@ export function useComposerVoice({
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
   const [liveEngineActive, setLiveEngineActive] = useState(false)
+  const ambient = useStore($apiRequestScope)
+  const connectionId = ownerConnectionId || ambient.connectionId
+  const profile = ownerProfile || ambient.profile
+  const [liveOwner, setLiveOwner] = useState<ResolvedOwner>()
+  const activation = useRef(0)
+  useLayoutEffect(() => {
+    setVoiceConversationActive(false)
+
+    return () => { activation.current++ }
+  }, [connectionId, profile, target])
   const [liveExpectedAuth, setLiveExpectedAuth] = useState<null | VoiceLiveAuth>(null)
   // Barge-in can retain a submit callback from a render where the interrupted
   // turn was still busy. Read the current gate when its transcript arrives so
@@ -248,6 +259,7 @@ export function useComposerVoice({
     consumePendingResponse,
     enabled: voiceConversationActive && liveEngineActive,
     expectedAuth: liveExpectedAuth,
+    owner: liveOwner,
     onFatalError: () => setVoiceConversationActive(false),
     onInterrupt,
     onStopWord: () => setVoiceConversationActive(false),
@@ -264,11 +276,14 @@ export function useComposerVoice({
    *  gateway) falls back to chained with a notice only for API mode. Explicit
    *  subscription mode refuses to activate a different billed engine. */
   const activateConversation = useCallback(async () => {
+    const epoch = ++activation.current
+    const owner = resolveOwnerNow({ connectionId, profile })
+
     try {
-      const { auth, mode, fallbackReason } = await resolveVoiceConversationStart({
-        connectionId: ownerConnectionId,
-        profile: ownerProfile
-      })
+      const { auth, mode, fallbackReason } = await resolveVoiceConversationStart(owner)
+
+      if (activation.current !== epoch) {return}
+      setLiveOwner(owner)
 
       if (fallbackReason) {
         notify({
@@ -283,9 +298,9 @@ export function useComposerVoice({
       setVoiceConversationActive(true)
       recordFeatureUse('voice_conversation')
     } catch (error) {
-      notifyError(error, t.notifications.voice.couldNotStartSession)
+      if (activation.current === epoch) {notifyError(error, t.notifications.voice.couldNotStartSession)}
     }
-  }, [ownerConnectionId, ownerProfile, t])
+  }, [connectionId, profile, t])
 
   useEffect(() => {
     if (!voiceConversationActive) {
@@ -435,6 +450,7 @@ export function useComposerVoice({
   const startConversation = activateConversation
 
   const endConversation = useCallback(() => {
+    activation.current++
     setVoiceConversationActive(false)
     void conversation.end()
   }, [conversation])

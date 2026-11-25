@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import faulthandler
 import itertools
 import json
 import logging
@@ -50,11 +49,16 @@ DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
 # _FIRE_SAMPLE_BUDGET_S so a stalled procfs read still leaves time for the dump and stamp (#148527).
 _FIRE_FORENSICS_BUDGET_S = 5.0
 _FIRE_SAMPLE_BUDGET_S = 2.0
+# The shutdown watchdog's forensics (snapshot, dump, log line, lock release, drain, stamp) get the
+# same treatment: they run in a worker the watchdog thread waits on for at most this long before it
+# hard-exits anyway, so a diagnostic write blocked on a full stderr pipe or a stalled dump file
+# costs the forensics, not the exit (#160012).
+_SHUTDOWN_FORENSICS_BUDGET_S = 5.0
 _DECISION_LOCK_S = 0.1  # commit-vs-stand-down lock: held only for a flag check
 # Bound on the pre-``os._exit`` drain of the async file-log queue (both watchdogs).
 _LOG_DRAIN_S = 1.0
-# Thread and frame counts for the Python-rendered stacks, the same counts faulthandler's file copy
-# stops at: the stderr copy then grows with these caps, not with how many threads the gateway runs.
+# Thread and frame counts for the Python-rendered stacks, the counts faulthandler's own dump stops
+# at: both dump copies then grow with these caps, not with how many threads the gateway runs.
 _STDERR_STACK_THREADS = 100
 _STDERR_STACK_FRAMES = 100
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
@@ -219,7 +223,7 @@ def _run_bounded_worker(target: Callable[[], None], name: str, timeout: float) -
     """Run ``target`` in a named daemon thread and wait at most ``timeout`` for it.  Building or
     starting a thread allocates, so on a starved host either can raise: the caller then goes on
     without the worker.  No logging: the kill must not wait on a handler.  Never raises."""
-    with contextlib.suppress(MemoryError, RuntimeError):
+    with contextlib.suppress(Exception):
         worker = threading.Thread(target=target, daemon=True, name=name)
         worker.start()
         worker.join(timeout)
@@ -363,8 +367,11 @@ def resolve_shutdown_watchdog_delay(
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
                          event: str = "shutdown_watchdog_fired",
                          loop_thread_id: Optional[int] = None) -> None:
-    """Best-effort metadata + all-thread stack dump before hard-exit: the file copy via
-    faulthandler, then the stderr copy rendered in Python (``_format_thread_stacks``).
+    """Best-effort metadata + all-thread stack dump before hard-exit, both copies rendered in
+    Python (``_format_thread_stacks``): Python I/O releases the GIL while a write blocks, so a
+    stalled dump destination or a full stderr pipe cannot freeze the thread that bounds this
+    dump. faulthandler stays with the SIGUSR2 / fatal-signal dumps, whose writes are not on a
+    deadline (#160012).
 
     ``loop_thread_id`` names the monitored event loop's thread, whose own stack is written before
     the all-threads dump: that dump does not say which thread runs the loop, which is the first
@@ -382,12 +389,8 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(header, default=str) + "\n" + loop_section)
         fh.flush()
-        fh.write("--- faulthandler dump (all threads) ---\n")
+        fh.write(_format_thread_stacks())
         fh.flush()
-        try:
-            faulthandler.dump_traceback(file=fh, all_threads=True)
-        except Exception:
-            fh.write("(faulthandler.dump_traceback failed)\n")
         fh.write("--- end dump ---\n")
         fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
@@ -417,8 +420,8 @@ def _format_frame_stack(frame: Any) -> str:
 
 
 def _format_thread_stacks() -> str:
-    """Every thread's stack (``_format_frame_stack``) for the stderr copy, at most
-    ``_STDERR_STACK_THREADS`` threads, like the file copy's faulthandler dump. Never raises."""
+    """Every thread's stack (``_format_frame_stack``) for both dump copies, at most
+    ``_STDERR_STACK_THREADS`` threads, the count faulthandler's dump stops at. Never raises."""
     try:
         frames = sys._current_frames()
         names = {thread.ident: thread.name for thread in threading.enumerate()}  # one snapshot
@@ -464,30 +467,56 @@ def arm_shutdown_watchdog(
                 return
         if done.is_set():
             return
-        try:
-            snapshot = snapshot_fn() if snapshot_fn is not None else None
-        except Exception as exc:
-            snapshot = {"snapshot_error": repr(exc)}
-        target = dump_path if dump_path is not None else get_shutdown_watchdog_dump_path()
-        _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot)
-        with contextlib.suppress(Exception):
-            logger.critical("Shutdown watchdog fired after %.0fs — forcing process exit "
-                            "(asyncio drain path appears wedged; see %s)", delay, target)
-        for stream in (sys.stdout, sys.stderr):
+
+        decided = threading.Lock()  # commit vs stand-down: exactly one wins; no I/O while held
+        committed = False
+
+        def _forensics() -> None:
+            nonlocal committed
+            try:
+                snapshot = snapshot_fn() if snapshot_fn is not None else None
+            except Exception as exc:  # health: allow BLE001 -- caller-supplied diagnostics: any
+                # failure is recorded in the snapshot itself, never raised on the kill path
+                snapshot = {"snapshot_error": repr(exc)}
+            target = dump_path if dump_path is not None else get_shutdown_watchdog_dump_path()
+            _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot)
             with contextlib.suppress(Exception):
-                stream.flush()
-        # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
-        # (never strand locks), then drain the log queue so logger.critical lands before os._exit.
-        with contextlib.suppress(Exception):
+                logger.critical("Shutdown watchdog fired after %.0fs — forcing process exit "
+                                "(asyncio drain path appears wedged; see %s)", delay, target)
+            for stream in (sys.stdout, sys.stderr):
+                with contextlib.suppress(Exception):
+                    stream.flush()
+            with decided:
+                if done.is_set():  # disarmed during the diagnostics: stand down before the
+                    return  # destructive steps, which belong to an exit that will not happen
+                committed = True  # from here the exit happens
             # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
-            # (locks must never be stranded), then drain the async log queue so the logger.critical above
-            # actually reaches the file before os._exit bypasses atexit. (#66892)
-            from gateway.status import remove_pid_file, release_gateway_runtime_lock
-            remove_pid_file()
-            release_gateway_runtime_lock()
-        _drain_log_queue_quietly()
-        _mark_exited_quietly(exit_code, "shutdown_watchdog")
-        _hard_exit(exit_code)
+            # (never strand locks), then drain the log queue so logger.critical lands before os._exit.
+            with contextlib.suppress(Exception):
+                # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
+                # (locks must never be stranded), then drain the async log queue so the logger.critical above
+                # actually reaches the file before os._exit bypasses atexit. (#66892)
+                from gateway.status import remove_pid_file, release_gateway_runtime_lock
+                remove_pid_file()
+                release_gateway_runtime_lock()
+            _drain_log_queue_quietly()
+            _mark_exited_quietly(exit_code, "shutdown_watchdog")
+
+        # The loop-liveness shape: diagnostics in a bounded daemon worker, this thread hard-exits
+        # when the budget runs out, so a diagnostic write blocked on a full stderr pipe or a
+        # stalled dump file costs the forensics, not the exit (#160012).
+        _run_bounded_worker(_forensics, "gateway-shutdown-forensics", _SHUTDOWN_FORENSICS_BUDGET_S)
+        # Bounded, like the liveness decision: a worker descheduled inside the commit section
+        # must not hold up the exit. When the decision can't be taken, exit; standing down needs
+        # the lock, so the worker can't stamp a process that keeps running.
+        if not decided.acquire(timeout=_DECISION_LOCK_S):
+            _hard_exit(exit_code)
+            return
+        try:
+            if committed or not done.is_set():
+                _hard_exit(exit_code)
+        finally:
+            decided.release()
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:

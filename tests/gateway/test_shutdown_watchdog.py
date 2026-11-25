@@ -69,7 +69,7 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert dump.is_file()
     text = dump.read_text(encoding="utf-8")
     assert "shutdown_watchdog_fired" in text
-    assert "faulthandler dump" in text
+    assert "Python thread stacks" in text
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 

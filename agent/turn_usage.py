@@ -374,3 +374,11 @@ def record_response_usage(
             f"({hit_pct:.0f}% hit, {written:,} written)"
         )
     return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
+
+
+def last_prompt_usage(agent) -> dict:
+    """``{"last_prompt_tokens": n}``: size of the last prompt the turn sent to the model (the
+    context in use, where the turn's input counters sum every call), or ``{}`` when the agent
+    recorded none. API surfaces report it on request (``usage_prompt_tokens: context``)."""
+    last = getattr(getattr(agent, "context_compressor", None), "last_prompt_tokens", None)
+    return {"last_prompt_tokens": last} if type(last) is int and last > 0 else {}

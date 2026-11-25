@@ -1143,8 +1143,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
+                from agent.turn_usage import last_prompt_usage
                 captured['usage'] = {'input_tokens': incoming, 'output_tokens': outgoing,
-                                     'total_tokens': incoming + outgoing}
+                                     'total_tokens': incoming + outgoing, **last_prompt_usage(agent)}
                 _settle_api_runtime_lock(agent, result, captured)
             return result
         finally:

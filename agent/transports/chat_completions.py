@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 import string
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
@@ -167,6 +167,52 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None, base_
     its chat template accepts: the template raises on any other level and llama-server answers HTTP 500.
     """
     return clamp_reasoning_config(reasoning_config, chat_endpoint_efforts(model, base_url))
+
+
+def _catalog_model_rejects_reasoning(
+    provider: Optional[str], model: Optional[str], base_url: Optional[str] = None,
+) -> bool:
+    """True when the models.dev catalog states this route's model does NOT support reasoning.
+
+    A route reaches the catalog through its provider id, and a gateway/subscription route reaches
+    it through the ``catalog_provider`` alias configured on that provider. The agent hands the
+    transport the generic ``custom`` id for a config-defined endpoint, so when the provider id
+    carries no catalog mapping the endpoint's own base URL is matched back to the config row that
+    declares it. Unknown (no catalog row, cold cache, no alias) returns False: the request keeps
+    the effort the profile chose. Hot path — ``allow_network=False``, never blocking on I/O.
+    """
+    if not model:
+        return False
+    provider_id = str(provider or "")
+    try:
+        from agent.models_dev import _models_dev_id, get_model_capabilities
+
+        if _models_dev_id(provider_id) is None:
+            provider_id = _config_provider_for_endpoint(base_url, provider_id)
+        caps = get_model_capabilities(provider_id, str(model), allow_network=False)
+    except Exception:
+        return False
+    return caps is not None and caps.supports_reasoning is False
+
+
+def _config_provider_for_endpoint(base_url: Optional[str], fallback: str) -> str:
+    """The config provider whose ``base_url`` answers the agent's current endpoint, or the
+    provider id unchanged. A config-defined provider is registered under its own name; the
+    request path hands the transport the generic ``custom`` id, so the endpoint is the key
+    that finds the row (and its ``catalog_provider``)."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        from utils import base_url_hostname
+
+        rows = cfg_get(load_config_readonly(), "providers", default=None) or {}
+        host = base_url_hostname(str(base_url or ""))
+        for name, row in rows.items():
+            base = str((row or {}).get("base_url") or "").strip()
+            if base and host and base_url_hostname(base) == host:
+                return str(name)
+    except Exception:
+        pass
+    return fallback
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -670,6 +716,14 @@ class ChatCompletionsTransport(ProviderTransport):
             **({"lmstudio_reasoning_options": _lm_options} if _lm_options is not None else {}),
         )
         api_kwargs.update(top_level_from_profile)
+        # A catalogued non-reasoning model 400s on top-level reasoning_effort (Mistral's
+        # ministral: "reasoning_effort is not enabled for this model"), and a rejected first
+        # call throws the session onto the fallback provider's default model. Drop the field
+        # the endpoint refuses: the profile's clamp sees the wire vocabulary, not per-model
+        # capability; the catalog does.
+        if api_kwargs.get("reasoning_effort") is not None and _catalog_model_rejects_reasoning(
+                params.get("provider_name"), model, params.get("base_url")):
+            api_kwargs.pop("reasoning_effort", None)
 
         extra_body: dict[str, Any] = {}
         profile_body = profile.build_extra_body(

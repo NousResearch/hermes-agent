@@ -885,8 +885,12 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         pricing: dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
+                value = normalized.get(alias)
+                # Scalar values only: list/dict fields (e.g. a model's
+                # ``modalities: {"input": [...]}``) are not pricing, and a
+                # list here would crash the ``in {None, ""}`` membership test.
+                if isinstance(value, (int, float, str)) and value != "":
+                    pricing[target] = value
                     break
         if pricing:
             return _normalize_token_rates(pricing, normalized.get("unit"))

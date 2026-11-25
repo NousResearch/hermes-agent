@@ -244,6 +244,13 @@ def drop_unofferable_model_ids(rows: list) -> None:
             continue
         provider = row.get("slug")
         base_url = row.get("api_url") or row.get("base_url")
+        # A user-defined endpoint row (providers:<key> / custom_providers:
+        # entry) is the user's OWN server — switch validation reads it as custom:<key>,
+        # where spaced ids (a user's "Swift 1.5" route) are accepted. Dropping them
+        # here hid every spaced model of a user endpoint from the picker while the
+        # switch would have taken the pick.
+        if row.get("is_user_defined") and base_url:
+            continue
         models = row.get("models")
         if isinstance(models, list):
             filtered = offered_model_ids(models, provider, base_url)

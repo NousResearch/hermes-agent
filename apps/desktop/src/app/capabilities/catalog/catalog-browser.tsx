@@ -477,6 +477,41 @@ interface AgentCatalogProps extends Pick<
   installedPending: boolean
 }
 
+/** The library for a kind, opened on the agent whose page this is: the Capabilities page reads the
+ *  agent a link names. */
+function useLibraryHref(kind: CatalogKind): string {
+  const owner = useSettingsOwner()
+
+  return owner ? agentCapabilityHref(kind, owner) : `/capabilities?tab=${kind}`
+}
+
+/** An installed list ends with the one way to more; it has no library to advertise above it. */
+function InstalledListLibraryLink({ shown, to, label }: { shown: boolean; to: string; label: string }) {
+  return shown ? (
+    <Button asChild className="justify-self-start" size="inline" variant="text">
+      <Link to={to}>{label}</Link>
+    </Button>
+  ) : null
+}
+
+/** Nothing to list: an installed-only page with nothing installed says so under its section's head
+ *  (the link out follows the list); anything else is a search or filter that matched nothing. */
+function AgentCatalogEmpty({ installed, onClear }: { installed: boolean; onClear: () => void }) {
+  const { t } = useI18n()
+  const copy = useAgentCapabilityCopy()
+
+  return installed ? (
+    <section className="agent-capability-section">
+      <header>
+        <h3>{copy.plugins.onAgent}</h3>
+        <p>{t.skills.plugins.emptyAll}</p>
+      </header>
+    </section>
+  ) : (
+    <CatalogNoResults onClear={onClear} />
+  )
+}
+
 /** One agent's Skills or Plugins (Figma 895:14967, 895:16810): the library banner, then the
  *  agent's own sections, each row with its switch and ⋯ (or + Add for what it has not got). */
 function AgentCatalog({
@@ -520,9 +555,7 @@ function AgentCatalog({
     Number(facets.updatesOnly)
 
   const sections = agentCatalogSections({ kind, entries, isInstalled, copy })
-  // The library, opened on this agent: the page reads the agent a link names.
-  const owner = useSettingsOwner()
-  const browse = owner ? agentCapabilityHref(kind, owner) : `/capabilities?tab=${kind}`
+  const browse = useLibraryHref(kind)
 
   const open = (entry: CatalogEntry) => {
     onSelect(entry.id)
@@ -616,26 +649,10 @@ function AgentCatalog({
           </AgentCapabilitySection>
         )
       })}
-      {entries.length === 0 &&
-        !pending &&
-        !error &&
-        (installedOnly && !query && !installedPending ? (
-          // A section's head with no rows under it: the page's own voice, and the banner above links out.
-          <section className="agent-capability-section">
-            <header>
-              <h3>{copy.plugins.onAgent}</h3>
-              <p>{t.skills.plugins.emptyAll}</p>
-            </header>
-          </section>
-        ) : (
-          <CatalogNoResults onClear={onClear} />
-        ))}
-      {/* An installed list ends with the one way to more; it has no library to advertise above it. */}
-      {installedOnly && (
-        <Button asChild className="justify-self-start" size="inline" variant="text">
-          <Link to={browse}>{banner.browse}</Link>
-        </Button>
+      {entries.length === 0 && !pending && !error && (
+        <AgentCatalogEmpty installed={Boolean(installedOnly) && !query && !installedPending} onClear={onClear} />
       )}
+      <InstalledListLibraryLink label={banner.browse} shown={Boolean(installedOnly)} to={browse} />
       {selected && (
         <CatalogDetailDialog
           onOpenChange={onDetailOpenChange}

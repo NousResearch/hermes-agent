@@ -153,6 +153,16 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     d = _kb.board_dir(normed)
     if not d.exists():
         raise ValueError(f"board {normed!r} does not exist")
+    from hermes_cli.kanban_db_connect import board_removal_fence
+
+    with board_removal_fence(normed):
+        return _remove_board_locked(normed, d, archive=archive)
+
+
+def _remove_board_locked(normed: str, d: Path, *, archive: bool) -> dict:
+    # Revalidate under the fence: a connector blocked on removal cannot resurrect it.
+    if not d.exists():
+        raise ValueError(f"board {normed!r} does not exist")
 
     # If the user removed the currently-active board, revert to default.
     if _kb.get_current_board() == normed:

@@ -28,10 +28,9 @@ import plugins.platforms.discord.adapter_profile_mentions as profile_mentions
 
 #: ``agent-one``/``agent-two`` opted in through their own config.yaml; ``quiet`` is served but did not.
 MENTIONABLE = {"agent-one": {"mentionable": True}, "agent-two": {"mentionable": True}, "quiet": None}
-#: KNOWN BROKEN, fixed in the next commit: the gateway's session binding refuses every re-homed copy
-#: (``AuthorityRefusal('profile_mismatch')`` from ``session_ingress_context._binding``; the channel
-#: gets "Something went wrong"). Strict: a test that starts passing must drop its mark.
-_REFUSED = pytest.mark.xfail(strict=True, reason="profile_mismatch from session_ingress_context._binding")
+#: KNOWN BROKEN, fixed in the next commit: with two bots, a profile's session lane is paused when a
+#: later turn arrives through another bot than its first ("could not be re-authorized (not_found)").
+_PAUSED = pytest.mark.xfail(strict=True, reason="lane paused: turn through a different bot (check_native_route)")
 
 
 _DOC = "# Runbook\n\nPage $agent-two if prod is down.\n  Indented: costs $agent-one-ish, $5\n"
@@ -65,7 +64,6 @@ def _labelled(out, profile):
 # --- issue #159776 acceptance cases ----------------------------------------------------------------
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_case1_a_leading_handle_runs_one_labelled_turn_in_that_profile(rig):
     out = await rig.send("$agent-one what's the status?")
@@ -73,14 +71,12 @@ async def test_case1_a_leading_handle_runs_one_labelled_turn_in_that_profile(rig
     _labelled(out, "agent-one")
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_case2_a_handle_mid_message_routes_too(rig):
     out = await rig.send("hey $agent-one, any update?")
     _ran_in(rig, out, "agent-one", "hey, any update?")
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_case3_several_handles_each_run_in_their_own_session(rig):
     out = await rig.send("$agent-one $agent-two compare your dependency staleness")
@@ -115,8 +111,7 @@ async def test_case6_a_bare_handle_without_backfill_runs_nothing(rig):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("busy", [pytest.param(True, id="channel-activity", marks=_REFUSED),
-                                  pytest.param(False, id="no-activity")])
+@pytest.mark.parametrize("busy", [True, False], ids=["channel-activity", "no-activity"])
 async def test_case6_a_bare_handle_with_default_backfill_is_a_catch_me_up_turn(tmp_path, monkeypatch, authority_cwd_in_tmp, busy):
     """History backfill at its default (on): like a bare ``@bot``, a catch-me-up turn when the channel
     has activity, nothing otherwise; in agent-one's session."""
@@ -136,7 +131,7 @@ async def test_case6_a_bare_handle_with_default_backfill_is_a_catch_me_up_turn(t
 # --- the review's findings and each later round's fix ---------------------------------------------
 
 
-@_REFUSED
+@_PAUSED
 @pytest.mark.asyncio
 async def test_two_bots_in_one_gateway_run_the_turn_once(tmp_path, monkeypatch, authority_cwd_in_tmp):
     """Round 1: both bots receive every message; each named profile gets ONE turn, in its own session.
@@ -166,7 +161,6 @@ async def test_two_bots_in_one_gateway_run_the_turn_once(tmp_path, monkeypatch, 
 _FENCED = "$agent-one\n```py\ndef f():\n    return  1\n```\n\n  keep   this   spacing\n"
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_code_fences_and_whitespace_reach_the_profile_intact(rig):
     """Round 2: only the handle goes; the code block and inner spacing arrive byte for byte."""
@@ -209,7 +203,6 @@ async def test_the_rig_can_run_a_command_in_agent_ones_session(rig):
     assert out.commands == [("reset", "agent-one", rig.home("agent-one"))], out.summary()
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_slash_later_in_the_prompt_still_dispatches(rig):
     out = await rig.send("$agent-one please explain what /new does")
@@ -226,7 +219,6 @@ async def test_a_handle_inside_an_attached_document_never_routes(rig):
     assert _DOC.strip() in turn.message and turn.message.endswith("please summarize"), out.summary()
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_typed_handle_routes_with_the_attached_document_intact(rig):
     attachment = text_attachment(rig, _DOC)
@@ -260,7 +252,6 @@ async def test_pin_known_gap_a_skill_slash_command_keeps_its_handle_as_text(rig,
 # --- routing shapes the gateway's binding has to accept --------------------------------------------
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_require_mention_channel_lets_a_handle_through_to_the_profile(tmp_path, monkeypatch, authority_cwd_in_tmp):
     async with discord_gateway_rig(tmp_path, monkeypatch, profiles=MENTIONABLE,
@@ -272,7 +263,6 @@ async def test_a_require_mention_channel_lets_a_handle_through_to_the_profile(tm
             assert out.handed == [] and out.turns == [] and out.commands == [], (content, out.summary())
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_custom_handle_and_the_bots_own_profile(tmp_path, monkeypatch, authority_cwd_in_tmp):
     """``mention_handle: a1`` reaches agent-one; the bot's own (launch) profile can be named too."""
@@ -283,7 +273,6 @@ async def test_a_custom_handle_and_the_bots_own_profile(tmp_path, monkeypatch, a
         _ran_in(rig, await rig.send("$default hi"), "default", "hi")
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_secondary_profiles_bot_hands_a_message_to_another_profile(tmp_path, monkeypatch, authority_cwd_in_tmp):
     """Only agent-two's bot is in the channel: ``$agent-one`` runs in agent-one, received (and
@@ -295,7 +284,6 @@ async def test_a_secondary_profiles_bot_hands_a_message_to_another_profile(tmp_p
         _ran_in(rig, await rig.send("$agent-two status?", to=["agent-two"]), "agent-two", "status?")
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_follow_up_while_the_profile_is_busy_is_not_refused(rig):
     """A second ``$agent-one`` message while agent-one's first turn is still running."""
@@ -312,7 +300,6 @@ async def test_a_follow_up_while_the_profile_is_busy_is_not_refused(rig):
     assert "second" in out.turns[1].message, out.summary()
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_handle_in_a_profile_routes_channel_wins_over_the_route(rig):
     """The channel routes to agent-two (``profile_routes``); naming agent-one addresses agent-one,
@@ -323,7 +310,6 @@ async def test_a_handle_in_a_profile_routes_channel_wins_over_the_route(rig):
     _ran_in(rig, await rig.send("$agent-one status?"), "agent-one", "status?")
 
 
-@_REFUSED
 @pytest.mark.asyncio
 async def test_a_recovered_missed_message_runs_in_the_named_profile(rig, monkeypatch):
     """Missed-message recovery re-applies the gates itself, then dispatches like a live message."""
@@ -338,7 +324,7 @@ async def test_a_recovered_missed_message_runs_in_the_named_profile(rig, monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("profile", "marked", "runs"), [
-    pytest.param("agent-one", True, True, marks=_REFUSED),  # what the bot dispatches: admitted
+    ("agent-one", True, True),     # what the bot dispatches: admitted
     ("agent-one", False, False),   # a stamped profile alone proves nothing
     ("quiet", True, False),        # served, but never opted in
 ], ids=["marked-opted-in", "unmarked", "marked-not-opted-in"])

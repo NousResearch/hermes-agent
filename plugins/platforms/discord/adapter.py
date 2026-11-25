@@ -1180,11 +1180,11 @@ from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesM
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, build_vault_code_view
-from plugins.platforms.discord.adapter_profile_mentions import addresses_profile, dispatch_event as dispatch_profile_mentions
+from plugins.platforms.discord.adapter_profile_mentions import DiscordProfileMentionsMixin, addresses_profile, dispatch_event as dispatch_profile_mentions
 
 
 class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
-                     DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordVaultCodeMixin, BasePlatformAdapter):
+                     DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordVaultCodeMixin, DiscordProfileMentionsMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000

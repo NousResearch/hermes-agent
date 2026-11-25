@@ -1050,7 +1050,7 @@ When the launch profile owns the bot (the usual single-bot setup), its flag foll
 - A profile this gateway does not serve is never reachable, even if its config opts in (for example, a profile that still runs its own gateway). The message is never run under another profile.
 - When the gateway runs several Discord bots (profiles with their own bot token) and more than one of them is in the channel, the message still runs once per named profile. The first bot to handle it dispatches it and answers; the other bots do not dispatch it again.
 - Handles use `$`, not `@`, on purpose: `@name` would ping real users or roles.
-- Each turn is an ordinary turn in that profile's session for the channel. A later message without a handle goes back to the channel's normal profile. A turn started this way is not remembered across restarts as belonging to that profile, so a background notification that arrives after a restart may not be delivered back to the channel.
+- Each turn is an ordinary turn in that profile's session for the channel, also in a channel that `profile_routes` sends to another profile. A later message without a handle goes back to the channel's normal profile. A turn started this way is not remembered across restarts as belonging to that profile, so a background notification that arrives after a restart may not be delivered back to the channel.
 
 ### Mention Control
 

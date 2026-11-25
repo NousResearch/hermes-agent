@@ -25,7 +25,10 @@ is not served, did not opt in, or claims a handle another profile also claims is
 Each copy is the event's own source with ``profile`` stamped, exactly what ``build_source`` does
 for a ``profile_routes`` match, so the gateway's single identity seam (``resolve_identity``) keys,
 authorizes (the receiving bot's allowlist) and delivers it. ``profile_mention`` marks the source
-so the reply is labelled with the profile's name (``gateway/run_turn_persistence.py``).
+so the reply is labelled with the profile's name (``gateway/run_turn_persistence.py``). The same
+in-process marker is what the session authority's binding accepts the re-homed profile from
+(``session_ingress_context._mention_profile``): it re-asks this bot, on admission and when the turn
+is restored, whether the profile is still one it may hand to (``profile_mention_targets``).
 
 A message with no mentionable handle passes through untouched. Unknown ``$handles`` are logged and
 left in the text. A handle with no prompt after it behaves like a bare bot @mention: with
@@ -310,6 +313,16 @@ def mention_events(adapter: Any, event: Any, typed: str) -> list:
         logger.info("[%s] Dispatching message %s to %d mentioned profile(s)", adapter.name,
                     event.message_id, len(profiles))
     return [_profile_event(adapter, event, profile, prompt) for profile in profiles]
+
+
+class DiscordProfileMentionsMixin:
+    """What the gateway's session binding asks the receiving bot about a ``$<profile>`` copy."""
+
+    def profile_mention_targets(self) -> frozenset[str]:
+        """The served, opted-in profiles this bot may hand a message to right now. The session
+        binding (``session_ingress_context._mention_profile``) admits a dispatched copy, and later
+        its restored turn, only while its profile is in here."""
+        return frozenset(mentionable_handles(self).values()) if is_multiplex_active() else frozenset()
 
 
 async def dispatch_event(adapter: Any, event: Any, typed: str, *, batch: bool) -> None:

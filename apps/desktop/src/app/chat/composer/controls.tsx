@@ -60,6 +60,7 @@ export function ComposerControls({
   foldVoice = false,
   hasComposerPayload,
   hideModelPill = false,
+  keepModelPicker = false,
   minimal = false,
   sendWhileDisabled,
   state,
@@ -81,6 +82,8 @@ export function ComposerControls({
   foldVoice?: boolean
   hasComposerPayload: boolean
   hideModelPill?: boolean
+  /** Height-only touch collapse keeps model access while folding voice controls away. */
+  keepModelPicker?: boolean
   minimal?: boolean
   /** Send stays usable while `disabled`: a send now is held in the queue (a reply paused for its continuation). */
   sendWhileDisabled?: boolean
@@ -148,7 +151,7 @@ export function ComposerControls({
       className={cn('flex min-w-0 shrink items-center gap-(--composer-control-gap)', browserHost && 'justify-end')}
       style={{ flexWrap: browserHost && minimal ? 'wrap' : undefined }}
     >
-      {minimal ? null : (
+      {minimal && !keepModelPicker ? null : (
         <>
           {hideModelPill ? null : (
             <>
@@ -156,7 +159,7 @@ export function ComposerControls({
               {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
             </>
           )}
-          {voiceControls}
+          {minimal ? null : voiceControls}
         </>
       )}
       {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}

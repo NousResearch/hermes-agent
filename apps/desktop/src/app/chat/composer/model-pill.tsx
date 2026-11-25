@@ -14,6 +14,8 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
+import { useShortViewport } from '@/lib/short-viewport'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
@@ -22,6 +24,12 @@ import { onComposerModelMenuRequest } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
 import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
+
+/** True while a composer model menu is open. The short-viewport composer hides
+ *  the model pill; while its menu is open it must stay mounted, or the keyboard
+ *  that a search field raises (shrinking the viewport) unmounts the pill and
+ *  closes the menu mid-pick. */
+export const $composerModelMenuOpen = atom(false)
 
 // `shrink` (not `shrink-0`) with a truncating label: the pill is the one
 // control in the row that can give width back continuously, so it absorbs the
@@ -54,6 +62,11 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  const touchPointer = useStore($touchPointer)
+  const short = useShortViewport()
+  // The phone footer may yield its model label to quota values. Keep the
+  // current choice readable normally; keyboard-height collapse keeps its chevron.
+  const iconOnly = compact && (!touchPointer || short)
   // Two return branches below, one handle: only ever one of them mounts.
   const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
@@ -69,6 +82,7 @@ export function ModelPill({
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
+  useEffect(() => () => $composerModelMenuOpen.set(false), [])
   const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
@@ -139,7 +153,7 @@ export function ModelPill({
   // the text changes, and a provider that declines leaves the core label.
   const pillLabel = useComposerModelPillLabel({ compact, model: currentModel, reasoningEffort: reasoningEffort || '' })
 
-  const label = compact ? (
+  const label = iconOnly ? (
     <ChevronDown className="size-3.5 shrink-0 opacity-70" />
   ) : (
     <>
@@ -169,9 +183,9 @@ export function ModelPill({
     </>
   )
 
-  // Compact (floating composer): a snug square holding just the chevron — no pill
-  // padding, sized to match the other composer icon buttons.
-  const pillClass = compact
+  // Non-touch compact mode keeps its snug icon button. Touch uses the normal
+  // truncating/shrinking pill, so Send and the other controls keep their room.
+  const pillClass = iconOnly
     ? cn(
         'size-(--composer-control-size) shrink-0 justify-center gap-0 rounded-md p-0',
         'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -207,6 +221,7 @@ export function ModelPill({
   // committed a model also swallows whatever you type next.
   const setMenuOpen = (next: boolean) => {
     setOpen(next)
+    $composerModelMenuOpen.set(next)
 
     if (!next) {
       releaseTypingFocus()

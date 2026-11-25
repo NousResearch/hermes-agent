@@ -511,11 +511,12 @@ def _gh_json(cwd: str, args: list[str]):
 
 
 def review_ship_info(cwd: str) -> dict:
-    """gh availability/auth + this branch's PR. ghReady false when gh missing/unauthed."""
-    if not _is_dir(cwd) or not _gh(cwd, ["auth", "status"])[0]:
+    """gh availability/auth + this branch's PR. ghReady false when gh missing/unauthed, or when git
+    is macOS's CLT stub: gh reads the branch and repo with git, so neither the PR lookup nor
+    Create PR (gated on ghReady) can run without launching it."""
+    if not _is_dir(cwd) or _git_argv0_unusable(["git"]) or not _gh(cwd, ["auth", "status"])[0]:
         return {"ghReady": False, "pr": None}
-    # gh finds this branch and its repo by running git, so the CLT-stub guard applies to it too.
-    pr = None if _git_argv0_unusable(["git"]) else _gh_json(cwd, ["pr", "view", "--json", "url,state,number"])
+    pr = _gh_json(cwd, ["pr", "view", "--json", "url,state,number"])
     if pr and pr.get("url"):
         return {"ghReady": True, "pr": {"url": pr["url"], "state": pr.get("state"), "number": pr.get("number")}}
     return {"ghReady": True, "pr": None}
@@ -591,6 +592,8 @@ def review_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = No
 
 def review_create_pr(cwd: str) -> dict:
     """Create a PR for the current branch (push first), letting gh fill title/body."""
+    if _git_argv0_unusable(["git"]):  # gh pr create --fill reads the branch and commits with git
+        raise RuntimeError("git is not available")
     try:
         _review_push(cwd)
     except RuntimeError:

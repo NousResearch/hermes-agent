@@ -341,8 +341,9 @@ def test_clt_stub_plugin_git_falls_back_to_no_git_not_to_the_stub(tmp_path, monk
 
 @pytest.mark.platforms("posix")
 def test_clt_stub_skips_gh_calls_that_make_gh_run_git(tmp_path, clt_stub_env):
-    """The review pane's PR refresh and the sidebar's PR badges ask gh about "this repo", which gh
-    answers by running git; ``gh auth status`` needs no repo and still runs."""
+    """The review pane's PR refresh, its Create PR and the sidebar's PR badges ask gh about "this
+    repo", which gh answers by running git. With the stub the pane reports gh as not ready, which
+    disables Create PR, and a direct create is refused before gh runs."""
     from hermes_cli import web_git
 
     trap_bin, _trap_git, spawn_log = clt_stub_env
@@ -355,9 +356,11 @@ def test_clt_stub_skips_gh_calls_that_make_gh_run_git(tmp_path, clt_stub_env):
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    assert web_git.review_ship_info(str(repo)) == {"ghReady": True, "pr": None}
+    assert web_git.review_ship_info(str(repo)) == {"ghReady": False, "pr": None}
     assert web_git.review_pr_list(str(repo), ["main"]) == {"ghReady": False, "prs": []}
-    assert gh_log.read_text().splitlines() == ["auth status"]
+    with pytest.raises(RuntimeError, match="git is not available"):
+        web_git.review_create_pr(str(repo))
+    assert not gh_log.exists(), f"gh was run: {gh_log.read_text()}"
     assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
 
 

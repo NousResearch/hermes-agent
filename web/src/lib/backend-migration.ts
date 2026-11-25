@@ -356,9 +356,11 @@ export function viewOf(st: BackendMigrationStatus): PollView {
 /** Seconds after the request with no record of the new run before its outcome counts as unknown. */
 export const NOT_STARTED_AFTER_SECONDS = 60;
 /** Seconds without an answer about the followed run before a poll stops calling it the restart:
- *  covers the backend's restart handoff (240 s), verify wait (300 s), and rollback/old-backend
- *  restart budget (120 s). */
-export const UNREACHABLE_AFTER_SECONDS = 660;
+ *  covers the worst-case sequential backend timeout budget from stopping the old backend through a
+ *  failed verify and rollback (port-free 30 s + gateway restart 540 s + handoff 240 s + verify 300 s
+ *  + rollback stop 240 s + rollback gateway start 300 s + listener-gone 30 s + old backend start 90 s
+ *  + rollback verify 60 s = 1830 s). */
+export const UNREACHABLE_AFTER_SECONDS = 1830;
 
 /** Which run a poll follows. `requestedAt`: the server time the apply answer named, or `null` when that
  *  answer was lost (or the server said a move was already starting); then any record newer than

@@ -43,7 +43,7 @@ from hermes_cli.dashboard_auth.cookies import (
     parse_pkce_payload, read_pkce_cookie, read_session_cookies, set_pkce_cookie,
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
-    render_login_html, render_native_provider_choice_html)
+    login_notice_text, render_login_html, render_native_provider_choice_html)
 from hermes_cli.dashboard_auth.refresh_singleflight import forget as forget_refresh, refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age, client_ip as _client_ip, is_safe_next_path, is_same_origin_path)
@@ -297,11 +297,12 @@ def _validate_loopback_redirect_uri(raw: str) -> str:
 def _select_native_provider(provider: str):
     """Resolve the provider for a native authorize request. An empty ``provider`` auto-selects
     the ONLY interactive session provider (password providers included — native sign-in brokers
-    them via ``/login``); with several the caller renders a chooser instead of guessing."""
+    them via ``/login``); with several, or an operator sign-in notice to show, the caller renders a
+    chooser instead."""
     if provider:
         return get_provider(provider)
     candidates = list_interactive_providers()
-    return candidates[0] if len(candidates) == 1 else None
+    return candidates[0] if len(candidates) == 1 and not login_notice_text() else None
 
 
 @router.get("/auth/native/authorize", name="auth_native_authorize")
@@ -320,7 +321,7 @@ async def auth_native_authorize(
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_interactive_providers()
-        if len(candidates) > 1:
+        if len(candidates) > 1 or (candidates and login_notice_text()):
             # Render the chooser BEFORE allocating broker state or setting a cookie: every link
             # re-enters this same validated route with an explicit provider.
             return HTMLResponse(

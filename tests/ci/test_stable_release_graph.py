@@ -557,7 +557,9 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
     docker.chmod(0o755)
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c",
-         step["run"].replace("/tmp/digests", digest_dir.as_posix())], cwd=tmp_path,
+         # Relative to cwd: the step's ``cd /tmp/digests`` is unquoted, so an absolute temp path
+         # with a space (a Windows profile like C:/Users/Jane Doe) would split.
+         step["run"].replace("/tmp/digests", "digests")], cwd=tmp_path,
         env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
              "IMAGE_NAME": "owner/repo", "RELEASE_TAG": "0.21.5",
              "CREATE_MARKER": str(marker)},

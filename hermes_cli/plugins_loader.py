@@ -53,6 +53,11 @@ _PLUGIN_HOST_CREATE_LOCK = threading.Lock()
 _IN_PLUGIN_LOAD: contextvars.ContextVar[Optional[list[PluginContext]]] = contextvars.ContextVar(
     "hermes_plugin_load_scope", default=None,
 )
+# Per-call deadline for one discovery pass (send-path retry). None means "use config / default".
+# Does not write ``plugins.load_timeout_seconds`` and does not change ``_LOAD_TIMEOUT_SECS``.
+_LOAD_TIMEOUT_OVERRIDE: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "hermes_plugin_load_timeout_override", default=None,
+)
 
 
 class PluginLoadTimeout(Exception):
@@ -64,9 +69,31 @@ def in_plugin_load_worker() -> bool:
     return _IN_PLUGIN_LOAD.get() is not None
 
 
+@contextmanager
+def plugin_load_timeout_override(timeout: float):
+    """Bind the load deadline for the current discovery pass only.
+
+    Used by ``hermes send`` to give exactly one retry a longer deadline without
+    raising the process default or writing config.
+    """
+    token = _LOAD_TIMEOUT_OVERRIDE.set(float(timeout))
+    try:
+        yield
+    finally:
+        _LOAD_TIMEOUT_OVERRIDE.reset(token)
+
+
 def _resolve_plugin_load_timeout() -> float:
     """Effective per-plugin load deadline from ``plugins.load_timeout_seconds`` (default 10s; ``0`` runs
     loads inline with no deadline; clamped to ``_MAX_LOAD_TIMEOUT_SECS``)."""
+    override = _LOAD_TIMEOUT_OVERRIDE.get()
+    if override is not None:
+        timeout = float(override)
+        if timeout < 0:
+            return _LOAD_TIMEOUT_SECS
+        if timeout > _MAX_LOAD_TIMEOUT_SECS:
+            return _MAX_LOAD_TIMEOUT_SECS
+        return timeout
     default = _LOAD_TIMEOUT_SECS
     try:
         from hermes_cli.config import load_config_readonly

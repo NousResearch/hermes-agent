@@ -948,6 +948,12 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        # pre_gateway_dispatch before auth, as on the cold path (``_hm_admit_event``). This arrival
+        # never reached it: a skip must stop it before it interrupts, steers or queues. Rewritten
+        # in place because the adapter queues this same event when we return False.
+        if not event.internal and await self._hm_pre_gateway_dispatch_hook(
+                event, event.source, in_place=True) is None:
+            return True
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL

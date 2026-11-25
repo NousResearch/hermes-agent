@@ -72,7 +72,7 @@ class GatewayInboundHooksMixin:
         return await run_post_admission_hook(self, event, source, session_key)
 
     async def _hm_pre_gateway_dispatch_hook(
-        self, event: MessageEvent, source: SessionSource
+        self, event: MessageEvent, source: SessionSource, *, in_place: bool = False
     ) -> Optional[MessageEvent]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
@@ -82,9 +82,13 @@ class GatewayInboundHooksMixin:
 
         Once per inbound message, at ingress (here, or ``admit_producer`` for webhook/relay), never
         while an admitted row EXECUTES: a messaging turn already passed it before its commit, and a
-        local CLI/TUI/Desktop turn never fired it on main, so a skip must not drop committed input."""
+        local CLI/TUI/Desktop turn never fired it on main, so a skip must not drop committed input.
+        A busy arrival (``_handle_active_session_busy_message``) runs it on arrival and may then be
+        queued and drained through ``_handle_message``: the event object is marked (a process-local
+        attribute, not kept by a copy) so the drain does not run it again. ``in_place``: rewrite
+        this event rather than a copy, since the adapter that diverted it may still queue it."""
         from gateway.session_ingress import executing_admission
-        if executing_admission.get():
+        if executing_admission.get() or getattr(event, "_pre_gateway_dispatched", False):
             return event
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
@@ -112,9 +116,10 @@ class GatewayInboundHooksMixin:
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
                     from gateway.session_ingress_context import carry_callback
-                    if getattr(event, '_busy_observed', False):
+                    if in_place or getattr(event, '_busy_observed', False):
                         # Its observer closes the hooks using this exact event. Replacing it loses
-                        # the process-local admission handle assigned after this hook returns.
+                        # the process-local admission handle assigned after this hook returns. A
+                        # busy-handler arrival (in_place) is queued as this same event.
                         _carry_replied_voice_answer(event, event, _new_text)
                         event.text = _new_text
                     else:
@@ -126,6 +131,7 @@ class GatewayInboundHooksMixin:
                 break
             if _action == "allow":
                 break
+        event._pre_gateway_dispatched = True
         return event
 
     def _hm_quick_commands(self) -> dict:

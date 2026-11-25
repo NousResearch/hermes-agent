@@ -7,6 +7,7 @@ recorded working directory and launch policy instead, plus the message event of 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 
 def _active_policy():
@@ -14,29 +15,79 @@ def _active_policy():
     return active_policy()
 
 
-def session_policy():
-    """The launch policy of the session whose turn is running in this context, ``None`` outside one.
+@dataclass(frozen=True)
+class SessionPolicyView:
+    """The launch facts of a session, read-only: what a plugin may know, none of the policy's config."""
+    source: str
+    platform: str
+    cwd: str
+    model: str | None
+    toolsets: tuple[str, ...]
 
-    The policy is the session's frozen launch facts: its ``source`` (``cli``/``tui``/``gui``/``acp``),
-    ``platform``, the recorded ``cwd``, the resolved ``model`` and the session's ``toolsets``.
-    ``session_source()``, ``session_surface()`` and ``session_cwd()`` answer the single fields; read
-    the policy for the rest. ``None`` outside a session (the classic CLI, a messaging chat turn, a
-    cron run) — the same answer ``session_source()`` gives as an empty string.
+
+@dataclass(frozen=True)
+class TurnEventView:
+    """A read-only snapshot of the running turn's message event. Every field is untrusted input."""
+    platform: str
+    user_id: str | None
+    chat_id: str | None
+    message_id: str | None
+    reply_to_message_id: str | None
+    reply_to_is_own_message: bool
+    is_bot: bool
+    internal: bool
+    inherit_channel_pin: bool
+    forwarded: bool  # a forward Hermes passes on as plain text (Discord, Telegram, Feishu)
+
+
+def session_policy() -> SessionPolicyView | None:
+    """The launch facts of the session whose turn is running in this context, ``None`` outside one.
+
+    A frozen view of the session's ``source`` (``cli``/``tui``/``gui``/``acp``), ``platform``, recorded
+    ``cwd``, resolved ``model`` and ``toolsets``. It carries no config, request, credential or client
+    data, and it is a copy: nothing done to it reaches the session. ``session_source()``,
+    ``session_surface()`` and ``session_cwd()`` answer the single fields. ``None`` outside a session
+    (the classic CLI, a messaging chat turn, a cron run), as ``session_source()`` answers ``""``.
     """
-    return _active_policy()
+    policy = _active_policy()
+    if policy is None:
+        return None
+    return SessionPolicyView(policy.source, policy.platform, policy.cwd, policy.model, tuple(policy.toolsets))
 
 
-def turn_event():
-    """The gateway turn's message event for the turn running in this context, ``None`` outside one.
+def _is_forwarded(event) -> bool:
+    """Whether the message is a forward, by the markers the platform adapters already read."""
+    raw = getattr(event, "raw_message", None)
+    platform = getattr(getattr(event.source, "platform", None), "value", "")
+    if platform == "discord":
+        return bool(getattr(raw, "message_snapshots", None))
+    if platform == "telegram":
+        return getattr(raw, "forward_origin", None) is not None
+    if platform == "feishu":
+        message = getattr(getattr(raw, "event", None), "message", None)
+        return getattr(message, "message_type", "") == "merge_forward"
+    return False
 
-    The event is the platform adapter's own object (a Telegram update, a Discord message): read
-    ``user_id`` / ``source`` / ``message_id`` off it and treat every field as untrusted input.
-    ``None`` outside a gateway turn (the classic CLI, the TUI) and wherever the platform binds no
-    event. Under ``plugins.isolation: host`` the plugin's own process has no turn: it is ``None``
-    there.
+
+def turn_event() -> TurnEventView | None:
+    """A read-only snapshot of the message event of the turn running in this context.
+
+    ``None`` outside a gateway turn (the classic CLI, the TUI, a cron run), wherever the platform binds
+    no event, and under ``plugins.isolation: host`` (the plugin's own process has no turn). A delegated
+    child runs in its parent's context and reads the parent's event. The snapshot holds ids and flags,
+    never the platform's raw object: treat every field as untrusted input.
     """
     from gateway.session_context import current_turn_event
-    return current_turn_event()
+    event = current_turn_event()
+    source = getattr(event, "source", None)
+    if event is None or source is None:
+        return None
+    return TurnEventView(
+        platform=getattr(source.platform, "value", str(source.platform)), user_id=event.user_id or source.user_id,
+        chat_id=source.chat_id, message_id=event.message_id, reply_to_message_id=event.reply_to_message_id,
+        reply_to_is_own_message=bool(event.reply_to_is_own_message), is_bot=bool(source.is_bot),
+        internal=bool(event.internal), inherit_channel_pin=bool(event.inherit_channel_pin),
+        forwarded=_is_forwarded(event))
 
 
 def session_key() -> str:

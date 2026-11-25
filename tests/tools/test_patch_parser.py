@@ -1014,3 +1014,11 @@ class TestPatchFilePaths:
     def test_a_header_that_escapes_the_workspace_names_no_paths(self):
         """A ``..`` header is refused by the patch tool, so the file list is unknown, not a guess."""
         assert patch_file_paths("*** Begin Patch\n*** Update File: ../escape.py\n@@\n-a\n+b\n*** End Patch") is None
+
+    def test_paths_are_the_raw_header_text_with_single_headers_before_moves(self):
+        """Not expanded or resolved: ``~`` and relative parts stay as written; a Move's endpoints
+        follow every Update/Add/Delete header, whatever the order in the patch."""
+        patch = ("*** Begin Patch\n*** Move File: a.txt -> ~/b.txt\n"
+                 "*** Update File:  ./src//app.py \n@@\n-a\n+b\n*** End Patch")
+
+        assert patch_file_paths(patch) == ["./src//app.py", "a.txt", "~/b.txt"]

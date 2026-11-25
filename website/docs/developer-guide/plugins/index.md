@@ -1443,19 +1443,17 @@ compatibility contract:
 
 | Import | What it gives you |
 |---|---|
-| `tools.interrupt.set_interrupt(active, thread_id=None, *, reason=None)` | Set or clear the interrupt flag Hermes's tools check, so a plugin stops a turn the way the user's `/stop` does. `reason` is a user-safe cause, never the user's message text. |
-| `tools.interrupt.is_interrupted()` | Whether the interrupt flag is set for the calling thread. |
+| `tools.interrupt.is_interrupted()` | Whether the interrupt flag is set for the calling thread: a read, so a plugin tool can stop early when the user sends `/stop`. Hermes publishes no way to set or clear the flag from a plugin: it is keyed by thread, so a setter could reach another session. |
 | `plugins.computer_use.configured_backend_name()` | The computer-use backend the active profile's config selects (`cua` when unset). |
-| `plugins.computer_use.get_active_provider()` | That backend's provider (`create_backend()`, `is_available()`); it raises `LookupError` naming the available ones when it cannot be loaded. |
-| `agent.redact_vault_values.register_vault_redaction_value(value)` | Register an exact secret value, so Hermes scrubs it from everything it hands to the model (the vault fill path does this for the values it injects). |
+| `plugins.computer_use.get_active_provider()` | That backend's provider (`create_backend()`, `is_available()`); it raises `LookupError` naming the available ones when it cannot be loaded. **Computer use is its own risk:** a backend obtained this way drives the screen directly, without the `computer_use` tool's key and text blocklists, its approval gate or its permission-mode mapping (`tools/computer_use/tool.py`). The plugin owns those checks. |
+| `agent.redact_vault_values.register_plugin_redaction_value(value)` | Register an exact secret value your plugin holds, so Hermes scrubs it from everything it hands to the model, for the calling profile only. A value shorter than 8 characters raises `ValueError`. Plugin values sit in their own bucket with their own cap (64 per profile, oldest dropped first), so they never evict a value the vault fill registered. |
 | `agent.vault_keychain.os_keyring()` | The OS credential store keyring Hermes's vault key lives in; it raises `KeychainUnavailable` when this machine has none. |
 | `agent.vault_store.configured_key_storage()` | Where a new vault's key goes: `vault.key_storage` (`file` by default, or `keychain`). |
 | `tools.patch_parser.parse_v4a_patch(text)` | The V4A patch parser: `(operations, error)`. |
-| `tools.patch_parser.patch_file_paths(patch_text)` | The files a V4A patch names, in header order. `None` when the patch names none, and `None` when a header path escapes the workspace (`..`), because Hermes refuses that patch. |
+| `tools.patch_parser.patch_file_paths(patch_text)` | The files a V4A patch names, as the raw header text (trimmed, not expanded or resolved): the Update/Add/Delete headers first, then the endpoints of each Move. **`None` is a refusal, not "no files":** it means the patch names none, or a header path escapes the workspace (`..`) and Hermes refuses that patch. |
 | `tools.skill_provenance.is_background_review()` | Whether the running turn is Hermes's own background review (the self-improvement pass), so a plugin can stay quiet during it. |
 | `tools.image_source.MAX_INGEST_BYTES` | The byte budget Hermes's media resolver ingests (50 MiB): the cap your own media reads should honour. |
 | `gateway.media_fetch.remote_path_is_denied(path, remote_home)` | Whether Hermes refuses to fetch that path on a remote host (its credential-path denylist). |
-| `tools.terminal_tool_lifecycle.cleanup_vm(task_id, *, force_remove=False)` | Release the terminal environment Hermes keeps alive for `task_id` — the call the terminal tools make when they are done with it. |
 | `hermes_cli.__version__` | The version of the Hermes the plugin runs in (the build stamp's version; a source checkout reports `0.0.0`). |
 
 ```python
@@ -1465,7 +1463,10 @@ def files_a_patch_touches(patch_text):
     operations, error = parse_v4a_patch(patch_text)
     if error:
         return error
-    return patch_file_paths(patch_text) or []
+    paths = patch_file_paths(patch_text)
+    if paths is None:  # unreadable or refused ('..'): fail closed, never treat it as "touches nothing"
+        return "refused: the patch names no readable file list"
+    return paths
 ```
 
 ### Send a credentialed HTTP request without leaking it on redirect

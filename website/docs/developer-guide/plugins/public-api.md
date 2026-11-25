@@ -178,7 +178,7 @@ with a name allows that one name only.
 | `tools.skills_tool` | `skill_lookup_path_error` | plugins/index.md § Read the skill catalog |
 | `tools.skills_sync` | `dir_hash` | plugins/index.md § Read the skill catalog |
 | `tools.skill_usage` | `read_skill_name` | plugins/index.md § Read the skill catalog |
-| `agent.redact_vault_values` | `register_vault_redaction_value` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `agent.redact_vault_values` | `register_plugin_redaction_value` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `agent.vault_keychain` | `os_keyring` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `agent.vault_store` | `configured_key_storage` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `gateway.media_fetch` | `remote_path_is_denied` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
@@ -187,11 +187,9 @@ with a name allows that one name only.
 | `plugins.computer_use` | `get_active_provider` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `tools.image_source` | `MAX_INGEST_BYTES` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `tools.interrupt` | `is_interrupted` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
-| `tools.interrupt` | `set_interrupt` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `tools.patch_parser` | `parse_v4a_patch` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `tools.patch_parser` | `patch_file_paths` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `tools.skill_provenance` | `is_background_review` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
-| `tools.terminal_tool_lifecycle` | `cleanup_vm` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |

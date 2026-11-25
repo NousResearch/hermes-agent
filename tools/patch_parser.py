@@ -161,11 +161,14 @@ def v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str
 
 
 def patch_file_paths(patch_text: str) -> list[str] | None:
-    """The files a V4A patch names, in header order; ``None`` when that list is unknown.
+    """The files a V4A patch names; ``None`` when that list is unknown.
 
     A patch names a file in its ``*** Update/Add/Delete File:`` and ``*** Move File:`` headers (a
-    move names both endpoints). ``None`` says the list cannot be read: the patch names no file at
-    all, or a header path escapes the workspace (``..``) and Hermes refuses the patch itself.
+    move names both endpoints). The paths are the raw header text, trimmed: not expanded (``~``) or
+    resolved against any directory. Update/Add/Delete headers come first in patch order, then the
+    Move endpoints. ``None`` says the list cannot be read: the patch names no file at all, or a
+    header path escapes the workspace (``..``) and Hermes refuses the patch itself, so a caller must
+    treat ``None`` as a refusal, never as "no files".
     """
     if not isinstance(patch_text, str) or not patch_text:
         return None

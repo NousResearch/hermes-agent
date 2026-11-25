@@ -286,7 +286,7 @@ def test_every_published_plugin_api_entry_passes_validate(tmp_path):
 
 
 _PLUGIN_SUPPORT_SEAMS = (
-    ("agent.redact_vault_values", "register_vault_redaction_value"),
+    ("agent.redact_vault_values", "register_plugin_redaction_value"),
     ("agent.vault_keychain", "os_keyring"),
     ("agent.vault_store", "configured_key_storage"),
     ("gateway.media_fetch", "remote_path_is_denied"),
@@ -297,11 +297,9 @@ _PLUGIN_SUPPORT_SEAMS = (
     ("plugins.computer_use", "get_active_provider"),
     ("tools.image_source", "MAX_INGEST_BYTES"),
     ("tools.interrupt", "is_interrupted"),
-    ("tools.interrupt", "set_interrupt"),
     ("tools.patch_parser", "parse_v4a_patch"),
     ("tools.patch_parser", "patch_file_paths"),
     ("tools.skill_provenance", "is_background_review"),
-    ("tools.terminal_tool_lifecycle", "cleanup_vm"),
 )
 
 
@@ -317,6 +315,22 @@ def test_plugin_support_seams_are_public_and_exist(tmp_path):
     plugin = _plugin(tmp_path / "support", {"seams.py": imports})
 
     assert _private_warnings(validate_plugin_dir(plugin)) == []
+
+
+def test_helpers_that_reach_another_session_are_not_public(tmp_path):
+    """A plugin is locked to its calling session: these take a thread, task or vault bucket that is not
+    the caller's, so validate flags them."""
+    unlisted = (
+        ("tools.interrupt", "set_interrupt"),
+        ("tools.terminal_tool_lifecycle", "cleanup_vm"),
+        ("agent.redact_vault_values", "register_vault_redaction_value"),
+    )
+    imports = "".join(f"from {module} import {name}\n" for module, name in unlisted)
+    plugin = _plugin(tmp_path / "unlisted", {"reach.py": imports})
+
+    [warning] = _private_warnings(validate_plugin_dir(plugin))
+    for module, name in unlisted:
+        assert f"{module}" in warning and name in warning
 
 
 def test_public_api_docs_page_is_generated_from_the_data_file():

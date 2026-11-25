@@ -220,8 +220,8 @@ def reset_session_vars() -> None:
 def current_turn_event() -> Any:
     """The ``MessageEvent`` of the gateway turn running in THIS context, ``None`` outside one.
 
-    The event is the platform adapter's own object (a Telegram update, a Discord message): read
-    ``user_id`` / ``source`` / ``message_id`` off it and treat every field as untrusted input. A
+    The live, mutable event with the platform's raw object inside: INTERNAL, not published. Plugins
+    read ``hermes_cli.plugin_session.turn_event()``, a frozen snapshot of it. A
     delegated child runs in its parent turn's context and reads the parent's event. A context that
     bound no turn (the classic CLI, a plugin's own process) answers ``None``.
     """

@@ -153,6 +153,8 @@ class SessionAuthority:
         self.profile_id = profile_id
         self.instance_id = instance_id
         self.persistence = persistence
+        from gateway.session_voice_capture import VoiceCaptures
+        self.voice_captures = VoiceCaptures(persistence.messages, authority=self)
         self.epoch = epoch
         self.sessions = {}
         self.waiters = {}
@@ -1207,6 +1209,8 @@ class SessionAuthority:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
                 # waits queued, as main's pending slot did; /stop and /new still cancel it.
                 return 'classic_busy', first
+            # Flush deferred call text before the next typed turn reads history.
+            await self.voice_captures.recover(session_id=self.physical_target(ref), event_session=ref.session_id)
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
@@ -1555,6 +1559,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, persistence, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, epoch=epoch,
                                  persistence=persistence)
+    await authority.voice_captures.recover()
     # Prepare while private; publish and register in one loop step, with no intervening await.
     from gateway.session_local_startup import recover_local_sessions_async
     await recover_local_sessions_async(authority, initial=True)

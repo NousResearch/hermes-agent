@@ -29,6 +29,8 @@ def rewind_in_transaction(holder, conn, session_id, target_message_id, *,
     ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
                                      (session_id, target_message_id)).fetchall()]
     if ids:
+        from persistence.sqlite.conversation._store.live_voice import invalidate_for_rewind
+        invalidate_for_rewind(holder, conn, session_id)
         conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
     if replacement is not None:
         _insert_message_rows(holder, conn, session_id, [replacement])

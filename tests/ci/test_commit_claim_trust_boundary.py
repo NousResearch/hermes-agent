@@ -355,8 +355,9 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
     metadata = Path(record["cwd"], record["argv"][record["argv"].index("--out") + 1])
     metadata.write_text("{}", encoding="utf-8")
     (upload,) = [call for call in calls if call["module"] == "scripts.releases.handoff"]
+    root = Path(upload["cwd"], upload["argv"][upload["argv"].index("--root") + 1])
     includes = [upload["argv"][i + 1] for i, arg in enumerate(upload["argv"]) if arg == "--include"]
-    assert set(handoff._select_files(staged, includes)) == built | {metadata.relative_to(staged).as_posix()}
+    assert set(handoff._select_files(root, includes)) == built | {metadata.relative_to(staged).as_posix()}
 
 
 @pytest.mark.parametrize("target", [*NATIVE_TARGETS, "termux"])

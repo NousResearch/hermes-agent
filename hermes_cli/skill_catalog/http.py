@@ -223,6 +223,10 @@ async def _delegate(request, stock, provider_deadline):
     query_profile = request.query_params.get('profile')
     raw = await _bounded_body(request) if request.method == 'POST' else b''
     if raw is None:
+        # Never partially parse an oversized body to infer authority. The query
+        # selector (or current profile) determines whether stock bypass is safe.
+        if await _selected_service(request, None, provider_deadline) is not None:
+            raise CatalogError('request_too_large', 'Catalog request body exceeds 256 KiB.')
         return await stock(request)
     # Keep every selector until optional-provider admission has resolved it.
     # Providerless requests retain the stock last-value/body-profile behavior.

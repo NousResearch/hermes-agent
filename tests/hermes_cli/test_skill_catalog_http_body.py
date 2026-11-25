@@ -1,7 +1,6 @@
-"""Oversized hub bodies bypass optional routing without losing stock input."""
+"""Oversized hub bodies refuse live authority and preserve providerless stock input."""
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 from starlette.requests import Request
@@ -18,7 +17,7 @@ def _padded(plan, size):
 
 
 @pytest.mark.parametrize('query', ['', '?profile=default'])
-def test_oversized_live_provider_request_keeps_pinned_stock_response(client, catalog, monkeypatch, query):
+def test_oversized_live_provider_request_refuses_without_parsing(client, catalog, monkeypatch, query):
     from hermes_cli.skill_catalog import http
     entry, plan = catalog
     calls = []
@@ -30,14 +29,25 @@ def test_oversized_live_provider_request_keeps_pinned_stock_response(client, cat
 
     monkeypatch.setattr(http, '_hint', hint)
     response = client.post('/api/skills/hub/review' + query, content=_padded(plan, CAP + 1))
-    frozen = json.loads((Path(__file__).parents[1] / 'fixtures/skill_catalog/stock_extensions.json').read_text())
-    case = next(row for row in frozen['requests'] if row['method'] == 'POST'
-                and row['path'] == '/api/skills/hub/review')
-    assert response.status_code == case['status'], response.text
-    assert response.content == case['body'].encode()
-    assert dict(response.headers) == case['headers']
+    assert response.status_code == 413, response.text
+    assert response.json()['error']['code'] == 'request_too_large'
     assert calls == []
     assert entry.provider.effects == 0
+
+
+def test_oversized_managed_install_never_spawns_stock(client, catalog, monkeypatch):
+    from hermes_cli.web_routers import skills
+    _entry, plan = catalog
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    raw = json.dumps(dict(identifier=plan['identifier'], action='install')).encode()
+    small = client.post('/api/skills/hub/install', content=raw, headers={'content-type': 'application/json'})
+    assert small.status_code == 400
+    assert spawned == []
+    large = client.post('/api/skills/hub/install', content=raw + b' ' * (CAP + 1 - len(raw)),
+                        headers={'content-type': 'application/json'})
+    assert large.status_code == 413, large.text
+    assert spawned == []
 
 
 def test_exact_body_limit_still_routes_to_provider(client, catalog):

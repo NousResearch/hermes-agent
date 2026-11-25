@@ -11,6 +11,7 @@ import re
 
 _STATUSES = {
     "invalid_request": 400, "invalid_identifier": 400, "not_found": 404,
+    "request_too_large": 413,
     "provider_unavailable": 503, "ownership_state_unavailable": 503,
     "consent_required": 403, "permission_denied": 403, "sign_in_required": 401,
     "policy_denied": 403, "unsupported": 422, "review_required": 409,

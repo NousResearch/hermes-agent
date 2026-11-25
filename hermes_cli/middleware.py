@@ -53,6 +53,26 @@ class ToolCallAuthorization:
 
 _TOOL_CALL_AUTHORIZER: ContextVar[Optional[Callable[[Optional[dict[str, Any]]], ToolCallAuthorization]]] = ContextVar(
     "hermes_tool_call_authorizer", default=None)
+# The payload the running tool_execution middleware frame was handed (authorize_tool_call's default arguments).
+_FRAME_PAYLOAD: ContextVar[Any] = ContextVar("hermes_middleware_frame_payload", default=None)
+# True while the chain continues past a middleware frame that raised before calling next_call.
+_FAILED_OPEN: ContextVar[bool] = ContextVar("hermes_middleware_failed_open", default=False)
+
+
+def tool_call_refusal(message: str) -> str:
+    """The model-facing result of a tool call Hermes refused to run (JSON ``{"error": ...}``)."""
+    import json
+    return json.dumps({"error": message}, ensure_ascii=False)
+
+
+def middleware_failed_open() -> bool:
+    """Whether the current dispatch was reached because a middleware raised before calling ``next_call``."""
+    return _FAILED_OPEN.get()
+
+
+def frame_payload() -> Any:
+    """The payload handed to the running tool_execution middleware frame."""
+    return _FRAME_PAYLOAD.get()
 
 
 def authorize_tool_call(args: Optional[dict[str, Any]] = None) -> ToolCallAuthorization:
@@ -61,20 +81,26 @@ def authorize_tool_call(args: Optional[dict[str, Any]] = None) -> ToolCallAuthor
     For a ``tool_execution`` middleware that runs the call somewhere else (another machine, a sandbox) and so never
     calls ``next_call``. In the agent loop (``authorization="pending"``) this runs Hermes's policy once: the hosted-scope
     refusal, the tool-scope block, ``pre_tool_call`` hooks (block / approve / modify), the pruned-argument guard and the
-    loop guardrails. Where Hermes already authorized the call before the middleware (``authorization="done"``:
-    ``handle_function_call``) it returns that decision. Repeated calls return the first decision. ``args``: the arguments
-    the middleware intends to run (default: those the middleware chain started with).
+    loop guardrails, then the checks that otherwise live in the tool itself and that Hermes runs in its own code: the
+    terminal dangerous-command gate for ``terminal`` and ACP edit approval for file edits. Their answer is reused if the
+    call is later dispatched here, so nobody is asked twice. Where Hermes already authorized the call before the
+    middleware (``authorization="done"``: ``handle_function_call``) it returns that decision. ``args``: the arguments the
+    middleware intends to run (default: the payload this middleware frame was handed).
 
-    A result the middleware returns without calling ``next_call`` gets the same terminal ``post_tool_call`` and
-    ``transform_tool_result`` as a local result. If the middleware calls ``next_call`` after authorizing, the decision
-    is reused (policy does not run twice) and only the authorized arguments may run.
+    One decision per call: a repeat with the same arguments returns it; a repeat with other arguments is refused. A
+    refusal (``allowed=False``) carries the result the model must see, already reported; the call can never run, not
+    through ``next_call`` and not through the chain's fall-through when a middleware raises. A call whose middleware
+    asked for authorization and then raised does not fall back to running here either. A result the middleware returns
+    without calling ``next_call`` gets the same terminal ``post_tool_call`` and ``transform_tool_result`` as a local
+    result.
 
-    Raises ``RuntimeError`` outside a ``tool_execution`` middleware call.
+    Raises ``RuntimeError`` outside a ``tool_execution`` middleware call, and when called from inside Hermes's own
+    authorization (for example from a ``pre_tool_call`` hook).
     """
     authorizer = _TOOL_CALL_AUTHORIZER.get()
     if authorizer is None:
         raise RuntimeError("authorize_tool_call() works only inside a tool_execution middleware call")
-    return authorizer(args)
+    return authorizer(frame_payload() if args is None else args)
 
 
 def observer_payload(**kwargs: Any) -> dict[str, Any]:
@@ -192,23 +218,47 @@ def run_tool_execution_middleware(
     ``next_call``); middleware reach it through ``authorize_tool_call`` and see ``authorization="pending"``. Without
     it, Hermes authorized the call before the middleware (``authorization="done"``).
     """
-    def _already_authorized(requested: Optional[dict[str, Any]]) -> ToolCallAuthorization:
-        if requested is not None and requested != args:
-            raise RuntimeError("authorize_tool_call(): this tool call was authorized with the arguments it arrived "
-                               "with; other arguments cannot be authorized here")
-        return ToolCallAuthorization(allowed=True, args=dict(args))
+    asked: dict[str, Any] = {}       # this call's authorize_tool_call answer ("decision"), if any middleware asked
+
+    def _already_authorized(requested: dict[str, Any]) -> ToolCallAuthorization:
+        if "decision" in asked:
+            first = asked["decision"]
+            if requested in (first.args, args):
+                return first
+            return ToolCallAuthorization(allowed=False, args=dict(requested), result=tool_call_refusal(
+                "this tool call was already authorized with other arguments; it was not run"))
+        if requested != args:
+            decision = ToolCallAuthorization(allowed=False, args=dict(requested), result=tool_call_refusal(
+                "this tool call was authorized with the arguments it arrived with; the changed arguments were not "
+                "authorized and the call was not run"))
+        else:
+            decision = ToolCallAuthorization(allowed=True, args=dict(args))
+        asked["decision"] = decision
+        return decision
 
     if authorize is None:
         authorization, authorizer = "done", _already_authorized
     else:
         authorization = "pending"
 
-        def authorizer(requested: Optional[dict[str, Any]]) -> ToolCallAuthorization:
-            return authorize(args if requested is None else requested)
+        def authorizer(requested: dict[str, Any]) -> ToolCallAuthorization:
+            decision = authorize(args if requested is None else requested)
+            asked.setdefault("decision", decision)
+            return decision
+
+    def _terminal(payload: Any) -> Any:
+        decision = asked.get("decision")
+        if decision is not None and not decision.allowed:
+            return decision.result          # a refused call never runs, however the chain got here
+        if decision is not None and middleware_failed_open():
+            return tool_call_refusal("the middleware that took this tool call failed after authorizing it; the call "
+                                     "was not run here")
+        return next_call(payload)
+
     token = _TOOL_CALL_AUTHORIZER.set(authorizer)
     try:
         return _run_execution_chain(
-            TOOL_EXECUTION_MIDDLEWARE, next_call,
+            TOOL_EXECUTION_MIDDLEWARE, _terminal,
             tool_name=tool_name, args=args, original_args=context.pop("original_args", args),
             authorization=authorization, **context)
     finally:
@@ -264,6 +314,7 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         call_kwargs = middleware_payload(**kwargs)
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
+        frame_token = _FRAME_PAYLOAD.set(payload)
         try:
             return callback(**PluginDispatchMixin._hook_callback_kwargs(callback, call_kwargs))  # narrow signatures, as hooks
         except _DownstreamExecutionError as exc:
@@ -276,6 +327,12 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
                 return next_result
             if next_called:
                 raise
-            return call_at(index + 1, payload)
+            failed_token = _FAILED_OPEN.set(True)
+            try:
+                return call_at(index + 1, payload)
+            finally:
+                _FAILED_OPEN.reset(failed_token)
+        finally:
+            _FRAME_PAYLOAD.reset(frame_token)
 
     return call_at(0, kwargs[payload_key])

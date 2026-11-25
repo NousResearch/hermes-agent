@@ -47,7 +47,7 @@ from agent.inline_tool_executors import (
     tool_hook_ids,
 )
 from agent.message_metadata import stamp_data_use
-from agent.tool_authorization import authorize_call
+from agent.tool_authorization import BODY_DECISION, CallAuthorizer, authorize_call
 from agent.session_persistence import sync_rewritten_tool_rows
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS, _is_destructive_command, _append_subdir_hint_to_multimodal,
@@ -737,30 +737,15 @@ def _run_agent_tool_execution_middleware(
             begin_execution=begin_execution, authorization_gate=authorization_gate)
         return state
     dispatch_lock = threading.Lock()
-    decided: dict[str, Any] = {}   # authorize_tool_call's decision for this call: made once, then reused
 
-    def _authorize(requested_args: dict[str, Any]):
-        """``hermes_cli.middleware.authorize_tool_call`` for this call: Hermes's policy once, without running it."""
-        from hermes_cli.middleware import ToolCallAuthorization
-        with dispatch_lock:
-            if state.dispatched:
-                raise RuntimeError("authorize_tool_call() was called after this tool call already ran")
-            if "decision" in decided:
-                return decided["decision"]
-            ref = _ToolCallRef(function_name, dict(requested_args), effective_task_id, tool_call_id, trace)
-            state.args = ref.args
-            blocked = authorize_call(agent, state, ref, scope_block=scope_block, authorization_gate=authorization_gate)
-            if blocked is not None:
-                _advance_start_order(begin_execution)
-                decision = ToolCallAuthorization(allowed=False, args=ref.args, result=blocked)
-            else:
-                # Started here (progress, start order); the local checkpoint waits for a local dispatch, if any.
-                _start_authorized(agent, ref, display_index=display_index, begin_execution=begin_execution,
-                                  local_checkpoint=False)
-                state.authorized = True
-                decision = ToolCallAuthorization(allowed=True, args=ref.args)
-            decided.update(decision=decision, requested=dict(requested_args))
-            return decision
+    authorizer = CallAuthorizer(
+        agent, state, lock=dispatch_lock,
+        make_ref=lambda args: _ToolCallRef(function_name, dict(args), effective_task_id, tool_call_id, trace),
+        start=lambda ref: _start_authorized(agent, ref, display_index=display_index,
+                                            begin_execution=begin_execution, local_checkpoint=False),
+        advance=lambda: _advance_start_order(begin_execution),
+        scope_block=scope_block, authorization_gate=authorization_gate)
+    _authorize, decided = authorizer, authorizer.decided
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
         with dispatch_lock:
@@ -812,19 +797,23 @@ def _run_agent_tool_execution_middleware(
             **tool_hook_ids(agent, effective_task_id, tool_call_id),
         )
 
-    state.result, _relay_args = relay_tools.execute(
-        function_name,
-        function_args,
-        _hermes_pipeline,
-        session_id=str(getattr(agent, "session_id", "") or ""),
-        tool_call_id=tool_call_id or None,
-        metadata={
-            "task_id": effective_task_id or "",
-            "turn_id": getattr(agent, "_current_turn_id", "") or "",
-            "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
-            "tool_call_id": tool_call_id or "",
-        },
-    )
+    body_token = BODY_DECISION.set(None)    # a tool-body approval lives for this one call only
+    try:
+        state.result, _relay_args = relay_tools.execute(
+            function_name,
+            function_args,
+            _hermes_pipeline,
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            tool_call_id=tool_call_id or None,
+            metadata={
+                "task_id": effective_task_id or "",
+                "turn_id": getattr(agent, "_current_turn_id", "") or "",
+                "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                "tool_call_id": tool_call_id or "",
+            },
+        )
+    finally:
+        BODY_DECISION.reset(body_token)
     return state
 
 

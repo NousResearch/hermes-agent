@@ -11,6 +11,7 @@ the call somewhere else runs it through ``hermes_cli.middleware.authorize_tool_c
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
@@ -19,6 +20,12 @@ from agent.tool_dispatch_helpers import _context_pruned_argument_paths
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from agent.tool_executor import _ConcurrentToolAuthorizationGate, _ManagedToolResult, _ToolCallRef
+
+# A tool-body check authorize_tool_call already ran for one call ({"call_id", "terminal": (guard_key, approval)} or
+# {"call_id", "edit": args}), handed to the local tool if the call is then dispatched here, so nobody is asked twice.
+# Single use; bound for the life of one agent-loop tool call.
+BODY_DECISION: ContextVar[dict | None] = ContextVar("hermes_authorized_tool_body", default=None)
+_EDIT_TOOLS = frozenset({"write_file", "patch"})
 
 PRUNED_TOOL_ARGUMENTS_ERROR = "suspected_pruned_tool_arguments"
 PRUNED_TOOL_ARGUMENTS_MESSAGE = (
@@ -113,3 +120,149 @@ def authorize_call(
     return blocked_tool_result(
         agent, ref, block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
     )
+
+
+def refuse_call(agent, state: _ManagedToolResult, ref: _ToolCallRef, result: str, error_type: str) -> str:
+    """Report a call Hermes refused (terminal ``post_tool_call``, status blocked) and mark it blocked."""
+    ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=result[:200])
+    state.blocked = True
+    return result
+
+
+def authorize_tool_body(agent, ref: _ToolCallRef) -> tuple[str, str] | None:
+    """The checks that otherwise run inside the tool itself, for a call that runs elsewhere: the terminal
+    dangerous-command gate and ACP edit approval, through Hermes's own code. Returns ``(result, error_type)`` when the
+    call may not run, else ``None``; an approval is recorded in ``BODY_DECISION`` for a later local dispatch."""
+    if ref.name == "terminal":
+        return _authorize_terminal(agent, ref)
+    if ref.name in _EDIT_TOOLS:
+        return _authorize_edit(ref)
+    return None
+
+
+def _authorize_terminal(agent, ref: _ToolCallRef) -> tuple[str, str] | None:
+    from tools import terminal_tool as tt
+    from tools.approval_context import reset_current_observability_context, set_current_observability_context
+    from tools.terminal_tool_guards import trailing_amp_background_command
+    command = ref.args.get("command")
+    if not isinstance(command, str):
+        return None                         # the terminal tool refuses a non-string command itself
+    if not ref.args.get("background"):      # a foreground `cmd &` runs as `cmd`: gate what will run
+        command = trailing_amp_background_command(command) or command
+    config = tt._get_env_config()
+    key = (command, config["env_type"], tt._docker_has_host_access(config))
+    tokens = set_current_observability_context(
+        tool_call_id=ref.call_id, session_id=getattr(agent, "session_id", "") or "",
+        turn_id=getattr(agent, "_current_turn_id", "") or "")
+    try:
+        approval = tt._check_all_guards(*key)   # a desktop batch's prepared answer is consumed here, as locally
+    finally:
+        reset_current_observability_context(tokens)
+    rejected = tt.approval_rejection(approval, key[0])
+    if rejected is not None:
+        return rejected, "terminal_guard"
+    BODY_DECISION.set({"call_id": ref.call_id, "terminal": (key, approval)})
+    return None
+
+
+def _authorize_edit(ref: _ToolCallRef) -> tuple[str, str] | None:
+    try:
+        from acp_adapter.edit_approval import maybe_require_edit_approval
+        denied = maybe_require_edit_approval(ref.name, ref.args)
+    except Exception:
+        return json.dumps({"error": "Edit approval denied: approval guard failed"}), "edit_approval_error"
+    if denied is not None:
+        return denied, "edit_approval_denied"
+    BODY_DECISION.set({"call_id": ref.call_id, "edit": dict(ref.args)})
+    return None
+
+
+def consume_authorized_terminal(command: str, env_type: str, has_host_access: bool, call_id: str) -> dict | None:
+    """The terminal gate's answer authorize_tool_call already got for exactly this call and command, once."""
+    record = BODY_DECISION.get()
+    if not record or record.get("call_id") != call_id or "terminal" not in record:
+        return None
+    key, approval = record["terminal"]
+    if key != (command, env_type, has_host_access):
+        return None
+    BODY_DECISION.set(None)
+    return approval
+
+
+def consume_authorized_edit(name: str, args: dict, call_id: str) -> bool:
+    """True once when authorize_tool_call already got ACP edit approval for exactly this call and arguments."""
+    record = BODY_DECISION.get()
+    if not record or record.get("call_id") != call_id or record.get("edit") != args or name not in _EDIT_TOOLS:
+        return False
+    BODY_DECISION.set(None)
+    return True
+
+
+class CallAuthorizer:
+    """``hermes_cli.middleware.authorize_tool_call`` for one agent-loop call: Hermes's checks once, without running it.
+
+    One decision per call (``decided``: ``decision`` and the ``requested`` arguments), reused by the executor's
+    dispatch. ``start(ref)`` starts the call (progress, start order) once policy allowed it; ``advance()`` moves the
+    start order for a refused call.
+    """
+
+    def __init__(self, agent, state: _ManagedToolResult, *, lock, make_ref, start, advance, scope_block,
+                 authorization_gate) -> None:
+        self.agent, self.state, self.lock = agent, state, lock
+        self.make_ref, self.start, self.advance = make_ref, start, advance
+        self.scope_block, self.authorization_gate = scope_block, authorization_gate
+        self.decided: dict[str, Any] = {}
+
+    def __call__(self, requested_args: dict[str, Any]):
+        from hermes_cli import middleware as hmw
+        with self.lock:
+            if self.state.dispatched:
+                raise RuntimeError("authorize_tool_call() was called after this tool call already ran")
+            if "decision" in self.decided:
+                first = self.decided["decision"]
+                if requested_args in (first.args, self.decided["requested"]):
+                    return first
+                return hmw.ToolCallAuthorization(allowed=False, args=dict(requested_args), result=hmw.tool_call_refusal(
+                    "this tool call was already authorized with other arguments; it was not run"))
+            ref = self.make_ref(requested_args)
+            reentry = hmw._TOOL_CALL_AUTHORIZER.set(_no_reentry)    # a hook calling it again must not deadlock
+            try:
+                decision = self._decide(ref)
+            finally:
+                hmw._TOOL_CALL_AUTHORIZER.reset(reentry)
+            self.decided.update(decision=decision, requested=dict(requested_args))
+            return decision
+
+    def _decide(self, ref: _ToolCallRef):
+        """Policy, the start of the call, then the checks that otherwise live in the tool body."""
+        from hermes_cli.middleware import ToolCallAuthorization, tool_call_refusal
+        agent, state = self.agent, self.state
+        state.args = ref.args
+        if getattr(agent, "_interrupt_requested", False):
+            self.advance()
+            return ToolCallAuthorization(allowed=False, args=ref.args, result=refuse_call(
+                agent, state, ref, tool_call_refusal("the turn was interrupted; the tool call was not run"),
+                "interrupted"))
+        blocked = authorize_call(agent, state, ref, scope_block=self.scope_block,
+                                 authorization_gate=self.authorization_gate)
+        if blocked is not None:
+            self.advance()
+            return ToolCallAuthorization(allowed=False, args=ref.args, result=blocked)
+        try:
+            self.start(ref)                 # the local checkpoint waits for a local dispatch, if any
+            body_refusal = authorize_tool_body(agent, ref)
+        except Exception as exc:            # recorded, so a fall-through never runs policy again
+            return ToolCallAuthorization(allowed=False, args=ref.args, result=refuse_call(
+                agent, state, ref, tool_call_refusal(
+                    f"the tool call could not be authorized ({type(exc).__name__}); it was not run"),
+                "authorization_error"))
+        if body_refusal is not None:
+            return ToolCallAuthorization(allowed=False, args=ref.args,
+                                         result=refuse_call(agent, state, ref, *body_refusal))
+        state.authorized = True
+        return ToolCallAuthorization(allowed=True, args=ref.args)
+
+
+def _no_reentry(_args=None):
+    raise RuntimeError("authorize_tool_call() cannot be called from inside Hermes's own authorization of the call "
+                       "(for example from a pre_tool_call hook)")

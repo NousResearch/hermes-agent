@@ -273,15 +273,34 @@ def run_elsewhere(**kwargs):
     return remote_run(kwargs["tool_name"], decision.args)
 ```
 
-`authorize_tool_call` runs Hermes's policy for the call once (hosted-scope
-refusal, tool scope, `pre_tool_call` block/approve/modify hooks, the
-pruned-argument guard, loop guardrails) and returns a `ToolCallAuthorization`:
-`allowed`, the `args` to run (after any `modify` hook) and, when refused, the
-`result` the model must see. With `authorization="done"` it returns the
-decision Hermes already made. The returned result gets the usual terminal
-`post_tool_call` and `transform_tool_result`. If the middleware calls
-`next_call` after authorizing, the decision is reused and only the authorized
-arguments may run.
+`authorize_tool_call` runs Hermes's checks for the call once, through Hermes's
+own code: hosted-scope refusal, tool scope, `pre_tool_call` block/approve/modify
+hooks, the pruned-argument guard and loop guardrails, then the checks that
+otherwise live inside the tool: the terminal dangerous-command gate for
+`terminal` (a desktop batch's prepared answer included) and ACP edit approval
+for `write_file` / `patch`. It returns a `ToolCallAuthorization`: `allowed`, the
+`args` to run (after any `modify` hook) and, when refused, the `result` the
+model must see (already reported). With `authorization="done"` it returns the
+decision Hermes already made before the middleware. Without `args` it uses the
+payload this middleware frame was handed.
+
+- One decision per call: a repeat with the same arguments returns it, a repeat
+  with other arguments is refused.
+- A refused call never runs: not through `next_call` (which returns the
+  refusal) and not through the chain's fall-through when a middleware raises.
+- If the middleware calls `next_call` after authorizing, the decision is reused,
+  only the authorized arguments may run, and the terminal gate or edit approval
+  is not asked again.
+- A middleware that asked for authorization and then raises does not fall back
+  to running the call here: catch your own errors and return an error result.
+- Calling it from inside Hermes's authorization (a `pre_tool_call` hook) raises.
+- Checks that are part of the tool's own work (for example the patch tool's
+  sensitive-path and `..` header refusals, or the binary-document guard) run
+  only where the tool runs; a middleware running a tool elsewhere applies the
+  remote side's rules there.
+
+The returned result gets the usual terminal `post_tool_call` and
+`transform_tool_result`.
 
 Plugin-specific examples should live with the plugin that owns the behavior.
 NeMo Relay execution middleware is installed through Relay's discovered user

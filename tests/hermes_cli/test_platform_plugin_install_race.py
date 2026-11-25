@@ -21,8 +21,9 @@ import hermes_cli.left_core_migration as lcm
 
 # A stand-in platform row and catalog, shared by the race processes and the in-process tests.
 _STANDIN = textwrap.dedent("""
-    import json, os, sys, time
+    import json, os, sys
     from pathlib import Path
+    from tests.waiting import wait_until
     import hermes_cli.left_core_migration as lcm
     import hermes_cli.memory_provider_migration as mpm
     import hermes_cli.plugin_catalog as catalog
@@ -32,10 +33,8 @@ _STANDIN = textwrap.dedent("""
     catalog.fetch_live_catalog = lambda **kwargs: None
     plugins_cmd._scan_on_install_enabled = lambda: False
 
-    def wait_for(name):
-        deadline = time.monotonic() + 5
-        while not (signals / name).exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+    def wait_for(name):  # a handshake that never arrives fails this process (and the test) loudly
+        wait_until(lambda: (signals / name).exists(), timeout=60, what=f"signal {name!r}")
 
     def real_install_into(home, consent=None, before=None):
         def install(name, discard=None):
@@ -159,6 +158,31 @@ def test_credentials_added_after_a_start_are_picked_up_by_the_next_scan_in_that_
     (home / ".env").write_text("STANDIN_TOKEN=t\n", encoding="utf-8")
     assert lcm.recover_at_startup(gateway_start=True) == ["standin"]
     assert lcm.recover_at_startup(gateway_start=True) == [] and calls == ["standin"]
+
+
+def test_credentials_added_while_a_start_installs_are_not_marked_checked(standin, monkeypatch):
+    """The start records the settings it saw only once they held still: credentials for a second platform
+    written while the first one installed (or waited for the installer lock) are installed in that start."""
+    home, calls, _ = standin
+    first = lcm.LEFT_CORE[0]
+    second = lcm.LeftCoreFeature(plugin="other", label="Other", unchanged="nothing changes", platform="other",
+                                 in_use=lambda h, **_: lcm._home_env(h, "OTHER_TOKEN", process_env=False) != "")
+    monkeypatch.setattr(lcm, "LEFT_CORE", (first, second))
+    (home / ".env").write_text("STANDIN_TOKEN=t\n", encoding="utf-8")
+    install_into = lcm._install_into
+
+    def editing_install_into(h, consent=None):
+        install = install_into(h, consent)
+
+        def run(name, discard=None):
+            if name == "standin":  # the user saves the second platform's credentials meanwhile
+                (h / ".env").write_text("STANDIN_TOKEN=t\nOTHER_TOKEN=o\n", encoding="utf-8")
+            return install(name, discard)
+        return run
+    monkeypatch.setattr(lcm, "_install_into", editing_install_into)
+
+    assert lcm.recover_at_startup(gateway_start=True) == ["standin", "other"]
+    assert calls == ["standin", "other"]
 
 
 def test_a_gateway_start_retries_inside_the_failure_backoff_and_agent_starts_do_not(standin):

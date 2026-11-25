@@ -481,6 +481,54 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                  "profile_name": _response_profile_name(profile)}})
 
 
+def _chat_to_work_seed(source_id: str, history, *, max_msgs: int = 6, max_chars: int = 400) -> list[dict]:
+    """Bounded Chat->Work handoff seed (option A): a short transcript excerpt, any referenced links,
+    and an explicit reference to the source Chat session id so Work can ``session_search`` the full
+    conversation if needed. Deterministic and token-cheap; never copies the whole transcript."""
+    import re
+    rows = [h for h in (history or []) if isinstance(h, dict)]
+    texts = [str(h.get("content") or h.get("text") or "") for h in rows]
+    links = sorted({u for t in texts for u in re.findall(r"https?://[^\s)\]>\"']+", t)})
+    excerpt = []
+    for h in rows[-max_msgs:]:
+        role = str(h.get("role") or "user")
+        text = str(h.get("content") or h.get("text") or "").strip().replace("\n", " ")
+        if text:
+            excerpt.append(f"- {role}: {text[:max_chars]}")
+    body = (
+        f"Continuing from Chat session `{source_id}` (search that session id for the full conversation).\n\n"
+        "Recent context from the Chat session:\n" + ("\n".join(excerpt) or "(no messages)")
+    )
+    if links:
+        body += "\n\nReferenced links:\n" + "\n".join(f"- {u}" for u in links)
+    return [{"role": "user", "content": body}]
+
+
+@method("session.continue_in_work")
+def _continue_in_work(rid, params: dict) -> dict:
+    """Open a NEW Work session (full toolsets) seeded with a bounded summary of a Chat session plus its
+    id for search-back. Session-scoped handoff, not a mid-session mode change."""
+    source = _str_param(params, "source_session_id").strip()
+    if not source:
+        return _err(rid, 4008, "source_session_id is required")
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        reader = getattr(db, "get_resume_conversations", None)
+        if reader is None:
+            return _err(rid, 5000, "session store cannot read source history")
+        try:
+            _, display = reader(source)
+        except Exception as exc:
+            return _err(rid, 4008, f"source session not found — {exc}")
+    return _create_session(rid, {
+        "profile": params.get("profile") or "",
+        "messages": _chat_to_work_seed(source, display),
+        "enabled_toolsets": None,  # Work = full platform toolsets
+        "title": _str_param(params, "title") or f"Work: continue from {source[:8]}",
+    })
+
+
 @method("session.create")
 def _(rid, params: dict) -> dict:
     return _create_session(rid, params)

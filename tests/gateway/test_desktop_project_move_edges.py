@@ -265,3 +265,19 @@ async def test_a_background_childs_call_checks_the_chats_current_folder(tmp_path
         assert chat.authority.sessions[chat.sid].pending_workspace == (None if moved is True else str(path))
     finally:
         await _closed(chat)
+
+
+@pytest.mark.asyncio
+async def test_a_cli_chat_on_the_gateway_keeps_its_folder(tmp_path, monkeypatch):
+    from hermes_cli import projects_db as pdb
+    chat = await _chat(tmp_path, monkeypatch, source='cli')
+    try:
+        result = _create(chat, chat.worktree)
+        assert result['moved'] is False and result['not_moved_reason']
+        assert chat.authority.sessions[chat.sid].pending_workspace is None
+        await _boundary(chat)
+        assert _policy(chat.authority, chat.sid).cwd == str(chat.start)
+        with chat.connect_closing(db_path=chat.db_path) as conn:
+            assert pdb.get_active_id(conn) == result['id']
+    finally:
+        await _closed(chat)

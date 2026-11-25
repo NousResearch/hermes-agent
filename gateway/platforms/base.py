@@ -1591,7 +1591,7 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
             ("image", SUPPORTED_IMAGE_DOCUMENT_TYPES, ".jpg", cache_image_from_bytes, True),
             ("video", SUPPORTED_VIDEO_TYPES, ".mp4", cache_video_from_bytes, False),
             ("audio", _AUDIO_MIME_TYPES, ".ogg", cache_audio_from_bytes, True)):
-        if kind == "image" and mime == "image/svg+xml":
+        if kind == "image" and (mime == "image/svg+xml" or ext == ".svg"):
             continue  # SVG is an image/* MIME but XML text — route to the document path
         if not (mime.startswith(f"{kind}/") or ext in table or default_kind == kind):
             continue

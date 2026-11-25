@@ -1,0 +1,23 @@
+name: claim-gate
+repo: https://github.com/Mohamedhazeem/ClaimGate
+sha: "81892eec56eddd19132257cff9b1111b26fe0fea"
+description: >-
+  Deterministic evidence-readiness firewall for insurance claim submissions.
+  Resolves model-supplied evidence and incident-fact IDs against an
+  operator-controlled SQLite registry, evaluates a versioned policy, and
+  returns a deterministic PASS, BLOCK, or HUMAN_REVIEW. The model never gets
+  to verify its own evidence.
+maintainer: Mohamedhazeem
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - submit_claim_package
+    - claim_check
+    - claim_policy_get
+    - claim_audit
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call

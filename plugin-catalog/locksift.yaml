@@ -1,0 +1,34 @@
+name: locksift
+repo: https://github.com/rodricksz4h5/locksift
+sha: 1f09443979e5625cd6fed3cbebce6feb73ef91c6
+version: "1.0.0"
+title: Locksift
+description: >-
+  Exact, local review of dependency lockfiles: npm package-lock.json, pnpm-lock.yaml,
+  yarn.lock (v1 and Berry), uv.lock, poetry.lock, Pipfile.lock, Cargo.lock,
+  composer.lock, Gemfile.lock and go.sum. lock_diff compares two versions of a
+  lockfile (a branch against main) and returns the dependency changes instead of
+  thousands of lines of churn, with supply-chain signals per installed copy: a
+  source that moved (registry to git or URL, another registry host, a different
+  tarball or commit at the same version, an alias or patch that changed, a
+  tarball that belongs to another package), checksums changed, removed or
+  weakened, new install scripts, new registries. lock_summary gives counts,
+  packages at several versions, non-registry sources and install scripts;
+  lock_why shows the dependency chains that pull a package in. Standard library
+  only: no network, no credentials, no subprocess (never runs git or a package
+  manager), no third-party dependencies, no self-update.
+  Disclosure: reads the local lockfile paths you pass it (read-only), only
+  regular files, and honours Hermes' core read denylist.
+maintainer: rodricksz4h5
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/rodricksz4h5/locksift/tree/1f09443979e5625cd6fed3cbebce6feb73ef91c6
+capabilities:
+  provides_tools:
+    - lock_summary
+    - lock_diff
+    - lock_why
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

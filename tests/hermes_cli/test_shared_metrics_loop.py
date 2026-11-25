@@ -207,7 +207,7 @@ def test_delegate_task_call_is_one_row_however_many_children(home, monkeypatch):
         "duration_seconds": 1,
     })
     monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", lambda **kw: types.SimpleNamespace(tool_progress_callback=None))
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: {
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: {
         "model": "m", "provider": "openrouter", "base_url": "https://x/v1", "api_key": "k", "api_mode": "chat_completions",
     })
     parent = types.SimpleNamespace(
@@ -337,7 +337,7 @@ def browser_exec_route(monkeypatch):
     monkeypatch.setattr(bs_cloud, "auto_local_for_private_urls", lambda: True)
     monkeypatch.setattr(bs, "get_session_info", session_info)
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
-    monkeypatch.setattr(supervisor, "SUPERVISOR_REGISTRY", SimpleNamespace(get_or_start=lambda **kw: None))
+    monkeypatch.setattr(supervisor, "SUPERVISOR_REGISTRY", SimpleNamespace(get_or_start=lambda **kw: None, get=lambda task_id: None))
     monkeypatch.setattr(bu, "_find_cli", lambda: ["browser-use"])
     monkeypatch.setattr(bu, "_run_cli_killing_process_group",
                         lambda cmd, code, env, timeout: subprocess.CompletedProcess(cmd, 0, "ok", ""))

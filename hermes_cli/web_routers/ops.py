@@ -149,6 +149,7 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
         "skills": list(route.get("skills") or []),
         "created_at": route.get("created_at"),
         "url": f"{base_url}/webhooks/{name}",
+        "signature": route.get("signature"),
         "secret_set": bool(route.get("secret")),
         # Default-enabled; only an explicit enabled:false turns a route off.
         "enabled": route.get("enabled", True) is not False,
@@ -191,6 +192,18 @@ async def enable_webhooks(profile: Optional[str] = None):
     }
 
 
+def _dashboard_route_signature(requested: Optional[str], expected: object) -> dict[str, str]:
+    """The saved route's ``signature`` key (#84265). An unpinned route accepts every scheme, so
+    body-only GitHub/Linear MACs replay a captured V1 request; new routes are pinned to generic.
+    A re-POST replaces the record, so an omitted field keeps the stored pin verbatim (even one the
+    gateway refuses, like ``False``); an explicit pick replaces it."""
+    if requested is not None:
+        return {"signature": requested}
+    if not isinstance(expected, dict):
+        return {"signature": "generic"}
+    return {"signature": expected["signature"]} if "signature" in expected else {}
+
+
 @router.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     import hermes_cli.webhook as wh
@@ -227,6 +240,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         "skills": [s.strip() for s in body.skills if s.strip()],
         "deliver": body.deliver or "log",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **_dashboard_route_signature(body.signature, expected),
     }
     if body.script and body.script.strip():
         route["script"] = body.script.strip()
@@ -388,6 +402,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
         load_pool,
     )
 
+    from hermes_cli.auth_commands import _provider_base_url
+
     provider = (body.provider or "").strip().lower()
     api_key = (body.api_key or "").strip()
     if not provider or not api_key:
@@ -412,6 +428,8 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
                 priority=0,
                 source=SOURCE_MANUAL,
                 access_token=api_key,
+                # The key is bound to the address it was entered for (#130410), as `hermes auth add` does.
+                base_url=_provider_base_url(provider) or None,
             ))
             # Re-adding is an explicit re-engagement signal: lift every suppression
             # for this provider so a source deleted earlier can seed again
@@ -599,8 +617,8 @@ async def run_backup(body: BackupRequest, profile: Optional[str] = None):
     return response
 
 
-@router.get("/api/ops/backup/download")
-async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+def _dashboard_backup_path(archive: str, profile: Optional[str]) -> Path:
+    """``archive`` resolved, when it is a file in this profile's backups directory (403/404 else)."""
     try:
         backup_dir = _dashboard_backup_dir(profile).expanduser().resolve(strict=False)
         target = Path(archive).expanduser().resolve(strict=True)
@@ -608,20 +626,33 @@ async def download_dashboard_backup(archive: str, profile: Optional[str] = None)
         raise HTTPException(status_code=404, detail="Backup not found")
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid backup path")
-
     if not _path_is_under(backup_dir, target):
         raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Backup not found")
+    return target
+
+
+@router.get("/api/ops/backup/download")
+async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+    target = _dashboard_backup_path(archive, profile)
     return FileResponse(
         path=str(target), media_type="application/zip", filename=target.name, content_disposition_type="attachment",
     )
 
 
-def _spawn_import(archive: str, force: bool, profile: Optional[str] = None) -> dict:
+def _spawn_import(archive: str, force: bool, profile: Optional[str] = None, *, keep_host: bool = False,
+                  messaging_off: bool = False) -> dict:
+    """``hermes import``; ``keep_host`` (the Hermes Cloud transfer and its undo) also forces it, and
+    ``messaging_off`` (the transfer only) brings the bots over switched off. The undo point the import
+    takes is reported by ``/api/actions/import/status`` once it exists."""
     args = ["import", archive]
-    if force:
+    if force or keep_host:
         args.append("--force")
+    if keep_host:
+        args.append("--keep-host")
+    if keep_host and messaging_off:
+        args.append("--messaging-off")
     return _spawn_action(args, "import", log_msg="Failed to spawn import",
                          prefix="Failed to run import", profile=profile)
 
@@ -634,7 +665,7 @@ async def run_import(body: ImportRequest, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail="archive path is required")
     if not os.path.isfile(archive):
         raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
-    return _spawn_import(archive, body.force, profile)
+    return _spawn_import(archive, body.force, profile, keep_host=body.keep_host)
 
 
 def _safe_backup_upload_name(filename: str | None) -> str:

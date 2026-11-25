@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
+from agent.file_safety import is_project_env_basename
 from gateway.platforms.base import (
     _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
 
@@ -84,8 +85,8 @@ def fetch_remote_media(path: str) -> Optional[str]:
     env = _active_remote_env()
     if env is None:
         return None
-    from gateway.platforms.base import (
-        DOCUMENT_CACHE_DIR, _log_safe_path, _normalize_media_tag_path, validate_media_delivery_path)
+    from gateway.platforms.base import DOCUMENT_CACHE_DIR, _normalize_media_tag_path, validate_media_delivery_path
+    from gateway.platforms.base_log_safety import _log_safe_path
     from tools.environments.base import FileFetchError
 
     remote_home = getattr(env, "_remote_home", None)
@@ -100,7 +101,9 @@ def fetch_remote_media(path: str) -> Optional[str]:
         # ``[ -f ]`` in fetch_file follows symlinks, so the link TARGET is what gets screened;
         # an unresolvable path fails closed rather than trusting the unresolved name.
         resolved = env.fetch_realpath(candidate)
-        if resolved is None or remote_path_is_denied(resolved, remote_home):
+        # The copy is renamed below, so the validator's basename rule can't see a sandbox .env.
+        if (resolved is None or remote_path_is_denied(resolved, remote_home)
+                or is_project_env_basename(posixpath.basename(resolved))):
             return None
         basename = re.sub(r"[^\w.\-]", "_", posixpath.basename(resolved)) or "file"
         dest = Path(DOCUMENT_CACHE_DIR) / f"remote_{uuid.uuid4().hex[:12]}_{basename}"

@@ -8,7 +8,6 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
-from hermes_state_runtime import list_session_admissions
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -56,7 +55,7 @@ async def _setup(tmp_path, monkeypatch, mode):
 
 def _admitted(authority):
     return [row for sid in authority.sessions
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 @pytest.mark.asyncio
@@ -82,17 +81,14 @@ async def test_busy_voice_note_steers_with_transcript_folds_and_acks(tmp_path, m
         assert sent, 'no busy ack'
         assert _admitted(authority) == []  # steered text is inside the run, never replayed
     finally:
-        authority.db.close()
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
-async def test_busy_voice_note_interrupts_with_transcript_in_interrupt_mode(tmp_path, monkeypatch):
+async def test_busy_voice_note_interrupts_at_once_in_interrupt_mode(tmp_path, monkeypatch):
+    """The interrupt carries the media placeholder, never a transcript it waited for (#143961); the
+    admitted follow-up keeps the audio and transcribes it as its own turn."""
     runner, authority, source, agent, sent, _turn = await _setup(tmp_path, monkeypatch, 'interrupt')
-
-    async def transcribe(event, adapter, source, text, **_):
-        return 'TRANSCRIBED stop that', ['TRANSCRIBED stop that']
-
-    monkeypatch.setattr(runner, '_transcribe_and_echo_pending_voice', transcribe)
     monkeypatch.setattr(runner, '_pending_event_audio_paths', lambda event: list(event.media_urls))
     monkeypatch.setattr(runner, '_handle_message_with_agent', lambda *a, **k: None)
     voice = tmp_path / 'note.ogg'
@@ -104,7 +100,7 @@ async def test_busy_voice_note_interrupts_with_transcript_in_interrupt_mode(tmp_
         from tests.waiting import async_wait_until
         await async_wait_until(lambda: _admitted(authority), timeout=10, what='the voice note admitted')
         task.cancel()
-        assert agent.interrupts == [('TRANSCRIBED stop that',)], agent.interrupts
+        assert agent.interrupts == [(f'[User sent audio: {voice}]',)], agent.interrupts
         assert sent, 'no busy ack'
     finally:
-        authority.db.close()
+        runner.session_store.close_all_db_handles()

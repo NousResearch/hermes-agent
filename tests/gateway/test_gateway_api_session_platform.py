@@ -11,6 +11,8 @@ import pytest
 from tests.gateway.test_finite_unattended_wire_grant import CAPS
 from tests.gateway.test_session_follow_profile_config import _owner
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 
 def _connection(authority, user, *, native):
     from gateway.session_controls import AuthorityConnection

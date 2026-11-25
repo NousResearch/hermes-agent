@@ -26,7 +26,10 @@ scripts/run_tests.sh                                    # full suite
 scripts/run_tests.sh tests/gateway/                     # one directory
 scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # runner is file-granular; -k narrows
 scripts/run_tests.sh -v --tb=long                       # pytest flags pass through
+just test tests/agent/test_foo.py -k test_x             # same runner; refuses to start with no path
 ```
+
+`just test-all` is the explicit full-suite form.
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
   `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
@@ -36,7 +39,7 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   non-zero `time.sleep`/`asyncio.sleep` in a test fails the ratchet (HX013): wait on an Event or
   poll with `tests.waiting.wait_until` / `async_wait_until`.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
-  `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
+  `tests/agent/`, `tests/cron/`, `tests/gateway/relay/`, ...); installer/updater script tests
   under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
   `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
   cite the issue in the module docstring (`test_89315_x.py` → `test_x.py`, "Regression for #89315").

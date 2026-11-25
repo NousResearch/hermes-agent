@@ -1,0 +1,32 @@
+name: receipt-printer
+repo: https://github.com/thedavidmurray/hermes-receipts
+sha: 99ba291aecc69345db6cb0d1f536a6246d4a399d
+title: Receipts
+description: "Your agent says it's done. Get the receipt. Receipts detects action and completion claims and checks observed tool history or explicit local task evidence. Each claim is supported, contradicted, unverified or not evaluable; missing evidence is never called a lie. Output: PNG, ASCII, Desktop pane or optional USB printer. Configure kits, fields, five styles, paper, branding and automatic triggers; verdicts cannot be hidden or recolored. Chat requests stay in the caller's session. Disclosure — Reads this profile's state.db conversation history and kanban.db read-only; an explicit local `hermes receipt fleet --roots` scan can read other profiles' state.db files you choose. Stores a tool-name/argument-hash ledger and receipt PNGs (containing answer excerpts, private, review before sharing) under the profile's plugin data and receipt-printer directories until you delete them. The optional `runtime.jev` classifier, off by default, sends redacted conversation context to OpenRouter; the optional USB printer path uses separately installed python-escpos."
+maintainer: thedavidmurray
+tier: community
+category: desktop
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/thedavidmurray/hermes-receipts
+version: "0.2.1"
+screenshots:
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/kits/contact-sheet.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/custom/shop-58mm-dot-matrix.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/integration/task-before.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/integration/task-after.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+    - pre_tool_call
+    - post_llm_call
+    - kanban_task_completed
+    - kanban_task_blocked
+    - on_session_end
+    - subagent_stop
+    - agent_loop_stopped
+  provides_middleware: []
+  requires_env: []

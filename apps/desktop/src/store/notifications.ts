@@ -87,6 +87,23 @@ function cleanErrorText(value: string) {
   return value.replace(/^Error:\s*/, '').trim()
 }
 
+// FastAPI routes that raise with a dict detail ({message, kind} for SSH reach) carry the sentence in detail.message.
+function objectDetailMessage(text: string): string | undefined {
+  const start = text.indexOf('{')
+
+  if (start < 0) {
+    return undefined
+  }
+
+  try {
+    const message = (JSON.parse(text.slice(start)) as { detail?: { message?: unknown } } | null)?.detail?.message
+
+    return typeof message === 'string' && message.trim() ? message.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** True when an error string is a disk-full / ENOSPC / SQLITE_FULL failure. */
 export function isDiskFullErrorMessage(message: string): boolean {
   return (
@@ -133,7 +150,7 @@ export const RECOVERY_ACTIONS = {
 }
 
 /** Structured storage failure codes the backend puts in RPC/HTTP error data
- *  (`hermes_state_errors.classify_persistence_error`). */
+ *  (`storage_errors.classify_persistence_error`). */
 const STORAGE_CODE_RE = /['"]code['"]\s*:\s*['"](storage_[a-z_]+|disk_full)['"]/i
 
 interface ErrorSummaryRule {
@@ -235,7 +252,7 @@ function summarizeErrorMessage(message: string, fallback: string) {
 }
 
 // The owner's refusal of an edit, restore or regenerate whose target is not a live user turn
-// (hermes_state_mutations._rewind): invalid_params on target_message_id. Its detail starts with
+// (_rewind in persistence/sqlite/authority/_mutation.py): invalid_params on target_message_id. Its detail starts with
 // `compacted:` only when compaction summarized the turn; a turn another window already undid, an
 // assistant row or an unknown id is stale for another reason. Every other invalid_params keeps the
 // generic toast.
@@ -298,8 +315,11 @@ export function readableError(
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)
-  const detail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
-  const summary = summarizeErrorMessage(detail, fallback)
+  const rawDetail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
+  const classified = summarizeErrorMessage(rawDetail, fallback)
+  const plain = classified.category === 'unclassified' ? objectDetailMessage(rawDetail) : undefined
+  const detail = plain ?? rawDetail
+  const summary = plain ? summarizeErrorMessage(plain, fallback) : classified
 
   return {
     message: summary.message,

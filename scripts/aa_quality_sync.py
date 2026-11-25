@@ -29,7 +29,10 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CATALOG_PATH = REPO_ROOT / "hermes_cli" / "local_runtime" / "catalog.json"
+sys.path.append(str(REPO_ROOT))
+from hermes_agent.compat.paths import current_path
+
+CATALOG_PATH = REPO_ROOT / current_path("hermes_cli/local_runtime/catalog.json")
 AA_URL = "https://artificialanalysis.ai/api/v2/data/llms/models"
 
 # Catalog entry id -> AA slug. Hand-maintained: AA's naming rarely matches

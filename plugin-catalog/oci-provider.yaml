@@ -1,0 +1,18 @@
+name: oci-provider
+repo: https://github.com/fede-kamel/hermes-oci-provider
+sha: 4f5a7c368f5f9dc6d3148ca770fa813ff8eae57d
+title: "Oracle Cloud (OCI Generative AI)"
+description: "OCI Generative AI models (OpenAI GPT and gpt-oss, xAI Grok, Google Gemini) via the OpenAI-compatible API at inference.generativeai.<region>.oci.oraclecloud.com/openai/v1. Disclosure — model provider; prompts, tool schemas and your OCI_GENAI_API_KEY go to OCI Generative AI in the configured region, or to OCI_GENAI_BASE_URL when you set it."
+maintainer: fede-kamel
+tier: community
+category: models
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/fede-kamel/hermes-oci-provider#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OCI_GENAI_API_KEY

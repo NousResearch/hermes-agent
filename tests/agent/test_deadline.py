@@ -643,9 +643,6 @@ class _RecordingBackend:
     def mark_suspect(self, reason: str) -> None:
         self.reasons.append(reason)
 
-    def ensure_healthy(self) -> bool:
-        return not self.reasons
-
 
 def test_async_timeout_marks_backend_once():
     from agent.deadline import run_bounded_async

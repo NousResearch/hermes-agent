@@ -34,7 +34,8 @@ async def probe(peer):
     from gateway.session_contract import SessionRef
     from gateway.session_envelope import prepare_native, restore_native
     from hermes_cli import web_server
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from persistence.core.errors import AuthorityRefusal
+    from tests.fixtures.storage_holder import raw_holder
     from tests.waiting import async_wait_until
 
     sockets, outgoing, frames = [], [], []
@@ -93,15 +94,15 @@ async def probe(peer):
             async with asyncio.timeout(25):
                 while time.monotonic() < deadline:
                     entries = list(authority.sessions.values())
-                    rows = list_session_admissions(authority.db, session_id=next(iter(authority.sessions)),
+                    rows = authority.persistence.admissions.list(session_id=next(iter(authority.sessions)),
                         pending_only=False) if entries else []
-                    settled = [r for r in rows if r['request_id'] == raw_event['message_id'] and r['status'] == 'terminal']
+                    settled = [r for r in rows if r.request_id == raw_event['message_id'] and r.status == 'terminal']
                     if settled:
                         # The drain hands the reply to the adapter only AFTER the terminal commit
                         # (deliver_settled); the entry leaves pending_deliveries once that send
                         # returned. Closing the connector before then drops the final mid-send.
                         await async_wait_until(lambda: not adapter._active_sessions
-                                               and settled[0]['admission_id'] not in authority.pending_deliveries,
+                                               and settled[0].admission_id not in authority.pending_deliveries,
                                                timeout=25, what='the settled reply handed to the connector')
                         assert any(f.get('type') == 'inbound_ack' and f.get('bufferId') == raw_event['message_id']
                                    for f in outgoing), outgoing
@@ -114,9 +115,9 @@ async def probe(peer):
 
         try:
             failed_insert = asyncio.Event()
-            authority.db._execute_write(lambda conn: conn.create_function(
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.create_function(
                 'ingress_failure_witness', 0, lambda: failed_insert.set() or 1))
-            authority.db._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_relay BEFORE INSERT ON session_admissions BEGIN SELECT ingress_failure_witness(); SELECT RAISE(ABORT, 'owned storage failure'); END"))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_relay BEFORE INSERT ON session_admissions BEGIN SELECT ingress_failure_witness(); SELECT RAISE(ABORT, 'owned storage failure'); END"))
             await connector_ws.send(json.dumps({'type': 'inbound', 'event': raw,
                                                'bufferId': 'durable-buffer-1'}) + '\n')
             await asyncio.wait_for(failed_insert.wait(), 10)
@@ -124,7 +125,7 @@ async def probe(peer):
             connector_ws = await asyncio.wait_for(ready.get(), 5)
             assert not any(f.get('type') == 'inbound_ack' for f in outgoing), outgoing
             assert not peer.requests
-            authority.db._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_relay'))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_relay'))
             rows = await send(raw)
             sid = next(iter(authority.sessions))
             warm_agent = authority.agent(SessionRef('default', sid))
@@ -150,19 +151,19 @@ async def probe(peer):
                 rows = await send(second)
                 # Settlement and an RPC reply do not drain the fanout writer.
                 # Observe this admission's terminal event before taking a snapshot.
-                admission_id = next(r['admission_id'] for r in rows if r['request_id'] == 'relay-2')
+                admission_id = next(r.admission_id for r in rows if r.request_id == 'relay-2')
                 async with asyncio.timeout(10):
                     while not any(f.get('params', {}).get('type') == 'message.complete'
                                   and f['params'].get('admission_id') == admission_id for f in frames):
                         frames.append(json.loads(await ws.recv()))
                 snapshot = await rpc('session.resume', session_id=sid)
                 assert 'LOCAL_ACK_WS_SHARED' in json.dumps(snapshot), snapshot
-                assert [r['request_id'] for r in rows] == ['relay-1', 'relay-2'], rows
+                assert [r.request_id for r in rows] == ['relay-1', 'relay-2'], rows
                 assert len(peer.requests) == 2, peer.requests
                 assert authority.agent(SessionRef('default', sid)) is warm_agent
                 # Public authority transport cannot submit private/trusted source fields.
                 for extra in ({'internal': True}, {'source': raw['source']}, {'profile': 'foreign'},
-                              {'native_text_v1': rows[0]['payload']['native_text_v1']}):
+                              {'native_text_v1': rows[0].payload['native_text_v1']}):
                     denied = await rpc('prompt.submit', session_id=sid, input_id='forged', text='forged', **extra)
                     assert 'error' in denied, denied
                 # A busy relay callback must not block the same reader that receives
@@ -175,23 +176,23 @@ async def probe(peer):
                 queued.update(message_id='relay-4', text='QUEUED_AFTER_BLOCK')
                 await connector_ws.send(json.dumps({'type': 'inbound', 'event': queued}) + '\n')
                 try:
-                    await async_wait_until(lambda: any(r['request_id'] == 'relay-4' for r in list_session_admissions(
-                        authority.db, session_id=sid, pending_only=False)), timeout=5, what='relay-4 admitted')
+                    await async_wait_until(lambda: any(r.request_id == 'relay-4' for r in authority.persistence.admissions.list(
+                        session_id=sid, pending_only=False)), timeout=5, what='relay-4 admitted')
                     assert not adapter._pending_messages
                 finally:
                     peer.release.set()
                 await async_wait_until(lambda: not (any(not task.done() for task in adapter._background_tasks) or any(
-                    r['status'] != 'terminal' for r in list_session_admissions(authority.db, session_id=sid, pending_only=False))
+                    r.status != 'terminal' for r in authority.persistence.admissions.list(session_id=sid, pending_only=False))
                     or authority.pending_deliveries), timeout=10, what='every relay admission settled and delivered')
-                rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+                rows = authority.persistence.admissions.list(session_id=sid, pending_only=False)
                 assert len(peer.requests) == 4, peer.requests
-                payload = rows[0]['payload']
+                payload = rows[0].payload
                 for mutate in ('user_id', 'profile', 'platform'):
                     forged = deepcopy(payload)
                     forged['native_text_v1']['source'][mutate] = 'foreign'
                     try:
                         restore_native(forged, runner)
-                    except (RuntimeStoreError, ValueError):
+                    except (AuthorityRefusal, ValueError):
                         pass
                     else:
                         raise AssertionError('forged source accepted: ' + mutate)
@@ -201,7 +202,7 @@ async def probe(peer):
                 forged_proof = dict(payload['native_text_v1']['provenance'], relay='forged')
                 try:
                     restore_provenance(runner, untrusted, forged_proof)
-                except RuntimeStoreError:
+                except AuthorityRefusal:
                     pass
                 else:
                     raise AssertionError('forged seal accepted')
@@ -211,7 +212,7 @@ async def probe(peer):
                     event.internal = internal
                     try:
                         await prepare_native(runner, event)
-                    except RuntimeStoreError:
+                    except AuthorityRefusal:
                         pass
                     else:
                         raise AssertionError('unproven relay accepted')
@@ -226,7 +227,7 @@ async def probe(peer):
                     await asyncio.wait_for(ready.get(), 5)
                     try:
                         restore_native(payload, runner)
-                    except RuntimeStoreError:
+                    except AuthorityRefusal:
                         pass
                     else:
                         raise AssertionError('stale connector replay accepted')
@@ -241,7 +242,7 @@ async def probe(peer):
                 await async_wait_until(lambda: transport.auth_revoked, timeout=5, what='the connector auth revoked')
                 try:
                     restore_native(payload, runner)
-                except RuntimeStoreError:
+                except AuthorityRefusal:
                     pass
                 else:
                     raise AssertionError('revoked connector replay accepted')
@@ -250,7 +251,7 @@ async def probe(peer):
                           and 'LOCAL_ACK_' in f.get('action', {}).get('content', '')]
                 assert len(finals) == 4, outgoing
                 receipt = {'same_agent': True, 'negative_controls': True,
-                    'admissions': [r['admission_id'] for r in rows], 'model_requests': len(peer.requests),
+                    'admissions': [r.admission_id for r in rows], 'model_requests': len(peer.requests),
                     'finals': finals, 'observer_complete': True, 'reconnect_dedupe': True,
                     'busy_fifo': True, 'replacement_rejected': True, 'ws_revocation_rejected': True}
                 Path(os.environ['HERMES_HOME'], 'relay-receipt.json').write_text(json.dumps(receipt))

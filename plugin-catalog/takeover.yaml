@@ -1,0 +1,17 @@
+name: takeover
+title: Takeover
+repo: https://github.com/shoumikgoswami/Hermes-takeover
+sha: e35bd71c00e085304e3767126dbfe0e24ea07894
+description: "Human-in-the-loop screen takeover. When a step needs you (sign-in, approve/authorize, 2FA, CAPTCHA, payment) the agent asks, you take over its browser/desktop from hermes-webui, the dashboard or Desktop (even on a phone), then hand back. Installs TigerVNC + Xfce via Hermes's Bot Desktop installer (root) and runs a local VNC/websocket service. Disclosure — on first deliberate use (the Screen page, the agent's first `request_takeover`, or `hermes takeover setup`) it installs TigerVNC and Xfce as root through Hermes's Bot Desktop installer and sets `browser.headed: true` in your config (turn off with `auto_install: false`); when the plugin loads it copies a Screen page into hermes-webui's extensions folder and runs a loopback Takeover service there (turn off with `webui: false`); whoever holds the takeover controls the agent's browser and desktop, and the agent's screen tools are refused until they hand back."
+maintainer: shoumikgoswami
+tier: community
+category: tools
+platforms: [linux]
+version: "0.5.3"
+docs_url: https://github.com/shoumikgoswami/Hermes-takeover#readme
+capabilities:
+  provides_tools: [request_takeover]
+  provides_hooks: [on_session_start, pre_tool_call, transform_tool_result]
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

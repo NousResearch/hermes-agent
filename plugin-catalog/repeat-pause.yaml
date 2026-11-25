@@ -1,0 +1,38 @@
+name: repeat-pause
+repo: https://github.com/percyhendrux123-prog/hermes-repeat-pause
+sha: "dbf36857adb2c1a3c7ea31b94c2de6cfaf4b49df"
+version: "0.1.0"
+title: "Repeat pause"
+description: >-
+  When an agent-backed cron job sends the same result several runs in a row (default 3), appends
+  one notice to that run saying further identical results will be held, then holds later
+  identical results until the output changes. Comparison ignores case, whitespace and, by
+  default, numbers, dates and times. A changed result is delivered normally and starts a new
+  streak. The job keeps running; the plugin never pauses, edits or removes it. A run with an
+  observed tool error is never held. /repeats lists and resets streaks. Roadmap item 5 in #158538.
+  Disclosure — a transform_llm_output hook appends the notice and rewrites held cron replies to
+  [SILENT], which Hermes does not deliver; interactive and gateway chat replies are never changed;
+  writes <HERMES_HOME>/repeat-pause/streaks.json and a .lock file (or the state_dir setting; 0700
+  dir, 0600 file) holding job ids, SHA-256 fingerprints of normalized replies and counts, never
+  reply text; uses one in-process storage thread; makes no network calls, runs no subprocesses,
+  stores no credentials and sends no telemetry.
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-repeat-pause/blob/dbf36857adb2c1a3c7ea31b94c2de6cfaf4b49df/README.md
+readme: true
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - transform_llm_output
+    - on_session_end
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Script-mode (no_agent) cron jobs and monitor-gate unchanged ticks have no agent turn, so they are not seen. The cron run-lifecycle hook requested in #57971 would cover them."
+  - "transform_llm_output carries no run outcome. A run that fails without an observed tool error (an interruption or iteration limit) and whose reply matches the previous good result can be held. An outcome field in the transform payload would close this."
+  - "If another plugin's transform_llm_output rewrites first, Hermes uses that rewrite and this plugin's notice or hold does not apply."

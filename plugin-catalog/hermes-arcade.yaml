@@ -1,0 +1,24 @@
+name: hermes-arcade
+repo: https://github.com/leoresendedop-sys/hermes-arcade
+sha: 2daa7bed248a916ed2058f4574d31283a506b571
+title: Hermes Arcade
+description: "A neon arcade cabinet inside the Hermes dashboard: three playable canvas games (Snake, Breakout, Pong) with glow effects, particle bursts, chiptune synth SFX and an attract mode that plays itself. Persistent top-10 leaderboards with arcade-style initials entry are served by a FastAPI backend plugin and shared with the agent: LLM tools (arcade_games, arcade_top_scores, arcade_player_stats) let Hermes answer questions about your scores. No env vars, no hooks, no middleware; scores are stored only under the plugin's own data dir. The dashboard CSS loads Google Fonts (Orbitron / Press Start 2P) from fonts.googleapis.com — the only third-party network call. Disclosure — the dashboard tab loads Google Fonts (Orbitron / Press Start 2P) from fonts.googleapis.com and fonts.gstatic.com, which sends your IP and user agent to Google each time the tab opens; scores are stored locally in <HERMES_HOME>/plugin-data/hermes-arcade/scores.json."
+maintainer: leoresendedop-sys
+tier: community
+category: web
+version: "1.0.0"
+docs_url: https://github.com/leoresendedop-sys/hermes-arcade
+image: https://raw.githubusercontent.com/leoresendedop-sys/hermes-arcade/2daa7bed248a916ed2058f4574d31283a506b571/docs/assets/social-card.png
+screenshots:
+  - https://raw.githubusercontent.com/leoresendedop-sys/hermes-arcade/2daa7bed248a916ed2058f4574d31283a506b571/docs/assets/shots/attract.png
+  - https://raw.githubusercontent.com/leoresendedop-sys/hermes-arcade/2daa7bed248a916ed2058f4574d31283a506b571/docs/assets/shots/breakout.png
+  - https://raw.githubusercontent.com/leoresendedop-sys/hermes-arcade/2daa7bed248a916ed2058f4574d31283a506b571/docs/assets/shots/pong-attract.png
+platforms: []
+capabilities:
+  provides_tools:
+    - arcade_games
+    - arcade_top_scores
+    - arcade_player_stats
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

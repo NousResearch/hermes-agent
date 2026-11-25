@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from agent.prompt_cache_scope import conversation_id
 from tools.arg_coercion import coerce_tool_args
+from tools.arg_validation import call_with_arg_checks
+from tools.registry import registry
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
@@ -125,7 +127,7 @@ def _callback_tool(module: str, func: str, callback_attr: str, *arg_specs: _ArgS
 def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     session_db = agent._get_session_db_for_recall()
     if not session_db:
-        from hermes_state import format_session_db_unavailable
+        from storage_user_copy import format_session_db_unavailable
 
         return json.dumps({"success": False, "error": format_session_db_unavailable()})
     return _call_tool(
@@ -137,7 +139,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
             ("exclude_session_ids", "exclude_session_ids"),
         ),
-        db=session_db, current_session_id=agent.session_id,
+        db=session_db, persistence=getattr(agent, "persistence", None), current_session_id=agent.session_id,
     )
 
 
@@ -206,14 +208,21 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
 def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The preview transport is the agent's GUI callback, which registry dispatch never forwards.
     import tools.browser_vault_tool  # registers the real handler
+    from model_tools import _approval_observability, _CallIds
     from tools.registry import registry
 
     task_id = ctx.effective_task_id or "default"
     if "target" not in args and (args.get("action") in ("fill", "save_login", "enter_code")
                                  and _preview_is_default_vault_target(agent, task_id)):
         args = {**args, "target": "preview"}
-    return registry.dispatch("browser_vault", args, task_id=ctx.effective_task_id,
-                             preview_callback=getattr(agent, "drive_preview_callback", None))
+    # A plugin may override browser_vault: give its handler (and the approval prompts it raises)
+    # the same session/turn identity the registry path in model_tools._execute_tool binds. No
+    # turn_origin: a plugin fork never holds an inline tool (plugin_session_fork.fork_tool_allowlist).
+    ids = tool_hook_ids(agent, ctx.effective_task_id, ctx.tool_call_id)
+    with _approval_observability(_CallIds(**ids)):
+        return registry.dispatch("browser_vault", args, task_id=ctx.effective_task_id,
+                                 session_id=ids["session_id"], conversation_id=ids["conversation_id"],
+                                 preview_callback=getattr(agent, "drive_preview_callback", None))
 
 
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
@@ -272,7 +281,8 @@ def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
     from tools.setup_beat_tool import setup_beat_tool
 
     return setup_beat_tool(
-        args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
+        args, db=getattr(agent, "_session_db", None), persistence=getattr(agent, "persistence", None),
+        session_id=getattr(agent, "session_id", None) or "",
         tool_call_id=ctx.tool_call_id or "", callback=getattr(agent, "setup_beat_callback", None),
         end_turn=lambda: agent.interrupt(tool_reason=_REASON_NEW_MESSAGE),
     )
@@ -345,7 +355,11 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 
 def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
     def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
-        return executor(agent, coerce_tool_args(name, args), ctx)
+        from tools.hosted_tool_policy import hosted_tool_refusal
+        if refusal := hosted_tool_refusal(name):  # the table is an execution primitive: same allowlist
+            return json.dumps({"error": refusal}, ensure_ascii=False)
+        return call_with_arg_checks(
+            registry.get_entry(name), coerce_tool_args(name, args), lambda checked: executor(agent, checked, ctx))
     return _exec
 
 
@@ -367,8 +381,7 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     """
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
-    memory_manager = agent._memory_manager
-    if memory_manager and memory_manager.has_tool(function_name):
+    if is_memory_provider_tool(agent, function_name):
         return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(
             function_name, args,
             caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
@@ -376,3 +389,40 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     if function_name == "message_agent":
         return None
     return INLINE_TOOL_EXECUTORS.get(function_name)
+
+
+def is_memory_provider_tool(agent, function_name: str) -> bool:
+    """``function_name`` is served by the agent's memory provider (both paths, before the registry)."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    return bool(memory_manager) and memory_manager.has_tool(function_name)
+
+
+def is_context_engine_tool(agent, function_name: str) -> bool:
+    """``function_name`` is served by the agent's context engine (sequential path, before the registry)."""
+    names = getattr(agent, "_context_engine_tool_names", None)
+    return bool(names) and function_name in names
+
+
+def pre_registry_route(function_name: str, agent: Any = None) -> Optional[str]:
+    """Which seam dispatches ``function_name`` instead of its tool-registry handler on some path
+    (``model_tools.handle_function_call``, the sequential path, ``invoke_tool``), or None when every
+    path reaches the registry handler: ``alias``, ``bridge``, ``inline``, ``connector``, and with
+    ``agent`` also ``context_engine`` / ``memory_provider``. Each test is the one the dispatcher
+    runs, so a registration under such a name never runs its own handler there."""
+    from model_tools import _AGENT_LOOP_TOOLS, _LEGACY_TOOL_ALIASES
+    from tools.connectors import is_connector_name
+    from tools.tool_search import is_bridge_tool
+
+    if function_name in _LEGACY_TOOL_ALIASES:
+        return "alias"
+    if is_bridge_tool(function_name):
+        return "bridge"
+    if function_name in INLINE_TOOL_EXECUTORS or function_name in _AGENT_LOOP_TOOLS:
+        return "inline"
+    if is_connector_name(function_name):
+        return "connector"
+    if agent is not None and is_context_engine_tool(agent, function_name):
+        return "context_engine"
+    if agent is not None and is_memory_provider_tool(agent, function_name):
+        return "memory_provider"
+    return None

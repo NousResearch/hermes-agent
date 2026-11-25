@@ -57,7 +57,7 @@ jobs:
     timeout-minutes: 30
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url || steps.deploy_retry.outputs.page_url || steps.deploy_last.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -284,32 +284,39 @@ jobs:
         with:
           path: _site
 
-      # deploy-pages looks the artifact up ~300 ms after the upload finalizes,
-      # and the artifact service often has not listed it yet ("Found 0
-      # artifact(s)"; actions/deploy-pages#451): it became visible 0.5-46 s
-      # later. The lookup runs before any deployment is created, so retrying in
-      # the same attempt is safe; re-running the job is not (its fresh upload
-      # makes two "github-pages" artifacts and the lookup refuses both).
+      # deploy-pages lists this run's artifacts once, ~300 ms after the upload
+      # finalizes, and the artifact service often has not listed it yet
+      # ("Found 0 artifact(s)"; actions/deploy-pages#451 measured 0.5-46 s).
+      # Poll that same listing until the artifact shows up, then deploy once.
+      # Re-running deploy-pages on failure is not safe: it can fail after the
+      # Pages deployment exists. Re-running the job is not either: its second
+      # upload makes two "github-pages" artifacts and the lookup refuses both.
+      - name: Wait for the artifact to be listed
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const scope = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
+              .scp.split(' ').find(s => s.startsWith('Actions.Results:'));
+            const [, runId, jobId] = scope.split(':');
+            const url = new URL('/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts',
+              process.env.ACTIONS_RESULTS_URL).href;
+            const deadline = Date.now() + 120_000;
+            for (;;) {
+              const res = await fetch(url, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId }),
+              });
+              const listed = res.ok ? ((await res.json()).artifacts || []) : [];
+              const count = listed.filter(a => a.name === 'github-pages').length;
+              if (count === 1) { core.info('github-pages artifact is listed'); break; }
+              if (count > 1) { core.setFailed(`${count} github-pages artifacts in this run`); break; }
+              if (Date.now() > deadline) { core.setFailed('github-pages artifact still not listed after 120 s'); break; }
+              core.info(`not listed yet (HTTP ${res.status}), checking again in 3 s`);
+              await new Promise(r => setTimeout(r, 3000));
+            }
+
       - name: Deploy to GitHub Pages
         id: deploy
-        continue-on-error: true
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1
-
-      - name: Wait for the artifact to be listed
-        if: steps.deploy.outcome == 'failure'
-        run: sleep 15
-
-      - name: Deploy to GitHub Pages (retry)
-        id: deploy_retry
-        if: steps.deploy.outcome == 'failure'
-        continue-on-error: true
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1
-
-      - name: Wait longer for the artifact to be listed
-        if: steps.deploy_retry.outcome == 'failure'
-        run: sleep 60
-
-      - name: Deploy to GitHub Pages (last try)
-        id: deploy_last
-        if: steps.deploy_retry.outcome == 'failure'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

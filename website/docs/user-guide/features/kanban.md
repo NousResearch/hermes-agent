@@ -101,7 +101,7 @@ They look similar; they are not the same primitive.
 | | `delegate_task` | Kanban |
 |---|---|---|
 | Shape | Tool call that runs child agents inside the calling session | Durable message queue + state machine |
-| Parent | Gets a handle at once and the result as a later message. Sessions that cannot receive a later message (one-shot runs, cron jobs, Kanban workers) and nested orchestrators wait in the call | Gets a task id at once. A chat that creates a task is subscribed to its completion and block events by default |
+| Parent | Gets a handle at once and the result as a later message. Sessions that cannot receive a later message (one-shot runs, cron jobs, Kanban workers) and nested orchestrators wait in the call | Gets a task id at once. A gateway, TUI or Desktop chat that creates a task is subscribed to its completion and block events by default; a classic CLI, cron or scripted create is not, and the result's `subscribed` flag says which |
 | Child identity | Anonymous subagent | Named profile with persistent memory |
 | Resumability | A finished or stopped child continues on its own conversation with `action="continue"`. Automatic resume is opt-in (`delegation.auto_resume`) | Block → unblock → re-run; crash → reclaim |
 | Human in the loop | The child cannot ask questions. You can steer or stop it while it runs | Comment / unblock at any point |

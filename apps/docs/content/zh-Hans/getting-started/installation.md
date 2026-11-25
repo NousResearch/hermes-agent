@@ -12,7 +12,7 @@ description: "在 Linux、macOS、WSL2 或原生 Windows 上安装 Hermes Agent"
 
 <a id="一行安装命令linux--macos--wsl2"></a>
 
-### 一行安装命令（Linux / macOS / WSL2） {#linux--macos--wsl2}
+### 一行安装命令（Linux / macOS / WSL2） [#linux--macos--wsl2]
 
 基于 git 的安装方式，跟踪 `main` 分支，可立即获取最新变更：
 
@@ -22,7 +22,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 <a id="windows原生powershell"></a>
 
-### Windows（原生，PowerShell） {#windows-native}
+### Windows（原生，PowerShell） [#windows-native]
 
 原生 Windows 无需 WSL 即可运行 Hermes——CLI、gateway、TUI 和工具均可原生运行。（原生安装与 WSL2 安装可干净共存；唯一仅限 WSL2 的功能见下方功能说明。）遇到 bug 请[提交 issue](https://github.com/NousResearch/hermes-agent/issues)。
 

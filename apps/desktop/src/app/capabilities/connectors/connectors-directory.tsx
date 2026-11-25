@@ -29,6 +29,8 @@ export interface ConnectorsDirectoryProps {
   onServerToggle?: (card: ConnectorCardModel, next: boolean) => void
   onVerb?: (card: ConnectorCardModel) => void
   selectedKey?: null | string
+  /** Whose connectors the installed groups are ("Agent in ops"), said under each one's head. */
+  owner?: string
 }
 
 export function ConnectorsDirectory({
@@ -45,6 +47,7 @@ export function ConnectorsDirectory({
   onRetryHosted,
   onServerToggle,
   onVerb,
+  owner,
   selectedKey = null
 }: ConnectorsDirectoryProps) {
   const { t } = useI18n()
@@ -130,6 +133,7 @@ export function ConnectorsDirectory({
               onPrefetch={onPrefetch}
               onServerToggle={onServerToggle}
               onVerb={onVerb}
+              owner={group.id === 'available' ? undefined : owner}
               selectedKey={selectedKey}
               where={where}
             />
@@ -165,9 +169,11 @@ function Group({
   onPrefetch,
   onServerToggle,
   onVerb,
+  owner,
   selectedKey,
   where
 }: {
+  owner?: string
   busyKey: null | string
   group: ConnectorGroupModel
   onOpen: (card: ConnectorCardModel) => void
@@ -190,6 +196,7 @@ function Group({
           </h2>
           {group.id === 'connected' && showsAttentionFirst(group) ? <p>{copy.connectedNote}</p> : null}
           {group.id === 'off' ? <p>{copy.offNote}</p> : null}
+          {owner ? <p>{owner}</p> : null}
         </div>
       </header>
 

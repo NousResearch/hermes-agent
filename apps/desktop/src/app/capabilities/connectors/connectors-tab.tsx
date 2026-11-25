@@ -48,10 +48,18 @@ export interface ConnectorsTabProps {
   gateway: HermesGateway | null
   profile: ProfileScope
   agentControls?: boolean
+  /** The agent whose connectors these are, where the page can show more than one agent's. */
+  ownerLabel?: string
   agentLayout?: boolean
 }
 
-export function ConnectorsTab({ gateway, profile, agentControls = true, agentLayout = false }: ConnectorsTabProps) {
+export function ConnectorsTab({
+  gateway,
+  profile,
+  agentControls = true,
+  agentLayout = false,
+  ownerLabel
+}: ConnectorsTabProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const copy = t.connectorsPage
@@ -257,6 +265,7 @@ export function ConnectorsTab({ gateway, profile, agentControls = true, agentLay
           onRetryHosted={hosted.refetch}
           onServerToggle={onServerToggle}
           onVerb={runVerb}
+          owner={ownerLabel ? t.skills.plugins.halfAgentIn(ownerLabel) : undefined}
           selectedKey={openKey}
         />
       )}

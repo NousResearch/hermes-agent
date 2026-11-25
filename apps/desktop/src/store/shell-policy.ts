@@ -18,7 +18,9 @@ export const $setupGuideOnboarding = gate(portal => portal)
 /** The sidebar lists every profile's sessions: the agents list is the filter, not a gateway swap. */
 export const $sessionListSpansProfiles = gate(portal => portal)
 
-/** Capabilities is a read-only inventory; installs and toggles live in each agent's settings. */
+/** Capabilities is an inventory: Skills and Plugins are read-only there, their installs and toggles
+ *  live in each agent's settings. Connectors are the exception: they are managed on that page, for
+ *  the agent chosen in its header, and an agent's settings have no Connectors page. */
 export const $capabilitiesManagedPerAgent = gate(portal => portal)
 
 /** Bots are a section of the Agents page, so the Bots plugin registers no sidebar pane. */

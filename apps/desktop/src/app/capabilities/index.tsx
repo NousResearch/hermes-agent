@@ -98,11 +98,11 @@ export function CapabilitiesView({
   const { t } = useI18n()
   const redesign = usePortalShell()
   const presentation = capabilitiesPresentation(redesign, embedded, Boolean(fixedProfile))
-  const pageDescription = useCapabilitiesPageDescription()
   const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
   const modes = capabilityModes(redesign, Boolean(fixedProfile))
   const [selectedMode, setMode] = useSelectedMode(modes, embedded)
   const mode = fixedMode ?? selectedMode
+  const pageDescription = useCapabilitiesPageDescription(mode === 'connectors')
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
   const reloadsOwnerChat = useReloadsOwnerChat()
 
@@ -154,11 +154,13 @@ export function CapabilitiesView({
     // ACTIVE gateway's socket — for a scope pinned to a different backend that
     // (config edits still apply on that backend's next session).
     connectors: () => (
+      // Connectors are switched here in both shells: in the redesign this page is the only place
+      // they are managed (an agent's settings have no Connectors page), for the agent in its header.
       <ConnectorsTab
-        agentControls={agentControls}
         agentLayout={presentation.agentLayout}
         gateway={scope.crossBackend || !reloadsOwnerChat ? null : gateway}
         key={`connectors-${scope.key}`}
+        ownerLabel={inventoryOwnerLabel(presentation, scope)}
         profile={scope.profile}
       />
     ),
@@ -223,7 +225,13 @@ export function CapabilitiesView({
     searchHidden: true,
     searchTrailingAction: presentation.headerScope
       ? mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />
-      : !agentControls && <CapabilityInventoryScope onOpenAgentSettings={openAgentSettings} scope={scope} />,
+      : !agentControls && (
+          <CapabilityInventoryScope
+            managedHere={mode === 'connectors'}
+            onOpenAgentSettings={openAgentSettings}
+            scope={scope}
+          />
+        ),
     tabs: fixedMode ? [] : capabilityTabs(modes, t, skills, toolsets),
     tabsAlign: 'start',
     children: (
@@ -463,8 +471,8 @@ function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode
 
   const ownerQuery = new URLSearchParams({
     agentProfile: ownerProfile,
-    // Connectors have no page in an agent's settings: from that tab the link opens the agent.
-    ...(mode !== 'connectors' && { panel: 'capabilities', tab: mode }),
+    panel: 'capabilities',
+    tab: mode,
     connection: ownerConnection
   })
 
@@ -476,23 +484,35 @@ function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode
 interface CapabilityInventoryScopeProps {
   scope: CapabilityScope
   onOpenAgentSettings: () => void
+  /** The tab's switches are on this page (Connectors): there is nothing to hand off for. */
+  managedHere: boolean
+}
+
+/** Whose connectors the redesign's page is editing, for the tab to say beside its lists. */
+function inventoryOwnerLabel(presentation: CapabilitiesPresentation, scope: CapabilityScope) {
+  const profile = typeof scope.profile === 'object' ? scope.profile?.profile : scope.profile
+
+  // The roster's name for it, or the profile's own while the roster loads.
+  return presentation.pageFrame ? (scope.label ?? profile ?? undefined) : undefined
 }
 
 /** The inventory's owner, in the header's trailing slot where 919:9095 puts its one quiet link: which
  *  agent and machine the page reads, and the hand-off to that agent's settings, where switches live.
  *  The header owns the slot's height, so the select resolving its options never moves the page. */
-function CapabilityInventoryScope({ scope, onOpenAgentSettings }: CapabilityInventoryScopeProps) {
+function CapabilityInventoryScope({ scope, onOpenAgentSettings, managedHere }: CapabilityInventoryScopeProps) {
   const { t } = useI18n()
 
   return (
     <div className="capability-header-scope" data-slot="capability-scope">
       <CapabilityScopeSelector quiet scope={scope} />
-      <Tip label={t.skills.inventoryScopeHint}>
-        <Button className="capability-header-link" onClick={onOpenAgentSettings} size="inline" variant="text">
-          {t.skills.openAgentSettings}
-          <Codicon aria-hidden name="arrow-right" size="0.75rem" />
-        </Button>
-      </Tip>
+      {!managedHere && (
+        <Tip label={t.skills.inventoryScopeHint}>
+          <Button className="capability-header-link" onClick={onOpenAgentSettings} size="inline" variant="text">
+            {t.skills.openAgentSettings}
+            <Codicon aria-hidden name="arrow-right" size="0.75rem" />
+          </Button>
+        </Tip>
+      )}
     </div>
   )
 }

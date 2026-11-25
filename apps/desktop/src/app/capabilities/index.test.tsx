@@ -54,6 +54,18 @@ vi.mock('@/store/agent-plugins', async importOriginal => ({
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
+// The tab's own data is not this file's subject: what the page hands it is.
+vi.mock('./connectors/connectors-tab', () => ({
+  ConnectorsTab: (props: { agentControls?: boolean; ownerLabel?: string; profile: unknown }) => (
+    <div
+      data-controls={String(props.agentControls ?? true)}
+      data-owner={props.ownerLabel ?? ''}
+      data-profile={JSON.stringify(props.profile ?? 'default')}
+      data-testid="connectors-tab"
+    />
+  )
+}))
+
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()
@@ -205,6 +217,46 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
 
     await waitFor(() => expect(getToolsets).toHaveBeenCalled())
     expect(getToolsets.mock.calls.some(call => JSON.stringify(call).includes('ops'))).toBe(linked)
+  })
+
+  it.each([
+    [true, 'Agent settings hand-off gone'],
+    [false, 'classic as it was']
+  ])('manages connectors on the page itself, for the agent chosen (redesign %s: %s)', async redesign => {
+    $shellChoice.set(redesign)
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=connectors&agentProfile=ops']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    const tab = await screen.findByTestId('connectors-tab')
+
+    // The switches, "for me" and tool rules all hang off this one flag (connectors-tab.tsx).
+    expect(tab.dataset.controls).toBe('true')
+    expect(tab.dataset.profile).toBe(redesign ? '"ops"' : '"default"')
+    expect(Boolean(tab.dataset.owner)).toBe(redesign)
+    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings })).toBeNull()
+  })
+
+  it('hands off to the agent\'s settings from Skills, where its switches are', async () => {
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=skills&agentProfile=ops']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings }))
+
+    expect(navigateSpy).toHaveBeenCalledWith(expect.stringContaining('agentProfile=ops&panel=capabilities&tab=skills'))
   })
 
   it('keeps classic order and its Skills default', async () => {
@@ -600,11 +652,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       fireEvent.click(selector)
       fireEvent.click(await screen.findByRole('option', { name: 'inbox-bot — Homelab' }))
       await waitFor(() => expect(getToolsets).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' }))
-      fireEvent.click(screen.getByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings }))
-      expect(navigateSpy).toHaveBeenCalledWith(
-        // From Connectors, which an agent's settings has no page for: the agent itself.
-        '/settings?agentProfile=default&connection=homelab'
-      )
+      // Connectors are managed on this page, so its tab offers no hand-off to the agent's settings.
+      expect(screen.queryByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings })).toBeNull()
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }

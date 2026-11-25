@@ -493,6 +493,45 @@ export function ChatBar({
     recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
   }
 
+  // Ctrl/Cmd+Shift+V — plain-text paste, the web chat's escape hatch. The DOM
+  // paste event carries no modifier state, so the intercept lives on keydown:
+  // the keydown's preventDefault stops the native paste before its pipeline
+  // runs (image blobs, PR-comment attach, link/path chips). The clipboard is
+  // read directly and the raw text inserted verbatim at the caret.
+  const pastePlainText = async (editor: HTMLDivElement) => {
+    let raw = ''
+
+    // The Electron bridge first — the app's own channel (terminal and context
+    // menus use it); navigator.clipboard can be unavailable or
+    // permission-gated in the renderer.
+    if (window.hermesDesktop?.readClipboard) {
+      try {
+        raw = await window.hermesDesktop.readClipboard()
+      } catch {
+        raw = ''
+      }
+    }
+
+    if (!raw) {
+      try {
+        raw = await navigator.clipboard.readText()
+      } catch {
+        raw = ''
+      }
+    }
+
+    // Same edge cleanup as a native paste; internal newlines stay.
+    const plain = sanitizeComposerInput(raw.trim())
+
+    if (!plain) {
+      return
+    }
+
+    recordUndoPoint()
+    insertComposerContentsAtCaret(editor, plain)
+    scheduleFlushEditorToDraft(editor)
+  }
+
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
@@ -665,6 +704,23 @@ export function ChatBar({
       if (!busy) {
         void drainNextQueued()
       }
+
+      return
+    }
+
+    // Cmd/Ctrl+Shift+V pastes the clipboard as raw text — no image attach, no
+    // PR-comment attach, no link/path chips. Skipped while the composer is
+    // disabled so the hijack can't insert into a read-only editor.
+    if (
+      !disabled &&
+      !inputDisabled &&
+      (event.metaKey || event.ctrlKey) &&
+      event.shiftKey &&
+      !event.altKey &&
+      event.key.toLowerCase() === 'v'
+    ) {
+      event.preventDefault()
+      void pastePlainText(event.currentTarget)
 
       return
     }

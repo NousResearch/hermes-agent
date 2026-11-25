@@ -1529,12 +1529,11 @@ class TestSignalObserveUnmentionedGroupMessages:
         from gateway.run import _build_gateway_agent_history
         from gateway.run_observed_context import _wrap_current_message_with_observed_context
         from gateway.session import SessionStore
-        from hermes_state import SessionDB
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         adapter = _make_observing_adapter(monkeypatch)
-        db = SessionDB(db_path=tmp_path / "state.db")
+        # Unpinned, as the gateway runs it: the write resolves the owning profile's storage handle.
         store = SessionStore(tmp_path / "sessions", GatewayConfig(group_sessions_per_user=False))
-        store._db = db
         adapter.set_session_store(store)
         try:
             await adapter._handle_envelope(_group_envelope())
@@ -1544,7 +1543,6 @@ class TestSignalObserveUnmentionedGroupMessages:
             event = adapter.handle_message.await_args.args[0]
             history = store.load_transcript(store.get_or_create_session(event.source).session_id)
         finally:
-            db.close()
             store.close_all_db_handles()
 
         # The addressed turn keeps its sender, so the gateway still authorizes Bob himself.

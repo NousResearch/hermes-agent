@@ -24,9 +24,11 @@ import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { asText } from '@/lib/text'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
+import { startBotScreen } from '@/plugins/hermes-bots/screen-open'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profileColors, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 import type { HermesConfigRecord, ProfileInfo } from '@/types/hermes'
@@ -218,6 +220,7 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
   const { bot, tone, says, open } = useAgentScreen(owner.connectionId, owner.profile)
   // Opening waits on a route lookup: by then the page may be gone, or a second click be waiting too.
   const page = useRef({ closed: false, shown: true })
+  const [starting, setStarting] = useState(false)
 
   useEffect(() => {
     page.current.shown = true
@@ -229,6 +232,18 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
 
   if (tone === 'unsupported' || tone === 'unavailable') {
     return null
+  }
+
+  const start = async () => {
+    setStarting(true)
+
+    try {
+      await startBotScreen(bot)
+    } catch (error) {
+      notifyError(error, b.screen.heroStart)
+    } finally {
+      setStarting(false)
+    }
   }
 
   const opened = (did: boolean) => {
@@ -248,7 +263,20 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
     )
   }
 
-  return <SettingRow detail={says} onClick={() => void open().then(opened)} title={b.screen.portalTitle} />
+  const row = <SettingRow detail={says} onClick={() => void open().then(opened)} title={b.screen.portalTitle} />
+
+  // A screen that is installed and off starts from here; one that is not installed is the pane's
+  // business, behind the row.
+  return tone === 'off' ? (
+    <div className="agent-overview-screen-stopped">
+      {row}
+      <Button disabled={starting} onClick={() => void start()} size="sm" variant="secondary">
+        {b.screen.heroStart}
+      </Button>
+    </div>
+  ) : (
+    row
+  )
 }
 
 function SettingRow({

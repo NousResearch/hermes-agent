@@ -10,7 +10,9 @@ import { botSelectionKey, saveBotMeta } from './data'
 import { botsText } from './i18n'
 import { displayName } from './labels'
 import { noteScreenTabClosed, noteScreenTabOpened } from './screen-autoraise'
+import { displayRequest, type DisplayStatus } from './screen-connection'
 import { BotScreenPane } from './screen-pane'
+import { setScreenStatus } from './screen-state'
 import { ID } from './shared'
 import type { BotMeta, RosterRow } from './types'
 
@@ -66,4 +68,10 @@ export async function toggleBotScreenAutoOpen(bot: RosterRow): Promise<void> {
   } catch (error) {
     host.notifyError?.(error, b.bot.metadataLoadFailed)
   }
+}
+
+/** Start a bot's screen: the request its pane makes, with the status the backend answers taken as
+ *  what every surface shows. A screen that will not start rejects with the backend's reason. */
+export async function startBotScreen(bot: RosterRow): Promise<void> {
+  setScreenStatus(bot, await displayRequest<DisplayStatus>(bot, 'display.start'))
 }

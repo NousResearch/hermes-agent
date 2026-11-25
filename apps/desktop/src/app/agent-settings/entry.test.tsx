@@ -48,11 +48,12 @@ const requestGateway = vi.fn(async (method: string, params?: Record<string, unkn
   return {}
 })
 
-const screenPlugin = vi.hoisted(() => ({ tone: 'unknown' as string, open: vi.fn() }))
+const screenPlugin = vi.hoisted(() => ({ tone: 'unknown' as string, open: vi.fn(), start: vi.fn() }))
 
 vi.mock('@/plugins/hermes-bots/screen-open', async original => ({
   ...(await original<object>()),
-  openBotScreen: screenPlugin.open
+  openBotScreen: screenPlugin.open,
+  startBotScreen: screenPlugin.start
 }))
 
 vi.mock('@/app/chat/sidebar/simplified-bot-chat-row', async original => ({
@@ -160,6 +161,7 @@ beforeAll(async () => {
 beforeEach(() => {
   screenPlugin.tone = 'unknown'
   screenPlugin.open.mockReset()
+  screenPlugin.start.mockReset()
   vi.spyOn(host, 'profileRoutes').mockResolvedValue([])
   closed.mockReset()
   $notifications.set([])
@@ -566,6 +568,55 @@ it('shows a running Screen as itself on the Overview, in the row’s place, and 
   expect(screenPlugin.open).toHaveBeenCalledTimes(1)
   expect(screenPlugin.open.mock.calls[0][0]).toMatchObject({ name: 'default' })
   expect(closed).toHaveBeenCalledTimes(1)
+})
+
+const startButton = () => screen.queryByRole('button', { name: botsText().screen.heroStart })
+
+it('starts a stopped Screen from its row, once, for that agent', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'off'
+
+  let started: () => void = () => {}
+  screenPlugin.start.mockImplementation(() => new Promise<void>(resolve => (started = resolve)))
+  mount('/settings?agentProfile=default')
+  await screenControls()
+
+  fireEvent.click(startButton()!)
+  fireEvent.click(startButton()!)
+
+  expect(screenPlugin.start).toHaveBeenCalledTimes(1)
+  expect(screenPlugin.start.mock.calls[0][0]).toMatchObject({ name: 'default' })
+  expect(startButton()?.hasAttribute('disabled')).toBe(true)
+  // Starting is not opening: the page stays, and the row is still there to open the Screen.
+  expect(closed).not.toHaveBeenCalled()
+
+  await act(async () => started())
+  expect(startButton()?.hasAttribute('disabled')).toBe(false)
+})
+
+it('says why a Screen did not start, and leaves its row as it was', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'off'
+  screenPlugin.start.mockRejectedValue(new Error('not enough memory to start a screen'))
+  mount('/settings?agentProfile=default')
+  await screenControls()
+
+  fireEvent.click(startButton()!)
+
+  await waitFor(() =>
+    expect($notifications.get().some(note => note.kind === 'error' && /not enough memory/.test(JSON.stringify(note)))).toBe(true)
+  )
+  expect(startButton()?.hasAttribute('disabled')).toBe(false)
+  expect((await screenControls())[0].textContent).toContain(botsText().screen.portalStopped)
+})
+
+it.each(['missing', 'unknown', 'live', 'unsupported'])('offers no Start for a Screen that is %s', async tone => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = tone
+  mount('/settings?agentProfile=default')
+
+  await screen.findAllByRole('button', { name: new RegExp(`^${en.cron.title}`) })
+  expect(startButton()).toBeNull()
 })
 
 it('stays on the Overview and says so when the Screen could not be opened', async () => {

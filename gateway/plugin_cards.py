@@ -106,6 +106,14 @@ def model_line(plugin_id: str, card_id: str) -> str:
     return f"[{plugin_id} posted a card {opaque_id}]"
 
 
+def legacy_model_line(plugin_id: str, card_id: str) -> str:
+    """The line a row admitted before the opaque reference carries: the plugin's own card id. That
+    line is part of the row's durable payload digest, so an unchanged retry of such a card matches
+    its row only under this text. ``post`` sends it only after the ``model_line`` admission met an
+    existing row with another digest: it replays a durable row or is refused, never queues one."""
+    return f"[{plugin_id} posted a card {card_id}]"
+
+
 def _rate_window(plugin_id: str, session_key: str) -> deque:
     """The (plugin, session) window's live stamps. The caller appends one when, and only when, its
     admission created a row: an exact replay spends nothing."""
@@ -148,6 +156,14 @@ def _resolve(runner, *, session_key: str, origin, plugin_home, plugin_id: str):
     return source, session_key, entry, None
 
 
+async def _admit(runner, adapter, source, plugin_home, text: str, metadata: dict, *, request_id: str, replay):
+    """One admission of the card's wake under *text*, from the gateway's own scope."""
+    from gateway.session_automation import admit_route_wake
+    async with runner._plugin_injection_scope(source, plugin_home):
+        return await admit_route_wake(runner, adapter, source, text, PRODUCER, metadata,
+                                      request_id=request_id, replay=replay)
+
+
 async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: str = "",
                origin: Optional[Mapping[str, Any]] = None) -> dict:
     """Admit *card* into the target conversation's FIFO. Runs on the gateway loop; never raises."""
@@ -159,7 +175,7 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
     if refusal is not None:
         return refusal
     from gateway.session_authorities import authority_for_home
-    from gateway.session_automation import AdmissionReplay, admit_route_wake
+    from gateway.session_automation import AdmissionReplay
     from gateway.session_persistence import authority_persistence
     from persistence.core.errors import AuthorityRefusal
     authority = authority_for_home(runner, plugin_home) if plugin_home is not None else None
@@ -183,9 +199,19 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
             if seen is None:
                 return _err("rate_limited", f"more than {RATE_LIMIT[0]} cards in {RATE_LIMIT[1]:.0f}s for this session")
         try:
-            async with runner._plugin_injection_scope(source, plugin_home):
-                admitted = await admit_route_wake(runner, adapter, source, model_line(plugin_id, normalized["card_id"]),
-                                                  PRODUCER, metadata, request_id=request_id, replay=replay)
+            try:
+                admitted = await _admit(runner, adapter, source, plugin_home, model_line(plugin_id, normalized["card_id"]),
+                                        metadata, request_id=request_id, replay=replay)
+            except AuthorityRefusal as exc:
+                if exc.reason != "admission_conflict":
+                    raise
+                # The row this card id already has was digested under another line: a card admitted
+                # before the opaque reference carries its legacy line. Replay under that durable
+                # identity; the admission still digests everything else, so changed content stays a
+                # conflict, and the row exists, so this never queues a line that names the plugin's id.
+                admitted = await _admit(runner, adapter, source, plugin_home,
+                                        legacy_model_line(plugin_id, normalized["card_id"]),
+                                        metadata, request_id=request_id, replay=replay)
         except AuthorityRefusal as exc:
             if exc.reason == "admission_conflict":
                 return _err("card_conflict", f"card {normalized['card_id']!r} was posted with different content")

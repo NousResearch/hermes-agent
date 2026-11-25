@@ -34,6 +34,15 @@ const row = () =>
 
 const preview = () => document.querySelector('.portal-screen-preview')
 const wait = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms))
+// jsdom never reports :focus-visible, so each test says whether focus arrived by keyboard.
+const focusKind = { keyboard: false }
+const matches = Element.prototype.matches
+
+function focusRow(keyboard: boolean) {
+  focusKind.keyboard = keyboard
+  act(() => row().focus())
+}
+
 const rest = () => fireEvent.pointerEnter(row().closest('.portal-session-row')!, { pointerType: 'mouse' })
 const leave = () => fireEvent.pointerLeave(row().closest('.portal-session-row')!, { pointerType: 'mouse' })
 
@@ -41,8 +50,13 @@ beforeEach(() => {
   stubMenuDomApis()
   vi.useFakeTimers()
   plugin.frames.mockClear()
+  plugin.tone = 'live'
+  focusKind.keyboard = false
   plugin.open.mockReset()
   vi.spyOn(host, 'profileRoutes').mockResolvedValue([])
+  vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+    return selector === ':focus-visible' ? focusKind.keyboard && this === document.activeElement : matches.call(this, selector)
+  })
 })
 
 afterEach(() => {
@@ -97,8 +111,7 @@ it('stays while the pointer is on the preview itself', async () => {
 it('opens for keyboard focus without taking it, and Escape or leaving the row closes it', async () => {
   render(<AgentScreenRow agent={OPS} />)
 
-  act(() => row().focus())
-  fireEvent.focus(row())
+  focusRow(true)
   await wait(0)
   expect(preview()).not.toBeNull()
   expect(document.activeElement).toBe(row())
@@ -107,10 +120,52 @@ it('opens for keyboard focus without taking it, and Escape or leaving the row cl
   await wait(0)
   expect(preview()).toBeNull()
 
-  fireEvent.focus(row())
+  act(() => row().blur())
+  focusRow(true)
   await wait(0)
-  fireEvent.blur(row())
+  act(() => row().blur())
   await wait(0)
+  expect(preview()).toBeNull()
+})
+
+it('does not open for focus the mouse left on the row, however often focus comes back to it', async () => {
+  render(<AgentScreenRow agent={OPS} />)
+
+  // A click focuses the row; the window losing and regaining focus then blurs and focuses it again.
+  focusRow(false)
+  act(() => row().blur())
+  focusRow(false)
+  await wait(1000)
+
+  expect(preview()).toBeNull()
+  expect(plugin.frames).not.toHaveBeenCalled()
+})
+
+it('lets a keyboard-opened card be clicked: focus moving into the card does not close it', async () => {
+  render(<AgentScreenRow agent={OPS} />)
+  focusRow(true)
+  await wait(0)
+  const tile = preview()!.querySelector('button')!
+
+  fireEvent.blur(row(), { relatedTarget: tile })
+  await wait(0)
+
+  expect(preview()).not.toBeNull()
+})
+
+it('starts closed again when the screen stops and later runs again', async () => {
+  const view = render(<AgentScreenRow agent={OPS} />)
+  rest()
+  await wait(400)
+  expect(preview()).not.toBeNull()
+
+  plugin.tone = 'off'
+  view.rerender(<AgentScreenRow agent={OPS} />)
+  await wait(0)
+  plugin.tone = 'live'
+  view.rerender(<AgentScreenRow agent={OPS} />)
+  await wait(1000)
+
   expect(preview()).toBeNull()
 })
 

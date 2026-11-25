@@ -87,17 +87,20 @@ const MARK: Partial<Record<PortalTone, 'needs-input' | 'working'>> = {
  *  click opens it. No row otherwise; the agent's menu opens a Screen that is stopped or not
  *  installed. */
 export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
-  const b = useBots()
-  const { bot, tone, says, holder, open } = useAgentScreen(agent.connectionId, agent.profile)
-  const preview = useRestingHover()
-  // Focus that a press left on the row is not a request to look: only focus that arrived by keyboard.
-  const pressed = useRef(false)
-  const row = useRef<HTMLDivElement>(null)
-  const mark = MARK[tone]
+  const screen = useAgentScreen(agent.connectionId, agent.profile)
+  const mark = MARK[screen.tone]
 
-  if (!mark) {
-    return null
-  }
+  // The row and its preview card are one component that exists only while the screen runs, so a
+  // card left open when the screen stops is gone with it, not waiting for the next run.
+  return mark ? <LiveScreenRow mark={mark} screen={screen} /> : null
+}
+
+function LiveScreenRow({ mark, screen }: { mark: 'needs-input' | 'working'; screen: AgentScreen }) {
+  const b = useBots()
+  const { bot, says, holder, open } = screen
+  const preview = useRestingHover()
+  const row = useRef<HTMLDivElement>(null)
+  const card = useRef<HTMLDivElement>(null)
 
   return (
     <div className="portal-agent-sessions portal-agent-screen">
@@ -116,19 +119,16 @@ export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
               <RowButton
                 aria-label={`${b.screen.portalTitle}: ${says}`}
                 className="portal-session-open"
-                onBlur={() => {
-                  pressed.current = false
-                  preview.close()
-                }}
+                // Focus going into the card (a press on its picture) is not leaving it.
+                onBlur={event => !card.current?.contains(event.relatedTarget) && preview.close()}
                 onClick={() => {
                   preview.close()
                   void open()
                 }}
-                onFocus={() => !pressed.current && preview.setOpen('click')}
+                // Only focus the keyboard brought: a click, or the window coming back to the front,
+                // also focuses the row and is not a request to look.
+                onFocus={event => event.target.matches(':focus-visible') && preview.setOpen('click')}
                 onKeyDown={event => event.key === 'Escape' && preview.close()}
-                onPointerDown={() => {
-                  pressed.current = true
-                }}
               >
                 <span className="portal-session-title">{b.screen.portalTitle}</span>
               </RowButton>
@@ -149,7 +149,9 @@ export function AgentScreenRow({ agent }: { agent: SimplifiedAgent }) {
             side="right"
             {...preview.hoverHandlers}
           >
-            <ScreenHero bot={bot} />
+            <div ref={card}>
+              <ScreenHero bot={bot} />
+            </div>
           </PopoverContent>
         </Popover>
       </div>

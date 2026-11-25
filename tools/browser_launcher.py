@@ -743,6 +743,71 @@ def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> 
             shutil.rmtree(browser.user_data_dir, ignore_errors=True)
 
 
+#: The files Chromium's ProcessSingleton leaves in a profile dir; the lock goes last (see
+#: :func:`_reclaim_owned_singletons`).
+_SINGLETON_LEFTOVERS = ("SingletonCookie", "SingletonSocket", "SingletonLock")
+
+
+def _unlink_singleton(path: str) -> Optional[bool]:
+    """Remove one ``Singleton*`` SYMLINK: True when removed, None when it was not there, False when it stays.
+
+    Chromium writes all three as symlinks (the lock to ``<hostname>-<pid>``, the cookie to its token, the socket to
+    its socket path), so a regular file of that name is somebody else's data and is never removed: only the link
+    itself is unlinked, never its target, and a link is never followed.
+    """
+    try:
+        if not stat.S_ISLNK(os.lstat(path).st_mode):
+            logger.debug("browser: %s is not a symlink; leaving it", path)
+            return False
+        os.unlink(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.debug("browser: could not remove %s: %s", path, exc)
+        return False
+    return True
+
+
+def _reclaim_owned_singletons(user_data_dir: Optional[str], pid: Optional[int]) -> list:
+    """Remove the ``Singleton*`` files the browser ``pid`` left on ``user_data_dir`` once it has exited.
+
+    Chromium deletes them itself on a normal exit; one this process had to TEAR DOWN (``_terminate``: SIGTERM, then
+    SIGKILL) leaves them behind, and the next Hermes then reads that lock as a browser another environment holds and
+    refuses the profile (``_foreign_holder`` → ``_foreign_unreachable``: "… delete …/SingletonLock"). Called from the
+    stop path and the reaper, under the profile's records lock, after the browser is confirmed gone and BEFORE its
+    launch record goes, so no other launcher can start one on that dir meanwhile.
+
+    Three gates, each from an existing helper: the pid is gone (:func:`_pid_alive` — PID reuse is not modelled, a live
+    number simply keeps its lock), no other Chromium still uses the dir (:func:`_browser_running_on` — another key or
+    another holder may be driving it), and the lock names this host and this pid (:func:`_singleton_owner`). Only then
+    are the links removed — cookie and socket first, the lock last, and the lock is kept whenever either of them could
+    not be removed, so a half-cleaned set never looks like a free profile. Nothing here can fail a stop: every error
+    is logged and dropped.
+    """
+    if not pid or not user_data_dir:
+        return []
+    if _pid_alive(pid):
+        logger.debug("browser: Chromium pid %s is still alive; leaving its profile lock alone", pid)
+        return []
+    if _browser_running_on(user_data_dir):
+        logger.debug("browser: another Chromium still runs on %s; leaving its profile lock alone", user_data_dir)
+        return []
+    if _singleton_owner(user_data_dir) != (socket.gethostname(), pid):
+        return []  # no lock, another environment's lock, or another instance's: not ours to remove
+    removed = []
+    for name in _SINGLETON_LEFTOVERS[:-1]:  # the lock goes last: it is what keeps a profile from being reused
+        state = _unlink_singleton(os.path.join(user_data_dir, name))
+        if state is False:
+            return removed  # a cookie or socket that stays keeps the lock: not ours to hand out a partial profile
+        if state:
+            removed.append(name)
+    if _unlink_singleton(os.path.join(user_data_dir, _SINGLETON_LEFTOVERS[-1])):
+        removed.append(_SINGLETON_LEFTOVERS[-1])
+    if removed:
+        logger.info("browser: removed %s left by Chromium pid %s on %s", removed, pid, user_data_dir)
+    return removed
+
+
 def _terminate(pid: Optional[int], start_time: Optional[int], proc: Optional[subprocess.Popen]) -> None:
     """Parent-first teardown (tools/AGENTS.md): SIGTERM the browser alone, then its snapshot survivors."""
     if not pid:
@@ -785,6 +850,7 @@ def _stop_locked(key: str) -> None:
     with records_lock(record.parent):  # the decision and the forget are one step: another key may be the heir
         if _heir_key(browser) is None and _last_holder_out(record, browser):
             _terminate(browser.pid, browser.start_time, proc)
+            _reclaim_owned_singletons(browser.user_data_dir, browser.pid)
             record.unlink(missing_ok=True)
         with _lock:
             _forget(key, browser, drop_record=False)
@@ -1047,6 +1113,7 @@ def _reap_record(path: Path, home: Optional[str]) -> bool:
     reaped = _is_recorded_browser(record, home)
     if reaped:
         _terminate(record["pid"], record.get("start_time"), None)
+        _reclaim_owned_singletons(record.get("user_data_dir"), record["pid"])
         logger.info("browser: reaped orphaned Chromium pid %s (%s)", record["pid"], record["user_data_dir"])
     udd = record.get("user_data_dir")
     if (record.get("ephemeral") and isinstance(udd, str) and _inside_ephemeral_root(udd, home)

@@ -18,9 +18,8 @@ These tests pin the contract:
   - When LSP is inactive or disabled-for-path, the shell linter runs
     exactly as before (regression guard for the default config).
   - The skip only applies to extensions in
-    ``_SHELL_LINTER_LSP_REDUNDANT`` — Python ``py_compile`` and
-    ``node --check`` keep running unconditionally because they're fast,
-    file-local, and correct.
+    ``_SHELL_LINTER_LSP_REDUNDANT`` — ``node --check`` keeps running
+    unconditionally because it's fast, file-local, and correct.
   - ``.tsx`` is intentionally NOT in either ``LINTERS`` or
     ``_SHELL_LINTER_LSP_REDUNDANT``: it had no ``LINTERS`` entry
     pre-PR (so it was already implicitly ``skipped`` via the
@@ -128,11 +127,11 @@ def test_ts_shell_linter_runs_when_no_ancestor_tsconfig(tmp_path):
 
     with patch.object(fops, "_lsp_local_only", return_value=True), \
          patch.object(fops, "_lsp_will_handle", return_value=False), \
-         patch.object(fops, "_has_command", return_value=True), \
-         patch.object(fops, "_exec", return_value=exec_result) as exec_mock:
+         patch.object(fops, "_local_workspace_untrusted", return_value=False), \
+         patch.object(fops, "_run_managed_node_linter", return_value=exec_result) as exec_mock:
         fops._check_lint(str(src))
 
-    assert exec_mock.called, "shell tsc should run when there's no project tsconfig"
+    assert exec_mock.called, "tsc should run when there's no project tsconfig"
 
 
 if __name__ == "__main__":  # pragma: no cover

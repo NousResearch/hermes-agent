@@ -125,3 +125,59 @@ describe('ConfirmingModelPanel model pick', () => {
     }
   })
 })
+
+describe('ConfirmingModelPanel sign-in result', () => {
+  it('names the account and what moved before Begin', async () => {
+    $desktopOnboarding.set({
+      ...confirmingModelState(),
+      flow: {
+        currentModel: 'gpt-5.6-terra',
+        label: 'OpenAI OAuth (ChatGPT)',
+        providerSlug: 'openai',
+        saving: false,
+        signedIn: { email: 'someone@example.com', handoff: { lines: ['Your apps moved.'], state: 'claimed' } },
+        status: 'confirming_model'
+      }
+    })
+
+    render(<Harness />)
+
+    expect(screen.getByText('someone@example.com')).toBeTruthy()
+    expect(screen.getByText('Your apps moved.')).toBeTruthy()
+  })
+})
+
+describe('external CLI sign-in step', () => {
+  const longCommand = '/Users/someone/.nvm/current/bin/claude auth login'
+
+  beforeEach(() => {
+    $desktopOnboarding.set({
+      ...confirmingModelState(),
+      flow: {
+        copied: false,
+        provider: {
+          cli_command: longCommand,
+          docs_url: '',
+          flow: 'external',
+          id: 'claude-subscription-directsdk-experimental',
+          name: 'Claude Subscription DirectSDK (Experimental)',
+          status: { logged_in: false }
+        },
+        status: 'external_pending'
+      }
+    })
+  })
+
+  it('keeps the command selectable and the Copy and continue actions rendered', () => {
+    render(<Harness />)
+
+    const command = screen.getByText(longCommand, { exact: false }).closest('code')
+
+    const selectable = command?.querySelector('[data-selectable-text="true"]')
+
+    // Only the command is selectable: a copied "$" prompt would not run in a shell.
+    expect(selectable?.textContent).toBe(longCommand)
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: "I've signed in" })).toBeTruthy()
+  })
+})

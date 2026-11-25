@@ -15,19 +15,75 @@
 
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 
+import { externalUrlTarget } from '../../shared/src/external-url'
+
+import { absolutizeProtocolRelativeUrl, looksLikeLocalFilesystemPath } from './local-filesystem-path'
+
 export type ExternalOpenResult =
   { ok: true } | { ok: false; reason: 'invalid' } | { ok: false; reason: 'failed'; message: string }
+
+export interface FileOpenGuardDeps {
+  log: (line: string) => void
+  reportMissing: (rawUrl: string, message: string) => void
+}
+
+/**
+ * Decide what a pre-open stat failure means for a file open (#122027). Lives
+ * here, not inline in main.ts, so the classification is unit-tested without
+ * loading electron — same injected-deps shape as the rest of the module.
+ *
+ * Returns true when the failure was a MISS: it has been reported through
+ * reportMissing and the caller must NOT hand the path to the OS (a reveal of
+ * a non-existent path is silently a no-op on macOS; an open of one reads as
+ * "No application found" on LaunchServices). Returns false for every other
+ * stat failure (EACCES on a locked volume, ELOOP, Windows EPERM): those are
+ * logged and the caller still proceeds to the OS, so an existing-but-locked
+ * file keeps its real error and a stat failure never fabricates a miss.
+ */
+export function reportPreOpenStatFailure(error: unknown, rawUrl: string, deps: FileOpenGuardDeps): boolean {
+  if (error && typeof error === 'object' && (error as { code?: string }).code === 'missing-file') {
+    deps.reportMissing(rawUrl, externalOpenErrorMessage(error))
+
+    return true
+  }
+
+  deps.log(`[file] pre-open stat failed: ${externalOpenErrorMessage(error)}`)
+
+  return false
+}
 
 export interface ExternalOpenDeps {
   isWsl: boolean
   spawn: (cmd: string, args: readonly string[], opts: SpawnOptions) => ChildProcess
   openExternal: (url: string) => Promise<void>
   openFile: (rawUrl: string) => Promise<void>
+  /**
+   * Open a BARE local filesystem path (POSIX `/…`, `~/…`, Windows drive/UNC)
+   * that is not a URL. The impl resolves it through the same audited
+   * `resolveRequestedPathForIpc` the `file:` route uses, then `shell.openPath`,
+   * with the same reveal-in-folder fallback and missing-file reporting as the
+   * file route. Resolves false when the path could not be resolved at all
+   * (rejected syntax, blocked device path) so the caller logs and reports it.
+   */
+  openLocalPath: (rawPath: string) => Promise<boolean>
   notifyFailure: (url: string, message: string) => void
   log: (line: string) => void
 }
 
-const SUPPORTED_WEB = ['http:', 'https:', 'mailto:']
+/**
+ * Fail-closed guard for the WSL hand-off (#126939). rundll32 receives the URL
+ * as one argv element, so the only characters that could split or escape that
+ * argument are quotes, whitespace, and control characters. `&`, `|`, `^`, and
+ * `%` are ordinary URL characters for this sink (rundll32 performs no shell
+ * parsing and never expands `%VAR%`), so they must stay allowed — rejecting
+ * them would break every `?a=1&b=2` query string.
+ */
+// eslint-disable-next-line no-control-regex -- deliberately reject control chars in launch arguments
+const WSL_LAUNCH_UNSAFE = /["\s\x00-\x1f\x7f]/
+
+export function isUnsafeWslLaunchArgument(url: string): boolean {
+  return WSL_LAUNCH_UNSAFE.test(url)
+}
 
 export function externalOpenErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -40,23 +96,44 @@ export function externalOpenErrorMessage(error: unknown): string {
  * so fire-and-forget callers can `void` the result safely.
  */
 export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
-  const raw = String(rawUrl || '').trim()
+  const raw = absolutizeProtocolRelativeUrl(String(rawUrl || '').trim())
 
   if (!raw) {
     return { ok: false, reason: 'invalid' }
   }
 
-  let parsed: URL
+  // Bare local paths (POSIX `/…`, `~/…`, Windows drive/UNC) are not valid
+  // absolute URLs: `new URL()` either throws (POSIX, `~`, UNC) or mis-parses a
+  // drive letter as a bogus `c:` scheme, which the web allowlist below would
+  // reject as "Invalid external URL". Route them through the audited file
+  // resolver instead (hermes-agent 80946, 84361).
+  if (looksLikeLocalFilesystemPath(raw)) {
+    let opened: boolean
 
-  try {
-    parsed = new URL(raw)
-  } catch {
+    try {
+      opened = await deps.openLocalPath(raw)
+    } catch (error) {
+      return failOpen(deps, raw, error)
+    }
+
+    if (!opened) {
+      deps.log(`[file] openPath resolve rejected: path=${raw}`)
+
+      return { ok: false, reason: 'invalid' }
+    }
+
+    return { ok: true }
+  }
+
+  const target = externalUrlTarget(raw)
+
+  if (!target) {
     return { ok: false, reason: 'invalid' }
   }
 
-  if (parsed.protocol === 'file:') {
+  if (target.kind === 'file') {
     try {
-      await deps.openFile(raw)
+      await deps.openFile(target.url)
     } catch {
       // main's openFile handles its own fallback; never surfaced here
     }
@@ -64,11 +141,7 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
     return { ok: true }
   }
 
-  if (!SUPPORTED_WEB.includes(parsed.protocol)) {
-    return { ok: false, reason: 'invalid' }
-  }
-
-  const url = parsed.toString()
+  const { url } = target
 
   if (deps.isWsl) {
     return openViaWsl(url, deps)
@@ -84,9 +157,21 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
 }
 
 async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
+  if (isUnsafeWslLaunchArgument(url)) {
+    deps.log(`[link] refusing WSL hand-off: URL contains a character unsafe as a launch argument`)
+
+    return { ok: false, reason: 'invalid' }
+  }
+
   deps.log(`[link] opening via WSL→Windows: ${url}`)
 
-  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', url], {
+  // rundll32 is not a shell: it never treats `&`, `|`, or `^` as separators
+  // and never expands `%VAR%`, so the URL travels as a single argument no
+  // matter what an agent-produced markdown link contains (#126939). The
+  // previous sink — `cmd.exe /c start "" <url>` — let cmd.exe parse `&` in a
+  // query string as a command separator, which was both an injection risk and
+  // the reason every `?a=1&b=2` URL failed to open on WSL.
+  const proc = deps.spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true
@@ -96,7 +181,7 @@ async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<External
   // fall back to xdg-open; if that also fails, surface it. The handler runs
   // asynchronously after this function has already resolved.
   proc.on('error', error => {
-    deps.log(`[link] cmd.exe start failed: ${error.message}; falling back to xdg-open`)
+    deps.log(`[link] rundll32 hand-off failed: ${error.message}; falling back to xdg-open`)
 
     deps.openExternal(url).catch(openError => {
       failOpen(deps, url, openError)

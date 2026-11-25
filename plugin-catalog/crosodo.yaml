@@ -1,0 +1,18 @@
+name: crosodo
+title: Crosodo
+repo: https://github.com/Terahertz-Inc/crosodo-mcp
+sha: 0acc98a34c1d58251ff1047c67b74ed2bc1b905b
+version: "1.0.3"
+description: "Cottage food and home bakery law lookups for US states and counties through Crosodo's remote MCP (https://crosodo.com/api/mcp): state rules, county permits, label requirements, Crosodo Certified credentials, and optional label-packet checkout. Portable Agent Plugins v1 (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector; every tool call goes to crosodo.com. Lookups are open; checkout may require a signed-in Crosodo account. The package marks the server untrusted so Hermes asks before write-capable tools and refuses them in unattended runs. The live tool set is served by the remote server and is not covered by the pinned sha."
+maintainer: Terahertz, Inc.
+tier: community
+category: tools
+docs_url: https://crosodo.com/developers
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

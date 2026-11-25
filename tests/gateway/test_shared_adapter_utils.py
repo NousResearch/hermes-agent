@@ -49,7 +49,7 @@ def test_bounded_put_refreshes_and_caps():
 
 
 def test_dedup_sites_keep_their_own_window(monkeypatch):
-    from gateway.platforms.qqbot import constants as qq
+    from plugins.platforms.qqbot import constants as qq
     from plugins.platforms.photon import adapter as photon
     from plugins.platforms.wecom import callback_adapter as wecom_cb
 

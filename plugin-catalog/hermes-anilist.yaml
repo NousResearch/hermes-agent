@@ -1,0 +1,52 @@
+# The Hermes plugin catalog entry for this plugin.
+#
+# THIS FILE IS NOT READ BY HERMES. It is kept here so the submission is a copy,
+# not a reconstruction: the catalog lives in the hermes-agent repository, and
+# admission is a pull request adding `plugin-catalog/hermes-anilist.yaml` with
+# exactly these contents. Checklist: that repo's plugin-catalog/README.md.
+#
+#   sha     the commit that was reviewed: the v0.10.0 code plus the documentation
+#           restructure (README slimmed, guides moved to docs/, banner and an animated
+#           ASCII diagram added) — not HEAD at any later moment. Bump it in the same PR
+#           that bumps `version`, and never point it at a branch: the pin IS the trust
+#           model. Quote it: an all-digit SHA unquoted is a YAML number and the loader
+#           rejects it. There is no minimum pin age; admission turns on the pin not
+#           being able to move itself, which this plugin has never done.
+#           The two commits differ in documentation and dev tooling only —
+#           `git diff v0.10.0..<sha> --stat` touches nothing the plugin runs
+#           (`tools/make_flow_gif.py` is a dev script that draws the README's GIF) —
+#           which is why `version` stays 0.10.0: the code at this pin IS the 0.10.0 release.
+#   image   the 2:1 banner on the catalog card and the plugin page hero, pinned to `sha`
+#           so it cannot change under the review (2032x1016, an ASCII portrait with the
+#           plugin name and the status-bar chip). This field is the ONLY source of the
+#           hero: a README image near the top does not become one, so the README leads
+#           with the same file and the entry declares it too.
+#           No `screenshots:` list on purpose: that fills a separate gallery section from
+#           the entry rather than the README, and the README's own table already shows
+#           all three captures (markdown images resolve against the pinned commit).
+name: hermes-anilist
+repo: https://github.com/BatataBF/hermes-anilist
+sha: "1b3549d3027e4cdc417283325ae2816098c50a9a"
+description: "AniList tracker for Hermes Desktop — airing countdowns, a season browser, a local or account-backed watchlist, episode alerts and a daily digest, plus agent tools that read and update your own list and answer about a single show. Disclosure — stores your pasted AniList token in the active profile .env (sent only to graphql.anilist.co); alerts and the daily digest are Hermes cron jobs it creates on the host you pick, and the digest job asks that host's agent to query the public AniList API itself; the agent tools anilist_mark and anilist_remove can change or delete entries on your AniList list (instructed to act only when you ask, and to ask before removing)."
+maintainer: BatataBF
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/BatataBF/hermes-anilist#readme
+version: "0.10.0"
+platforms: []
+image: https://raw.githubusercontent.com/BatataBF/hermes-anilist/1b3549d3027e4cdc417283325ae2816098c50a9a/docs/assets/banner.png
+capabilities:
+  # Must match what register(ctx) actually does at `sha`: `hermes plugins
+  # validate` diffs these against reality and fails the entry on drift.
+  provides_tools:
+    - anilist_list
+    - anilist_show
+    - anilist_airing
+    - anilist_mark
+    - anilist_remove
+  provides_hooks: []
+  provides_middleware: []
+  # No env var is required to install or to read: the AniList token is optional
+  # and lives in the profile's .env only after the user signs in from the pane.
+  requires_env: []

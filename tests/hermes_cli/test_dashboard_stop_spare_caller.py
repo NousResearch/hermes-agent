@@ -1,8 +1,7 @@
 """Root selection for ``dashboard --stop`` / update cleanup must spare the caller.
 
-The argv substring scan (``_DASHBOARD_PATTERNS``) matches any process whose command
-line merely mentions ``hermes dashboard`` / ``hermes serve`` — including the shell the
-``--stop`` was typed into (``bash -c 'hermes dashboard --stop'``). Killing it takes down
+The dashboard scan also selects the shell the ``--stop`` was typed into (``bash -c 'hermes
+dashboard --stop'``: same entry token, same subcommand). Killing it takes down
 the invoking terminal; the historical fix for the hosted-TUI case is descendant hygiene
 (#113819), which is orthogonal to root selection.
 """

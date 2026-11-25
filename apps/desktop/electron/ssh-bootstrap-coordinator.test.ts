@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { isExpectedTransition } from './crash-forensics'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 
 function deferred() {
@@ -310,4 +311,16 @@ test('a second cancelAndWait on the same scope composes with the teardown still 
   // their position after teardown-done is the contract.
   assert.deepEqual(events.slice(0, 2), ['teardown-start', 'teardown-done'])
   assert.deepEqual(events.slice(2).sort(), ['apply-drained', 'new-start'])
+})
+
+test('a start after shutdown rejects with a marked expected-transition sentinel', async () => {
+  const coordinator = createBootstrapCoordinator()
+  coordinator.shutdown()
+
+  await assert.rejects(
+    coordinator.start('', 'fingerprint', async () => {}),
+    (error: unknown) =>
+      isExpectedTransition(error) &&
+      (error as Error).message === 'SSH bootstrap was cancelled because Desktop is quitting.'
+  )
 })

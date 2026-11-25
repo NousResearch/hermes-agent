@@ -3,7 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { catalogProviderMatches, moaPickRemoved, modelOptionsQueryKey, requestModelOptions } from './model-options'
+import {
+  catalogProviderMatches,
+  customDefaultSupersedesPick,
+  moaPickRemoved,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -154,9 +160,11 @@ describe('requestModelOptions', () => {
       params?: Record<string, unknown>
     ) => Promise<T>
 
-    await expect(requestModelOptions({ gateway: gateway as never, request, sessionId: 'tile-1' })).resolves.toBe(
-      routedPayload
-    )
+    // The window's ambient profile must not ride along: the backend lets an
+    // explicit profile override the session the owner already resolves.
+    await expect(
+      requestModelOptions({ gateway: gateway as never, profile: 'default', request, sessionId: 'tile-1' })
+    ).resolves.toBe(routedPayload)
 
     expect(request).toHaveBeenCalledWith('model.options', { explicit_only: true, session_id: 'tile-1' })
     expect(gateway.request).not.toHaveBeenCalled()
@@ -255,5 +263,28 @@ describe('moaPickRemoved', () => {
     expect(moaPickRemoved({ providers: [providers[0]] }, 'deepseek', 'deepseek-v4.1-flash')).toBe(false)
     expect(moaPickRemoved({ providers: [providers[0]] }, 'custom', 'my-own-slug')).toBe(false)
     expect(moaPickRemoved({ providers: [providers[0]] }, '', 'default')).toBe(false)
+  })
+})
+
+describe('customDefaultSupersedesPick', () => {
+  it('flags a bare pick the default has migrated to its custom-provider form (#81922)', () => {
+    // The wire payload for `nvidia` builds the NATIVE provider and drops the
+    // custom entry's extra_body; `custom:nvidia` is the same endpoint.
+    expect(customDefaultSupersedesPick('nvidia', 'custom:nvidia')).toBe(true)
+    expect(customDefaultSupersedesPick('  NVIDIA ', 'Custom:NVIDIA')).toBe(true)
+  })
+
+  it('keeps a pick that already names the custom entry, or a different provider', () => {
+    expect(customDefaultSupersedesPick('custom:nvidia', 'custom:nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('custom:relay', 'custom:nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('anthropic', 'custom:nvidia')).toBe(false)
+  })
+
+  it('never fires for a non-custom default or an empty pick', () => {
+    expect(customDefaultSupersedesPick('nvidia', 'nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('custom', 'custom')).toBe(false)
+    expect(customDefaultSupersedesPick('nvidia', 'openai-codex')).toBe(false)
+    expect(customDefaultSupersedesPick('', 'custom:nvidia')).toBe(false)
+    expect(customDefaultSupersedesPick('nvidia', 'custom:')).toBe(false)
   })
 })

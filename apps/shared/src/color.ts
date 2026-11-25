@@ -135,6 +135,12 @@ export function readableOn(bg: string, inks: readonly [string, ...string[]] = DE
  * `#3f70d8`). The TUI's chainable form opts into 0.05 for less hue loss.
  * The accumulating loop (rather than `i * step`) is deliberate — it is the
  * exact float sequence the old desktop ladder produced.
+ *
+ * Invalid rungs are normalized instead of trusted: a finite `step` in
+ * (0.001, 1] is used as-is (clamped to 1 above that), everything else —
+ * non-finite, non-positive, or too small to reach the bound in a reasonable
+ * number of rungs (including denormals like `Number.MIN_VALUE`) — falls back
+ * to the default ladder. The helper terminates for every JavaScript number.
  */
 export function ensureContrast(color: string, bg: string, min: number, step = 0.2): string {
   const bgLuminance = relativeLuminance(bg)
@@ -152,7 +158,9 @@ export function ensureContrast(color: string, bg: string, min: number, step = 0.
   const pole = bgLuminance < 0.5 ? '#ffffff' : '#000000'
   let best = color
 
-  for (let amount = step; amount <= 1.0001; amount += step) {
+  const rung = Number.isFinite(step) && step >= 0.001 ? Math.min(step, 1) : 0.2
+
+  for (let amount = rung; amount <= 1.0001; amount += rung) {
     best = mix(color, pole, Math.min(amount, 1))
 
     const stepRatio = contrastRatio(best, bg)

@@ -46,8 +46,9 @@ AUTO_APPROVE_ASK = "ask"
 AUTO_APPROVE_WORKSPACE = "workspace_session"
 AUTO_APPROVE_SESSION = "session"
 
-_V4A_FILE_RE = re.compile(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)
-_V4A_MOVE_RE = re.compile(r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
+# ``\s*`` after the stars as in tools/patch_parser.py: a header the parser applies must not escape approval.
+_V4A_FILE_RE = re.compile(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)
+_V4A_MOVE_RE = re.compile(r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
 def set_edit_approval_requester(requester: EditApprovalRequester | None) -> Token:
@@ -73,7 +74,8 @@ def _required_path(arguments: dict[str, Any]) -> str:
     path = str(arguments.get("path") or "")
     if not path:
         raise ValueError("path required")
-    return path
+    from tools.file_tools_paths import _resolve_path_for_task
+    return str(_resolve_path_for_task(path))
 
 
 def _proposal_for_write_file(arguments: dict[str, Any]) -> EditProposal:
@@ -113,7 +115,7 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
     patch_body = arguments.get("patch")
     if not isinstance(patch_body, str) or not patch_body:
         raise ValueError("patch content required")
-    paths = _extract_v4a_patch_paths(patch_body)
+    paths = [_required_path({'path': path}) for path in _extract_v4a_patch_paths(patch_body)]
     if not paths:
         raise ValueError("no file paths found in V4A patch")
     single = len(paths) == 1
@@ -140,9 +142,37 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
     return builder(arguments) if builder else None
 
 
+def _path_is_sensitive(candidate: Path) -> bool:
+    lowered = {part.lower() for part in candidate.parts}
+    return bool(lowered & {".git", ".ssh"}) or candidate.name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+
+
 def _is_sensitive_auto_approve_path(path: str) -> bool:
-    lowered = {part.lower() for part in Path(path).expanduser().parts}
-    return bool(lowered & {".git", ".ssh"}) or Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    """Whether *path* as written OR its symlink-resolved target is sensitive.
+
+    The literal name alone lets ``notes.txt -> ~/.ssh/authorized_keys`` (or a
+    symlinked parent dir) through; the target alone loses a literal ``.git``
+    component whose link points at an innocuously named directory. Unresolvable
+    paths fail closed: they ask."""
+    expanded = Path(path).expanduser()
+    if _path_is_sensitive(expanded):
+        return True
+    try:
+        return _path_is_sensitive(expanded.resolve(strict=False))
+    except (OSError, RuntimeError):
+        return True
+
+
+def _literal_paths(proposal: EditProposal) -> tuple[str, ...]:
+    """Target paths exactly as the model wrote them.
+
+    ``path`` is always included and V4A targets only in patch mode: keying on a
+    present ``patch`` string would let a stray one shadow the real ``path``."""
+    args = proposal.arguments
+    literal = [str(args["path"])] if args.get("path") else []
+    if proposal.tool_name == "patch" and args.get("mode") == "patch" and isinstance(args.get("patch"), str):
+        literal.extend(_extract_v4a_patch_paths(args["patch"]))
+    return tuple(literal)
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:
@@ -154,6 +184,11 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
     # must run per real target or a sensitive/escaped file hides in the join.
     paths = proposal.paths or (proposal.path,)
     if policy == AUTO_APPROVE_ASK or any(_is_sensitive_auto_approve_path(p) for p in paths):
+        return False
+    # Builders canonicalize the target (symlinks followed), so a literal ``.git``
+    # link to an innocuously named directory survives only in the raw arguments.
+    # Lexical only: a relative literal has no trustworthy base here.
+    if any(_path_is_sensitive(Path(p).expanduser()) for p in _literal_paths(proposal)):
         return False
     resolved = [Path(p).expanduser().resolve(strict=False) for p in paths]
     if policy == AUTO_APPROVE_SESSION:
@@ -199,9 +234,12 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 def build_acp_edit_tool_call(proposal: EditProposal):
     """Build the ToolCallUpdate payload for ACP request_permission."""
     import acp
+    from agent.redact import redact_approval_display
 
+    # The title is display text; the diff keeps the raw path the client opens.
     return acp.update_tool_call(
-        f"edit-approval-{next(_PERMISSION_REQUEST_IDS)}", title=f"Approve edit: {proposal.path}", kind="edit",
+        f"edit-approval-{next(_PERMISSION_REQUEST_IDS)}", title=f"Approve edit: {redact_approval_display(proposal.path)}",
+        kind="edit",
         status="pending",
         content=[acp.tool_diff_content(path=proposal.path, old_text=proposal.old_text, new_text=proposal.new_text)],
         raw_input={"tool": proposal.tool_name, "arguments": proposal.arguments},
@@ -238,19 +276,3 @@ def make_acp_edit_approval_requester(
         return getattr(outcome, "outcome", None) == "selected" and getattr(outcome, "option_id", None) == "allow_once"
 
     return _requester
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from concurrent.futures import TimeoutError as FutureTimeout  # noqa: F401,E402
-
-def clear_edit_approval_requester() -> None:
-    """Clear the current requester; primarily used by tests."""
-
-    _EDIT_APPROVAL_REQUESTER.set(None)
-
-def get_edit_approval_requester() -> EditApprovalRequester | None:
-    return _EDIT_APPROVAL_REQUESTER.get()
-# ---- END PLUGIN-COMPAT ----

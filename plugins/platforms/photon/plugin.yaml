@@ -34,6 +34,10 @@ optional_env:
     description: "Loopback port for the Node sidecar control + inbound channel (default 8789)"
     prompt: "Sidecar control port"
     password: false
+  - name: PHOTON_SIDECAR_TOKEN
+    description: "Shared secret for the loopback sidecar channel (default: random per start)"
+    prompt: "Sidecar token"
+    password: true
   - name: PHOTON_SIDECAR_AUTOSTART
     description: "Spawn the Node sidecar on connect (true/false, default true)"
     prompt: "Auto-start the sidecar?"

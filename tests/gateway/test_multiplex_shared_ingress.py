@@ -17,10 +17,10 @@ from typing import Any
 import pytest
 
 pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
-from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig  # noqa: E402
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 def _line_sig(body: bytes, secret: str) -> str:

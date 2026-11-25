@@ -1,0 +1,176 @@
+"""Fail-closed pre-compress checkpoint gate for ``agent.conversation_compression``.
+
+The refusal type, its remediation text and the startup warning for
+``compression.checkpoint_required`` (``conversation_compression`` re-exports the refusal
+helpers), plus the record for lossy authorities outside compression the armed gate withholds.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
+
+# Log-record parity with the origin module.
+logger = logging.getLogger("agent.conversation_compression")
+
+
+class CompressionCheckpointUnavailable(RuntimeError):
+    """Raised when required durable pre-compress checkpointing is unavailable."""
+
+
+# Shared by the startup warning and compress-time block so operators see the
+# same recovery path: disable the fail-closed flag, or switch providers.
+_CHECKPOINT_REQUIRED_REMEDIATION = (
+    "set compression.checkpoint_required: false, or switch to a memory "
+    "provider that implements checkpoint API v2"
+)
+
+
+def _active_memory_provider_label(agent: Any) -> str:
+    """Human-readable active provider name, or an explicit none sentinel."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    if memory_manager is None:
+        return "no active provider"
+    providers = getattr(memory_manager, "providers", None)
+    names: list[str] = []
+    if providers is not None:
+        try:
+            iterable = list(providers)
+        except TypeError:
+            iterable = []
+        for provider in iterable:
+            name = getattr(provider, "name", None)
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+    return ", ".join(names) if names else "no active provider"
+
+
+def _checkpoint_blocked(reason: str) -> CompressionCheckpointUnavailable:
+    return CompressionCheckpointUnavailable(
+        f"BLOCKED_MISSING_PREREQUISITE: required pre-compress checkpoint unavailable: {reason}"
+    )
+
+
+def _checkpoint_incapable(reason: str) -> CompressionCheckpointUnavailable:
+    """Capability refusal: the gate can never pass with this provider set, so the
+    message carries the config-level way out. Transient checkpoint failures keep
+    the plain form — there the provider is capable and the right move is a retry."""
+    return _checkpoint_blocked(f"{reason}. Recover by {_CHECKPOINT_REQUIRED_REMEDIATION}")
+
+
+def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
+    """Startup warning when fail-closed compress will block (init itself must not refuse).
+
+    Capability-probe exceptions are suppressed so a broken provider cannot crash
+    agent construction — same fail-open style as the micro-compact warning.
+    Probe failures log at DEBUG so a flaky probe can be diagnosed without
+    refusing init or emitting the incapable-provider WARNING.
+    """
+    if getattr(agent, "compression_checkpoint_required", False) is not True:
+        return
+    memory_manager = getattr(agent, "_memory_manager", None)
+    if memory_manager is not None:
+        supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
+        if callable(supports_checkpoint):
+            try:
+                if bool(supports_checkpoint(PRE_COMPRESS_CHECKPOINT_API_VERSION)):
+                    return
+            except Exception as exc:
+                logger.debug(
+                    "checkpoint-required capability probe failed; init continues: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return
+    logger.warning(
+        "compression.checkpoint_required is enabled but the active memory "
+        "provider (%s) does not implement checkpoint API v%s. Compress will "
+        "fail closed. Recover by %s.",
+        _active_memory_provider_label(agent),
+        PRE_COMPRESS_CHECKPOINT_API_VERSION,
+        _CHECKPOINT_REQUIRED_REMEDIATION,
+    )
+
+
+def _refuse_checkpoint_required_on_codex_app_server(checkpoint_required: bool, api_mode: str | None) -> None:
+    """Fail closed at init: the codex app-server compacts its own thread without a truthful
+    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
+    guaranteed — the compress_context() guard alone cannot cover native turns."""
+    if checkpoint_required and api_mode == "codex_app_server":
+        raise RuntimeError(
+            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
+            "is incompatible with the codex_app_server API mode: the codex "
+            "agent compacts its own thread without a truthful pre-compaction "
+            "transcript boundary, so a required pre-compress checkpoint "
+            "cannot be guaranteed. Disable compression.checkpoint_required "
+            "or use a non-app-server API mode."
+        )
+
+
+def checkpoint_required_from_config() -> bool:
+    """Whether ``compression.checkpoint_required`` is armed, for sites that decide before an agent exists.
+
+    The fork sites need the answer before the child is built: the child arms the gate inside its own
+    init from the same ``load_config_readonly()`` call, so parent and child answer from one source and
+    a fork is given a provider exactly when it would refuse to compact without one. An unreadable
+    config reads as "not armed", matching ``init_agent``."""
+    from utils import is_truthy_value
+
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        compression = (load_config_readonly() or {}).get("compression") or {}
+    except Exception:  # health: allow BLE001 -- an unreadable config reads as not armed, like init_agent
+        return False
+    return isinstance(compression, dict) and is_truthy_value(compression.get("checkpoint_required"), default=False)
+
+
+_checkpoint_gate_warned: set[str] = set()
+
+
+def _record_checkpoint_gate_suppression(agent: Any, authority: str) -> None:
+    """Count a lossy authority the armed gate withheld; warn once per process per authority.
+
+    The suppression itself is re-evaluated on every call, only the log is deduplicated (per
+    authority, so an operator sees which path was lost). The line names the availability
+    trade: with every other reclamation path withheld, a checkpoint outage halts the session.
+    """
+    agent._checkpoint_gate_suppression_count = getattr(agent, "_checkpoint_gate_suppression_count", 0) + 1
+    if authority in _checkpoint_gate_warned:
+        return
+    _checkpoint_gate_warned.add(authority)
+    logger.warning(
+        "compression.checkpoint_required is enabled: %s is withheld so the checkpoint-gated "
+        "compressor stays the only lossy authority. If the checkpoint provider is unavailable, "
+        "compaction fails closed and the session halts instead of compacting unarchived context.",
+        authority,
+    )
+
+
+def _prune_would_have_run(compressor: Any, current_tokens: int) -> bool:
+    """Only a prune that would have run is a withheld authority.
+
+    The built-in answers via ``would_proactively_prune()``. An engine that overrides
+    ``prune_tool_results_only`` owns its trigger policy, so occupying the hook is the
+    precondition; the inherited ABC no-op is not an authority. A raising predicate reads as
+    "would have run": the call was withheld either way. A hosted engine (``plugins.isolation:
+    host``) is not counted: its methods are all proxies, so an override can't be told from the no-op.
+    """
+    from agent.context_engine import ContextEngine
+    from hermes_cli.plugin_host import is_hosted_object
+
+    prune = getattr(compressor, "prune_tool_results_only", None)
+    if not callable(prune) or getattr(prune, "__func__", None) is ContextEngine.prune_tool_results_only:
+        return False
+    if is_hosted_object(compressor):
+        return False
+    predicate = getattr(compressor, "would_proactively_prune", None)
+    if not callable(predicate):
+        return True
+    try:
+        return bool(predicate(current_tokens))
+    except Exception:
+        logger.debug("would_proactively_prune() failed; counting the withheld prune", exc_info=True)
+        return True

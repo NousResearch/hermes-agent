@@ -9,8 +9,22 @@ from agent import models_dev
 
 
 def _isolated_registry(monkeypatch, catalog=None):
+    # A post-discovery registration mirrors the profile into the picker catalog; keep that scoped too.
+    # Both imported before any patch: the catalog's import-time sync must see the real registry, and
+    # hermes_cli.models must bind the real list so the undo restores it.
+    import hermes_cli.models as hm
+    import hermes_cli.models_catalog_static as static
+    monkeypatch.setattr(static, "CANONICAL_PROVIDERS", list(static.CANONICAL_PROVIDERS))
+    monkeypatch.setattr(static, "_canonical_slugs", set(static._canonical_slugs))
+    monkeypatch.setattr(static, "_PROVIDER_LABELS", dict(static._PROVIDER_LABELS))
+    monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", static.CANONICAL_PROVIDERS)
+    monkeypatch.setattr(hm, "_PROVIDER_LABELS", static._PROVIDER_LABELS)
     monkeypatch.setattr(providers, "_REGISTRY", {})
     monkeypatch.setattr(providers, "_ALIASES", {})
+    # The list cache is filled from the swapped-in registry; without its own patch it outlives the
+    # test and later list_providers() calls see only the fixture profile (hidden ones go unfiltered).
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(providers, "_SOURCES", {})
     monkeypatch.setattr(providers, "_discovered", True)
     monkeypatch.setattr(models_dev, "_registry_models", lambda *a, **k: catalog)
 
@@ -60,7 +74,7 @@ def test_partial_plugin_metadata_preserves_unknowns_and_catalog_fields(monkeypat
     original = deepcopy(catalog)
     _isolated_registry(monkeypatch, catalog)
     monkeypatch.setitem(models_dev.PROVIDER_TO_MODELS_DEV, "fixture-provider", "fixture-provider")
-    monkeypatch.setattr(models_dev, "_load_model_overrides", lambda: {})
+    monkeypatch.setattr(models_dev, "_load_model_overrides", dict)
     providers.register_provider(ProviderProfile(name="fixture-provider", model_capabilities={
         "known": {"context_window": 64000},
         "unknown": {"context_window": 48000},
@@ -72,3 +86,21 @@ def test_partial_plugin_metadata_preserves_unknowns_and_catalog_fields(monkeypat
     assert unknown.context_window == 48000
     assert unknown.supports_reasoning is None and unknown.supports_vision is None
     assert catalog == original
+
+
+def test_provider_wide_vision_flag_gates_tool_results_not_attachments(monkeypatch):
+    """``ProviderProfile.supports_vision`` is a provider-wide tool-result wire capability; per-model attachment
+    routing comes only from ``model_capabilities``. Relays (``router``) set the flag over mixed catalogs, so
+    honouring it for attachments sent images to text-only models (reverted in 08feaa98b5b)."""
+    from agent.image_routing import decide_image_input_mode
+    from tools.vision_tools import _supports_media_in_tool_results
+
+    _isolated_registry(monkeypatch)
+    monkeypatch.setattr(models_dev, "_load_model_overrides", dict)
+    providers.register_provider(ProviderProfile(
+        name="fixture-relay", supports_vision=True,
+        model_capabilities={"seeing": {"supports_vision": True}}))
+
+    assert _supports_media_in_tool_results("fixture-relay", "undeclared") is True
+    assert decide_image_input_mode("fixture-relay", "undeclared", {}) == "text"
+    assert decide_image_input_mode("fixture-relay", "seeing", {}) == "native"

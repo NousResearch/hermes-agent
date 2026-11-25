@@ -38,6 +38,7 @@ except sqlite3.OperationalError as exc:
         raise
     sys.exit(75)
 """, str(db)], capture_output=True, text=True, timeout=30,
+check=False,
                 )
                 assert result.returncode in (0, 75), result.stderr
                 prunes.append(result.returncode)

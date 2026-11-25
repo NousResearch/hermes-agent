@@ -1,0 +1,22 @@
+name: recall-vault
+repo: https://github.com/tydavid5/recall-vault
+sha: e564eb53143840540d1987b48906e1602050c73f
+description: "A policy vault and memory for agent money. The agent remembers its spending rules, per-transaction cap, daily cap, confirm threshold, and allowlist, and Recall Vault blocks over-cap payments, refuses unknown recipients, and escalates over-threshold payments to human approval before any tool runs. Dry-run only, no money moves. Disclosure — the pre_tool_call hook inspects every tool call and blocks, or sends to Hermes' approval prompt, calls from other plugins whose tool name looks like a payment (pay, transfer, withdraw, payout, settle) and whose arguments carry an amount and a recipient; policy and ledger are stored in this profile's plugin data; the policy and remembered rules are added to the model input every turn; dry-run only, it moves no money itself."
+maintainer: tydavid5
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.1"
+capabilities:
+  provides_tools:
+    - recall_vault_check
+    - recall_vault_policy
+    - recall_vault_set_policy
+    - recall_vault_ledger
+    - recall_vault_remember
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

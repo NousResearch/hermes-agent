@@ -37,11 +37,14 @@ media/images/script/Scene1_Intro.png  (from -s flag)
 
 ## Stitching with ffmpeg
 
-```bash
-cat > concat.txt << 'EOF'
+`write_file` `concat.txt`:
+
+```
 file 'media/videos/script/480p15/Scene1_Intro.mp4'
 file 'media/videos/script/480p15/Scene2_Core.mp4'
-EOF
+```
+
+```bash
 ffmpeg -y -f concat -safe 0 -i concat.txt -c copy final.mp4
 ```
 
@@ -51,11 +54,9 @@ ffmpeg -y -f concat -safe 0 -i concat.txt -c copy final.mp4
 # Mux narration
 ffmpeg -y -i final.mp4 -i narration.mp3 -c:v copy -c:a aac -b:a 192k -shortest final_narrated.mp4
 
-# Concat per-scene audio first
-cat > audio_concat.txt << 'EOF'
-file 'audio/scene1.mp3'
-file 'audio/scene2.mp3'
-EOF
+# Concat per-scene audio first: write_file audio_concat.txt with
+#   file 'audio/scene1.mp3'
+#   file 'audio/scene2.mp3'
 ffmpeg -y -f concat -safe 0 -i audio_concat.txt -c copy full_narration.mp3
 ```
 

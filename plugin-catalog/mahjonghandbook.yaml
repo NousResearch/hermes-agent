@@ -1,0 +1,22 @@
+name: mahjonghandbook
+title: MahjongHandbook
+repo: https://github.com/AbigailDavised/mahjonghandbook-mcp
+sha: 7c18342b2a14ec609d25d4d9918cbe0c5b9c4f93
+version: "1.0.1"
+description: "American Mahjong (NMJL card pattern sections, Charleston 3-pass sequence rules, Joker legality & swapping), Chinese Official MCR 81-Fan scoring referee, and Japanese Riichi Mahjong Furiten/Yaku/Fu calculator through MahjongHandbook's official MCP server (Streamable HTTP at https://mahjonghandbook.com/api/mcp, no sign-in, no keys in config). Bundles the mahjonghandbook workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to mahjonghandbook.com/api/mcp with only the Mahjong rule variant or hand query arguments. All 4 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: MahjongHandbook
+tier: community
+category: tools
+docs_url: https://mahjonghandbook.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/mahjonghandbook-mcp/7c18342b2a14ec609d25d4d9918cbe0c5b9c4f93/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/mahjonghandbook-mcp/7c18342b2a14ec609d25d4d9918cbe0c5b9c4f93/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/mahjonghandbook-mcp/7c18342b2a14ec609d25d4d9918cbe0c5b9c4f93/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

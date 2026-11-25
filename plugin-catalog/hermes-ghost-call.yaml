@@ -1,0 +1,26 @@
+name: hermes-ghost-call
+repo: https://github.com/winchxyz/hermes-ghost-call
+sha: b670ff8a930a02aff8afe2c39994bcf4645654ac
+description: "A real-time AI assistant on your own phone calls. You stay on the line; Hermes listens and streams one-line hints to your page and chat (what they just offered, what to ask next), knows your private target without ever saying it, plays a hint in your earpiece on one tap, and posts a summary with what was agreed and a draft confirmation message when you hang up. Works with two browser links, a real phone line through your own Twilio account, or any call on speaker. Disclosure — streams live call audio of BOTH parties to OpenAI (realtime transcription at api.openai.com, plus hint, earpiece-TTS and summary models) and stores text transcripts (on by default; `store_transcripts: false` turns it off), hints and summaries in plugin data (SQLite); the other party is not told by the plugin that the call is transcribed, and call-recording consent law is the user's responsibility; runs a FastAPI bridge (`hermes ghost serve`, 127.0.0.1:8766 by default) that you must expose publicly at PUBLIC_BASE_URL (e.g. a tunnel), protected by one-time link tokens and Twilio signature checks; Twilio mode places paid calls through your own Twilio account to numbers the model may choose, but only numbers on your HERMES_GHOST_TEST_ALLOWLIST (empty = no dialing; HERMES_GHOST_ALLOW_ALL=1 lifts it) and never emergency/premium numbers, without a Hermes approval prompt; Hermes speaks on the call only after you type `/ghost intervene allow`, and then first says it is an AI."
+maintainer: winchxyz
+tier: community
+category: voice
+title: Ghost Call
+docs_url: https://github.com/winchxyz/hermes-ghost-call#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/winchxyz/hermes-ghost-call/b670ff8a930a02aff8afe2c39994bcf4645654ac/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/winchxyz/hermes-ghost-call/b670ff8a930a02aff8afe2c39994bcf4645654ac/docs/media/screen-chat.png
+  - https://raw.githubusercontent.com/winchxyz/hermes-ghost-call/b670ff8a930a02aff8afe2c39994bcf4645654ac/docs/media/screen-hints.png
+  - https://raw.githubusercontent.com/winchxyz/hermes-ghost-call/b670ff8a930a02aff8afe2c39994bcf4645654ac/docs/media/screen-whisper.png
+  - https://raw.githubusercontent.com/winchxyz/hermes-ghost-call/b670ff8a930a02aff8afe2c39994bcf4645654ac/docs/media/screen-summary.png
+  - https://raw.githubusercontent.com/winchxyz/hermes-ghost-call/b670ff8a930a02aff8afe2c39994bcf4645654ac/docs/media/screen-modes.png
+platforms: []
+capabilities:
+  provides_tools: [ghost_start, ghost_status, ghost_hint_latest, ghost_speak, ghost_intervene, ghost_hangup, ghost_summary]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env:
+    - OPENAI_API_KEY
+    - PUBLIC_BASE_URL
+requires_hermes: ">=0.23.0"

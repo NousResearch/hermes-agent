@@ -1,3 +1,9 @@
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this the first
+// test pays the cold transform of the whole graph and times out on a loaded runner.
+import '@/components/pane-shell/tree/store'
+import '@/store/layout'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // An edge belongs to the pane that sits on it. Mirrored (⌘\ or the Simple
@@ -16,7 +22,7 @@ describe('side toggles follow the flip', () => {
     vi.resetModules()
   })
 
-  it('collapses the edge the sidebar / file tree actually sit on', { timeout: 30_000 }, async () => {
+  it('collapses the edge the sidebar / file tree actually sit on', async () => {
     const tree = await import('@/components/pane-shell/tree/store')
     const layout = await import('@/store/layout')
 

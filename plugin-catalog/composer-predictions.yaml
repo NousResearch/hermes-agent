@@ -1,0 +1,22 @@
+name: composer-predictions
+title: Hermes Composer Predictions
+repo: https://github.com/xuhuawork/hermes-composer-predictions
+sha: 78f9742719f6da4a12ee780c48ba02bb6a582acb
+description: "Context-aware next-step prompts below the Hermes Desktop composer: suggests three editable follow-ups after each assistant reply with two-click replacement protection on non-empty drafts, bilingual EN/zh-CN controls, and never auto-sends. Disclosure — Desktop-only plugin, on by default: after every completed assistant reply it reads up to the latest 6 visible user/assistant messages (12,000-character cap) via session.history and makes one extra stateless llm.oneshot request (task 'composer_predictions') through the session's configured model provider, which adds one model call per reply until you switch it off in the strip; it never writes conversation history, reads credential files, runs shell commands, or submits turns automatically."
+maintainer: xuhuawork
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/xuhuawork/hermes-composer-predictions#readme
+version: "0.1.0"
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/xuhuawork/hermes-composer-predictions/78f9742719f6da4a12ee780c48ba02bb6a582acb/docs/screenshots/composer-predictions.png
+known_issues:
+  - In-composer gray preview and Tab / ArrowRight / Escape require a Hermes Desktop build with PR #151206; current Desktop builds use the bottom suggestion chips.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -19,7 +19,6 @@ import {
   useSyncExternalStore
 } from 'react'
 
-import { isScreenPane } from '@/app/redesign/developer-tool-panel'
 import { beginSashDrag, endSashDrag } from '@/components/pane-shell/geometry'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
@@ -70,8 +69,6 @@ const SASH_KEY_STEP_LARGE_PX = 64
 
 /** A Browser tab's tile: main by placement, docked beside the main column. */
 const isPreviewTile = (id: string) => id.startsWith(`${PREVIEW_TILE_PREFIX}:`)
-// The redesign's side surfaces that are main by placement: a Browser tile and an agent's Screen.
-const isDockedSide = (id: string) => isPreviewTile(id) || isScreenPane(id)
 
 /** The single group id a subtree resolves to, or null when it holds several
  *  zones — the sash can only collapse a boundary that IS exactly one zone. */
@@ -195,7 +192,7 @@ export function TreeSplit({
     (!revealsHidden && (hiddenPanes.has(id) || routeCollapsed.has(id))) ||
     (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
-  const trackCtx: TrackContext = { paneFor, paneGone, overrides, dockedSide: portal ? isDockedSide : undefined }
+  const trackCtx: TrackContext = { paneFor, paneGone, overrides, dockedSide: portal ? isPreviewTile : undefined }
 
   // Chrome-toggle collapse: a subtree whose every pane is gone renders
   // display:none (content stays MOUNTED — toggling back is instant), and its

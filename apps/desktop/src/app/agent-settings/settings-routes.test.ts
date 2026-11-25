@@ -52,7 +52,7 @@ describe('agent settings routes', () => {
     expect(resolveAgentSettingsSection(new URLSearchParams(`agentProfile=research&${link}`))).toBe(section)
   })
 
-  it.each(['connectors', 'mcp'])('has no Connectors page: an old %s link is a link to Capabilities for that agent', tab => {
+  it.each(['connectors', 'mcp', 'agent:connectors'])('has no Connectors page: an old %s link is a link to Capabilities for that agent', tab => {
     const params = new URLSearchParams(`agentProfile=research&connection=homelab&panel=capabilities&tab=${tab}`)
 
     expect(resolveAgentSettingsSection(params)).toBeNull()

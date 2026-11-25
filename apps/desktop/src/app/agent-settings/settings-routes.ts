@@ -90,15 +90,24 @@ export function resolveAgentSettingsSection(params: URLSearchParams): AgentSetti
 }
 
 /** Connectors are not one of an agent's settings pages: they are set up on Capabilities, for the
- *  agent chosen there. A link to the page they had here (`tab=connectors`, or its older `tab=mcp`)
- *  is a link to that. */
+ *  agent chosen there. A link to the page they had here (`tab=connectors`, its older `tab=mcp`, or
+ *  the `tab=agent:connectors` the settings menu wrote, which a restored window may still hold) is a
+ *  link to that. */
 export function isAgentConnectorsLink(params: URLSearchParams): boolean {
-  return ['connectors', 'mcp'].includes(params.get('tab') ?? '')
+  return ['connectors', 'mcp', 'agent:connectors'].includes(params.get('tab') ?? '')
 }
 
 /** Capabilities > Connectors, opened on one agent. */
-export function agentConnectorsHref(agent: { connectionId?: null | string; profile: string }): string {
-  const query = new URLSearchParams({ tab: 'connectors', agentProfile: agent.profile })
+export const agentConnectorsHref = (agent: AgentLinkOwner): string => agentCapabilityHref('connectors', agent)
+
+interface AgentLinkOwner {
+  connectionId?: null | string
+  profile: string
+}
+
+/** A Capabilities tab, opened on one agent. */
+export function agentCapabilityHref(tab: string, agent: AgentLinkOwner): string {
+  const query = new URLSearchParams({ tab, agentProfile: agent.profile })
 
   if (agent.connectionId) {
     query.set('connection', agent.connectionId)

@@ -14,6 +14,7 @@ import { $connection, $gatewayState } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { PageSearchShell } from '../../page-search-shell'
+import { SettingsOwnerContext } from '../../settings/profile-scope'
 import { parseCatalog } from '../catalog/catalog-data'
 import { $catalogCardView } from '../catalog/store'
 
@@ -915,6 +916,55 @@ describe('PluginsTab catalog UX', () => {
 
       expect(await screen.findByRole('switch', { name: 'demo-weather' })).toBeTruthy()
       expect(screen.queryByRole('button', { name: 'Uninstall: demo-weather' })).toBeNull()
+    })
+
+    const forOwner = (owner: { connectionId: string; profile: string }) =>
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <SettingsOwnerContext.Provider value={owner}>
+              <PluginsHarness agentControls agentLayout profile={owner.profile} />
+            </SettingsOwnerContext.Provider>
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+
+    it('browses the library for this agent, not whichever one is active', async () => {
+      await act(async () => {
+        forOwner({ connectionId: 'local', profile: 'workbot' })
+      })
+
+      expect((await screen.findByRole('link', { name: 'Browse the plugin catalog' })).getAttribute('href')).toBe(
+        '/capabilities?tab=plugins&agentProfile=workbot&connection=local'
+      )
+      // An installed list advertises nothing above itself.
+      expect(screen.queryByText('Extend Hermes with plugins')).toBeNull()
+    })
+
+    it('keeps Install from Git for an agent on another machine, which the Capabilities page cannot reach', async () => {
+      const git = TRANSLATIONS.en.settings.plugins.installModal.installFromGit
+
+      await act(async () => {
+        forOwner({ connectionId: 'homelab', profile: 'workbot' })
+      })
+
+      expect(await screen.findByRole('button', { name: git })).toBeTruthy()
+    })
+
+    it('does not show the library\'s failure: it never asked for the library', async () => {
+      queryClient.setQueryData(['public-catalog', 'plugins'], undefined)
+      await queryClient
+        .fetchQuery({ queryKey: ['public-catalog', 'plugins'], queryFn: () => Promise.reject(new Error('catalog down')), retry: false })
+        .catch(() => undefined)
+      $agentPlugins.set([])
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeTruthy()
+      expect(screen.queryByText('catalog down')).toBeNull()
     })
 
     it('says so in a line when nothing is installed', async () => {

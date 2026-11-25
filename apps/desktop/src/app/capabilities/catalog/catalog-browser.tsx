@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
+import { agentCapabilityHref } from '@/app/agent-settings/settings-routes'
+import { useSettingsOwner } from '@/app/settings/profile-scope'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -78,8 +80,6 @@ interface CatalogBrowserProps {
   /** List what is installed and nothing else: no library section, and no library fetch. Installing
    *  happens on the page the banner links to. */
   installedOnly?: boolean
-  /** What an installed-only list says when nothing is installed. */
-  emptyInstalled?: string
 }
 
 const PAGE_SIZE = 60
@@ -95,7 +95,9 @@ function useDeferredCatalog(kind: CatalogKind, installedEntries: CatalogEntry[] 
   // Installed only: the library is neither fetched nor read, even where another page has cached it.
   const fetched = installedOnly ? undefined : feed.data
   const isPending = !installedOnly && feed.isPending
-  const { error, refetch } = feed
+  // Nor is its failure this page's: a library that failed to load elsewhere is not an error here.
+  const error = installedOnly ? null : feed.error
+  const { refetch } = feed
   const data = useDeferredValue(fetched, NO_ROWS)
   // Until the deferred feed lands, the installed rows alone would render a throwaway page of cards
   // (about a thousand nodes in the click's frame) that the feed replaces a moment later: the page
@@ -454,7 +456,7 @@ interface AgentCatalogProps extends Pick<
   | 'actions'
   | 'headerActions'
   | 'notice'
-  | 'emptyInstalled'
+  | 'installedOnly'
 > {
   entries: CatalogEntry[]
   /** Every entry the library offers, for the banner's count; undefined while it loads. */
@@ -486,7 +488,7 @@ function AgentCatalog({
   actions,
   headerActions,
   notice,
-  emptyInstalled,
+  installedOnly,
   entries,
   libraryCount,
   facets,
@@ -518,6 +520,9 @@ function AgentCatalog({
     Number(facets.updatesOnly)
 
   const sections = agentCatalogSections({ kind, entries, isInstalled, copy })
+  // The library, opened on this agent: the page reads the agent a link names.
+  const owner = useSettingsOwner()
+  const browse = owner ? agentCapabilityHref(kind, owner) : `/capabilities?tab=${kind}`
 
   const open = (entry: CatalogEntry) => {
     onSelect(entry.id)
@@ -526,10 +531,11 @@ function AgentCatalog({
 
   return (
     <div className="agent-capability-list">
+      {installedOnly ? null : (
       <AgentCapabilityBanner
         action={
           <Button asChild variant="outline">
-            <Link to={`/capabilities?tab=${kind}`}>{banner.browse}</Link>
+            <Link to={browse}>{banner.browse}</Link>
           </Button>
         }
         // The count line is held while the feed loads, so the sections below never move down.
@@ -542,6 +548,7 @@ function AgentCatalog({
         }
         title={banner.bannerTitle}
       />
+      )}
       <CapabilitySearch
         actions={
           <>
@@ -612,17 +619,23 @@ function AgentCatalog({
       {entries.length === 0 &&
         !pending &&
         !error &&
-        (emptyInstalled && !query && !installedPending ? (
+        (installedOnly && !query && !installedPending ? (
           // A section's head with no rows under it: the page's own voice, and the banner above links out.
           <section className="agent-capability-section">
             <header>
               <h3>{copy.plugins.onAgent}</h3>
-              <p>{emptyInstalled}</p>
+              <p>{t.skills.plugins.emptyAll}</p>
             </header>
           </section>
         ) : (
           <CatalogNoResults onClear={onClear} />
         ))}
+      {/* An installed list ends with the one way to more; it has no library to advertise above it. */}
+      {installedOnly && (
+        <Button asChild className="justify-self-start" size="inline" variant="text">
+          <Link to={browse}>{banner.browse}</Link>
+        </Button>
+      )}
       {selected && (
         <CatalogDetailDialog
           onOpenChange={onDetailOpenChange}
@@ -655,7 +668,6 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   renderInstalledDetail,
   renderInstalledAction,
   installedOnly,
-  emptyInstalled,
   selectedEntryId,
   query,
   onQueryChange,
@@ -798,11 +810,11 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         actions={actions}
         detailOpen={detailOpen}
         details={details}
-        emptyInstalled={installedOnly ? emptyInstalled : undefined}
         entries={filtered}
         error={error}
         facets={facets}
         headerActions={headerActions}
+        installedOnly={installedOnly}
         installedPending={Boolean(installedPending)}
         isInstalled={isInstalled}
         kind={kind}

@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey, profileLabel, refreshProfiles } from '@/store/profile'
 import {
   $settingsScopeEditsNonDefault,
@@ -20,6 +21,11 @@ export interface SettingsOwner {
 /** An embedded agent editor cannot retarget its controls through the global scope chip. */
 export const SettingsOwnerContext = createContext<SettingsOwner | undefined>(undefined)
 export const useSettingsOwner = () => useContext(SettingsOwnerContext)
+
+/** An agent whose settings are open while another machine's gateway is the active one: pages that
+ *  reach only the active machine's agents (the Capabilities library) are not a way out for it. */
+export const settingsOwnerElsewhere = (owner: SettingsOwner | undefined): boolean =>
+  Boolean(owner?.connectionId) && owner?.connectionId !== (activeGatewayConnectionId() ?? 'local')
 
 /** The scope a settings control's requests carry: an embedded agent page's owner pins its
  *  connection and profile; otherwise the profile the page was asked to edit (unset → active). */

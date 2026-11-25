@@ -152,6 +152,7 @@ it('shares the saved layout choice when moving between Skills and Plugins', () =
 
 it.each(['skills', 'plugins'] as const)('supports compact agent facet filtering and clearing for %s', async kind => {
   setup(kind, true)
+
   for (const facet of ['Memory', 'alpha-tag']) {
     expect(screen.getByRole('button', { name: 'beta' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'alpha' }))

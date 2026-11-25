@@ -3,7 +3,7 @@ import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } f
 import { Link } from 'react-router'
 
 import { agentCapabilityHref } from '@/app/agent-settings/settings-routes'
-import { useSettingsOwner } from '@/app/settings/profile-scope'
+import { settingsOwnerElsewhere, useSettingsOwner } from '@/app/settings/profile-scope'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -487,7 +487,10 @@ function useLibraryHref(kind: CatalogKind): string {
 
 /** An installed list ends with the one way to more; it has no library to advertise above it. */
 function InstalledListLibraryLink({ shown, to, label }: { shown: boolean; to: string; label: string }) {
-  return shown ? (
+  // The library page reaches only the open machine's agents: for an agent elsewhere it is no way out.
+  const elsewhere = settingsOwnerElsewhere(useSettingsOwner())
+
+  return shown && !elsewhere ? (
     <Button asChild className="justify-self-start" size="inline" variant="text">
       <Link to={to}>{label}</Link>
     </Button>
@@ -496,9 +499,14 @@ function InstalledListLibraryLink({ shown, to, label }: { shown: boolean; to: st
 
 /** Nothing to list: an installed-only page with nothing installed says so under its section's head
  *  (the link out follows the list); anything else is a search or filter that matched nothing. */
-function AgentCatalogEmpty({ installed, onClear }: { installed: boolean; onClear: () => void }) {
+function AgentCatalogEmpty({ installed, loading, onClear }: { installed: boolean; loading: boolean; onClear: () => void }) {
   const { t } = useI18n()
   const copy = useAgentCapabilityCopy()
+
+  // The installed list has not answered yet: its place, not "no results".
+  if (loading) {
+    return <AgentCapabilitySkeleton />
+  }
 
   return installed ? (
     <section className="agent-capability-section">
@@ -650,7 +658,11 @@ function AgentCatalog({
         )
       })}
       {entries.length === 0 && !pending && !error && (
-        <AgentCatalogEmpty installed={Boolean(installedOnly) && !query && !installedPending} onClear={onClear} />
+        <AgentCatalogEmpty
+          installed={Boolean(installedOnly) && !query}
+          loading={Boolean(installedOnly) && installedPending}
+          onClear={onClear}
+        />
       )}
       <InstalledListLibraryLink label={banner.browse} shown={Boolean(installedOnly)} to={browse} />
       {selected && (

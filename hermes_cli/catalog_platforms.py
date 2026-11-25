@@ -53,10 +53,6 @@ def _installs_unattended(entry) -> bool:
     return any(default.name == entry.name for default in default_entries())
 
 
-def _label(entry) -> str:
-    return entry.title or entry.name
-
-
 def recover_in(home: Path, *, report: Callable[[str], None]) -> list[str]:
     """Install or point to every :func:`pending_entries` entry for *home* (the active, bound home). Returns
     the installed plugin names; never raises. Blocking: call it off the event loop."""
@@ -85,8 +81,9 @@ def _recover(home: Path, *, report: Callable[[str], None]) -> list[str]:
             why = ("security.allow_lazy_installs is off, so Hermes did not fetch it"
                    if not fetch_allowed(home) and _installs_unattended(entry)
                    else f"Hermes installs {entry.tier}-tier plugins only when you ask")
-            report(f"⚠ This profile sets {env}, but the '{entry.name}' platform plugin for {_label(entry)} is not "
-                   f"installed, so the gateway does not serve it ({why}). Run `{_install_command(entry.name, home)}`.")
+            label = f" for {entry.title}" if entry.title else ""
+            report(f"⚠ This profile sets {env}, but the '{entry.name}' platform plugin{label} is not installed, so "
+                   f"the gateway does not serve it ({why}). Run `{_install_command(entry.name, home)}`.")
         if not unattended:
             return []
         try:

@@ -942,7 +942,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
         _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
         _ensure_windows_gateway_venv_imports()
-        from gateway.shutdown_watchdog import preload_stop_path_modules
+        from gateway.stop_path_preload import preload_stop_path_modules
         preload_stop_path_modules()
 
         _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)

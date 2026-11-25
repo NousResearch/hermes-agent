@@ -49,10 +49,18 @@ trap 'exit 143' TERM
 /usr/bin/shasum -a 256 "$artifact" > "$out/artifact-before.sha256"
 mkdir "$work/install" "$work/home" "$work/user-data"
 shopt -s nullglob
+# The driver owns which artifacts need the outer DMG check. Asked before install it has no stamp yet, so it
+# answers for releases and channels and leaves commit claims to the installed app's stamp. The assignment keeps a
+# driver failure fatal under set -e.
+dmg_check_needed() {
+  need_dmg_verify=$("$node" "$metadata" should-verify-mac-dmg "${identity_args[@]}" "$@" \
+    | "$node" -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).verifyMacDmg ? "1" : "0")')
+}
 dmg_verified=0
 case "$artifact" in
   *.dmg)
-    if [[ -n $channel_request || ( -n $tag && $tag != commit.* ) ]]; then
+    dmg_check_needed
+    if [[ $need_dmg_verify == 1 ]]; then
       "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
       dmg_verified=1
     fi
@@ -75,8 +83,7 @@ apps=("$work/install"/*.app)
 "$node" "$metadata" verify-mac --app "${apps[0]}" --arch "$arch" "${identity_args[@]}" --out "$out/installed-identity.json"
 if [[ $artifact == *.dmg ]]; then
   if ((dmg_verified == 0)); then
-    need_dmg_verify=$("$node" "$metadata" should-verify-mac-dmg --identity "$out/installed-identity.json" "${identity_args[@]}" \
-      | "$node" -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).verifyMacDmg ? "1" : "0")')
+    dmg_check_needed --identity "$out/installed-identity.json"
     if [[ $need_dmg_verify == 1 ]]; then
       "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
       dmg_verified=1

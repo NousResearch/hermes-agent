@@ -683,10 +683,10 @@ DEFAULT_CONFIG = {
         "prepare_ahead": False,
     },
     # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "auto" (default) | "5m" | "1h"
-    # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
-    # oneshot, webhook, kanban, api_server, tool, batch, curator); falsy ("off", null, ...) disables caching.
-    # route_ttl_ceilings {<provider>: "5m"|"1h"} overrides a profile's prompt_cache_max_ttl.
-    "prompt_caching": {"cache_ttl": "auto", "route_ttl_ceilings": {}},
+    # (auto = 1h for human-paced sessions, 5m for subagent/cron/oneshot/webhook/kanban/api_server/tool/batch/curator);
+    # falsy ("off", null, ...) disables caching. route_ttl_ceilings {<provider>: "5m"|"1h"} overrides a profile's
+    # prompt_cache_max_ttl. openai_key_scope (api.openai.com): "session" = key per chat, "install" = shared by new chats.
+    "prompt_caching": {"cache_ttl": "auto", "route_ttl_ceilings": {}, "openai_key_scope": "session"},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
     # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):

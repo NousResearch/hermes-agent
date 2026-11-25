@@ -1486,12 +1486,12 @@ class _CodexCompletionsAdapter:
             # Reuse the Responses transport's single authoritative hash algorithm and session-scope
             # normalization so equivalent static prefixes route to the same cache bucket across modes,
             # without concentrating unrelated sessions into one shared bucket (see #78941).
-            from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+            from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key, _openai_key_scope
             from agent.transports.codex import _default_prompt_cache_retention_for_request
             if not is_xai and route.endpoint.prompt_cache_key and "prompt_cache_key" not in resp_kwargs:
-                scope = _cache_scope_from_session_id(
+                scope = _openai_key_scope(_cache_scope_from_session_id(
                     _runtime_main_value("cache_scope") or _runtime_main_value("session_id")
-                )
+                ), host)
                 cache_key = _content_cache_key(resp_kwargs["instructions"], resp_kwargs.get("tools"), scope)
                 if cache_key:
                     resp_kwargs["prompt_cache_key"] = cache_key

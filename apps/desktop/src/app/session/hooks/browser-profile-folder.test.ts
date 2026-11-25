@@ -219,7 +219,9 @@ describe('browser default folder follows the profile a new session belongs to', 
         })
       )
 
-      const params = vi.mocked(requestGatewayForAgent).mock.calls.find(([, , method]) => method === 'session.create')?.[3]
+      const params = vi
+        .mocked(requestGatewayForAgent)
+        .mock.calls.find(([, , method]) => method === 'session.create')?.[3]
       expect(params).toMatchObject({ profile: 'writer' })
       expect((params as { cwd?: string } | undefined)?.cwd ?? '').toBe(expected)
     }

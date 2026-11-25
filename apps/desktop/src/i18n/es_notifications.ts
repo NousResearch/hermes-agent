@@ -50,12 +50,16 @@ export const esNotifications = {
   },
   phonePresence: {
     title: 'Este equipo para notificaciones del teléfono',
-    description: 'Lo que esta ventana le dice a Hermes sobre si estás aquí. Un plugin de notificaciones del teléfono decide qué hacer con ello.',
+    description:
+      'Lo que esta ventana le dice a Hermes sobre si estás aquí. Un plugin de notificaciones del teléfono decide qué hacer con ello.',
     unsupported: 'En este backend, las notificaciones del teléfono no dependen de tu actividad.',
     disconnected: 'Sin conexión.',
-    watchingComputer: (time: string) => `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste este equipo por última vez. Última entrada hace ${time}.`,
-    watchingWindow: (time: string) => `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Última entrada hace ${time}.`,
-    watchingWindowNoInput: 'Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Aún no se ha detectado ninguna entrada.'
+    watchingComputer: (time: string) =>
+      `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste este equipo por última vez. Última entrada hace ${time}.`,
+    watchingWindow: (time: string) =>
+      `Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Última entrada hace ${time}.`,
+    watchingWindowNoInput:
+      'Mientras haya una conversación abierta en esta ventana, Hermes sabe cuándo usaste esta ventana por última vez. Aún no se ha detectado ninguna entrada.'
   },
   test: 'Enviar notificación de prueba',
   testTitle: 'Hermes',

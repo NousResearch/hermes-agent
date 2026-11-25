@@ -4,8 +4,24 @@ import { Fragment, type MouseEvent, useMemo, useRef } from 'react'
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'
 import { RoomBotAvatar } from './group-room-avatar'
-import { focusThread, isBusyStatus, memberOutcomes, memberStatus, type MemberStatus, type RoomCycle, roomCycle, type RoomLogEvent, type RoomMemberActivity } from './group-room-status'
-import { MemberStatusChip, ROOM_AVATAR_SIZE, RoomCycleFooter, type RoomStatusLabels, RoomTypingRow } from './group-room-ui'
+import {
+  focusThread,
+  isBusyStatus,
+  memberOutcomes,
+  memberStatus,
+  type MemberStatus,
+  type RoomCycle,
+  roomCycle,
+  type RoomLogEvent,
+  type RoomMemberActivity
+} from './group-room-status'
+import {
+  MemberStatusChip,
+  ROOM_AVATAR_SIZE,
+  RoomCycleFooter,
+  type RoomStatusLabels,
+  RoomTypingRow
+} from './group-room-ui'
 
 /** `groups.state` driver fields that say who is answering. */
 export interface CanonicalDriverActivity {
@@ -15,7 +31,9 @@ export interface CanonicalDriverActivity {
 }
 
 /** `groups.state` driver fields that say what the room is waiting on. */
-export interface CanonicalDriverStatus<Action extends { kind: string } = { kind: string }> extends CanonicalDriverActivity {
+export interface CanonicalDriverStatus<
+  Action extends { kind: string } = { kind: string }
+> extends CanonicalDriverActivity {
   blocked?: boolean
   counts?: Record<string, number>
   pending_actions?: Action[]
@@ -28,7 +46,8 @@ export interface CanonicalActivityLabels extends RoomStatusLabels {
   memberWorking: string
 }
 
-export const canonicalMemberName = (member: CanonicalRoomMember) => member.display_name || member.handle || member.member_id
+export const canonicalMemberName = (member: CanonicalRoomMember) =>
+  member.display_name || member.handle || member.member_id
 const avatarName = (member: CanonicalRoomMember) => member.profile || member.handle || member.member_id
 
 /** The coarse phase the roster has always exposed (`data-phase`); outcomes read as idle. */
@@ -37,46 +56,97 @@ const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working
 const statusOf = (statuses: Map<string, MemberStatus>, member: CanonicalRoomMember): MemberStatus =>
   statuses.get(member.member_id) ?? { kind: 'idle' }
 
-export function CanonicalGroupRoster({ members = [], label, labels, statuses, peerBadges }: {
-  members?: CanonicalRoomMember[]; label: string; labels: RoomStatusLabels & { lead: string }; statuses: Map<string, MemberStatus>
+export function CanonicalGroupRoster({
+  members = [],
+  label,
+  labels,
+  statuses,
+  peerBadges
+}: {
+  members?: CanonicalRoomMember[]
+  label: string
+  labels: RoomStatusLabels & { lead: string }
+  statuses: Map<string, MemberStatus>
   peerBadges?: ReadonlyMap<string, string | undefined>
 }) {
-  if (!members.length) {return null}
+  if (!members.length) {
+    return null
+  }
 
-  return <ul aria-label={label} className="flex min-w-0 flex-wrap gap-1.5">
-    {members.map(member => {
-      const status = statusOf(statuses, member)
+  return (
+    <ul aria-label={label} className="flex min-w-0 flex-wrap gap-1.5">
+      {members.map(member => {
+        const status = statusOf(statuses, member)
 
-      return <MemberStatusChip avatar={<RoomBotAvatar name={avatarName(member)} size={18} />}
-        badge={[(member as { lead?: unknown }).lead && labels.lead, peerBadges?.get(member.member_id)].filter(Boolean).join(' · ') || undefined} key={member.member_id}
-        labels={labels} name={canonicalMemberName(member)} phase={PHASE[status.kind] ?? 'idle'} status={status} />
-    })}
-  </ul>
+        return (
+          <MemberStatusChip
+            avatar={<RoomBotAvatar name={avatarName(member)} size={18} />}
+            badge={
+              [(member as { lead?: unknown }).lead && labels.lead, peerBadges?.get(member.member_id)]
+                .filter(Boolean)
+                .join(' · ') || undefined
+            }
+            key={member.member_id}
+            labels={labels}
+            name={canonicalMemberName(member)}
+            phase={PHASE[status.kind] ?? 'idle'}
+            status={status}
+          />
+        )
+      })}
+    </ul>
+  )
 }
 
 /** A typing-style row per working member at the end of the transcript. */
-export function CanonicalGroupTyping({ members = [], labels, statuses }: {
-  members?: CanonicalRoomMember[]; labels: RoomStatusLabels; statuses: Map<string, MemberStatus>
+export function CanonicalGroupTyping({
+  members = [],
+  labels,
+  statuses
+}: {
+  members?: CanonicalRoomMember[]
+  labels: RoomStatusLabels
+  statuses: Map<string, MemberStatus>
 }) {
-  return <>{members.map(member => {
-    const status = statusOf(statuses, member)
+  return (
+    <>
+      {members.map(member => {
+        const status = statusOf(statuses, member)
 
-    return isBusyStatus(status)
-      ? <RoomTypingRow avatar={<RoomBotAvatar name={avatarName(member)} size={ROOM_AVATAR_SIZE} />} key={member.member_id} labels={labels}
-        name={canonicalMemberName(member)} status={status} />
-      : null
-  })}</>
+        return isBusyStatus(status) ? (
+          <RoomTypingRow
+            avatar={<RoomBotAvatar name={avatarName(member)} size={ROOM_AVATAR_SIZE} />}
+            key={member.member_id}
+            labels={labels}
+            name={canonicalMemberName(member)}
+            status={status}
+          />
+        ) : null
+      })}
+    </>
+  )
 }
 
 /** The room's footer: its round cycle once the log names a discussion; before that (or on a
  *  gateway without member activity) the plain working line. */
-export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statuses }: {
-  cycle: null | RoomCycle; driver?: CanonicalDriverStatus; members?: CanonicalRoomMember[]; labels: CanonicalActivityLabels
+export function CanonicalGroupCycle({
+  cycle,
+  driver,
+  members = [],
+  labels,
+  statuses
+}: {
+  cycle: null | RoomCycle
+  driver?: CanonicalDriverStatus
+  members?: CanonicalRoomMember[]
+  labels: CanonicalActivityLabels
   statuses: Map<string, MemberStatus>
 }) {
   const busy = members.filter(member => isBusyStatus(statusOf(statuses, member)))
 
-  if (cycle?.kind === 'settled' && (driver?.pending_actions?.length || driver?.counts?.deferred)) {return null}
+  if (cycle?.kind === 'settled' && (driver?.pending_actions?.length || driver?.counts?.deferred)) {
+    return null
+  }
 
   if (cycle) {
     // Names only (the chips and typing rows carry each member's tool and time), and only the members of
@@ -86,10 +156,18 @@ export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statu
     return <RoomCycleFooter cycle={cycle} labels={labels} working={named.map(canonicalMemberName)} />
   }
 
-  if (!busy.length && !driver?.working) {return null}
+  if (!busy.length && !driver?.working) {
+    return null
+  }
 
-  return <RoomCycleFooter cycle={{ kind: 'working', round: 0, members: [] }} labels={labels}
-    text={busy.length ? `${labels.memberWorking}: ${busy.map(canonicalMemberName).join(', ')}` : labels.groupWorking} working={[]} />
+  return (
+    <RoomCycleFooter
+      cycle={{ kind: 'working', round: 0, members: [] }}
+      labels={labels}
+      text={busy.length ? `${labels.memberWorking}: ${busy.map(canonicalMemberName).join(', ')}` : labels.groupWorking}
+      working={[]}
+    />
+  )
 }
 
 /** `value`, or the last one while equal by content. Each read builds new objects; the room's memos key on
@@ -98,7 +176,10 @@ export function useSameValue<T>(value: T): T {
   const kept = useRef({ given: value, shown: value })
 
   if (kept.current.given !== value) {
-    kept.current = { given: value, shown: JSON.stringify(value) === JSON.stringify(kept.current.shown) ? kept.current.shown : value }
+    kept.current = {
+      given: value,
+      shown: JSON.stringify(value) === JSON.stringify(kept.current.shown) ? kept.current.shown : value
+    }
   }
 
   return kept.current.shown
@@ -107,21 +188,35 @@ export function useSameValue<T>(value: T): T {
 /** Every member's status, the room's cycle and whether it works, from one poll's state + log. Outcomes are
  *  read per thread; the round comes from the live tasks' own thread (`replyThread`'s when it has work).
  *  Clock-free: it re-derives when the log or the live rows change, never as time passes. */
-export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: CanonicalDriverStatus | undefined, members: CanonicalRoomMember[], replyThread?: string) {
+export function useCanonicalRoomLive(
+  events: CanonicalGroupEvent[],
+  driver: CanonicalDriverStatus | undefined,
+  members: CanonicalRoomMember[],
+  replyThread?: string
+) {
   const activity = useSameValue(driver?.member_activity)
   const log = events as RoomLogEvent[]
   const focus = useMemo(() => focusThread(log, replyThread), [log, replyThread])
   const outcomes = useMemo(() => memberOutcomes(log), [log])
-  const stopConfirmed = !!driver?.counts && driver.working === false && activity?.length === 0 &&
-    driver.pending_actions?.length === 0 && Object.entries(driver.counts).every(([status, count]) =>
-      count === 0 || ['settled', 'cancelled', 'failed'].includes(status))
 
-  const cycle = useMemo(() => roomCycle(log, activity, driver?.max_rounds, focus, stopConfirmed),
-    [log, activity, driver?.max_rounds, focus, stopConfirmed])
+  const stopConfirmed =
+    !!driver?.counts &&
+    driver.working === false &&
+    activity?.length === 0 &&
+    driver.pending_actions?.length === 0 &&
+    Object.entries(driver.counts).every(
+      ([status, count]) => count === 0 || ['settled', 'cancelled', 'failed'].includes(status)
+    )
+
+  const cycle = useMemo(
+    () => roomCycle(log, activity, driver?.max_rounds, focus, stopConfirmed),
+    [log, activity, driver?.max_rounds, focus, stopConfirmed]
+  )
 
   const statuses = useMemo(
     () => new Map(members.map(member => [member.member_id, memberStatus(member.member_id, activity, outcomes)])),
-    [members, activity, outcomes])
+    [members, activity, outcomes]
+  )
 
   return {
     // "Settled" isn't true while a turn waits on a person: its Retry and Discard say what's next.
@@ -146,18 +241,30 @@ export function canonicalRoomAttention(driver: CanonicalDriverStatus | undefined
 
   // The gateway also calls a room blocked while a stopped task settles: that is Stop at work, not a
   // block, unless an unresolved task holds the room as well.
-  if (driver?.blocked && (driver.counts?.indeterminate || !driver.counts?.stopping)) {parts.push(labels.statusBlocked)}
+  if (driver?.blocked && (driver.counts?.indeterminate || !driver.counts?.stopping)) {
+    parts.push(labels.statusBlocked)
+  }
 
-  if (approvals) {parts.push(labels.statusApprovals.replace('{count}', String(approvals)))}
+  if (approvals) {
+    parts.push(labels.statusApprovals.replace('{count}', String(approvals)))
+  }
 
-  if (actions.length > approvals) {parts.push(labels.statusAttention.replace('{count}', String(actions.length - approvals)))}
+  if (actions.length > approvals) {
+    parts.push(labels.statusAttention.replace('{count}', String(actions.length - approvals)))
+  }
 
   return parts
 }
 
 /** Shown beside the working line and roster, never instead of them: one member's failure
  *  does not hide the others' live work. */
-export function CanonicalGroupAttention({ driver, labels }: { driver?: CanonicalDriverStatus; labels: AttentionLabels }) {
+export function CanonicalGroupAttention({
+  driver,
+  labels
+}: {
+  driver?: CanonicalDriverStatus
+  labels: AttentionLabels
+}) {
   const parts = canonicalRoomAttention(driver, labels)
   const approvals = driver?.pending_actions?.filter(action => action.kind === 'approval').length ?? 0
   const approvalText = labels.statusApprovals.replace('{count}', String(approvals))
@@ -168,36 +275,81 @@ export function CanonicalGroupAttention({ driver, labels }: { driver?: Canonical
     card?.focus({ preventScroll: true })
   }
 
-  return parts.length ? <p aria-live="polite" className="text-xs text-(--ui-text-secondary)">
-    {parts.map((part, index) => <Fragment key={part}>
-      {index > 0 && ' · '}
-      {approvals && part === approvalText
-        ? <Button onClick={jumpToApproval} size="inline" variant="text">{part}</Button>
-        : part}
-    </Fragment>)}
-  </p> : null
+  return parts.length ? (
+    <p aria-live="polite" className="text-xs text-(--ui-text-secondary)">
+      {parts.map((part, index) => (
+        <Fragment key={part}>
+          {index > 0 && ' · '}
+          {approvals && part === approvalText ? (
+            <Button onClick={jumpToApproval} size="inline" variant="text">
+              {part}
+            </Button>
+          ) : (
+            part
+          )}
+        </Fragment>
+      ))}
+    </p>
+  ) : null
 }
 
 /** The room's read, action, journal and driver notices, above its log. */
-export function CanonicalGroupNotices({ readError, error, journalError, notice, unavailable, labels, onRefresh, onJournalReload }: {
+export function CanonicalGroupNotices({
+  readError,
+  error,
+  journalError,
+  notice,
+  unavailable,
+  labels,
+  onRefresh,
+  onJournalReload
+}: {
   readError: string
   error: string
   journalError: string
   notice: string
   unavailable: boolean
-  labels: { refresh: string; driverUnavailable: string; journalLoadFailed: string; journalReload: string; details: string }
+  labels: {
+    refresh: string
+    driverUnavailable: string
+    journalLoadFailed: string
+    journalReload: string
+    details: string
+  }
   onRefresh: () => void
   onJournalReload: () => void
 }) {
-  return <div className="px-4"><div className="mx-auto w-full max-w-3xl">
-    {readError && <div className="py-1.5 text-xs text-destructive" role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
-    {error && <div className="py-1.5 text-xs text-destructive" role="alert">{error}</div>}
-    {journalError && <div className="py-1.5 text-xs text-destructive" role="alert">
-      <p>{labels.journalLoadFailed}</p>
-      <Button onClick={onJournalReload}>{labels.journalReload}</Button>
-      <details><summary>{labels.details}</summary>{journalError}</details>
-    </div>}
-    {notice && <p aria-live="polite" className="py-1.5 text-xs text-(--ui-text-secondary)">{notice}</p>}
-    {unavailable && <p className="py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
-  </div></div>
+  return (
+    <div className="px-4">
+      <div className="mx-auto w-full max-w-3xl">
+        {readError && (
+          <div className="py-1.5 text-xs text-destructive" role="alert">
+            {readError}
+            <Button onClick={onRefresh}>{labels.refresh}</Button>
+          </div>
+        )}
+        {error && (
+          <div className="py-1.5 text-xs text-destructive" role="alert">
+            {error}
+          </div>
+        )}
+        {journalError && (
+          <div className="py-1.5 text-xs text-destructive" role="alert">
+            <p>{labels.journalLoadFailed}</p>
+            <Button onClick={onJournalReload}>{labels.journalReload}</Button>
+            <details>
+              <summary>{labels.details}</summary>
+              {journalError}
+            </details>
+          </div>
+        )}
+        {notice && (
+          <p aria-live="polite" className="py-1.5 text-xs text-(--ui-text-secondary)">
+            {notice}
+          </p>
+        )}
+        {unavailable && <p className="py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
+      </div>
+    </div>
+  )
 }

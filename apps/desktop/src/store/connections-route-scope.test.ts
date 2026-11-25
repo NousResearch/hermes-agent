@@ -29,11 +29,7 @@ vi.mock('@/hermes', async importOriginal => {
   }
 })
 
-import {
-  _resetConnectionsForTests,
-  selectConnection,
-  setConnectionsRegistry
-} from '@/store/connections'
+import { _resetConnectionsForTests, selectConnection, setConnectionsRegistry } from '@/store/connections'
 import {
   closeSecondaryGateways,
   configureGatewayRegistry,

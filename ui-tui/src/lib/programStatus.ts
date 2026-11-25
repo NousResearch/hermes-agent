@@ -106,9 +106,7 @@ const RESOLVED = new Set(['connected', 'not_connected', 'skipped'])
 // A connection card waits on the user only for a row still unresolved and not mid-authorize
 // (initiated without a link yet = the backend minting it); answered or working rows are not blocking.
 export const connectionNeedsUser = (targets: readonly ConnectionOperationTarget[] | undefined): boolean =>
-  (targets ?? []).some(
-    target => !RESOLVED.has(target.state) && !(target.state === 'initiated' && !target.connect_url)
-  )
+  (targets ?? []).some(target => !RESOLVED.has(target.state) && !(target.state === 'initiated' && !target.connect_url))
 
 // Why the user is needed, as the classic CLI says it: the command to approve, or the open question.
 const blockedMessage = (overlay: OverlayState): string | undefined => {

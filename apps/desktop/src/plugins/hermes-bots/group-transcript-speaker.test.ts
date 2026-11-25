@@ -18,12 +18,26 @@ import type { RosterRow } from './types'
 
 const localDefault = { name: 'default' } as RosterRow
 const scribe = { name: 'scribe' } as RosterRow
-const homelabDefault = { name: 'default', connectionId: 'homelab', connectionLabel: 'Homelab', remoteSource: true, sourceScoped: true } as RosterRow
+const homelabDefault = {
+  name: 'default',
+  connectionId: 'homelab',
+  connectionLabel: 'Homelab',
+  remoteSource: true,
+  sourceScoped: true
+} as RosterRow
 const remoteLine = { from: { kind: 'member' as const, name: 'default', source: 'Homelab' } }
 const localLine = { from: { kind: 'member' as const, name: 'default' } }
 
-const label = (entry: typeof remoteLine | typeof localLine, members: RosterRow[], roster: RosterRow[] = [], allMeta = {}) =>
-  displayName(groupTranscriptSpeaker(entry, members, roster)!, groupTranscriptSpeakerMeta(entry, members, allMeta, roster))
+const label = (
+  entry: typeof remoteLine | typeof localLine,
+  members: RosterRow[],
+  roster: RosterRow[] = [],
+  allMeta = {}
+) =>
+  displayName(
+    groupTranscriptSpeaker(entry, members, roster)!,
+    groupTranscriptSpeakerMeta(entry, members, allMeta, roster)
+  )
 
 describe('group transcript speaker', () => {
   it('names a seated remote default by its machine, the local one as Hermes', () => {

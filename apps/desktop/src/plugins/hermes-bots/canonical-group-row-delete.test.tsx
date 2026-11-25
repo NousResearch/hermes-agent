@@ -25,7 +25,12 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       ...sdk.host,
       notify,
       requestProfile,
-      state: { ...sdk.host.state, connectionId: atom<null | string>('local'), gateway: atom('open'), profile: atom('default') }
+      state: {
+        ...sdk.host.state,
+        connectionId: atom<null | string>('local'),
+        gateway: atom('open'),
+        profile: atom('default')
+      }
     },
     usePluginI18n: () => translateBotsIn('en')
   }
@@ -90,7 +95,9 @@ it('disbands a group chat from its row menu: confirm, disband on its gateway, go
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
   // The re-read after the disband no longer lists it.
-  await waitFor(() => expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1))
+  await waitFor(() =>
+    expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1)
+  )
   const disband = requestProfile.mock.calls.filter(([, method]) => method === 'groups.disband')
   expect(disband).toHaveLength(1)
   expect(disband[0][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
@@ -128,7 +135,9 @@ it('closes the tab and selection opened under the room name, and leaves another 
   fireEvent.click((await openDisbandConfirm()).getByRole('button', { name: 'Disband' }))
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
-  await waitFor(() => expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1))
+  await waitFor(() =>
+    expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1)
+  )
   expect(closeAlias).toHaveBeenCalledTimes(1)
   expect($groupChatWorkspace.get()).toBeNull()
   expect(closeOther).not.toHaveBeenCalled()

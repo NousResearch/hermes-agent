@@ -91,8 +91,7 @@ export const ruPluginSettings = {
 
 /** Russian copy for the Capabilities ▸ Plugins tab: the page blurb and a plugin's folder access. */
 export const ruPluginsTab = {
-  pageBlurb:
-    'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.',
+  pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.',
   folderAccess: {
     title: 'Доступ к папкам',
     hint: (name: string) => `${name} может читать и изменять файлы в этих папках. Отзыв доступа действует сразу.`,

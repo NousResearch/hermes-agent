@@ -687,7 +687,12 @@ function groupChatSyncEnvelope(
   return envelope
 }
 
-function mirroredGroupLocalName(roomId: string | null, name: string | undefined, byId: Map<string, string>, rooms: Record<string, GroupChat>) {
+function mirroredGroupLocalName(
+  roomId: string | null,
+  name: string | undefined,
+  byId: Map<string, string>,
+  rooms: Record<string, GroupChat>
+) {
   return roomId && byId.has(roomId) ? byId.get(roomId) : name && rooms[name] ? name : null
 }
 
@@ -697,8 +702,19 @@ const disbandedDuringRead = (roomId: string | null, name: string, started: numbe
 function fenceGroupChatRead(snapshot: GroupChatSyncSnapshot | null, started: number): GroupChatSyncSnapshot {
   const remote = normalizeGroupChatSyncSnapshot(snapshot)
 
-  return { ...remote, rooms: Object.fromEntries(Object.entries(remote.rooms).filter(([key, room]) =>
-    !disbandedDuringRead(room.roomId || (key.startsWith('id:') ? key.slice(3) : null), room.name || key.slice(5), started))) }
+  return {
+    ...remote,
+    rooms: Object.fromEntries(
+      Object.entries(remote.rooms).filter(
+        ([key, room]) =>
+          !disbandedDuringRead(
+            room.roomId || (key.startsWith('id:') ? key.slice(3) : null),
+            room.name || key.slice(5),
+            started
+          )
+      )
+    )
+  }
 }
 
 /** Merge the gateway's bounded display projection into Desktop's richer room
@@ -713,7 +729,12 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     deletedRooms = [],
     tombstones = {},
     readStarted = disbandVersion
-  }: { deletedRooms?: string[]; preserveRooms?: string[]; tombstones?: Record<string, number>; readStarted?: number } = {}
+  }: {
+    deletedRooms?: string[]
+    preserveRooms?: string[]
+    tombstones?: Record<string, number>
+    readStarted?: number
+  } = {}
 ) {
   const remoteNorm = normalizeGroupChatSyncSnapshot(remote)
 
@@ -769,8 +790,10 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     const displayName = String(projected.name || localName || (key.startsWith('name:') ? key.slice(5) : key))
 
-    if (disbandedDuringRead(projectedRoomId, displayName, readStarted) ||
-      [displayName, localName].some(name => name && locallyDeleted.has(name))) {
+    if (
+      disbandedDuringRead(projectedRoomId, displayName, readStarted) ||
+      [displayName, localName].some(name => name && locallyDeleted.has(name))
+    ) {
       // Mid-rename guard: the remote copy may still be under the OLD display
       // name while the local record was already re-keyed (same roomId, new
       // name). That old name sits in deletedRooms, but the local record is
@@ -789,7 +812,12 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     const identity = { ...projected, roomId: projectedRoomId }
 
-    if (gatewayGroupIdentityConflicts(existing, identity) || gatewayGroupIdentityConflicts(rooms[displayName] || {}, identity)) {continue}
+    if (
+      gatewayGroupIdentityConflicts(existing, identity) ||
+      gatewayGroupIdentityConflicts(rooms[displayName] || {}, identity)
+    ) {
+      continue
+    }
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
 
@@ -1149,11 +1177,15 @@ async function flushGroupChatServerSync(connectionId?: string) {
     const local = groupChatSyncSnapshot($groupChats.get(), groupChatTombstones)
     const writeRevision = remoteState.revision + 1
 
-    const snapshot = mergeGroupChatSyncSnapshots(fenceGroupChatRead(remoteState.snapshot, remoteState.readStarted), local, {
-      changedRooms: job.changedRooms,
-      deletedRooms: job.deletedRooms,
-      writeRevision
-    })
+    const snapshot = mergeGroupChatSyncSnapshots(
+      fenceGroupChatRead(remoteState.snapshot, remoteState.readStarted),
+      local,
+      {
+        changedRooms: job.changedRooms,
+        deletedRooms: job.deletedRooms,
+        writeRevision
+      }
+    )
 
     // Reconnect/startup reconciliation often discovers that the gateway
     // already holds the exact merged projection. Avoid advancing a revision

@@ -129,6 +129,7 @@ describe('slash output face', () => {
   it('renders a usage-window /usage block (plan gauges) monospace', () => {
     const output =
       'Session Token Usage\nInput tokens:                 13,527\n\nNous Plan\nToday  [||        ]  20% used'
+
     const { container } = render(<Harness text={`slash:/usage\n${output}`} />)
 
     expect(body(container)?.className).toContain('font-mono')

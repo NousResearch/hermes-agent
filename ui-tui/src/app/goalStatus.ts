@@ -37,7 +37,11 @@ export function goalLine(goal: GoalSnapshot | null): GoalLine | null {
   }
 
   // Subgoals and gates as the CLI dock counts them: a tool adding criteria mid-turn shows up here.
-  const turns = [`${goal.turns_used}/${goal.max_turns} turns`, count(goal.subgoals.length, 'subgoal'), count(goal.gates.length, 'gate')]
+  const turns = [
+    `${goal.turns_used}/${goal.max_turns} turns`,
+    count(goal.subgoals.length, 'subgoal'),
+    count(goal.gates.length, 'gate')
+  ]
     .filter(Boolean)
     .join(' · ')
 

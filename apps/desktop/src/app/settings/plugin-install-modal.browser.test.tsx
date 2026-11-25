@@ -22,7 +22,11 @@ vi.mock('@/hermes', async importOriginal => ({
 
 import { queryClient } from '@/lib/query-client'
 import { $notifications } from '@/store/notifications'
-import { $pluginInstallRequest, closePluginInstallRequest, openPluginInstallRequest } from '@/store/plugin-install-request'
+import {
+  $pluginInstallRequest,
+  closePluginInstallRequest,
+  openPluginInstallRequest
+} from '@/store/plugin-install-request'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
@@ -211,8 +215,10 @@ describe('Plugin install in the browser-hosted app with a backend that installs 
   it('installs a desktop-only package on the host through the backend, at the reviewed commit', async () => {
     const reviewed = 'e404b6816b20237a82f6fbe2749b5a576cf75dba'
 
-    desktopBackend({ ok: true, agent: false, desktop: true, desktop_name: 'ui', sha: reviewed, warnings: [] },
-      { ok: true, plugin_name: 'ui', paired_with_agent: false })
+    desktopBackend(
+      { ok: true, agent: false, desktop: true, desktop_name: 'ui', sha: reviewed, warnings: [] },
+      { ok: true, plugin_name: 'ui', paired_with_agent: false }
+    )
 
     renderModal()
     act(() => openPluginInstallRequest({ repo: 'https://github.com/example/ui' }))
@@ -237,8 +243,11 @@ describe('Plugin install in the browser-hosted app with a backend that installs 
   it('holds the agent install to the commit the dialog inspected', async () => {
     const reviewed = 'e404b6816b20237a82f6fbe2749b5a576cf75dba'
 
-    desktopBackend({ ok: true, agent: true, agent_name: 'pkg', desktop: false, sha: reviewed, warnings: [] }, {},
-      { ok: true, plugin_name: 'pkg', enabled: true })
+    desktopBackend(
+      { ok: true, agent: true, agent_name: 'pkg', desktop: false, sha: reviewed, warnings: [] },
+      {},
+      { ok: true, plugin_name: 'pkg', enabled: true }
+    )
 
     renderModal()
     act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
@@ -272,9 +281,14 @@ describe('Plugin install in the browser-hosted app with a backend that installs 
       await waitFor(() => expect(installButton()?.disabled).toBe(false))
       fireEvent.click(installButton()!)
 
-      await waitFor(() => expect($notifications.get().some(n => n.message === 'Desktop plugin pkg installed')).toBe(true))
+      await waitFor(() =>
+        expect($notifications.get().some(n => n.message === 'Desktop plugin pkg installed')).toBe(true)
+      )
       expect(callsFor('install')).toHaveLength(1)
-      expect(callsFor('install')[0][1]).toMatchObject({ action: 'install', identifier: 'https://github.com/example/pkg' })
+      expect(callsFor('install')[0][1]).toMatchObject({
+        action: 'install',
+        identifier: 'https://github.com/example/pkg'
+      })
       // One checkout: no second clone of the same repository racing the host's scan into the same folder.
       expect(callsFor('install_desktop')).toHaveLength(0)
       expect(reconcileDesktopPlugins).toHaveBeenCalled()
@@ -291,14 +305,27 @@ describe('Plugin install in the browser-hosted app with a backend that installs 
     const desktopPluginsRoot = vi.fn(async () => '/srv/hermes/desktop-plugins')
 
     const readDir = vi.fn(async (path: string) => ({
-      entries: path === '/srv/hermes/desktop-plugins' ? [{ name: 'other', path: `${path}/other`, isDirectory: true }] : []
+      entries:
+        path === '/srv/hermes/desktop-plugins' ? [{ name: 'other', path: `${path}/other`, isDirectory: true }] : []
     }))
 
-    window.hermesDesktop = { desktopPluginsRoot, readDir, reconcileDesktopPlugins } as unknown as Window['hermesDesktop']
+    window.hermesDesktop = {
+      desktopPluginsRoot,
+      readDir,
+      reconcileDesktopPlugins
+    } as unknown as Window['hermesDesktop']
 
     try {
       desktopBackend(
-        { ok: true, agent: true, agent_name: 'pkg', desktop: true, desktop_name: 'pkg', sha: 'e404b6816b20237a82f6fbe2749b5a576cf75dba', warnings: [] },
+        {
+          ok: true,
+          agent: true,
+          agent_name: 'pkg',
+          desktop: true,
+          desktop_name: 'pkg',
+          sha: 'e404b6816b20237a82f6fbe2749b5a576cf75dba',
+          warnings: []
+        },
         { ok: true, plugin_name: 'pkg', paired_with_agent: true },
         { ok: true, plugin_name: 'pkg', enabled: true }
       )
@@ -326,14 +353,27 @@ describe('Plugin install in the browser-hosted app with a backend that installs 
     const desktopPluginsRoot = vi.fn(async () => '/srv/hermes/desktop-plugins')
 
     const readDir = vi.fn(async (path: string) => ({
-      entries: path === '/srv/hermes/desktop-plugins' ? [{ name: 'other', path: `${path}/other`, isDirectory: true }] : []
+      entries:
+        path === '/srv/hermes/desktop-plugins' ? [{ name: 'other', path: `${path}/other`, isDirectory: true }] : []
     }))
 
-    window.hermesDesktop = { desktopPluginsRoot, readDir, reconcileDesktopPlugins } as unknown as Window['hermesDesktop']
+    window.hermesDesktop = {
+      desktopPluginsRoot,
+      readDir,
+      reconcileDesktopPlugins
+    } as unknown as Window['hermesDesktop']
 
     try {
       desktopBackend(
-        { ok: true, agent: true, agent_name: 'pkg', desktop: true, desktop_name: 'pkg', sha: 'e404b6816b20237a82f6fbe2749b5a576cf75dba', warnings: [] },
+        {
+          ok: true,
+          agent: true,
+          agent_name: 'pkg',
+          desktop: true,
+          desktop_name: 'pkg',
+          sha: 'e404b6816b20237a82f6fbe2749b5a576cf75dba',
+          warnings: []
+        },
         { ok: true, plugin_name: 'pkg', paired_with_agent: true },
         { ok: true, plugin_name: 'pkg', enabled: true }
       )

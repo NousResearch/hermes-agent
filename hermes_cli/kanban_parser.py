@@ -368,6 +368,11 @@ _SPECS = [
                   f"(spawn_failed, timed_out, or crashed; default: {kbd.DEFAULT_FAILURE_LIMIT})"),
         _json_flag(),
     ], help="One dispatcher pass: reclaim stale, promote ready, spawn workers"),
+    _cmd("cap", [
+        _arg("cap", nargs="?", type=int, metavar="N",
+             help="New kanban.max_in_progress (omit to print the configured and effective cap)"),
+        _json_flag(help="Print the cap state as JSON"),
+    ], help="Show or set the live concurrency cap (applies on the next dispatcher tick, no restart)"),
     _cmd("daemon", [
         _arg("--interval", type=float, default=60.0, help="Seconds between dispatch ticks (default: 60)"),
         _arg("--max", type=int, help="Cap number of spawns per tick"),

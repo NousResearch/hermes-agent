@@ -13,7 +13,7 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
@@ -27,14 +27,37 @@ from gateway.kanban_watchers_common import (
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
+    _apply_live_caps,
+    _log_live_cap_change,
     _log_spawn_results,
     _resolve_dispatcher_settings,
+    _resolve_live_caps,
 )
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+
+
+def _kanban_cfg_now(load_config: Callable[[], Any]) -> Optional[dict]:
+    """The ``kanban:`` mapping as it reads right now; ``None`` when unreadable.
+
+    A read failure keeps the last applied caps: ``load_config`` already serves
+    last-known-good and warns, so a debug line here is enough.
+    """
+    try:
+        cfg = load_config() or {}
+    # health: allow BLE001 -- fail-safe cap re-read; a broken hand edit must never raise into the loop
+    except Exception as exc:
+        logger.debug("kanban dispatcher: live-cap config re-read failed (%s); keeping caps", exc)
+        return None
+    if not isinstance(cfg, dict):
+        return {}
+    kcfg = cfg.get("kanban")
+    # A `kanban:` section that is present but not a mapping is an unusable
+    # edit — keep the last applied caps instead of silently dropping them.
+    return kcfg if isinstance(kcfg, dict) else None
 
 
 class GatewayKanbanWatchersMixin:
@@ -209,9 +232,10 @@ class GatewayKanbanWatchersMixin:
     def _kanban_dispatcher_boot(self) -> Optional[tuple]:
         """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.
 
-        Config is read once at boot (restart to apply), except the auto-decompose
-        toggle which is re-read every tick. The env var is an escape hatch to
-        disable without editing YAML.
+        Config is read once at boot (restart to apply), except the
+        auto-decompose toggle and the three concurrency caps, which are re-read
+        every tick. The env var is an escape hatch to disable without editing
+        YAML.
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -262,6 +286,10 @@ class GatewayKanbanWatchersMixin:
         tick runs :func:`kanban_db_dispatch.dispatch_once` in a thread; one tick's
         failure never stops the next. Shutdown: ``self._running`` is checked
         between ticks and the in-flight ``to_thread`` returns on its own.
+
+        ``dispatch_interval_seconds`` is boot-time; the three concurrency caps
+        (``max_spawn``, ``max_in_progress``, ``max_in_progress_per_profile``)
+        are live — re-read every tick, so changing one needs no restart.
         """
         boot = self._kanban_dispatcher_boot()
         if boot is None:
@@ -280,6 +308,7 @@ class GatewayKanbanWatchersMixin:
         last_warn_at = 0
         results: Optional[list] = None
         dispatcher = _KanbanDispatcher(_kb, settings)
+        applied_caps = _resolve_live_caps(kanban_cfg)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -299,6 +328,17 @@ class GatewayKanbanWatchersMixin:
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
                 else:
+                    # Re-read the concurrency caps live: they gate the NEXT
+                    # spawn, so a tick boundary is a safe place to apply them,
+                    # and a restart would drop every in-flight worker. A read
+                    # failure keeps the last applied caps (fail-safe).
+                    live_cfg = _kanban_cfg_now(_load_config)
+                    if live_cfg is not None:
+                        caps = _resolve_live_caps(live_cfg)
+                        if caps != applied_caps:
+                            _log_live_cap_change(applied_caps, caps)
+                            _apply_live_caps(dispatcher.settings, caps)
+                            applied_caps = caps
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)

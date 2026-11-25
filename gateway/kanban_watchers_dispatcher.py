@@ -31,7 +31,14 @@ _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malform
 
 @dataclass
 class _DispatcherSettings:
-    """``kanban.*`` dispatch settings, read once at boot (restart to apply)."""
+    """``kanban.*`` dispatch settings.
+
+    Resolved at boot; the three concurrency caps (``max_spawn``,
+    ``max_in_progress``, ``max_in_progress_per_profile``) are re-resolved every
+    tick (see :func:`_resolve_live_caps`), so changing them needs no restart.
+    Everything else (interval, failure limit, stale timeout, orphan reconcile,
+    default assignee) stays boot-time.
+    """
 
     interval: float
     max_spawn: Any
@@ -41,6 +48,83 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+
+
+_CAP_KEYS = ("max_spawn", "max_in_progress", "max_in_progress_per_profile")
+
+
+@dataclass(frozen=True)
+class _LiveCaps:
+    """The three ``kanban.*`` concurrency caps as config reads right now.
+
+    ``max_in_progress`` is the EFFECTIVE value: an explicit config value wins,
+    otherwise the memory-derived default (``None`` = uncapped, memory
+    unreadable). ``invalid`` carries the raw values that parsed to ``None`` so
+    a live edit to a bad value is reported once instead of silently ignored.
+    """
+
+    max_spawn: Optional[int]
+    max_in_progress: Optional[int]
+    max_in_progress_per_profile: Optional[int]
+    invalid: tuple[tuple[str, Any], ...] = ()
+
+
+def _cap_int(raw: Any) -> Optional[int]:
+    """Parse one cap: a positive int, or ``None`` when unset or invalid."""
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 1 else None
+
+
+def _resolve_live_caps(kanban_cfg: dict) -> _LiveCaps:
+    """Quiet twin of the boot parser: raw ``kanban.*`` caps -> effective values.
+
+    Deliberately silent: the dispatcher calls this every tick, so a warning
+    here would repeat forever for one bad hand-edited value.
+    """
+    parsed = {key: _cap_int(kanban_cfg.get(key)) for key in _CAP_KEYS}
+    invalid = tuple(
+        (key, kanban_cfg.get(key))
+        for key in _CAP_KEYS
+        if kanban_cfg.get(key) is not None and parsed[key] is None
+    )
+    return _LiveCaps(
+        max_spawn=parsed["max_spawn"],
+        max_in_progress=_kbd().resolve_max_in_progress(parsed["max_in_progress"]),
+        max_in_progress_per_profile=parsed["max_in_progress_per_profile"],
+        invalid=invalid,
+    )
+
+
+def _apply_live_caps(settings: _DispatcherSettings, caps: _LiveCaps) -> None:
+    """Point the running dispatcher at *caps* in place, so the next tick uses them."""
+    settings.max_spawn = caps.max_spawn
+    settings.max_in_progress = caps.max_in_progress
+    settings.max_in_progress_per_profile = caps.max_in_progress_per_profile
+
+
+def _log_live_cap_change(previous: _LiveCaps, current: _LiveCaps) -> None:
+    """One line per changed cap; only called when ``current != previous``.
+
+    Never per tick: the dispatcher compares against the caps it last applied.
+    """
+    for key in _CAP_KEYS:
+        old, new = getattr(previous, key), getattr(current, key)
+        if old == new:
+            continue
+        logger.info(
+            "kanban dispatcher: %s %s -> %s (live; next tick, no restart)",
+            key,
+            "unset" if old is None else old,
+            "unset" if new is None else new,
+        )
+    for key, raw in current.invalid:
+        if (key, raw) not in previous.invalid:
+            logger.warning("kanban dispatcher: invalid kanban.%s=%r; ignoring", key, raw)
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:

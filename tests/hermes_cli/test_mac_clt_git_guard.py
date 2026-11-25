@@ -320,10 +320,10 @@ def test_clt_stub_plugin_git_falls_back_to_no_git_not_to_the_stub(tmp_path, monk
     monkeypatch.setattr(git_resolver, "is_usable_git_executable", lambda _exe, _env=None, **_kw: False)
     launched: list = []
     monkeypatch.setattr(plugins_cmd, "_run_plugin_git", lambda *a, **kw: launched.append(a))
-    real_run = subprocess.run
+    # Record a git launch and never run it: on a Mac without the tools it would be the stub.
     monkeypatch.setattr(
         plugins_provenance.subprocess, "run",
-        lambda cmd, *a, **kw: launched.append(cmd) or real_run(cmd, *a, **kw),
+        lambda cmd, *a, **kw: launched.append(cmd) or subprocess.CompletedProcess(cmd, 1, "", ""),
     )
     plugin = tmp_path / "plugin"
     (plugin / ".git").mkdir(parents=True)

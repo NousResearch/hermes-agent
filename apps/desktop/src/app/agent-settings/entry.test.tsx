@@ -594,6 +594,27 @@ it('starts a stopped Screen from its row, once, for that agent', async () => {
   expect(startButton()?.hasAttribute('disabled')).toBe(false)
 })
 
+it('gives Start back, and says so, when the backend never answers', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  screenPlugin.tone = 'off'
+  screenPlugin.start.mockImplementation(() => new Promise<void>(() => {}))
+  mount('/settings?agentProfile=default')
+  await screenControls()
+  vi.useFakeTimers()
+
+  try {
+    fireEvent.click(startButton()!)
+    expect(startButton()?.hasAttribute('disabled')).toBe(true)
+
+    await act(() => vi.advanceTimersByTimeAsync(5 * 60_000))
+
+    expect(startButton()?.hasAttribute('disabled')).toBe(false)
+    expect($notifications.get().some(note => note.kind === 'error')).toBe(true)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 it('says why a Screen did not start, and leaves its row as it was', async () => {
   $apiRequestScope.set({ connectionId: null, profile: 'default' })
   screenPlugin.tone = 'off'

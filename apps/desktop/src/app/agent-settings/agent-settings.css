@@ -242,8 +242,8 @@
 .agent-overview-screen-stopped {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-inline-end: 12px;
+  gap: var(--portal-space-compact);
+  padding-inline-end: var(--portal-space-compact);
 }
 
 .agent-overview-row + .agent-overview-screen-stopped {

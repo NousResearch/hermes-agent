@@ -22,6 +22,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { platformStatusTone } from '@/lib/platform-status'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { asText } from '@/lib/text'
+import { withTimeout } from '@/lib/with-timeout'
 import { useBots } from '@/plugins/hermes-bots/i18n'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { startBotScreen } from '@/plugins/hermes-bots/screen-open'
@@ -212,6 +213,9 @@ function SkeletonRows({ count, subtitle = false }: { count: number; subtitle?: b
   ))
 }
 
+/** Starting a desktop session can take a while on a cold machine; past this it is not coming. */
+const START_SCREEN_TIMEOUT_MS = 60_000
+
 /** The agent's Screen (Bot Mode: its own desktop) and where it stands; it opens the Screen, which
  *  offers to install or start one that is not running. The Screen is a tab beside the chat, so the
  *  page steps aside for it. Absent where the agent cannot have one. */
@@ -238,7 +242,8 @@ function ScreenRow({ owner, onOpened }: { owner: AgentRouteOwner; onOpened: () =
     setStarting(true)
 
     try {
-      await startBotScreen(bot)
+      // A backend that never answers must not leave Start disabled for good.
+      await withTimeout(startBotScreen(bot), START_SCREEN_TIMEOUT_MS, b.bot.openReasonTimeout(owner.profile))
     } catch (error) {
       notifyError(error, b.screen.heroStart)
     } finally {

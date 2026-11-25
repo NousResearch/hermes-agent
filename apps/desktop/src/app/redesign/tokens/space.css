@@ -106,8 +106,8 @@
      a cap so a line never runs the width of a wide monitor. */
   --portal-column-page: 61.25rem;
   --portal-column-conversation: 60rem;
-  --portal-composer-inset: 1rem;
-  --portal-column-conversation-inset: var(--portal-composer-inset);
+  --portal-column-conversation-gutter: 1rem;
+  --portal-composer-inset: 1.25rem;
   /* The 640 column: the landing's composer before the first message (16292:14822), and what stands
      on the stage in its place (the splashes, the held exchange, the offers over the composer). */
   --portal-column-landing: 40rem;

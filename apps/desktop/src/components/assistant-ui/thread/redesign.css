@@ -37,8 +37,12 @@
    third, most of it in the first half so a line does not look sliced. That third clears the text
    only while it is one centred line no taller than a third of the row. A static mask on the
    scroller: no repaint per scroll frame. The HUD has no header row and keeps its own fade
-   (styles.css). */
+   (styles.css).
+
+   The scroller keeps room for its scrollbar on both sides whether or not one shows, so the column
+   stays centred over the composer, which does not scroll. */
 :root[data-shell='portal'] [data-chat-surface] [data-slot='aui_thread-viewport']:not([data-hud-shell] *) {
+  scrollbar-gutter: stable both-edges;
   mask-image: linear-gradient(
     to bottom,
     transparent calc(var(--portal-stage-header-height) * 2 / 3),

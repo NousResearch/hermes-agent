@@ -1,12 +1,13 @@
 /* The redesigned chat stage (Figma 906:19804, conversation 16292:16175).
-   The transcript and the docked composer share ONE centred column, both its
-   full width (up to 960, tokens/space.css). Both resolve 100cqw against this container, so they
+   The transcript and the docked composer share ONE centred column (up to 960,
+   tokens/space.css): the composer's card its full width, the turns inside it by
+   the card's own inset. Both resolve 100cqw against this container, so they
    measure the same box even though one lives in the scroller and the other
    overlays it. */
 :root[data-shell='portal'] [data-chat-surface] {
   --portal-conversation-width: var(--portal-column-conversation);
-  --portal-conversation-inset: var(--portal-column-conversation-inset);
-  --portal-conversation-gutter: 1rem;
+  --portal-conversation-inset: var(--portal-composer-inset);
+  --portal-conversation-gutter: var(--portal-column-conversation-gutter);
   --portal-conversation-column: min(var(--portal-conversation-width), 100cqw - 2 * var(--portal-conversation-gutter));
   --portal-landing-composer-width: var(--portal-column-landing);
   /* Figma's sizes are the Default text-size preset; other presets scale from it. */
@@ -96,7 +97,13 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0.75rem;
-  padding-inline: 1.25rem 0.75rem;
+  /* Its end stands where a prompt's does: the column's edge on the stage (centred, capped, never
+     nearer than the gutter), then the turns' inset. */
+  padding-inline: 1.25rem
+    calc(
+      (100% - min(var(--portal-column-conversation), 100% - 2 * var(--portal-column-conversation-gutter))) / 2 +
+        var(--portal-composer-inset)
+    );
   pointer-events: none;
 }
 

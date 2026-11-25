@@ -7,9 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 
+import { LEGACY_REDIRECTS, sitemapXml } from '../scripts/postbuild.mjs';
+
 const postbuild = fileURLToPath(new URL('../scripts/postbuild.mjs', import.meta.url));
 
-const englishPages = ['/', '/getting-started/quickstart', '/getting-started/installation', '/guides/automation-blueprints', '/developer-guide/plugins'];
+// Every legacy alias needs its target in the export, so the fixture carries them all.
+const englishPages = ['/', ...new Set(Object.values(LEGACY_REDIRECTS))];
 const bilingualPages = [...englishPages, ...englishPages.map((route) => '/zh-Hans' + (route === '/' ? '' : route))];
 
 function exportFixture(t, routes = bilingualPages) {
@@ -33,6 +36,12 @@ function exportFixture(t, routes = bilingualPages) {
 function runPostbuild(appDir) {
   return spawnSync(process.execPath, [postbuild, '--app-dir', appDir], { encoding: 'utf8' });
 }
+
+test('the sitemap leaves out the search page, which robots.txt disallows', () => {
+  const xml = sitemapXml(['/', '/search', '/zh-Hans', '/zh-Hans/search']);
+  const locations = [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => match[1]);
+  assert.deepEqual(locations, ['https://hermes-agent.nousresearch.com/docs', 'https://hermes-agent.nousresearch.com/docs/zh-Hans']);
+});
 
 test('postbuild publishes the exported route set as a public bilingual sitemap', (t) => {
   const appDir = exportFixture(t);
@@ -94,6 +103,7 @@ test('legacy aliases preserve language, preview origin, query and fragment', (t)
     '/guides/build-a-hermes-plugin': '/developer-guide/plugins',
     '/quickstart': '/getting-started/quickstart',
     '/installation': '/getting-started/installation',
+    '/user-guide/skills/bundled/media/media-songsee': '/user-guide/skills/optional/media/media-songsee',
   };
   for (const prefix of ['', '/zh-Hans']) {
     for (const [from, to] of Object.entries(aliases)) {

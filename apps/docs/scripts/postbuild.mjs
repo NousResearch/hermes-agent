@@ -80,6 +80,18 @@ export const LEGACY_REDIRECTS = {
   '/guides/build-a-hermes-plugin': '/developer-guide/plugins',
   '/quickstart': '/getting-started/quickstart',
   '/installation': '/getting-started/installation',
+  // Skill pages that moved from bundled/ to optional/ when the skill graduated.
+  // The bundled URLs still rank and inbound links still point at them.
+  '/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode': '/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode',
+  '/user-guide/skills/bundled/creative/creative-design-md': '/user-guide/skills/optional/creative/creative-design-md',
+  '/user-guide/skills/bundled/media/media-gif-search': '/user-guide/skills/optional/media/media-gif-search',
+  '/user-guide/skills/bundled/media/media-songsee': '/user-guide/skills/optional/media/media-songsee',
+  '/user-guide/skills/bundled/productivity/productivity-box': '/user-guide/skills/optional/productivity/productivity-box',
+  '/user-guide/skills/bundled/research/research-llm-wiki': '/user-guide/skills/optional/research/research-llm-wiki',
+  '/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring': '/user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring',
+  '/user-guide/skills/bundled/software-development/software-development-inspecting-hermes-desktop-dom': '/user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom',
+  '/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger': '/user-guide/skills/optional/software-development/software-development-node-inspect-debugger',
+  '/user-guide/skills/bundled/software-development/software-development-python-debugpy': '/user-guide/skills/optional/software-development/software-development-python-debugpy',
 };
 
 const redirectMarker = '<!-- hermes-docs-redirect -->';
@@ -134,9 +146,13 @@ function writeRedirects(outputDir, entries) {
   }
 }
 
+// robots.txt disallows /docs/search, so the search page stays out of the sitemap.
+const SITEMAP_EXCLUDED_PATHS = new Set(['/search']);
+
 export function sitemapXml(routes) {
   const knownRoutes = new Set(routes);
-  const entries = routes.map((route) => {
+  const listed = routes.filter((route) => !SITEMAP_EXCLUDED_PATHS.has(splitLocalePath(route).path));
+  const entries = listed.map((route) => {
     const { path: logicalPath } = splitLocalePath(route);
     const alternates = LOCALES.map((locale) => [locale, localizedHref(logicalPath, locale)])
       .filter(([, href]) => knownRoutes.has(href))

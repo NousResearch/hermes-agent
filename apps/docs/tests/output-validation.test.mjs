@@ -21,6 +21,8 @@ import { spawnSync } from "node:child_process";
 import { validateOutput } from "../scripts/validate-output.mjs";
 
 const validatorCli = fileURLToPath(new URL("../scripts/validate-output.mjs", import.meta.url));
+import { LEGACY_REDIRECTS } from "../scripts/postbuild.mjs";
+
 const postbuildCli = fileURLToPath(new URL("../scripts/postbuild.mjs", import.meta.url));
 const docsAppDir = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = path.resolve(docsAppDir, "../..");
@@ -34,6 +36,10 @@ const EN_DOCS = [
   "getting-started/installation.mdx",
   "guides/automation-blueprints.mdx",
   "developer-guide/plugins.mdx",
+  // Targets of the moved-skill legacy aliases; like the two above, English only.
+  ...Object.values(LEGACY_REDIRECTS)
+    .filter((target) => target.startsWith("/user-guide/skills/"))
+    .map((target) => target.slice(1) + ".md"),
 ];
 const ZH_DOCS = ["index.mdx", "getting-started/quickstart.mdx", "developer-guide/plugins.mdx"];
 const ZH_ONLY_DOCS = ["zh-only.mdx"];

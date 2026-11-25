@@ -286,6 +286,30 @@ def test_clt_stub_never_spawns_version_info_probes(tmp_path, clt_stub_env):
 
 
 @pytest.mark.platforms("posix")
+def test_clt_stub_never_spawns_startup_dropped_directory_prune(tmp_path, clt_stub_env):
+    """The launch-time bytecode sweep lists the files an update dropped; with the stub it takes the
+    "recorded commit is gone" answer (what the stub's failed launch gave) instead of launching it."""
+    from hermes_cli import main_web_build
+
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+
+    assert main_web_build._prune_dropped_directories(tmp_path, "git:" + "a" * 40) == 0
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+def test_startup_dropped_directory_prune_without_git_still_retries(tmp_path, monkeypatch):
+    """A git that cannot be launched at all keeps raising, so the old fingerprint stays and the
+    next launch retries the prune."""
+    from hermes_cli import main_web_build
+
+    empty = tmp_path / "no-git"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    with pytest.raises(OSError):
+        main_web_build._prune_dropped_directories(tmp_path, "git:" + "a" * 40)
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

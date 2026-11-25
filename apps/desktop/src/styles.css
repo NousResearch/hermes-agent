@@ -4008,6 +4008,9 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
    starts `visibility` transitions on transition-enabled descendants, firing a
    `transitionrun` storm that compounds with synchronous scroll-restore geometry
    reads into a 1-2s `Recalculate style` stall (#158689, #146852). */
+[data-tree-group] *,
+[data-tree-group] *::before,
+[data-tree-group] *::after,
 [data-pane-hidden],
 [data-pane-hidden] *,
 [data-pane-hidden] *::before,

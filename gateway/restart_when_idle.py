@@ -153,10 +153,13 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
             await _restart_when_idle()
         except Exception:
             # Nothing else awaits this task, so its failure is logged here, except one raised inside its
-            # own stop() call: the stop's guard logged that one and owns the exit.
+            # own stop() after the stop's guard was entered: the guard logged that one and owns the exit.
             if getattr(runner, "_stop_task", None) is not None:
                 if not in_stop:
                     logger.warning("Restart wait failed while the gateway was already stopping", exc_info=True)
+                elif not getattr(runner, "_stop_guard_entered", False):
+                    logger.exception("Restart stop failed before its teardown began; the gateway stays "
+                                     "draining with no shutdown watchdog and needs an external restart")
                 return
             # No stop has begun: keep serving and let the next restart request run.
             logger.exception("Restart failed before the gateway began stopping; still serving, and the "

@@ -225,7 +225,7 @@ async def test_restart_that_fails_before_the_stop_is_logged_and_the_next_request
 
     async def stop(**_kwargs):
         if fails == "inside_stop":
-            runner._stop_task = object()
+            runner._stop_task, runner._stop_guard_entered = object(), True
         if fails != "idle_wait":
             raise RuntimeError("stop failed")
     runner.stop = stop
@@ -249,6 +249,26 @@ async def test_restart_that_fails_before_the_stop_is_logged_and_the_next_request
     assert runner.request_restart(detached=False, via_service=True) is True
     await runner._restart_task
     runner.stop.assert_awaited_once_with(restart=True, detached_restart=False, service_restart=True)
+
+
+@pytest.mark.asyncio
+async def test_a_restart_whose_stop_fails_before_its_guard_is_logged(monkeypatch, caplog):
+    """A stop() that raises before its teardown guard is entered (arming the watchdog can fail when the
+    unit hits its task limit) was logged by nothing: the restart task must log it."""
+    from gateway import run_shutdown
+
+    def arm_fails(*_args, **_kwargs):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(run_shutdown, "arm_shutdown_watchdog", arm_fails)
+    runner, _adapter = make_restart_runner()
+    runner._scale_to_zero_status = MagicMock()
+
+    with caplog.at_level("ERROR", logger="gateway.run"):
+        assert runner.request_restart(detached=False, via_service=True) is True
+        await asyncio.gather(runner._restart_task, return_exceptions=True)
+    logged = [r for r in caplog.records if r.exc_info and "can't start new thread" in str(r.exc_info[1])]
+    assert logged, [r.getMessage() for r in caplog.records]
 
 
 @pytest.mark.asyncio

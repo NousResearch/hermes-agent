@@ -497,8 +497,8 @@ def arm_shutdown_watchdog(
 
 
 @contextlib.contextmanager
-def disarm_after_teardown(done_event: threading.Event,
-                          shutdown_event: Optional[asyncio.Event] = None) -> Iterator[None]:
+def disarm_after_teardown(done_event: threading.Event, shutdown_event: Optional[asyncio.Event] = None,
+                          owner: Any = None) -> Iterator[None]:
     """Disarm the shutdown watchdog only once the teardown it guards has run to completion.
 
     A teardown that raises, or is cancelled, before ``shutdown_event`` is set leaves the stop as
@@ -506,7 +506,10 @@ def disarm_after_teardown(done_event: threading.Event,
     up holding its lock until SIGKILL (#158360). The watchdog stays armed and forces the exit on its
     leash. Once ``shutdown_event`` is set the caller runs the shutdown tail and exits on its own, as
     after a completed teardown, so a later raise disarms too. Either ending is logged here, because
-    the watchdog's later stack dump cannot show an exception that has unwound."""
+    the watchdog's later stack dump cannot show an exception that has unwound. ``owner`` (the runner)
+    gets ``_stop_guard_entered``, so a caller can tell a failure this guard logged from one before it."""
+    if owner is not None:
+        owner._stop_guard_entered = True
     try:
         yield
     except Exception:

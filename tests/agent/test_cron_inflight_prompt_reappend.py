@@ -17,7 +17,7 @@ The fix re-appends the in-flight user task after the handoff so the prefix's
 still be left with nothing to act on.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
@@ -370,7 +370,7 @@ SWITCH_NOTE = (
 )
 
 
-def _noted_transcript() -> List[Dict[str, Any]]:
+def _noted_transcript() -> list[dict[str, Any]]:
     """A session that switched models before its first prompt: the CLI's
     one-shot note rides in the in-memory first user row (the persisted and
     displayed value is clean) so the cached prompt prefix stays stable."""
@@ -406,7 +406,7 @@ def test_switch_note_is_not_restated_after_the_handoff():
 def test_repeated_compactions_never_nest_the_switch_note():
     """The note must not survive into any restated request, and must not nest
     inside the replay header across repeated compactions."""
-    out: List[Dict[str, Any]] = _noted_transcript()
+    out: list[dict[str, Any]] = _noted_transcript()
     for cycle in (1, 2, 3):
         extra = _tool_pairs(40, start=100 * cycle) if cycle > 1 else []
         out = _compress_with(2, cycle, out + extra)

@@ -215,6 +215,22 @@ def _read_browser_cfg() -> dict:
         return {}
 
 
+def _harness_wrapper() -> list[str]:
+    """``browser.harness_wrapper``: the command every browser_exec CLI call runs under, the harness
+    command appended as its arguments, so a deployment can queue or account for calls on a browser
+    several agents share. A string is one executable path (no shell splitting), a list is an argv.
+    ``[]`` when unset; any other value raises ValueError: a wrapper is never skipped silently."""
+    raw = _read_browser_cfg().get("harness_wrapper")
+    if raw in (None, "", []):
+        return []
+    argv = [raw] if isinstance(raw, str) else raw
+    if not isinstance(argv, list) or not all(isinstance(arg, str) and arg.strip() for arg in argv):
+        raise ValueError(
+            f"browser.harness_wrapper must be an executable path or a list of non-empty strings, "
+            f"got {raw!r}; quote numbers such as '30'. Fix or remove it in config.yaml.")
+    return [os.path.expanduser(argv[0]), *argv[1:]]
+
+
 def _use_gateway(browser_cfg: dict) -> bool:
     """True when the browser section selects the Nous Tool Gateway — by the current ``hermes tools``
     picker row (``cloud_provider: nous``) or the pre-picker ``use_gateway: true`` flag. Reading only
@@ -845,6 +861,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     started = time.time()
 
     def dispatch() -> dict[str, Any]:
+        try:  # before any side effect: an invalid wrapper must fail the call, never run the harness unwrapped
+            wrapper = _harness_wrapper()
+        except ValueError as e:
+            return {"error_result": tool_error(str(e))}
         _attach_vault_supervisor(env, task_id)
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
@@ -854,7 +874,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         from agent.periodic_scheduler import schedule
         owning = schedule(lambda: _own_harness_daemon_until_owned(env), _OWN_DURING_CALL_S)
         try:
-            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+            # The wrapper goes outside cmd, which harness_command already turned into the helper launcher.
+            return {"proc": _run_cli_killing_process_group([*wrapper, *cmd], code, env, timeout)}
         except subprocess.TimeoutExpired:
             return {"error_result": tool_error(
                 f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
@@ -862,7 +883,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                 "append to workspace files — anything already written to the workspace is preserved."
             )}
         except OSError as e:
-            return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+            via = f" through browser.harness_wrapper {wrapper[0]!r} (fix or remove it in config.yaml)" if wrapper else ""
+            return {"error_result": tool_error(f"Failed to launch browser-use CLI{via}: {e}")}
         finally:
             owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
             _record_driven_tab(env, task_id)  # only a call that ran: the supervisor is this call's browser's

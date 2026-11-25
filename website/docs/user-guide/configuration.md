@@ -3089,11 +3089,23 @@ browser:
   # Optional CDP override — when set, the browser tools attach to your own
   # Chromium-family browser (as /browser connect does) instead of launching one.
   cdp_url: ""
+  harness_wrapper: []            # Command every browser_exec CLI call runs under (see below); [] = none
   use_real_profile: false        # Browse on a managed copy of your real browser profile (opt-in)
   # Dialog supervisor — how native JS dialogs (alert / confirm / prompt / beforeunload) are handled
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
 ```
+
+**Harness wrapper.** `browser.harness_wrapper` makes every `browser_exec` call run as
+`<wrapper> <harness command>`. A string is a single executable path (no shell splitting); pass
+arguments as a list, with numbers quoted: `["/usr/bin/flock", "-w", "30", "/run/lock/browser.lock"]`.
+The model's code still arrives on stdin and the environment (`BU_NAME`, `BU_CDP_*`, `BH_RUNTIME_DIR`,
+...) passes through unchanged. Use it when several agents or cron jobs share one browser
+(`browser.cdp_url`), for example to run their calls one at a time or to record and later close the
+tabs each call opens. The wrapper must run its arguments and return their exit code. An invalid value
+or a wrapper that cannot be launched fails the call with an error naming `browser.harness_wrapper`;
+the harness never runs without it. Daemon stops (`--reload`) do not go through the wrapper. The
+setting is per profile.
 
 **Executable resolution.** Hermes launches the first Chromium it finds:
 `browser.executable_path` → the Chromium installed by Hermes's package manager

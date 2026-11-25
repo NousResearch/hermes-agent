@@ -7,6 +7,8 @@ export const deGatewayHost: GatewayHostTranslations = {
   webappHostTitle: 'Hermes-Host',
   webappHostDesc:
     'Die Webapp läuft immer auf dem Hermes-Host, der sie bereitstellt. Die gespeicherten Verbindungen unten sind die Liste dieses Rechners, geteilt mit der Hermes-Desktop-App; andere Gateways werden über diesen Host erreicht.',
+  webappAccountHostDesc:
+    'Das sind die Agents deiner Hermes-Cloud-Organisation. Dieser Host meldet dich bei jedem an, und die Liste folgt deinem Konto.',
   webappOauthPaste: {
     title: 'Anmeldung abschließen',
     description: 'Wenn der Anmelde-Tab auf einer Adresse endete, die nicht lädt (dieser Browser läuft nicht auf dem Rechner des Gateways), füge diese Adresse hier ein.',

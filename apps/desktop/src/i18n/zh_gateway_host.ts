@@ -7,6 +7,8 @@ export const zhGatewayHost: GatewayHostTranslations = {
   webappHostTitle: 'Hermes 主机',
   webappHostDesc:
     'Webapp 始终运行在提供它的 Hermes 主机上。下方已保存的连接是这台机器的列表，与 Hermes Desktop 应用共享；其他网关通过此主机访问。',
+  webappAccountHostDesc:
+    '这些是你的 Hermes Cloud 组织中的代理。此主机会为你登录每一个代理，列表随你的账户更新。',
   webappOauthPaste: {
     title: '完成登录',
     description: '如果登录标签页停在无法打开的地址（此浏览器不在网关所在的机器上），请将该地址粘贴到这里。',

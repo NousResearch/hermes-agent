@@ -7,6 +7,8 @@ export const enGatewayHost: GatewayHostTranslations = {
   webappHostTitle: 'Hermes host',
   webappHostDesc:
     'The Webapp always runs on the Hermes host that serves it. The saved connections below are this machine\'s list, shared with the Hermes Desktop app; other gateways are reached through this host.',
+  webappAccountHostDesc:
+    'These are your Hermes Cloud organization\'s agents. This host signs you in to each one, and the list follows your account.',
   webappOauthPaste: {
     title: 'Finish signing in',
     description: 'If the sign-in tab ended on an address that would not load (this browser is not on the gateway\'s machine), paste that address here.',

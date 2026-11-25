@@ -94,7 +94,7 @@ export function WebappGatewaySettings({ embedded }: { embedded: boolean }) {
         />
       ) : null}
       <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {g.webappHostDesc}
+        {window.hermesDesktop?.connections?.managedByHost ? g.webappAccountHostDesc : g.webappHostDesc}
       </p>
       <ConnectionsRegistrySection />
     </SettingsContent>

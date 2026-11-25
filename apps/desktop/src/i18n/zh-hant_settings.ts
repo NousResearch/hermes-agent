@@ -907,6 +907,8 @@ export const zhHantSettings = {
       webappHostTitle: 'Hermes 主機',
       webappHostDesc:
         'Webapp 一律在提供它的 Hermes 主機上執行。下方已儲存的連線是這台機器的清單，與 Hermes Desktop 應用程式共用；其他閘道透過此主機連線。',
+      webappAccountHostDesc:
+        '這些是你的 Hermes Cloud 組織中的代理。此主機會替你登入每一個代理，清單會隨你的帳戶更新。',
       webappOauthPaste: {
         title: '完成登入',
         description: '如果登入分頁停在無法開啟的位址（此瀏覽器不在閘道所在的機器上），請將該位址貼到這裡。',

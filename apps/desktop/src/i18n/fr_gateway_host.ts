@@ -7,6 +7,8 @@ export const frGatewayHost: GatewayHostTranslations = {
   webappHostTitle: 'Hôte Hermes',
   webappHostDesc:
     'La Webapp s’exécute toujours sur l’hôte Hermes qui la sert. Les connexions enregistrées ci-dessous sont la liste de cette machine, partagée avec l’app Hermes Desktop ; les autres passerelles sont atteintes via cet hôte.',
+  webappAccountHostDesc:
+    'Voici les agents de votre organisation Hermes Cloud. Cet hôte vous connecte à chacun d’eux, et la liste suit votre compte.',
   webappOauthPaste: {
     title: 'Terminer la connexion',
     description: 'Si l’onglet de connexion s’est arrêté sur une adresse qui ne charge pas (ce navigateur n’est pas sur la machine de la passerelle), collez cette adresse ici.',

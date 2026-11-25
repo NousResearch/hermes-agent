@@ -210,6 +210,64 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
   return null
 }
 
+/** The host lets this page add, edit and remove connections (the hosted dashboard's list is the account's). */
+const registryEditable = (bridge: Window['hermesDesktop']['connections']) => !bridge?.managedByHost
+
+/** Update all fans out over more than one connection, where the bridge can run it. */
+const canUpdateAll = (bridge: Window['hermesDesktop']['connections'], registry: DesktopConnectionsRegistry | null) =>
+  Boolean(bridge?.updateAll) && (registry?.connections.length ?? 0) > 1
+
+/** A row offers edit and remove: any but this device's own, unless the host manages the list. */
+const rowEditable = (conn: DesktopRegistryConnection, editable: boolean) => editable && conn.kind !== 'local'
+
+/** Below the list: Add connection (absent where the host manages the list) and Update all. */
+function RegistryFooterActions({
+  canAdd,
+  canUpdateAll,
+  copy,
+  onAdd,
+  onUpdateAll,
+  updatingAll
+}: {
+  canAdd: boolean
+  canUpdateAll: boolean
+  copy: { addConnection: string; updateAll: string; updateAllRunning: string }
+  onAdd: () => void
+  onUpdateAll: () => void
+  updatingAll: boolean
+}) {
+  return (
+    <div className="mt-4 flex items-center gap-2">
+      {canAdd && (
+        <Button
+          onClick={() => {
+            triggerHaptic('selection')
+            onAdd()
+          }}
+          size="sm"
+          variant="outline"
+        >
+          <Plus className="size-3.5" /> {copy.addConnection}
+        </Button>
+      )}
+      {canUpdateAll && (
+        <Button
+          disabled={updatingAll}
+          onClick={() => {
+            triggerHaptic('selection')
+            onUpdateAll()
+          }}
+          size="sm"
+          variant="outline"
+        >
+          {updatingAll ? <Loader2 className="animate-spin" /> : <RefreshCw />}{' '}
+          {updatingAll ? copy.updateAllRunning : copy.updateAll}
+        </Button>
+      )}
+    </div>
+  )
+}
+
 /**
  * Another window, the other host (native Desktop or a Webapp tab: they share one list) or a
  * registry repair changed the list: show it without a spinner or closing an open editor.
@@ -289,7 +347,7 @@ export function ConnectionsRegistrySection() {
 
   const bridge = window.hermesDesktop?.connections
   // The hosted dashboard keeps this list for the account: rows are tested and ordered, not edited.
-  const editable = !bridge?.managedByHost
+  const editable = registryEditable(bridge)
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
 
   const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
@@ -609,7 +667,12 @@ export function ConnectionsRegistrySection() {
   return (
     <div className={hasBreadcrumb ? undefined : 'mt-8 border-t border-border/60 pt-6'}>
       <SectionHeading icon={Globe} page title={s.title} />
-      <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
+      <p
+        className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)"
+        hidden={!editable}
+      >
+        {s.intro}
+      </p>
       {/* Source selection lives in Sessions. Primary is the registry fallback,
           not an immediate workspace switch. */}
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
@@ -673,7 +736,7 @@ export function ConnectionsRegistrySection() {
                       {s.makePrimary}
                     </Button>
                   )}
-                  {conn.kind !== 'local' && editable && (
+                  {rowEditable(conn, editable) && (
                     <>
                       <Button
                         aria-label={s.editConnection}
@@ -894,41 +957,14 @@ export function ConnectionsRegistrySection() {
           </div>
         </div>
       ) : (
-        <div className="mt-4 flex items-center gap-2">
-          {editable && (
-            <Button
-              onClick={() => {
-                triggerHaptic('selection')
-                openEditor(emptyEditor('remote'))
-              }}
-              size="sm"
-              variant="outline"
-            >
-              <Plus className="size-3.5" /> {s.addConnection}
-            </Button>
-          )}
-          {bridge?.updateAll && (registry?.connections.length ?? 0) > 1 && (
-            <Button
-              disabled={updatingAll}
-              onClick={() => {
-                triggerHaptic('selection')
-                void updateAll()
-              }}
-              size="sm"
-              variant="outline"
-            >
-              {updatingAll ? (
-                <>
-                  <Loader2 className="animate-spin" /> {s.updateAllRunning}
-                </>
-              ) : (
-                <>
-                  <RefreshCw /> {s.updateAll}
-                </>
-              )}
-            </Button>
-          )}
-        </div>
+        <RegistryFooterActions
+          canAdd={editable}
+          canUpdateAll={canUpdateAll(bridge, registry)}
+          copy={s}
+          onAdd={() => openEditor(emptyEditor('remote'))}
+          onUpdateAll={() => void updateAll()}
+          updatingAll={updatingAll}
+        />
       )}
 
       {/* Not gated on connections.length > 1: a registry that drifted down to

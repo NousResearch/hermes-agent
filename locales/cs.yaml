@@ -440,6 +440,9 @@ gateway:
     cache_unknown_route: 'Mezipaměť promptu: neznámá (tento poskytovatel nezveřejňuje, jak dlouho mezipaměť uchovává).'
     cache_unknown_runtime: 'Mezipaměť promptu: neznámá (toto běhové prostředí si nastavuje vlastní volby mezipaměti, které Hermes nevidí).'
     cache_unknown_storage: 'Mezipaměť promptu: neznámá (úložiště relací se nepodařilo přečíst).'
+    cache_warming_off: 'Udržovací požadavky: vypnuto (dvakrát vynecháno).'
+    cache_tier_pending: 'Úroveň: 5 min do první pauzy delší než 5 minut, poté 1 h.'
+    cache_learned: 'Naučeno: {rule}.'
     cache_confidence:
       proven: 'ověřená'
       declared: 'deklarovaná'

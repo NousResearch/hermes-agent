@@ -630,11 +630,12 @@ class GatewayAgentCacheMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         _cache = getattr(self, "_agent_cache", None)
-        if self._session_db is None or not session_id or not _cache_lock or _cache is None:
+        store = self.persistence
+        if store is None or not session_id or not _cache_lock or _cache is None:
             return
         try:
-            _sess_row = await self._session_db.get_session(session_id)
-            _live = _sess_row.get("message_count", 0) if _sess_row else None
+            _sess_row = await store.aio.sessions.get(session_id)
+            _live = _sess_row.message_count if _sess_row else None
         except Exception:
             return
         if _live is None:
@@ -1136,7 +1137,7 @@ class GatewayAgentCacheMixin:
             )
         for key, agent in evict_plan:
             logger.info("Agent cache at cap; evicting LRU session=%s (cache_size=%d)", key, len(_cache))
-            if agent is not None:
+            if agent is not None and not self._compact_then_release(key, agent):
                 # Commit end-of-session memory, then soft-release, both on the daemon thread so the
                 # (possibly network-bound) provider call never blocks the held cache lock.
                 self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}",
@@ -1166,6 +1167,8 @@ class GatewayAgentCacheMixin:
                 _cache.pop(key, None)
         for key, agent in to_evict:
             logger.info("Agent cache idle-TTL evict: session=%s (idle=%.0fs)", key, now - getattr(agent, "_last_activity_ts", now))
+            if self._compact_then_release(key, agent):
+                continue  # step 2 at release: compacted first, released by that job
             self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}",
                                        inline_fallback=False, session_key=key)
         return len(to_evict)

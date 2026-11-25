@@ -233,3 +233,16 @@ class TestCatalogIngestValidation:
             ],
         )
         assert profile.fetch_models() == ["b", "a", "c"]
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_catalog_mirror_skips_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """The disk mirror is best-effort: a dead profile home is skipped, never recreated (#155595 U3)."""
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    _profile, mod = _router_plugin_module()
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    mod._save_disk({"m": ["low"]})  # never raises
+    assert not home.exists()

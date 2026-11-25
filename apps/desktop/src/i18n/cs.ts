@@ -593,6 +593,11 @@ export const csOverrides = {
         'To, co drží instalaci, se změnilo dřív, než se Hermes stihl spustit. Prohlédněte to a zkuste to znovu.'
     }
   },
+  sandbox: {
+    starting: 'Spouštění sandboxu…',
+    stopping: 'Zastavování sandboxu…',
+    restarting: 'Restartování sandboxu…'
+  },
   notifications: {
     sharedProfileWarning:
       'Tento profil používá jiná instalace Hermes. Obě instalace sdílejí jeho nastavení i data, takže změny si mohou vzájemně odporovat. Můžete pokračovat, nebo před provedením změn zavřít druhou instalaci.',
@@ -695,6 +700,14 @@ export const csOverrides = {
       approvalTitleNamed: session => `Je vyžadováno schválení — ${session}`,
       approveAction: 'Schválit',
       rejectAction: 'Odmítnout',
+      accessTitle: 'Je vyžadován přístup ke složce',
+      accessTitleNamed: session => `Je vyžadován přístup ke složce — ${session}`,
+      accessReadBody: folder => `Pouze pro čtení: ${folder}`,
+      accessReadWriteBody: folder => `Čtení i zápis: ${folder}`,
+      networkTitle: 'Je vyžadován přístup k webu',
+      networkTitleNamed: session => `Je vyžadován přístup k webu — ${session}`,
+      allowAction: 'Povolit',
+      denyAction: 'Zamítnout',
       inputTitle: 'Je vyžadován vstup',
       inputTitleNamed: session => `Je vyžadován vstup — ${session}`,
       inputBody: 'Hermes čeká na vaši odpověď.',
@@ -1211,6 +1224,19 @@ export const csOverrides = {
           unsupported: 'Tento prohlížeč neumí zobrazovat upozornění. Titulek karty přesto bliká.'
         },
         title: 'Upozornění prohlížeče'
+      },
+      phonePresence: {
+        title: 'Tento počítač pro oznámení do telefonu',
+        description:
+          'Co toto okno sděluje Hermesovi o tom, že jste právě u počítače. Co s tím plugin pro oznámení do telefonu udělá, určuje on sám.',
+        unsupported: 'Oznámení do telefonu nejsou aktivitou na tomto backendu ovlivněna.',
+        disconnected: 'Nepřipojeno.',
+        watchingComputer: time =>
+          `Dokud je v tomto okně otevřená konverzace, Hermes se dozvídá, kdy jste tento počítač naposledy použili. Poslední vstup před ${time}.`,
+        watchingWindow: time =>
+          `Dokud je v tomto okně otevřená konverzace, Hermes se dozvídá, kdy jste toto okno naposledy použili. Poslední vstup před ${time}.`,
+        watchingWindowNoInput:
+          'Dokud je v tomto okně otevřená konverzace, Hermes se dozvídá, kdy jste toto okno naposledy použili. Zatím nebyl zaznamenán žádný vstup.'
       }
     },
     sections: {
@@ -3363,11 +3389,6 @@ export const csOverrides = {
       openLog: 'Otevřít protokol',
       actionLog: 'Záznam akcí',
       alreadyInstalled: name => `"${name}" je již nainstalována`,
-      pickerTitle: 'Dovednosti z hubu',
-      pickerBrowse: 'Procházet celý hub',
-      pickerHide: 'Skrýt prohlížeč hubu',
-      pickerHint:
-        'Klikněte u požadované dovednosti na „+ Přidat k tomuto agentovi“. Dovednost se nainstaluje a objeví v seznamu výše.',
       loadFailed: 'Nepodařilo se načíst hub',
       previewFailed: 'Náhled dovednosti se nezdařil',
       scanFailed: 'Bezpečnostní kontrola se nezdařila',
@@ -4068,6 +4089,8 @@ export const csOverrides = {
     remoteOverride: {
       menuItem: 'Připojit ke vzdálenému hostiteli…',
       badge: host => `Běží na ${host}`,
+      runHere: 'Spustit na tomto počítači…',
+      sandboxed: 'V sandboxu',
       title: profile => `Připojit profil ${profile} ke vzdálenému hostiteli`,
       description:
         'Relace v tomto profilu budou místo na tomto počítači běžet ve vzdáleném Hermes, na který profil odkazuje.',
@@ -4629,7 +4652,10 @@ export const csOverrides = {
   },
   composer: {
     message: 'Zpráva',
-    wakingProfile: profile => `Probouzení profilu ${profile}…`,
+    switchingProfile: profile => `Přepínání na ${profile}…`,
+    switchingProfileSlow: 'Stále se připojuji. Zprávy odeslané teď počkají a odejdou tomuto agentovi.',
+    switchProfileFailed: profile => `Nepodařilo se přepnout na ${profile}`,
+    willSendTo: profile => `Odešle se do ${profile}`,
     placeholderStarting: 'Spouštění Hermes…',
     placeholderReconnecting: 'Opětovné připojování k Hermes…',
     placeholderFollowUp: 'Odeslat doplňující zprávu',
@@ -6013,6 +6039,7 @@ export const csOverrides = {
       branchNewChat: 'Odvětvit do nového chatu',
       react: 'Reagovat',
       dismissError: 'Skrýt chybu',
+      responseContinuing: 'Pokračuje…',
       responseStopped: 'Odpověď zastavena',
       contentRefusedNotice: 'Tuto zprávu odmítl bezpečnostní filtr modelu — zkuste jiný dotaz.',
       errorLayers: {
@@ -6305,7 +6332,28 @@ export const csOverrides = {
       alwaysTitle: 'Vždy povolit tento příkaz?',
       alwaysDescription: pattern =>
         `Vzor „${pattern}“ se přidá do trvalého seznamu povolených příkazů (~/.hermes/config.yaml). Hermes se už nebude ptát na podobné příkazy — ani v této, ani v žádné budoucí relaci.`,
-      alwaysAllow: 'Vždy povolit'
+      alwaysAllow: 'Vždy povolit',
+      deny: 'Zamítnout',
+      allow: 'Povolit',
+      allowHint: 'Dokud nebude sandbox vypnutý',
+      denyReason: 'Důvod zamítnutí',
+      denyReasonPlaceholder: 'Sdělte Hermesovi důvod (nepovinné)',
+      access: {
+        title: 'Přístup ke složce',
+        readOnly: 'Pouze pro čtení',
+        readWrite: 'Čtení i zápis',
+        timedOut: folder =>
+          `Požadavek vypršel — přístup ke složce ${folder} nebyl udělen. Požádejte Hermes o nový pokus.`,
+        alwaysTitle: 'Vždy povolit tuto složku?',
+        alwaysDescription: 'Složka se přidá do sandboxu tohoto profilu. Hermes se na ni už v žádném chatu nebude ptát.'
+      },
+      network: {
+        title: 'Přístup k webu',
+        timedOut: site => `Požadavek vypršel — přístup k ${site} nebyl udělen. Požádejte Hermes o nový pokus.`,
+        alwaysTitle: 'Vždy povolit tento web?',
+        alwaysDescription:
+          'Web se přidá do povolených webů tohoto profilu. Hermes se na něj už v žádném chatu nebude ptát.'
+      }
     },
     clarify: {
       notReady: 'Požadavek na upřesnění ještě není připraven',

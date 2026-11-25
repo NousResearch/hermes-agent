@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "プロンプトキャッシュ: 不明 (このプロバイダーはキャッシュ保持期間を公開していません)。"
     cache_unknown_runtime: "プロンプトキャッシュ: 不明 (このランタイムは独自のキャッシュ設定を使い、Hermes からは観測できません)。"
     cache_unknown_storage: "プロンプトキャッシュ: 不明 (セッションストアを読み取れませんでした)。"
+    cache_warming_off: "キープアライブ: 停止 (2回失敗)。"
+    cache_tier_pending: "階層: 5分を超える最初の休止まで5m、その後1h。"
+    cache_learned: "学習済み: {rule}。"
     cache_confidence:
       proven: "実証済み"
       declared: "申告"
@@ -4021,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "大型モデル：{name}の上限に達しました（{resets}）。それまで実行できません。"
   large_notice_percent: "大型モデル：1メッセージあたりプランの利用量を多く消費します。大型モデルの月間上限：{percent} 使用。"
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ 取り消したターンで変更されたファイル: {files}。/rollback でチェックポイントを一覧表示し、1 つを復元してください。"
     more: "ほか {count} 件"

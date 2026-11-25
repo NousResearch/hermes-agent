@@ -185,6 +185,9 @@ def page(monkeypatch):
 
     def secret_eval(task_id, expression):
         secret_evals.append(expression)
+        if "reverted" in expression:  # read-back pass: the page kept the value
+            return {"success": True, "result": json.dumps(
+                {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
         return {"success": True, "result": json.dumps({"filled": 1})}
 
     monkeypatch.setattr(browser_vault_tool, "_eval_js_secret", secret_eval)
@@ -328,7 +331,8 @@ def test_plugin_backend_is_off_until_enabled_refused_in_host_and_origin_checked(
     assert [c[0] for c in alpha.calls] == ["get_meta"]  # refused before fill_context, before any secret
     page.origin = ORIGIN
     assert json.loads(_vault({"action": "fill", "handle": "alpha:1"}))["success"] is True
-    assert len(page.secret_evals) == 1 and json.dumps(ORIGIN) in page.secret_evals[0]
+    writes = [e for e in page.secret_evals if "reverted" not in e]  # the read-back polls are not writes
+    assert len(writes) == 1 and json.dumps(ORIGIN) in writes[0]
 
     remote = RemotePluginContext(None, "alpha_vault", {"ctx_methods": ["register_login_backend"]})
     with pytest.raises(PluginHostUnsupported):

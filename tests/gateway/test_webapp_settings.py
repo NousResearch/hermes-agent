@@ -15,7 +15,7 @@ from gateway import webapp_listener as webapp
 MALFORMED = [
     ("webapp: yes\n", "webapp in"),
     ("webapp:\n  enabled: 'true'\n", "webapp.enabled"),
-    ("webapp:\n  enabled: true\n  host: 192.168.1.20\n", "webapp.host"),
+    ("webapp:\n  enabled: true\n  host: hermes.example.net\n", "webapp.host"),
     ("webapp:\n  enabled: true\n  host: ''\n", "webapp.host"),
     ("webapp:\n  enabled: true\n  port: 70000\n", "webapp.port"),
     ("webapp:\n  enabled: true\n  port: http\n", "webapp.port"),
@@ -53,7 +53,7 @@ def test_a_webapp_block_that_is_off_still_reads_its_address(tmp_path):
         False, "0.0.0.0", 9333, "https://webapp.example.net", None)
     assert off.bind == ("127.0.0.1", 0)
     unusable = webapp.webapp_settings(_home(tmp_path / "unusable", (
-        "webapp:\n  enabled: true\n  host: 192.168.1.20\n  port: 9333\n  public_url: https://u:p@x.example\n")))
+        "webapp:\n  enabled: true\n  host: hermes.example.net\n  port: 9333\n  public_url: https://u:p@x.example\n")))
     assert (unusable.enabled, unusable.host, unusable.port, unusable.public_url) == (False, "127.0.0.1", 9333, "")
     assert unusable.bind == ("127.0.0.1", 0)
     assert "webapp.host" in unusable.reason
@@ -96,7 +96,7 @@ def test_the_webapp_and_its_sign_in_gate_agree_on_which_hosts_stay_on_this_machi
     settings = webapp.webapp_settings(_home(tmp_path, f"webapp:\n  enabled: true\n  host: {host}\n"))
     if bind_host is None:
         assert settings.bind == ("127.0.0.1", 0)
-        assert "webapp.host must be 127.0.0.1, ::1, localhost, 0.0.0.0 or ::" in settings.reason
+        assert f"webapp.host must be {webapp.HOST_CHOICES}" in settings.reason
         return
     assert settings.bind == (bind_host, webapp.DEFAULT_PORT)
     assert should_require_auth(settings.host) is webapp._is_wildcard(settings.host)

@@ -3,42 +3,55 @@
 A gateway-backed CLI keeps the conversation's creation id for its whole life, while every
 compression moves the live segment, and the title with it, to a new row. Reading the creation
 row's title made the status bar badge (and ``/title``) go blank after the first compression.
+
+The CLI's store is its ``GatewaySessionStore`` on a connection to a real session authority in this
+process; the rows are seeded and read back through the owner's storage interface handle.
 """
 from datetime import datetime
 
+import pytest
+
 from cli import HermesCLI
-from hermes_state import SessionDB
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.gateway_owner import GatewayOwner
+from tests.fixtures.storage_seed import seed_messages
 
 
-def _rotated(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("root", source="cli")
-    db.append_message("root", role="user", content="hi")
-    db.set_session_title("root", "weekly digest")
-    db.publish_compression_child(
-        parent_session_id="root", child_session_id="tip", source="cli",
-        messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
+@pytest.fixture
+def owner(tmp_path, monkeypatch):
+    owner = GatewayOwner(tmp_path, monkeypatch)
+    yield owner
+    owner.close()
+
+
+def _rotated(rows, root):
+    rows.sessions.set_title(root, "weekly digest")
+    seed_messages(rows, root, {"role": "user", "content": "hi"})
+    rows.lineage.publish_compression_child(
+        root, CompressionChild(session_id="tip", source="cli"),
+        [NewMessage.from_live({"role": "user", "content": "hi"})], require_compression_lease=False)
     # The rotation moves the name onto the live segment (the creation row's copy is cleared).
-    db.set_session_title("tip", "weekly digest")
-    return db
+    rows.sessions.set_title("tip", "weekly digest")
 
 
-def _cli(db, session_id):
+def _cli(store):
+    """The CLI on its gateway store, holding the session the owner created for it."""
     cli = HermesCLI.__new__(HermesCLI)
-    cli.session_id, cli._session_db, cli._pending_title = session_id, db, None
+    cli._session_db, cli._pending_title = store, None
     cli.model, cli.agent, cli.session_start, cli.conversation_history = "m", None, datetime.now(), []
+    cli.session_id = store.open_session(cli)
     return cli
 
 
-def test_status_bar_and_title_command_read_the_compression_tip(tmp_path, capsys):
-    db = _rotated(tmp_path)
-    try:
-        assert db.get_session_title("root") is None  # the precondition the CLI used to miss
-        cli = _cli(db, "root")
-        assert cli._get_status_bar_session_title() == "weekly digest"
-        cli._cmd_title("/title")
-        assert "weekly digest" in capsys.readouterr().out
-        cli._cmd_title("/title renamed")
-        assert (db.get_session_title("tip"), db.get_session_title("root")) == ("renamed", None)
-    finally:
-        db.close()
+def test_status_bar_and_title_command_read_the_compression_tip(owner, capsys):
+    rows = owner.persistence
+    cli = _cli(owner.client())
+    root = cli.session_id
+    _rotated(rows, root)
+    assert rows.sessions.get_title(root) is None  # the precondition the CLI used to miss
+    assert cli._get_status_bar_session_title() == "weekly digest"
+    cli._cmd_title("/title")
+    assert "weekly digest" in capsys.readouterr().out
+    cli._cmd_title("/title renamed")
+    assert (rows.sessions.get_title("tip"), rows.sessions.get_title(root)) == ("renamed", None)

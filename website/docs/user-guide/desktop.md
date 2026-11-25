@@ -73,7 +73,8 @@ also works there on its own, as a bearer token, in the `X-Hermes-Session-Token` 
 For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
 serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
 
-**From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
+**From another machine.** Set `webapp.host` to `0.0.0.0`, or to one IP address of this machine (a LAN or
+Tailscale address) to serve the Webapp at that address only; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
 for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
 you run on the same machine, keep the loopback host and set `webapp.public_url` to the address it
@@ -81,8 +82,9 @@ serves instead; that requires the same sign-in. A proxy in another container or 
 cannot reach that loopback address: see [Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy).
 `hermes webapp` then opens the Webapp's address, where you sign in with
 your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
-registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
-loopback address (a password provider, or sign-in you set up by hand for that address). One-use
+registered Nous sign-in for, while it is still this machine's address and the Webapp's port; on an
+IP address you set, that address (if Web Access registered Nous sign-in for another address, the
+command says that sign-in cannot finish there); else the loopback address (a password provider, or sign-in you set up by hand for that address). One-use
 links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely.
 
 **What plain HTTP loses.** Browsers turn off features that need a secure context on a plain-HTTP
@@ -452,6 +454,7 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
 - **Reasoning Blocks** — **Settings → Chat → Reasoning Blocks** (`display.show_reasoning` in `config.yaml`) shows or hides the model's thinking in the transcript (off shows answers only). Open chats update as soon as the setting saves. Typing `/reasoning hide` or `/reasoning show` in the composer flips the same setting and the open transcript follows immediately.
 - **Reopen Last Chat on Launch** — by default the app picks up where you left off on cold start. Turn it off in **Settings → Appearance** (or set `display.resume_last_session: false` in `config.yaml`) to always begin with a fresh chat. Deep links and explicit destinations are never overridden either way.
+- **Open-only link** — `hermes://launch` opens Hermes Desktop (or brings a running window to the front) and does nothing else: anything after `launch` is ignored, so it never pre-fills, navigates, or opens a dialog. Use it for an "Open Hermes" button on a page or a shortcut.
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
@@ -480,7 +483,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The public Skills Hub's **Install in Hermes** buttons open `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace)'s **Install in Hermes** buttons open source-qualified `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).

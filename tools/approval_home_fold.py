@@ -18,6 +18,48 @@ _PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
 _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 
 
+def _spell_component(component: str) -> str:
+    """*component* as a regex, tolerating the optional escape Git Bash writes before a space.
+
+    An unquoted path with a space is written ``/c/Users/John\\ Smith`` — the same directory as
+    ``John Smith``. Escaping alone (``re.escape``) leaves the literal space, so a profile whose name
+    contains one never folded and a ``sed -i`` of its config.yaml passed as safe.
+    """
+    return re.escape(component).replace(r"\ ", r"\\? ")
+
+
+def _fold_matches(pattern, command: str, replace) -> str:
+    """``pattern.sub(replace, command)``, except where a match ends on the backslash of a ``\\ ``
+    (the last of an odd run; ``\\\\`` is one literal backslash, and a space after it splits words).
+    That backslash belongs to the last name, which goes on past the match:
+
+    - right after the home (the tail is only that backslash run): the home's own last name continues,
+      so ``hermes\\ data\\ backup`` is a sibling of the home ``hermes data``. It stays unfolded.
+      Quoted, the backslash is a literal name character and the name is no closer to the home, so
+      this rule needs no quote state.
+    - in a child name (``My\\ Documents``, ``.hermes/\\ x``, ``config.yaml${u:+\\ }``, ``config.yaml{,\\ }``):
+      the home is a real prefix. Fold it and preserve the child spelling for the detector, so the rest of
+      the word survives after ``~/`` and an expansion that bash turns back into ``config.yaml`` still meets
+      the patterns. This can also prompt for a literal backup name such as ``.bashrc\\ backup``, just as
+      the home-relative spelling already does.
+
+    An escaped space INSIDE the home always folds, quoted or not. Telling the two apart
+    takes a full shell parse (a quote in a comment, heredoc body or backtick flips every lexical quote
+    model for the rest of the command), so the fold fails closed: a quoted ``'/home/John\\ Smith/...'``
+    costs a prompt, a misread unquoted one would lose the gate on the approval policy file.
+    """
+    def fold(match: re.Match) -> str:
+        text = match.group(0)
+        if not (command.startswith((" ", "\t"), match.end()) and (len(text) - len(text.rstrip("\\"))) % 2):
+            return replace(match)
+        if (match.groupdict().get("tail") or "").strip("\\"):
+            shorter = pattern.match(command, match.start(), match.end() - 1)
+            return replace(shorter) + command[shorter.end():match.end()]
+        return text
+
+    return pattern.sub(fold, command)
+
+
 @functools.lru_cache(maxsize=64)
 def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* as an absolute directory prefix.
@@ -41,7 +83,7 @@ def _home_prefix_fold_regex(path: str):
     sep = r"(?:\\?/)" if len(components) == 1 and facts.os_family() != "win32" and path.startswith("/") else r"[/\\]"
     lead = r"(?<![\w.~$}/\\-])" + sep + "+" if len(components) == 1 else sep + "*"
     tail = _PATH_TAIL if sep == r"[/\\]" else r"(?P<tail>(?:\\?/[^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
-    return re.compile(lead + (sep + "+").join(re.escape(c) for c in components) + tail)
+    return re.compile(lead + (sep + "+").join(_spell_component(c) for c in components) + tail)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
@@ -50,7 +92,8 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
         pattern = _home_prefix_fold_regex(path)
         if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\/", "/").replace("\\", "/"), command)
+            command = _fold_matches(
+                pattern, command, lambda m: replacement + m.group("tail").replace("\\/", "/").replace("\\", "/"))
     return command
 
 
@@ -135,7 +178,7 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
         pattern = _bare_home_fold_regex(path)
         if pattern is not None:
-            command = pattern.sub("~/.hermes", command)
+            command = _fold_matches(pattern, command, lambda _m: "~/.hermes")
     return command
 
 
@@ -146,5 +189,5 @@ def _bare_home_fold_regex(path: str):
     if len(components) < 2:
         return None
     return re.compile(
-        r"(?<![^\s'\"`=;|&<>(])[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components)
+        r"(?<![^\s'\"`=;|&<>(])[/\\]*" + r"[/\\]+".join(_spell_component(c) for c in components)
         + r"[/\\]?(?=[" + _PATH_TOKEN_STOP + r"*]|$)")

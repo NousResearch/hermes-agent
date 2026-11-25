@@ -14,7 +14,10 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli.active_sessions import try_acquire_active_session
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 
@@ -45,19 +48,19 @@ def taken_chat(monkeypatch):
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    db = SessionDB(db_path=get_hermes_home() / "state.db")
+    db = open_persistence(profile_scope(home=get_hermes_home()))
     monkeypatch.setattr(server, "_db", db)
     sid = "taken-chat"
-    db.create_session(sid, source="desktop")
+    seed_session(db, sid, "desktop")
     for n in range(3):
-        db.append_message(sid, "user", f"question {n}")
-        db.append_message(sid, "assistant", f"answer {n}")
+        seed_messages(db, sid, {"role": "user", "content": f"question {n}"},
+                      {"role": "assistant", "content": f"answer {n}"})
     ready = threading.Event()
     ready.set()
     long_ago = time.time() - 3600
     record = {
         "session_key": sid, "source": "desktop", "history_version": 0, "history_lock": threading.Lock(),
-        "history": db.get_messages_as_conversation(sid, include_row_ids=True), "agent_ready": ready,
+        "history": conversation(db, sid, ConversationRequest(include_row_ids=True)), "agent_ready": ready,
         "running": False, "created_at": long_ago, "last_active": long_ago, "transport": _LiveSocket(),
         "agent": _Agent(sid), "attached_images": [], "cols": 80}
     server._sessions[sid] = record
@@ -65,8 +68,8 @@ def taken_chat(monkeypatch):
     server._reap_idle_sessions()  # the real idle tick releases the lease
     lease, refusal = try_acquire_active_session(session_id=sid, surface="telegram", config={})
     assert lease is not None, refusal
-    db.append_message(sid, "user", "telegram message")
-    db.append_message(sid, "assistant", "telegram answer")
+    seed_messages(db, sid, {"role": "user", "content": "telegram message"},
+                  {"role": "assistant", "content": "telegram answer"})
     try:
         yield SimpleNamespace(sid=sid, record=record, db=db)
     finally:
@@ -83,7 +86,7 @@ _OWNER_TRANSCRIPT = [
 def _outcome(response: dict, chat) -> dict:
     error = response.get("error") or {}
     return {"code": error.get("code"), "reason": (error.get("data") or {}).get("reason"),
-            "transcript": [m["content"] for m in chat.db.get_messages_as_conversation(chat.sid)]}
+            "transcript": [m["content"] for m in conversation(chat.db, chat.sid)]}
 
 
 def test_model_switch_never_writes_its_marker_into_the_new_owners_transcript(taken_chat, monkeypatch):

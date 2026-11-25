@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "Cache del prompt: sconosciuta (questo provider non pubblica la conservazione della cache)."
     cache_unknown_runtime: "Cache del prompt: sconosciuta (questo runtime imposta le proprie opzioni di cache, che Hermes non può osservare)."
     cache_unknown_storage: "Cache del prompt: sconosciuta (impossibile leggere l'archivio della sessione)."
+    cache_warming_off: "Keep-alive: disattivati (mancati due volte)."
+    cache_tier_pending: "Livello: 5m fino alla prima pausa oltre 5 minuti, poi 1h."
+    cache_learned: "Appreso: {rule}."
     cache_confidence:
       proven: "provato"
       declared: "dichiarato"
@@ -4021,7 +4024,7 @@ plan_usage:
   large_notice_limit_stops: "Modello grande: hai raggiunto il limite {name} ({resets}), quindi non funzionerà fino ad allora."
   large_notice_percent: "Modello grande: usa più utilizzo del tuo piano per messaggio. Limite mensile dei modelli grandi: {percent} usato."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ File modificati nei turni annullati: {files}. Esegui /rollback per elencare i checkpoint e ripristinarne uno."
     more: "+{count} altri"

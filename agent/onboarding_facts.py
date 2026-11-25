@@ -7,7 +7,7 @@ running this backend; the desktop says when that is not the user's own computer 
 
 from __future__ import annotations
 
-from agent.onboarding_flow import Facts
+from session_rules.onboarding_flow import Facts
 
 _OS = {"darwin": "macos", "win32": "windows"}
 

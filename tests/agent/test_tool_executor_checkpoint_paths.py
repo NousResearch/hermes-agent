@@ -9,7 +9,7 @@ import pytest
 
 from agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_file_checkpoint
 from agent.turn_explainers import TurnExplainersMixin
-from tools.checkpoint_manager import CheckpointManager
+from agent.checkpoints.manager import CheckpointManager
 from tools.terminal_tool import _active_environments, _env_lock
 from hermes_constants import get_hermes_home
 

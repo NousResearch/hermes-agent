@@ -36,12 +36,13 @@ async def test_registration_demoted_after_probe_persists_revoke_debt(gateway, mo
 
     _peer, url, catalog, room = linked_peer
     service, probe = gateway.service, PeerRunsHTTPClient.probe
+    store, placement = service.store, service.placement
     request = _surface(gateway, monkeypatch, surface)
     grant = (await invite(gateway, room))['grant']
 
     def demote_after_probe(client, **kwargs):
         result = probe(client, **kwargs)
-        demote_room(service.db_path, room_id='linked', observed_gateway_id='install:new-owner',
+        demote_room(store, placement=placement, room_id='linked', observed_gateway_id='install:new-owner',
                     observed_epoch=room['authority_epoch'] + 1)
         return result
 
@@ -51,12 +52,12 @@ async def test_registration_demoted_after_probe_persists_revoke_debt(gateway, mo
     monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
     with pytest.raises(hosted_rooms.AuthorityConflictError):
         service.route_authority('linked')
-    assert service.peer_routes == {} and hosted_room_links.load_room_links(service.db_path) == ()
+    assert service.peer_routes == {} and hosted_room_links.load_room_links(store, placement=placement) == ()
     assert await _grant_error(url, grant) is None
-    assert _owed(service.db_path) == [('linked', 'reviewer', 0)]
+    assert _owed(store) == [('linked', 'reviewer', 0)]
     restarted = CanonicalHostedRoomService(gateway.authority, None)
     assert await asyncio.to_thread(restarted.retry_owed_revokes) == 1
-    assert _owed(service.db_path) == []
+    assert _owed(store) == []
     assert await _grant_error(url, grant) == 'room_reauthorization_required'
 
 
@@ -72,6 +73,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
     monkeypatch.setattr(api_server_runs, '_execute_run', complete)
     _peer, url, catalog, room = linked_peer
     service, blocked = gateway.service, []
+    store, placement = service.store, service.placement
     lock = threading.Lock()
 
     class BoundedLock:
@@ -103,10 +105,11 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
     other = await linked_room(gateway, catalog, room_id='other')
     assert (await call(gateway.owner, 'groups.send', room_id='linked', event_id='ask',
                        payload={'text': '@reviewer review', 'thread_id': 'thread'}))['accepted']
-    task, = driver.list_tasks(service.db_path, room_id='linked', status='queued')
+    task, = driver.list_tasks(store, placement=placement, room_id='linked', status='queued')
     binding = next(b for b in service.bindings() if b.room_id == 'linked')
     lease = service.runtime._ensure_lease(binding)
-    driver.start_task(service.db_path, task['identity'], lease, expected_cancel_generation=0, clock=service.runtime.clock)
+    driver.start_task(store, task['identity'], lease, placement=placement, expected_cancel_generation=0,
+                      clock=service.runtime.clock)
     monkeypatch.setattr(service, 'peer_route_lock', BoundedLock())
     monkeypatch.setattr(PeerRunsHTTPClient, 'refresh_grant', refresh_without_policy_lock)
     try:
@@ -119,7 +122,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
         # cannot be confirmed and the room and its route stay for a retry.
         assert ('room_stop_pending' if surface == 'canonical' else 'still stopping') in str(result), result
         assert ('linked', 'reviewer') in service.peer_routes
-        assert len(hosted_room_links.load_room_links(service.db_path)) == 1
+        assert len(hosted_room_links.load_room_links(store, placement=placement)) == 1
     else:
         assert isinstance(result, dict) and 'code' not in result, result
     assert (await _seat(gateway, other, url, catalog))[1]['registered']
@@ -127,7 +130,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
                        payload={'text': '@reviewer next', 'thread_id': 'next'}))['accepted']
     binding = next(b for b in service.bindings() if b.room_id == 'other')
     await asyncio.to_thread(service.runtime._run_room_once, binding)
-    task, = driver.list_tasks(service.db_path, room_id='other', status='settled')
+    task, = driver.list_tasks(store, placement=placement, room_id='other', status='settled')
     assert task['result']['text'] == 'peer reply'
 
 
@@ -137,7 +140,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
 @pytest.mark.parametrize('outcome', ['failed', 'ended', 'ended_without_route'])
 async def test_registration_during_disband_preserves_surviving_grants(gateway, monkeypatch, linked_peer, surface, phase, outcome):
     from gateway.platforms import api_server_runs
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
     async def complete(adapter, run, **kwargs):
@@ -147,6 +150,7 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
     _peer, url, catalog, room = linked_peer
     reached, release, probed, publish = (threading.Event() for _ in range(4))
     service, stop, key = gateway.service, gateway.service.stop_room, ('linked', 'reviewer')
+    store, placement = service.store, service.placement
     ending = seating = None
 
     def paused_stop(*args, **kwargs):
@@ -167,14 +171,14 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
         else:
             grant, registered = await _seat(gateway, room, url, catalog, ttl_seconds=120, status_ttl_seconds=3600)
             assert registered['registered']
-        routes, links = dict(service.peer_routes), hosted_room_links.load_room_links(service.db_path)
+        routes, links = dict(service.peer_routes), hosted_room_links.load_room_links(store, placement=placement)
         binding = next(b for b in service.bindings() if b.room_id == 'linked')
         if outcome == 'failed':
             assert (await call(gateway.owner, 'groups.send', room_id='linked', event_id='local',
                                payload={'text': '@host wait', 'thread_id': 'local'}))['accepted']
-            task, = driver.list_tasks(service.db_path, room_id='linked', status='queued')
+            task, = driver.list_tasks(store, placement=placement, room_id='linked', status='queued')
             lease = service.runtime._ensure_lease(binding)
-            driver.start_task(service.db_path, task['identity'], lease, expected_cancel_generation=0,
+            driver.start_task(store, task['identity'], lease, placement=placement, expected_cancel_generation=0,
                               clock=service.runtime.clock)
             monkeypatch.setattr(service.runtime, 'cancel', lambda *a, **kw: {'status': 'stopping'})
         probe = PeerRunsHTTPClient.probe
@@ -201,22 +205,22 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
             seating = asyncio.create_task(register())
         result = await asyncio.wait_for(asyncio.shield(seating), timeout=3)
         # A temporary refusal persists a hold, never runnable revocation debt.
-        assert _owed(service.db_path) == [("linked", "reviewer", 0)]
-        assert hosted_rooms.due_room_grant_revokes(service.db_path, limit=10) == []
+        assert _owed(store) == [("linked", "reviewer", 0)]
+        assert hosted_rooms.due_room_grant_revokes(store, placement=placement, limit=10) == []
         assert (result if surface == 'canonical' else result['message']) == 'room_disbanding_retry'
         assert probed.is_set() == (phase == 'after_probe')
-        with pytest.raises(RuntimeStoreError, match='room_disbanding_retry'):
+        with pytest.raises(AuthorityRefusal, match='room_disbanding_retry'):
             service._rotate_route_grant(*key, 'not-published', previous=grant)
-        assert service.peer_routes == routes and hosted_room_links.load_room_links(service.db_path) == links
+        assert service.peer_routes == routes and hosted_room_links.load_room_links(store, placement=placement) == links
         release.set()
         result = await ending
         monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
         if outcome == 'failed':
             assert ('room_stop_pending' if surface == 'canonical' else 'still stopping') in str(result)
-            assert _owed(service.db_path) == [("linked", "reviewer", 0)]
+            assert _owed(store) == [("linked", "reviewer", 0)]
             assert await asyncio.to_thread(service.retry_owed_revokes) == 0
-            assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None
-            assert service.peer_routes == routes and hosted_room_links.load_room_links(service.db_path) == links
+            assert hosted_rooms.room_state(store, placement=placement, room_id='linked').get('disbanded_at') is None
+            assert service.peer_routes == routes and hosted_room_links.load_room_links(store, placement=placement) == links
             route = service.peer_routes[key]
             transport = service._resolve_member_transport(binding, {'payload': {'target_member_id': 'reviewer', 'source_event_seq': 1}})
             dispatch = build_member_dispatch(
@@ -224,13 +228,13 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
                 execution_generation=1, source_event_seq=1, prompt='review', trace_id=route.trace_id).as_mapping()
             receipt = await asyncio.to_thread(transport.client.dispatch, grant=grant, dispatch=dispatch)
             assert receipt['run_id']
-            stored, = hosted_room_links.load_room_links(service.db_path)
+            stored, = hosted_room_links.load_room_links(store, placement=placement)
             assert stored.grant == service.peer_routes[key].grant != grant
         else:
             assert 'tombstone' in result
-            assert service.peer_routes == {} and hosted_room_links.load_room_links(service.db_path) == ()
+            assert service.peer_routes == {} and hosted_room_links.load_room_links(store, placement=placement) == ()
             # Disband revoked any surviving route at its member gateway first: nothing stays owed.
-            assert _owed(service.db_path) == []
+            assert _owed(store) == []
             assert await _grant_error(url, grant) == 'room_reauthorization_required'
     finally:
         release.set()

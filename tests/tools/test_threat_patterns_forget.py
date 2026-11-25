@@ -77,7 +77,7 @@ def test_benign_forget_prose_not_flagged(text, tmp_path):
 
 
 def test_plugin_guard_treats_quoted_forget_phrase_like_its_siblings():
-    from tools.plugin_guard_context import is_quoted_injection_phrase
+    from hermes_cli.plugins_install_scan_context import is_quoted_injection_phrase
     from tools.skills_guard import Finding
 
     line = '- Validator refuses "forget your previous instructions" phrasing.'

@@ -2,7 +2,7 @@
 (handlers in ``tui_gateway/methods_tools.py``, browser helpers in ``methods_browser.py``).
 
 Several results here are pass-throughs of dicts another module owns (``tools/process_registry.py``,
-``tools/checkpoint_manager.py``, ``tools/cronjob_tools.py``): those declare every key the producer is
+``agent/checkpoints/manager.py``, ``tools/cronjob_tools.py``): those declare every key the producer is
 known to emit plus ``extra="allow"`` so a new upstream key never trips the strict gate.
 """
 
@@ -368,7 +368,7 @@ method("config.show", params=ConfigShowParams, result=ConfigShowResult,
 class RollbackListParams(Params):
     session_id: str
     profile: str | None = None
-    # Epoch seconds an /undo's span began (``tools/checkpoint_undo_hint.py::undo_span_start``): the result
+    # Epoch seconds an /undo's span began (``agent/checkpoints/undo_hint.py::undo_span_start``): the result
     # then carries ``undo_hint`` naming the files that span changed.
     undo_since: float | None = None
     # The rewound user row's id (``session.mutate`` rewind's ``target_message.id``): the kept rows before it
@@ -403,7 +403,7 @@ class RollbackRestoreParams(Params):
 
 
 class RollbackRestoreResult(_Open):
-    """``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full
+    """``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full
     (non-file) restore that also rewound the live transcript."""
 
     success: bool

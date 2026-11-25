@@ -2,9 +2,12 @@
 
 import asyncio
 import base64
+import contextlib
+import importlib
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -238,7 +241,8 @@ def test_download_resolves_paths_in_the_originating_profile_session(
     local_files_client, monkeypatch, route,
 ):
     from pathlib import Path
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     client, home = local_files_client
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -257,11 +261,8 @@ def test_download_resolves_paths_in_the_originating_profile_session(
         db_home = hermes_home if profile == "default" else hermes_home / "profiles" / profile
         db_home.mkdir(parents=True, exist_ok=True)
         (db_home / "config.yaml").write_text("{}", encoding="utf-8")
-        db = SessionDB(db_path=db_home / "state.db")
-        try:
-            db.create_session(sid, source="gui", cwd=cwd)
-        finally:
-            db.close()
+        with open_persistence(profile_scope(home=db_home)) as db:
+            seed_session(db, sid, "gui", cwd=cwd)
     for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
         response = client.get(route, params={
             "path": path, "profile": "default", "session_id": "origin-session",
@@ -929,6 +930,75 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+_MIGRATION_BACKUPS = ("env.bak", "config.yaml.bak", "launcher-env.json", "launcher-argv.json")
+
+
+def _route_codes(client, path):
+    return [client.get(f"/api/files/{route}", params={"path": str(path)}).status_code
+            for route in ("read", "download", "stream")]
+
+
+def _names(client, folder):
+    return [e["name"] for e in client.get("/api/files", params={"path": str(folder)}).json().get("entries", [])]
+
+
+def test_the_migration_backups_and_record_are_refused_like_env(forced_files_client, monkeypatch):
+    """A backend migration's backups (the copy of .env, a hand-started backend's environment and command line)
+    and its record, directly under a Hermes home or a profile home, are refused exactly as .env is: never
+    listed, read, streamed, downloaded or written. Matched without regard to case."""
+    client, root = forced_files_client
+    home = root / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    profile = home / "profiles" / "work"
+    (home / ".env").parent.mkdir(parents=True)
+    (home / ".env").write_text("OPENAI_API_KEY=fixture-only\n", encoding="utf-8")
+    (home / "notes.txt").write_text("ordinary\n", encoding="utf-8")
+    env = _route_codes(client, home / ".env")
+    assert env == [403, 403, 403]
+    for base, folder_name, record_name in ((home, "backend_migration", "backend_migration.json"),
+                                           (profile, "backend_migration", "backend_migration.json"),
+                                           (home / "profiles" / "case", "Backend_Migration", "BACKEND_MIGRATION.json")):
+        folder = base / folder_name
+        folder.mkdir(parents=True)
+        (base / record_name).write_text('{"state": "done"}\n', encoding="utf-8")
+        for name in _MIGRATION_BACKUPS:
+            (folder / name).write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=fixture-only\n", encoding="utf-8")
+
+        assert folder_name not in _names(client, base) and record_name not in _names(client, base), base
+        assert _names(client, folder) == []
+        for path in (base / record_name, *(folder / n for n in _MIGRATION_BACKUPS)):
+            assert _route_codes(client, path) == env, path
+            written = client.post("/api/fs/write-text", json={"path": str(path), "content": "x"})
+            assert written.status_code == 403, (path, written.text)
+    assert "notes.txt" in _names(client, home)
+    assert client.get("/api/files/read", params={"path": str(home / "notes.txt")}).status_code == 200
+
+
+def test_an_unrelated_projects_backend_migration_names_are_ordinary_files(forced_files_client, monkeypatch):
+    """Outside a Hermes home the two names are a project's own: listed, read, downloaded and written as any file
+    (nothing changes for a user who never migrated)."""
+    client, root = forced_files_client
+    monkeypatch.setenv("HERMES_HOME", str(root / "hermes-home"))
+    project = root / "work" / "some-project"
+    (project / "backend_migration").mkdir(parents=True)
+    readme = project / "backend_migration" / "README.md"
+    record = project / "backend_migration.json"
+    readme.write_text("# how we migrated our backend\n", encoding="utf-8")
+    record.write_text('{"steps": []}\n', encoding="utf-8")
+
+    (project / "OTHER.md").write_text("# ordinary\n", encoding="utf-8")
+    (project / "other.json").write_text("{}\n", encoding="utf-8")
+
+    assert {"backend_migration", "backend_migration.json"} <= set(_names(client, project))
+    assert _names(client, project / "backend_migration") == ["README.md"]
+    for path, ordinary in ((readme, project / "OTHER.md"), (record, project / "other.json")):
+        assert _route_codes(client, path) == _route_codes(client, ordinary), path
+        assert _route_codes(client, path)[:2] == [200, 200], path
+        written = client.post("/api/fs/write-text", json={"path": str(path), "content": "edited\n"})
+        assert written.status_code == 200, written.text
+        assert path.read_text(encoding="utf-8") == "edited\n"
+
+
 def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
     """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
     subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised
@@ -1219,3 +1289,64 @@ def test_managed_writes_allow_a_plain_chain_of_exactly_the_hop_bound(forced_file
         previous = link
 
     assert _refused_writes(client, previous) == (200, 200)
+
+
+@contextlib.contextmanager
+def _without_files_router():
+    from hermes_cli import web_routers
+
+    saved_mod = sys.modules.pop("hermes_cli.web_routers.files", None)
+    had_attr = hasattr(web_routers, "files")
+    saved_attr = getattr(web_routers, "files", None)
+    if had_attr:
+        del web_routers.files
+    try:
+        yield
+    finally:
+        if saved_mod is not None:
+            sys.modules["hermes_cli.web_routers.files"] = saved_mod
+        else:
+            sys.modules.pop("hermes_cli.web_routers.files", None)
+        if had_attr:
+            web_routers.files = saved_attr
+        elif hasattr(web_routers, "files"):
+            del web_routers.files
+
+
+def test_files_router_loads_and_guards_migration_stores_against_n1_file_safety(tmp_path, monkeypatch):
+    import agent
+    import agent.file_safety as real_file_safety
+
+    home = tmp_path / ".hermes"
+    (home / "backend_migration").mkdir(parents=True)
+    backup = home / "backend_migration" / "config.yaml"
+    backup.write_text("backup\n", encoding="utf-8")
+    record = home / "backend_migration.json"
+    record.write_text('{"state": "done"}\n', encoding="utf-8")
+
+    project = tmp_path / "work" / "project"
+    (project / "backend_migration").mkdir(parents=True)
+    readme = project / "backend_migration" / "README.md"
+    readme.write_text("# docs\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    legacy_safety = ModuleType("agent.file_safety")
+    for attr, val in vars(real_file_safety).items():
+        if attr != "hermes_credential_homes":
+            setattr(legacy_safety, attr, val)
+    monkeypatch.setitem(sys.modules, "agent.file_safety", legacy_safety)
+    monkeypatch.setattr(agent, "file_safety", legacy_safety, raising=False)
+
+    with _without_files_router():
+        files_mod = importlib.import_module("hermes_cli.web_routers.files")
+        assert files_mod._is_local_sensitive_path(backup) is True
+        assert files_mod._is_local_sensitive_path(record) is True
+        assert files_mod._is_local_sensitive_path(readme) is False
+
+
+def test_files_router_does_not_swallow_missing_file_safety_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "agent.file_safety", None)
+    with _without_files_router(), pytest.raises(ModuleNotFoundError):
+        importlib.import_module("hermes_cli.web_routers.files")

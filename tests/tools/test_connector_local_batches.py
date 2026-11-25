@@ -35,7 +35,7 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
 @pytest.mark.parametrize("flatten_probe", [False, True])
 def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe):
     from agent.tool_executor import _unwrap_tool_search_call
-    from agent.agent_runtime_helpers import invoke_tool
+    from agent.tool_invocation.dispatch import invoke_tool
     from persistence_assembly import open_persistence, profile_scope
     from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools.connectors import live

@@ -1160,32 +1160,35 @@ def _get_pre_tool_call_directive_details(
     )
     modified_args: Optional[dict[str, Any]] = None
     first_approve: Optional[tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)
-    for result in hook_results:
-        if not isinstance(result, dict):
-            continue
-        action = result.get("action")
-        # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
-        # so modify directives are visible even when a later hook blocks. Each modify directive
-        # shallow-merges its keys into one accumulated dict built from the original args.
-        if action == "modify":
-            partial = result.get("args")
-            if isinstance(partial, dict) and partial:
-                modified_args = {**(modified_args if modified_args is not None else
-                                    (args if isinstance(args, dict) else {})), **partial}
-            continue
-        if action not in ("block", "approve"):
-            continue
-        message = result.get("message")
-        message = message if isinstance(message, str) and message else None
-        # A block directive requires a message (it becomes the tool result); approve's is optional.
-        if action == "block" and not message:
-            continue
-        if action == "block":
-            return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
-        # approve is held back until the whole list has been scanned for a veto.
-        if first_approve is None:
-            rule_key = result.get("rule_key")
-            first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
+    try:
+        for result in hook_results:
+            if not isinstance(result, dict):
+                continue
+            action = result.get("action")
+            # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
+            # so modify directives are visible even when a later hook blocks. Each modify directive
+            # shallow-merges its keys into one accumulated dict built from the original args.
+            if action == "modify":
+                partial = result.get("args")
+                if isinstance(partial, dict) and partial:
+                    modified_args = {**(modified_args if modified_args is not None else
+                                        (args if isinstance(args, dict) else {})), **partial}
+                continue
+            if action not in ("block", "approve"):
+                continue
+            message = result.get("message")
+            message = message if isinstance(message, str) and message else None
+            # A block directive requires a message (it becomes the tool result); approve's is optional.
+            if action == "block" and not message:
+                continue
+            if action == "block":
+                return _PreToolCallDirective(action="block", message=message, modified_args=modified_args)
+            # approve is held back until the whole list has been scanned for a veto.
+            if first_approve is None:
+                rule_key = result.get("rule_key")
+                first_approve = (message, (rule_key.strip() or None) if isinstance(rule_key, str) else None)
+    except Exception:  # health: allow BLE001 -- malformed directives cannot bypass a policy gate
+        return _PreToolCallDirective(action="block", message=f"BLOCKED: plugin directive processing failed for {tool_name}")
     if first_approve is not None:
         return _PreToolCallDirective(action="approve", message=first_approve[0], rule_key=first_approve[1],
                                      modified_args=modified_args)
@@ -1218,28 +1221,33 @@ def resolve_pre_tool_block(
 
 
 def _redacted_arguments_json(args: dict[str, Any]) -> str:
-    """Render tool args for a human approval prompt without exposing secret values."""
+    """Best-effort masking; arbitrary text may still contain unrecognized secrets."""
     from agent.redact import redact_sensitive_text
 
-    secret_markers = (
-        "accesskeyid", "access_key", "api_key", "apikey", "auth", "bearer", "client_secret",
-        "connection_string", "credential", "jwt", "passphrase", "passwd", "password", "private_key",
-        "refresh_token", "secret", "session", "token",
-    )
+    # Unknown fields are data, not trusted descriptions. Preserve only a small
+    # set of operational labels; even these can contain unrecognized secrets.
+    import re
 
-    def _redact_values(value: Any) -> Any:
+    def _redact_values(value: Any, key: str = "") -> Any:
+        if re.search(r"(?i)(secret|token|password|passwd|credential|auth|api.?key|otp|pin|code)", key):
+            return "[REDACTED]"
         if isinstance(value, dict):
-            redacted = {}
-            for key, item in value.items():
-                normalized = str(key).lower().replace("-", "_").replace(" ", "_")
-                compact = normalized.replace("_", "")
-                redacted[key] = "[REDACTED]" if any(
-                    marker in normalized or marker in compact for marker in secret_markers
-                ) else _redact_values(item)
-            return redacted
+            return {str(k): _redact_values(v, str(k).lower()) for k, v in value.items()}
         if isinstance(value, list):
             return [_redact_values(item) for item in value]
-        return value
+        # Short numeric parameters often describe counts/revisions. Longer values
+        # can be one-time codes even under innocuous names.
+        if type(value) is int and -999 <= value <= 999:
+            return value
+        if isinstance(value, str):
+            if re.fullmatch(r"-?[0-9]{1,3}", value):
+                return value
+            if key == "action" and value in {"read", "write", "create", "update", "delete", "list", "search"}:
+                return value
+            if key in {"path", "target"} and re.fullmatch(r"[A-Za-z0-9_./-]{1,256}", value):
+                if not re.search(r"(?i)(secret|token|password|credential|otp|[0-9]{4,})", value):
+                    return value
+        return "[REDACTED]"
 
     return redact_sensitive_text(
         json.dumps(_redact_values(args), ensure_ascii=False, sort_keys=True, default=str),
@@ -1249,6 +1257,18 @@ def _redacted_arguments_json(args: dict[str, Any]) -> str:
 
 def _approval_observability_kwargs(hook_kwargs: dict[str, Any]) -> dict[str, str]:
     return {k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")}
+
+
+_payload_key_lock = threading.Lock()
+_payload_key: bytes | None = None
+
+
+def _payload_binding_key() -> bytes:
+    global _payload_key
+    with _payload_key_lock:
+        if _payload_key is None:
+            _payload_key = os.urandom(32)
+        return _payload_key
 
 
 def _resolve_block_from_details(
@@ -1272,21 +1292,30 @@ def _resolve_block_from_details(
             approval_reason = details.message or ""
             if final_args is not None:
                 approval_reason = (
-                    f"{approval_reason}\n\nFinal tool arguments after all pre-tool-call modifiers "
+                    f"{approval_reason}\n\nRedaction is best-effort; unrecognized sensitive values may be visible."
+                    "\nFinal tool arguments after all pre-tool-call modifiers "
                     f"and execution middleware (secrets redacted): {_redacted_arguments_json(final_args)}"
                 )
-            result = request_tool_approval(tool_name, approval_reason, rule_key=details.rule_key or tool_name)
+            # Bind session grants to the raw final payload. A process-local HMAC key
+            # prevents logged or transported identifiers becoming offline secret oracles.
+            import hmac
+            binding = json.dumps(
+                [tool_name, details.rule_key or tool_name, final_args],
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            )
+            rule_key = "payload_hmac_sha256:" + hmac.digest(_payload_binding_key(), binding.encode("utf-8"), "sha256").hex()
+            result = request_tool_approval(tool_name, approval_reason, rule_key=rule_key, allow_permanent=False)
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):
                     reset_current_observability_context(approval_tokens)
+        if not result.get("approved"):
+            return str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
+        return None
     except Exception:
         # Fail-closed: if the gate itself errors, block rather than silently execute an action a
         # plugin flagged for approval.
         return f"BLOCKED: plugin approval gate failed for {tool_name}"
-    if not result.get("approved"):
-        return str(result.get("message") or f"BLOCKED: plugin approval required for {tool_name}")
-    return None
 
 
 def _resolve_pending_pre_tool_approval(
@@ -1308,10 +1337,21 @@ def _dispatch_pre_tool_call_hooks(
     block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     effective_args = details.modified_args if details.modified_args is not None else (args if isinstance(args, dict) else {})
+    if details.action == "approve":
+        try:
+            snapshot = json.dumps(effective_args, allow_nan=False)
+            from tools.arg_coercion import ApprovedToolArgs, coerce_tool_args
+            effective_args = coerce_tool_args(tool_name, json.loads(snapshot))
+            snapshot = json.dumps(effective_args, allow_nan=False)
+            block_msg = _resolve_block_from_details(
+                details, tool_name, final_args=effective_args,
+                **_approval_observability_kwargs(hook_kwargs))
+            return (block_msg, ApprovedToolArgs(tool_name, snapshot) if block_msg is None else details.modified_args)
+        except Exception:  # health: allow BLE001 -- approval failures must block without logging sensitive payloads
+            # Once approval is required no resolution failure may become a no-op hook.
+            return f"BLOCKED: plugin approval gate failed for {tool_name}", None
     block_msg = _resolve_block_from_details(
-        details, tool_name,
-        final_args=effective_args,
-        **_approval_observability_kwargs(hook_kwargs))
+        details, tool_name, final_args=effective_args, **_approval_observability_kwargs(hook_kwargs))
     return (block_msg, details.modified_args)
 
 

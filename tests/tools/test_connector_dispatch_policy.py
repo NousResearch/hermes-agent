@@ -8,7 +8,7 @@ import pytest
 @pytest.mark.parametrize("blocked_by", ["hook", "execution"])
 def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blocked_by):
     import model_tools
-    from hermes_cli import plugins
+    from hermes_cli import lifecycle, plugins
     from tools.registry import invalidate_check_fn_cache
     from tools.connectors.gateway import bridge, config
 
@@ -27,14 +27,17 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
         assert kw["session_id"] == "policy-session"
         return {"args": {"body": "request-rewrite"}, "source": "test-policy"}
 
-    def hook(name, args, **kw):
+    def hook(event, **kw):
+        if event != "pre_tool_call":
+            return []
+        name, args = kw["tool_name"], kw["args"]
         events.append(("hook", name))
         assert args == {"body": "request-rewrite"}
         assert kw["middleware_trace"] == [{"source": "test-policy"}]
         assert kw["tool_call_id"] == f"policy-call#{[denied, rewritten].index(name)}"  # each entry is its own call
         if name == denied and blocked_by == "hook":
-            return "hook denied", None
-        return None, {"body": "hook-rewrite"}
+            return [{"action": "block", "message": "hook denied"}]
+        return [{"action": "modify", "args": {"body": "hook-rewrite"}}]
 
     def execution(**kw):
         events.append(("execution", kw["tool_name"]))
@@ -47,7 +50,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
 
     monkeypatch.setattr(plugins.get_plugin_manager(), "_middleware", {
         "tool_request": [request], "tool_execution": [execution]})
-    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks", hook)
+    monkeypatch.setattr(lifecycle, "invoke_hook", hook)
 
     class Client:
         def execute(self, planned):

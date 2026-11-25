@@ -18,8 +18,21 @@ from tools.schema_sanitizer import resolve_local_schema_ref
 logger = logging.getLogger("model_tools")
 
 
+class ApprovedToolArgs(dict):
+    """An internal, detached payload already normalized and approved for one tool."""
+
+    def __init__(self, tool_name: str, snapshot: str):
+        super().__init__(json.loads(snapshot))
+        self._tool_name = tool_name
+        self._snapshot = snapshot
+
+
 def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
+    if isinstance(args, ApprovedToolArgs) and args._tool_name == tool_name:
+        if json.dumps(args, allow_nan=False) != args._snapshot:
+            raise ValueError("approved tool arguments changed after approval")
+        return args
     if not args or not isinstance(args, dict):
         return args
 
@@ -53,14 +66,16 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
-                    args[key] = coerced
+                    args[key] = _normalize_json_strings_for_schema(
+                        coerced, prop_schema, root_schema=parameters
+                    )
                     continue
                 if value.strip().startswith("["):
                     logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "
                                    "but could not be parsed — model may have emitted a "
                                    "JSON-encoded string instead of a native array. "
                                    "Falling back to single-element list.", tool_name, key)
-                args[key] = [value]
+                args[key] = _normalize_json_strings_for_schema([value], prop_schema, root_schema=parameters)
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
                 continue
             args[key] = [value]

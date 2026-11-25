@@ -1013,7 +1013,8 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None,
+                    allow_permanent: bool = True) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
@@ -1038,7 +1039,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     # always grant on its key would wave through every later command that trips the scan budget.
     # A manual-only class (an osascript program that can discard unsaved work) is one run too.
     one_shot = smart_denied or manual_only or _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys
-    allow_permanent = not one_shot
+    allow_permanent = allow_permanent and not one_shot
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -1054,6 +1055,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         # Consent is an allow-list, not a deny-list: normalize the answer, then refuse anything
         # that is not one of CONSENT_ANSWERS rather than executing it. See the constant for why.
         choice = canonical_approval_choice(choice)
+        if choice == "always" and not allow_permanent and not one_shot:
+            return _denied("BLOCKED: permanent approval is unavailable for this tool payload; choose once or session.",
+                           pattern_key=pattern_key, description=description, outcome="denied", noun=spec.noun)
         if choice not in CONSENT_ANSWERS:
             logger.warning(
                 "approval: refusing unrecognized approval answer %r (pattern_key=%s, session=%s); "
@@ -1098,7 +1102,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not one_shot,
+                "allow_permanent": allow_permanent,
                 "allow_session": not one_shot,
             }
             if smart_denied:
@@ -1210,7 +1214,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
-    pattern_keys: list[str] | None = None,
+    pattern_keys: list[str] | None = None, allow_permanent: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -1231,7 +1235,12 @@ def _run_approval_gate(
     if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if allow_permanent:
+        cached = is_approved(session_key, pattern_key)
+    else:
+        with _lock:
+            cached = pattern_key in _session_approved.get(_session_grant_key(session_key), set())
+    if cached:
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
@@ -1276,6 +1285,7 @@ def _run_approval_gate(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
         pattern_keys=pattern_keys or [pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        allow_permanent=allow_permanent,
     )
 
 
@@ -1369,7 +1379,8 @@ def check_dangerous_command(command: str, env_type: str,
     )
 
 
-def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None) -> dict:
+def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None,
+                          allow_permanent: bool = True) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
     Entry point for a plugin ``pre_tool_call`` hook returning ``{"action": "approve", ...}``:
@@ -1392,6 +1403,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         subject=subject, advice="Find an alternative approach.",
         autoapprove_log_prefix=f"plugin-escalated tool call '{tool_name}' in non-interactive non-gateway context",
         fail_closed_when_no_human=True,
+        allow_permanent=allow_permanent,
         no_human_block_message=(f"BLOCKED: {subject} but no interactive user or gateway is present "
                                 "to approve it. A plugin flagged this action for human confirmation."),
     )

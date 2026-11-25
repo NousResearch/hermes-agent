@@ -634,7 +634,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     # Button decision → ``choice`` for tools.approval.resolve_gateway_approval. The
     # 3-button layout folds "session" into "always"; ``/approve session`` still works.
-    _APPROVAL_BUTTON_TO_CHOICE = {"allow-once": "once", "allow-always": "always", "deny": "deny"}
+    _APPROVAL_BUTTON_TO_CHOICE = {
+        "allow-once": "once", "allow-session": "session", "allow-always": "always", "deny": "deny"}
 
     @staticmethod
     def _parse_gateway_session_key(session_key: str) -> Optional[dict[str, str]]:
@@ -1494,7 +1495,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         buttons fold the session tier into ``always``)."""
         choices = prompt.choices
         keyboard = build_approval_keyboard(prompt.session_key, allow_permanent="always" in choices,
-                                           allow_once="once" in choices, request_id=prompt.request_id)
+                                           allow_once="once" in choices, allow_session="session" in choices,
+                                           request_id=prompt.request_id)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
         return await self.send_with_keyboard(
             prompt.chat_id, prompt.text, keyboard, reply_to=self._last_msg_id.get(prompt.chat_id))

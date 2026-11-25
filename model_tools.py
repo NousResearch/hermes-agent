@@ -876,12 +876,17 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     def _dispatch(next_args: dict[str, Any]) -> Any:
         if pending_approval is not None:
             from hermes_cli.plugins import _resolve_pending_pre_tool_approval
+            # Serialize once: neither a retained middleware reference nor the approval
+            # callback can mutate the payload between presentation and dispatch.
+            snapshot = json.dumps(next_args if isinstance(next_args, dict) else function_args, allow_nan=False)
+            normalized = coerce_tool_args(function_name, json.loads(snapshot))
+            snapshot = json.dumps(normalized, allow_nan=False)
             block_message = _resolve_pending_pre_tool_approval(
-                pending_approval, function_name, next_args if isinstance(next_args, dict) else function_args,
-                **ids.hook_kwargs(),
+                pending_approval, function_name, json.loads(snapshot), **ids.hook_kwargs(),
             )
             if block_message is not None:
                 raise _PluginApprovalBlocked(block_message)
+            next_args = json.loads(snapshot)
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)

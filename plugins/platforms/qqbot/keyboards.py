@@ -15,7 +15,7 @@ UPDATE_PROMPT_PREFIX = "update_prompt:"
 
 # session_key may itself contain colons (agent:main:qqbot:c2c:OPENID): greedy group, decision trails.
 # The request id trails, so a card from an older build (no id) still parses.
-_APPROVAL_DATA_RE = re.compile(r"^approve:(.+):(allow-once|allow-always|deny)(?::([0-9A-Za-z_-]+))?$")
+_APPROVAL_DATA_RE = re.compile(r"^approve:(.+):(allow-once|allow-session|allow-always|deny)(?::([0-9A-Za-z_-]+))?$")
 _UPDATE_PROMPT_RE = re.compile(r"^update_prompt:(y|n)$")
 
 def _to_dict(value: Any) -> Any:
@@ -103,7 +103,7 @@ def _single_row_keyboard(group_id: str, *buttons: tuple) -> InlineKeyboard:
 
 
 def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True, allow_once: bool = True,
-                            request_id: Optional[str] = None) -> InlineKeyboard:
+                            allow_session: bool = False, request_id: Optional[str] = None) -> InlineKeyboard:
     """Build ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` (one group, so a click greys the rest). ⭐ is hidden when
     persistent scope is unavailable; *session_key* and *request_id* ride in ``button_data`` so a click
     resolves exactly the request its card was sent for."""
@@ -112,6 +112,8 @@ def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True, a
     buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once{rid}", 1)] if allow_once else []
     if allow_once and allow_permanent:
         buttons.append(("always", "⭐ 始终允许", "已始终允许", f"{prefix}:allow-always{rid}", 1))
+    elif allow_once and allow_session:
+        buttons.append(("session", "✅ 本次会话允许", "本次会话已允许", f"{prefix}:allow-session{rid}", 1))
     buttons.append(("deny", "❌ 拒绝", "已拒绝", f"{prefix}:deny{rid}", 0))
     return _single_row_keyboard("approval", *buttons)
 

@@ -26,11 +26,12 @@ def _local_kernel(monkeypatch):
 def hook_calls():
     calls = []
 
-    def _record(tool_name, args, **hook_kwargs):
-        calls.append((tool_name, hook_kwargs))
-        return None, None
+    def _record(event, **hook_kwargs):
+        if event == "pre_tool_call":
+            calls.append((hook_kwargs["tool_name"], hook_kwargs))
+        return []
 
-    with patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks", side_effect=_record):
+    with patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record):
         yield calls
 
 

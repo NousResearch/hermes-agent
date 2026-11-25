@@ -581,6 +581,10 @@ return {"action": "approve", "message": "Why approval is required", "rule_key": 
 
 Precedence is `block` > `approve` > no directive, regardless of registration order: any plugin's valid `block` wins over an earlier plugin's `approve`, and among `approve` directives the first valid one wins (Python plugins are registered first, then shell hooks). `block` requires a non-empty `message` and short-circuits the tool with that text as the error returned to the model. `approve` escalates the call to the existing human-approval gate; `message` and `rule_key` are optional, and denial, timeout, or gate error fails closed. Other return values are ignored, so existing observer-only callbacks keep working unchanged.
 
+For plugin approvals, choose once or for the session; permanent approval is unavailable. A session approval applies only to the same tool, rule and exact final arguments after middleware, including values hidden by best-effort redaction. A changed payload or process restart requires approval again. Existing legacy permanent plugin grants do not authorize these payload-bound requests. Explicit approval-bypass and unattended approval settings still apply.
+
+The preview hides free-text values, URLs, numeric values and sensitive-key subtrees, while retaining selected operation names and simple paths or targets where possible. This trades detail for privacy: a reviewer may need to inspect the operation through a trusted channel before approving. It is not a confidentiality guarantee: keys, plugin-provided messages and retained paths or targets may contain unrecognized sensitive information. Avoid putting secrets in those fields, and do not rely on the preview as a complete redactor.
+
 **Return value — rewrite the tool's arguments:**
 
 ```python

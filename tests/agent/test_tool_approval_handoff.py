@@ -14,7 +14,7 @@ def test_approval_handoff_preserves_single_execution(tmp_path, monkeypatch, path
     from hermes_cli import plugins
     import model_tools
     from agent import inline_tool_executors, tool_executor
-    from agent.agent_runtime_helpers import invoke_tool
+    from agent.tool_invocation.dispatch import invoke_tool
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()
@@ -41,7 +41,7 @@ def request(**kw):
     return kw['args']
 def rewrite(**kw):
     CALLS['execution'] += 1
-    return kw['next_call']({**kw['args'], 'revision': kw['args']['revision'] + 1})
+    return kw['next_call']({**kw['args'], 'revision': str(int(kw['args']['revision']) + 1)})
 def post(**kw):
     CALLS['post'] += 1
 def transform(**kw):
@@ -54,7 +54,7 @@ def register(ctx):
     ctx.register_middleware('tool_execution', rewrite)
     ctx.register_tool(name='approval_echo', toolset='approval_fixture',
         schema={'name': 'approval_echo', 'description': 'fixture',
-                'parameters': {'type': 'object', 'properties': {}}}, handler=handler)
+                'parameters': {'type': 'object', 'properties': {'revision': {'type': 'integer'}}}}, handler=handler)
 ''', encoding="utf-8")
     bundled = tmp_path / "empty_bundled"
     bundled.mkdir()
@@ -102,13 +102,15 @@ def register(ctx):
         if path == "invoke_inline":
             monkeypatch.setattr(
                 inline_tool_executors, "resolve_invoke_tool_executor",
-                lambda *_: lambda agent, payload, ctx: handler(payload),
+                lambda *_: inline_tool_executors._coerced(
+                    "approval_echo", lambda agent, payload, ctx: handler(payload)),
             )
         result = invoke_tool(agent, "approval_echo", args, "fixture-task")
 
+    # The approval and the handler must receive the same schema-coerced payload.
     final = {"path": "fixture-target", "revision": 1}
-    assert approved == [final]
     assert fixture["EXECUTED"] == ([final] if allowed else [])
+    assert approved == [final]
     assert fixture["CALLS"] == Counter(
         request=1, execution=1, pre=1, post=1, transform=int(allowed),
     )

@@ -96,7 +96,8 @@ def _build_anchor_index(turns: list[dict[str, Any]], *, carried_section: str = "
         last_seen: dict[str, int] = {}
         fresh: dict[str, int] = {}
         for n, m in enumerate(pattern.finditer(text)):
-            val = m.group(0).strip().rstrip(".,;:")
+            # An entry never holds the separator, so a carried index parses back to the same entries.
+            val = m.group(0).split(_ANCHOR_ITEM_SEP)[0].strip().rstrip(".,;:")
             if val.lower() in _ANCHOR_NOISE:
                 continue
             fresh[val] = fresh.get(val, 0) + 1
@@ -146,22 +147,22 @@ def strip_lean_sections(summary: str, headings: tuple[str, ...]) -> tuple[str, d
 
 
 def _unquoted_section_spans(summary: str, headings: tuple[str, ...]) -> list[tuple[int, int, str]]:
-    """``(start, end, heading)`` for each deterministic heading that stands alone on an unquoted line."""
-    spans: list[tuple[int, int, str]] = []
-    lines = summary.splitlines(keepends=True)
-    offset = 0
-    for index, raw in enumerate(lines):
+    """``(start, end, heading)`` for each deterministic heading that stands alone on an unquoted line outside a
+    fenced code block (a summary quoting one of these headings in an example must keep the example)."""
+    rows: list[tuple[int, str]] = []  # (offset, line) of every line outside a fence
+    offset, fenced = 0, False
+    for raw in summary.splitlines(keepends=True):
         line = raw.rstrip("\r\n")
-        if line in headings:
-            end = len(summary)
-            probe = offset + len(raw)
-            for following in lines[index + 1:]:
-                if following.rstrip("\r\n").startswith("## "):
-                    end = probe
-                    break
-                probe += len(following)
-            spans.append((offset, end, line))
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced:
+            rows.append((offset, line))
         offset += len(raw)
+    spans: list[tuple[int, int, str]] = []
+    for index, (start, line) in enumerate(rows):
+        if line in headings:
+            end = next((o for o, following in rows[index + 1:] if following.startswith("## ")), len(summary))
+            spans.append((start, end, line))
     return spans
 
 

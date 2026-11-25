@@ -167,3 +167,24 @@ def test_an_anchor_index_written_before_the_separator_change_carries_per_entry()
                                 previous_summary=previous, session_id="s")
 
     assert "src/a.py(x4)" in out and "src/b.py" in out and "src/a.py(x3), src/b.py" not in out
+
+
+def test_a_heading_inside_a_code_fence_is_summary_content_not_a_section():
+    from agent.context_compressor import _LEAN_RECOVERY_HEADING
+    from agent.context_compressor_lean import rebuild_lean_sections
+
+    summary = f"## Progress\nDocumented the footer:\n```\n{_LEAN_RECOVERY_HEADING}\nexample\n```\nKEEP-AFTER-FENCE"
+    out = rebuild_lean_sections(summary, [{"role": "user", "content": "go"}], previous_summary="", session_id="s")
+
+    assert f"```\n{_LEAN_RECOVERY_HEADING}\nexample\n```\nKEEP-AFTER-FENCE" in out
+
+
+def test_an_error_entry_with_the_separator_in_it_carries_as_one_entry():
+    from agent.context_compressor_lean import _ANCHOR_ITEM_SEP, rebuild_lean_sections
+
+    turns = [{"role": "assistant", "content": f"ValueError: input a{_ANCHOR_ITEM_SEP}b invalid"}]
+    first = rebuild_lean_sections("n", turns, previous_summary="", session_id="s")
+    second = rebuild_lean_sections("n", turns, previous_summary=first, session_id="s")
+
+    (line,) = [ln for ln in second.splitlines() if ln.startswith("errors: ")]
+    assert line == "errors: ValueError: input a(x2)"

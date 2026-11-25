@@ -472,9 +472,7 @@ function readDay(raw: unknown, collector: DesktopFrameMetrics): DayAggregate | n
 
   const visibleMs = finite(source.visibleMs)
 
-  const legacy = visibleMs > 0 || Object.keys(frames).length > 0
-    ? { frames, visibleMs }
-    : null
+  const legacy = visibleMs > 0 || Object.keys(frames).length > 0 ? { frames, visibleMs } : null
 
   const adopted = legacy ? collector.adopt(source.day as string, legacy) : true
 
@@ -543,26 +541,28 @@ function withState<T = void>(
 
   // One phase publishes both the observed visible-time boundary and its aggregate mutation.
   // A later view switch does not discard already queued observations from this valid cohort.
-  return collector.checkpoint(Date.now(), () => {
-    const current = readState(key, collector, observedBotCount)
+  return collector
+    .checkpoint(Date.now(), () => {
+      const current = readState(key, collector, observedBotCount)
 
-    rollDay(current, Date.now(), observedBotCount)
-    const result = fn?.(current)
+      rollDay(current, Date.now(), observedBotCount)
+      const result = fn?.(current)
 
-    writeJson(key, current)
+      writeJson(key, current)
 
-    return result
-  })?.then(result => {
-    if (!currentOwner() || !collector.isCurrent()) {
-      return undefined
-    }
+      return result
+    })
+    ?.then(result => {
+      if (!currentOwner() || !collector.isCurrent()) {
+        return undefined
+      }
 
-    if (result !== undefined) {
-      after?.(result)
-    }
+      if (result !== undefined) {
+        after?.(result)
+      }
 
-    return result
-  })
+      return result
+    })
 }
 
 function send(method: string, params: Record<string, unknown>): void {
@@ -601,19 +601,22 @@ export function recordFeatureUse(area: DesktopFeatureArea, now = Date.now()): vo
   }
 
   areaOpenedAt.set(area, now)
-  void withState(current => {
-    if (current.areas.includes(area)) {
-      return false
-    }
+  void withState(
+    current => {
+      if (current.areas.includes(area)) {
+        return false
+      }
 
-    current.areas = [...current.areas, area]
+      current.areas = [...current.areas, area]
 
-    return true
-  }, fresh => {
-    if (fresh) {
-      send('shared_metrics.desktop_feature_use', { area })
+      return true
+    },
+    fresh => {
+      if (fresh) {
+        send('shared_metrics.desktop_feature_use', { area })
+      }
     }
-  })
+  )
 }
 
 /** An area closed: within QUICK_CLOSE_MS of opening it is a quick_close dislike. */
@@ -706,7 +709,8 @@ export function cancelPendingBackendDrop(): void {
 
 export function recordFriction(kind: DesktopFrictionKind, detail: DesktopFrictionDetail): void {
   void withState(
-    current => takeCap(current, `friction:${kind}:${detail}`, kind === 'slow_frame' ? SLOW_FRAME_DAILY_CAP : FRICTION_DAILY_CAP),
+    current =>
+      takeCap(current, `friction:${kind}:${detail}`, kind === 'slow_frame' ? SLOW_FRAME_DAILY_CAP : FRICTION_DAILY_CAP),
     fresh => {
       if (fresh) {
         send('shared_metrics.desktop_friction', { detail, kind })
@@ -721,14 +725,17 @@ export function recordDislike(
   setting?: string,
   profile?: null | string
 ): void {
-  void withState(current => takeCap(current, `dislike:${signal}`, DISLIKE_DAILY_CAP), fresh => {
-    if (fresh) {
-      send('shared_metrics.desktop_dislike', {
-        ...(setting ? { setting, signal, target: 'setting' } : { signal, target }),
-        ...(profile ? { profile } : {})
-      })
+  void withState(
+    current => takeCap(current, `dislike:${signal}`, DISLIKE_DAILY_CAP),
+    fresh => {
+      if (fresh) {
+        send('shared_metrics.desktop_dislike', {
+          ...(setting ? { setting, signal, target: 'setting' } : { signal, target }),
+          ...(profile ? { profile } : {})
+        })
+      }
     }
-  })
+  )
 }
 
 const MAX_SETTING_KEYS_PER_SAVE = 10
@@ -808,17 +815,20 @@ export function noteInteraction(now = Date.now(), mode: DesktopMode = $workspace
 
 /** The user sent a message from a session in `mode` (a bot-owned tile is `bots`). */
 export function noteMessageSent(mode: DesktopMode = $workspaceMode.get()): void {
-  void withState(current => {
-    const entry = (current.today.modes[mode] ??= { activeMs: 0, messages: 0 })
+  void withState(
+    current => {
+      const entry = (current.today.modes[mode] ??= { activeMs: 0, messages: 0 })
 
-    entry.messages += 1
+      entry.messages += 1
 
-    return current.onboarding.sent.some(key => !key.startsWith('first_message:'))
-  }, onboarded => {
-    if (onboarded) {
-      recordOnboarding('first_message', 'completed')
+      return current.onboarding.sent.some(key => !key.startsWith('first_message:'))
+    },
+    onboarded => {
+      if (onboarded) {
+        recordOnboarding('first_message', 'completed')
+      }
     }
-  })
+  )
 }
 
 /** A batch of long animation frames seen while the window was visible (durations in ms). */
@@ -887,11 +897,14 @@ export function recordOnboarding(step: DesktopOnboardingStep, event: DesktopOnbo
     return
   }
 
-  void withState(current => updateOnboarding(current, step, event), fresh => {
-    if (fresh) {
-      send('shared_metrics.desktop_onboarding', { event, step })
+  void withState(
+    current => updateOnboarding(current, step, event),
+    fresh => {
+      if (fresh) {
+        send('shared_metrics.desktop_onboarding', { event, step })
+      }
     }
-  })
+  )
 }
 
 /** A step ended without an event of its own (skipped past, cancelled): no
@@ -912,21 +925,24 @@ export function closeOnboardingStep(step: DesktopOnboardingStep): void {
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 
 function reportAbandonedSteps(): void {
-  void withState(current => {
-    const abandoned: DesktopOnboardingStep[] = []
+  void withState(
+    current => {
+      const abandoned: DesktopOnboardingStep[] = []
 
-    for (const [step, launch] of Object.entries(current.onboarding.open)) {
-      if (launch !== LAUNCH_ID && updateOnboarding(current, step as DesktopOnboardingStep, 'abandoned')) {
-        abandoned.push(step as DesktopOnboardingStep)
+      for (const [step, launch] of Object.entries(current.onboarding.open)) {
+        if (launch !== LAUNCH_ID && updateOnboarding(current, step as DesktopOnboardingStep, 'abandoned')) {
+          abandoned.push(step as DesktopOnboardingStep)
+        }
+      }
+
+      return abandoned
+    },
+    abandoned => {
+      for (const step of abandoned) {
+        send('shared_metrics.desktop_onboarding', { event: 'abandoned', step })
       }
     }
-
-    return abandoned
-  }, abandoned => {
-    for (const step of abandoned) {
-      send('shared_metrics.desktop_onboarding', { event: 'abandoned', step })
-    }
-  })
+  )
 }
 
 function flushFrameDays(owner: string, requester: SharedMetricsRequester, collector: DesktopFrameMetrics | null): void {
@@ -969,8 +985,12 @@ async function flushPendingDays(): Promise<void> {
     ) {
       const reported = day.day
 
-      const settled = () => scope === owner && request === requester && frameMetrics === collector &&
-        $desktopMetricsGate.get() === 'on' && collector?.isCurrent() === true
+      const settled = () =>
+        scope === owner &&
+        request === requester &&
+        frameMetrics === collector &&
+        $desktopMetricsGate.get() === 'on' &&
+        collector?.isCurrent() === true
 
       if (!settled()) {
         return
@@ -990,16 +1010,20 @@ async function flushPendingDays(): Promise<void> {
         }
 
         // A consent withdrawal purges the entry, including an off→on flip during the await.
-        const kept = await withState(current => {
-          const entry = current.pending.find(pending => pending.day === reported)
+        const kept = await withState(
+          current => {
+            const entry = current.pending.find(pending => pending.day === reported)
 
-          if (entry) {
-            entry.actions = {}
-            entry.modes = {}
-          }
+            if (entry) {
+              entry.actions = {}
+              entry.modes = {}
+            }
 
-          return entry !== undefined
-        }, undefined, collector)
+            return entry !== undefined
+          },
+          undefined,
+          collector
+        )
 
         if (!kept) {
           return
@@ -1014,9 +1038,13 @@ async function flushPendingDays(): Promise<void> {
         }
       }
 
-      await withState(current => {
-        current.pending = current.pending.filter(entry => entry.day !== reported)
-      }, undefined, collector)
+      await withState(
+        current => {
+          current.pending = current.pending.filter(entry => entry.day !== reported)
+        },
+        undefined,
+        collector
+      )
     }
 
     flushFrameDays(owner, requester, collector)
@@ -1125,17 +1153,17 @@ function closeDesktopMetricsGate(decided: boolean): void {
 
 /** Capture before an asynchronous consent read/write. A withdrawal owns its original permit
  * even after a rename or focus change; a positive result never authorizes a newer bound owner. */
-export async function captureDesktopMetricsGate(profileScope?: string): Promise<(
-  next: DesktopMetricsGate,
-  decided?: boolean
-) => Promise<boolean>> {
+export async function captureDesktopMetricsGate(
+  profileScope?: string
+): Promise<(next: DesktopMetricsGate, decided?: boolean) => Promise<boolean>> {
   const ownerScope = profileScope === undefined ? scope : scopeKey(profileScope)
   const key = `${STATE_KEY}:${ownerScope}`
   const collector = ownerScope === scope ? frameMetrics : null
   const owner = gateOwner
   const captured = await DesktopFrameMetrics.captureCoordinated(key)
   const ownsView = () => ownerScope === scope && owner === gateOwner && collector === frameMetrics
-  const sameCohort = (value: DesktopFrameConsent) => value.epoch === captured.epoch && value.consent === captured.consent
+  const sameCohort = (value: DesktopFrameConsent) =>
+    value.epoch === captured.epoch && value.consent === captured.consent
 
   async function withdrawCapturedConsent(decided: boolean): Promise<boolean> {
     const currentOwner = ownsView() && sameCohort(DesktopFrameMetrics.capture(key))
@@ -1152,10 +1180,16 @@ export async function captureDesktopMetricsGate(profileScope?: string): Promise<
 
     // The receipt distinguishes our own epoch retirement from another renderer replacing
     // this same scope while we awaited ownership. A stale Off still revokes its old permit.
-    return currentOwner && ownerScope === scope && gateOwner === closedOwner && frameMetrics === null &&
+    return (
+      currentOwner &&
+      ownerScope === scope &&
+      gateOwner === closedOwner &&
+      frameMetrics === null &&
       (!revoked.before || sameCohort(revoked.before)) &&
-      current.epoch === after.epoch && current.consent === after.consent &&
+      current.epoch === after.epoch &&
+      current.consent === after.consent &&
       (!revoked.after || current.active === revoked.after.active)
+    )
   }
 
   return async (next, decided = true) => {
@@ -1166,8 +1200,12 @@ export async function captureDesktopMetricsGate(profileScope?: string): Promise<
     // Validation must not mint a replacement cohort for an old asynchronous result.
     const current = await DesktopFrameMetrics.captureCoordinated(key, false)
 
-    if (!ownsView() || current.epoch !== captured.epoch || current.consent !== captured.consent ||
-      (captured.active && !current.active)) {
+    if (
+      !ownsView() ||
+      current.epoch !== captured.epoch ||
+      current.consent !== captured.consent ||
+      (captured.active && !current.active)
+    ) {
       return false
     }
 
@@ -1186,8 +1224,9 @@ export async function captureDesktopMetricsGate(profileScope?: string): Promise<
     if (next === 'on' && !acceptedCollector?.isCurrent()) {
       const settled = DesktopFrameMetrics.capture(key)
 
-      return settled.epoch === captured.epoch && settled.consent === captured.consent &&
-        (!captured.active || settled.active)
+      return (
+        settled.epoch === captured.epoch && settled.consent === captured.consent && (!captured.active || settled.active)
+      )
     }
 
     return true

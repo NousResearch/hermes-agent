@@ -54,12 +54,7 @@ function BrowserPermissionRow() {
     <ListRow
       action={
         permission === 'default' ? (
-          <Button
-            onClick={() => void askBrowserNotificationPermission()}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
+          <Button onClick={() => void askBrowserNotificationPermission()} size="sm" type="button" variant="outline">
             {copy.allow}
           </Button>
         ) : undefined
@@ -96,7 +91,11 @@ function readPresence(): PresenceReadout {
   return age ? { kind: 'watching', ...age } : { kind: 'unsupported' }
 }
 
-function presenceDescription(readout: PresenceReadout, copy: NotificationSettingsTranslations['phonePresence'], locale: string) {
+function presenceDescription(
+  readout: PresenceReadout,
+  copy: NotificationSettingsTranslations['phonePresence'],
+  locale: string
+) {
   if (readout.kind !== 'watching') {
     return readout.kind === 'disconnected' ? copy.disconnected : copy.unsupported
   }
@@ -106,7 +105,9 @@ function presenceDescription(readout: PresenceReadout, copy: NotificationSetting
     return copy.watchingWindowNoInput
   }
 
-  return (readout.basis === 'system' ? copy.watchingComputer : copy.watchingWindow)(formatElapsed(readout.idleSeconds, locale))
+  return (readout.basis === 'system' ? copy.watchingComputer : copy.watchingWindow)(
+    formatElapsed(readout.idleSeconds, locale)
+  )
 }
 
 /** Read-only: what this window tells Hermes while a conversation is open in it, with the evidence it

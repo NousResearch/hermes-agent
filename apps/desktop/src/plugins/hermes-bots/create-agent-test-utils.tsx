@@ -97,7 +97,6 @@ export function controlUnder(caption: string) {
   return screen.getByText(caption).parentElement!.querySelector('[role="combobox"]') as HTMLElement
 }
 
-
 /** Dismisses every store notice, persistent ones included (timers and onDismiss too). */
 export async function dismissAllNotifications() {
   const { $notifications, dismissNotification } = await import('@/store/notifications')
@@ -163,7 +162,9 @@ export function createAgentHarness(mocks: CreateAgentMocks) {
 
     const { CreateAgentDialog } = await import('./create-dialog')
 
-    const dialog = <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
+    const dialog = (
+      <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
+    )
     const view = render(withQueryClient(dialog))
 
     fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })

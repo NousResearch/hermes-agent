@@ -149,31 +149,55 @@ describe('GatewayClient websocket attach mode', () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
-    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://gateway.test/api/ws',
+      protocols: [],
+      instance_id: 'owner',
+      profile_id: 'fixture'
+    }))
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       const socket = FakeWebSocket.instances[0]!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
 
-      const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
+      const request = socket.sent
+        .map(text => JSON.parse(text) as { id: number; method: string })
         .find(frame => frame.method === 'runtime.describe')!
 
-      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
-        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] } } }))
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }
+          }
+        })
+      )
       await vi.advanceTimersByTimeAsync(0)
       expect(lifecycle.some(line => line.startsWith('[lifecycle] attached shared gateway '))).toBe(true)
 
-      applyLocale('xx', { lang: 'xx', surface: 'tui', messages: {
-        'canonical.launch.unsupportedOptions': 'XX-launch {0}', 'libText.gateway.closed': 'XX-closed' } })
+      applyLocale('xx', {
+        lang: 'xx',
+        surface: 'tui',
+        messages: {
+          'canonical.launch.unsupportedOptions': 'XX-launch {0}',
+          'libText.gateway.closed': 'XX-closed'
+        }
+      })
       await expect(gw.request('session.create', { yolo: true })).rejects.toThrow('XX-launch yolo')
       const pending = gw.request('session.list', {})
       await vi.advanceTimersByTimeAsync(0)
       gw.kill()
       await expect(pending).rejects.toThrow('XX-closed')
-    } finally { gw.kill(); resetLocale(); vi.useRealTimers() }
+    } finally {
+      gw.kill()
+      resetLocale()
+      vi.useRealTimers()
+    }
   })
 
   // Pins Ink's launch on the shared client: the exact session.create params (no client name, even to an
@@ -186,14 +210,21 @@ describe('GatewayClient websocket attach mode', () => {
     const clients: GatewayClient[] = []
 
     const attach = async (sessionCreate: { parameters: string[]; sources: string[] }) => {
-      const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+      const gw = new GatewayClient(async () => ({
+        url: 'ws://gateway.test/api/ws',
+        protocols: [],
+        instance_id: 'owner',
+        profile_id: 'fixture'
+      }))
       clients.push(gw)
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       const socket = FakeWebSocket.instances.at(-1)!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
-      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: Record<string, unknown> })
+      const frames = () =>
+        socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: Record<string, unknown> })
       const describe = frames().find(frame => frame.method === 'runtime.describe')!
       socket.message(JSON.stringify({ jsonrpc: '2.0', id: describe.id, result: { session_create: sessionCreate } }))
       await vi.advanceTimersByTimeAsync(0)
@@ -201,29 +232,47 @@ describe('GatewayClient websocket attach mode', () => {
       return { frames, gw }
     }
 
-    const message = (promise: Promise<unknown>) => promise.then(() => '', (error: Error) => error.message)
+    const message = (promise: Promise<unknown>) =>
+      promise.then(
+        () => '',
+        (error: Error) => error.message
+      )
 
     try {
-      const { frames, gw } = await attach({ sources: ['cli', 'tui'], parameters: ['source', 'request_id', 'model', 'client'] })
+      const { frames, gw } = await attach({
+        sources: ['cli', 'tui'],
+        parameters: ['source', 'request_id', 'model', 'client']
+      })
       void gw.request('session.create', { model: 'm', cols: 80 }).catch(() => undefined)
       await vi.advanceTimersByTimeAsync(0)
       const create = frames().find(frame => frame.method === 'session.create')!
       expect(Object.keys(create.params)).toEqual(['model', 'source', 'request_id'])
       expect(create.params).toMatchObject({ model: 'm', source: 'tui' })
       expect(create.params.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
-      expect(await message(gw.request('session.create', { yolo: true }))).toBe('gateway does not support TUI launch options: yolo')
+      expect(await message(gw.request('session.create', { yolo: true }))).toBe(
+        'gateway does not support TUI launch options: yolo'
+      )
 
       const older = await attach({ sources: ['cli'], parameters: ['source', 'request_id'] })
-      expect(await message(older.gw.request('session.create', {})))
-        .toBe('gateway does not support tui session policy; update/restart the gateway')
-    } finally { clients.forEach(gw => gw.kill()); vi.useRealTimers() }
+      expect(await message(older.gw.request('session.create', {}))).toBe(
+        'gateway does not support tui session policy; update/restart the gateway'
+      )
+    } finally {
+      clients.forEach(gw => gw.kill())
+      vi.useRealTimers()
+    }
   })
 
   it('publishes canonical readiness once after discovery and arms the negotiated heartbeat', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
-    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://gateway.test/api/ws',
+      protocols: [],
+      instance_id: 'owner',
+      profile_id: 'fixture'
+    }))
     const events: any[] = []
     gw.on('event', event => events.push(event))
 
@@ -234,7 +283,13 @@ describe('GatewayClient websocket attach mode', () => {
       expect(FakeWebSocket.instances).toHaveLength(1)
       const socket = FakeWebSocket.instances[0]!
       socket.open()
-      socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { heartbeat: true } } }))
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { heartbeat: true } }
+        })
+      )
       await vi.advanceTimersByTimeAsync(0)
       expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(0)
       // The wire's ready frame triggers the client.capabilities advertisement; discovery
@@ -242,9 +297,15 @@ describe('GatewayClient websocket attach mode', () => {
       const sent = socket.sent.map(text => JSON.parse(text) as { id?: number; method: string })
       expect(sent.map(frame => frame.method).sort()).toEqual(['client.capabilities', 'runtime.describe'])
       const request = sent.find(frame => frame.method === 'runtime.describe')!
-      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
-        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }
-      } }))
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }
+          }
+        })
+      )
       await vi.advanceTimersByTimeAsync(0)
       expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1)
 
@@ -257,13 +318,16 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
-  it('/logs carries the attach lifecycle like main\'s sidecar spawn line (row 24)', async () => {
+  it("/logs carries the attach lifecycle like main's sidecar spawn line (row 24)", async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
 
     const gw = new GatewayClient(async () => ({
-      url: 'ws://127.0.0.1:9/api/ws?token=secret', protocols: [], instance_id: 'owner-1', profile_id: '/home/u/.hermes/profiles/work'
+      url: 'ws://127.0.0.1:9/api/ws?token=secret',
+      protocols: [],
+      instance_id: 'owner-1',
+      profile_id: '/home/u/.hermes/profiles/work'
     }))
 
     try {
@@ -284,36 +348,59 @@ describe('GatewayClient websocket attach mode', () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
-    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://gateway.test/api/ws',
+      protocols: [],
+      instance_id: 'owner',
+      profile_id: 'fixture'
+    }))
     const events: any[] = []
     gw.on('event', event => events.push(event))
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       const socket = FakeWebSocket.instances[0]!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
 
-      const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
+      const request = socket.sent
+        .map(text => JSON.parse(text) as { id: number; method: string })
         .find(frame => frame.method === 'runtime.describe')!
 
       const skin = { name: 'ares', colors: { banner_title: '#C7A96B' }, branding: { prompt_symbol: '⚔' } }
-      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
-        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }, skin } }))
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            session_create: { sources: ['tui'], parameters: ['source', 'request_id'] },
+            skin
+          }
+        })
+      )
       await vi.advanceTimersByTimeAsync(0)
 
       const ready = events.filter(event => event.type === 'gateway.ready')
       expect(ready).toHaveLength(1)
       expect(ready[0].payload.skin).toEqual(skin)
-    } finally { gw.kill(); vi.useRealTimers() }
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
   })
 
   it('remembers clarify-batch-v1 from runtime.describe and forgets it on reconnect to an owner without it', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
-    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://gateway.test/api/ws',
+      protocols: [],
+      instance_id: 'owner',
+      profile_id: 'fixture'
+    }))
 
     const open = async () => {
       const socket = FakeWebSocket.instances.at(-1)!
@@ -324,18 +411,28 @@ describe('GatewayClient websocket attach mode', () => {
     }
 
     const describe = async (socket: FakeWebSocket, capabilities?: string[]) => {
-      const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
+      const request = socket.sent
+        .map(text => JSON.parse(text) as { id: number; method: string })
         .find(frame => frame.method === 'runtime.describe')!
 
-      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
-        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }, capabilities } }))
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            session_create: { sources: ['tui'], parameters: ['source', 'request_id'] },
+            capabilities
+          }
+        })
+      )
       await vi.advanceTimersByTimeAsync(0)
 
       return socket
     }
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       const first = await describe(await open(), ['clarify-batch-v1'])
       expect(gw.clarifyBatch).toBe(true)
@@ -348,24 +445,34 @@ describe('GatewayClient websocket attach mode', () => {
       expect(gw.clarifyBatch).toBe(false)
       await describe(second)
       expect(gw.clarifyBatch).toBe(false)
-    } finally { gw.kill(); vi.useRealTimers() }
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
   })
 
   it('treats a failed runtime.describe as a transport failure: redial, re-describe, then ready (B2-21)', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
-    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://gateway.test/api/ws',
+      protocols: [],
+      instance_id: 'owner',
+      profile_id: 'fixture'
+    }))
     const events: any[] = []
     gw.on('event', event => events.push(event))
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       const socket = FakeWebSocket.instances[0]!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
-      const frames = (ws: InstanceType<typeof FakeWebSocket>) => ws.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+      const frames = (ws: InstanceType<typeof FakeWebSocket>) =>
+        ws.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
       const first = frames(socket).find(frame => frame.method === 'runtime.describe')!
       socket.message(JSON.stringify({ jsonrpc: '2.0', id: first.id, error: { code: -32000, message: 'owner busy' } }))
       await vi.advanceTimersByTimeAsync(0)
@@ -381,8 +488,15 @@ describe('GatewayClient websocket attach mode', () => {
       await vi.advanceTimersByTimeAsync(0)
 
       for (const frame of frames(next).filter(f => f.method === 'runtime.describe')) {
-        next.message(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {
-          session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+        next.message(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: frame.id,
+            result: {
+              session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] }
+            }
+          })
+        )
       }
 
       await vi.advanceTimersByTimeAsync(0)
@@ -391,20 +505,29 @@ describe('GatewayClient websocket attach mode', () => {
       expect(create.params).toMatchObject({ source: 'tui', model: 'm' })
       next.message(JSON.stringify({ jsonrpc: '2.0', id: create.id, result: { session_id: 'fresh', info: {} } }))
       await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
-    } finally { gw.kill(); vi.useRealTimers() }
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
   })
 
   it('keeps discovery-only retries alive and delivers readiness to the mounted subscriber', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     const grant = { url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }
-    const bootstrap = vi.fn().mockResolvedValueOnce(grant).mockRejectedValueOnce(new Error('owner stopped')).mockRejectedValueOnce(new Error('owner stopped')).mockResolvedValue(grant)
+    const bootstrap = vi
+      .fn()
+      .mockResolvedValueOnce(grant)
+      .mockRejectedValueOnce(new Error('owner stopped'))
+      .mockRejectedValueOnce(new Error('owner stopped'))
+      .mockResolvedValue(grant)
     const gw = new GatewayClient(bootstrap)
     const events: any[] = []
     gw.on('event', event => events.push(event))
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       FakeWebSocket.instances[0]!.open()
       await vi.advanceTimersByTimeAsync(0)
@@ -415,21 +538,32 @@ describe('GatewayClient websocket attach mode', () => {
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
       const request = JSON.parse(socket.sent[0]!)
-      socket.message(JSON.stringify({ id: request.id, result: { session_create: { sources: ['tui'], parameters: [] } } }))
+      socket.message(
+        JSON.stringify({ id: request.id, result: { session_create: { sources: ['tui'], parameters: [] } } })
+      )
       await vi.advanceTimersByTimeAsync(0)
       expect(events.some(event => event.type === 'gateway.ready')).toBe(true)
-    } finally { gw.kill(); vi.useRealTimers() }
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
   })
 
   it('pins the launcher tool-progress mode (hermes --tui -v) on the created session before returning it', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     vi.stubEnv('HERMES_TUI_TOOL_PROGRESS', 'verbose')
-    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://gateway.test/api/ws',
+      protocols: [],
+      instance_id: 'owner',
+      profile_id: 'fixture'
+    }))
     gw.on('event', () => undefined)
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       const socket = FakeWebSocket.instances[0]!
       socket.open()
@@ -437,7 +571,9 @@ describe('GatewayClient websocket attach mode', () => {
       const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
 
       const reply = (method: string, result: unknown) => {
-        const frame = frames().filter(f => f.method === method).at(-1)!
+        const frame = frames()
+          .filter(f => f.method === method)
+          .at(-1)!
 
         socket.message(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
       }
@@ -452,33 +588,49 @@ describe('GatewayClient websocket attach mode', () => {
         return r
       })
 
-
       await vi.advanceTimersByTimeAsync(0)
       reply('session.create', { session_id: 'fresh', info: {} })
       await vi.advanceTimersByTimeAsync(0)
       expect(settled).toBe(false)
-      expect(frames().at(-1)).toMatchObject({ method: 'config.set', params: { key: 'verbose', session_id: 'fresh', value: 'verbose' } })
+      expect(frames().at(-1)).toMatchObject({
+        method: 'config.set',
+        params: { key: 'verbose', session_id: 'fresh', value: 'verbose' }
+      })
       reply('config.set', { key: 'verbose', value: 'verbose', scope: 'session' })
       await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
-    } finally { gw.kill(); vi.unstubAllEnvs(); vi.useRealTimers() }
+    } finally {
+      gw.kill()
+      vi.unstubAllEnvs()
+      vi.useRealTimers()
+    }
   })
 
   it('retries a create whose launch pin failed after the ACK under the same request_id (one session, pin reapplied)', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     vi.stubEnv('HERMES_TUI_TOOL_PROGRESS', 'verbose')
-    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://gateway.test/api/ws',
+      protocols: [],
+      instance_id: 'owner',
+      profile_id: 'fixture'
+    }))
     gw.on('event', () => undefined)
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       const socket = FakeWebSocket.instances[0]!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
       const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
-      const last = (method: string) => frames().filter(f => f.method === method).at(-1)!
-      const answer = (method: string, body: object) => socket.message(JSON.stringify({ jsonrpc: '2.0', id: last(method).id, ...body }))
+      const last = (method: string) =>
+        frames()
+          .filter(f => f.method === method)
+          .at(-1)!
+      const answer = (method: string, body: object) =>
+        socket.message(JSON.stringify({ jsonrpc: '2.0', id: last(method).id, ...body }))
       // The owner keys a local session by request_id, exactly like create_local_session.
       const minted = new Map<string, string>()
 
@@ -488,7 +640,9 @@ describe('GatewayClient websocket attach mode', () => {
         answer('session.create', { result: { session_id: minted.get(requestId), info: {} } })
       }
 
-      answer('runtime.describe', { result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } })
+      answer('runtime.describe', {
+        result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } }
+      })
       await vi.advanceTimersByTimeAsync(0)
 
       // The caller (useSessionLifecycle) mints a fresh request_id on every attempt.
@@ -508,7 +662,11 @@ describe('GatewayClient websocket attach mode', () => {
       answer('config.set', { result: { key: 'verbose', value: 'verbose', scope: 'session' } })
       await expect(retry).resolves.toMatchObject({ session_id: 'orphan-1' })
       expect([...minted.values()]).toEqual(['orphan-1'])
-    } finally { gw.kill(); vi.unstubAllEnvs(); vi.useRealTimers() }
+    } finally {
+      gw.kill()
+      vi.unstubAllEnvs()
+      vi.useRealTimers()
+    }
   })
 
   it('re-ensures a crashed owner on a bounded number of reconnects, then stays discovery-only', async () => {
@@ -519,7 +677,8 @@ describe('GatewayClient websocket attach mode', () => {
     const gw = new GatewayClient(bootstrap)
 
     try {
-      gw.start(); gw.drain()
+      gw.start()
+      gw.drain()
       await vi.advanceTimersByTimeAsync(0)
       FakeWebSocket.instances[0]!.open()
       await vi.advanceTimersByTimeAsync(0)
@@ -527,8 +686,17 @@ describe('GatewayClient websocket attach mode', () => {
       // Five reconnects inside one recovery window.
       await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * (1 + 2 + 4 + 8 + 16))
       expect(bootstrap.mock.calls.map(([start, recover]) => [start, Boolean(recover)])).toEqual([
-        [true, false], [false, true], [false, true], [false, true], [false, false], [false, false]])
-    } finally { gw.kill(); vi.useRealTimers() }
+        [true, false],
+        [false, true],
+        [false, true],
+        [false, true],
+        [false, false],
+        [false, false]
+      ])
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
   })
 
   it('negotiates the canonical wire on an explicit attach whose listener advertises a session authority', async () => {
@@ -543,12 +711,22 @@ describe('GatewayClient websocket attach mode', () => {
     const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
 
     socket.open()
-    socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready',
-      payload: { skin: { name: 'mono' }, session_authority: true } } }))
+    socket.message(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'event',
+        params: { type: 'gateway.ready', payload: { skin: { name: 'mono' }, session_authority: true } }
+      })
+    )
     await vi.waitFor(() => expect(frames().some(frame => frame.method === 'runtime.describe')).toBe(true))
     expect(events.some(event => event.type === 'gateway.ready')).toBe(false)
-    socket.message(JSON.stringify({ jsonrpc: '2.0', id: frames().find(f => f.method === 'runtime.describe')!.id,
-      result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+    socket.message(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: frames().find(f => f.method === 'runtime.describe')!.id,
+        result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } }
+      })
+    )
     await vi.waitFor(() => expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1))
     expect(events.find(event => event.type === 'gateway.ready').payload.skin).toEqual({ name: 'mono' })
     expect(gw.isCanonical).toBe(true)

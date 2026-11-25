@@ -12,7 +12,12 @@ test('acknowledged journal mutations survive reopening with exact payload and or
   try {
     const origin = 'http://localhost:5174'
     const key = JSON.stringify(['remote', 'profile-a', 'stored-a'])
-    const entry = { id: 'id-a', text: 'Ω 👩🏽‍💻 e\u0301\n  []', attachments: [{ id: 'asset', path: '/tmp/Ω' }], params: { session_id: 'live-a' } }
+    const entry = {
+      id: 'id-a',
+      text: 'Ω 👩🏽‍💻 e\u0301\n  []',
+      attachments: [{ id: 'asset', path: '/tmp/Ω' }],
+      params: { session_id: 'live-a' }
+    }
     preparedJournal(dir, origin).update(key, entry)
     preparedJournal(dir, origin).update('other-profile', { id: 'id-b' })
     expect(preparedJournal(dir, origin).read()[key]).toEqual(entry)

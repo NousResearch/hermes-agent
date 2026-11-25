@@ -57,7 +57,10 @@ describe('OSC 7501 program status', () => {
       state: 'blocked'
     })
     expect(completionOutcome(false, { status: 'interrupted' })).toEqual({ state: 'idle' })
-    expect(completionOutcome(false, { error: 'HTTP 429', status: 'error' })).toEqual({ msg: 'HTTP 429', state: 'error' })
+    expect(completionOutcome(false, { error: 'HTTP 429', status: 'error' })).toEqual({
+      msg: 'HTTP 429',
+      state: 'error'
+    })
     expect(completionOutcome(false, { status: 'error', text: 'HTTP 401: bad key' })).toEqual({
       msg: 'HTTP 401: bad key',
       state: 'error'

@@ -71,6 +71,8 @@ it("mints a member's first session when the owning gateway answers not_found", a
 it('still fails closed on any other refusal from the owning gateway', async () => {
   const room = await loadRoom({ code: 4001, message: 'session_busy', reason: 'session_busy' })
 
-  await expect(room.turns.ensureGroupChatSession('Mixed', member, 't1')).rejects.toThrow(/Could not check .*group session/)
+  await expect(room.turns.ensureGroupChatSession('Mixed', member, 't1')).rejects.toThrow(
+    /Could not check .*group session/
+  )
   expect(room.gateway.sessions.size).toBe(0)
 })

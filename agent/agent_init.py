@@ -1785,20 +1785,26 @@ def _select_context_engine(_agent_cfg):
 
 
 def _compressor_max_tokens(agent):
-    """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
-    still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
-    reserving 0 let the provider 400 before compaction fired."""
+    """``agent.max_tokens``, or the provider's implicit output reservation when unset (native Gemini
+    still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so reserving 0
+    let the provider 400 before compaction fired)."""
     if agent.max_tokens is not None:
         return agent.max_tokens
     with suppress(Exception):
-        from agent.gemini_native_adapter import (
-            GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url
-        )
-        _gemini_provider = str(agent.provider or "").strip().lower() in {
-            "gemini", "google", "google-gemini", "google-ai-studio",
-        }
-        if _gemini_provider or is_native_gemini_base_url(agent.base_url):
-            return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(agent, "provider", "") or "")
+        if profile is not None:
+            reserved = profile.implicit_max_output_tokens(
+                model=getattr(agent, "model", None), base_url=str(getattr(agent, "base_url", "") or ""),
+            )
+            if reserved is not None:
+                return reserved
+    from agent.gemini_model_family import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+    from agent.gemini_urls import is_native_gemini_base_url
+
+    if is_native_gemini_base_url(agent.base_url):
+        return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     return None
 
 

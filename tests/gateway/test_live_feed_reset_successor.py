@@ -95,6 +95,24 @@ async def test_a_session_nobody_continued_stays_live(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_branch_child_leaves_its_parent_live(tmp_path):
+    """``/branch`` forks a lane without ending it: the child is visible and the parent keeps its place.
+
+    The closing rule keys on a *continuation* (reset or compression child), so a branch child must not
+    be read as one — otherwise forking a conversation would bury the row the user forked from."""
+    cold = await _cold(tmp_path)
+    seed_session(cold.store.persistence, 'origin', 'desktop', session_key=ROUTE)
+    seed_session(cold.store.persistence, 'forked', 'desktop', session_key=ROUTE,
+                 parent_session_id='origin', model_config={'_branched_from': 'origin'})
+    _live(cold.authority, 'origin', 'forked')
+    listed, active = await _feeds(_connection(cold.authority), 1)
+
+    assert 'origin' in listed, 'a /branch child does not close the parent it forked from'
+    assert 'origin' in active, active
+    assert 'forked' in listed, listed
+
+
+@pytest.mark.asyncio
 async def test_a_viewed_reset_parent_is_not_hidden_from_its_viewer(tmp_path):
     """The closed verdict needs no viewer: a mounted parent keeps its live row until the viewer leaves."""
     cold = await _cold(tmp_path)

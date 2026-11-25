@@ -454,7 +454,33 @@ it('keeps local deletion unavailable while descriptor bootstrap is still pending
   api.mockImplementation(() => new Promise(() => undefined))
   setup([{ name: 'Managed', description: '', category: '', enabled: true, provenance: 'provider', provider: search.results[0].provider, identifier, target_relative_path: 'team/example', installed_version: '1', latest_version: '1', managed_state: 'installed', installation_revision: 'r1', actions: ['uninstall'] } as SkillInfo])
   fireEvent.click(screen.getByRole('button', { name: 'Managed' }))
+  expect(screen.getByRole('status').textContent).toBe('Loading capabilities...')
   expect(screen.queryByText('Local delete Managed')).toBeNull()
+})
+
+it.each(['official', 'hub'] as const)('waits for the pending %s bootstrap before settling managed details', async pending => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  api.mockImplementation(async ({ path }: { path: string }) => {
+    if (path.endsWith(pending === 'official' ? '/official' : '/sources')) { await gate }
+
+    if (path.endsWith('/official')) { return stock }
+
+    if (path.endsWith('/sources')) { return { sources: [], installed: {}, featured: [] } }
+
+    if (path.endsWith('/updates')) { return { updates: [] } }
+    throw new Error(`Unexpected request ${path}`)
+  })
+  const managed = { name: 'Managed', description: '', category: '', enabled: true, provenance: 'provider', provider: search.results[0].provider, identifier, target_relative_path: 'team/example', installed_version: '1', latest_version: '1', managed_state: 'installed', installation_revision: 'r1', actions: ['uninstall'] } as SkillInfo
+  setup([managed, { name: 'Hub skill', description: '', category: '', enabled: true, provenance: 'hub' }])
+  fireEvent.click(screen.getByRole('button', { name: 'Managed' }))
+  const dialog = screen.getByRole('dialog')
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+  expect(within(dialog).getByRole('status').textContent).toBe('Loading capabilities...')
+  expect(within(dialog).queryByText('Local delete Managed')).toBeNull()
+  await act(async () => release())
+  await within(dialog).findByText('This source is unavailable. Your local skills are unchanged.')
+  expect(within(dialog).queryByText('Local delete Managed')).toBeNull()
 })
 
 it('keeps generic row actions unavailable during descriptor bootstrap', async () => {
@@ -462,6 +488,24 @@ it('keeps generic row actions unavailable during descriptor bootstrap', async ()
   const managed = { name: 'Managed', description: '', category: '', enabled: true, provenance: 'provider', provider: search.results[0].provider, identifier, target_relative_path: 'team/example', installed_version: '1', latest_version: '1', managed_state: 'installed', installation_revision: 'r1', actions: ['uninstall'] } as SkillInfo
   render(<QueryClientProvider client={queryClient}><SkillCatalog profile={profile} renderInstalledAction={() => <button>Generic row delete</button>} renderInstalledDetail={() => null} skills={[managed]} /></QueryClientProvider>)
   expect(screen.queryByRole('button', { name: 'Generic row delete' })).toBeNull()
+})
+
+it.each(['hidden', 'failed'] as const)('settles managed details when provider bootstrap is %s', async scenario => {
+  api.mockImplementation(async ({ path }: { path: string }) => {
+    expect(path).toBe('/api/skills/hub/official')
+
+    if (scenario === 'failed') { throw new Error('Bootstrap offline') }
+
+    // Core omits hidden descriptors but still projects installed managed rows.
+    return stock
+  })
+  setup([{ name: 'Managed', description: '', category: '', enabled: true, provenance: 'provider', provider: search.results[0].provider, identifier, target_relative_path: 'team/example', installed_version: '1', latest_version: '1', managed_state: 'installed', installation_revision: 'r1', actions: ['uninstall'] } as SkillInfo])
+  fireEvent.click(screen.getByRole('button', { name: 'Managed' }))
+  const dialog = screen.getByRole('dialog')
+  await within(dialog).findByText('This source is unavailable. Your local skills are unchanged.')
+  expect(within(dialog).queryByText('Loading capabilities...')).toBeNull()
+  expect(within(dialog).queryByText('Local delete Managed')).toBeNull()
+  expect(api.mock.calls.map(([request]) => request.path)).toEqual(['/api/skills/hub/official'])
 })
 
 it('treats a disabled provider install as a normal local skill with no provider requests', async () => {

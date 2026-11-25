@@ -79,6 +79,7 @@ function ScopedSkillCatalog({
   const {
     data: officialData,
     dataUpdatedAt: officialUpdatedAt,
+    isPending: officialPending,
     error: officialError,
     refetch: refreshOfficial
   } = useQuery({
@@ -255,7 +256,11 @@ function ScopedSkillCatalog({
         if (entry.provider) { return <ProviderDetail entry={entry} key={entry.id} profile={profile} /> }
         const skill = catalog.skillsById.get(entry.id)
 
-        if (skill?.provider && !entry.provider) { return <p role="status">{t.skills.loading}</p> }
+        if (skill?.provider) {
+          const bootstrapPending = officialPending || (hasHubSkills && hubPending)
+
+          return <p role="status">{bootstrapPending ? t.skills.loading : t.catalog.provider.unavailable}</p>
+        }
 
         return skill ? renderInstalledDetail(skill) : null
       }}

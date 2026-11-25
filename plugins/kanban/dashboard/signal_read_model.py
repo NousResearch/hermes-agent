@@ -438,11 +438,15 @@ class _SignalEventReader:
         )
 
     async def aclose(self) -> None:
-        # Queued behind any in-flight poll on the same thread; shutdown(wait=False)
-        # never cancels it and shield keeps a second cancellation from doing so.
+        # Queued behind any in-flight poll on the connection's own thread.
         closing = self._executor.submit(self._close)
-        self._executor.shutdown(wait=False)
-        await asyncio.shield(asyncio.wrap_future(closing))
+        try:
+            await asyncio.shield(asyncio.wrap_future(closing))
+        finally:
+            # A cancelled handler (server shutdown, or the ASGI server cancelling
+            # after disconnect) stops awaiting, but the connection must not
+            # outlive it: wait for the queued close, at most one poll behind.
+            self._executor.shutdown(wait=True)
 
 
 async def _stream_signal_events(

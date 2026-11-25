@@ -253,9 +253,36 @@ def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
         return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
     return None
 
-# Set (token-scoped) by the curator consolidation pass: the umbrellas it creates absorb and shrink
-# the library, so they are never counted against the cap. Tool workers copy the context.
+# Set (token-scoped) by the curator consolidation pass: its umbrella creates skip the check (they
+# absorb and shrink the library); once created they count like any other curator-managed skill.
 _cap_exempt: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar("agent_created_cap_exempt", default=False)
+
+
+def _count_agent_created() -> int:
+    """Live curator-managed skills, keyed exactly as ``record_created`` writes them (the tool's
+    ``name``, wherever ``skills.create_dir`` put the files). Strict read: raises on a damaged sidecar."""
+    from tools import skill_manager_tool as _smt
+    from tools import skill_usage
+    return sum(1 for name, rec in skill_usage._load_usage_strict().items()
+               if skill_usage._is_curator_managed_record(rec) and rec.get("state") != skill_usage.STATE_ARCHIVED
+               and not skill_usage.is_bundled(name) and _smt._find_skill(name))
+
+
+def agent_created_cap_lock(creates: bool):
+    """Profile-wide lock held across a capped background create's count, write and creation record
+    (thread re-entrant, so a batch's nested per-op calls pass). A no-op for every other call."""
+    from contextlib import nullcontext
+    if not creates or not _is_background_review() or _cap_exempt.get():
+        return nullcontext()
+    try:
+        from agent.curator import get_max_agent_created
+        if get_max_agent_created() <= 0:
+            return nullcontext()
+    except Exception:
+        logger.debug("cap config read failed; taking the cap lock", exc_info=True)
+    from tools import skill_manager_tool as _smt
+    from tools.skill_usage import skill_file_lock
+    return skill_file_lock(_smt._skills_dir() / ".locks" / "agent-created-cap.lock")
 
 
 def _agent_created_cap_guard(creates: int) -> Optional[dict[str, Any]]:
@@ -268,13 +295,14 @@ def _agent_created_cap_guard(creates: int) -> Optional[dict[str, Any]]:
         return None
     try:
         from agent.curator import get_max_agent_created
-        from tools import skill_usage
         if (cap := get_max_agent_created()) <= 0:
             return None
-        have = len([n for n in skill_usage.list_agent_created_skill_names() if not skill_usage.is_bundled(n)])
+        have = _count_agent_created()
     except Exception:
-        logger.debug("agent-created skill cap lookup failed", exc_info=True)
-        return None
+        logger.warning("agent-created skill cap lookup failed; refusing the background create", exc_info=True)
+        return _refusal("Refusing background create: the agent-created skill count could not be read "
+                        "(skills/.usage.json unreadable), so curator.max_agent_created cannot be checked. "
+                        "Patch an existing skill instead.", _cap_reached=True)
     if have + creates <= cap:
         return None
     return _refusal(

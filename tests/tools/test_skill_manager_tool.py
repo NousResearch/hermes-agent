@@ -6,6 +6,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from contextvars import copy_context
+from contextlib import suppress as contextlib_suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1577,15 +1578,17 @@ def test_index_desc_limit_sets_the_skill_manage_description_budget(tmp_path, mon
 
 
 def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(tmp_path, monkeypatch):
-    """At curator.max_agent_created the unattended review cannot add a skill (single op or batch)
-    but can still patch one it has read, and a user-directed create is never capped."""
+    """At curator.max_agent_created the unattended review cannot add a skill (single op or batch, or
+    while the count is unreadable) but can still patch one it has read; a user create is never capped."""
     from tools.skill_manager_guards import _reset_background_review_read_marks, mark_background_review_skill_read
     from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text("curator:\n  max_agent_created: 1\n", encoding="utf-8")
+    # create_dir + a frontmatter name unlike the tool name: the count must still see skill "one".
+    (tmp_path / "config.yaml").write_text(
+        "curator:\n  max_agent_created: 1\nskills:\n  create_dir: team-skills\n", encoding="utf-8")
 
     def skill(name):
-        return f"---\nname: {name}\ndescription: Use when testing the cap.\n---\n\nStep one.\n"
+        return f"---\nname: {name}-display\ndescription: Use when testing the cap.\n---\n\nStep one.\n"
 
     token = set_current_write_origin(BACKGROUND_REVIEW)
     try:
@@ -1594,9 +1597,11 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
         second = json.loads(skill_manage(action="create", name="two", content=skill("two")))
         batch = json.loads(skill_manage(action="", name="", operations=[
             {"action": "create", "name": "three", "content": skill("three")}]))
-        mark_background_review_skill_read(tmp_path / "skills" / "one" / "SKILL.md")
+        mark_background_review_skill_read(tmp_path / "team-skills" / "one" / "SKILL.md")
         patched = json.loads(skill_manage(action="patch", name="one", old_string="Step one.",
                                           new_string="Step one, then two."))
+        (tmp_path / "skills" / ".usage.json").write_text("{not json", encoding="utf-8")
+        damaged = json.loads(skill_manage(action="create", name="four", content=skill("four")))
     finally:
         reset_current_write_origin(token)
     user = json.loads(skill_manage(action="create", name="mine", content=skill("mine")))
@@ -1604,6 +1609,36 @@ def test_max_agent_created_caps_review_creates_but_not_updates_or_user_creates(t
     assert first["success"] is True, first
     assert second["success"] is False and second.get("_cap_reached") is True, second
     assert batch["success"] is False and batch.get("_cap_reached") is True, batch
-    assert not (tmp_path / "skills" / "two").exists() and not (tmp_path / "skills" / "three").exists()
+    assert not (tmp_path / "team-skills" / "two").exists() and not (tmp_path / "team-skills" / "three").exists()
     assert patched["success"] is True, patched
+    assert damaged["success"] is False and not (tmp_path / "team-skills" / "four").exists(), damaged  # fail closed
     assert user["success"] is True, user
+
+
+def test_max_agent_created_two_concurrent_reviews_cannot_share_the_last_slot(tmp_path, monkeypatch):
+    """Two review forks racing for the one free slot: exactly one create lands."""
+    from tools.skill_provenance import BACKGROUND_REVIEW, set_current_write_origin
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("curator:\n  max_agent_created: 1\n", encoding="utf-8")
+    import tools.skill_manager_tool as smt
+    real_create, gate = smt._create_skill, threading.Barrier(2, timeout=2)
+
+    def slow_create(*a, **kw):  # widen the count-to-record window the lock must cover
+        with contextlib_suppress(threading.BrokenBarrierError):
+            gate.wait()
+        return real_create(*a, **kw)
+
+    monkeypatch.setattr(smt, "_create_skill", slow_create)
+    results = []
+
+    def review(name):
+        set_current_write_origin(BACKGROUND_REVIEW)
+        body = f"---\nname: {name}\ndescription: Use when testing the cap.\n---\n\nStep.\n"
+        results.append(json.loads(skill_manage(action="create", name=name, content=body)))
+
+    threads = [threading.Thread(target=copy_context().run, args=(review, n)) for n in ("race-a", "race-b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert sorted(r["success"] for r in results) == [False, True], results

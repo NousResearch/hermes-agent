@@ -795,6 +795,22 @@ def skill_manage(
     session_id: str | None = None, operations=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
+    from tools.skill_manager_guards import agent_created_cap_lock
+    creates = action == "create" or any(isinstance(op, dict) and op.get("action") == "create"
+                                        for op in (operations if isinstance(operations, list) else ()))
+    # Count, write and creation record under one profile-wide lock, so two reviews cannot share a last slot.
+    with agent_created_cap_lock(creates):
+        return _skill_manage_unlocked(
+            action, name, content=content, category=category, file_path=file_path, file_content=file_content,
+            old_string=old_string, new_string=new_string, replace_all=replace_all, absorbed_into=absorbed_into,
+            task_id=task_id, session_id=session_id, operations=operations)
+
+
+def _skill_manage_unlocked(
+    action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
+    file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
+    replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
+    session_id: str | None = None, operations=None) -> str:
     if operations is not None:
         return _skill_manage_batch(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)

@@ -237,6 +237,7 @@ def create_live_transcripts(
     delegation_id: Optional[str] = None, model: Optional[str] = None,
     provider: Optional[str] = None,
     home: Optional[Path] = None,
+    parent_session_id: Optional[str] = None,
 ) -> tuple[Optional[str], list[Optional[LiveTranscriptWriter]], list[str]]:
     """One pre-headered writer per task + a manifest.json; prunes stale dirs.
     Returns ``(delegation_id, writers, paths)``; on any top-level failure
@@ -246,6 +247,11 @@ def create_live_transcripts(
     home instead of an ambient resolve that raw thread boundaries can strip
     of its ContextVar override (#91996). Retention pruning runs against the
     same resolved root, so pinned homes clean their own stale dirs.
+
+    ``parent_session_id`` is the spawning agent's own session (the direct
+    parent, not the conversation root when nested); recorded from the first
+    write so a viewer can place a running delegation without waiting for its
+    result. Anything but a non-blank string leaves the manifest unbound.
     """
     n = len(task_list)
     prune_stale_live_dirs(root=live_transcript_root(home))  # best-effort; never raises
@@ -260,7 +266,8 @@ def create_live_transcripts(
         paths: list[str] = [str(w.path) for w in made if w.path is not None]
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider, home=home)
+        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider, home=home,
+                        parent_session_id=parent_session_id)
         return deleg_id, writers, paths
     return None, [None] * n, []
 
@@ -271,10 +278,14 @@ def _manifest_path(delegation_id: str, home: Optional[Path] = None) -> Path:
 
 def _write_manifest(delegation_id: str, task_list: list[dict[str, Any]],
                     paths: list[str], model: Optional[str] = None,
-                    provider: Optional[str] = None, home: Optional[Path] = None) -> None:
+                    provider: Optional[str] = None, home: Optional[Path] = None,
+                    parent_session_id: Optional[str] = None) -> None:
     with _best_effort("manifest write"):
+        # Unbound (key absent, as in pre-parent manifests) unless the caller handed a real id.
+        bound = isinstance(parent_session_id, str) and parent_session_id.strip()
+        parent = {"parent_session_id": parent_session_id} if bound else {}
         _dump_json(_manifest_path(delegation_id, home), {
-            "delegation_id": delegation_id, "started": time.strftime(_TIME_FMT),
+            "delegation_id": delegation_id, **parent, "started": time.strftime(_TIME_FMT),
             "task_count": len(task_list), "model": model, "provider": provider,
             "tasks": [{
                 "index": i,

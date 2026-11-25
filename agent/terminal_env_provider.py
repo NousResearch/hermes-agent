@@ -7,6 +7,13 @@ runners). Providers register via :meth:`PluginContext.register_terminal_environm
 third-party sandbox vendors do NOT have to live in core). :meth:`create_environment` returns
 any ``BaseEnvironment`` duck type (``execute()``, ``cleanup()`` …); the factory stamps
 ``_hermes_backend_name`` on the result so file-path resolution can identify plugin backends.
+
+``execute()`` is called by every Hermes site that reaches a backend, so the environment needs to
+know who is calling and whether the dangerous-command gate already approved the command. Read
+:func:`current_command_context` inside ``execute()``: it returns a :class:`CommandContext` (origin,
+background job id, the gated command, task/session ids, and the :class:`CommandApproval`) or ``None``
+for a caller that has not opted in. See ``tools/environments/command_context.py`` for the origins and
+the rule for trusting ``approval``.
 """
 
 from __future__ import annotations
@@ -15,6 +22,14 @@ import abc
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.provider_base import ProviderBase
+from tools.environments.command_context import (
+    CommandApproval, CommandContext, command_context, current_command_context,
+)
+
+__all__ = [
+    "CommandApproval", "CommandContext", "TerminalEnvironmentProvider",
+    "command_context", "current_command_context",
+]
 
 
 class TerminalEnvironmentProvider(ProviderBase):

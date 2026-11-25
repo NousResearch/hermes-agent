@@ -140,10 +140,15 @@
       "source": "prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export)",
       "entries": [
         "agent.runtime_cwd:resolve_agent_cwd",
+        "agent.terminal_env_provider:CommandApproval",
+        "agent.terminal_env_provider:CommandContext",
+        "agent.terminal_env_provider:command_context",
+        "agent.terminal_env_provider:current_command_context",
         "agent.usage_pricing:CostResult",
         "hermes_cli.auth_constants:AuthError",
         "tools.environments.base:BaseEnvironment",
         "tools.environments:BaseEnvironment",
+        "tools.environments.command_context",
         "utils:atomic_json_write",
         "utils:read_json_or_empty"
       ]

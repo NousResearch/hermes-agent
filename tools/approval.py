@@ -620,8 +620,28 @@ def is_approval_bypass_active() -> bool:
 
 # --- Result builders shared by the gates ----------------------------------------------------------------------------
 
-def _approved() -> dict:
-    return {"approved": True, "message": None}
+def _approved(**extra: bool) -> dict:
+    return {"approved": True, "message": None, **extra}
+
+
+def gate_approval_kind(result: dict, *, forced: bool = False) -> str:
+    """How *result* let the command through, as a ``CommandApproval.kind``.
+
+    ``batch`` outranks the underlying answer: the batch flow collected the decision before the
+    run (a human answer or a policy one), and that provenance is what a terminal provider logs."""
+    if forced:
+        return "forced"
+    if result.get("batch"):
+        return "batch"
+    if result.get("user_approved"):
+        return "user"
+    if result.get("smart_approved"):
+        return "smart"
+    if result.get("pre_approved"):
+        return "pre_approved"
+    if result.get("gate_skipped"):
+        return "gate_skipped"
+    return "no_findings"
 
 
 # ``outcome`` -> one plain sentence for the person who just answered (or did not), keyed as
@@ -1406,7 +1426,7 @@ def check_all_command_guards(command: str, env_type: str,
     want to veto or escalate a command do it from ``pre_tool_call``.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
+        return _user_deny_block(command) or _approved(gate_skipped=True)
 
     blocked = _floor_block(command, sudo_guard=True)
     if blocked is not None:
@@ -1415,7 +1435,7 @@ def check_all_command_guards(command: str, env_type: str,
     from agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
-        return prepared
+        return {**prepared, "batch": True}
 
     approval_mode = approval_context._get_approval_mode()
     # A command the hardline scan could not finish is human-only: no bypass, allowlist glob,
@@ -1494,7 +1514,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
     # Isolated backends already sandbox the child.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _approved()
+        return _approved(gate_skipped=True)
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
         return _approved()

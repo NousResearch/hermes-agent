@@ -23,6 +23,7 @@ from typing import Callable, Iterable
 
 from hermes_constants import get_hermes_home
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
+from tools.environments.command_context import command_context
 from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
@@ -384,9 +385,10 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         quoted = shlex.quote(remote_path)
         # ``[ -f ]`` follows symlinks, so a link to a denied host file is judged by the CALLER on
         # ``readlink -f`` output before any bytes move.
-        result = self.execute(
-            f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
-            timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
+        with command_context("media_read"):
+            result = self.execute(
+                f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
+                timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
         output = result.get("output") or ""
         first, last = output.find(marker), output.rfind(marker)
         if int(result.get("returncode") or 0) != 0 or first == -1 or last <= first:
@@ -401,7 +403,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
 
     def fetch_realpath(self, remote_path: str) -> str | None:
         """``readlink -f`` inside the backend, or None when it cannot be resolved."""
-        result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null", rewrite_compound_background=False)
+        with command_context("media_read"):
+            result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null",
+                                  rewrite_compound_background=False)
         if int(result.get("returncode") or 0) != 0:
             return None
         return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)

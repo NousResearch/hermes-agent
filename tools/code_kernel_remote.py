@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd, _remote_write
 from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning
+from tools.environments.command_context import command_context
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,8 @@ if __name__ == "__main__":
 
 def _sh(env, cmd: str, timeout: int = 15) -> str:
     """Run *cmd* on the remote from ``/`` and return its output text."""
-    result = env.execute(cmd, cwd="/", timeout=timeout)
+    with command_context("execute_code_rpc"):
+        result = env.execute(cmd, cwd="/", timeout=timeout)
     return (result.get("output", "") if isinstance(result, dict) else "") or ""
 
 

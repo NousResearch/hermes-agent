@@ -188,6 +188,50 @@ is `False`. Hermes v0.22.5 and earlier ignore the attribute and use the host
 fast path for every `LocalEnvironment` subclass, so pin `requires_hermes` past
 that.
 
+## Who is calling: the command context
+
+Your `execute()` is reached by every caller, not just the terminal tool: the
+background process registry, `execute_code` and its RPC traffic, the file
+tools, media reads, result spills and Hermes's own probes. Inside `execute()`,
+ask `current_command_context()` rather than inspecting the call stack:
+
+```python
+from agent.terminal_env_provider import current_command_context
+
+class AcmeEnvironment(BaseEnvironment):
+    def execute(self, command, **kwargs):
+        ctx = current_command_context()
+        if ctx is not None and ctx.origin == "background_poll":
+            ...  # cheap poll read: don't bill it as a user command
+        return super().execute(command, **kwargs)
+```
+
+It returns a `CommandContext` or `None` (the default for any caller that has
+not opted in, your own calls included):
+
+| Field | Meaning |
+|---|---|
+| `origin` | `terminal`, `background_spawn` / `background_poll` / `background_kill`, `execute_code`, `execute_code_rpc`, `file_op`, `media_read`, `spill`, `guard_probe`, `internal` |
+| `job_id` | the background job's session id (`background_*` only) |
+| `inner_command` | the command a background wrapper carries (the one the gate approved) |
+| `task_id`, `session_key` | the owning task and session, when known |
+| `approval` | `CommandApproval(command, kind)`, or `None` |
+
+`kind` is how the dangerous-command gate let the command through: `user`,
+`smart`, `pre_approved`, `forced`, `no_findings`, `gate_skipped` (the backend
+skips prompts) or `batch` (the batch approval flow collected the decision
+before the run). **Trust `approval` only when** `origin == "terminal"` and
+`approval.command` is exactly the `command` argument your `execute()` received
+(the gate approves the raw command before Hermes rewrites it), or for a
+background spawn when `inner_command` matches it. Anything else is provenance
+only: an `execute_code` script is gated as a whole and stamped
+`execute_code:<kind>`, which says nothing about the commands inside it.
+
+The value rides a `ContextVar`, so it needs no `execute()` keyword: it is set
+for the duration of one call and reset on return, and a nested call (a
+`terminal` tool call dispatched from inside `execute_code`'s RPC) replaces it
+with its own. Nothing leaks into later polls or requests.
+
 ## Images
 
 Your backend reads its own image setting (a `config_schema` key, or a

@@ -82,6 +82,48 @@ def test_timed_out_acquire_never_orphans_permit(tmp_path, monkeypatch, phase, me
         assert p.read()['reservations'][admission['reservation_id']]['state'] in ('bound', 'unknown')
 
 
+@pytest.mark.parametrize('method', ['acquire', 'recovery_acquire'])
+def test_cancelled_queued_acquire_never_reaches_projection(tmp_path, monkeypatch, method):
+    with admitted(tmp_path) as (_p, _owner, facade, admission, op):
+        entered, resume = threading.Event(), threading.Event()
+        original_settlement = facade._do_settlement
+        original_acquire = getattr(facade, '_do_' + method)
+        original_wait = threading.Event.wait
+        acquisitions = []
+
+        def blocking(payload):
+            entered.set()
+            assert resume.wait(10)
+            return original_settlement(payload)
+
+        def acquire(payload):
+            acquisitions.append(payload)
+            return original_acquire(payload)
+
+        monkeypatch.setattr(facade, '_do_settlement', blocking)
+        monkeypatch.setattr(facade, '_do_' + method, acquire)
+        payload = dict(admission=admission, operation_id=op)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            blocker = pool.submit(facade.settlement, op)
+            try:
+                assert entered.wait(5)
+                monkeypatch.setattr(threading.Event, 'wait', lambda event, timeout=None:
+                    original_wait(event, 0.1 if timeout == 3.5 else timeout))
+                with pytest.raises(CatalogError) as caught:
+                    getattr(facade, method)(payload)
+                assert caught.value.code == 'outcome_unknown'
+            finally:
+                resume.set()
+            blocker.result(5)
+        monkeypatch.setattr(facade, '_do_settlement', original_settlement)
+        facade.settlement(op)
+        assert acquisitions == []
+        assert facade._permit is None
+        monkeypatch.setattr(facade, '_do_' + method, original_acquire)
+        permit = facade.acquire(payload)
+        facade.release(dict(permit_id=permit['permit_id']))
+
+
 def test_commit_derives_target_holds_both_locks_and_idempotently_settles(tmp_path):
     with admitted(tmp_path) as (p, owner, facade, admission, op):
         with facade.commit(admission, op) as commit:

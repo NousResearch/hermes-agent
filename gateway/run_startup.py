@@ -676,7 +676,8 @@ class GatewayStartupMixin:
         return scheduled
 
     def _startup_should_abort(self) -> bool:
-        return self._restart_requested or self._draining or self._shutdown_event.is_set()
+        from gateway.run_common import startup_should_abort
+        return startup_should_abort(self)
 
     async def _startup_teardown_adapter(self, adapter, platform) -> None:
         """Cancel an adapter's background tasks (best-effort) then disconnect it."""
@@ -696,16 +697,8 @@ class GatewayStartupMixin:
             return False
         if adapter is not None and platform is not None:
             await self._startup_teardown_adapter(adapter, platform)
-        stop_task = self._stop_task
-        current_task = asyncio.current_task()
-        if stop_task is not None and stop_task is not current_task:
-            await stop_task
-        elif not self._shutdown_event.is_set():
-            await self.stop(
-                restart=self._restart_requested, detached_restart=self._restart_detached,
-                service_restart=self._restart_via_service,
-            )
-        return True
+        from gateway.run_common import abort_startup_if_shutdown_requested
+        return await abort_startup_if_shutdown_requested(self, check=False)
 
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
         from gateway.run_startup_liveness import start_loop_liveness_guards

@@ -225,6 +225,7 @@ def render(out: Path) -> int:
     """Render into *out* from a fresh child process and home, so nothing from the caller's
     environment, config or imported modules reaches the bytes."""
     with tempfile.TemporaryDirectory(prefix="prompt-surface-") as tmp:
+        tmp = str(Path(tmp).resolve())  # the child scrubs the resolved home; macOS temp dirs sit behind a symlink
         home = Path(tmp) / "home"
         home.mkdir()
         staging = Path(tmp) / "out"

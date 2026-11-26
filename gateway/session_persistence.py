@@ -470,7 +470,8 @@ class SessionPersistenceMixin:
             imported = 0
             for key, entry_data in data.items():
                 # "_"-prefixed keys are sentinels (e.g. "_README"), not entries.
-                if key.startswith("_") or key in self._entries:
+                # A held unparsed DB row is the newer copy too (state.db first).
+                if key.startswith("_") or key in self._entries or key in (getattr(self, "_unparsed_routes", None) or {}):
                     continue
                 if not isinstance(entry_data, dict):  # corrupt file must not abort the whole load
                     logger.warning(

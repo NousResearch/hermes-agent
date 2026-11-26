@@ -50,7 +50,7 @@ Hermes 有两个独立运行的压缩层：
                                    │
                                    ▼
                      ┌──────────────────────────┐
-                     │   Agent ContextCompressor │  Fires at 50% of context (default)
+                     │   Agent ContextCompressor │  Base: 50%; at least 75% below 512K
                      │   (in-loop, real tokens)  │  Normal context management
                      └──────────────────────────┘
 ```
@@ -68,7 +68,7 @@ Gateway 清理阈值有意高于 agent 压缩器的阈值。将其设置为 50%�
 
 ### 2. Agent ContextCompressor（50% 阈值，可配置）
 
-位于 `agent/context_compressor.py`。这是**主要压缩系统**，在 agent 的工具循环内运行，可访问准确的 API 报告 token 数。
+位于 `agent/context_compressor.py`。这是**主要压缩系统**，在 agent 的工具循环内运行，可使用 API 报告的 token 数。50% 是配置的基础比例，不一定是实际触发线。
 
 
 ## 配置
@@ -78,10 +78,10 @@ Gateway 清理阈值有意高于 agent 压缩器的阈值。将其设置为 50%�
 ```yaml
 compression:
   enabled: true              # Enable/disable compression (default: true)
-  threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
-  target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
-  tail_mode: legacy          # 尾部保留策略：legacy | lean（默认 legacy）
-  protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  threshold: 0.50            # 基础比例，窗口小于 512K 时至少为 0.75
+  target_ratio: 0.20         # 仅 legacy 模式用于计算尾部预算
+  tail_mode: lean            # 尾部保留策略：lean | legacy（默认 lean）
+  protect_last_n: 20         # 最近消息条数的兜底设置，不保证保留 20 条
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -95,19 +95,21 @@ auxiliary:
 
 | 参数 | 默认值 | 范围 | 描述 |
 |-----------|---------|-------|-------------|
-| `threshold` | `0.50` | 0.0-1.0 | 当 prompt token 数 ≥ `threshold × context_length` 时触发压缩 |
-| `target_ratio` | `0.20` | 0.10-0.80 | 控制尾部保护 token 预算：`threshold_tokens × target_ratio` |
-| `tail_mode` | `legacy` | `legacy`、`lean` | 尾部保留策略。`legacy` 保留 `target_ratio` 大小的逐字尾部（大窗口模型约 100K+ token）。`lean` 保留截取后的尾部（窗口的 2.5%，下限 10K、上限 25K），并将连续性移入摘要：压缩区域的分块保标识符摘录、机械提取的锚点索引（PR 编号、SHA、路径、报错文本 — 正则提取，绝不改写）、逐字引用的全部真实用户消息，以及 `session_search` 恢复指引。在 500K token 的真实会话上：保留约 49K（对比 162K）。压缩边界会多出数次摘要模型调用。lean 尾部中较旧的工具输出会降级为带恢复指引的单行占位 |
-| `protect_last_n` | `20` | ≥1 | 始终保留的最近消息最小数量 |
+| `threshold` | `0.50` | 0.0-1.0 | 压缩触发的基础比例。上下文窗口小于 512K 时，比例至少为 0.75 |
+| `target_ratio` | `0.20` | 0.10-0.80 | 仅在 `legacy` 模式下计算尾部预算：`threshold_tokens × target_ratio` |
+| `tail_mode` | `lean` | `lean`、`legacy` | `lean` 使用较短的尾部，在同一次摘要请求中生成详细会话日志，并保留锚点索引和 `session_search` 恢复指引。尾部中较旧的工具结果可替换为短引用。`legacy` 则按 `target_ratio` 计算尾部预算 |
+| `protect_last_n` | `20` | ≥1 | 最近消息条数的兜底设置。计算尾部切点时，按条数兜底最多考虑 8 条，仍要结合 token 预算，不保证保留 20 条 |
 | `protect_first_n` | `3` | （硬编码）| 系统提示词 + 首次交互始终保留 |
 
 ### 计算值（200K 上下文模型，默认参数）
 
+以下示例假定没有输出 token 预留或模型阈值覆盖。
+
 ```
 context_length       = 200,000
-threshold_tokens     = 200,000 × 0.50 = 100,000
-tail_token_budget    = 100,000 × 0.20 = 20,000
-max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
+threshold_tokens     = 200,000 × 0.75 = 150,000
+tail_token_budget    = max(10,000, min(25,000, 200,000 × 0.025)) = 10,000
+max_summary_tokens   = min(200,000 × 0.05, 10,000) = 10,000
 ```
 
 
@@ -137,7 +139,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 └─────────────────────────────────────────────────────────────┘
 ```
 
-尾部保护基于 **token 预算**：从末尾向前遍历，累积 token 直到预算耗尽。如果预算保护的消息数少于固定的 `protect_last_n`，则回退到该固定数量。
+尾部保护主要看 **token 预算**：从末尾向前估算每条消息的大小，再调整切点。`protect_last_n` 不会强制把大量工具结果原样留在尾部。最近的用户请求或必须成组保留的工具消息可能让尾部超出预算。
 
 边界对齐以避免拆分 tool_call/tool_result 组。`_align_boundary_backward()` 方法会跳过连续的工具结果，找到父级 assistant 消息，保持组的完整性。
 
@@ -177,17 +179,16 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 [Specific values, error messages, configuration details]
 ```
 
-摘要预算随被压缩内容的量动态调整：
-- 公式：`content_tokens × 0.20`（`_SUMMARY_RATIO` 常量）
-- 最小值：2,000 token
-- 最大值：`min(context_length × 0.05, 12,000)` token
+压缩器先估算待摘要消息的 token 数，取其 20% 作为基础目标，下限为 2,000，上限为 `min(context_length × 0.05, 10,000)`。这里的 `context_length` 是主模型的上下文窗口。`lean` 模式会给详细会话日志额外增加约 4,000 token 的目标预算。
+
+这是**写进提示词的长度目标**，不是 API 输出上限。Hermes 不会把预算作为 `max_tokens` 传给模型，也不会把完整摘要截到目标长度。如果服务端返回 `finish_reason=length`，Hermes 会把这份被截断的摘要视为失败，不会用半截摘要替换历史。
 
 ### 阶段 4：组装压缩后的消息
 
 压缩后的消息列表为：
 1. 头部消息（首次压缩时在系统提示词后追加一条说明）
 2. 摘要消息（角色经过选择以避免连续相同角色违规）
-3. 尾部消息（未修改）
+3. 保留的尾部消息（较旧的工具结果可能被缩短）
 
 `_sanitize_tool_pairs()` 清理孤立的 tool_call/tool_result 对：
 - 引用已删除调用的工具结果 → 删除
@@ -325,4 +326,4 @@ CLI 在启动时显示缓存状态：
 
 ## 上下文压力警告
 
-中间上下文压力警告已被移除（参见 `run_agent.py` 中的迭代预算块，其中注明："No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"）。压缩在 prompt token 达到配置的 `compression.threshold`（默认 50%）时触发，无需事先警告步骤；gateway 会话清理作为二级安全网在模型上下文窗口的 85% 处触发。
+中间上下文压力警告已被移除（参见 `run_agent.py` 中的迭代预算块，其中注明："No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"）。压缩在达到有效触发阈值时启动，无需事先警告。`compression.threshold` 的基础比例默认是 50%，窗口小于 512K 时比例至少为 75%。Gateway 会话清理作为二级安全网在模型上下文窗口的 85% 处触发。

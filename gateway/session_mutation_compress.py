@@ -29,6 +29,19 @@ def compress_request(payload):
     return request
 
 
+def _compress_runtime(authority, live):
+    """Resolve with the same fallback policy as a turn, without overwriting its one-shot notice."""
+    from hermes_cli.auth import AuthError
+    try:
+        return authority.runner._resolve_session_agent_runtime(
+            source=live.source, session_key=live.route, record_notice=False, refresh_fallbacks=True)
+    except AuthorityRefusal:
+        raise  # AuthorityRefusal is also a ValueError; preserve its wire reason and details.
+    except (AuthError, ValueError) as exc:  # a stopped local model server raises ValueError
+        logger.warning('compress: session=%s could not resolve a provider: %s', live.route, exc)
+        raise AuthorityRefusal('compression_provider_unavailable', field='runtime') from exc
+
+
 async def prepare_compress(authority, live, payload, prepared):
     from gateway.session_persistence import authority_persistence
     from gateway.session_policy import restore_policy, policy_scope
@@ -45,7 +58,7 @@ async def prepare_compress(authority, live, payload, prepared):
     options = config.get('compression') or {}
     if options.get('checkpoint_required'):
         raise AuthorityRefusal('compression_checkpoint_required')
-    model, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
+    model, runtime = _compress_runtime(authority, live)
     if runtime.get('api_mode') == 'codex_app_server':
         raise AuthorityRefusal('runtime_coordination_required')
     store = authority_persistence(authority)

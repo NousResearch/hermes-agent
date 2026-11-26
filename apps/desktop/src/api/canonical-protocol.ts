@@ -282,6 +282,9 @@ export class CanonicalDesktopProtocol {
     // alone, so keeping the refused request would resend it for every later /undo instead of deriving.
     if (typeof reason === 'string' && params.operation === 'rewind') { this.forgetMutation(params) }
 
+    // Provider resolution refused compression before any write; the user's next attempt uses current fences.
+    if (reason === 'compression_provider_unavailable' && params.operation === 'compress') { this.forgetMutation(params) }
+
     // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
     if (reason !== 'revision_conflict' && reason !== 'stale_generation' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 

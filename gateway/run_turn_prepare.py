@@ -41,7 +41,7 @@ logger = logging.getLogger("gateway.run")
 _TIER_FROM_RUNNER = object()
 
 
-def _resolve_policy_agent_runtime(runner, policy, *, fallback=True, record_notice=True) -> tuple[str, dict]:
+def _resolve_policy_agent_runtime(runner, policy, *, fallback=True, record_notice=True, refresh_fallbacks=False) -> tuple[str, dict]:
     """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
     config and launch credential, walking its own fallback chain on an AuthError unless
     ``fallback=False`` (a session control asking which route the session itself runs). Module-level
@@ -49,14 +49,16 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True, record_notic
     leaves the runner's one-shot fallback notice alone (see ``_resolve_session_agent_runtime``)."""
     from gateway.run import _runtime_agent_kwargs
     from gateway.session_policy import route_launch_key
-    from gateway.session_worker_construct import route_runtime
+    from gateway.session_worker_construct import _fallback_chain, route_runtime
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
+    # An empty live chain replaces the receipt's chain; only None preserves it.
+    chain = (_fallback_chain(authority, policy) or []) if fallback and refresh_fallbacks else None
     runtime, fallback_entry = route_runtime(policy, frozen, model, route_launch_key(authority, policy, frozen),
-                                            fallback=fallback)
+                                            fallback=fallback, chain=chain)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
         from agent.primary_auth_fallback import RUNTIME_KEY, set_pending_primary_auth_failure
@@ -191,12 +193,15 @@ class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, fallback: bool = True, record_notice: bool = True,
+        refresh_fallbacks: bool = False,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution). ``fallback=False``
         keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``).
+        ``refresh_fallbacks=True`` uses the policy session's current turn chain (even if empty)
+        instead of the chain frozen in its receipt.
 
         ``record_notice=False`` is for read-only lookups (``/status``) from any thread: the runner-wide
         ``_pre_agent_fallback_notice`` is one turn's one-shot slot, so such a lookup must neither clear
@@ -214,7 +219,8 @@ class GatewayTurnPrepareMixin:
         set_pending_primary_auth_failure(None)
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            return _resolve_policy_agent_runtime(self, policy, fallback=fallback, record_notice=record_notice)
+            return _resolve_policy_agent_runtime(self, policy, fallback=fallback, record_notice=record_notice,
+                                                 refresh_fallbacks=refresh_fallbacks)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
         if skey:

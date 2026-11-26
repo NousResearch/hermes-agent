@@ -152,16 +152,23 @@ def _dict_list(value):
     return value is None or (isinstance(value, list) and all(isinstance(e, dict) for e in value))
 
 
-def route_runtime(policy, frozen, model, key, *, fallback=True):
+def route_runtime(policy, frozen, model, key, *, fallback=True, chain=None):
     """``(runtime, fallback_entry)`` for a launch-policy route: the session's FROZEN config and launch
     credential, walking its own fallback chain on an AuthError unless ``fallback=False`` (a session
     control asking which route the session itself runs). The one resolver an in-process turn
-    (``_resolve_policy_agent_runtime``) and a managed worker (``worker_route``) share."""
+    (``_resolve_policy_agent_runtime``) and a managed worker (``worker_route``) share.
+
+    ``chain`` overrides the fallback chain the frozen config carries: the caller resolved the chain
+    the session's next turn will actually get (``_fallback_chain``). The receipt's chain was frozen
+    at creation and can name a provider that is itself unavailable, while the turn runs on the
+    profile's current one."""
     from hermes_cli.runtime_provider import (
         frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback,
     )
     from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
     provider = (frozen.get('model') or {}).get('provider')
+    if chain is not None:
+        frozen = {**frozen, 'fallback_providers': list(chain), 'fallback_model': None}
     launch_url = json.loads(policy.request_json).get('base_url')
     if launch_url:
         # The creation request is immutable identity, not the current selection: once a canonical

@@ -68,7 +68,14 @@ class RecordingAgent:
 
 
 class TestBatchRunnerClosesAgent:
-    CONFIG = {"model": "m", "max_iterations": 1, "distribution": "d", "verbose": False}
+    CONFIG = {
+        "model": "m",
+        "api_key": "k",
+        "base_url": "https://example.invalid/v1",
+        "max_iterations": 1,
+        "distribution": "d",
+        "verbose": False,
+    }
 
     def test_agent_closed_after_successful_prompt(self, monkeypatch):
         import batch_runner

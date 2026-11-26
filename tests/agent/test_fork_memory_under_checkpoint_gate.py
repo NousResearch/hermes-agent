@@ -51,7 +51,13 @@ def _fork_site(site):
         import batch_runner
 
         return batch_runner, (lambda: batch_runner._process_single_prompt(
-            0, {"prompt": "p"}, 0, {"model": "m", "max_iterations": 3, "distribution": {}},
+            0, {"prompt": "p"}, 0, {
+                "model": "m",
+                "api_key": "k",
+                "base_url": "https://example.invalid/v1",
+                "max_iterations": 3,
+                "distribution": {},
+            },
         )), (patch.object(batch_runner, "sample_toolsets_from_distribution", return_value=["terminal"]),)
     if site == "feishu_comment":
         from plugins.platforms.feishu import feishu_comment

@@ -49,22 +49,202 @@ ALL_POSSIBLE_TOOLS = set(get_all_tool_names())
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
 _REASONING_KEYS = ("total_assistant_turns", "turns_with_reasoning", "turns_without_reasoning")
 
+# Process-local state initialized independently in each batch worker.
+# These module globals are not shared across multiprocessing workers.
+_WORKER_CONFIG: dict[str, Any] = {}
+_WORKER_RUNTIME: Optional[dict[str, Any]] = None
+
 # BatchRunner.__init__ parameters stored as same-named attributes.
 _RUNNER_FIELDS = (
     "batch_size", "run_name", "distribution", "max_iterations", "base_url", "api_key", "model",
-    "num_workers", "verbose", "ephemeral_system_prompt", "log_prefix_chars", "providers_allowed",
-    "providers_ignored", "providers_order", "provider_sort", "openrouter_min_coding_score",
-    "reasoning_config", "prefill_messages", "max_samples",
+    "provider", "api_mode", "num_workers", "verbose", "ephemeral_system_prompt", "log_prefix_chars",
+    "providers_allowed", "providers_ignored", "providers_order", "provider_sort",
+    "openrouter_min_coding_score", "reasoning_config", "prefill_messages", "max_samples",
 )
 # BatchRunner attributes forwarded verbatim to every AIAgent in the worker config.
 _AGENT_PASSTHROUGH = (
-    "base_url", "api_key", "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
+    "ephemeral_system_prompt", "providers_allowed", "providers_ignored",
     "providers_order", "provider_sort", "openrouter_min_coding_score",
     "reasoning_config", "prefill_messages",
     # Without this, every batch task run is attributed to the "unknown" execution
     # surface in shared metrics even though "batch" is a first-class surface.
     "platform",
 )
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    """Normalize an optional CLI/config string without coercing callables."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _configured_batch_model_and_provider() -> tuple[Optional[str], Optional[str]]:
+    """Return the configured main model and provider for batch inheritance."""
+    from hermes_cli.config import load_config
+
+    config = load_config()
+    model_config = config.get("model") if isinstance(config, dict) else {}
+    if not isinstance(model_config, dict):
+        return None, None
+    model = _optional_text(model_config.get("default") or model_config.get("model"))
+    provider = _optional_text(model_config.get("provider"))
+    return model, provider
+
+
+def _is_provider_alias(model: str, alias_candidates: tuple[Optional[str], ...]) -> bool:
+    """Return True when *model* merely names one of the candidate provider aliases."""
+    aliases = {alias.lower() for alias in alias_candidates if alias}
+    aliases.update(
+        alias.split(":", 1)[1]
+        for alias in tuple(aliases)
+        if alias.startswith("custom:") and alias.split(":", 1)[1]
+    )
+    return model.lower() in aliases
+
+
+def _resolve_effective_model(
+    model: str,
+    runtime_model: Optional[str],
+    alias_candidates: tuple[Optional[str], ...],
+) -> str:
+    """Keep explicit model IDs authoritative; resolve named-provider aliases to their wire model."""
+    if not runtime_model:
+        return model
+    return runtime_model if _is_provider_alias(model, alias_candidates) else model
+
+
+def _select_requested_provider(
+    provider: Optional[str],
+    configured_provider: Optional[str],
+    *,
+    has_api_key: bool,
+    base_url: Optional[str],
+) -> Optional[str]:
+    """Choose the provider identity to pass to ``resolve_runtime_provider``."""
+    if provider:
+        return provider
+    if base_url and not has_api_key:
+        # An explicit endpoint must not be relabelled as the provider selected in config.yaml.
+        # The shared custom resolver still recognizes known hosts and selects endpoint-scoped keys.
+        return "custom"
+    if has_api_key and not base_url:
+        if not configured_provider:
+            raise ValueError(
+                "--api-key without --base-url requires a configured model.provider "
+                "or an explicit --provider."
+            )
+        return configured_provider
+    return None
+
+
+def _resolve_batch_runtime(config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve one worker's effective model endpoint and credentials.
+
+    A complete ``api_key`` + ``base_url`` pair remains an explicit direct runtime for backward
+    compatibility. Missing or partial runtime fields are resolved through the shared provider
+    router so batch runs inherit ``config.yaml`` instead of silently defaulting to OpenRouter.
+    """
+    model = _optional_text(config.get("model"))
+    provider = _optional_text(config.get("provider"))
+    api_mode = _optional_text(config.get("api_mode"))
+    base_url = _optional_text(config.get("base_url"))
+    api_key = config.get("api_key")
+    if isinstance(api_key, str):
+        api_key = _optional_text(api_key)
+    has_api_key = callable(api_key) or bool(_optional_text(api_key))
+
+    configured_provider = None
+    if not model or (not (has_api_key and base_url) and not provider):
+        configured_model, configured_provider = _configured_batch_model_and_provider()
+        model = model or configured_model
+
+    if not model:
+        raise ValueError(
+            "No model configured for batch execution. Pass --model or select "
+            "a model with `hermes model`."
+        )
+
+    if has_api_key and base_url:
+        return {
+            "model": model,
+            "provider": provider,
+            "requested_provider": provider,
+            "api_mode": api_mode,
+            "api_key": api_key,
+            "base_url": base_url,
+            "credential_pool": None,
+            "source": "command-line",
+        }
+
+    requested_provider = _select_requested_provider(
+        provider, configured_provider, has_api_key=has_api_key, base_url=base_url,
+    )
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    target_model = None if _is_provider_alias(model, (provider, requested_provider, configured_provider)) else model
+    runtime = resolve_runtime_provider(
+        requested=requested_provider,
+        explicit_api_key=api_key if has_api_key else None,
+        explicit_base_url=base_url,
+        target_model=target_model,
+    )
+    resolved_requested_provider = (
+        _optional_text(runtime.get("requested_provider"))
+        or requested_provider
+        or configured_provider
+        or _optional_text(runtime.get("provider"))
+    )
+    effective_model = _resolve_effective_model(
+        model,
+        _optional_text(runtime.get("model")),
+        (provider, requested_provider, configured_provider, resolved_requested_provider),
+    )
+    return {
+        "model": effective_model,
+        "provider": _optional_text(runtime.get("provider")),
+        "requested_provider": resolved_requested_provider,
+        "api_mode": api_mode or _optional_text(runtime.get("api_mode")),
+        "api_key": runtime.get("api_key"),
+        "base_url": _optional_text(runtime.get("base_url")),
+        "credential_pool": runtime.get("credential_pool"),
+        "source": runtime.get("source", "config"),
+    }
+
+
+def _initialize_batch_worker(config: dict[str, Any]) -> None:
+    """Install immutable run config in a worker process; runtime resolves lazily on first use."""
+    global _WORKER_CONFIG, _WORKER_RUNTIME
+    _WORKER_CONFIG = config
+    _WORKER_RUNTIME = None
+
+
+def _get_batch_worker_runtime(config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve runtime once per initialized worker, or directly in tests."""
+    global _WORKER_RUNTIME
+    if _WORKER_CONFIG:
+        if _WORKER_RUNTIME is None:
+            _WORKER_RUNTIME = _resolve_batch_runtime(_WORKER_CONFIG)
+        return _WORKER_RUNTIME
+    return _resolve_batch_runtime(config)
+
+
+def _effective_model_for_statistics(
+    results: list[dict[str, Any]],
+    requested_model: Optional[str],
+) -> Optional[str]:
+    """Return the model workers actually used, with config fallback."""
+    for result in results:
+        effective_model = _optional_text(result.get("model"))
+        if effective_model:
+            return effective_model
+    requested_model = _optional_text(requested_model)
+    if requested_model:
+        return requested_model
+    configured_model, _ = _configured_batch_model_and_provider()
+    return configured_model
+
 
 
 def _normalize_tool_stats(tool_stats: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
@@ -236,7 +416,8 @@ def _process_single_prompt(
     prompt_index: int,
     prompt_data: dict[str, Any],
     batch_num: int,
-    config: dict[str, Any]
+    config: dict[str, Any],
+    resolved_runtime: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Run the agent on one prompt; returns trajectory, stats and metadata (or a failure result)."""
     prompt = prompt_data["prompt"]
@@ -247,11 +428,24 @@ def _process_single_prompt(
 
     try:
         selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
+        runtime = resolved_runtime or _resolve_batch_runtime(config)
 
         if config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using toolsets {selected_toolsets}")
+            print(
+                f"   Prompt {prompt_index}: Runtime "
+                f"provider={runtime['provider'] or 'custom'}, "
+                f"api_mode={runtime['api_mode'] or 'auto'}, "
+                f"source={runtime['source']}"
+            )
         agent = AIAgent(
-            model=config["model"],
+            base_url=runtime["base_url"],
+            api_key=runtime["api_key"],
+            provider=runtime["provider"],
+            requested_provider=runtime.get("requested_provider"),
+            api_mode=runtime["api_mode"],
+            credential_pool=runtime["credential_pool"],
+            model=runtime["model"],
             max_iterations=config["max_iterations"],
             enabled_toolsets=selected_toolsets,
             save_trajectories=False,  # We handle saving ourselves
@@ -297,7 +491,7 @@ def _process_single_prompt(
             "partial": result.get("partial", False),
             "api_calls": result["api_calls"],
             "toolsets_used": selected_toolsets,
-            "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat(), "model": config["model"]},
+            "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat(), "model": runtime["model"]},
         }
     except Exception as e:
         print(f"❌ Error processing prompt {prompt_index}: {e}")
@@ -328,6 +522,9 @@ def _process_batch_worker(args: tuple) -> dict[str, Any]:
     if not prompts_to_process:
         print(f"✅ Batch {batch_num}: Already completed (skipping)")
         return {"batch_num": batch_num, "processed": 0, "skipped": len(batch_data), "tool_stats": {}, "completed_prompts": []}
+
+    runtime = _get_batch_worker_runtime(config) if _WORKER_CONFIG else None
+    batch_model = runtime["model"] if runtime else _optional_text(config.get("model"))
     print(f"   Processing {len(prompts_to_process)} prompts (skipping {len(batch_data) - len(prompts_to_process)} already completed)")
     batch_tool_stats = {}
     batch_reasoning_stats = dict.fromkeys(_REASONING_KEYS, 0)
@@ -335,7 +532,11 @@ def _process_batch_worker(args: tuple) -> dict[str, Any]:
     discarded_no_reasoning = 0
 
     for prompt_index, prompt_data in prompts_to_process:
-        result = _process_single_prompt(prompt_index, prompt_data, batch_num, config)
+        result = _process_single_prompt(
+            prompt_index, prompt_data, batch_num, config, resolved_runtime=runtime,
+        )
+        if not batch_model and isinstance(result.get("metadata"), dict):
+            batch_model = _optional_text(result["metadata"].get("model"))
 
         if result["success"] and result["trajectory"]:
             reasoning = result.get("reasoning_stats", {})
@@ -392,7 +593,8 @@ def _process_batch_worker(args: tuple) -> dict[str, Any]:
         "tool_stats": batch_tool_stats,
         "reasoning_stats": batch_reasoning_stats,
         "discarded_no_reasoning": discarded_no_reasoning,
-        "completed_prompts": completed_in_batch
+        "completed_prompts": completed_in_batch,
+        "model": batch_model,
     }
 
 
@@ -440,7 +642,7 @@ class BatchRunner:
         max_iterations: int = 10,
         base_url: str | None = None,
         api_key: str | None = None,
-        model: str = "claude-opus-4-20250514",
+        model: str | None = None,
         num_workers: int = 4,
         verbose: bool = False,
         ephemeral_system_prompt: str | None = None,
@@ -454,6 +656,8 @@ class BatchRunner:
         reasoning_config: dict[str, Any] | None = None,
         prefill_messages: list[dict[str, Any]] | None = None,
         max_samples: int | None = None,
+        provider: str | None = None,
+        api_mode: str | None = None,
     ):
         """Load the dataset (truncated to *max_samples*), validate *distribution*, create batches.
 
@@ -646,7 +850,10 @@ class BatchRunner:
             worker_api_key = self.api_key
         config = {key: getattr(self, key) for key in _AGENT_PASSTHROUGH}
         config["api_key"] = worker_api_key
-        for key in ("distribution", "model", "max_iterations", "verbose", "log_prefix_chars"):
+        for key in (
+            "distribution", "model", "provider", "api_mode", "base_url",
+            "max_iterations", "verbose", "log_prefix_chars",
+        ):
             config[key] = getattr(self, key)
         return config
 
@@ -654,7 +861,11 @@ class BatchRunner:
         """Process all batches in a worker pool, checkpointing after each result."""
         print(f"\n🔧 Initializing {self.num_workers} worker processes...")
 
-        with Pool(processes=self.num_workers) as pool:
+        with Pool(
+            processes=self.num_workers,
+            initializer=_initialize_batch_worker,
+            initargs=(config,),
+        ) as pool:
             # output_dir as str for pickling
             tasks = [
                 (batch_num, batch_data, str(self.output_dir), completed_prompts_set, config)
@@ -842,6 +1053,7 @@ class BatchRunner:
             stats["success_rate"] = round(stats["success"] / total_calls * 100, 2) if total_calls > 0 else 0.0
             stats["failure_rate"] = round(stats["failure"] / total_calls * 100, 2) if total_calls > 0 else 0.0
         kept, batch_files_found = self._combine_batch_files()
+        effective_model = _effective_model_for_statistics(results, self.model)
         final_stats = {
             "run_name": self.run_name,
             "distribution": self.distribution,
@@ -854,7 +1066,7 @@ class BatchRunner:
             # rolled back (#50163).
             # Snapshot CLI-level fields before mutation so a failed in-place swap rolls the whole CLI back
             # to the old working model (#50163).
-            "model": self.model,
+            "model": effective_model,
             "completed_at": datetime.now().isoformat(),
             "duration_seconds": round(time.time() - start_time, 2),
             "tool_statistics": total_tool_stats,
@@ -877,9 +1089,9 @@ def main(
     batch_size: int | None = None,
     run_name: str | None = None,
     distribution: str = "default",
-    model: str = "anthropic/claude-sonnet-4.6",
+    model: str | None = None,
     api_key: str | None = None,
-    base_url: str = "https://openrouter.ai/api/v1",
+    base_url: str | None = None,
     max_turns: int = 10,
     num_workers: int = 4,
     resume: bool = False,
@@ -896,6 +1108,8 @@ def main(
     reasoning_disabled: bool = False,
     prefill_messages_file: str | None = None,
     max_samples: int | None = None,
+    provider: str | None = None,
+    api_mode: str | None = None,
 ):
     """
     Run batch processing of agent prompts from a dataset.
@@ -905,9 +1119,11 @@ def main(
         batch_size (int): Number of prompts per batch
         run_name (str): Name for this run (used for output and checkpointing)
         distribution (str): Toolset distribution to use (default: "default")
-        model (str): Model name to use (default: "claude-opus-4-20250514")
+        model (str): Model name to use (defaults to config.yaml)
         api_key (str): API key for model authentication
-        base_url (str): Base URL for model API
+        base_url (str): Base URL for model API (defaults to configured provider)
+        provider (str): Provider override (defaults to config.yaml)
+        api_mode (str): API transport override (for example, codex_responses)
         max_turns (int): Maximum number of tool calling iterations per prompt (default: 10)
         num_workers (int): Number of parallel worker processes (default: 4)
         resume (bool): Resume from checkpoint if run was interrupted (default: False)
@@ -1003,6 +1219,8 @@ def main(
             base_url=base_url,
             api_key=api_key,
             model=model,
+            provider=provider,
+            api_mode=api_mode,
             num_workers=num_workers,
             verbose=verbose,
             ephemeral_system_prompt=ephemeral_system_prompt,

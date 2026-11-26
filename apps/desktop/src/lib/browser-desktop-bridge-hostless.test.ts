@@ -297,6 +297,36 @@ describe('a Webapp whose host runs no agent', () => {
     expect(ownRequests(requests).every(request => HOST_SURFACE.has(request))).toBe(true)
   })
 
+  // The store falls back to the window's own socket when the agent in view leaves the account.
+  it("falls back to the window socket's agent when the agent in view leaves the account", async () => {
+    const agents = [ALPHA, BETA]
+    dashboardHost({ agents })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    $connection.set(await desktop.getConnectionFor!({ connectionId: 'beta' }))
+
+    agents.splice(1, 1)
+    await desktop.connections!.list()
+
+    // `$connection` still names Beta until the fallback publishes Alpha's descriptor.
+    expect(await desktop.getConnection('default')).toMatchObject({ connectionId: 'alpha', profile: 'default' })
+    expect(await desktop.api({ path: '/api/config' })).toEqual({ from: 'alpha', path: '/api/config' })
+    expect(dialed(await desktop.getGatewayWsUrlFor!({ connectionId: 'local' })).pathname).toBe('/api/relay/alpha/api/ws')
+  })
+
+  it('reopens on the next agent in the list when the one the window socket opened on leaves it', async () => {
+    const agents = [ALPHA, BETA]
+    dashboardHost({ agents })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+
+    agents.splice(0, 1)
+    await desktop.connections!.list()
+
+    expect(dialed(await desktop.getGatewayWsUrl()).pathname).toBe('/api/relay/beta/api/ws')
+    expect((await desktop.getConnection()).connectionId).toBe('beta')
+  })
+
   it('routes only the profiles the agent has', async () => {
     dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] } })
     const routes = await install().getProfileRoutes!(['research', 'deleted', ''])

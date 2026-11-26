@@ -34,20 +34,43 @@ const named = (connectionId?: null | string) =>
   connectionId && connectionId !== LOCAL_CONNECTION_ID ? connectionId : undefined
 
 export function createHostedRoute({ relays, windowAgent }: HostedRouteOptions): HostedRoute {
-  let pinned: null | Promise<string> = null
+  let pinned: string | undefined
 
-  const knownAgentFor = (connectionId?: null | string) =>
-    named(connectionId) ?? named(windowAgent()) ?? relays.knownWindowConnection()
+  // A candidate counts only while the account still lists it: an agent that left the list is
+  // refused by the relay, so the next rung answers instead.
+  const listed = (connectionId?: null | string) => {
+    const id = named(connectionId)
 
-  // The first bare dial pins the agent it opened on; a failed read pins nothing.
-  const home = () =>
-    (pinned ??= relays.windowConnection().catch(error => {
-      pinned = null
-      throw error
-    }))
+    return id && relays.gateway(id) ? id : undefined
+  }
+
+  // The window's own socket: the agent it opened on while listed, else the list's primary (or
+  // first), which the next dial opens on and so becomes the pin.
+  const knownHome = () => listed(pinned) ?? relays.knownWindowConnection()
+
+  const home = async () => {
+    pinned = listed(pinned) ?? (await relays.windowConnection())
+
+    return pinned
+  }
+
+  // No connection (or `local`): the agent boot or the last switch published while listed, else the
+  // window's own socket's.
+  const knownAgentFor = (connectionId?: null | string) => named(connectionId) ?? listed(windowAgent()) ?? knownHome()
 
   return {
-    agentFor: async connectionId => knownAgentFor(connectionId) ?? (await relays.windowConnection()),
+    agentFor: async connectionId => {
+      const id = named(connectionId)
+
+      if (id) {
+        return id
+      }
+
+      // Read the list once, so every rung is checked against it.
+      await relays.windowConnection()
+
+      return listed(windowAgent()) ?? home()
+    },
     home,
     knownAgentFor,
     relays

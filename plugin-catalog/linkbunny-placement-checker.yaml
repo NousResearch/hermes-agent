@@ -1,0 +1,16 @@
+name: linkbunny-placement-checker
+title: LinkBunny Placement Checker
+repo: https://github.com/hboon/linkbunny-placement-checker-hermes
+sha: 6639d3544bc850395bde33128883ab228924a10f
+description: Check a public page for a specific backlink and see its href, anchor text, and nofollow status.
+maintainer: hboon
+tier: community
+category: web
+version: "1.0.0"
+requires_hermes: ">=0.23.4"
+docs_url: https://getlinkbunny.com/tools/backlink-placement-checker
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

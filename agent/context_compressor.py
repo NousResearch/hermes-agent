@@ -4726,7 +4726,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return scan
 
         summary_idx, summary_body = summary_hits[-1]
-        if not self._previous_summary:
+        if not self._previous_summary or self._micro_marker_outdates_cache(messages, summary_hits):
             self._previous_summary = "\n\n".join(body for _, body in summary_hits if body) or self._previous_summary
         # Zero-user provenance (#64650) rides on the newest handoff hit.
         provenance = messages[summary_idx].get(COMPRESSED_SUMMARY_HAS_USER_TURN_KEY)

@@ -18,7 +18,7 @@ The invariants that matter:
   times and then skipped, so a poison exchange can't stall every turn.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -670,6 +670,50 @@ class TestMicroCompaction:
 
         assert cc._micro_compact_rolling_summary == ""
         assert cc._micro_compact_cursor == 0
+
+    def test_batch_compress_builds_on_what_a_micro_pass_absorbed(self):
+        """A batch pass after a micro pass summarizes from the micro marker.
+
+        One compressor serves many turns, so the summary the last batch pass
+        cached stays in memory. A later micro pass folds an exchange into the
+        transcript marker only, and the next batch pass drops that marker from
+        its window as already summarized. Seeding the summarizer from the
+        cache then loses what the micro pass absorbed; a resumed session,
+        which has no cache, keeps it. Regression for #160039.
+        """
+        cc = _compressor()
+        cc._micro_summarize_one = lambda text: cc._micro_compact_rolling_summary + (
+            "\nreleased sha deadbeef" if "deadbeef" in text else ""
+        )
+        prompts = []
+
+        def _summarizer(**kwargs):
+            prompts.append("\n".join(str(m.get("content")) for m in kwargs["messages"]))
+            response = MagicMock()
+            response.choices = [MagicMock()]
+            response.choices[0].message.content = "## Goal\nearlier work"
+            return response
+
+        with patch("agent.context_compressor.call_llm", side_effect=_summarizer):
+            msgs = cc.compress(_conversation(exchanges=8), force=True)
+            msgs += [
+                {"role": "user", "content": "ship the release"},
+                {"role": "assistant", "content": "Released at sha deadbeef. " + "z" * 400},
+            ]
+            msgs += _conversation(exchanges=6)[1:]
+            for _ in range(4):
+                msgs = cc._micro_compact(msgs)
+            # The release turn now lives only in the micro marker.
+            assert [
+                bool(m.get(COMPRESSED_SUMMARY_METADATA_KEY))
+                for m in msgs if "deadbeef" in str(m.get("content"))
+            ] == [True]
+
+            prompts.clear()
+            cc.compress(msgs + _conversation(exchanges=8)[1:], force=True)
+
+        assert len(prompts) == 1
+        assert "deadbeef" in prompts[0]
 
 
     def test_db_sync_passes_exact_carried_messages(self):

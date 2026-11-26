@@ -264,10 +264,10 @@ def test_user_bus_env_preserves_existing_own_runtime_dir_and_absent_bus(host, no
     assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
 
-@pytest.mark.parametrize("family", ["darwin", "win32"])
-def test_non_linux_backend_scan_skips_user_systemd_env(host, no_writes, monkeypatch, family):
+@pytest.mark.platforms("macos", "windows")
+def test_non_linux_backend_scan_skips_user_systemd_env(host, no_writes, monkeypatch):
     """macOS and Windows never call the Linux-only user-systemd env helper (which uses os.getuid())."""
-    monkeypatch.setattr(gmb, "os_family", lambda: family)
+    family = gmb.os_family()
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
     monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", list)

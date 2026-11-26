@@ -493,6 +493,7 @@ def test_dependency_block_requires_current_judged_parents(worker, monkeypatch, p
     from tools import kanban_tools
 
     tid = worker.context['task_id']
+    judged = []
     with connect_closing() as conn:
         parent = kb.create_task(conn, title='Produce source data', assignee='default')
         other = kb.create_task(conn, title='Review unrelated notes', assignee='default')
@@ -501,7 +502,7 @@ def test_dependency_block_requires_current_judged_parents(worker, monkeypatch, p
                 kb.link_tasks(conn, pid, tid, expected_child_run_id=worker.context['run_id'])
 
     def judge(goal, last_response):
-        assert parents != 'none', 'a dependency without an open parent must not reach the judge'
+        judged.append(last_response)
         assert parent in last_response and other in last_response
         if parents == 'finish_during_judge':
             with connect_closing() as conn:
@@ -510,6 +511,7 @@ def test_dependency_block_requires_current_judged_parents(worker, monkeypatch, p
 
     monkeypatch.setattr(kanban_tools, 'judge_goal', judge)
     response = json.loads(kanban_tools._handle_block({'kind': 'dependency', 'reason': f'Need source data from {parent}.'}))
+    assert len(judged) == (0 if parents == 'none' else 1)
     with connect_closing() as conn:
         task = kb.get_task(conn, tid)
         assert task is not None

@@ -54,14 +54,16 @@ _PLATFORMS = [
 ]
 
 
-def _all_platforms() -> list[dict]:
+def _all_platforms(catalog: bool = False) -> list[dict]:
     """Built-in ``_PLATFORMS`` plus registry plugin platforms (same dict shape, source in
     ``_registry_entry``). Plugins are discovered here (idempotent) so the setup menu works without a
     running gateway; user-installed ones still need ``plugins.enabled`` (untrusted code). Matrix is
-    hidden on Windows: python-olm has no wheel or native build (use WSL)."""
+    hidden on Windows: python-olm has no wheel or native build (use WSL). ``catalog`` (the pick menus)
+    appends the catalog platforms nothing loaded provides yet (``_catalog_platform``): picking one
+    installs it first. Status summaries leave it off: a row that is not installed is no progress."""
     try:
-        from hermes_cli.plugins import discover_plugins
-        discover_plugins()
+        from hermes_cli.catalog_platform_listing import refresh_platform_plugins
+        refresh_platform_plugins()  # a plugin installed since the menu last drew (background default install)
     except Exception as e:
         _gw().logger.debug("plugin discovery failed during platform enumeration: %s", e)
 
@@ -77,16 +79,32 @@ def _all_platforms() -> list[dict]:
     for entry in platform_registry.all_entries():
         if entry.name in by_key or (hide_matrix and entry.name == "matrix"):
             continue
-        platforms.append({
-            "key": entry.name, "label": entry.label, "emoji": entry.emoji,
-            "token_var": entry.required_env[0] if entry.required_env else "",
-            "install_hint": entry.install_hint, "_registry_entry": entry,
-        })
+        platforms.append(_registry_row(entry))
+    if catalog:
+        from hermes_cli.catalog_platform_listing import available_catalog_platforms
+        provided = {name for p in platforms for name in (p["key"], getattr(p.get("_registry_entry"), "plugin_name", ""))}
+        platforms += [{"key": row.name, "label": row.title, "emoji": "📦", "token_var": "", "_catalog_platform": row}
+                      for row in available_catalog_platforms(provided)]
     return platforms
+
+
+def _registry_row(entry) -> dict:
+    return {
+        "key": entry.name, "label": entry.label, "emoji": entry.emoji,
+        "token_var": entry.required_env[0] if entry.required_env else "",
+        "install_hint": entry.install_hint, "_registry_entry": entry,
+    }
+
+
+def _catalog_status(row) -> str:
+    status = f"not installed · {row.badge}"
+    return status if not row.blocked else f"{status} · cannot install here"
 
 
 def _platform_status(platform: dict) -> str:
     """Plain-text status string; uncolored because ANSI codes break curses menu width math."""
+    if (row := platform.get("_catalog_platform")) is not None:
+        return _catalog_status(row)
     entry = platform.get("_registry_entry")
     if entry is not None:
         # Prefer is_connected (env + config.yaml) over check_fn (a coarse deps gate). Never fall back
@@ -332,7 +350,12 @@ def _builtin_setup_fn(key: str):
 
 def _configure_platform(platform: dict) -> None:
     """Plugin ``setup_fn`` -> built-in by key -> ``_setup_standard_platform`` (``vars``) -> env-var hint.
-    Bundled plugins auto-load; user plugins must already be in ``plugins.enabled``."""
+    Bundled plugins auto-load; user plugins must already be in ``plugins.enabled``. A catalog row
+    installs its plugin first (:func:`_install_catalog_pick`), then configures what it registered."""
+    if (row := platform.get("_catalog_platform")) is not None:
+        for installed in _install_catalog_pick(row):
+            _configure_platform(installed)
+        return
     entry = platform.get("_registry_entry")
     fn = entry.setup_fn if entry is not None else None
     if fn is None:
@@ -353,6 +376,39 @@ def _configure_platform(platform: dict) -> None:
         _gw().print_info(f"  Configure {label} in config.yaml under gateway.platforms.{platform['key']}")
     if platform.get("install_hint"):
         _gw().print_info(f"  {platform['install_hint']}")
+
+
+def _install_catalog_pick(row) -> list[dict]:
+    """Say what a catalog platform is, install it on a yes and return the setup rows of the platforms
+    it registered. Blocked or failed: the reason and the one command to run, and nothing to configure."""
+    from hermes_cli.catalog_platform_listing import BLOCKED_SENTENCES, install_catalog_platform
+    from gateway.platform_registry import platform_registry
+    print_setup_header(f"📦 {row.title}")
+    _gw().print_info(f"  {row.summary}")
+    if row.disclosure:
+        _gw().print_info(f"  Disclosure: {row.disclosure}")
+    if row.blocked:
+        _gw().print_warning(f"  {row.title} is not installed. {BLOCKED_SENTENCES[row.blocked]}")
+        _gw().print_info(f"  Install it with: {row.install_command}")
+        return []
+    question = f"  {row.title} is a plugin from the Hermes catalog. Install and enable it now?"
+    if not _gw().prompt_yes_no(question, True):
+        _gw().print_info(f"  Skipped. Install it later with: {row.install_command}")
+        return []
+    _gw().print_info(f"  Installing '{row.name}' from the plugin catalog...")
+    result = install_catalog_platform(row.name)
+    if not result["ok"]:
+        _gw().print_error(f"  Could not install '{row.name}': {result['error']}")
+        _gw().print_info(f"  Install it with: {result['install_command'] or row.install_command}")
+        return []
+    done = "is already installed and enabled" if result.get("already_installed") else "is installed and enabled"
+    _gw().print_success(f"  The '{result['plugin_name']}' plugin {done}.")
+    for warning in result.get("warnings") or ():
+        _gw().print_warning(f"  {warning}")
+    rows = [_registry_row(entry) for key in result["platforms"] if (entry := platform_registry.get(key)) is not None]
+    if not rows:
+        _gw().print_info("  It registered no messaging platform in this process; run 'hermes gateway setup' again.")
+    return rows
 
 
 def _wizard_offer_service_action(action: str, question: str, failed_label: str, **kwargs) -> None:
@@ -445,7 +501,7 @@ def _wizard_platform_loop() -> None:
         print()
         _gw().print_header("Messaging Platforms")
 
-        platforms = _gw()._all_platforms()
+        platforms = _gw()._all_platforms(catalog=True)
         menu_items = [f"{p['emoji']} {p['label']}  ({_platform_status(p)})" for p in platforms] + ["Done"]
         choice = _gw().prompt_choice("Select a platform to configure:", menu_items, len(menu_items) - 1)
         if choice == len(platforms):

@@ -24,9 +24,11 @@ import {
   approvePairing,
   getMessagingPlatforms,
   getPairing,
+  type MessagingCatalogPlatform,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
+  type MessagingPlatformUpdateResponse,
   type PairingUser,
   revokePairing,
   type TelegramOnboardingApplyResponse,
@@ -59,6 +61,15 @@ import { useSettingsPagesCopy } from '../settings/settings-pages-copy'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
+import {
+  type CatalogInstallHandlers,
+  CatalogPlatformDetail,
+  CatalogPlatformList,
+  catalogRowId,
+  catalogRowsWithKept,
+  visibleCatalogRows
+} from './catalog-platforms'
+import { appliedLive, needsCredentials, optimisticToggleState, restartPendingAfter, restartReason } from './live-apply'
 import { PlatformAvatar } from './platform-icon'
 import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
@@ -322,10 +333,18 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // An agent page restarts (and watches) its owner's messaging gateway; classic keeps the active one.
   const restartProfile = pinnedOwner?.profile
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+  // Catalog platforms this profile has not installed: picking one installs it, then its card takes over.
+  const [available, setAvailable] = useState<MessagingCatalogPlatform[]>([])
+  // A catalog row stays listed only while this page's install of it runs: the plugin lands on disk (and the
+  // platforms.changed refresh drops the row) before the install call returns with the card to open. A row
+  // installed elsewhere (background default install, another terminal) leaves with the refreshed list.
+  const [keptCatalog, setKeptCatalog] = useState<MessagingCatalogPlatform | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
   // actually happens (dashboard parity). Cleared on a completed restart.
   const [restartNeeded, setRestartNeeded] = useState(false)
+  // Platforms whose last save the running gateway could not apply (see restartPendingAfter).
+  const [restartPlatforms, setRestartPlatforms] = useState<ReadonlySet<string>>(() => new Set())
   const gatewayRestarting = useStore($gatewayRestarting)
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
@@ -340,7 +359,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [statusFilter, setStatusFilter] = useState<'all' | StatusTone>('all')
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
-  const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
+
+  const platformIds = useMemo(() => {
+    const catalogIds = catalogRowsWithKept(available, keptCatalog).map(catalogRowId)
+
+    return [...(platforms?.map(p => p.id) ?? []), ...new Set(catalogIds)]
+  }, [available, keptCatalog, platforms])
+
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
   const restartGatewayNow = useCallback(async () => {
@@ -350,20 +375,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     if (ok) {
       setRestartNeeded(false)
+      setRestartPlatforms(new Set())
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
   }, [restartProfile])
 
-  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
-  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
-  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
-    if (hotServed) {
+  // The running gateway applied the save itself (any profile): no restart banner; re-read status once
+  // the adapter had a moment to connect. Only a gateway that could not (or an older one) needs a restart.
+  const settleAfterUpdate = useCallback((platformId: string, result: MessagingPlatformUpdateResponse) => {
+    setRestartPlatforms(pending => restartPendingAfter(pending, platformId, result))
+
+    if (appliedLive(result)) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
-
-      return
     }
-
-    setRestartNeeded(true)
   }, [])
 
   // The scope each in-flight fetch was issued for. A→B: A's request can resolve
@@ -385,6 +409,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
         if (scopeRef.current === scopeProfile) {
           setPlatforms(result.platforms)
+          setAvailable(result.available ?? [])
         }
       } catch (err) {
         if (!silent) {
@@ -449,6 +474,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   if (prevScope !== scopeProfile) {
     setPrevScope(scopeProfile)
     setPlatforms(null)
+    setAvailable([])
+    setKeptCatalog(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
   }
@@ -502,13 +529,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [changeEventsAvailable, refreshAll])
 
+  const selectedCatalog = useMemo(
+    () =>
+      catalogRowsWithKept(available, keptCatalog).find(row => catalogRowId(row) === selectedId) ?? null,
+    [available, keptCatalog, selectedId]
+  )
+
   const selected = useMemo(() => {
-    if (!platforms) {
+    if (!platforms || selectedCatalog) {
       return null
     }
 
     return platforms.find(platform => platform.id === selectedId) || platforms[0] || null
-  }, [platforms, selectedId])
+  }, [platforms, selectedCatalog, selectedId])
 
   const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
   const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
@@ -526,6 +559,46 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     () => platforms?.filter(platform => platformMatches(platform, activeStatusFilter, query)) ?? [],
     [activeStatusFilter, platforms, query]
   )
+
+  const visibleAvailable = useMemo(
+    () => visibleCatalogRows(available, query, activeStatusFilter),
+    [activeStatusFilter, available, query]
+  )
+
+  // An install from this page: re-read the list (the plugin's card replaces its catalog row) and open
+  // the card it registered, whose credential form is what the user picked the row for. Only while the
+  // page still shows that row under the same profile: a newer pick, a profile switch or leaving
+  // Messaging wins over an install that finishes late. One owner object per mount, updated in place, so
+  // the unmount below marks the very object a late completion reads.
+  const ownerRef = useRef({ mounted: true, profile: scopeProfile, selectedId })
+  ownerRef.current.profile = scopeProfile
+  ownerRef.current.selectedId = selectedId
+  useEffect(() => {
+    const owner = ownerRef.current
+    owner.mounted = true
+
+    return () => {
+      owner.mounted = false
+    }
+  }, [])
+
+  const catalogInstall: CatalogInstallHandlers = {
+    onInstallStart: row => setKeptCatalog(row),
+    onInstallEnd: row => setKeptCatalog(kept => (kept?.name === row.name ? null : kept)),
+    onInstalled: async (row, platformIdsAdded, profile) => {
+      const samePage = () => ownerRef.current.mounted && ownerRef.current.profile === profile
+
+      if (!samePage()) {
+        return
+      }
+
+      await refreshPlatforms(true)
+
+      if (platformIdsAdded[0] && samePage() && ownerRef.current.selectedId === catalogRowId(row)) {
+        setSelectedId(platformIdsAdded[0])
+      }
+    }
+  }
 
   // Picking a filter moves the detail pane into it. Only on that click: a
   // platform that leaves the filter because you just enabled it stays open.
@@ -553,16 +626,20 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               ? {
                   ...row,
                   enabled,
-                  state: enabled ? (row.configured ? 'pending_restart' : 'not_configured') : 'disabled'
+                  state: optimisticToggleState(enabled, row.configured, result)
                 }
               : row
           ) ?? current
       )
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: result.hot_served ? m.appliedLive : m.restartToApply
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.appliedLive
+            : restartReason(result, m.restartToApply)
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -585,11 +662,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
       setEdits(current => ({ ...current, [platform.id]: {} }))
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: result.hot_served ? m.connectingLive : m.restartToReconnect
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.connectingLive
+            : restartReason(result, m.restartToReconnect)
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -611,7 +692,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
@@ -729,13 +810,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     />
   )
 
-  const restartNotice = restartNeeded && (
+  const restartNotice = (restartNeeded || restartPlatforms.size > 0) && (
     <RestartNotice onRestart={() => void restartGatewayNow()} restarting={gatewayRestarting} />
   )
 
   const platformContent = (
     <>
       {restartNotice}
+      {selectedCatalog && (
+        <CatalogPlatformDetail {...catalogInstall} row={selectedCatalog} scopeProfile={scopeProfile} />
+      )}
       {selected && (
         <PlatformDetail
           approved={approvedByPlatform[selected.id] ?? []}
@@ -833,6 +917,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     </li>
                   ))}
                 </ul>
+                <CatalogPlatformList
+                  activeName={selectedCatalog?.name}
+                  onSelect={row => setSelectedId(catalogRowId(row))}
+                  rows={visibleAvailable}
+                  title={<SectionTitle>{m.catalog.sectionTitle}</SectionTitle>}
+                />
               </ListColumn>
 
               <DetailColumn actionBar={platformActions}>{platformContent}</DetailColumn>

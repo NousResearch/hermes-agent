@@ -1,0 +1,16 @@
+name: z0live
+repo: https://github.com/kvnloo/z0live
+sha: 23a89749d286ad04c0a67d3c6e588c9c286921b6
+version: "0.2.0"
+description: "z0live is a self-hosted realtime voice stack that runs beside Hermes: GPT-Live or Grok Voice as the voice, a second voice that answers when called by name (the plugin switches it between Grok and off; a GPT-Live guest on another Hermes profile is set in the stack's own voices.json), and fast/medium/slow model lanes that answer while Hermes works. The repo is the plugin; GPL-3.0-only. z0live_status reports the engine for the next call, the second voice, the lane models, lane server health and a summary of the latest call's event trace (read only). z0live_configure sets the engine (gpt-live or grok), the second voice (grok or off) and the tier models. z0live_lanes and /z0live-lanes show or change the helper-lane board in plain words. z0live_say sends a fixed stock progress line (no free text) to the live call linked to the requesting session, over a loopback endpoint with a shared token read through get_secret. Disclosure — the plugin's tools read z0live's local files (lanes config, tier and voice overrides, call traces), write only those override files and the lanes board, make one loopback GET to z0live's lane server and one loopback POST for z0live_say, and may run the plugin's own `bin/z0live engine`; the plugin itself sends nothing off the machine and reads only its own optional Z0LIVE_PROGRESS_TOKEN through get_secret. The separately installed voice stack streams call audio and context to OpenAI or xAI (xAI with the XAI_API_KEY from its own service env), reuses the host Codex login in ~/.codex/auth.json (read-only) with Codex Desktop client headers against chatgpt.com, reads every local Hermes profile's state.db read-only, can steer or submit prompts into your Hermes sessions through the gateway, runs local CLIs (ctx, git, gh, hermes) with its service environment, and with Passthru on (the default; `Z0LIVE_PASSTHRU=off` turns it off) joins your video meetings on a spoken command in a headless browser with private-network and CSP checks off, using links read over adb from your phone's calendar, notifications and screen, hearing participants, speaking into the meeting and, on request, sharing the phone screen."
+maintainer: kvnloo
+tier: community
+category: voice
+docs_url: https://github.com/kvnloo/z0live/blob/23a89749d286ad04c0a67d3c6e588c9c286921b6/README.md
+requires_hermes: ">=0.21.5"
+platforms: []
+capabilities:
+  provides_tools: [z0live_status, z0live_configure, z0live_lanes, z0live_say]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

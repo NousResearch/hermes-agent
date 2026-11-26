@@ -1,0 +1,20 @@
+name: tarkle
+title: Tarkle
+repo: https://github.com/tarkleHQ/tarkle-mcp-server
+sha: 51980d469bf015247cac23fead6efe508e14812c
+version: "1.1.1"
+description: "Upload, manage and share your business files through Tarkle's official MCP server (Streamable HTTP at https://mcp.tarkle.tech/mcp, OAuth 2.1 sign-in with a Tarkle account, no API key): upload, store and organize your team's files and folders, share files with a link, and request documents from your team, clients and partners on your own domain. Bundles one skill, tarkle, and an after-install note. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Sign-in: run `hermes mcp add tarkle --url https://mcp.tarkle.tech/mcp --auth oauth` once, then `hermes config set mcp_servers.tarkle.trust untrusted` (both shown after install), since a portable mcp.json entry cannot turn on OAuth and the native entry replaces the package's trust setting. Disclosure — hosted-only connector with no local code; every tool call goes to mcp.tarkle.tech (closed-source server), which acts as the signed-in person within their role in each workspace. Share links and file requests are public links; the server asks for confirmation before creating them, moving files to the recovery bin or changing workspace settings, members, invitations, domains or portal access. The package marks the server untrusted, so Hermes asks before any tool that is not annotated read-only. Hermes stores and refreshes the OAuth tokens. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: tarkleHQ
+tier: community
+category: tools
+docs_url: https://tarkle.tech/docs/mcp
+requires_hermes: ">=0.23.4"
+readme: true
+platforms: []
+known_issues:
+  - "Sign-in needs `hermes mcp add tarkle --url https://mcp.tarkle.tech/mcp --auth oauth` after install, then `hermes config set mcp_servers.tarkle.trust untrusted` to keep write approvals."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

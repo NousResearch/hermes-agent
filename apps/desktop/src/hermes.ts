@@ -82,6 +82,8 @@ export type {
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
+  MessagingCatalogInstallResponse,
+  MessagingCatalogPlatform,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,

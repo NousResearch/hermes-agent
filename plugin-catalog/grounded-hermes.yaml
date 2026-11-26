@@ -1,0 +1,26 @@
+name: grounded-hermes
+title: Grounded Hermes
+repo: https://github.com/cygnostik/grounded-hermes
+sha: b4c143e5dc3292dac5cffd095efb584312ee4984
+description: "Compare news coverage in Hermes. See bias, blind spots, publisher ratings, and shared wire reports. Disclosure — unofficial, not affiliated with Ground News. Searches, story IDs and publisher article URLs you look up are sent to Ground News's public web and browser-extension endpoints (web-api-cdn.ground.news, extension.ground.news, production.checkitt.news, ground.news), which are not a published API and whose terms restrict automated access; publisher pages open in a sandboxed Desktop frame or your browser. Responses are cached in a local SQLite database at ~/.cache/ground-news (or $XDG_CACHE_HOME/ground-news or GROUND_NEWS_CACHE_DIR), shared by every Hermes profile and the bundled CLI."
+maintainer: cygnostik
+tier: community
+category: desktop
+requires_hermes: ">=0.23.4"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/cygnostik/grounded-hermes/b4c143e5dc3292dac5cffd095efb584312ee4984/docs/images/please-stand-by.jpg
+screenshots:
+  - https://raw.githubusercontent.com/cygnostik/grounded-hermes/b4c143e5dc3292dac5cffd095efb584312ee4984/docs/images/coverage-reader.png
+  - https://raw.githubusercontent.com/cygnostik/grounded-hermes/b4c143e5dc3292dac5cffd095efb584312ee4984/docs/images/chat-pane.png
+capabilities:
+  provides_tools:
+    - ground_news_search
+    - ground_news_story
+    - ground_news_lookup
+    - ground_news_wire_reports
+    - ground_news_feed
+    - ground_news_cache
+    - ground_news_blindspots
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

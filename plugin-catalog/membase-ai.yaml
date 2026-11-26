@@ -1,0 +1,19 @@
+name: membase-ai
+repo: https://github.com/membaseai/membase
+sha: fc276f5d65ecd807155f5d65339961aa3e528c1a
+subdir: integrations/hermes
+title: Membase
+description: "Long-term memory for you and your AI from Membase (membase.com): one memory every connected AI shares. Searches the user's Membase memory before each turn (8 s, fail-open) and adds membase_search, membase_search_media, membase_save and membase_profile; when the key reaches a media Memory, recall also returns what matching photos and videos show or say. Formerly listed as unibaseio-membase. Disclosure — user prompts are sent as search queries to the Membase API (api.app.membase.com), and as a photo and video query when the key reaches a media Memory; with the opt-in capture_turns setting the user's messages are saved there too; on a Hermes build with memory.user_store: provider, what Hermes' memory tool records about the user is saved to their Membase profile instead of USER.md. MEMBASE_API_KEY comes from the Hermes secret scope; the only local file is $HERMES_HOME/membase-ai.json (the former $HERMES_HOME/unibaseio-membase.json is read while membase-ai.json does not exist). No background processes, shell commands or telemetry."
+maintainer: membaseai
+tier: community
+category: memory
+requires_hermes: ">=0.22.2"
+version: "0.5.0"
+docs_url: https://github.com/membaseai/membase/tree/main/integrations/hermes#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MEMBASE_API_KEY

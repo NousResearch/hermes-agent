@@ -1,14 +1,14 @@
 name: air-agent-kya
 title: AIR Agent KYA
 repo: https://github.com/air3Network/air-agent-hermes
-sha: "a53103df6929397b9abf9b01bc874df0a2b7357d"
-description: "Know-Your-Agent with AIR: you delegate your AIR identity to Hermes once in the AIR Console (`hermes air login`, device code, P-256 agent key, credentials.verify scope, no wallet signing); the kya_visit tool then enters KYA stores that publish /.well-known/air-kya, gets a one-time SD-JWT presentation from AIR that discloses only the claims the store requests (e.g. membership tier), and returns the catalog that credential unlocks; agents that aren't delegated get the store's public catalog. Disclosure — network calls to the AIR Console (sandbox.agents.air3.com, during login only), the AIR API (air.api.sandbox.air3.com) and AIR credential API (credential-testnet.api.sandbox.air3.com), and to each KYA site the agent visits (https only, plain http allowed for localhost); stores a P-256 agent private key and the AIR delegation bundle in its own plugin-data directory with mode 0600, removed by `hermes air logout`; on first run after the rename it reads the old air-kya plugin-data directory once to carry a delegation over; a live kya_visit asks for approval through Hermes's approval gate before any claim is disclosed and sends the presentation only to the origin that issued the nonce; the model never sees the presentation, key or tokens; endpoints are plugin settings, no secrets or env vars read; no shell, subprocess, background thread or telemetry."
+sha: "f84e1350c80f25ce04978d5116c2bfdb6ee14fc0"
+description: "Know-Your-Agent with AIR: you delegate your AIR identity to Hermes once in the AIR Console (`hermes air login`, device code, P-256 agent key, credentials.verify scope, no wallet signing); the kya_visit tool then enters KYA stores that publish /.well-known/air-kya, gets a one-time SD-JWT presentation from AIR that discloses only the claims the store requests (e.g. membership tier), and returns the catalog that credential unlocks; agents that aren't delegated get the store's public catalog. Disclosure — network calls to the AIR Console (sandbox.agents.air3.com, during login only), the AIR API (air.api.sandbox.air3.com) and AIR credential API (credential-testnet.api.sandbox.air3.com), with endpoint overrides limited to https air3.com hosts, and to each KYA site the agent visits (https only, plain http allowed for localhost), including one read of the site's /.well-known/air-kya before the approval prompt; stores a P-256 agent private key and the AIR delegation bundle in its own plugin-data directory with mode 0600, removed by `hermes air logout`; on first run after the rename it moves a delegation from the old air-kya plugin-data directory once and deletes the old copy; a live kya_visit asks for approval through Hermes's approval gate naming the site and the exact fields before any claim is disclosed (\"always\" covers only those exact terms) and sends the presentation only to the origin that issued the nonce; the model never sees the presentation, key or tokens; endpoints are plugin settings, no secrets or env vars read; no shell, subprocess, background thread or telemetry."
 maintainer: Air3 Network
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/air3Network/air-agent-hermes#readme
-version: "0.1.3"
+version: "0.1.4"
 readme: true
 platforms: []
 known_issues:

@@ -20,11 +20,11 @@ import re
 import sys
 import threading
 import types
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
 
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
@@ -1060,6 +1060,15 @@ def has_hook(hook_name: str) -> bool:
     Lazy-discovers first — same gate-before-invoke rationale as :func:`has_middleware` (tracking #64178).
     """
     return _delivery_manager().has_hook(hook_name)
+
+
+@contextmanager
+def settled_plugin_registrations() -> Iterator[None]:
+    """Hold this home's plugin discovery lock, so registrations read inside are never a force reload's
+    midpoint (it unregisters every plugin's platforms and tools first, then re-registers them as it loads
+    each plugin). Blocking: waits out a sweep in flight, so never call it on an event loop."""
+    with get_plugin_manager()._discovery_lock:
+        yield
 
 
 def _loaded_registry_nowait(check: Callable[[PluginManager], bool]) -> bool:

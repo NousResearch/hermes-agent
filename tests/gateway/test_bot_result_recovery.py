@@ -205,7 +205,7 @@ def test_gateway_startup_skips_bot_recovery_when_the_mailbox_dir_is_unusable(tmp
     ``start_gateway``; the log names the dir, its owner and the remedy."""
     import asyncio
     import logging
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     root = _deny_mailbox_lock(monkeypatch, tmp_path)
     db = open_persistence(profile_scope(home=tmp_path))
     try:
@@ -218,7 +218,7 @@ def test_gateway_startup_skips_bot_recovery_when_the_mailbox_dir_is_unusable(tmp
 
         monkeypatch.setattr(run_api, 'start_gateway_api', api)
         with caplog.at_level(logging.DEBUG):
-            asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+            asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
         assert runner.session_runtime_descriptor['api_origin'] == 'http://127.0.0.1:1'
         warnings = [r.getMessage() for r in caplog.records
                     if r.levelno == logging.WARNING and 'not usable by this process' in r.getMessage()]

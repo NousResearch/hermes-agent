@@ -1,0 +1,22 @@
+name: arana
+title: Arana
+repo: https://github.com/mevarx/Arana
+sha: ff5af1d59792d2b892bbd6f572f71da7fba2f289
+description: "Read-only internet research for agents. The portable package ships a skill for the installed Arana CLI (14 channels, 40 read-only actions) and a local stdio MCP server with four public web tools: list_capabilities, read_url, read_many and search. Disclosure — the MCP server is the separately installed Arana CLI (`arana mcp` on PATH), which the plugin does not bundle or download and which is not covered by the pinned sha; install the official GitHub release and verify its SHA-256 sidecar first. Pages you read are fetched through r.jina.ai and searches run through Exa's public MCP endpoint (mcp.exa.ai), so the URLs and queries you send go to those services; send only public URLs and queries. The public MCP tools need no login, credentials, browser profile, install, update or write action. The standalone CLI also has login workflows, optional tool installs (`arana update`) and browser-assisted actions outside the MCP allowlist, used only on explicit operator direction through Hermes' terminal. No telemetry. The plugin does not update itself."
+maintainer: mevarx
+tier: community
+category: web
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/mevarx/Arana/blob/ff5af1d59792d2b892bbd6f572f71da7fba2f289/README.md
+version: "0.3.3"
+image: https://raw.githubusercontent.com/mevarx/Arana/ff5af1d59792d2b892bbd6f572f71da7fba2f289/assets/arana-banner.png
+readme: true
+platforms: [linux, macos, windows]
+known_issues:
+  - Requires the separately installed Arana CLI; GUI hosts may need an absolute binary path.
+  - Live 40-action platform acceptance is not met; public MCP and offline gates are covered.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

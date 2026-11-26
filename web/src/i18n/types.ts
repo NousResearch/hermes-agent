@@ -952,4 +952,19 @@ export interface Translations {
       confirmManyTitle?: string;
     };
   };
+
+  // ── Channels page: catalog platforms not installed yet ──
+  channelsCatalog: {
+    title: string;
+    hint: string;
+    badgeOfficial: string;
+    badgeVerified: string;
+    disclosure: string;
+    lazyInstallsOff: string;
+    run: string;
+    install: string;
+    installing: string;
+    installed: (title: string) => string;
+    installFailed: (title: string) => string;
+  };
 }

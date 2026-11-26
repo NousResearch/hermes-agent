@@ -948,6 +948,7 @@ class TestSecretFileReadRedaction:
             self.matches = matches
             self.files = []
             self.counts = {}
+            self.total_count = len(matches)
 
         def to_dict(self, densify=False):
             return {
@@ -1002,6 +1003,7 @@ class TestSecretFileReadRedaction:
         ops = MagicMock()
         ops.search.return_value = self._SearchResult(
             [self._Match(str(config), f"      ADS_API_TOKEN: {self.SYNTH}")])
+        ops.hidden_match_counts.return_value = None
         mock_get.return_value = ops
 
         from tools.file_tools import search_tool

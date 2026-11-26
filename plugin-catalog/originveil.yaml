@@ -1,0 +1,21 @@
+name: originveil
+repo: https://github.com/alpinsh/originveil
+sha: 366aa609fe93ca15e9098f71a3938b5707ba82c8
+description: "Audits whether a Cloudflare-proxied origin server can be found or reached directly (DNS leaks, MX/SPF, certificate match, direct reach, webserver and firewall config) and explains fixes. Only domains you verify by a DNS TXT record or list in its config can be audited, and origin IPs are redacted before results reach the model. Disclosure — audits only domains you list in its config file or prove you control with a DNS TXT record; calls the Cloudflare API (/ips, plus zone and DNS reads when the optional ORIGINVEIL_CF_TOKEN secret or a token file named in its config is set) and Cloudflare DNS-over-HTTPS when dig is missing; makes DNS lookups and HTTPS requests to the audited domains and opens direct TCP connections on ports 80 and 443 to the public IPs their A, AAAA, MX and SPF records point at (which can include third-party mail hosts); runs its bundled CLI, which calls dig and ip and, if you configure a vantage host, connects to it over ssh with your SSH agent and runs a bundled probe script there with python3; reads /etc/originveil/config.toml or ~/.config/originveil/config.toml and report.redacted.json in report_dir; stores verified domains in plugin state. No hooks, no background processes, no telemetry; the optional root timer is installed by you with the CLI, not by the plugin."
+maintainer: alpinsh
+tier: community
+category: tools
+requires_hermes: ">=0.23.4"
+docs_url: https://github.com/alpinsh/originveil#readme
+version: "0.1.2"
+capabilities:
+  provides_tools:
+  - originveil_audit
+  - originveil_last_report
+  - originveil_add_domain
+  - originveil_verify_domain
+  - originveil_list_domains
+  - originveil_remove_domain
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

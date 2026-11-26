@@ -7,7 +7,7 @@ import { bundleIdentity, shouldVerifyMacDmg, verifyBundleStamp, verifyMacDmg, ve
 import { stampAssertions } from '../tests/install/e2e-assets/mac-bundled-manifest.cjs'
 import { randomBytes } from 'node:crypto'
 import { buildStampPayload } from '../apps/desktop/scripts/write-build-stamp.mjs'
-import { releaseVersion } from '../scripts/msix-shared.mjs'
+import { channelBuildRequest, releaseVersion } from '../scripts/msix-shared.mjs'
 
 const commit = 'a'.repeat(40)
 
@@ -111,6 +111,35 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
     }
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
 }, 15_000)
+
+test.skipIf(process.platform === 'win32')('channel admission validates each distinct request once and re-checks every rejection', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-admit-'))
+  try {
+    const log = path.join(temp, 'calls'), python = path.join(temp, 'python')
+    const quote = value => `'${value.replaceAll("'", "'\\''")}'`
+    fs.writeFileSync(python, `#!/bin/sh\necho x >> ${quote(log)}\nexec ${quote(process.env.HERMES_PYTHON || 'python')} "$@"\n`,
+      { mode: 0o755 })
+    const calls = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0
+    const token = randomBytes(8).toString('hex')
+    const request = { schema: 1, buildId: randomBytes(16).toString('hex'), channel: `smoke-${token}`,
+      repository: 'NousResearch/hermes-agent', publicBase: 'https://releases.example.test', commit,
+      sourceVersion: '1.2.3', sequence: 1, version: '0.0.1', windowsVersion: '0.0.1.0', bundleEnv: {},
+      identity: { token, displayName: 'Smoke Channel', appId: `com.example.preview-${token}`,
+        appNamePascal: `Smoke${token}`, artifactNamePascal: `Artifact${token}`,
+        msixAppIdWithOrg: `Example.Smoke${token}`, cliName: `smoke-${token}`, windowsExecutableName: `smoke-${token}` } }
+    const admit = value => channelBuildRequest({ HERMES_PYTHON: python, HERMES_DESKTOP_VARIANT: 'bundled',
+      PATH: process.env.PATH, _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(value) })
+    expect(admit(request)).toEqual(request)
+    expect(admit(request)).toEqual(request)
+    expect(calls()).toBe(1)
+    const insecure = { ...request, publicBase: 'http://releases.example.test' }
+    expect(() => admit(insecure)).toThrow()
+    expect(() => admit(insecure)).toThrow()
+    expect(calls()).toBe(3)
+    expect(admit({ ...request, buildId: randomBytes(16).toString('hex') }).channel).toBe(request.channel)
+    expect(calls()).toBe(4)
+  } finally { fs.rmSync(temp, { recursive: true, force: true }) }
+})
 
 test('workspace admission rejects reuse and symlink escapes before creating anything outside runner temp', () => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-paths-')))

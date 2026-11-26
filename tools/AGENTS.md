@@ -145,10 +145,12 @@ it is never the first signal a live parent receives.
 
 ## Delegation (`tools/delegate_tool.py`)
 
-Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
-`background=true`, which returns a delegation id and re-enters the result via the async-delegation
-completion queue. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
-concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
+Spawns a subagent with isolated context + terminal session. A top-level model call returns a delegation id and
+re-enters the result via the async-delegation completion queue where the session can receive it and does not join
+inline (`delegation.gateway_mode`); elsewhere, or while the background pool is full, the parent waits for the
+summary (a model-sent `background` arg is ignored; direct Python callers default to synchronous). Shapes: single
+(`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`, concurrency capped by
+`delegation.max_concurrent_children`, default 10). A background batch returns as ONE
 completion by default; with `delegation.independent_completions` it is split into completion **units**
 (`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped
 task reports alone as it finishes. That variant's schema marks `group` required per task (`_build_dynamic_schema_overrides`)
@@ -157,7 +159,7 @@ so the model states the delivery choice in every call; the handler never enforce
 and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
 no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
-`delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
+`delegation.max_spawn_depth`, default 1). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, gateway_mode, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
 subagent_auto_approve, inherit_mcp_toolsets, max_iterations, backend, backends`. **Routes:** `delegation.backend` picks a
 delegation provider (`agent/delegation_provider.py`, `ctx.register_delegation_provider`; its settings live in
@@ -171,8 +173,8 @@ processes are killed at its teardown and their notices are suppressed in the par
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on
 the result as `orphaned_processes`, exited-but-never-read notify processes as `unread_completions` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Child kernels:** a child's `execute_code` kernels are keyed `<parent-owner>::child::<child-session-id>`, pinned against the `max_session_kernels` LRU cap while the child runs and disposed by `cleanup` (`code_kernel.shutdown_kernels_for_delegated_child`) — never let a finished child's kernel squat the cap. **output_schema:** a miss after the one retry keeps `status: completed` with the raw text in `summary` plus `schema_valid: false` / `schema_errors` / `schema_note` — never discard a child's result. **Durability:** background
-delegation is process-local; work that must survive restart uses `cronjob` or
-`terminal(background=True, notify_on_complete=True)`. `heartbeat=N` on the same spawn emits a `heartbeat` event (type on the completion queue; delta output only, `HEARTBEAT_MIN_SECONDS` floor, one daemon timer thread for all sessions in `process_registry.py::ProcessRegistry._heartbeat_loop`) — every surface that renders `watch_match` must render `heartbeat` (`process_registry_notifications.py`, `gateway/run.py::_drain_gateway_watch_events`, `tui_gateway/session_notifications.py::_DEDUP_EXTRA_FIELDS`). **Stop fan-out:** a turn's hard interrupt reaches only
+delegation is process-local; work that must survive restart uses `cronjob`
+(`terminal(background=True, persist_on_release=True)` survives only the session ending). `heartbeat=N` on the same spawn emits a `heartbeat` event (type on the completion queue; delta output only, `HEARTBEAT_MIN_SECONDS` floor, one daemon timer thread for all sessions in `process_registry.py::ProcessRegistry._heartbeat_loop`) — every surface that renders `watch_match` must render `heartbeat` (`process_registry_notifications.py`, `gateway/run.py::_drain_gateway_watch_events`, `tui_gateway/session_notifications.py::_DEDUP_EXTRA_FIELDS`). **Stop fan-out:** a turn's hard interrupt reaches only
 `_active_children`; background units are detached at dispatch and survive it on purpose (Teknium ruling: a
 background subagent, `/review` included, is independent of the chat that spawned it). Turn stops — Ctrl+C,
 Esc, the Desktop/TUI Stop button, a message that interrupts, `session.interrupt`, ACP `cancel` — never call

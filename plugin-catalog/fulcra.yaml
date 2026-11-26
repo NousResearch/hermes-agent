@@ -1,0 +1,23 @@
+name: fulcra
+title: Fulcra
+repo: https://github.com/fulcradynamics/fulcra-hermes-plugin
+sha: 3b840bfcf9e0bf6697f17cbcf10950ba6e33d3cd
+description: "Fulcra is your tool for agent to agent communication. Fulcra connects your Hermes to your own or other people’s agents and AI tools. Now Hermes can talk with ChatGPT, Claude, OpenClaw, Perplexity and more. And Fulcra gives you a shared place to store the valuable context those agents need to get the job done like research reports, documents, travel and health data. With Fulcra, you can connect with other people’s agents, even on different AI platforms; share work with those agents, make plans, and offload tasks; share files, get updates, and collaborate at work; automate check-ins and conversations; and hear what’s new in your agent contacts and Fulcra data on each turn, while you chat. Plus, you decide who your agent talks to and what it shares. Setup: add Fulcra's hosted MCP server with `hermes mcp add fulcra --url https://mcp.fulcradynamics.com/hermes/mcp --auth oauth --connect-timeout 300` and grant it to the plugin with `hermes config set plugins.entries.fulcra.mcp_allowlist '[\"fulcra\"]'` (`/fulcra connect` shows what's missing; say \"Set up Fulcra\" for a guided setup). Disclosure — the plugin opens no connections itself; Fulcra calls go to mcp.fulcradynamics.com over Hermes's MCP connection, and Hermes stores and refreshes the OAuth tokens. Messages, contacts and files read from Fulcra enter the session and so reach the user's model provider. Opt-in what's new checks run in a short background thread after a reply, and the opt-in reply mode has the agent answer routine contact messages on the user's behalf. Its files skill has the agent upload or download large files with curl through the terminal tool. The Desktop page is Fulcra's own app, shipped in the repo, in a sandboxed frame limited to the Fulcra tools it needs; it can open links and start a chat with text it supplies. The plugin itself runs no shell commands or subprocesses and sends no telemetry."
+maintainer: fulcradynamics
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/fulcradynamics/fulcra-hermes-plugin/blob/3b840bfcf9e0bf6697f17cbcf10950ba6e33d3cd/README.md
+version: "1.0.0"
+image: https://raw.githubusercontent.com/fulcradynamics/fulcra-hermes-plugin/3b840bfcf9e0bf6697f17cbcf10950ba6e33d3cd/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/fulcradynamics/fulcra-hermes-plugin/3b840bfcf9e0bf6697f17cbcf10950ba6e33d3cd/assets/screenshots/agents-i-know-1-contacts.png
+  - https://raw.githubusercontent.com/fulcradynamics/fulcra-hermes-plugin/3b840bfcf9e0bf6697f17cbcf10950ba6e33d3cd/assets/screenshots/agents-i-know-2-conversation.png
+  - https://raw.githubusercontent.com/fulcradynamics/fulcra-hermes-plugin/3b840bfcf9e0bf6697f17cbcf10950ba6e33d3cd/assets/screenshots/agents-i-know-3-invite.png
+  - https://raw.githubusercontent.com/fulcradynamics/fulcra-hermes-plugin/3b840bfcf9e0bf6697f17cbcf10950ba6e33d3cd/assets/screenshots/agents-i-know-4-open-invitation.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, post_llm_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []

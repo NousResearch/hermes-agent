@@ -851,10 +851,10 @@ _TOOL_DOC_LINES = [
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000)\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
+     "    Lines are 1-indexed. Returns {\"content\", \"text\" (no line numbers), \"total_lines\"}"),
     ("write_file", "  write_file(path: str, content: str)\n    Always overwrites the entire file; an existing file must be read_file'd first or the write is refused."),
     ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\")\n"
-     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
+     "    target=\"content\" returns {\"matches\": [{\"path\", \"line\", \"content\"}]}; target=\"files\" returns {\"files\": [path]}"),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False)"),
     ("terminal", "  terminal(command: str, timeout=None, workdir=None)\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),

@@ -148,6 +148,15 @@ interface DialContext {
   pinned: boolean
 }
 
+// The session a dial resolves with. A pinned shell also says where it runs, so a tab that named no
+// agent records it.
+function startedSession(state: TerminalState, pinned: boolean): HermesTerminalSession {
+  return {
+    id: state.id, cwd: state.cwd, shell: state.shell, persistent: Boolean(state.terminalId),
+    ...(pinned ? { connectionId: state.connectionId, profile: state.profile } : {})
+  }
+}
+
 async function dialTerminal(state: TerminalState, context: DialContext): Promise<HermesTerminalSession> {
   const { stopSocket, emitData, setStatus, forget, finish, reconnect } = context
   stopSocket(state)
@@ -250,11 +259,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
             settled = true
             window.clearTimeout(timer)
             state.cancelDial = undefined
-            resolve({
-              id: state.id, cwd: state.cwd, shell: state.shell, persistent: Boolean(state.terminalId),
-              // Where a pinned shell runs, so a tab that named no agent records it.
-              ...(context.pinned ? { connectionId: state.connectionId, profile: state.profile } : {})
-            })
+            resolve(startedSession(state, context.pinned))
           }
         } catch (error) {
           fail(error instanceof Error ? error : new Error('Host terminal returned invalid startup metadata'))

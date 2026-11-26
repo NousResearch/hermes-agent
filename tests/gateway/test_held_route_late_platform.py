@@ -287,3 +287,84 @@ def test_a_plugin_registering_before_the_db_recovers_keeps_the_newer_db_route(tm
             _unregister("yuanbao")
         monkeypatch.setattr(type(db.routing), "load_routing_entries", real_load)
         assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["resume_pending"] is True
+
+
+def _durable_keys(store, db):
+    """Route keys in both durable copies: state.db's routing table and the sessions.json mirror."""
+    mirror = json.loads((store.sessions_dir / "sessions.json").read_text(encoding="utf-8"))
+    return set(db.routing.load_routing_entries(routing_scope=store._routing_scope())), set(mirror) - {"_README"}
+
+
+def _seed_two_held(tmp_path):
+    """Two saved yuanbao routes (a run with the plugin wrote them) and a live telegram one; the restarted
+    store has no yuanbao plugin, so both yuanbao routes are held."""
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    Platform._add_pseudo_member("yuanbao")
+    try:
+        doomed = store.get_or_create_session(_yb_source())
+        kept = store.get_or_create_session(SessionSource(platform=Platform("yuanbao"), chat_id="U2", chat_type="dm"))
+    finally:
+        _unregister("yuanbao")
+    live = store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t1"))
+    restarted = SessionStore(store.sessions_dir, GatewayConfig())
+    with restarted._lock:
+        restarted._ensure_loaded_locked()
+    return restarted, doomed, kept, live
+
+
+def test_hard_deleting_a_session_drops_its_held_route_from_both_durable_copies(tmp_path):
+    """The delete endpoint's removal (#42422) covers a held route: gone at once and after an unrelated save,
+    other routes stay, a repeat is a no-op, and the plugin registering later starts a fresh session."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        from gateway.platforms.api_server_store import delete_session
+        store, doomed, kept, live = _seed_two_held(tmp_path)
+        assert delete_session(db, doomed.session_id, store.sessions_dir)  # the endpoint's order: rows, then routes
+        assert store.remove_by_session_id(doomed.session_id) == 1
+        for keys in _durable_keys(store, db):
+            assert doomed.session_key not in keys and {kept.session_key, live.session_key} <= keys
+        store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t2"))  # unrelated full save
+        for keys in _durable_keys(store, db):
+            assert doomed.session_key not in keys and {kept.session_key, live.session_key} <= keys
+        assert store.remove_by_session_id(doomed.session_id) == 0
+        Platform._add_pseudo_member("yuanbao")
+        try:
+            assert store.get_or_create_session(_yb_source()).session_id != doomed.session_id
+            assert store.get_or_create_session(
+                SessionSource(platform=Platform("yuanbao"), chat_id="U2", chat_type="dm")).session_id == kept.session_id
+        finally:
+            _unregister("yuanbao")
+
+
+def _rewrite_held_row(store, db, key, **fields):
+    """Change a held route's saved row, then restart so the new store holds that copy."""
+    scope = store._routing_scope()
+    row = json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])
+    db.routing.upsert_routing_entry(key, json.dumps({**row, **fields}), routing_scope=scope)
+    restarted = SessionStore(store.sessions_dir, GatewayConfig())
+    with restarted._lock:
+        restarted._ensure_loaded_locked()
+    return restarted
+
+
+def test_hard_deleting_a_session_drops_its_live_and_held_routes_together(tmp_path):
+    """Session S has a live telegram route and a held yuanbao route: both go in one delete, counted once each."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store, held, _kept, live = _seed_two_held(tmp_path)
+        store = _rewrite_held_row(store, db, held.session_key, session_id=live.session_id)
+        assert store.remove_by_session_id(live.session_id) == 2
+        store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t2"))
+        for keys in _durable_keys(store, db):
+            assert not {held.session_key, live.session_key} & keys
+
+
+def test_expiring_an_idle_route_drops_an_idle_held_route_too(tmp_path):
+    """Routing expiry covers a held route: an idle one is pruned like a live one, a fresh one stays."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store, idle, fresh, _live = _seed_two_held(tmp_path)
+        store = _rewrite_held_row(store, db, idle.session_key, updated_at="2001-01-01T00:00:00")
+        assert store.prune_old_entries(30) == 1
+        for keys in _durable_keys(store, db):
+            assert idle.session_key not in keys and fresh.session_key in keys

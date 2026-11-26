@@ -1074,7 +1074,7 @@ class SessionStore(
                 # Honour an explicit suspension/reset decision instead of silently reopening via recovery.
                 if reset_reason:
                     decision.schedule_reset(reset_reason, entry, entry.last_prompt_tokens > 0)
-                self._entries.pop(session_key, None)
+                self._drop_routes_locked([session_key])
                 decision.needs_recover = True
             else:
                 # Internal/system events preserve the user-activity clock.
@@ -1298,10 +1298,8 @@ class SessionStore(
         with self._lock:
             held = getattr(self, "_unparsed_routes", None) or {}
             dropped = [key for key in self._entries if key.startswith(ns)]
-            dropped += [key for key in held if key.startswith(ns)]  # else the save below writes them back
-            for key in dropped:
-                self._entries.pop(key, None)
-                held.pop(key, None)
+            dropped += [key for key in held if key.startswith(ns) and key not in self._entries]
+            self._drop_routes_locked(dropped)
             if dropped:
                 self._save()
         return len(dropped)
@@ -1312,16 +1310,16 @@ class SessionStore(
         The routing index is written back by THIS process, so removing only the state.db rows
         elsewhere in a delete flow is undone by the next whole-index save: the surviving entry
         hands the same id to the next inbound message and run_agent's INSERT OR IGNORE
-        re-creates the row — the deleted conversation comes back (#42422). Idempotent; returns
-        the number of entries dropped.
+        re-creates the row — the deleted conversation comes back (#42422). A held route (its
+        platform's plugin not registered yet) goes too, or that save writes it back. Idempotent;
+        returns the number of routes dropped.
         """
         if not session_id:
             return 0
         with self._lock:
             self._ensure_loaded_locked()
-            dropped = [key for key, entry in self._entries.items() if entry.session_id == session_id]
-            for key in dropped:
-                self._entries.pop(key, None)
+            dropped = self._route_keys_for_sessions_locked({session_id})
+            self._drop_routes_locked(dropped)
             if dropped:
                 hints = getattr(self, "_session_owner_hints", None)
                 if hints is not None:
@@ -1340,7 +1338,7 @@ class SessionStore(
             entry = self._entry_locked(session_key)
             if entry is None or entry.session_id != session_id:
                 return False
-            self._entries.pop(session_key, None)
+            self._drop_routes_locked([session_key])
             self._save()
         return True
 

@@ -159,11 +159,12 @@ class PlatformConfigUnreadable(Exception):
     readable edit is applied as usual."""
 
 
-def _unreadable_receipt(profile: str, error: Exception, states: dict) -> dict:
+def _unreadable_receipt(profile: str, error: Exception, states: dict, installed=()) -> dict:
     """The ``reconcile-platforms`` answer when the profile's config cannot be read: nothing applied,
-    every platform keeps running as it was (``platforms``), and why (``error``)."""
+    every platform keeps running as it was (``platforms``), and why (``error``). ``installed``: plugins
+    the recovery ahead of the read installed all the same."""
     return {"applied": False, "profile": profile, "changed": False, "started": [], "restarted": [],
-            "stopped": [], "platforms": states, "reasons": {}, "installed": [],
+            "stopped": [], "platforms": states, "reasons": {}, "installed": list(installed),
             "reason": "config_unreadable",
             "error": f"config.yaml cannot be read; the running gateway kept its current platforms ({error})"}
 
@@ -234,34 +235,59 @@ class PlatformChangeLedger:
 
     The rule: every platform a reconcile started, restarted or stopped, and every plugin it installed, is
     reported to exactly ONE answer for that profile, the first one given after that reconcile finished.
+    It holds for every path that applies a served profile's platforms, because each records here at the
+    one apply boundary it goes through, under the reconcile lock:
 
-    - Change lists ACCUMULATE: every reconcile (watcher tick, plugin-load trigger, an ask's own apply,
-      the apply of an ask that answered ``pending``) merges its lists in; nothing ever replaces them, so
-      a later reconcile that found nothing left to do cannot erase an earlier one's start.
-    - An answer drains them on the thread that returns it, as the last step before it returns (nothing
-      waits after the drain, so the whole answer stays inside the caller's wait), after the reconcile
-      it waited for finished; an ask that stops waiting leaves everything for the next ask.
-    - Nothing else is kept: an ask always reconciles the files as they stand (no saved answer is ever
-      replayed), and answers the platform states and reasons its own reconcile read as it finished.
+    - the launch profile (``_reconcile_primary_locked``): watcher tick, plugin-load trigger, the gateway-
+      start plugin recovery landing late, an ask's own apply, the apply of an ask that answered ``pending``;
+    - every named profile (``_apply_profile_diff``): the profile watcher's tick, ``rescan-profiles``,
+      ``serve-profile``, a plugin-load trigger, an ask's own apply, and the plugins its recovery installed.
+
+    - Change lists ACCUMULATE: every reconcile merges its lists in; nothing ever replaces them, so a later
+      reconcile that found nothing left to do cannot erase an earlier one's start.
+    - Each record also replaces the profile's platform states and reasons with the ones that reconcile
+      read as it finished. :meth:`drain` takes the lists AND that latest snapshot in one locked step, so
+      an answer pairs every change it reports with the state after the newest of them: a reconcile that
+      finishes between an ask's own apply and its drain is reported with its own states, never older ones.
+    - An answer drains on the thread that returns it, as the last step before it returns (nothing waits
+      after the drain, so the whole answer stays inside the caller's wait), after the reconcile it waited
+      for finished; an ask that stops waiting leaves everything for the next ask.
+    - No saved answer is ever replayed: an ask always reconciles the files as they stand first.
 
     Recorded on the loop thread, drained on the control socket's: hence the lock."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._lists: dict = {}
+        self._latest: dict = {}  # profile -> the newest receipt's non-list fields (states, reasons, ...)
 
     def record(self, receipt: dict) -> None:
         profile = receipt.get("profile")
-        if profile is None or not any(receipt.get(k) for k in _CHANGE_LISTS):
+        if profile is None:
             return
         with self._lock:
+            self._latest[profile] = {k: v for k, v in receipt.items() if k not in _CHANGE_LISTS}
+            if not any(receipt.get(k) for k in _CHANGE_LISTS):
+                return
             lists = self._lists.setdefault(profile, {k: [] for k in _CHANGE_LISTS})
             for key in _CHANGE_LISTS:
                 lists[key].extend(v for v in receipt.get(key) or () if v not in lists[key])
 
-    def drain(self, profile: str) -> dict:
+    def drain(self, profile: str) -> Optional[dict]:
+        """The answer for ``profile`` as of the newest record: its unreported lists (taken) and its
+        states. None when nothing was ever recorded for it (or it left the served set since)."""
         with self._lock:
-            return self._lists.pop(profile, None) or {k: [] for k in _CHANGE_LISTS}
+            latest = self._latest.get(profile)
+            if latest is None:
+                return None
+            lists = self._lists.pop(profile, None) or {k: [] for k in _CHANGE_LISTS}
+        return {**latest, **lists, "changed": bool(lists["started"] or lists["restarted"] or lists["stopped"])}
+
+    def forget(self, profile: str) -> None:
+        """A profile newly served: nothing a previous serving of that name applied is owed to it."""
+        with self._lock:
+            self._lists.pop(profile, None)
+            self._latest.pop(profile, None)
 
 
 class GatewayPlatformReconcileMixin:
@@ -330,14 +356,12 @@ class GatewayPlatformReconcileMixin:
         """Apply one profile's platform diff now; ``None`` (or the primary's name) = the launch profile.
         Returns ``{"applied", "profile", "changed", "started", "restarted", "stopped", "platforms": {platform:
         state}, "reasons": {platform: why it is unavailable}}`` for every served profile alike: what THIS
-        reconcile did. Its change lists also go to the :class:`PlatformChangeLedger` for the next answer."""
-        receipt = await self._reconcile_platforms(profile_name, reason=reason)
-        self.platform_change_ledger.record(receipt)
-        return receipt
+        reconcile did; the apply recorded it in the :class:`PlatformChangeLedger` for the next answer."""
+        return await self._reconcile_platforms(profile_name, reason=reason)
 
     async def answer_platform_reconcile(self, profile_name: Optional[str]) -> dict:
         """The control verb's apply (loop thread): reconcile the files the caller wrote. The verb then
-        drains the ledger (:meth:`deliver_platform_changes`); an ask that stops waiting drains nothing."""
+        drains the ledger (:func:`reconcile_platforms_verb`); an ask that stops waiting drains nothing."""
         return await self.reconcile_profile_platforms(profile_name, reason="control-socket")
 
     @property
@@ -367,28 +391,69 @@ class GatewayPlatformReconcileMixin:
         except PlatformConfigUnreadable as exc:
             # Not acknowledged: the edit that makes it readable again is applied as usual.
             self._note_unreadable_platform_config(primary, signature, exc)
-            return _unreadable_receipt(primary, exc, self._primary_platform_states())
+            return self._recorded(_unreadable_receipt(primary, exc, self._primary_platform_states()))
         finally:
             self._primary_platform_plan = None
         # The plugin recovery's install marker is this apply's own write to config.yaml, not an edit.
         self._primary_platform_signature = signature if own_write is None else (own_write, *signature[1:])
         self._unreadable_platform_configs.pop(primary, None)
-        return _receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
-                        dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed)
+        return self._recorded(_receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
+                                       dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed))
+
+    def _recorded(self, receipt: dict) -> dict:
+        self.platform_change_ledger.record(receipt)
+        return receipt
 
     async def _reconcile_secondary_locked(self, profile_name: str, reason: str) -> dict:
-        before = self._secondary_running_platforms(profile_name)
-        (getattr(self, "_profile_platform_plans", None) or {}).pop(profile_name, None)
-        applied = await self._apply_profile_changes(
+        _result, receipts = await self._apply_profile_diff(
             dict(self._served_profile_homes or {}), [], [], [profile_name], reason=reason)
-        unreadable = (applied.get("unreadable") or {}).get(profile_name)
-        if unreadable is not None:
-            return _unreadable_receipt(profile_name, unreadable, self._secondary_platform_states(profile_name))
-        plan = (getattr(self, "_profile_platform_plans", None) or {}).pop(profile_name, PlatformPlan((), (), ()))
-        after = self._secondary_running_platforms(profile_name)
-        started = tuple(p for p in after if p not in before and p not in plan.restart)
-        return _receipt(profile_name, started, plan.restart, plan.stop,
-                        self._secondary_platform_states(profile_name), {})
+        # None: this apply parked or dropped it (nothing of it is served now).
+        return receipts.get(profile_name) or _receipt(
+            profile_name, (), (), (), self._secondary_platform_states(profile_name), {})
+
+    # ── named-profile receipts (``_apply_profile_diff`` brackets every named-profile apply) ──────────
+
+    @property
+    def _profile_installs(self) -> dict:
+        installs = getattr(self, "_profile_installs_pending", None)
+        if installs is None:
+            installs = self._profile_installs_pending = {}
+        return installs
+
+    def _note_profile_installs(self, profile_name: str, installed) -> None:
+        """A named profile's plugin recovery installed ``installed``: owed to its apply's receipt."""
+        self._profile_installs.setdefault(profile_name, []).extend(installed)
+
+    def _open_profile_receipts(self, added, changed) -> dict:
+        """Before a named-profile apply: what each profile it applies runs now (its receipt's baseline).
+        A newly served profile owes nothing a previous serving of its name applied."""
+        plans = getattr(self, "_profile_platform_plans", None) or {}
+        for name in added:
+            self.platform_change_ledger.forget(name)
+        for name in (*added, *changed):
+            plans.pop(name, None)
+            self._profile_installs.pop(name, None)  # the gateway start's install, not this apply's
+        return {name: self._secondary_running_platforms(name) for name in (*added, *changed)}
+
+    def _close_profile_receipts(self, before: dict, unreadable: dict) -> dict:
+        """After the apply, still under its lock: each still-served profile's receipt, recorded in the
+        ledger. ``{profile: receipt}``."""
+        plans = getattr(self, "_profile_platform_plans", None) or {}
+        served = self._served_profile_homes or {}
+        receipts = {}
+        for name, was in before.items():
+            plan = plans.pop(name, PlatformPlan((), (), ()))
+            installed = self._profile_installs.pop(name, [])
+            if name not in served:
+                continue
+            states = self._secondary_platform_states(name)
+            if name in unreadable:
+                receipts[name] = self._recorded(_unreadable_receipt(name, unreadable[name], states, installed))
+                continue
+            started = tuple(p for p in self._secondary_running_platforms(name)
+                            if p not in was and p not in plan.restart)
+            receipts[name] = self._recorded(_receipt(name, started, plan.restart, plan.stop, states, {}, installed))
+        return receipts
 
     def platform_plan_in_flight(self, profile_name: Optional[str]) -> Optional[PlatformPlan]:
         """The plan a still-running reconcile of ``profile_name`` (None = the launch profile) applies."""
@@ -751,12 +816,15 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
 
     def _deliver(receipt: dict) -> dict:
         """This thread returns the answer, so it drains the ledger (PlatformChangeLedger), and waits on
-        nothing after: the reconcile's own states, read as it finished, are the live ones."""
+        nothing after. The drain is one cut: the unreported changes with the states of the newest
+        reconcile that recorded any (this ask's own, or one that finished after it)."""
         profile = receipt.get("profile")
         if profile is None:
             return receipt
-        lists = runner.platform_change_ledger.drain(profile)
-        return {**receipt, **lists, "changed": bool(lists["started"] or lists["restarted"] or lists["stopped"])}
+        answer = runner.platform_change_ledger.drain(profile)
+        if answer is None:  # it left the served set since: what it applied is owed to no one
+            return {**receipt, **{k: [] for k in _CHANGE_LISTS}, "changed": False}
+        return answer
 
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_process_hermes_home, hermes_home_key

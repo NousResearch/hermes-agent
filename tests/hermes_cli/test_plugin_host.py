@@ -1403,9 +1403,11 @@ def test_a_host_started_by_a_caller_bound_to_a_since_renamed_link_runs_the_profi
 @pytest.mark.platforms("posix")  # a directory symlink
 def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path, monkeypatch):
     """One start, one home: a profile name that moves while the host starts does not give the launcher check a
-    different home from the one the host's environment and working directory were built for."""
+    different home from the one the host's environment and working directory were built for, and the start is
+    refused once that name leads elsewhere (Greptile on #159450: it read the other directory's files)."""
     from hermes_cli import plugin_isolation
     from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugins_loader import PluginHomeMoved
 
     target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
     profiles = tmp_path / "root" / "profiles"
@@ -1433,8 +1435,9 @@ def test_a_host_start_asks_about_its_launcher_for_the_home_it_starts_in(tmp_path
     monkeypatch.setattr(PluginHost, "_build_base_context", linked_while_building)
     monkeypatch.setattr(plugin_isolation, "host_launcher", recording)
     try:
-        host.ensure_started()
-        assert host.home == profiles / "ops2"
+        with pytest.raises(PluginHomeMoved):
+            host.ensure_started()
+        assert host.home == profiles / "ops2" and host.pid is None
         assert asked == [host.home]
     finally:
         host.shutdown()

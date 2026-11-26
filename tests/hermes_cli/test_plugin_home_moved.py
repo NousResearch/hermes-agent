@@ -139,6 +139,38 @@ def test_a_sibling_name_the_process_served_elsewhere_is_not_taken_over_when_repo
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_host_start_whose_link_is_repointed_while_it_builds_the_childs_env_starts_no_host(tmp_path, monkeypatch):
+    """The child's env is the start's last read through the profile's name: a link repointed during it refuses the
+    start, and no host process runs on the other directory's files (Greptile on #159450)."""
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugins_loader import PluginHomeMoved
+
+    target = _home_with_plugins(tmp_path / "outside", monkeypatch, {})
+    link = tmp_path / "root" / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    plugins_mod._reset_plugin_managers_for_tests()
+    build_env = PluginHost._env
+
+    def repointed_while_building(self, *args):
+        env = build_env(self, *args)
+        link.unlink()
+        link.symlink_to(tmp_path, target_is_directory=True)
+        return env
+
+    monkeypatch.setattr(PluginHost, "_env", repointed_while_building)
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        with pytest.raises(PluginHomeMoved):
+            host.ensure_started()
+        assert host.pid is None
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
 def test_a_provider_extraction_for_a_home_whose_link_was_repointed_runs_no_launcher(tmp_path, monkeypatch):
     """A model-provider extraction outside a host start, for a home whose name the process remembered and that now

@@ -25,5 +25,7 @@ hermes plugins install dingtalk
 所有名称保持不变：`DINGTALK_*` 环境变量（`DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET`、`DINGTALK_ALLOWED_USERS`、`DINGTALK_HOME_CHANNEL` 等）、`config.yaml` 中的 `platforms.dingtalk` 配置块、cron 与 webhook 投递使用的 `dingtalk` 平台名，以及 `hermes-dingtalk` 工具集。
 
 :::info 从内置钉钉的版本升级
-无需任何操作。已经在使用钉钉的 profile（`.env` 中有 `DINGTALK_CLIENT_ID` 和 `DINGTALK_CLIENT_SECRET`，或 `config.yaml` 中启用了 `platforms.dingtalk`）会在 `hermes update` 时，或该 profile 首次启动时（agent 或 gateway 启动，遵循 `security.allow_lazy_installs`），自动从插件目录安装该插件。安装失败会按退避策略重试，`hermes update` 总会重试。每个 profile 只自动安装一次：之后若用 `hermes plugins remove dingtalk` 移除，它不会被重新安装。
+无需任何操作。已经在使用钉钉的 profile（`.env` 中有 `DINGTALK_CLIENT_ID` 和 `DINGTALK_CLIENT_SECRET`，或 `config.yaml` 中启用了 `platforms.dingtalk`）会在 `hermes update` 时，或该 profile 首次启动时（agent 或 gateway 启动，遵循 `security.allow_lazy_installs`），自动从插件目录安装该插件。安装失败会按退避策略重试，`hermes update` 总会重试。每个 profile 只自动安装一次：之后若用 `hermes plugins remove dingtalk` 移除，它不会被重新安装。只配置了 `DINGTALK_WEBHOOK_URL`（用于 cron 投递）的 profile 也算在使用钉钉。
+
+升级之后才配置钉钉的 profile 不会自动安装任何内容：Hermes Labs 代码只在你要求时安装，agent 和 gateway 会输出一行提示 `hermes plugins install dingtalk`。
 :::

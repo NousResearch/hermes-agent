@@ -782,6 +782,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         private_env=("DINGTALK_CLIENT_ID", "DINGTALK_ALLOWED_USERS", "DINGTALK_HOME_CHANNEL",
                      "DINGTALK_HOME_CHANNEL_NAME", "DINGTALK_WEBHOOK_URL"),
         platform="dingtalk", enable_env=("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"), notice=_dingtalk_notice,
+        left_at=55,  # a home from v55 on that adds DingTalk is told the install command, never auto-installed
     ),
 )
 

@@ -164,3 +164,41 @@ def test_the_plugin_platform_keeps_its_cron_home_target_slot(monkeypatch):
     monkeypatch.setattr(platform_registry, "plugin_entries", lambda: entries)
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *a, **k: None)
     assert list(delivery._iter_home_target_platforms()) == ["dingtalk", "feishu"]
+
+def _migrate_config(home: Path) -> None:
+    from hermes_cli.config import migrate_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        migrate_config(interactive=False, quiet=True)
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.parametrize("env", [_CREDS, "DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=f\n"],
+                         ids=["stream", "webhook-only"])
+def test_an_upgrade_crossing_v55_still_installs_the_plugin(tmp_path, monkeypatch, env):
+    """`hermes update` migrates config.yaml past v55 before the left-core pass: the v55 step records that the home
+    ran DingTalk in core, so the pass still installs the plugin once."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    home = _home(tmp_path, env=env, config="_config_version: 54\n")
+    _migrate_config(home)
+    import hermes_yaml as yaml
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert config["_config_version"] >= 55 and "dingtalk" in config["_left_core_used"]
+    installed = lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True)
+                                 or {"ok": True}, say=lambda _m: None)
+    assert installed == ["dingtalk"]
+
+
+def test_a_home_from_v55_on_that_adds_dingtalk_is_told_the_install_command(tmp_path):
+    """Labs code is installed only when asked: a home that never ran core's DingTalk gets one line naming
+    `hermes plugins install dingtalk`, and nothing is installed or written."""
+    home = _home(tmp_path, env=_CREDS, config="_config_version: 55\n")
+    before = (home / "config.yaml").read_bytes()
+    said = []
+    assert lcm.migrate_home(home, install=lambda name: pytest.fail("Labs code is installed only when asked"),
+                            say=said.append) == []
+    assert len(said) == 1 and "hermes plugins install dingtalk" in said[0]
+    assert (home / "config.yaml").read_bytes() == before
+

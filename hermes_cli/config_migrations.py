@@ -813,6 +813,20 @@ def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
             'machine-paced runs. Set cache_ttl: "5m" to pin the old behaviour.')
 
 
+def _migrate_to_55(results: dict[str, Any], quiet: bool) -> None:
+    # 54 → 55: DingTalk left core for the dingtalk Hermes Labs plugin. A home that ran it is recorded from its
+    # pre-v55 files, so its left-core row installs the plugin once; a home from v55 on that adds DingTalk
+    # credentials is told the install command instead (Labs code is installed only when asked).
+    from pathlib import Path
+
+    from hermes_cli.left_core_migration import record_core_use
+    from hermes_constants import get_hermes_home
+
+    config = read_raw_config()
+    if record_core_use(Path(get_hermes_home()), config, 55):
+        _persist_migration(config)
+
+
 def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None:
     """Post-migration: disable exfiltration-shaped MCP stdio entries (hand-edited or from older
     installs). The stanza is preserved for auditability but marked disabled."""
@@ -988,6 +1002,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
     # 53 → 54: prompt_caching.cache_ttl defaults to "auto" (see _migrate_to_54).
     (54, _migrate_to_54),
+    # 54 → 55: record a home's core-era DingTalk use (see _migrate_to_55).
+    (55, _migrate_to_55),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

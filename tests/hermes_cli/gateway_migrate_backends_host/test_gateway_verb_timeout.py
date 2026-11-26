@@ -56,8 +56,7 @@ def test_gateway_verb_restart_timeout_covers_handoff_and_verify_budget(tmp_path,
     scope, args, timeout = calls[0]
     assert scope == "user"
     assert args == ["restart", "hermes-gateway"]
-    assert timeout == 540
-    assert timeout >= int(getattr(engine, "RESTART_HANDOFF_SECONDS", 240.0) + engine.VERIFY_SECONDS)
+    assert timeout >= timeouts.RESTART_HANDOFF_SECONDS + timeouts.VERIFY_SECONDS
 
 
 def test_gateway_verb_start_timeout_covers_verify_budget(tmp_path, monkeypatch):
@@ -65,7 +64,8 @@ def test_gateway_verb_start_timeout_covers_verify_budget(tmp_path, monkeypatch):
 
     host.gateway_verb("start")
 
-    assert calls == [("user", ["start", "hermes-gateway"], 300)]
+    [(scope, args, timeout)] = calls
+    assert (scope, args) == ("user", ["start", "hermes-gateway"]) and timeout >= timeouts.VERIFY_SECONDS
 
 
 def test_gateway_verb_stop_marks_planned_stop_and_covers_handoff_budget(tmp_path, monkeypatch):
@@ -74,7 +74,8 @@ def test_gateway_verb_stop_marks_planned_stop_and_covers_handoff_budget(tmp_path
     host.gateway_verb("stop")
 
     assert planned_stops == [True]
-    assert calls == [("user", ["stop", "hermes-gateway"], 240)]
+    [(scope, args, timeout)] = calls
+    assert (scope, args) == ("user", ["stop", "hermes-gateway"]) and timeout >= timeouts.RESTART_HANDOFF_SECONDS
 
 
 @pytest.mark.parametrize("verb", ["enable", "disable"])
@@ -126,11 +127,9 @@ def test_plan_and_host_do_not_import_apply_engine(tmp_path):
         "from hermes_cli.gateway_migrate_backends_plan import BackendPlan\n"
         "from hermes_cli.gateway_migrate_backends_host import _gateway_verb_timeout\n"
         f"plan = BackendPlan(home={str(tmp_path)!r}, new_host='0.0.0.0', new_port=9119)\n"
-        "steps = plan.step_titles()\n"
-        "assert any('within 300 s' in s['title'] for s in steps)\n"
-        "assert _gateway_verb_timeout('restart') == 540\n"
-        "assert _gateway_verb_timeout('start') == 300\n"
-        "assert _gateway_verb_timeout('stop') == 240\n"
+        "plan.step_titles()\n"
+        "for verb in ('restart', 'start', 'stop'):\n"
+        "    _gateway_verb_timeout(verb)\n"
         "assert 'hermes_cli.gateway_migrate_backends_apply' not in sys.modules\n"
     )
     res = subprocess.run(

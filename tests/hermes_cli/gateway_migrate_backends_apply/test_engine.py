@@ -1905,9 +1905,8 @@ def test_verify_waits_for_the_replacement_process_instead_of_the_draining_old_on
     assert engine.status_payload(host)["state"] == "done"
 
 
-def test_a_hand_off_that_never_lands_still_verifies_and_says_so(home, monkeypatch, capsys):
-    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 5.0)
-    host = _RestartHost(home, handover_after=10 ** 9, answer_while_old=True)
+def test_a_hand_off_that_never_lands_still_verifies_and_says_so(home, capsys):
+    host = _RestartHost(home, handover_after=10 ** 9, answer_while_old=True)  # the fixture's 0 s handoff budget
 
     assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
 

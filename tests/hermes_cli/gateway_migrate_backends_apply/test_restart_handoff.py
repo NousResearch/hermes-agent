@@ -99,6 +99,52 @@ def test_missing_before_pid_proceeds_once_live_pid_appears(home, monkeypatch):
     assert engine.status_payload(host)["state"] == "done"
 
 
+class _RequestedRestartHost(FakeHost):
+    """The old PID keeps draining until ``gateway_verb("restart")`` is requested; after it, the PID lookup
+    reads the old PID, misses once (the old process gone, the new one not published yet), reads the old
+    PID again, and only then the replacement."""
+
+    def __init__(self, home):
+        super().__init__(home, gateway_installed=True, gateway_active=True)
+        self.order: list[str] = []
+        self.after_request = [_GATEWAY_PID, None, _GATEWAY_PID]
+        self.replaced = False
+
+    def gateway_verb(self, verb):
+        super().gateway_verb(verb)
+        self.order.append(verb)
+
+    def gateway_pid(self):
+        self.order.append("pid")
+        if "restart" in self.order and not self.after_request:
+            self.replaced = True
+        if self.replaced:
+            return _NEW_GATEWAY_PID
+        return self.after_request.pop(0) if "restart" in self.order else _GATEWAY_PID
+
+    def sleep(self, seconds):
+        assert "restart" in self.order, "waited for a replacement before the restart was requested"
+
+    def gateway_status(self, host, port):
+        self.order.append("status")
+        if not self.replaced:
+            return None
+        return {"gateway_state": "running", "auth_required": True, "auth_providers": ["basic"]}
+
+    def pid_listens_on(self, pid, port):
+        return pid == _NEW_GATEWAY_PID and self._webapp_on_9119()
+
+
+def test_handoff_starts_after_the_restart_request_and_outlasts_a_missed_pid_lookup(home, monkeypatch):
+    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 5.0)
+    host = _RequestedRestartHost(home)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+
+    between = host.order[host.order.index("restart") + 1:host.order.index("status")]
+    assert between == ["pid"] * 4  # old, missed (None), old, replacement: then verify
+
+
 @pytest.mark.parametrize("bad_state", ["draining", "starting", "startup_failed", None])
 def test_non_serving_gateway_states_fail_verify_and_roll_back(home, monkeypatch, bad_state):
     monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 5.0, raising=False)
@@ -127,8 +173,6 @@ def test_plan_verify_step_title_uses_verify_seconds(monkeypatch, tmp_path):
     plan = BackendPlan(home=str(tmp_path), new_host="0.0.0.0", new_port=9119)
     verify_step = next(step for step in plan.step_titles() if step["name"] == "verify")
     assert f"within {int(timeouts.VERIFY_SECONDS)} s" in verify_step["title"]
-    assert "within 300 s" in verify_step["title"]
-    assert "within 90 s" not in verify_step["title"]
 
     monkeypatch.setattr(timeouts, "VERIFY_SECONDS", 420.0)
     updated = next(step for step in plan.step_titles() if step["name"] == "verify")

@@ -58,6 +58,8 @@ def _gateway_verb_timeout(verb: str) -> int:
 
     ``restart`` can block across both the old gateway's in-band drain (``RESTART_HANDOFF_SECONDS``) and a
     ``Type=notify`` startup (``VERIFY_SECONDS``); ``start`` can block on startup; ``stop`` can block on drain.
+    These are the migration's caps, not the unit's: a raised ``agent.cron_drain_timeout`` or
+    ``agent.restart_drain_timeout`` gives the unit a ``TimeoutStopSec`` longer than they wait.
     """
     if verb == "restart":
         return max(90, int(_timeouts.RESTART_HANDOFF_SECONDS + _timeouts.VERIFY_SECONDS))

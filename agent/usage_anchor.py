@@ -149,8 +149,11 @@ def persist_usage_anchor(agent: Any, anchor: Optional[dict[str, Any]]) -> None:
     """Write (or clear, ``None``) the session row's anchor blob. Best-effort: the row may not exist yet."""
     if getattr(agent, "_persist_disabled", False):
         return
+    from agent.agent_init_session import agent_interface
     session_id = getattr(agent, "session_id", None)
-    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    store = agent_interface(agent)
+    patcher = (store.sessions.patch_model_config if store is not None
+               else getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None))
     if not session_id or not callable(patcher):
         return
     try:
@@ -172,8 +175,11 @@ def restore_usage_anchor(agent: Any, conversation_history: Optional[list[dict[st
     the priced prefix; otherwise clear the stale blob so it can never suppress compression."""
     if getattr(agent, "_usage_anchor", None) is not None or getattr(agent, "_persist_disabled", False):
         return
+    from agent.agent_init_session import agent_interface
     session_id = getattr(agent, "session_id", None)
-    getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
+    store = agent_interface(agent)
+    getter = (store.sessions.get_model_config_value if store is not None
+              else getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None))
     if not session_id or not callable(getter) or not isinstance(conversation_history, list):
         return
     try:
@@ -189,10 +195,13 @@ def restore_usage_anchor(agent: Any, conversation_history: Optional[list[dict[st
         persist_usage_anchor(agent, None)
 
 
-def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any) -> Optional[int]:
+def persisted_anchor_tokens(session_db: Any, session_id: Any, messages: Any, *, persistence: Any = None) -> Optional[int]:
     """Anchored token figure from the session row's persisted anchor, for callers without a live
     agent (gateway hygiene); None when absent, unreadable, or stale against ``messages``."""
-    getter = getattr(session_db, "get_session_model_config_value", None)
+    from agent.agent_init_session import writer_interface
+    store = writer_interface(persistence, session_db)
+    getter = (store.sessions.get_model_config_value if store is not None
+              else getattr(session_db, "get_session_model_config_value", None))
     if not session_id or not callable(getter) or not isinstance(messages, list):
         return None
     try:

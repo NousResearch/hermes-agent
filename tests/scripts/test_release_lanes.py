@@ -4,15 +4,18 @@ import pytest
 from scripts.releases import lanes as lane_set
 
 
-def test_the_default_builds_everything_but_termux():
-    assert lane_set.DEFAULT == set(lane_set.NAMES) - {"termux"}
+def test_the_default_builds_everything_but_termux_and_diagnostic_linux():
+    assert lane_set.DEFAULT == set(lane_set.NAMES) - {"termux", "linux"}
     assert lane_set.select() == lane_set.DEFAULT
+    assert "linux" in lane_set.CANARY
+    assert not lane_set.has_bundles(["linux"])
+    assert lane_set.DIAGNOSTIC_CALLS.isdisjoint(lane_set.CANDIDATE_CALLS)
 
 
 @pytest.mark.parametrize("kwargs,expected", [
     # The request that motivated lanes: only the Windows bundles and the image, no tests.
     ({"only": ["windows", "docker"]}, {"windows", "docker"}),
-    ({"with_": ["termux"]}, set(lane_set.NAMES)),
+    ({"with_": ["termux", "linux"]}, set(lane_set.NAMES)),
     ({"without": ["macos-arm64", "upgrade"]}, set(lane_set.DEFAULT) - {"macos-arm64", "upgrade"}),
     ({"only": ["windows"], "with_": ["smoke"], "without": ["windows"]}, {"smoke"}),
     ({"only": []}, set()),
@@ -34,6 +37,12 @@ def test_select_refuses_unknown_and_contradictory_lanes():
 def test_options_flatten_repeats_and_commas():
     assert lane_set.parse_list(["windows, docker", "ci"]) == ["windows", "docker", "ci"]
     assert lane_set.parse_list(None) is None
+
+
+def test_every_desktop_target_has_a_build_lane():
+    from scripts.releases.desktop_targets import MANIFEST_TARGETS
+    desktop = {target for target in lane_set.TARGET_LANE if not target.startswith("termux/")}
+    assert desktop == {f"{platform}/{arch}" for platform, arch in MANIFEST_TARGETS}
 
 
 def test_every_job_names_real_lanes():
@@ -105,7 +114,7 @@ def test_a_pre_lanes_claim_reads_only_while_it_left_macos_intel_out():
     """Published pre-lanes claims carry includeMacosIntel:false; no build can honour true any more."""
     legacy = {"skipBundles": False, "skipTests": False}
     assert lane_set.claim_lanes({**legacy, "includeMacosIntel": False}) == lane_set.DEFAULT
-    with pytest.raises(ValueError, match="invalid"):
+    with pytest.raises(ValueError, match="invalid: it opts into macOS Intel.*no longer built"):
         lane_set.claim_lanes({**legacy, "includeMacosIntel": True})
 
 

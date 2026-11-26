@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import Persistence, open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway import server
 
 TURN = f"pid={os.getpid()}:turn=tui:platform=tui"
@@ -40,7 +44,7 @@ class _Agent:
     model = "test-model"
     provider = "test-provider"
 
-    def __init__(self, session_id: str, db: SessionDB):
+    def __init__(self, session_id: str, db: Persistence):
         self.session_id = session_id
         self._db = db
         self.turns: list = []
@@ -51,8 +55,8 @@ class _Agent:
 
     def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
         # What admit_durable_turn_lease does at the top of the real run_conversation.
-        self._db.try_acquire_session_turn_lease(self.session_id, TURN, ttl_seconds=300.0)
-        self.stamp_seen_by_turn.append(self._db.get_session(self.session_id)["end_reason"])
+        self._db.coordination.try_acquire_turn_lease(session_id=self.session_id, holder=TURN, ttl_seconds=300.0)
+        self.stamp_seen_by_turn.append(self._db.sessions.get(self.session_id).end_reason)
         self.turns.append(prompt)
         return {"final_response": "", "messages": []}
 
@@ -67,7 +71,7 @@ def _session(agent: _Agent) -> dict:
 
 @pytest.fixture
 def db(tmp_path: Path):
-    handle = SessionDB(db_path=tmp_path / "state.db")
+    handle = open_persistence(profile_scope(home=tmp_path))
     try:
         yield handle
     finally:
@@ -76,7 +80,7 @@ def db(tmp_path: Path):
 
 @pytest.fixture
 def turn_env(monkeypatch, tmp_path, db):
-    """The immediate-prompt harness of tests/tui_gateway/test_tui_gateway_server.py, with a real SessionDB."""
+    """The immediate-prompt harness of tests/tui_gateway/test_tui_gateway_server.py, with a real store."""
     for name, stub in {
         "_emit": lambda *_a, **_k: None, "make_stream_renderer": lambda _cols: None,
         "render_message": lambda _raw, _cols: None, "_wire_callbacks": lambda _sid: None,
@@ -93,15 +97,16 @@ def turn_env(monkeypatch, tmp_path, db):
         server._sessions.pop(sid, None)
 
 
-def _stamp(db: SessionDB, row_id: str, reason: str) -> None:
-    db.end_session(row_id, reason)
-    db._write_sql("UPDATE sessions SET ended_at = ? WHERE id = ?", (time.time() - 60.0, row_id))
+def _stamp(db: Persistence, row_id: str, reason: str) -> None:
+    db.sessions.end(row_id, reason)
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET ended_at = ? WHERE id = ?", (time.time() - 60.0, row_id)))
 
 
 def test_a_registered_stale_close_is_cleared_before_the_turn_and_rotation_publishes(turn_env, db):
     """The field shape: the TUI keeps accepting prompts on a row stamped ``tui_close`` an hour ago.
     The row is clear when the worker runs, and the rotation that follows publishes instead of wedging."""
-    db.create_session("row-1", source="tui")
+    seed_session(db, "row-1", "tui")
     _stamp(db, "row-1", "tui_close")
     agent = _Agent("row-1", db)
     session = server._sessions["ui-106459-1"] = _session(agent)
@@ -110,11 +115,11 @@ def test_a_registered_stale_close_is_cleared_before_the_turn_and_rotation_publis
 
     assert agent.turns == ["go"]
     assert agent.stamp_seen_by_turn == [None], "the stamp must be cleared before the worker starts"
-    assert db.try_acquire_compression_lock("row-1", "holder")
-    db.publish_compression_child(
-        parent_session_id="row-1", child_session_id="row-1-child", source="tui",
-        messages=[{"role": "user", "content": "go"}], model="m", compression_lock_holder="holder")
-    assert db.get_session("row-1")["end_reason"] == "compression"
+    assert db.coordination.try_acquire_compression_lock(session_id="row-1", holder="holder")
+    db.lineage.publish_compression_child(
+        "row-1", CompressionChild(session_id="row-1-child", source="tui", model="m"),
+        [NewMessage(role="user", content="go")], compression_lock_holder="holder")
+    assert db.sessions.get("row-1").end_reason == "compression"
 
 
 @pytest.mark.parametrize("reason, claimed_for_teardown", [
@@ -124,7 +129,7 @@ def test_a_registered_stale_close_is_cleared_before_the_turn_and_rotation_publis
 def test_only_an_explicit_close_on_a_still_registered_session_is_cleared(turn_env, db, reason, claimed_for_teardown):
     """Boundaries, compression and automatic stamps own lineage elsewhere; a session ``session.close``
     already claimed under ``_sessions_lock`` is refused a turn and its deliberate close survives."""
-    db.create_session("row-2", source="tui")
+    seed_session(db, "row-2", "tui")
     _stamp(db, "row-2", reason)
     agent = _Agent("row-2", db)
     session = server._sessions["ui-106459-2"] = _session(agent)
@@ -134,4 +139,4 @@ def test_only_an_explicit_close_on_a_still_registered_session_is_cleared(turn_en
     started = server._run_prompt_submit("rid", "ui-106459-2", session, "go")
 
     assert started is not claimed_for_teardown
-    assert db.get_session("row-2")["end_reason"] == reason
+    assert db.sessions.get("row-2").end_reason == reason

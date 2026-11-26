@@ -78,6 +78,13 @@ class DelegationProvider(ProviderBase):
         """One user-facing line for backend pickers (``/delegation``); never shown to the model."""
         return ""
 
+    @property
+    def route_keys(self) -> tuple[str, ...]:
+        """Keys of this backend's own route entries, beyond core's route fields, that settings editors may write and
+        must keep (e.g. a per-route ``daybreak`` opt-in). Editors offer a control only when its key is listed here,
+        so an older plugin never gets a setting it would ignore. The backend validates their values itself."""
+        return ()
+
     def is_available(self) -> bool:
         """Whether this provider can run here. MUST NOT make network calls. False fails delegation closed: a
         ``delegate_task`` call under this backend is a tool error naming it, never a run on another route."""

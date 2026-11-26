@@ -49,3 +49,17 @@ export interface Contribution {
    */
   data?: unknown
 }
+
+/** `host.openWorkspace` options. */
+export interface PluginWorkspaceOptions {
+  /** `'per-profile'`: the workspace hosts several independently gated profiles (a group room),
+   *  so the statusbar explains per-profile approvals instead of offering the active profile's mode. */
+  approvalScope?: 'per-profile'
+  dock?: { before?: null | string; pane: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
+  headerVeto?: boolean
+  minWidth?: string
+  onClose?: () => void
+  render: () => ReactNode
+  title?: string
+  uncloseable?: boolean
+}

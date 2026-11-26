@@ -32,6 +32,8 @@ from utils import rmtree_readonly
 logger = logging.getLogger(__name__)
 
 PACKAGE_MARKER = ".hermes-package.json"
+#: A standalone plugin's catalog entry, written by the installer (Electron's ``INSTALL_ORIGIN``).
+INSTALL_ORIGIN = ".hermes-origin.json"
 #: The whole published folder; the loader reads at most a 16 MB ``plugin.js`` from it.
 TREE_MAX_BYTES = 64 * 1024 * 1024
 #: Folders a root-layout half never publishes (Electron's ``ROOT_LAYOUT_SKIP`` matches).
@@ -109,6 +111,16 @@ def _write_marker(folder: Path, marker: dict) -> None:
     (folder / PACKAGE_MARKER).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
 
 
+def write_install_origin(folder: Path, origin: dict | None) -> None:
+    """Write a standalone plugin's catalog entry (``catalogName``/``repo``/``sha``), or drop the file
+    when there is none: a repository may ship one to pose as a catalog entry."""
+    # A file already there goes first, so a link of that name is never written through.
+    (folder / INSTALL_ORIGIN).unlink(missing_ok=True)
+    if origin is not None:
+        with (folder / INSTALL_ORIGIN).open("x", encoding="utf-8") as out:
+            out.write(json.dumps(origin, indent=2) + "\n")
+
+
 def _same_file(a: Path, b: Path) -> bool:
     """Same bytes on both paths. A comparison that cannot be made is never a match."""
     try:
@@ -156,20 +168,22 @@ def check_desktop_tree(source: Path, base: Path, *, linked_root: bool = False,
     return None
 
 
-def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ignore=None) -> None:
+def publish_desktop_tree(source_dir: Path, target: Path, marker: dict | None, ignore=None,
+                         origin: dict | None = None) -> None:
     """Copy through a staging sibling and rename the finished tree into place, marker included, so a
     failure leaves the old folder or none: never a partial, marker-less one that a later pass would
     take for a hand install. A standalone plugin is published with no marker (``None``): one would
-    claim another package's agent half."""
+    claim another package's agent half. It carries *origin* (its catalog entry) instead, or none."""
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.staging-", dir=target.parent))
     staged = staging / target.name
     try:
         shutil.copytree(source_dir, staged, symlinks=True, ignore=ignore)
         if marker is None:
-            # Only an installer writes the marker: one shipped in the repository would claim
-            # another package's agent half (Electron's ``installDesktopPluginFromGit`` drops it too).
+            # Only an installer writes the marker or the origin: one shipped in the repository would
+            # claim another package's agent half, or a catalog entry (Electron drops both too).
             (staged / PACKAGE_MARKER).unlink(missing_ok=True)
+            write_install_origin(staged, origin)
         else:
             _write_marker(staged, marker)
         if _is_link(target):

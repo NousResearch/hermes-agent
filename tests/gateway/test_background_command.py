@@ -75,7 +75,7 @@ class TestRunBackgroundTask:
         runner.adapters[Platform.TELEGRAM] = adapter
         parent = SimpleNamespace(_delegate_depth=0, _subagent_id=None)
         monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: SimpleNamespace(_subagent_id="child"))
-        monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: {
+        monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **kw: {
             "model": "test", "provider": None, "base_url": None, "api_key": None,
             "api_mode": None, "command": None, "args": None,
         })
@@ -106,7 +106,8 @@ class TestRunBackgroundTask:
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):
-        """When the agent completes successfully, the result is sent."""
+        """When the agent completes successfully, the result is sent. No fixtures:
+        test_grid_sweep_gateway_diagnostics calls this method directly."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
@@ -123,6 +124,18 @@ class TestRunBackgroundTask:
 
         mock_result = {"final_response": "Hello from background!", "messages": []}
 
+        from agent.agent_init import _init_prompt_cache_config
+        import hermes_cli.config
+
+        cache_ttls = []
+
+        def build_agent(**kwargs):
+            from types import SimpleNamespace
+            cache_agent = SimpleNamespace(_anthropic_prompt_cache_policy=lambda: (True, True), **kwargs)
+            _init_prompt_cache_config(cache_agent)
+            cache_ttls.append(cache_agent._cache_ttl)
+            return mock_agent_instance
+
         checkpoint_config = {
             "checkpoints": {
                 "enabled": True,
@@ -131,17 +144,22 @@ class TestRunBackgroundTask:
                 "max_file_size_mb": 3,
             }
         }
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+        with pytest.MonkeyPatch.context() as mp, \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
              patch("gateway.run._load_gateway_config", return_value=checkpoint_config), \
              patch("run_agent.AIAgent") as MockAgent:
+            mp.setattr(hermes_cli.config, "load_config_readonly", dict)
+            mp.delenv("HERMES_SESSION_SOURCE", raising=False)
+            mp.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
             mock_agent_instance = MagicMock()
             mock_agent_instance.shutdown_memory_provider = MagicMock()
             mock_agent_instance.close = MagicMock()
             mock_agent_instance.run_conversation.return_value = mock_result
-            MockAgent.return_value = mock_agent_instance
+            MockAgent.side_effect = build_agent
 
             await runner._run_background_task("say hello", source, "bg_test")
 
+        assert cache_ttls == ["5m"]
         # Should have sent the result
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
@@ -154,6 +172,25 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("surface, switch", [(True, True), (True, False), (False, False)])
+    async def test_task_takes_its_chats_daybreak_verdicts(self, surface, switch):
+        """A /bg agent is built outside the turn wiring; it carries its own chat's owner verdict and switch."""
+        runner = _make_runner()
+        adapter = AsyncMock()
+        adapter.extract_media = lambda text: ([], text)
+        adapter.extract_images = lambda text: ([], text)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        runner._daybreak_surface = lambda source: surface
+        runner._load_daybreak = lambda source: switch
+        agent = MagicMock()
+        agent.run_conversation.return_value = {"final_response": "done", "messages": []}
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent", return_value=agent):
+            await runner._run_background_task("say hello", _make_event().source, "bg_test")
+        assert (agent.daybreak_surface, agent.daybreak) == (surface, switch)
 
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands

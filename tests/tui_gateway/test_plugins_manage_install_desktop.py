@@ -39,7 +39,8 @@ def test_install_desktop_round_trips_through_the_rpc(tmp_path, monkeypatch):
 
     refused = _manage(action="install_desktop", **source)
     assert refused["error"]["code"] == 5026 and "already exists" in refused["error"]["message"]
-    assert "data" not in refused["error"]  # an ordinary refusal: the client offers Retry, not a re-review
+    # Not a re-review (no ``source_moved``): the client offers Force, which is what replaces the folder.
+    assert refused["error"]["data"] == {"reason": "exists"}
 
     assert _manage(action="remove_desktop", name="gizmo")["result"]["ok"] is True
     assert not (home / "desktop-plugins" / "gizmo").exists()

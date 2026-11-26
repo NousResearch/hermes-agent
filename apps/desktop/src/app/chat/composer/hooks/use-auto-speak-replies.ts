@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
-import { playSpeechText } from '@/lib/voice-playback'
+import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -84,6 +84,11 @@ interface UseAutoSpeakReplies {
   sessionId: string | null | undefined
 }
 
+// Replies auto-speak started reading. Turning read-aloud off (here or in another
+// window) silences one of these mid-clip; a reply the user started by hand from
+// the message's own button keeps playing.
+const autoStartedReplies = new Set<string>()
+
 /**
  * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
  * turn aloud — no dictation, no conversation loop. Stays off while a full voice
@@ -104,9 +109,21 @@ export function useAutoSpeakReplies({
   const { $messages, connectionId, profile } = useComposerScope()
   const latest = useRef({ connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile })
   latest.current = { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile }
-
   useEffect(() => {
     if (!enabled) {
+      const playback = $voicePlayback.get()
+
+      if (
+        playback.status !== 'idle' &&
+        playback.source === 'read-aloud' &&
+        playback.messageId !== null &&
+        autoStartedReplies.has(playback.messageId)
+      ) {
+        stopVoicePlayback()
+      }
+
+      autoStartedReplies.clear()
+
       return undefined
     }
 
@@ -153,6 +170,8 @@ export function useAutoSpeakReplies({
 
           return
         }
+
+        autoStartedReplies.add(reply.id)
 
         void playSpeechText(reply.text, {
           connectionId,

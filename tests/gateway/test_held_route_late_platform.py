@@ -226,3 +226,28 @@ def test_a_clean_startup_clears_a_held_route_s_turn_marker_on_disk(tmp_path):
         assert restarted.discard_active_turn_markers() >= 1
         row = json.loads(db.routing.load_routing_entries(routing_scope=restarted._routing_scope())[key])
         assert (row["origin"]["platform"], row["active_turn_token"]) == ("yuanbao", None)
+
+
+def test_a_recovered_db_load_keeps_the_boot_s_marker_discard_on_a_held_mirror_route(tmp_path, monkeypatch):
+    """state.db unreadable at a clean startup: the mirror's held route gets the marker discard, and the DB
+    retry inside that save must not put the old marker back."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store, key = _seed_held(tmp_path, db, turn_active=True)
+        scope = store._routing_scope()
+        mirror = store.sessions_dir / "sessions.json"
+        data = json.loads(mirror.read_text(encoding="utf-8")) if mirror.exists() else {}
+        data[key] = json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])
+        mirror.write_text(json.dumps(data), encoding="utf-8")
+        real_load, calls = type(db.routing).load_routing_entries, []
+
+        def _first_fails(self, *a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("database is locked")
+            return real_load(self, *a, **k)
+        monkeypatch.setattr(type(db.routing), "load_routing_entries", _first_fails)
+        restarted = SessionStore(store.sessions_dir, GatewayConfig())
+        restarted.discard_active_turn_markers()
+        monkeypatch.setattr(type(db.routing), "load_routing_entries", real_load)
+        assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["active_turn_token"] is None

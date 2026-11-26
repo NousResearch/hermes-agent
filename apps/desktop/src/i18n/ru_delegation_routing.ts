@@ -74,6 +74,13 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Быстрая',
   tierUltrafast: 'Сверхбыстрая',
   tierHint: 'Только для моделей, которые это поддерживают.',
+  daybreakLabel: 'Daybreak',
+  daybreakOff: 'Выкл.',
+  daybreakOn: 'Вкл.',
+  daybreakHint: 'Доверенный доступ OpenAI с ослабленными ограничениями, только для этого маршрута.',
+  daybreakUnlisted: 'Эта модель не указана для Daybreak в вашем аккаунте. Выключите его или выберите другую модель.',
+  daybreakNeedsPlugin:
+    'Ваш плагин Advanced Delegation пока не поддерживает маршруты Daybreak. Обновите его или выключите это.',
   optional: 'необязательно',
   errors: { required: 'Обязательно', spaces: 'Без пробелов', duplicate: 'Это название уже использует другой маршрут' },
   saveRoute: 'Сохранить маршрут',

@@ -30,12 +30,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, mkdir_under_hermes_home, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
+from hermes_cli.auth_declared_providers import (
+    default_api_key_base_url, provider_env_base_url, resolve_declared_api_key_provider)
 from hermes_cli.auth_model_picker import (
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (
@@ -44,6 +46,7 @@ from hermes_cli.auth_device_flow import (
     _poll_device_token_generic, _poll_for_token, _print_device_code_instructions,
     _print_login_success, _print_loopback_ssh_hint, _prompt_yes_no, _request_device_code,
     _resolve_verify, _ssh_user_at_host)
+default_httpx_verify = _default_verify
 from hermes_cli.auth_oauth_grants import (
     SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
     consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
@@ -62,6 +65,7 @@ from hermes_cli.auth_nous import (
     _write_shared_nous_state, fetch_nous_models, get_nous_auth_status_local,
     get_nous_session_validity, persist_nous_credentials, refresh_nous_oauth_from_state,
     resolve_nous_runtime_credentials, step_up_nous_billing_scope)
+nous_portal_base_url = _nous_portal_base_url
 from hermes_cli.auth_minimax import (
     _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
     _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
@@ -180,8 +184,6 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL),
     ProviderConfig("qwen-oauth", "Qwen OAuth", "oauth_external", inference_base_url=DEFAULT_QWEN_BASE_URL),
     ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
-    ("gemini", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta",
-     ("GOOGLE_API_KEY", "GEMINI_API_KEY"), "GEMINI_BASE_URL"),
     ("zai", "Z.AI / GLM", "https://api.z.ai/api/paas/v4",
      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "GLM_BASE_URL"),
     # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat); sk-kimi- (Kimi Code)
@@ -658,7 +660,7 @@ def _file_lock(
             holder.depth -= 1
         return
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(lock_path.parent)  # a deleted/renamed profile home is never recreated
     with ExitStack() as stack:
         lock_file = None
         if fcntl is not None or msvcrt is not None:
@@ -2023,25 +2025,13 @@ def get_xai_oauth_auth_status() -> dict[str, Any]:
         resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
 
 
-def _provider_env_base_url(pconfig: ProviderConfig) -> str:
-    if pconfig.id == "actual":
-        from hermes_cli.providers import normalize_provider
-
-        model = read_raw_config().get("model")
-        if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
-            configured_url = str(model.get("base_url") or "").strip()
-            if configured_url:
-                return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-
-
 def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-    env_url = _provider_env_base_url(pconfig)
+    env_url = provider_env_base_url(pconfig)
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     else:
@@ -2079,7 +2069,7 @@ def _external_process_spec(
 
     Launch details come from the provider's own profile (``process_command`` and its env overrides),
     so out-of-tree providers describe their binary."""
-    base_url = _provider_env_base_url(pconfig) or pconfig.inference_base_url
+    base_url = provider_env_base_url(pconfig) or pconfig.inference_base_url
     try:
         from providers import get_provider_profile as _get_provider_profile
         profile = _get_provider_profile(pconfig.id)
@@ -2087,11 +2077,10 @@ def _external_process_spec(
         profile = None
     command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
     args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
-    command = (next((v for v in (os.getenv(var, "").strip() for var in command_env_vars) if v), "")
-               or str(getattr(profile, "process_command", "") or ""))
+    from hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
+    command = external_process_command(profile)
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
-    from hermes_cli.auth_external_process import resolve_external_process_command
     return command, args, base_url, resolve_external_process_command(command), command_env_vars
 
 
@@ -2201,24 +2190,22 @@ def _get_azure_foundry_auth_status() -> dict[str, Any]:
     return info
 
 
-def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
-    return env_url.rstrip("/") if env_url else default
-
-
 # Providers whose runtime base URL is not simply env-override-or-registry-default:
 # ``(api_key, registry_default, env_override) -> base_url``.
 _API_KEY_BASE_URL_RESOLVERS: dict[str, Callable[[str, str, str], str]] = {
     "kimi-coding": _resolve_kimi_base_url,
     "kimi-coding-cn": _resolve_kimi_base_url,
     "zai": _resolve_zai_base_url,
-    "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
-    "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
+    "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(default_api_key_base_url(*a)),
+    "actual": lambda *a: normalize_actual_base_url(default_api_key_base_url(*a))}
 
 
 def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
     pconfig = _registry_lookup(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if not pconfig:
+        return resolve_declared_api_key_provider(provider_id)
+    if pconfig.auth_type != "api_key":
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
             provider=provider_id, code="invalid_provider")
@@ -2230,8 +2217,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
 
-    env_url = _provider_env_base_url(pconfig)
-    resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
+    env_url = provider_env_base_url(pconfig)
+    resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, default_api_key_base_url)
     profile = _credential_profile(provider_id)
     base_url = (profile.runtime_base_url(api_key=api_key, default=pconfig.inference_base_url, env_url=env_url)
                 if profile else None)

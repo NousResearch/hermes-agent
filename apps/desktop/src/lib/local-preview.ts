@@ -222,7 +222,8 @@ export async function openPreviewTargetInBrowser(target: PreviewTarget): Promise
     throw new Error('Desktop preview buffer bridge is unavailable')
   }
 
-  const decoded = atob(dataUrl.slice(dataUrl.indexOf(',') + 1))
+  // saveImageBuffer refuses zero bytes, so an empty remote document is staged as a blank page.
+  const decoded = atob(dataUrl.slice(dataUrl.indexOf(',') + 1)) || '<!doctype html>'
   const bytes = Uint8Array.from(decoded, char => char.charCodeAt(0))
   const filePath = await bridge.saveImageBuffer(bytes, '.html')
 

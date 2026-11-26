@@ -1,6 +1,7 @@
 """An owner restart leaves a started admission `unknown`; a client must be able to acknowledge it."""
 import asyncio
 import queue
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,10 @@ from gateway.session import SessionSource, SessionStore
 from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_controls import AuthorityConnection
-from hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.waiting import async_wait_until
 
 
@@ -27,7 +31,7 @@ async def _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed):
     """Real authority + SQLite: a started turn interrupted by an owner epoch change plus a queued follower."""
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
 
     async def answer(event):
         from gateway.session_results import execution_result
@@ -38,7 +42,7 @@ async def _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed):
     runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='unknown-head')
-    db.create_session('s', source='telegram')
+    seed_session(db, 's', 'telegram')
     first = await initialize_session_authority(runner, profile_id='p', instance_id='owner-1')
     first.sessions['s'] = LiveSession(source, 's')
     ref = SessionRef('p', 's')
@@ -47,11 +51,11 @@ async def _restarted_owner_with_unknown_head(tmp_path, monkeypatch, executed):
     first._schedule = lambda ref: None
     head = await first.submit(actor, Submission('head', ref, {'text': 'HEAD'}, 'queue'))
     follower = await first.submit(actor, Submission('follower', ref, {'text': 'FOLLOWER'}, 'queue'))
-    claimed = claim_session_input(db, epoch=first.epoch, session_id='s')
-    assert claimed['admission_id'] == head.admission_id
+    claimed = db.admissions.claim(epoch=first.epoch, session_id='s')
+    assert claimed.admission_id == head.admission_id
     authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner-2')
     authority.sessions['s'] = LiveSession(source, 's')
-    rows = {r['admission_id']: r for r in list_session_admissions(db, session_id='s')}
+    rows = {r.admission_id: asdict(r) for r in db.admissions.list(session_id='s')}
     assert rows[head.admission_id]['status'] == 'unknown' and rows[follower.admission_id]['status'] == 'queued'
     return store, authority, ref, rows[head.admission_id], follower
 
@@ -77,8 +81,8 @@ async def test_resolve_unknown_releases_the_paused_follower_exactly_once(tmp_pat
         assert receipt['status'] == 'terminal' and receipt['outcome'] == 'interrupted', reply
         await authority.sessions['s'].task
         assert executed == ['FOLLOWER']
-        statuses = {r['admission_id']: (r['status'], r['outcome']) for r in
-                    list_session_admissions(authority.db, session_id='s', pending_only=False)}
+        statuses = {r.admission_id: (r.status, r.outcome) for r in
+                    authority.persistence.admissions.list(session_id='s', pending_only=False)}
         assert statuses[follower.admission_id] == ('terminal', 'completed')
         # The viewer learns about the release through the ordinary pending fanout.
         infos = []
@@ -117,7 +121,7 @@ async def test_resolve_unknown_is_fenced_by_generation_and_capability(tmp_path, 
         assert 'error' in foreign
         live = authority.sessions['s']
         await async_wait_until(lambda: live.task is None or live.task.done(), what='no live drain')
-        rows = {r['admission_id']: r['status'] for r in list_session_admissions(authority.db, session_id='s')}
+        rows = {r.admission_id: r.status for r in authority.persistence.admissions.list(session_id='s')}
         assert rows[unknown['admission_id']] == 'unknown' and rows[follower.admission_id] == 'queued'
         assert executed == []
     finally:
@@ -132,12 +136,12 @@ async def test_discard_and_its_transcript_boundary_commit_atomically_on_the_phys
     Discard retry refused, the follower claimable onto an open user tail). The boundary lands on
     the rotated physical transcript, not the logical owner."""
     store, authority, _ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
-    db = authority.db
-    db.create_session('s-tip', source='telegram', parent_session_id='s')
-    db.end_session('s', 'compression')
-    db.append_message('s-tip', 'user', 'LOST_OPERATION')
+    db = authority.persistence
+    seed_session(db, 's-tip', 'telegram', parent_session_id='s')
+    db.sessions.end('s', 'compression')
+    seed_messages(db, 's-tip', {'role': 'user', 'content': 'LOST_OPERATION'})
     authority._schedule = lambda ref: None
-    db._execute_write(lambda c: c.execute("CREATE TRIGGER deny_boundary BEFORE INSERT ON messages "
+    raw_holder(db)._execute_write(lambda c: c.execute("CREATE TRIGGER deny_boundary BEFORE INSERT ON messages "
                                           "WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT,'boundary failed'); END"))
     viewer = AuthorityConnection(authority, Peer(), {'user_id': 'human'})
     params = {'session_id': 's', 'admission_id': unknown['admission_id'], 'execution_generation': unknown['generation']}
@@ -145,16 +149,16 @@ async def test_discard_and_its_transcript_boundary_commit_atomically_on_the_phys
         await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
         failed = await viewer.dispatch({'id': 2, 'method': 'prompt.resolve_unknown', 'params': params})
         assert 'error' in failed, failed
-        rows = {r['admission_id']: r['status'] for r in list_session_admissions(db, session_id='s')}
+        rows = {r.admission_id: r.status for r in db.admissions.list(session_id='s')}
         assert rows.get(unknown['admission_id']) == 'unknown', 'Discard committed without its transcript boundary'
-        with pytest.raises(RuntimeStoreError, match='unknown_execution'):
-            claim_session_input(db, epoch=authority.epoch, session_id='s')
-        db._execute_write(lambda c: c.execute('DROP TRIGGER deny_boundary'))
+        with pytest.raises(AuthorityRefusal, match='unknown_execution'):
+            db.admissions.claim(epoch=authority.epoch, session_id='s')
+        raw_holder(db)._execute_write(lambda c: c.execute('DROP TRIGGER deny_boundary'))
         retried = await viewer.dispatch({'id': 3, 'method': 'prompt.resolve_unknown', 'params': params})
         assert retried['result']['outcome'] == 'interrupted', retried
-        assert db.latest_conversation_role('s-tip') == 'assistant'
-        assert [m['role'] for m in db.get_messages('s') if m['role'] == 'assistant'] == []
-        assert claim_session_input(db, epoch=authority.epoch, session_id='s')['admission_id'] == follower.admission_id
+        assert db.messages.latest_conversation_role('s-tip') == 'assistant'
+        assert [m['role'] for m in transcript_rows(db, 's') if m['role'] == 'assistant'] == []
+        assert db.admissions.claim(epoch=authority.epoch, session_id='s').admission_id == follower.admission_id
     finally:
         await viewer.close()
         store.close_all_db_handles()
@@ -170,8 +174,8 @@ async def test_discarded_lost_turn_is_closed_and_never_merged_into_the_follower_
     monkeypatch.setenv('HERMES_DISABLE_PLUGINS', '1')
     monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost')
     store, authority, _ref, unknown, _follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
-    db = authority.db
-    db.append_message('s', 'user', 'HEAD lost in restart')  # the lost turn's turn-start flush
+    db = authority.persistence
+    seed_messages(db, 's', {'role': 'user', 'content': 'HEAD lost in restart'})  # the lost turn's turn-start flush
     viewer = AuthorityConnection(authority, Peer(), {'user_id': 'human'})
     provider = _LoopbackProvider()
     try:
@@ -181,7 +185,7 @@ async def test_discarded_lost_turn_is_closed_and_never_merged_into_the_follower_
             'execution_generation': unknown['generation']}})
         assert reply['result']['outcome'] == 'interrupted', reply
         await authority.sessions['s'].task
-        rows = [m for m in db.get_messages('s') if m['role'] in ('user', 'assistant')]
+        rows = [m for m in transcript_rows(db, 's') if m['role'] in ('user', 'assistant')]
         assert [(m['role'], m['content']) for m in rows[:2]] == [
             ('user', 'HEAD lost in restart'), ('assistant', PARTIAL_FAILED_TURN_NOTICE)]
         assert rows[1]['display_kind'] == FAILED_TURN_DISPLAY_KIND

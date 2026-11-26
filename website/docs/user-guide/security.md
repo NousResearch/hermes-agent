@@ -50,12 +50,13 @@ The full set of keys:
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
 | `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Exception: an api_server session whose client can answer the card (`/v1/runs` and streaming chat completions, via `POST /v1/runs/{id}/approval`) still gets the approval request. Mirrors `cron_mode`. |
+| `approvers` | `["*"]` | Who may answer a pending approval from a messaging chat. `["*"]`: any admitted member. `[]` or a list of user ids: the requester, those ids and the platform admins only — see [Who can answer an approval in a shared chat](#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers). |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
 | Mode | Behavior |
 |------|----------|
-| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **smart** (default) | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved for that command only. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. One class never reaches the auxiliary LLM: `osascript` that can destroy work the agent did not create (closing a document with `saving no`, quitting an app, deleting files, sending keystrokes, `do shell script`), or whose script is not visible on the command line. Only the operator can consent to that, so it always prompts, and the answer covers that one command. |
 | **manual** | Always prompt the user for approval on dangerous commands. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts, and write calls on `trust: untrusted` MCP servers run without the trust prompt. An MCP server's declared spend limit still asks (see [YOLO mode](#yolo-mode)). |
 
@@ -146,7 +147,7 @@ Some commands are so catastrophic — irreversible filesystem wipes, fork bombs,
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
 
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval_detection.py::HARDLINE_PATTERNS`):
 
 | Pattern | Why it's hardline |
 |---|---|
@@ -155,6 +156,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
+| `format C:`, `Format-Volume`, `Clear-Disk`, `rd /s /q C:\`, `Remove-Item -Recurse C:\` (a literal `-Include *.tmp` filter and a plain `Clear-Disk -WhatIf` preview stay approvable) | Windows analogues: format/wipe a volume or recursively delete a drive root |
+| `Restart-Computer` / `Stop-Computer` (a plain `-WhatIf` preview stays approvable) | Windows analogue of `shutdown`/`reboot` |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
@@ -238,9 +241,11 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 | `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker`/`podman` `rm`, `container rm/remove`, `volume rm/remove/prune`, `container/system prune`; `podman system reset`; `docker compose rm` / `docker-compose rm` | Container and volume destruction (`image rm`/`rmi`/`network rm` stay ungated: a pull or recreate restores them) |
 | `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
 | `docker context use` | Switches the default daemon for all future docker commands |
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
+| `osascript` or `osacompile` whose script closes, quits, saves, deletes, moves, writes, sends keystrokes/clicks or runs `do shell script` / Terminal's `do script` (any JXA `-l JavaScript` program counts; `¬` continuations and comments are read through), or whose script comes from a file, pipe, `$VAR`/`$(...)` expansion or a carrier (`sh -c`, `eval`, `ssh`, `xargs`, ...) | AppleScript can discard the operator's unsaved work in any app. Always a manual, one-time prompt, even in `smart` mode. Detection is a command-line heuristic, not a boundary. Read-only literal scripts (`get name of first application process whose frontmost is true`, `activate`, `display notification`) are not flagged |
 
 :::info
 **Container bypass**: When running in `docker`, `modal`, `daytona`, or `vercel_sandbox` backends (or a container plugin backend such as `singularity` or `sprites`), dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
@@ -283,7 +288,49 @@ On messaging platforms, the agent sends the dangerous command details to the cha
 - Reply **yes**, **y**, **approve**, **ok**, or **go** to approve
 - Reply **no**, **n**, **deny**, or **cancel** to deny
 
+A messaging approval never asks you to approve a command you cannot read in full. When the command is too long for the approval card, Hermes first sends the whole command as its own message (split across several messages if needed), and the card says the preview was shortened. If the full command cannot be shown (the send fails, or the command itself contains a triple-backtick fence), the card offers **Deny** only. Review such a command in the CLI or the desktop app. On platforms that cut long messages instead of splitting them (ntfy, DingTalk, Photon, LINE), the plain-text prompt puts the answer instructions before the command. When the command would still be cut, the prompt offers only `/deny` and shows the same "preview shortened" notice.
+
 The `HERMES_EXEC_ASK=1` environment variable is automatically set when running the gateway.
+
+#### Who can answer an approval in a shared chat (`approvals.approvers`)
+
+By default any member admitted to the chat can answer a pending approval, whoever's message raised it. In a group, channel or shared thread you can bind each approval to the person who asked instead:
+
+```yaml
+approvals:
+  approvers: []            # default ["*"]: any admitted member answers
+  # approvers: ["U024BE7LH", "123456789"]   # requester + these chat user ids + admins
+```
+
+With `approvers` narrowed from `["*"]`, only these people can approve or deny a command:
+
+- the user whose message started the turn that raised it;
+- the user ids listed in `approvers`, using each platform's own id form (Slack `U…`, Telegram numeric id, Matrix `@user:server`);
+- the platform's admins of the chat the approval came from: `allow_admin_from` in a DM, `group_allow_admin_from` in a group (the same scopes slash commands use; a DM admin is not a group admin), from the profile whose bot received the chat.
+
+Identical commands raised at the same time by two different requesters get one prompt each, so one requester's answer never decides the other's. A turn that carries messages from two members (follow-ups merged while the agent was busy) has no single requester: its approvals go to the listed approvers and admins only.
+
+When anyone else clicks a button, adds a reaction, or sends `/approve`, `/deny` or a bare "yes", they get *Only &lt;name&gt; can answer this approval.* The command stays pending, so the requester can still answer it. Where the platform supports a private reply, only the clicker sees that note: a Slack ephemeral message, a Discord ephemeral reply, a Telegram callback alert, a Feishu toast or a Teams card response. Matrix, WhatsApp and the relay post it in the chat instead.
+
+The same rule covers the other prompts a member can answer for someone else: a slash-command confirmation (`/reload-mcp`'s Approve Once / Always / Cancel) and the agent's clarify question (a choice button, "Other", or a typed answer). Another member's tap gets the same note and the prompt stays pending; another member's typed message is handled as their own message, never as the answer.
+
+**With slash admin gating (`allow_admin_from` / `group_allow_admin_from`) set for the chat's scope**, the default `approvers: ["*"]` no longer means "any admitted member": answering an approval is `/approve` or `/deny`, and answering a slash-command confirmation runs that command, so only someone allowed to run that command in the chat can answer, on every path (button, reaction, typed `/approve`, bare `yes` / `always`, typed confirm reply). That is the scope's admins, plus members whose `user_allowed_commands` lists `approve` (who may then also deny) or `deny` (deny only), or the confirmed command. Anyone else, the member whose message raised the approval included, can answer neither way: they get *⛔ /approve is admin-only here* and the prompt stays pending for an admin, or is denied when it times out.
+
+When both are set, a narrowed `approvers` takes precedence: it is the explicit answer to "who approves", so the requester, the listed ids and the scope's admins answer with a button, reaction or bare "yes", as described above, whatever `user_allowed_commands` says. Typing `/approve` or `/deny` is itself a slash command, so it still needs that command's permission.
+
+| Config for the chat's scope | Who can answer |
+|---|---|
+| neither | any admitted member |
+| `allow_admin_from` only | admins, plus members with `approve` (approve or deny) / `deny` (deny only) or the confirmed command in `user_allowed_commands` |
+| `approvers` narrowed (with or without `allow_admin_from`) | the requester, the listed ids, the scope's admins |
+
+A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
+
+Discord interactions through the relay are checked more tightly. The relay forwards a Discord button press or application command (such as `/approve` or `/deny`) without checking who sent it. So under `approvers: ["*"]`, a member answers with one only once the relay has delivered one of their messages to this gateway (since it last started); anyone else must be the requester or one of the scope's admins, on top of the rules above. Other senders get the same note and the prompt stays pending. Any other Discord interaction (an application command such as `/status` or `/new`, a modal) from a sender the relay has not delivered a message from is dropped unless they are one of the scope's admins. When Hermes starts again, a member's application commands do nothing until they have sent a message. Ordinary messages, and button presses on the relay's other platforms, keep the rules above.
+
+Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
+
+The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
 
 ### Permanent Allowlist
 
@@ -377,7 +424,7 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, the google-workspace skill's `google_token.json`, `google_client_secret.json` and `google_oauth_pending.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME: the active profile, every profile under `profiles/`, and the global root. Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
 
 Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
@@ -652,6 +699,8 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+The [managed scope](./managed-scope.md) can set the same list (an administrator's, or a sandbox launcher's for the variables its children need); a managed list replaces the profile's, and provider credentials are refused from either.
+
 Both lists apply to `terminal`, `execute_code` and `no_agent` cron scripts alike. A declared variable is forwarded with the value of the profile the child runs for: when one process serves several profiles (multi-profile gateway, Desktop/dashboard backend) each profile's declared value comes from its own `.env` / secret sources, never from the process environment the launch profile populated, and the launch profile's `.env` credentials are dropped from a served profile's children.
 
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
@@ -682,6 +731,8 @@ terminal:
 ```
 
 Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
+
+The [managed scope](./managed-scope.md) can set this list too. From either source, Hermes's own credential stores (`.env`, `auth.json`, `mcp-tokens/` and the other files the agent is denied from reading) are never mounted: an entry that names one is skipped with a warning, as it is when a skill asks for it. The Google Workspace token files above are the exception a skill has as well.
 
 ### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
 
@@ -727,6 +778,8 @@ PATH, HOME, USER, LANG, LC_ALL, TERM, SHELL, TMPDIR
 
 Plus any `XDG_*` variables. All other environment variables (API keys, tokens, secrets) are **stripped**.
 
+Variables supplied by an [external secret source](secrets/index.md) (Bitwarden, 1Password, a command helper) are also passed, except Hermes-managed credentials: model-provider keys, tool keys Hermes uses itself, and bot, gateway and relay tokens. That covers every name Hermes reads such a credential by: the numbered rotation keys (`DEEPSEEK_API_KEY_2`), any variable a [credential pool](features/credential-pools.md) entry points at (`source: env:MY_KEY`), any variable the profile's `config.yaml` names as a provider key (`key_env` / `api_key_env` on `model`, `custom_providers`, `providers`, `auxiliary` or fallback entries, or a credential field such as `api_key` written as `${VAR}` / `${env:VAR}`), and the profile-suffixed form the active profile uses (`TELEGRAM_BOT_TOKEN_<PROFILE>`). Those are stripped wherever they are stored. If a server needs one, declare it in that server's `env` (for example `OPENAI_API_KEY: "${OPENAI_API_KEY}"`).
+
 Variables explicitly defined in the MCP server's `env` config are passed through:
 
 ```yaml
@@ -763,7 +816,7 @@ security:
       - "/etc/hermes/blocked-sites.txt"
 ```
 
-When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_exec`, and all URL-capable tools.
+When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced on `web_extract`, browser navigation, `vision_analyze` and `video_analyze` URLs, and skills hub downloads. A `web_extract` redirect to a blocked host is caught after the provider has fetched it, so the page is withheld from the agent but the host still saw the request. `web_search` takes a query, not a URL, so it is not gated, and its result list is not filtered. Kanban URL attachments, cron URL monitors and gateway media downloads apply only the private-address SSRF check.
 
 See [Website Blocklist](./configuration.md#website-blocklist) in the configuration guide for full details.
 
@@ -791,9 +844,11 @@ security:
   allow_private_urls: true   # default: false
 ```
 
-When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+When on, web tools, the browser, vision URL fetches, gateway media downloads, cron `monitor_url` fetches, and A2A push callbacks no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
+
+The [managed scope](./managed-scope.md) can pin this key (or the legacy `browser.allow_private_urls`). A pinned value decides this guard in either direction: `HERMES_ALLOW_PRIVATE_URLS` and the profile's own keys are read only when the managed scope pins neither. Cloud and CDP browsers also read `browser.allow_private_urls` as their own switch, so pin that key as well to hold them.
 
 #### What `allow_private_urls` covers, and what it doesn't
 
@@ -837,6 +892,8 @@ security:
   fake_ip_ranges:
     - 198.18.0.0/15
 ```
+
+The [managed scope](./managed-scope.md) can declare the block too, for example a sandbox launcher whose proxy answers DNS this way; the rules below apply to a managed entry the same way.
 
 Empty by default, and narrower than `allow_private_urls`: only the declared blocks get the
 exemption, they should be ranges the local proxy owns (the dial still goes to the proxy, which

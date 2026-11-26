@@ -32,6 +32,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -133,6 +134,8 @@ function ConfigSettingsInner({
     refetch: refetchConfig,
     writeScope
   } = useHermesConfigRecord(scopeProfile)
+
+  const desktopReadAloud = useStore($autoSpeakReplies)
 
   // Writes land on the same cache key the query above reads (base key when
   // following the active profile, suffixed when a scope override is set).
@@ -531,7 +534,18 @@ function ConfigSettingsInner({
         writeScope={writeScope}
       />
       {activeSectionId === 'voice' ? (
-        <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+        <>
+          {/* Desktop's own read-aloud switch: the same preference as the composer's toggle, for
+              every window and profile. voice.auto_tts below stays the messaging/CLI setting of
+              the profile being edited (#119885). */}
+          <ToggleRow
+            checked={desktopReadAloud}
+            description={c.desktopReadAloudDesc}
+            label={c.desktopReadAloudTitle}
+            onChange={on => void setAutoSpeakReplies(on)}
+          />
+          <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+        </>
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
@@ -541,7 +555,11 @@ function ConfigSettingsInner({
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               {key === 'delegation.model' ? (
                 <SubagentModelGate scope={writeScope ?? scopeProfile}>
-                  <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+                  <DelegationRouteRow
+                    config={config}
+                    onConfigChange={updateConfig}
+                    scope={writeScope ?? scopeProfile}
+                  />
                 </SubagentModelGate>
               ) : (
                 <ConfigField

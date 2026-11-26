@@ -17,16 +17,7 @@ import pytest
 
 from tools import tts_command_provider, tts_tool, tts_tool_lifecycle, tts_tool_local
 
-
-@pytest.fixture(autouse=True)
-def _clean_lifecycle(monkeypatch):
-    tts_tool_lifecycle._reset_tts_leases_for_tests()
-    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
-        cache.clear()
-    yield
-    tts_tool_lifecycle._reset_tts_leases_for_tests()
-    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
-        cache.clear()
+pytestmark = pytest.mark.usefixtures("tts_lifecycle_reset")
 
 
 class _FakePiperVoice:
@@ -63,37 +54,13 @@ def fake_piper(monkeypatch, tmp_path):
     return cfg
 
 
-class _FakeTimer:
-    def __init__(self, interval, function, args=None, kwargs=None):
-        self.interval, self.function, self.args = interval, function, tuple(args or ())
-        self.started = self.cancelled = False
-        self.daemon = False
-
-    def start(self):
-        self.started = True
-
-    def cancel(self):
-        self.cancelled = True
-
-    def fire(self):
-        self.function(*self.args)
-
-
 @pytest.fixture
-def timers(monkeypatch):
-    created: list = []
-
-    def _factory(*args, **kwargs):
-        timer = _FakeTimer(*args, **kwargs)
-        created.append(timer)
-        return timer
-
-    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", _factory, raising=False)
-    return created
+def timers(tts_keep_warm_timers):
+    return tts_keep_warm_timers
 
 
 def _pending(timers):
-    return [t for t in timers if t.started and not t.cancelled]
+    return [t for t in timers if t.pending]
 
 
 # --------------------------------------------------------------------------

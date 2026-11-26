@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
@@ -263,11 +264,14 @@ def _messaging_platform_payload(
         })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)
-    if gateway_running and runtime_platform.get("mirrored_from"):
+    if gateway_running and runtime_platform.get("mirrored_from") and platform_id in _LISTENER_MIRRORS:
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
-        # must not project Disabled over the live mirror (#121125).
+        # must not project Disabled over the live mirror (#121125). A mirrored Relay keeps the
+        # profile's own verdict: Relay has a per-profile opt-out, and a disabled one stays Disabled.
         enabled, configured = True, True
+    elif runtime_platform.get("mirrored_from") and not (enabled and configured):
+        runtime_platform = {}  # the default's Relay is not this profile's channel: none of its errors either
 
     state = runtime_platform.get("state")
     if not enabled:
@@ -447,7 +451,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
     from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
 
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
@@ -466,16 +470,18 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
             node = str(installed.binary)
         except pm.InstallError as exc:
             raise HTTPException(status_code=500, detail=f"Node.js preparation failed: {exc}") from exc
-    session_path.mkdir(parents=True, exist_ok=True)
+    store_umask = ensure_private_store(session_path)  # pairing writes creds.json + signal keys (#80090)
 
-    env = with_hermes_node_path()
+    from tools.environments.local import hermes_subprocess_env
+    # bridge.js and its npm deps never see Hermes' credentials; it needs only the mode and policy below.
+    env = with_hermes_node_path(hermes_subprocess_env())
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
     # Owned: a SIGKILLed dashboard must not leave a pairing bridge holding the session dir.
     return spawn_owned(
         [node, str(bridge_script), "--pair-only", "--pair-json", "--session", str(session_path)],
         purpose="whatsapp-pairing", cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(),
+        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(), umask=store_umask,
     )
 
 
@@ -506,6 +512,14 @@ def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WH
             record.error = error
 
 
+# Readable text for bridge pairing error codes the dashboard displays; other codes show as the bridge sent them.
+_WHATSAPP_PAIRING_ERROR_TEXT = {
+    "passkey_required": "This WhatsApp account requires passkey verification, which dashboard setup cannot do. "
+                        "In a local terminal, run hermes whatsapp --passkey-browser followed by the path to your "
+                        "Chrome or Edge executable.",
+}
+
+
 def _apply_pairing_event(record, payload: dict) -> None:
     event = str(payload.get("event") or "").strip()
     if event == "qr":
@@ -525,7 +539,8 @@ def _apply_pairing_event(record, payload: dict) -> None:
         record.error = None
     elif event == "error":
         record.status = "error"
-        record.error = str(payload.get("error") or "WhatsApp pairing failed.")
+        code = str(payload.get("error") or "WhatsApp pairing failed.")
+        record.error = _WHATSAPP_PAIRING_ERROR_TEXT.get(code, code)
     elif event == "disconnected" and record.status == "starting":
         record.status = "waiting"
 
@@ -551,11 +566,11 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return
-    # An "error" status from the stream may be overwritten by the exit reason.
+    # An error the bridge streamed names the cause; the exit code only says it stopped.
     _fail_whatsapp_pairing(
         pairing_id, "WhatsApp pairing process exited before pairing completed." if returncode == 0
         else f"WhatsApp pairing process exited with code {returncode}.",
-        proc=proc, unless={"connected", "cancelled", "expired"})
+        proc=proc)
 
 
 def _run_whatsapp_pairing(pairing_id: str, session_path: Path, mode: str) -> None:
@@ -1170,7 +1185,7 @@ def _messaging_platform_posture(
     - pairing grants: approved users in the profile's pairing store (the gateway honors
       the store as a UNION with the allowlists)
     - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
-      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp, Yuanbao) gate at intake
+      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp) gate at intake
 
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".

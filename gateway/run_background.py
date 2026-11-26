@@ -63,8 +63,8 @@ class GatewayBackgroundMixin:
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
-            self._service_tier = self._resolve_session_service_tier(source=source)
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            service_tier = self._resolve_session_service_tier(source=source)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, tier=service_tier)
 
             # Enrich the prompt with image descriptions (same as the main flow).
             enriched_prompt = prompt
@@ -92,7 +92,7 @@ class GatewayBackgroundMixin:
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
+                    service_tier=turn_route.get("service_tier"),
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -101,15 +101,18 @@ class GatewayBackgroundMixin:
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
                     session_id=task_id,
-                    platform=platform_key,
+                    platform=platform_key, side_agent=True,
                     **{k: getattr(source, k) for k in (
                         "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
                     )},
-                    session_db=getattr(self._session_db, "_db", self._session_db),
+                    persistence=getattr(self, "persistence", None),
                     # Reload from disk — do not reuse the startup snapshot.
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                # Built outside the turn wiring, so it takes its chat's Daybreak verdicts here.
+                agent.daybreak_surface = self._daybreak_surface(source) is True
+                agent.daybreak = self._load_daybreak(source) is True
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:
@@ -130,6 +133,8 @@ class GatewayBackgroundMixin:
             if response:
                 media_files, response = adapter.extract_media(response)
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                from gateway.platforms.docker_media_paths import hand_back_unreadable_media
+                await hand_back_unreadable_media([p for p, _ in media_files])
                 images, text_content = adapter.extract_images(response)
             if text_content:
                 await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
@@ -165,9 +170,11 @@ class GatewayBackgroundMixin:
         except Exception:
             logger.exception("Background task %s failed", task_id)
             # Automatic failure diagnostic (the task produced no requested result to deliver).
+            from gateway.bot_peer_notices import automatic_notices_allowed
             with suppress(Exception):
-                await adapter.emit_warning(
-                    source.chat_id,
-                    t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
-                    metadata=_thread_metadata, logical_platform=source.platform,
-                )
+                if automatic_notices_allowed(source):
+                    await adapter.emit_warning(
+                        source.chat_id,
+                        t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
+                        metadata=_thread_metadata, logical_platform=source.platform,
+                    )

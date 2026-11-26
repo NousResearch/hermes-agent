@@ -45,7 +45,7 @@ export interface RealSessionSpec {
 export interface RealSession {
   /** Runtime-only TUI session id, valid only while the builder process is alive. */
   runtimeId: string
-  /** Durable SessionDB id that desktop resumes after the builder exits. */
+  /** Durable stored session id that desktop resumes after the builder exits. */
   sessionId: string
 }
 
@@ -54,7 +54,7 @@ export interface RealSession {
  * AIAgent loop, using the E2E mock provider configured in `hermesHome`.
  *
  * This intentionally uses the shipped stdio JSON-RPC transport instead of
- * importing SessionDB or launching Electron. The desktop's WebSocket backend
+ * opening the session store or launching Electron. The desktop's WebSocket backend
  * dispatches the same `tui_gateway.server` methods.
  */
 export class RealSessionBuilder {

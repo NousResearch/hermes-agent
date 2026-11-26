@@ -1,0 +1,34 @@
+name: harness-story
+title: "Harness Story"
+repo: https://github.com/wronglebowsk/harness-story
+sha: "ac6c59b1a85f254b2145443fbff495ce8516f81a"
+description: "Plain-English session storyteller and Desktop workspace pane: reconstructs what you asked, the hidden Hermes startup context load (skills, connectors, plugins, tools, memory), why the model chose each tool or pivoted after errors, and a 5-bucket context window bar synchronized with an auto-scrolling Chronicle. Disclosure — records 12 observer hooks (including short previews of your prompts, tool arguments and tool results) as JSONL under the plugin's data directory, writes a story JSON/HTML for every session by default, reads `state.db` read-only and the names of MCP servers, plugins and toolsets from `config.yaml`; optional narrative synthesis posts a session digest to the OpenAI-compatible endpoint you configure (none by default). No third-party cloud calls, no shell execution, no stored credentials, no self-updater."
+maintainer: wronglebowsk
+tier: community
+category: desktop
+requires_hermes: ">=0.20"
+docs_url: https://github.com/wronglebowsk/harness-story
+version: "0.1.0"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - harness_story_generate
+    - harness_story_inspect
+    - harness_story_compare
+    - harness_story_render
+    - harness_story_list
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_api_request
+    - post_api_request
+    - pre_tool_call
+    - post_tool_call
+    - on_skill_lifecycle
+    - subagent_start
+    - subagent_stop
+    - post_compaction
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

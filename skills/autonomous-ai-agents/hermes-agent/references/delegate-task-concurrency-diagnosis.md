@@ -11,7 +11,8 @@ choice.
 
 All resolved through `tools.delegate_tool._get_max_concurrent_children()`,
 which reads `delegation.max_concurrent_children` from `config.yaml`
-(env fallback `DELEGATION_MAX_CONCURRENT_CHILDREN`, default 3). Floor of 1.
+(default 10; the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var is read only
+when no config value is loaded). Floor of 1.
 **No hard ceiling.**
 
 1. **Per-call hard reject** — `tools/delegate_tool.py` (~line 1953).
@@ -43,8 +44,10 @@ When a user says "delegate is capped at N":
 hermes config get delegation.max_concurrent_children
 
 # 2. Did Hermes' truncator or rejector actually fire?
-grep -E "Truncated.*delegate_task|Too many tasks" ~/.hermes/logs/agent.log | tail
-# If neither line appears, neither cap path executed.
+#    search_files(pattern="Truncated.*delegate_task|Too many tasks", path="~/.hermes/logs/agent.log")
+#    Matches come back oldest first, 50 at a time: for the newest, repeat with offset=50, 100, ...
+#    until a call returns fewer than 50 (or read_file the log's last page).
+#    If neither line appears, neither cap path executed.
 
 # 3. Confirm the resolver returns what config says (in venv with hermes on path)
 python -c "from tools.delegate_tool import _get_max_concurrent_children; \

@@ -1,0 +1,18 @@
+name: web-specstream
+repo: https://github.com/specstream/hermes-web-specstream
+sha: ff87c46376d87d662bb20557f41eec2953bd7b33
+description: "SpecStream Search API and Extract API for web_search and web_extract. Search is $5 per 1,000 searches, extract is $0.80 per 1,000 pages (web pages, PDF, Word and Excel, up to 20 URLs a call, a page with no text is free). Needs a SpecStream API key. Disclosure — paid third-party backend: search queries and every URL passed to web_extract are sent to api.specstream.ai with your SPECSTREAM_API_KEY, which SpecStream fetches server-side and bills to that key's balance."
+maintainer: Specstreamai
+tier: community
+category: web
+title: SpecStream Search and Extract
+version: "1.0.0"
+docs_url: https://github.com/specstream/hermes-web-specstream#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SPECSTREAM_API_KEY
+requires_hermes: ">=0.21.6"

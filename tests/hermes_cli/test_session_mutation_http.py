@@ -10,8 +10,11 @@ import uvicorn
 from fastapi import FastAPI, WebSocket
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.mark.asyncio
@@ -20,14 +23,13 @@ async def test_http_and_ws_clients_compete_for_one_revision(tmp_path, monkeypatc
     from hermes_cli import web_server as web
     monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     app = FastAPI()
     app.state.auth_required = False
     app.include_router(manage_router)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('session-fixture', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'session-fixture', 'test')
+        epoch = store.runtime.begin_epoch(instance_id='owner')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path), instance_id='owner', epoch=epoch, persistence=storage_handle(tmp_path))
         authority.sessions['session-fixture'] = LiveSession(None, 'route')
         app.state.session_authority = authority
 
@@ -74,8 +76,8 @@ async def test_http_and_ws_clients_compete_for_one_revision(tmp_path, monkeypatc
                 assert denied.status_code == 401
                 foreign = await client.patch('/api/sessions/session-fixture?token=fixture-token', json=body | {'profile': 'other'}, headers={'Authorization': 'Bearer fixture-token'})
                 assert foreign.status_code in (400, 403, 404)
-                assert db.get_session('session-fixture')['runtime_revision'] == 1
-                assert db.get_session('session-fixture')['title'] == 'Title'
+                assert session_row(store, 'session-fixture')['runtime_revision'] == 1
+                assert session_row(store, 'session-fixture')['title'] == 'Title'
         finally:
             server.should_exit = True
             await asyncio.wait_for(task, 10)
@@ -87,23 +89,23 @@ async def test_http_import_and_delete_keep_atomic_receipts(tmp_path, monkeypatch
     from hermes_cli.web_routers.sessions import manage_router
     from hermes_cli import web_server as web
     monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     app = FastAPI()
     app.state.auth_required = False
     app.include_router(manage_router)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        epoch = store.runtime.begin_epoch(instance_id='owner')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path), instance_id='owner', epoch=epoch, persistence=storage_handle(tmp_path))
         app.state.session_authority = authority
         headers = {'Authorization': 'Bearer fixture-token'}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost', headers=headers) as client:
             body = {'request_id': 'import', 'expected_revision': 0,
                     'sessions': [{'id': 'imported-session', 'source': 'cli', 'messages': [{'role': 'user', 'content': 'keep'}]}]}
-            db._execute_write(lambda c: c.execute("CREATE TRIGGER fail_receipt BEFORE INSERT ON state_meta WHEN NEW.key LIKE 'gateway.mutation.%' BEGIN SELECT RAISE(ABORT, 'receipt failed'); END"))
+            raw_holder(store)._execute_write(lambda c: c.execute("CREATE TRIGGER fail_receipt BEFORE INSERT ON state_meta WHEN NEW.key LIKE 'gateway.mutation.%' BEGIN SELECT RAISE(ABORT, 'receipt failed'); END"))
             failed = await client.post('/api/sessions/import', json=body)
             assert failed.status_code == 503, failed.text
-            assert db.get_session('imported-session') is None
-            db._execute_write(lambda c: c.execute('DROP TRIGGER fail_receipt'))
+            assert session_row(store, 'imported-session') is None
+            raw_holder(store)._execute_write(lambda c: c.execute('DROP TRIGGER fail_receipt'))
             imported = await client.post('/api/sessions/import', json=body)
             assert imported.status_code == 200, imported.text
             assert (await client.post('/api/sessions/import', json=body)).json() == imported.json()
@@ -113,7 +115,7 @@ async def test_http_import_and_delete_keep_atomic_receipts(tmp_path, monkeypatch
             assert deleted.status_code == 200, deleted.text
             assert deleted.json()['deleted_ids'] == ['imported-session']
             assert (await client.delete('/api/sessions/imported-session', params=query)).json() == deleted.json()
-            assert db.get_session('imported-session') is None
+            assert session_row(store, 'imported-session') is None
 
 
 @pytest.mark.asyncio
@@ -127,15 +129,15 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
     from hermes_cli import web_server as web
     import hermes_cli.web_server_sessions as web_sessions
     monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     app = FastAPI()
     app.state.auth_required = False
     app.include_router(manage_router)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('cold-api', source='api_server', chat_id='cold-api', session_key='agent:main:api:cold')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'cold-api', 'api_server', chat_id='cold-api', session_key='agent:main:api:cold')
+        epoch = store.runtime.begin_epoch(instance_id='owner')
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
-                                     instance_id='owner', db=db, epoch=epoch)
+                                     instance_id='owner', epoch=epoch, persistence=storage_handle(tmp_path))
         login = SessionActor('basic:alice', str(tmp_path), frozenset({'session:read', 'session:control'}), 'http')
         monkeypatch.setattr(web_sessions, '_session_mutation_context', lambda request, profile: (authority, login))
         query = {'request_id': 'delete', 'expected_revision': 0, 'expected_generation': 0}
@@ -144,5 +146,5 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
             unrestorable = await client.delete('/api/sessions/cold-api', params=query)
             gone = await client.delete('/api/sessions/never-existed', params=query)
         assert unrestorable.status_code == 404 and unrestorable.json()['detail'] == 'not_found', unrestorable.text
-        assert db.get_session('cold-api') is not None
+        assert session_row(store, 'cold-api') is not None
         assert gone.status_code == 200 and gone.json() == {'ok': True, 'already_absent': True}, gone.text

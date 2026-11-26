@@ -1,4 +1,5 @@
 import {
+  type CanonicalClientIdentity,
   type ConnectionState,
   type GatewayEvent,
   type GatewayEventName,
@@ -9,6 +10,7 @@ import {
 import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
+import { desktopClientIdentity } from '@/lib/client-identity'
 
 import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } from './dial-readiness'
@@ -329,6 +331,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     return this.nativeDial
   }
 
+  protected override clientIdentity(): Promise<CanonicalClientIdentity> {
+    return desktopClientIdentity()
+  }
+
   /** The session wire this connection negotiated; null until its readiness settles. */
   get sessionWire(): GatewaySessionWire | null {
     return this.readiness.ready ? (this.canonical ? 'canonical' : 'legacy') : null
@@ -579,6 +585,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
       // The channel already answered -32603; surface the crash in devtools like the dial-failure sink.
       onRequestHandlerError: (error, request) =>
         console.error(`[gateway] server request handler crashed for ${request.method} (${request.id}):`, error),
+      onUncorrelatedError: error =>
+        console.error(`[gateway] error frame with no request id (code ${error.code ?? 'none'}): ${error.message}`),
       // The channel already answered -32601; note the missing registry in devtools.
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),

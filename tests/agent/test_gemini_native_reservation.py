@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 
 import agent.context_compressor as cc_mod
-from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+from agent.gemini_model_family import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
 
 
 CFG = {"agent": {}}

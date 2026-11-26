@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Atlas Omnia
+name: hermes-office-desktop
+title: "Workbench by Atlas Omnia"
+repo: https://github.com/AtlasOmnia/workbench
+docs_url: https://github.com/AtlasOmnia/workbench#readme
+sha: 59d56b33e82472532b683183b8de4c5726a0c1af
+version: "0.4.0"
+screenshots: ["https://raw.githubusercontent.com/AtlasOmnia/workbench/59d56b33e82472532b683183b8de4c5726a0c1af/assets/demo-highlight.gif"]
+description: "Workbench by Atlas Omnia — Open and edit Word, Excel, PowerPoint, OneNote and Outlook for the web in Hermes Desktop. Live-tested in the automated harness and real Hermes Desktop sessions on macOS and Windows; see docs/live-evidence.md. Every edit requests Hermes approval and returns a readback/undo receipt; undo has exceptions (large Word snapshots, Excel over 10,000 cells, some PowerPoint edits and OneNote page creation), and history is lost on pane reload. powerpoint_add_speaker_notes returns Unsupported. Requires Microsoft sign-in and Upload My Add-in. A loopback HTTPS bridge on 127.0.0.1:47615-47619 (https://localhost) serves the add-in from this pinned plugin (only files listed in addin/SHA256SUMS with a matching sha256, never addin/dev), accepts only Workbench's own loopback origins (or a self-hosted addin_base's exact origin) and a user-typed single-use code, then a per-pane token; idle listeners release after ten minutes. One manual step per Hermes profile: trust the plugin's local certificate authority with the command it prints (the plugin never changes OS trust); /workbench manifest writes the add-in manifests. Earlier live runs used a private add-in site; the plugin-served default passed one live Excel run on macOS (2026-11-12) and is not live-tested yet in the other apps or on Windows. The pane loads Microsoft Office.js. Document data enters the local Hermes conversation; OneNote pages and email indexed on request persist unencrypted in brain.db. Reads are capped at 20,000 characters for Word and Outlook bodies. No Graph, credentials, telemetry, shell commands or unattended runs. Outlook reads only the open item; mail and calendar drafts are never sent or saved and recipients/attendees never changed. Image URL fetches alone use outbound HTTPS (public addresses, checked redirects, PNG/JPEG, 4 MiB); local images are restricted to allowed folders. Full disclosures and known limits: README and docs/reference.md. Not affiliated with Microsoft or Nous Research. Disclosure — Workbench serves its Office add-in from this plugin's pinned files over HTTPS on 127.0.0.1 ports 47615-47619 (https://localhost). To make that work you trust, by hand and once per Hermes profile, a local certificate authority the plugin creates. That authority can vouch only for localhost and 127.0.0.1, and its private key is stored unencrypted in the profile's plugin-data/hermes-office-desktop/tls folder, so keep that folder private and remove the trust when you stop using Workbench. The pane loads Microsoft's Office.js from appsforoffice.microsoft.com. Document and mail content you work on enters your Hermes conversation, and OneNote pages and email you index stay unencrypted in the plugin's local brain.db. Every edit asks for Hermes approval; deletes and other edits that cannot be undone have their own approval rule. Image URL fetches go out over HTTPS to public addresses only."
+maintainer: AtlasOmnia
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+readme: true
+platforms: [macos, windows]  # Windows: one real Hermes Desktop session passed the 5-prompt story on 2026-11-10 with a single profile.
+known_issues:
+  - "Windows: two Hermes profiles at once are not live-tested (port 47615 is no longer bound twice)."
+  - "Requires the Hermes Desktop app (macOS 13+ or Windows) on the same machine as the Hermes gateway, or with the bridge ports 47615-47619 forwarded; the browser Webapp (webapp.enabled) preview pane cannot host Office for the web."
+  - "The add-in is served by the plugin on https://localhost: trust the profile's local certificate authority once with the printed command (manual; never done by the plugin). Live-tested with it so far: one Excel run on macOS (2026-11-12); the other apps and Windows are not yet."
+  - "Pairing follows the chat session id: after auto-compression or a /rewind fork the pane reports NotPaired and needs a fresh office_connect code."
+  - "powerpoint_add_speaker_notes is registered for schema parity but always returns Unsupported: Office.js for the web has no speaker-notes API."
+  - "hermes plugins validate warns (rule 9) about two private Hermes imports in scripts/livetest/, developer-only live-test scripts that Hermes never loads."
+capabilities:
+  provides_tools:
+    - excel_get_workbook_overview
+    - excel_read_range
+    - excel_summarize_range_stats
+    - excel_write_range
+    - excel_format_range
+    - excel_conditional_format_range
+    - excel_freeze_panes
+    - excel_set_data_validation
+    - excel_create_sheet
+    - excel_delete_sheet
+    - excel_activate_sheet
+    - excel_insert_table
+    - excel_sort_table
+    - excel_filter_table
+    - excel_create_chart
+    - excel_find_replace
+    - excel_clear_range
+    - excel_autofill_formula
+    - excel_rename_sheet
+    - excel_copy_sheet
+    - excel_protect_sheet
+    - excel_unprotect_sheet
+    - excel_create_pivot_table
+    - excel_run_calculation
+    - excel_add_comment
+    - excel_clear_comments
+    - excel_import_csv_to_sheet
+    - word_get_document_overview
+    - word_read_selection
+    - word_read_document_text
+    - word_apply_edit_plan
+    - word_insert_text
+    - word_replace_selection
+    - word_find_replace
+    - word_format_selection
+    - word_get_document_structure
+    - word_apply_style
+    - word_insert_ooxml
+    - word_insert_comment
+    - powerpoint_get_presentation_overview
+    - powerpoint_read_selected_slides
+    - powerpoint_read_all_slides
+    - powerpoint_create_slide
+    - powerpoint_create_text_slide
+    - powerpoint_add_text_box
+    - powerpoint_update_slide_text
+    - powerpoint_add_speaker_notes
+    - powerpoint_add_shape
+    - powerpoint_read_slide_content
+    - powerpoint_delete_slide
+    - powerpoint_duplicate_slide
+    - powerpoint_reorder_slide
+    - powerpoint_find_and_replace_text
+    - powerpoint_list_slide_layouts
+    - powerpoint_set_slide_layout
+    - powerpoint_format_text
+    - powerpoint_add_image
+    - onenote_get_context
+    - onenote_list_sections
+    - onenote_list_pages
+    - onenote_get_page
+    - onenote_create_page
+    - onenote_append
+    - onenote_insert_table
+    - onenote_open_page
+    - brain_sync
+    - brain_ask
+    - brain_links
+    - brain_link_both_ways
+    - brain_decision_page
+    - brain_make_deliverables
+    - brain_why
+    - brain_resurface
+    - brain_from_email
+    - outlook_get_item
+    - outlook_insert
+    - outlook_draft_reply
+    - outlook_draft_new
+    - calendar_get_event
+    - calendar_update_draft
+    - calendar_draft_new
+    - office_connect
+    - office_status
+    - office_disconnect
+    - office_undo
+    - office_insert_image
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

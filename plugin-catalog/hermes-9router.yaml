@@ -1,0 +1,20 @@
+name: hermes-9router
+repo: https://github.com/aligundogar/hermes-9router
+sha: 4ab5030369f20a332ca03819b145c5c303ccb6b9
+subdir: ""
+title: 9Router
+description: "Dashboard tab for a 9Router gateway configured as the `9router` custom provider: groups the router's models by route prefix, shows the last test result for each model, the `/models` response time and, with the optional admin password, connection health and cooldown counts. A Test group button retests one group at a time. Routing and load balancing stay in 9Router. Disclosure — calls only the 9Router URL from `providers.9router` in config.yaml; a group test sends real chat/completions requests (max_tokens 16, at most 25 models per press, never in the background), so it can spend credits or quota; the optional admin password logs in to 9Router's admin API and only connection name, provider, active state and test status reach the page; secrets are read through Hermes get_secret and not stored; results are kept in $HERMES_HOME/hermes-9router.json. No telemetry."
+maintainer: aligundogar
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aligundogar/hermes-9router#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - NINE_ROUTER_API_KEY
+    - NINE_ROUTER_ADMIN_PASSWORD

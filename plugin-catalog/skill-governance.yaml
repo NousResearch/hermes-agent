@@ -1,0 +1,21 @@
+name: skill-governance
+version: "0.3.0"
+repo: https://github.com/moonlight-lupin/agent-skills
+sha: 8743eae944c0d361339c614f21c258e6851357e8
+subdir: plugins/skill-governance
+description: "Consolidated skill-governance plugin behind one composed hook surface: on_skill_lifecycle, on_session_start, pre_tool_call, pre_llm_call. The manifest engine enforces UPSTREAM_MANIFEST.md — arrivals need a manifest row, content changes in manifested skills re-flag until re-acknowledged against a content fingerprint via the preserved /skill-manifest-ack command. The advisor engine observes behavioral skill edits (never blocking) and injects one bounded reminder to run the contrastive-refinement probe cycle (bundled as skill-governance:contrastive-refinement), recording every delivered advisory to ~/.hermes/skill-probes/fire-ledger.jsonl. Both legacy state namespaces import by copy (destination-wins, sources never modified) and a conservative governance.records summary joins them (acknowledged never implies validated). A clearance Automation Blueprint (daily schedule, origin delivery) replaces both legacy schedulers and preserves both clearance procedures verbatim; the user adopts it from the blueprint gallery or /blueprint, and the plugin imports no private cron modules and writes no cron state. Stdlib only, no network calls, fail-soft everywhere (malformed state keeps hooks inert, never aborts the host turn). Disclosure — reads the profile's skills tree (SKILL.md files, fingerprinted read-only) and UPSTREAM_MANIFEST.md, and copies the legacy skill-manifest / contrastive-advisor plugin state read-only on first run; writes its own plugin state, `<HERMES_HOME>/skill-probes/fire-ledger.jsonl` when the opt-in advisor fires, and `plugin-data/skill-manifest/acks.json` on a manual `/skill-manifest-ack`; injects advisory reminders into turns; the optional daily clearance blueprint, once the user adopts it with `/blueprint`, runs an unattended agent that edits UPSTREAM_MANIFEST.md and the plugin's dismissed list, reads past session tool calls from state.db, and writes probe notes; never deletes, never blocks tool calls, no network."
+maintainer: moonlight-lupin
+tier: community
+category: tools
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/moonlight-lupin/agent-skills/tree/8743eae944c0d361339c614f21c258e6851357e8/plugins/skill-governance#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - on_skill_lifecycle
+  - on_session_start
+  - pre_tool_call
+  - pre_llm_call
+  provides_middleware: []
+  requires_env: []

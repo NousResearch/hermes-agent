@@ -5,8 +5,6 @@ import asyncio
 from contextlib import suppress
 import errno
 import logging
-import math
-import os
 import time
 
 # Log-record parity with gateway/run_runtime.py.
@@ -17,27 +15,10 @@ logger = logging.getLogger("gateway.run_runtime")
 # daemon reports ready, and a DHCP lease lands the same way. The bind then fails with EADDRNOTAVAIL, and
 # the gateway keeps running with the Webapp off (see below) — nothing crashes, so no Restart= policy
 # retries it and the address stays dark until someone restarts the gateway by hand. Wait, bounded, for the
-# address to appear, then bind again. ``HERMES_WEBAPP_ADDRESS_WAIT`` overrides the wait in seconds (0
-# disables it); only EADDRNOTAVAIL is waited out, so a busy port or a refused bind still reports at once.
+# address to appear, then bind again. Only EADDRNOTAVAIL is waited out, so a busy port or a refused bind
+# still reports at once.
 WEBAPP_ADDRESS_WAIT_SECONDS = 20.0
 _WEBAPP_ADDRESS_POLL_SECONDS = 0.5
-
-
-def _webapp_address_wait_seconds() -> float:
-    """How long to wait for ``webapp.host`` to be assigned to an interface (see above)."""
-    # health: allow HX002 -- process-level boot-timing override for systemd/supervisor startup ordering (shared by the gateway process, not per-profile)
-    raw = os.environ.get("HERMES_WEBAPP_ADDRESS_WAIT")
-    if raw is None or not raw.strip():
-        return WEBAPP_ADDRESS_WAIT_SECONDS
-    try:
-        seconds = float(raw)
-    except ValueError:
-        seconds = float("nan")
-    if not math.isfinite(seconds):
-        logger.warning("HERMES_WEBAPP_ADDRESS_WAIT=%r is not a number of seconds; using %.0fs",
-                       raw, WEBAPP_ADDRESS_WAIT_SECONDS)
-        return WEBAPP_ADDRESS_WAIT_SECONDS
-    return max(0.0, seconds)
 
 
 async def _wait_for_address_retry(runner, delay: float) -> None:
@@ -63,7 +44,7 @@ async def _close_listener_if_stopping(run_api, runner, handle) -> bool:
     return True
 
 
-async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port, webapp):
+async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port, webapp, wait_seconds):
     """Start the gateway's listener, waiting out a specific ``webapp.host`` an interface has not been given yet.
 
     A failed start leaves nothing behind (``start_gateway_api`` closes its listener and clears its
@@ -76,8 +57,8 @@ async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port,
     from gateway.run_common import startup_should_abort
     from gateway.webapp_listener import loopback_companion
 
-    wait_for_address = webapp is not None and bool(loopback_companion(host))
-    deadline = (time.monotonic() + _webapp_address_wait_seconds()) if wait_for_address else 0.0
+    wait_for_address = wait_seconds > 0 and webapp is not None and bool(loopback_companion(host))
+    deadline = time.monotonic() + wait_seconds
     warned = False
 
     async def _start():
@@ -130,7 +111,7 @@ def _webapp_unavailable_reason(exc: BaseException, *, host: str, port: int, run_
     return f"could not listen on {address} ({cause})"
 
 
-async def start_gateway_runtime_api(runner):
+async def start_gateway_runtime_api(runner, *, address_wait: float = WEBAPP_ADDRESS_WAIT_SECONDS):
     from gateway import run_api, run_runtime
     from gateway.run_common import startup_should_abort
     from gateway.webapp_listener import (
@@ -150,7 +131,7 @@ async def start_gateway_runtime_api(runner):
     try:
         # Without the Webapp the listener is main's: the same call, a private ephemeral port.
         handle = await _start_gateway_api_waiting_for_address(
-            run_api, runner, host=host, port=port, webapp=webapp)
+            run_api, runner, host=host, port=port, webapp=webapp, wait_seconds=address_wait)
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- Webapp listener bind/credential/auth-gate failures intentionally fall back to the private listener and record the reason in webapp_status
         if startup_should_abort(runner):
             runner.session_api = None

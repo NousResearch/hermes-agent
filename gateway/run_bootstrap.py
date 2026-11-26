@@ -754,8 +754,10 @@ async def _start_gateway_listener_and_runner(
         _resolve_gateway_exit_verdict, _shutdown_gateway_health_export,
     )
     from gateway.run_common import abort_startup_if_shutdown_requested, startup_should_abort
-    from gateway.run_runtime_listener import start_gateway_runtime_api
-    await start_gateway_runtime_api(runner)
+    from gateway.run_runtime_listener import WEBAPP_ADDRESS_WAIT_SECONDS, start_gateway_runtime_api
+    # A client's own idle-exit gateway (TUI, chat -q) has that client waiting on a hard start budget
+    # (Ink's is 30 s), and the boot race the address wait covers is a supervised unit's.
+    await start_gateway_runtime_api(runner, address_wait=0.0 if idle_exit else WEBAPP_ADDRESS_WAIT_SECONDS)
     if startup_should_abort(runner):
         try:
             await abort_startup_if_shutdown_requested(runner, check=False)

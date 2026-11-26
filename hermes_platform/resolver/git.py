@@ -266,7 +266,6 @@ def inspect_git(
 def resolve_usable_git(
     env: Mapping[str, str] | None = None,
     *,
-    cwd: str | os.PathLike[str] | None = None,
     cached: bool = True,
     platform: str | None = None,
     apple_stub_path: str = APPLE_GIT_STUB,
@@ -277,7 +276,6 @@ def resolve_usable_git(
     """Resolved path to a usable ``git`` on *env*'s effective PATH, or ``None`` if missing/CLT stub."""
     return inspect_git(
         env,
-        cwd=cwd,
         cached=cached,
         platform=platform,
         apple_stub_path=apple_stub_path,

@@ -815,33 +815,28 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   )
 
   const platformContent = (
-    <>
-      {restartNotice}
-      {selectedCatalog && (
-        <CatalogPlatformDetail {...catalogInstall} row={selectedCatalog} scopeProfile={scopeProfile} />
-      )}
-      {selected && (
-        <PlatformDetail
-          approved={approvedByPlatform[selected.id] ?? []}
-          approving={approving}
-          edits={edits[selected.id] || {}}
-          onApprove={user => void handleApprove(user)}
-          onClear={key => void handleClear(selected, key)}
-          onEdit={(key, value) =>
-            setEdits(current => ({
-              ...current,
-              [selected.id]: { ...(current[selected.id] || {}), [key]: value }
-            }))
-          }
-          onRevoke={setPendingRevoke}
-          onTelegramApplied={result => void handleTelegramApplied(result)}
-          pending={pendingByPlatform[selected.id] ?? []}
-          platform={selected}
-          saving={saving}
-          scopeProfile={scopeProfile}
-        />
-      )}
-    </>
+    <MessagingDetailContent
+      approvedByPlatform={approvedByPlatform}
+      approving={approving}
+      catalogInstall={catalogInstall}
+      edits={edits}
+      onApprove={user => void handleApprove(user)}
+      onClear={(platform, key) => void handleClear(platform, key)}
+      onEdit={(platformId, key, value) =>
+        setEdits(current => ({
+          ...current,
+          [platformId]: { ...(current[platformId] || {}), [key]: value }
+        }))
+      }
+      onRevoke={setPendingRevoke}
+      onTelegramApplied={result => void handleTelegramApplied(result)}
+      pendingByPlatform={pendingByPlatform}
+      restartNotice={restartNotice}
+      saving={saving}
+      scopeProfile={scopeProfile}
+      selected={selected}
+      selectedCatalog={selectedCatalog}
+    />
   )
 
   const revokeDialog = (
@@ -933,6 +928,65 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       {revokeDialog}
     </PageSearchShell>
+  )
+}
+
+function MessagingDetailContent({
+  approvedByPlatform,
+  approving,
+  catalogInstall,
+  edits,
+  onApprove,
+  onClear,
+  onEdit,
+  onRevoke,
+  onTelegramApplied,
+  pendingByPlatform,
+  restartNotice,
+  saving,
+  scopeProfile,
+  selected,
+  selectedCatalog
+}: {
+  approvedByPlatform: Record<string, PairingUser[]>
+  approving: null | string
+  catalogInstall: CatalogInstallHandlers
+  edits: Record<string, Record<string, string>>
+  onApprove: (user: PairingUser) => void
+  onClear: (platform: MessagingPlatformInfo, key: string) => void
+  onEdit: (platformId: string, key: string, value: string) => void
+  onRevoke: (user: PairingUser) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
+  pendingByPlatform: Record<string, PairingUser[]>
+  restartNotice: React.ReactNode
+  saving: null | string
+  scopeProfile: ProfileScope | undefined
+  selected: MessagingPlatformInfo | null | undefined
+  selectedCatalog: MessagingCatalogPlatform | null | undefined
+}) {
+  return (
+    <>
+      {restartNotice}
+      {selectedCatalog && (
+        <CatalogPlatformDetail {...catalogInstall} row={selectedCatalog} scopeProfile={scopeProfile} />
+      )}
+      {selected && (
+        <PlatformDetail
+          approved={approvedByPlatform[selected.id] ?? []}
+          approving={approving}
+          edits={edits[selected.id] || {}}
+          onApprove={onApprove}
+          onClear={key => onClear(selected, key)}
+          onEdit={(key, value) => onEdit(selected.id, key, value)}
+          onRevoke={onRevoke}
+          onTelegramApplied={onTelegramApplied}
+          pending={pendingByPlatform[selected.id] ?? []}
+          platform={selected}
+          saving={saving}
+          scopeProfile={scopeProfile}
+        />
+      )}
+    </>
   )
 }
 

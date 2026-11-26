@@ -54,10 +54,12 @@ def _prune_dropped_directories(root: Path, recorded_fingerprint: str) -> int:
     dropped files, so the caller keeps the old fingerprint and the next sweep retries.
     """
     from hermes_cli._early_recovery import is_object_id
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_cli._subprocess_compat import _git_argv0_unusable, windows_hide_flags
 
     since = recorded_fingerprint.rpartition(":")[2]
-    if not is_object_id(since):
+    if not is_object_id(since) or _git_argv0_unusable(["git"]):
+        # macOS's CLT stub fails every call (the "commit is gone" answer below) and opens Apple's
+        # install dialog when launched; raising instead would clear __pycache__ on every launch.
         return 0
     git = ["git", "-C", str(root)]
     try:

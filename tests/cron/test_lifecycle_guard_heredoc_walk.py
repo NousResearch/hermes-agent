@@ -43,6 +43,7 @@ def test_prefixed_inert_heredoc_body_path_not_walked_as_script(tmp_path):
     ("python3 - <<'PY' | grep x | sh", "x = 1\nbash {big}", True),
     ("python3 - <<'PY'; bash <<'SH'", "print(1)\nPY\nbash {big}\nSH", True),
     ("env -S 'bash -s' python3 <<'PY'", "bash {big}", True),
+    ("cat <<'PY' | sort --compress-program=sh", "hermes gateway restart", True),
     ("timeout 600 python3 - <<'PY' 2>&1 | grep -v x", "import os\nos.system('hermes gateway restart')", True),
 ])
 def test_heredoc_body_belongs_to_its_owner_through_wrappers_and_pipes(tmp_path, opener, body, blocked):

@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
+from persistence.authority.external_messages import ExternalAppendOutcome, ExternalMessage
 from ..core.canonical import canonical_json
 from ..core.errors import AuthorityRefusal
 from ..core.identity import SessionId
@@ -529,6 +530,18 @@ class SessionRuntimeRepository(Protocol):
     """The runtime authority of the handle's profile; every verb is one transaction."""
 
     # Writes
+
+    def append_external_messages(self, *, epoch: int, session_id: str,
+                                 messages: Sequence[ExternalMessage], memory_interval: int = 0) -> ExternalAppendOutcome:
+        """Atomically record speech and exact-retry receipts without a foreground admission.
+
+        Fence the owner epoch, resolve the physical compression target inside the transaction, and keep
+        the active worker's lease. Reusing a client id with different content refuses the whole batch.
+        Receipts retain their original row id and logical message uid across compaction; newly inserted
+        user rows crossing the memory interval request a background review. Retries never count again.
+        """
+        ...
+
 
     def begin_epoch(self, *, instance_id: str) -> int:
         """Advance the store's authority epoch (1 on first acquisition), record ``instance_id`` as holder, return it. The bump is a takeover and an owner captures the epoch once at boot, so the caller must own the profile: while another process holds the profile's gateway ownership the bump raises ``AuthorityRefusal('ownership_conflict', field='runtime_epoch')`` and the epoch is unchanged; a reservation this process holds is granted. A store with no profile directory (the reference backend) has no owner to fence out and never refuses."""

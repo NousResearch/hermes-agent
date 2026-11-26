@@ -106,6 +106,7 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
+import { appendMessage } from './append-message'
 import { logBotWake } from './bot-wake-log'
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
@@ -1494,10 +1495,9 @@ export const host = {
     )
   },
 
-  /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
-   *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
-   *  overrides the socket's 30 s default for RPCs that legitimately run longer
-   *  (session.compress); unset keeps the default. */
+  /** Record externally spoken text; accepted requests paint only after persistence. */
+  appendMessage,
+  /** JSON-RPC on the live socket; timeoutMs overrides its 30 s default (e.g. session.compress). */
   request: async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> => {
     const gateway = $gateway.get()
 

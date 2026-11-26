@@ -46,13 +46,13 @@ async def stored_transcript(runner, session_key):
 
 
 @contextlib.contextmanager
-def cold_review_parent(runner, source, session_key, session_id):
+def cold_review_parent(runner, source, session_key, session_id, *, agent_type=None):
     """A fresh agent on the session's next-turn route (built as ``session_execution._build_fresh_agent``
     builds one, minus the turn-only prompt pieces), inside the session's policy scope. On exit only its
     own LLM clients are released: ``close()`` would tear down the session's terminal and browser, and the
     reviewer it dispatched is detached and builds its own clients."""
     from gateway.run import _load_gateway_config, _platform_config_key
-    from gateway.session_api_turn import api_runtime_locked
+    from gateway.session_api_turn import api_runtime_locked, prepare_api_runtime
     from gateway.session_authorities import active_authority
     from gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
     from gateway.session_worker_construct import session_prefill, session_routing
@@ -72,8 +72,9 @@ def cold_review_parent(runner, source, session_key, session_id):
     with policy_scope(policy, authority=authority):
         model, runtime = runner._resolve_session_agent_runtime(
             source=source, session_key=session_key, user_config=user_config)
+        model, runtime = prepare_api_runtime(model, runtime)
         route = runner._resolve_turn_agent_config("", model, runtime, tier=tier)  # /fast request options
-        agent = AIAgent(
+        agent = (agent_type or AIAgent)(
             model=route["model"], **route["runtime"], quiet_mode=True, verbose_logging=False,
             enabled_toolsets=enabled, disabled_toolsets=disabled,
             # Launch-preloaded skills (``hermes -s``): the reviewer is told to load them too.

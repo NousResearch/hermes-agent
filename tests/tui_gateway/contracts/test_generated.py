@@ -77,6 +77,8 @@ def emitted_event_names() -> set[str]:
     names.update(_SETUP_READY.findall(_read(REPO / current_path("hermes_cli/free_tier_bootstrap.py"))))
     names.update(_FREE_TIER_CHALLENGE.findall(_read(REPO / current_path("hermes_cli/anon_challenge.py"))))
     names.update(_LOCAL_VIEWER_PUBLISH.findall(_read(REPO / current_path("gateway/local_viewer_events.py"))))
+    names.update(re.findall(r"event_type=['\"]([a-z_][a-z0-9_.]*)['\"]",
+                            _read(REPO / current_path("gateway/session_append.py"))))
     return names
 
 

@@ -74,6 +74,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
     ("session_delete", ("DELETE", "/api/sessions/{session_id}")),
     ("session_messages", ("GET", "/api/sessions/{session_id}/messages")),
+    ("session_append_messages", ("POST", "/api/sessions/{session_id}/messages")),
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
@@ -131,7 +132,7 @@ from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_se
 from gateway.platforms._shared import secrets_match
 from gateway.platforms.tcp_site import start_tcp_site
 from persistence import RetiredSessionError, SessionWriteGuarded
-from persistence.conversation.messages import NewMessage, ReplaceMode, TranscriptRead, TranscriptView
+from persistence.conversation.messages import NewMessage, ReplaceMode
 from persistence.conversation.sessions import CanonicalTitleLocked, NewSession, RuntimeLock, SessionExists, \
     SessionLineageKind, SessionOrder, SessionQuery, SessionWindow, TitleConflict
 
@@ -1580,6 +1581,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+            ("POST", "/api/sessions/{session_id}/messages", self._handle_append_session_messages),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
@@ -2717,40 +2719,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth
+    async def _handle_append_session_messages(self, request: web.Request) -> web.Response:
+        from gateway.platforms.api_server_session_messages import append_messages
+        return await append_messages(self, request)
+
+    @_require_auth
     async def _handle_session_messages(self, request: web.Request) -> web.Response:
-        """GET /api/sessions/{session_id}/messages."""
-        session_id = request.match_info["session_id"]
-        _, err = await self._get_existing_session_or_404(session_id)
-        if err:
-            return err
-        store = self._store_beside(await self._ensure_store_async())
-        resolved_id = await store.aio.lineage.resolve_resume_target(session_id)
-        raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
-        order = request.query.get("order")
-        if order not in (None, "oldest", "latest"):
-            return _error_response("order must be one of: oldest, latest", 400, code="invalid_pagination")
-        try:
-            offset = int(raw_offset)
-            requested_limit = None if raw_limit is None else int(raw_limit)
-        except (TypeError, ValueError):
-            offset = requested_limit = -1
-        if offset < 0 or (requested_limit is not None and requested_limit < 0):
-            return _error_response("limit and offset must be non-negative integers", 400, code="invalid_pagination")
-        default_page = requested_limit is None
-        latest_page = order == "latest" or (order is None and default_page)
-        limit = 500 if default_page else min(requested_limit, 500)
-        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
-        # Compression lineage: return root→tip messages, matching the REST router (#51058).
-        messages = await store.aio.messages.read_transcript(resolved_id, TranscriptRead(
-            view=TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE, limit=limit, offset=offset,
-            latest=latest_page, include_lineage=True))
-        return web.json_response({
-            "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m.as_wire_row()) for m in messages],
-            "pagination": {
-                "limit": limit, "offset": offset,
-                "order": order or ("latest" if default_page else "oldest"),
-                "returned": len(messages)}})
+        from gateway.platforms.api_server_session_messages import read_messages
+        return await read_messages(self, request)
 
     @_require_auth
     async def _handle_fork_session(self, request: web.Request) -> web.Response:

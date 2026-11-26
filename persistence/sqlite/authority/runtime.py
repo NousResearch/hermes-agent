@@ -12,6 +12,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from persistence.authority.external_messages import ExternalAppendOutcome, ExternalMessage
 from persistence.authority.admissions import GateRefusal
 from persistence.authority.bindings import api_generation_id, generation_request_id, local_session_id, room_session_id
 from persistence.authority.runtime import (
@@ -79,6 +80,15 @@ class SQLiteSessionRuntimeRepository:
         self._store = store
 
     # Writes
+
+    def append_external_messages(self, *, epoch: int, session_id: str,
+                                 messages: Sequence[ExternalMessage], memory_interval: int = 0) -> ExternalAppendOutcome:
+        from ._external_messages import append_external_messages
+        holder = self._store.holder()
+        with refused(holder, session_id):
+            return append_external_messages(holder, epoch=epoch, session_id=session_id,
+                                            messages=messages, memory_interval=memory_interval)
+
 
     def begin_epoch(self, *, instance_id: str) -> int:
         with refused():

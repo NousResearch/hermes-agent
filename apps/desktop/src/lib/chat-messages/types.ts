@@ -81,6 +81,8 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** Logical message identity, retained when compaction copies a durable row. */
+  messageUid?: string
   /** The send a stored prompt row holds (`display_metadata.submission_id`); its live copy's id is `user-<it>`. */
   submissionId?: string
   /** Backend transcript rows this message represents — the hydration fold

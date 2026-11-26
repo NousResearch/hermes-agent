@@ -254,6 +254,14 @@ CREATE TABLE IF NOT EXISTS runtime_epoch (
     epoch INTEGER NOT NULL CHECK (epoch > 0),
     instance_id TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_external_messages (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY (session_id, client_id)
+);
+
 CREATE TABLE IF NOT EXISTS session_admissions (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     admission_id TEXT NOT NULL UNIQUE,

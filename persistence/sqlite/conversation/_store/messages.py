@@ -29,7 +29,7 @@ from persistence.sqlite.conversation._store.messages_sql import (
     _DISPLAY_ACTIVE_CLAUSE, _DISPLAY_INDEX_MISSING_SQL, _DISPLAY_META_ROW_SQL, _INSERT_MESSAGE_SQL, _INVALID,
     _LIVE_IDENTITY_SQL, _MESSAGE_SCHEMA_KEYS, _MESSAGE_WRITE_COLUMNS, _RESET_COUNTERS_SQL, _SET_CODEX_REASONING_SQL,
     _SET_COUNTERS_SQL, _SET_DISPLAY_META_SQL, _SHADOWED_CHECKPOINT_ROWS_SQL, _TURN_LEASE_ROW_SQL, _coerce_timestamp,
-    _parse_tool_calls, _scrub_surrogates, _stale_holder, _tool_calls_count, _tool_calls_len, logger,
+    _lineage_rows_sql, _parse_tool_calls, _scrub_surrogates, _stale_holder, _tool_calls_count, _tool_calls_len, logger,
 )
 from persistence.sqlite.conversation._store.rules import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, TOOL_CALL_UID, _is_checkpoint_item, _newest_checkpoint_carrier,
@@ -1361,7 +1361,7 @@ def get_messages(holder: StoreHolder, session_id: str, include_inactive: bool = 
         # (display_order is per-segment and not comparable across segments, so the per-segment
         # display_order paging below does not apply across a lineage.)
         display = include_compacted and not include_inactive  # removed rows too: see drop_removed
-        sql = f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)}){active_clause} ORDER BY id ASC"
+        sql = _lineage_rows_sql("*", session_ids, active_clause)
         rows = _dedupe_display_generations(holder, _display_set(holder, sql, session_ids) if display
                                            else holder._read_all(sql, session_ids), drop_removed=display)
         rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
@@ -1469,18 +1469,16 @@ def _fetch_conversation_rows(holder: StoreHolder, session_ids: list[str], active
     """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
     and would break tool-call adjacency). ``with_compacted``: the display set (``active_clause`` is
     ignored) with the ``compacted`` column, plus the removed rows' identities for ``drop_removed``."""
-    sql = (f"SELECT {'session_id, ' if with_session_id or with_compacted else ''}{'compacted, display_order, ' if with_compacted else ''}"
-           f"{_CONVERSATION_ROW_COLUMNS} "
-           f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
-           f"{_DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause} ORDER BY id")
+    columns = (f"{'session_id, ' if with_session_id or with_compacted else ''}{'compacted, display_order, ' if with_compacted else ''}"
+               f"{_CONVERSATION_ROW_COLUMNS}")
+    sql = _lineage_rows_sql(columns, session_ids, _DISPLAY_ACTIVE_CLAUSE if with_compacted else active_clause)
     return _display_set(holder, sql, session_ids) if with_compacted else holder._read_all(sql, tuple(session_ids))
 
 
-_REMOVED_IDENTITIES_SQL = (
-    "SELECT session_id, id, role, timestamp, tool_call_id, tool_calls, tool_name, display_kind, display_metadata, "
+_REMOVED_IDENTITY_COLUMNS = (
+    "session_id, id, role, timestamp, tool_call_id, tool_calls, tool_name, display_kind, display_metadata, "
     "message_uid, absorbed_message_uids, display_identity, active, compacted, "
-    "CASE WHEN display_identity IS NULL THEN content END AS content "
-    "FROM messages WHERE session_id IN ({ids}) AND active = 0 AND compacted = 0 ORDER BY id")
+    "CASE WHEN display_identity IS NULL THEN content END AS content")
 
 
 def _with_removed_identities(holder: StoreHolder, rows, session_ids: list[str], conn=None) -> list[Any]:
@@ -1489,7 +1487,7 @@ def _with_removed_identities(holder: StoreHolder, rows, session_ids: list[str], 
     to show: no body (a legacy row without a stored display identity keeps its content for the key).
     *conn*: read on the caller's transaction, else on a read of its own (*holder* is a store holder or a
     worker's compression view)."""
-    sql = _REMOVED_IDENTITIES_SQL.format(ids=_placeholders(session_ids))
+    sql = _lineage_rows_sql(_REMOVED_IDENTITY_COLUMNS, session_ids, " AND active = 0 AND compacted = 0")
     removed = conn.execute(sql, tuple(session_ids)).fetchall() if conn is not None else holder._read_all(sql, tuple(session_ids))
     return sorted([*rows, *removed], key=lambda row: row["id"]) if removed else list(rows)
 

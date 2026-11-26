@@ -198,14 +198,15 @@ def worker_history(holder, conn, sid, payload):
     from ..conversation._store.messages import (
         _active_clause, _dedupe_display_generations, _resume_lineage_ids, _rows_to_conversation, _with_removed_identities,
     )
+    from ..conversation._store.messages_sql import _lineage_rows_sql
     view = _ReceiptView(conn)
     target = payload['target']
     _authorize(view, sid, target)
     ids = _resume_lineage_ids(view, target) if payload['include_ancestors'] else [target]
     active = _active_clause(payload['include_inactive'], payload['include_compacted'])
     display = payload['include_compacted'] and not payload['include_inactive']
-    rows = conn.execute(f'SELECT {"session_id, compacted, display_order, " if display else ""}{_CONVERSATION_ROW_COLUMNS} FROM messages '
-                        f'WHERE session_id IN ({",".join("?" for _ in ids)}){active} ORDER BY id', ids).fetchall()
+    rows = conn.execute(_lineage_rows_sql(
+        f'{"session_id, compacted, display_order, " if display else ""}{_CONVERSATION_ROW_COLUMNS}', ids, active), ids).fetchall()
     if display:  # the owner's display reads' rule: a message whose newest copy was removed stays hidden
         rows = _with_removed_identities(view, rows, ids)
     if payload['include_compacted']:

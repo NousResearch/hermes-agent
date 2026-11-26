@@ -340,6 +340,7 @@ def test_explicit_env_without_developer_dir_does_not_inherit_ambient_developer_d
 def test_empty_path_reports_missing_not_clt_stub(tmp_path):
     res = inspect_git({"PATH": ""}, platform="darwin", cache=_CltGitCache())
     assert res == GitResolution(executable=None, status="missing", raw_path=None)
+    _make_exe(tmp_path / "git")  # an empty PATH searches nothing, not the cwd
     res_cwd = inspect_git({"PATH": ""}, cwd=tmp_path, platform="darwin", cache=_CltGitCache())
     assert res_cwd == GitResolution(executable=None, status="missing", raw_path=None)
 

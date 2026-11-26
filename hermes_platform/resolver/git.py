@@ -107,38 +107,35 @@ def _env_lookup(env: Mapping[str, str], name: str, *, case_insensitive: bool) ->
     return False, None
 
 
-def _resolve_path_for_cwd(path_value: str, cwd: str | os.PathLike[str] | None) -> str:
-    if not path_value or cwd is None or os.name == "nt":
-        return path_value
-    cwd_str = os.fspath(cwd)
-    return os.pathsep.join(
-        entry if (entry and os.path.isabs(entry)) else os.path.join(cwd_str, entry or ".")
-        for entry in path_value.split(os.pathsep)
-    )
-
-
-def _lookup_context_for_env(
-    env: Mapping[str, str] | None,
-    *,
-    cwd: str | os.PathLike[str] | None = None,
-) -> LookupContext:
+def _lookup_context_for_env(env: Mapping[str, str] | None) -> LookupContext:
     if env is None:
-        if cwd is None or os.name == "nt":
-            return LookupContext()
-        ambient = os.environ.get("PATH")
-        raw_path = os.defpath if ambient is None else ambient
-        return LookupContext(path=_resolve_path_for_cwd(raw_path, cwd))
+        return LookupContext()
     case_insensitive = os.name == "nt"
     has_path, path_val = _env_lookup(env, "PATH", case_insensitive=case_insensitive)
     _, pathext_val = _env_lookup(env, "PATHEXT", case_insensitive=case_insensitive)
     if has_path:
-        raw_path = "" if path_val is None else path_val
-        return LookupContext(path=_resolve_path_for_cwd(raw_path, cwd), pathext=pathext_val)
+        return LookupContext(path="" if path_val is None else path_val, pathext=pathext_val)
     # Match subprocess semantics: Windows CreateProcess searches ambient PATH; POSIX execvp falls back to os.defpath.
-    return LookupContext(
-        path=ABSENT if os.name == "nt" else _resolve_path_for_cwd(os.defpath, cwd),
-        pathext=pathext_val,
-    )
+    return LookupContext(path=ABSENT if os.name == "nt" else os.defpath, pathext=pathext_val)
+
+
+def _locate_git(env: Mapping[str, str] | None, cwd: str | os.PathLike[str] | None) -> str | None:
+    ctx = _lookup_context_for_env(env)
+    if cwd is None or os.name == "nt":
+        res = locate_command("git", ctx)
+        return res.command[0] if res.found else None
+    path = ctx.effective_path()
+    path = os.environ.get("PATH", os.defpath) if path is None else path
+    if not path:
+        return None
+    # POSIX subprocess tries each PATH entry after chdir(cwd), so a relative entry names a directory under
+    # cwd (an absolute one replaces it in the join). Test each entry on its own: a PATH string rebuilt from
+    # cwd-joined entries would split a cwd that contains os.pathsep.
+    for entry in path.split(os.pathsep):
+        candidate = os.path.join(os.fspath(cwd), entry, "git")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def _effective_developer_dir(env: Mapping[str, str] | None) -> str:
@@ -249,10 +246,9 @@ def inspect_git(
     now_fn: Callable[[], float] = time.monotonic,
 ) -> GitResolution:
     """Resolve ``git`` from *env*'s effective PATH and report whether it is usable or a macOS CLT stub."""
-    res = locate_command("git", _lookup_context_for_env(env, cwd=cwd))
-    if not res.found:
+    hit = _locate_git(env, cwd)
+    if hit is None:
         return GitResolution(None, "missing", None)
-    hit = res.command[0]
     if is_usable_git_executable(
         hit,
         env,

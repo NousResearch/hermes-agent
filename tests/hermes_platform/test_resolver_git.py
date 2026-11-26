@@ -390,6 +390,33 @@ def test_inspect_git_resolves_relative_path_entries_against_cwd(tmp_path, monkey
     assert ambient_in_child == GitResolution(executable=None, status="clt_stub", raw_path=str(stub))
 
 
+@pytest.mark.platforms("posix")
+def test_inspect_git_keeps_a_pathsep_in_cwd_inside_one_search_entry(tmp_path, monkeypatch):
+    """A checkout directory may contain ``:``; joining it into PATH entries must not split it."""
+    stub = _make_exe(tmp_path / "usr_bin" / "git")
+    child = tmp_path / f"a{os.pathsep}b"
+    child_git = _make_exe(child / "bin" / "git")
+    path = f"bin{os.pathsep}{stub.parent}"
+
+    def _inspect(env):
+        return inspect_git(
+            env,
+            cwd=child,
+            platform="darwin",
+            apple_stub_path=str(stub),
+            developer_dir_probe=lambda _env: "",
+            cache=_CltGitCache(),
+        )
+
+    explicit = _inspect({"PATH": path})
+    monkeypatch.setenv("PATH", path)
+    ambient = _inspect(None)
+    for res in (explicit, ambient):
+        assert res.status == "usable"
+        assert res.executable is not None
+        assert os.path.realpath(res.executable) == os.path.realpath(child_git)
+
+
 def test_spawn_guard_refuses_only_the_clt_stub_not_a_git_it_cannot_find(tmp_path):
     """A bare launch searches PATH its own way (CreateProcess reads the parent's PATH, execvp
     follows a relative entry from the child's cwd), so "not found from here" is left to the launch

@@ -216,19 +216,21 @@ export function createBrowserSavedConnections({
   let reading: null | Promise<DesktopConnectionsRegistry> = null
 
   const list = () => {
-    if (reading) {
-      return reading
+    const started = generation
+
+    if (!reading) {
+      const read = readList().finally(() => {
+        if (reading === read) {
+          reading = null
+        }
+      })
+
+      reading = read
     }
 
-    const read = readList().finally(() => {
-      if (reading === read) {
-        reading = null
-      }
-    })
-
-    reading = read
-
-    return read
+    // Checked again as the caller gets its answer: a write that landed after the read answered but
+    // before this caller saw it is newer, and its own caller hears of it after this one does.
+    return reading.then(read => (started === generation ? read : (snapshot ?? read)))
   }
 
   const mutated = async <T extends { registry: DesktopConnectionsRegistry }>(request: HermesApiRequest) => {

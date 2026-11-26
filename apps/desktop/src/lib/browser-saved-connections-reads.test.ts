@@ -26,8 +26,10 @@ const registryOf = (...ids: string[]): DesktopConnectionsRegistry => ({
 })
 
 /** The serving gateway's list route, whose GETs answer only when the test says so. */
-function gatewayList() {
+function gatewayList({ holdWrites = false } = {}) {
   const gets: ReturnType<typeof deferred<DesktopConnectionsRegistry>>[] = []
+  // With `holdWrites`, a save answers only when the test calls its entry here.
+  const writes: (() => void)[] = []
   let stored = registryOf('alpha')
 
   const api = async <T,>(request: HermesApiRequest): Promise<T> => {
@@ -39,8 +41,16 @@ function gatewayList() {
     }
 
     stored = registryOf('alpha', 'beta')
+    const answer = { connection: row('beta'), ok: true, registry: stored }
 
-    return { connection: row('beta'), ok: true, registry: stored } as T
+    if (!holdWrites) {
+      return answer as T
+    }
+
+    const held = deferred<T>()
+    writes.push(() => held.resolve(answer as T))
+
+    return held.promise
   }
 
   const connections = createBrowserSavedConnections({
@@ -48,7 +58,7 @@ function gatewayList() {
     bootstrap: { authRequired: true, basePath: '', privateSession: false, token: '' }
   })
 
-  return { connections, gets, stored: () => stored }
+  return { connections, gets, stored: () => stored, writes }
 }
 
 const ids = (registry: DesktopConnectionsRegistry) => registry.connections.map(connection => connection.id)
@@ -112,5 +122,24 @@ describe('reading the saved connections', () => {
       ['alpha', 'beta', 'gamma'],
       ['alpha', 'beta', 'gamma']
     ])
+  })
+
+  it('gives the save the last word when a read from before it answers in the same moment', async () => {
+    const { connections, gets, writes } = gatewayList({ holdWrites: true })
+    const seen: string[][] = []
+
+    // Settings reads, then saves; the read (the list before the save) and the save answer together.
+    const older = connections.connections.list().then(registry => seen.push(ids(registry)))
+
+    const saved = connections.connections
+      .save({ kind: 'remote', label: 'beta', url: 'https://beta.example' })
+      .then(result => seen.push(ids(result.registry)))
+
+    await Promise.resolve()
+    gets[0]!.resolve(registryOf('alpha'))
+    writes[0]!()
+    await Promise.all([older, saved])
+
+    expect(seen.at(-1)).toEqual(['alpha', 'beta'])
   })
 })

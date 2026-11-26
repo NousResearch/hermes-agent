@@ -1074,6 +1074,11 @@ _JUDGE_CONFIG_HINT = (
 )
 
 
+class _GoalSuperseded(Exception):
+    """The stored goal changed (paused, cleared or replaced) while ``evaluate_after_turn`` ran its gates
+    or its judge: the turn's result must not be written over that change."""
+
+
 class GoalManager:
     """Per-session goal state + continuation decisions.
 
@@ -1086,6 +1091,7 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+        self._judged: Optional[dict[str, Any]] = None  # the stored goal evaluate_after_turn last read
 
     def refresh(self) -> None:
         """Re-read state from the DB (another writer, e.g. a tool, moved it)."""
@@ -1135,7 +1141,21 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
+        if self._judged is not None:
+            # Gates and the judge take seconds; another manager (a /goal command sent meanwhile) may
+            # have written since this state was read, and that write wins. A pause, clear or new goal
+            # ends this evaluation; any other field it changed (a /subgoal, a gate, a wait) is kept.
+            # Nothing stored (no session DB yet, or never saved) means nothing was written over.
+            stored = load_goal(self.session_id)
+            if stored is not None and (stored.status != "active" or stored.created_at != self._judged["created_at"]):
+                self._state = None if stored.status == "cleared" else stored
+                raise _GoalSuperseded
+            for name, value in asdict(stored).items() if stored is not None else ():
+                if value != self._judged[name]:
+                    setattr(self._state, name, getattr(stored, name))
         save_goal(self.session_id, self._state)
+        if self._judged is not None:
+            self._judged = asdict(self._state)
         return self._state
 
     def _require_goal(self) -> GoalState:
@@ -1476,7 +1496,24 @@ class GoalManager:
     ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
-        own continuations increment ``turns_used`` — both consume model budget."""
+        own continuations increment ``turns_used`` — both consume model budget. A goal paused, cleared
+        or replaced while the gates or the judge ran keeps that change: nothing is saved over it and
+        the turn does not continue (verdict ``superseded``)."""
+        self._judged = asdict(self._state) if self._state is not None else None
+        try:
+            return self._judge_turn(last_response, background_processes=background_processes,
+                                    active_delegations=active_delegations)
+        except _GoalSuperseded:
+            return _decision(self._state.status if self._state else None, False, None, "superseded",
+                             "the goal changed while this turn was judged", "")
+        finally:
+            self._judged = None
+
+    def _judge_turn(
+        self, last_response: str, *, background_processes: Optional[list[dict[str, Any]]] = None,
+        active_delegations: int = 0,
+    ) -> dict[str, Any]:
+        """``evaluate_after_turn``'s body; every write goes through ``_save``."""
         state = self._state
         if state is None or state.status != "active":
             return _decision(state.status if state else None, False, None, "inactive", "no active goal", "")

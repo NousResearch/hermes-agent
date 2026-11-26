@@ -13,6 +13,9 @@ is refused is not run as a plain row.
 A follow-up sent while a turn runs (``dispatch_shared_busy``) is answered by its observer, which
 delivers the reply but never drains the adapter's pending slot: a continuation parked there after
 that turn would wait for an unrelated message (#145865).
+
+The judge runs for seconds: a /goal pause or clear sent meanwhile is not written back over, and a
+/subgoal added meanwhile is kept.
 """
 
 from __future__ import annotations
@@ -594,6 +597,63 @@ async def test_goal_resume_whose_wake_is_refused_does_not_run_unidentified(tmp_p
         assert [c for c in calls if c.startswith(MARKER)] == [], calls
         assert goals.GoalManager(sid).is_active()
     finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/goal clear", "/goal pause", "/subgoal also tag the release"])
+async def test_a_goal_changed_while_its_judge_runs_stays_changed(tmp_path, monkeypatch, command):
+    """The judge takes seconds. A /goal clear or pause sent through the adapter meanwhile is persisted
+    before the judge returns ``continue``: the judge's result must not write the goal back as active,
+    and no continuation may start. A /subgoal added meanwhile is kept, and the continuation carries it."""
+    import threading
+
+    from hermes_cli import goals
+    from tests.waiting import async_wait_until
+
+    runner, authority, adapter, db, _sent = await _telegram_gateway(tmp_path, monkeypatch, "goal-judging")
+    calls, judging, release = [], threading.Event(), threading.Event()
+
+    async def respond(**kw):
+        calls.append(kw["message"])
+        return _reply(f"answered {len(calls)}")
+
+    def slow_judge(*a, **k):
+        if judging.is_set():
+            return ("done", "all done", False, None, False)
+        judging.set()
+        assert release.wait(30), "the test never released the judge"
+        return ("continue", "one step remains", False, None, False)
+
+    monkeypatch.setattr(runner, "_run_agent", respond)
+    monkeypatch.setattr(goals, "judge_goal", slow_judge)
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    sid = runner.session_store.get_or_create_session(source).session_id
+    goals.GoalManager(sid).set("finish the report")
+    try:
+        await adapter.handle_message(MessageEvent(text="work", source=source, message_id="1"))
+        await async_wait_until(judging.is_set, what="the judge is running")
+        await adapter.handle_message(MessageEvent(text=command, source=source, message_id="2"))
+        expected = {"/goal clear": "cleared", "/goal pause": "paused"}.get(command, "active")
+        await async_wait_until(lambda: goals.load_goal(sid).status == expected
+                               and (expected != "active" or goals.load_goal(sid).subgoals),
+                               what="the command was persisted")
+        release.set()
+        live = authority.sessions[authority.logical_owner(sid)]
+        await async_wait_until(lambda: not adapter._background_tasks and (live.task is None or live.task.done())
+                               and all(r.status == "terminal" for r in authority.persistence.admissions.list(
+                                   session_id=authority.logical_owner(sid), pending_only=False)),
+                               what="the route settled")
+
+        continued = [c for c in calls if c.startswith(MARKER)]
+        if expected == "active":
+            assert goals.load_goal(sid).subgoals == ["also tag the release"]
+            assert len(continued) == 1 and "also tag the release" in continued[0], calls
+        else:
+            assert goals.load_goal(sid).status == expected
+            assert continued == [], calls
+    finally:
+        release.set()
         db.close()
 
 

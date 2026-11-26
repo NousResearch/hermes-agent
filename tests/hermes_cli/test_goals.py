@@ -947,3 +947,60 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     finally:
         goals._DB_CACHE.clear()
         db.close()
+
+
+class TestJudgedGoalChangedMeanwhile:
+    """``evaluate_after_turn`` saves what it read before the gates and the judge ran (seconds). A
+    write another manager made meanwhile wins; with no stored goal there is nothing to write over."""
+
+    @staticmethod
+    def _judge_then(action):
+        def judge(*_args, **_kwargs):
+            action()
+            return ("continue", "one step remains", False, None, False)
+        return judge
+
+    @pytest.mark.parametrize("change", ["clear", "pause", "new_goal"])
+    def test_pause_clear_or_new_goal_during_the_judge_is_not_written_over(self, hermes_home, change):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, load_goal
+
+        judged = GoalManager(session_id="judged-meanwhile")
+        first = judged.set("ship the PR").created_at
+        act = {"clear": lambda: GoalManager("judged-meanwhile").clear(),
+               "pause": lambda: GoalManager("judged-meanwhile").pause(),
+               "new_goal": lambda: GoalManager("judged-meanwhile").set("write the docs")}[change]
+        with patch.object(goals, "judge_goal", self._judge_then(act)):
+            decision = judged.evaluate_after_turn("partial work")
+        assert decision["should_continue"] is False and decision["verdict"] == "superseded"
+        stored = load_goal("judged-meanwhile")
+        assert {"clear": "cleared", "pause": "paused", "new_goal": "active"}[change] == stored.status
+        assert (stored.created_at != first) is (change == "new_goal")
+        assert stored.turns_used == 0
+
+    def test_a_subgoal_added_during_the_judge_is_kept(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, load_goal
+
+        judged = GoalManager(session_id="judged-subgoal")
+        judged.set("ship the PR")
+        add = lambda: GoalManager("judged-subgoal").add_subgoal("tag the release")
+        with patch.object(goals, "judge_goal", self._judge_then(add)):
+            decision = judged.evaluate_after_turn("partial work")
+        assert decision["should_continue"] is True and "tag the release" in decision["continuation_prompt"]
+        stored = load_goal("judged-subgoal")
+        assert stored.subgoals == ["tag the release"] and stored.turns_used == 1
+
+    def test_without_a_session_db_the_judged_goal_still_continues(self, hermes_home, monkeypatch):
+        """Before the session DB is available the goal lives in memory only (``_warn_dropped_write``):
+        an absent stored goal is not a goal changed by someone else."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        monkeypatch.setattr(goals, "_get_session_db", lambda: None)
+        mgr = GoalManager(session_id="no-db-yet")
+        mgr.set("ship the PR")
+        with patch.object(goals, "judge_goal", return_value=("continue", "one step remains", False, None, False)):
+            decision = mgr.evaluate_after_turn("partial work")
+        assert decision["should_continue"] is True and decision["verdict"] == "continue"
+        assert mgr.state.turns_used == 1

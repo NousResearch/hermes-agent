@@ -255,6 +255,44 @@ def test_a_profiles_dashboard_plugins_scanned_through_a_name_since_reused_are_sc
 
 
 @pytest.mark.platforms("posix")  # directory symlinks
+def test_a_launch_profile_renamed_with_its_old_name_reused_forwards_no_dashboard_plugin(tmp_path, monkeypatch):
+    """The dashboard's hosted routes forward the launch profile's copy of a plugin, discovered through the process's
+    own home name. After the launch link ops is renamed to ops2 and ops is reused, a request through ops2 still
+    counts as the launch profile (the same remembered key) and passes its own name's check, while discovery reads
+    the other directory through ops: that directory's plugin code would run in ops2's host."""
+    from hermes_cli import web_server, web_server_dashboard
+    from hermes_cli.plugins_loader import PluginHomeMoved
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tests.hermes_cli.test_plugin_api_consent_gate import _install
+
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {})
+    for each in (home, other):
+        _install(each, "dash")
+        (each / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["dash"], "isolation": "host"}}),
+                                          encoding="utf-8")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    monkeypatch.setattr(web_server, "_dashboard_plugins_cache", None)
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        _, dashboard_dir, _ = web_server_dashboard._hosted_plugin_for_request("dash")
+        assert Path(dashboard_dir).resolve() == (home / "plugins" / "dash" / "dashboard").resolve()
+        (profiles / "ops").rename(profiles / "ops2")
+        (profiles / "ops").symlink_to(other, target_is_directory=True)  # the old name, reused
+        token = set_hermes_home_override(profiles / "ops2")
+        try:
+            with pytest.raises(PluginHomeMoved):
+                web_server_dashboard._hosted_plugin_for_request("dash")
+        finally:
+            reset_hermes_home_override(token)
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # directory symlinks
 def test_a_sibling_name_the_process_served_elsewhere_is_not_taken_over_when_repointed_here(tmp_path, monkeypatch):
     """A renamed profile's manager takes the name beside its old one that leads to its directory, but not a name the
     process already serves another directory under: that name keys the other directory, so plugin code bound to it

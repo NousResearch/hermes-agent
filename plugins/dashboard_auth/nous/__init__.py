@@ -130,6 +130,8 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             claims = self._claims_for(token)
         except InvalidCodeError:
             return False
+        except _UnsupportedContract:
+            raise  # verified, and Portal is reachable: no reason to stop fetching keys
         except ProviderError:
             self._exchange_keys_down_until = time.monotonic() + _EXCHANGE_KEY_BACKOFF_SECONDS
             raise
@@ -171,7 +173,8 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
             issuer=self._portal_url, label="access token", leeway=self._token_leeway)
-        self._verified_kids.add(_kid(access_token))
+        if kid := _kid(access_token):
+            self._verified_kids.add(kid)
         # Contract C9: agent_instance_id is "should" not "must" — tolerated when absent
         # (the aud check already binds the token to this instance). A token for another
         # instance is not ours, like a foreign aud: a rejection, never a 503.
@@ -187,7 +190,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
                 "Nous Portal token missing oauth_contract_version claim (contract says it should be %d); proceeding anyway.",
                 _EXPECTED_CONTRACT_VERSION)
         elif contract_version != _EXPECTED_CONTRACT_VERSION:
-            raise ProviderError(
+            raise _UnsupportedContract(
                 f"unsupported oauth_contract_version={contract_version!r}, expected {_EXPECTED_CONTRACT_VERSION}")
         return claims
 
@@ -196,6 +199,11 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         # Contract C4: no email / display_name in tokens.
         return session_from_claims(
             self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))
+
+
+class _UnsupportedContract(ProviderError):
+    """A verified token whose contract version this agent does not support: still a 503 (every token
+    Portal mints would fail it), but no sign that Portal's keys are unreachable."""
 
 
 def _kid(token: str) -> str:

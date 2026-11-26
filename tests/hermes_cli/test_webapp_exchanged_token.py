@@ -310,6 +310,15 @@ def test_a_key_outage_leaves_tokens_whose_key_already_verified_working(gated, no
     assert len(fetches) == 2
 
 
+def test_an_unsupported_contract_version_answers_503_without_stopping_key_fetches(gated, nous, portal_key):
+    """A verified token with a contract version this agent does not support gets the outage 503 (every
+    token Portal mints would fail it), but Portal answered: key fetching carries on for other tokens."""
+    newer = _token(portal_key, oauth_contract_version=2)
+    assert gated.browser().get("/api/auth/me", headers=_bearer(newer)).status_code == 503
+    assert nous._exchange_keys_down_until == 0.0
+    assert gated.browser().get("/api/auth/me", headers=_bearer(_token(portal_key))).status_code == 200
+
+
 @pytest.mark.parametrize("header", [{"alg": []}, {"alg": {"x": 1}}, {"alg": None}])
 def test_a_malformed_header_is_refused_not_an_error(gated, nous, header):
     token = f"{_b64(header)}.{_b64({'act': ACTOR})}.c2ln"

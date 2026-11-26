@@ -834,9 +834,12 @@ class SystemHost:
         """Stop, disable and delete this user's legacy units (``gateway.remove_legacy_hermes_units``)."""
         from hermes_cli import gateway as gw
         units = [u["unit"] for u in self.legacy_unit_records() if not u["system"]]
-        run_quietly(lambda: gw.remove_legacy_hermes_units(interactive=False))
-        if left := [u["unit"] for u in self.legacy_unit_records() if not u["system"]]:
-            raise RuntimeError(f"could not remove {', '.join(left)}")
+
+        def remove() -> None:  # raises inside run_quietly, so systemctl's own reason is shown with it
+            gw.remove_legacy_hermes_units(interactive=False)
+            if left := [u["unit"] for u in self.legacy_unit_records() if not u["system"]]:
+                raise RuntimeError(f"could not remove {', '.join(left)}")
+        run_quietly(remove)
         for unit in units:  # a stopped gateway may exit non-zero: no deleted unit is left listed as failed
             _systemctl("user", ["reset-failed", unit])
 

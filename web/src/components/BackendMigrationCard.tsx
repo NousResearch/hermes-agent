@@ -335,7 +335,15 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
     case "running":
       return <Line spin>{stepWords(view.step)}…</Line>;
     case "switching":
-      return <Line spin>Switching over: this address is unavailable for a few seconds…</Line>;
+      return (
+        <div className="flex flex-col gap-2">
+          <Line spin>Switching over: this address is unavailable until Hermes answers on it again…</Line>
+          <span className="text-muted-foreground">
+            A move that waits for running work, or puts everything back, can take several minutes. On this computer,
+            see where it stands with <Cmd>{status}</Cmd>
+          </span>
+        </div>
+      );
     case "signInAgain":
       return (
         <div className="flex flex-col gap-2" data-slot="backend-migration-signin">

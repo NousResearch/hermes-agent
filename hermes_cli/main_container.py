@@ -26,6 +26,23 @@ def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
         sys.exit(1)
 
 
+def container_exec_info() -> dict | None:
+    """``hermes_cli.config.get_container_exec_info()`` for the entry point, or None for a profile a plugin
+    runs elsewhere: that backend writes the file, and its ``backend=`` line names the program to start. The
+    file is not opened for such a profile, whatever the backend left under its name, and the command stays
+    a host command. A home with nothing under that name is not asked about; what its backend writes there
+    after that look is read and not used."""
+    from hermes_cli.config import get_container_exec_info
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    from hermes_constants import get_hermes_home
+
+    if os.path.lexists(get_hermes_home() / ".container-mode") and run_elsewhere_refusal() is not None:
+        return None
+    info = get_container_exec_info()
+    # The backend can write the file between the look above and this read, so the question is asked again.
+    return None if info and run_elsewhere_refusal() is not None else info
+
+
 def exec_in_container(container_info: dict, cli_args: list):
     """Replace the current process with a command inside the managed container.
 

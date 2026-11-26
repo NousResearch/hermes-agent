@@ -34,6 +34,7 @@ from agent.file_safety import (
 )
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.resolver.git import resolve_usable_git
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.staged_uploads import (
@@ -411,6 +412,8 @@ def _fs_default_cwd(profile: Optional[str] = None) -> str:
 
 
 def _fs_git_branch(cwd: str) -> str:
+    if resolve_usable_git() is None:
+        return ""
     try:
         # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
         # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).

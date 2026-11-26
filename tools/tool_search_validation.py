@@ -212,6 +212,20 @@ def local_batch_error(entries: list[dict[str, Any]]) -> str:
     )
 
 
+def resolve_oauth_tool_alias(name: str) -> str:
+    """Reverse Anthropic OAuth wire tool-name aliases (``chat_history_lookup`` ->
+    ``session_search``, ``context_notes`` -> ``memory``, with or without ``mcp__``)
+    back to the canonical registered tool name. A real tool registered under the
+    wire name always wins, matching ``agent.transports.anthropic._unprefix_oauth_tool_name``."""
+    if _registry_entry(name) is not None:
+        return name
+    from agent.anthropic_adapter import _MCP_TOOL_PREFIX, _OAUTH_TOOL_NAME_REVERSE_ALIASES
+    bare = name[len(_MCP_TOOL_PREFIX):] if name.startswith(_MCP_TOOL_PREFIX) else name
+    if bare != name and (_registry_entry("mcp_" + bare) is not None or _registry_entry(bare) is not None):
+        return name
+    return _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(bare, name)
+
+
 def unavailable_in_session_reason(name: str) -> str:
     """Why a registered tool absent from THIS session cannot be reached, whatever its door.
 
@@ -227,12 +241,15 @@ def session_unavailable_error(name: str, session_tool_names: Optional[Iterable[s
     whether or not ``defer:`` moved it behind the bridge; None without session context, when
     the session carries it, or for MCP/plugin/unregistered names (an absent one may be a stale
     catalog that ``tool_search`` can still refresh). A missing GUI surface keeps its own reason."""
-    if session_tool_names is None or name in set(session_tool_names):
+    if session_tool_names is None:
+        return None
+    canonical = resolve_oauth_tool_alias(name)
+    if canonical in set(session_tool_names):
         return None
     from tools.tool_search import _core_tool_names, out_of_scope_reason  # late: imports this module
-    if name not in _core_tool_names() or _registry_entry(name) is None:
+    if canonical not in _core_tool_names() or _registry_entry(canonical) is None:
         return None
-    return out_of_scope_reason(name) or unavailable_in_session_reason(name)
+    return out_of_scope_reason(canonical) or unavailable_in_session_reason(name)
 
 
 def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] = None) -> str:
@@ -250,8 +267,9 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
     global blocklist, because a top-level session legitimately has these tools.
     """
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
-    if name in _core_tool_names() or _registry_entry(name) is not None:
-        if session_tool_names is not None and name not in set(session_tool_names):
+    canonical = resolve_oauth_tool_alias(name)
+    if canonical in _core_tool_names() or _registry_entry(canonical) is not None:
+        if session_tool_names is not None and canonical not in set(session_tool_names):
             return unavailable_in_session_reason(name)
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")

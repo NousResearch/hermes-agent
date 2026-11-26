@@ -921,3 +921,130 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+class TestAnthropicOAuthToolAliases:
+    """Anthropic OAuth aliases ``session_search`` -> ``chat_history_lookup`` and
+    ``memory`` -> ``context_notes`` on the wire and in prose (including the embedded
+    tool_search catalog). Calls through ``tool_call`` / ``tool_describe`` must
+    resolve those wire aliases rather than rejecting them as unknown tool names."""
+
+    @pytest.mark.parametrize("wire_name", ["chat_history_lookup", "mcp__chat_history_lookup"])
+    def test_chat_history_lookup_resolves_when_session_search_is_deferred(self, wire_name):
+        from tools.tool_search import resolve_underlying_call
+
+        name, args, err = resolve_underlying_call(
+            {"calls": [{"name": wire_name, "arguments": {"query": "deploy"}}]},
+            session_tool_names={"session_search", "memory", "terminal"},
+        )
+        assert (name, args, err) == ("session_search", {"query": "deploy"}, None)
+
+    def test_chat_history_lookup_reports_directly_listed_when_not_deferred(self, monkeypatch):
+        from tools import tool_search
+        from tools.tool_search import ToolSearchConfig, resolve_underlying_call
+
+        monkeypatch.setattr(
+            tool_search,
+            "load_config_readonly",
+            lambda: ToolSearchConfig.from_raw({"enabled": "auto", "defer": []}),
+        )
+        name, args, err = resolve_underlying_call(
+            {"calls": [{"name": "chat_history_lookup", "arguments": {"query": "deploy"}}]},
+            session_tool_names={"session_search", "memory", "terminal"},
+        )
+        assert (name, args) == (None, {})
+        assert err is not None
+        assert "'chat_history_lookup' is a directly-listed tool" in err
+        assert "not a known tool name" not in err
+
+    @pytest.mark.parametrize("wire_name", ["context_notes", "mcp__context_notes"])
+    def test_context_notes_reports_directly_listed_by_default(self, wire_name):
+        from tools.tool_search import resolve_underlying_call
+
+        name, args, err = resolve_underlying_call(
+            {"calls": [{"name": wire_name, "arguments": {"action": "add", "target": "memory", "content": "hi"}}]},
+            session_tool_names={"session_search", "memory", "terminal"},
+        )
+        assert (name, args) == (None, {})
+        assert err is not None
+        assert f"'{wire_name}' is a directly-listed tool" in err
+        assert "not a known tool name" not in err
+
+    def test_context_notes_resolves_when_memory_is_explicitly_deferred(self, monkeypatch):
+        from tools import tool_search
+        from tools.tool_search import ToolSearchConfig, resolve_underlying_call
+
+        monkeypatch.setattr(
+            tool_search,
+            "load_config_readonly",
+            lambda: ToolSearchConfig.from_raw({"enabled": "auto", "defer": ["memory"]}),
+        )
+        name, args, err = resolve_underlying_call(
+            {"calls": [{"name": "context_notes", "arguments": {"action": "add", "target": "memory", "content": "hi"}}]},
+            session_tool_names={"memory", "terminal"},
+        )
+        assert (name, args, err) == ("memory", {"action": "add", "target": "memory", "content": "hi"}, None)
+
+    @pytest.mark.parametrize("wire_name", ["chat_history_lookup", "context_notes"])
+    def test_oauth_alias_reports_unavailable_when_stripped_from_session(self, wire_name):
+        from tools.tool_search import resolve_underlying_call
+
+        name, args, err = resolve_underlying_call(
+            {"calls": [{"name": wire_name, "arguments": {}}]},
+            session_tool_names={"terminal", "read_file"},
+        )
+        assert (name, args) == (None, {})
+        assert err is not None
+        assert f"'{wire_name}' is not available in this execution context" in err
+
+    def test_tool_describe_handles_oauth_aliases(self):
+        from tools.tool_search import dispatch_tool_describe
+
+        defs = [
+            _td("session_search", "Search past conversations.", {"query": {"type": "string"}}),
+            _td("memory", "Persist notes.", {"action": {"type": "string"}}),
+        ]
+        result = json.loads(dispatch_tool_describe(
+            {"names": ["chat_history_lookup", "context_notes"]},
+            current_tool_defs=defs,
+        ))
+        assert "chat_history_lookup" in result["tools"]
+        assert "query" in result["tools"]["chat_history_lookup"]["parameters"]["properties"]
+        assert "'context_notes' is a directly-listed tool" in result["errors"]["context_notes"]
+        assert "not_found" not in result
+
+    def test_unwrap_and_handle_function_call_for_oauth_aliases(self):
+        from types import SimpleNamespace
+        import model_tools
+        from agent.tool_executor import _unwrap_tool_search_call
+
+        # session_search is an inline agent-loop tool: _unwrap_tool_search_call peels
+        # tool_call("chat_history_lookup") -> ("session_search", args, None) so the
+        # agent loop's INLINE_TOOL_EXECUTORS handles it directly.
+        fake_agent = SimpleNamespace(enabled_toolsets=["session_search", "memory"], disabled_toolsets=None)
+        unwrapped_name, unwrapped_args, scope_block = _unwrap_tool_search_call(
+            fake_agent,
+            "tool_call",
+            {"calls": [{"name": "chat_history_lookup", "arguments": {"query": "oauth"}}]},
+        )
+        assert (unwrapped_name, unwrapped_args, scope_block) == ("session_search", {"query": "oauth"}, None)
+
+        # memory is directly-listed by default: handle_function_call returns the
+        # directly-listed guidance naming the wire alias instead of "unknown tool".
+        memory_out = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"calls": [{"name": "context_notes", "arguments": {"action": "add"}}]},
+            enabled_toolsets=["session_search", "memory"],
+        ))
+        assert "'context_notes' is a directly-listed tool" in memory_out["error"]
+        assert "not a known tool name" not in memory_out["error"]
+
+    def test_registered_tool_under_wire_name_wins_over_oauth_alias(self, monkeypatch):
+        from tools.tool_search_validation import resolve_oauth_tool_alias
+
+        monkeypatch.setattr(
+            "tools.tool_search_validation._registry_entry",
+            lambda name: object() if name == "chat_history_lookup" else None,
+        )
+        assert resolve_oauth_tool_alias("chat_history_lookup") == "chat_history_lookup"
+        assert resolve_oauth_tool_alias("mcp__chat_history_lookup") == "mcp__chat_history_lookup"

@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 
+from contextlib import suppress
 from pathlib import Path
 from rich import box as rich_box
 from rich.panel import Panel
@@ -57,10 +58,9 @@ class CLIChatTurnMixin:
             return
         self._write_program_status(seq)
 
-    def _write_program_status(self, seq: str) -> None:
-        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
-            return
-        if not sys.stdout.isatty():
+    def _emit_osc_sequence(self, seq: str) -> None:
+        """Write an OSC escape sequence via the prompt_toolkit loop when running, else write_tty."""
+        if getattr(self, "_terminal_io_broken", False) or not sys.stdout.isatty():
             return
         from hermes_cli.terminal_notify import write_tty
         app = getattr(self, "_app", None)
@@ -76,6 +76,85 @@ class CLIChatTurnMixin:
                 pass
 
         _run_on_app_loop(app, _emit)
+
+    def _write_program_status(self, seq: str) -> None:
+        if not getattr(self, "program_status_enabled", True):
+            return
+        self._emit_osc_sequence(seq)
+
+    _program_resume_interactive: bool = False
+    _program_resume_last_argv: tuple[str, ...] | None = None
+    _program_resume_reported: bool = False
+    _program_resume_closed: bool = False
+    _session_title_persisted: bool = False
+
+    def _write_osc7577(self, seq: str) -> None:
+        if not getattr(self, "program_resume_enabled", True):
+            return
+        self._emit_osc_sequence(seq)
+
+    def _resumable_session_id(self) -> str | None:
+        """Return the active session ID only once it is durable/resumable on disk."""
+        agent = getattr(self, "agent", None)
+        sid = (getattr(agent, "session_id", None) if agent is not None else None) or getattr(self, "session_id", None)
+        if not sid:
+            return None
+        durable = bool(
+            getattr(self, "_resumed", False)
+            or getattr(self, "conversation_history", None)
+            or getattr(self, "_agent_running", False)
+            or getattr(self, "_session_title_persisted", False)
+        )
+        return str(sid) if durable else None
+
+    def _sync_program_resume(self, *, force: bool = False) -> None:
+        """Report or update OSC 7577 resume argv for this interactive CLI pane."""
+        if (
+            self._program_resume_closed
+            or not getattr(self, "_program_resume_interactive", False)
+            or not getattr(self, "program_resume_enabled", True)
+            or getattr(self, "_terminal_io_broken", False)
+            or not sys.stdout.isatty()
+        ):
+            return
+        from hermes_cli.terminal_notify import (
+            build_hermes_resume_argv, osc7577_token,
+            program_resume_clear_sequence, program_resume_sequence,
+        )
+        token = osc7577_token()
+        if token is None:
+            return
+        target_argv = tuple(build_hermes_resume_argv(self._resumable_session_id(), surface="cli"))
+        if not force and target_argv == self._program_resume_last_argv:
+            return
+        try:
+            seq = program_resume_sequence(target_argv, token=token)
+        except (TypeError, ValueError, UnicodeError):
+            if self._program_resume_reported:
+                self._program_resume_reported = False
+                self._program_resume_last_argv = None
+                with suppress(TypeError, ValueError, UnicodeError):
+                    self._write_osc7577(program_resume_clear_sequence(token=token))
+            return
+        self._write_osc7577(seq)
+        self._program_resume_last_argv = target_argv
+        self._program_resume_reported = True
+
+    def _clear_program_resume(self) -> None:
+        """Clear this pane's OSC 7577 record on explicit user exit (never on SIGHUP/SIGTERM)."""
+        if self._program_resume_closed:
+            return
+        self._program_resume_closed = True
+        if not self._program_resume_reported:
+            return
+        self._program_resume_reported = False
+        self._program_resume_last_argv = None
+        from hermes_cli.terminal_notify import osc7577_token, program_resume_clear_sequence
+        token = osc7577_token()
+        if token is None:
+            return
+        with suppress(TypeError, ValueError, UnicodeError):
+            self._write_osc7577(program_resume_clear_sequence(token=token))
 
     # (state, msg) of the last finished turn; None = no outcome to show (fresh, early return, lost result).
     _program_turn_outcome: tuple[str, str] | None = None

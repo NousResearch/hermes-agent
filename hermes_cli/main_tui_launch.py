@@ -504,8 +504,16 @@ def _launch_tui(
     # `hermes --tui` try to resume a non-existent session; only forward the id
     # argparse resolved for this invocation.
     env.pop("HERMES_TUI_RESUME", None)
+    env.pop("HERMES_TUI_OWNER_PID", None)
+    env.pop("HERMES_TUI_RESUME_ARGV", None)
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
+
+    from hermes_cli.terminal_notify import build_hermes_resume_argv_prefix
+    env["HERMES_TUI_OWNER_PID"] = str(os.getpid())
+    env["HERMES_TUI_RESUME_ARGV"] = json.dumps(
+        build_hermes_resume_argv_prefix(surface="tui", tui_native=bool(native_mode), tui_dev=bool(tui_dev))
+    )
 
     notices: list[str] = []
     argv, cwd = _make_tui_argv(tui_dir, tui_dev, notices)

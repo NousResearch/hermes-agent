@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0.0",
+  "source_scan": {
+    "project_root": "/tmp/test-project",
+    "total_files": 5
+  },
+  "generated_at": "2026-05-30T12:01:00Z",
+  "files": {
+    "src/main.py": {
+      "imports": ["os", "sys", "logging"],
+      "warnings": []
+    },
+    "src/utils.py": {
+      "imports": ["os", "collections"],
+      "warnings": []
+    },
+    "src/api.py": {
+      "imports": ["flask", "json", "os"],
+      "warnings": []
+    },
+    "src/config.py": {
+      "imports": ["os", "json", "typing"],
+      "warnings": []
+    },
+    "src/db.py": {
+      "imports": ["sqlite3", "os"],
+      "warnings": []
+    }
+  },
+  "totals": {
+    "files_with_imports": 5,
+    "files_without_imports": 0,
+    "unique_modules": 6,
+    "total_warnings": 0
+  }
+}

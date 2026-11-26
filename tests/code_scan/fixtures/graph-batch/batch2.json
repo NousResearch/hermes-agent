@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/tmp/test-project",
+  "scanned_at": "2026-05-30T12:01:00Z",
+  "total_files": 5,
+  "total_lines": 200,
+  "languages": {"python": 5},
+  "categories": {"code": 5},
+  "frameworks": [],
+  "warnings": [],
+  "files": [
+    {
+      "path": "/tmp/test-project/src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 80,
+      "size_bytes": 2048,
+      "functions": ["entry_point"],
+      "classes": ["Application"]
+    },
+    {
+      "path": "/tmp/test-project/src/utils.py",
+      "relative_path": "src/utils.py",
+      "language": "python",
+      "category": "code",
+      "lines": 60,
+      "size_bytes": 1536,
+      "functions": ["util_parse"]
+    },
+    {
+      "path": "/tmp/test-project/src/api.py",
+      "relative_path": "src/api.py",
+      "language": "python",
+      "category": "code",
+      "lines": 40,
+      "size_bytes": 1100,
+      "functions": ["get_endpoint", "post_endpoint"],
+      "classes": ["APIHandler"]
+    },
+    {
+      "path": "/tmp/test-project/src/config.py",
+      "relative_path": "src/config.py",
+      "language": "python",
+      "category": "code",
+      "lines": 30,
+      "size_bytes": 800,
+      "functions": ["load_settings"],
+      "classes": ["Settings"]
+    },
+    {
+      "path": "/tmp/test-project/src/db.py",
+      "relative_path": "src/db.py",
+      "language": "python",
+      "category": "code",
+      "lines": 50,
+      "size_bytes": 1300,
+      "functions": ["connect_db", "query"],
+      "classes": ["Database"]
+    }
+  ]
+}

@@ -56,7 +56,10 @@ class Candidate:
 
 @dataclass(frozen=True)
 class LookupContext:
-    """`path`: ABSENT = caller did not say (ambient), None = ambient, "" = search nothing."""
+    """`path`: ABSENT = caller did not say (ambient), None = ambient, "" = search nothing.
+
+    `pathext`: None = ambient Windows extensions, "" = do not add extensions.
+    """
 
     path: str | None | _Absent = ABSENT
     pathext: str | None = None
@@ -95,12 +98,17 @@ def _which(name: str, ctx: LookupContext) -> str | None:
     if ctx.path == "":
         return None
     if ctx.pathext is not None and os.name == "nt":
-        # shutil.which reads PATHEXT from os.environ; an explicit pathext is honored without mutating it.
-        exts = [e for e in ctx.pathext.split(os.pathsep) if e]
-        for ext in ["", *exts]:
-            hit = shutil.which(name + ext, path=ctx.effective_path())
-            if hit:
-                return hit
+        # shutil.which always reads ambient PATHEXT, even when passed a suffixed name.
+        path = ctx.effective_path()
+        if path is None:
+            path = os.environ.get("PATH", os.defpath)
+        if not path:
+            return None
+        for directory in path.split(os.pathsep):
+            base = os.path.join(directory, name)
+            for candidate in _command_variants(base, ctx.pathext):
+                if _is_executable_file(candidate):
+                    return candidate
         return None
     return shutil.which(name, path=ctx.effective_path())
 
@@ -129,7 +137,7 @@ def locate_command(name: str, ctx: LookupContext | None = None, *, known_dirs: t
     candidates.append(Candidate(hit or name, "PATH", hit is not None))
     for d in known_dirs:
         base = os.path.join(_expand(d), name)
-        found = next((v for v in _known_dir_variants(base) if _is_executable_file(v)), None)
+        found = next((v for v in _command_variants(base, ctx.pathext) if _is_executable_file(v)), None)
         candidates.append(Candidate(found or base, f"known_dir:{d}", found is not None))
 
     kind: Kind = "missing"
@@ -140,9 +148,11 @@ def locate_command(name: str, ctx: LookupContext | None = None, *, known_dirs: t
     return Resolution(kind, tuple(candidates))
 
 
-def _known_dir_variants(base: str) -> tuple[str, ...]:
-    """On Windows a bare name in a known dir may carry any PATHEXT suffix; one candidate is recorded per dir."""
+def _command_variants(base: str, pathext: str | None = None) -> tuple[str, ...]:
+    """Try the literal name, then Windows suffixes from the caller or ambient PATHEXT."""
     if os.name != "nt":
         return (base,)
-    exts = [e for e in os.environ.get("PATHEXT", ".EXE;.CMD;.BAT").split(os.pathsep) if e]
+    if pathext is None:
+        pathext = os.environ.get("PATHEXT", ".EXE;.CMD;.BAT")
+    exts = [e for e in pathext.split(os.pathsep) if e]
     return (base, *[base + e for e in exts])

@@ -323,11 +323,13 @@ def rehome_queued_inputs(holder, *, epoch: int, old_session_id: str, new_session
                             "AND substr(principal_id,1,?)=? ORDER BY seq",
                             (old_session_id, len(principal_prefix), principal_prefix)).fetchall()
         for row in rows:
+            payload = json.loads(row['payload_json'])
+            stored_payload = _sqlite_payload_json(payload)
             digest = admission_fingerprint(canonical_target=new_session_id, payload={
-                'input': retry_input(json.loads(row['payload_json'])), 'intent': row['intent']})
-            conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=?,payload_digest=? "
+                'input': retry_input(json.loads(stored_payload)), 'intent': row['intent']})
+            conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=?,payload_json=?,payload_digest=? "
                          "WHERE admission_id=? AND status='queued'",
-                         (new_session_id, json.dumps([new_session_id]), digest, row['admission_id']))
+                         (new_session_id, json.dumps([new_session_id]), stored_payload, digest, row['admission_id']))
         if rows:
             for sid in (old_session_id, new_session_id):
                 conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (sid,))
@@ -362,10 +364,11 @@ def retarget_local_automation(holder, *, epoch: int, session_id: str, principal_
             if not isinstance(descriptor, dict) or descriptor.get('target') not in old_targets:
                 continue
             descriptor['target'] = new_target
+            stored_payload = _sqlite_payload_json(payload)
             digest = admission_fingerprint(canonical_target=session_id, payload={
-                'input': retry_input(payload), 'intent': row['intent']})
+                'input': retry_input(json.loads(stored_payload)), 'intent': row['intent']})
             conn.execute("UPDATE session_admissions SET payload_json=?,payload_digest=? WHERE admission_id=? AND status='queued'",
-                         (_sqlite_payload_json(payload), digest, row['admission_id']))
+                         (stored_payload, digest, row['admission_id']))
             moved.append(row['admission_id'])
         if moved:
             conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))

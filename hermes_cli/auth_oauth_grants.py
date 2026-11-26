@@ -7,6 +7,7 @@ inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -567,6 +568,46 @@ def _pool_rows(store: dict[str, Any], provider_id: str) -> tuple[Any, list[Any]]
     pool = store.get("credential_pool")
     rows = pool.get(provider_id) if isinstance(pool, dict) else None
     return pool, rows if isinstance(rows, list) else []
+
+
+def legacy_pool_row_id(provider: str, row: dict[str, Any]) -> str:
+    """Derive the same identity for readers of an ID-less OAuth row."""
+    identity = [provider, *(row.get(key) for key in ("source", "access_token", "refresh_token", "label", "priority"))]
+    return "legacy-" + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()[:32]
+
+
+def identify_legacy_pool_rows(provider: str, rows: list[Any], *, borrowed: bool) -> list[Any]:
+    """Give owned grants and borrowed rows the same ID without writing the store."""
+    return [{**row, "id": legacy_pool_row_id(provider, row)}
+            if isinstance(row, dict) and not row.get("id") and (borrowed or row.get("refresh_token"))
+            else row for row in rows]
+
+
+def store_supplies_pool_grant(path: Path, provider: str, row_id: str, source: str) -> bool:
+    """With the store locked, resolve the cached grant and persist a matched legacy ID."""
+    from agent.credential_pool import SOURCE_MANUAL, STATUS_DEAD, _TOKENS_SINGLETON_PROVIDERS
+    from hermes_cli.auth import _entry_ids, _load_auth_store, _provider_state_in, _save_auth_store
+
+    store = _load_auth_store(path)
+    _, rows = _pool_rows(store, provider)
+    row = _entry_ids(rows).get(row_id)
+    if row is None and row_id.startswith("legacy-"):
+        matches = [item for item in rows if isinstance(item, dict) and not item.get("id")
+                   and legacy_pool_row_id(provider, item) == row_id]
+        if len(matches) != 1:
+            return False
+        row = matches[0]
+    if row is not None:
+        eligible = (row.get("source", SOURCE_MANUAL) == source
+                    and row.get("last_status") != STATUS_DEAD and bool(row.get("refresh_token")))
+        if eligible and not row.get("id"):
+            row["id"] = row_id
+            _save_auth_store(store, target_path=path)
+        return eligible
+    if source != "device_code" or provider not in _TOKENS_SINGLETON_PROVIDERS:
+        return False
+    tokens = (_provider_state_in(store, provider) or {}).get("tokens")
+    return isinstance(tokens, dict) and bool(tokens.get("access_token") and tokens.get("refresh_token"))
 
 
 def owned_profile_reads_root_state(

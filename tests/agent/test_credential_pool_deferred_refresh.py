@@ -1,23 +1,20 @@
-"""Thread-safety of the deferred single-use-token refresh path (#71775).
+"""Deferred refresh leaves unrelated credential selection available (#71775)."""
 
-The deferred path deliberately runs OAuth network I/O outside the pool
-lock. These tests pin the two invariants that make that safe:
-
-1. `select()` does NOT hold the pool lock while the deferred refresh's
-   network call runs (the whole point of the PR).
-2. The pool mutations that follow the network call (`_replace_entry`,
-   `_persist`) DO re-serialize under the pool lock, so a concurrent
-   `select()`/rotation cannot tear `self._entries` or double-write
-   auth.json.
-"""
-
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
+from threading import Event
 
+import pytest
+
+from agent import credential_pool, credential_pool_deferred_refresh
 from agent.credential_pool import (
     AUTH_TYPE_OAUTH,
+    STRATEGY_ROUND_ROBIN,
     CredentialPool,
     PooledCredential,
 )
+from hermes_cli import auth
 
 def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
     return PooledCredential(
@@ -32,31 +29,84 @@ def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
         expires_at_ms=1,  # long expired -> needs refresh
     )
 
-def test_select_does_not_hold_pool_lock_during_deferred_refresh(monkeypatch):
-    pool = CredentialPool("openai-codex", [_codex_entry()])
-    lock_free_during_refresh = {}
+@pytest.mark.parametrize("blocked_at", ["file-lock", "provider"])
+def test_select_can_use_another_entry_during_deferred_refresh(tmp_path, monkeypatch, blocked_at):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    stale = replace(_codex_entry(), source="manual:device_code", priority=1)
+    healthy = replace(stale, id="healthy", priority=0, access_token="healthy-access", refresh_token="healthy-refresh")
+    pool = CredentialPool(stale.provider, [healthy, stale])
+    pool._persist()
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda e: e.access_token == stale.access_token)
+    started, release = Event(), Event()
+    real_store_lock = credential_pool._auth_store_lock
 
-    def _fake_refresh(entry, *, force):
-        # If select() still held the pool lock here, this non-blocking
-        # acquire would fail — the regression this PR exists to fix.
-        acquired = pool._lock.acquire(blocking=False)
-        lock_free_during_refresh["value"] = acquired
-        if acquired:
-            pool._lock.release()
-        refreshed = replace(entry, access_token="at-fresh", expires_at_ms=2**53)
-        pool._replace_entry(entry, refreshed)
-        return refreshed
+    def pause():
+        started.set()
+        assert release.wait(10)
 
-    monkeypatch.setattr(
-        pool, "_entry_needs_refresh", lambda e: e.access_token == "at-stale"
-    )
-    monkeypatch.setattr(pool, "_refresh_entry", _fake_refresh)
-    monkeypatch.setattr(pool, "_persist", lambda **kw: None)
+    @contextmanager
+    def store_lock(*args, **kwargs):
+        if blocked_at == "file-lock" and not started.is_set():
+            pause()
+        with real_store_lock(*args, **kwargs):
+            yield
 
-    selected = pool.select()
+    def refresh(*_args):
+        if blocked_at == "provider":
+            pause()
+        return {"access_token": "at-fresh", "refresh_token": "rt-fresh"}
 
-    assert lock_free_during_refresh.get("value") is True, (
-        "select() held the pool lock during the deferred refresh network window"
-    )
-    assert selected is not None
-    assert selected.access_token == "at-fresh"
+    monkeypatch.setattr(credential_pool, "_auth_store_lock", store_lock)
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", refresh)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pending = executor.submit(pool._refresh_pending_entries, [stale])
+        try:
+            assert started.wait(5)
+            selected = executor.submit(pool.select).result(timeout=3)
+            assert selected.id == healthy.id
+        finally:
+            release.set()
+        pending.result(timeout=5)
+
+    assert [entry.access_token for entry in pool.entries()] == [healthy.access_token, "at-fresh"]
+    assert [row["id"] for row in auth.read_credential_pool(stale.provider)] == [healthy.id, stale.id]
+
+
+@pytest.mark.parametrize("new_login", [False, True], ids=["metadata", "new-generation"])
+def test_round_robin_retains_deferred_refresh_across_row_rebuild(tmp_path, monkeypatch, new_login):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    stale = replace(_codex_entry(), source="manual:device_code", priority=1)
+    first = replace(stale, id="first", priority=0, access_token="first-access", refresh_token="first-refresh")
+    second = replace(stale, id="second", priority=2, access_token="second-access", refresh_token="second-refresh")
+    pool = CredentialPool(stale.provider, [first, stale, second])
+    pool._strategy = STRATEGY_ROUND_ROBIN
+    pool._persist()
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda row: row.access_token == stale.access_token)
+    refresh_calls = []
+
+    def refresh(access_token, refresh_token):
+        refresh_calls.append((access_token, refresh_token))
+        return {"access_token": "at-fresh", "refresh_token": "rt-fresh"}
+
+    publish = credential_pool_deferred_refresh._publish_deferred_entry
+
+    def update_before_publish(live_pool, original, staged):
+        current, *_ = live_pool.entries()
+        updates = {"request_count": 7}
+        if new_login:
+            updates.update(access_token="new-login-access", refresh_token="new-login-refresh")
+        live_pool._replace_entry(current, replace(current, **updates))
+        publish(live_pool, original, staged)
+
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", refresh)
+    monkeypatch.setattr(credential_pool_deferred_refresh, "_publish_deferred_entry", update_before_publish)
+
+    assert pool.select().id == first.id
+
+    assert refresh_calls == [(stale.access_token, stale.refresh_token)]
+    rows = pool.entries()
+    assert [(row.id, row.priority, row.request_count) for row in rows] == [
+        (stale.id, 0, 7), (second.id, 1, 0), (first.id, 2, 1),
+    ]
+    assert rows[0].refresh_token == ("new-login-refresh" if new_login else "rt-fresh")

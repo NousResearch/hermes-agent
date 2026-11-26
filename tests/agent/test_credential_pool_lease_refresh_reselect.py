@@ -48,7 +48,7 @@ def _wire_deferred_refresh(pool, *, refresh_succeeds: bool = True):
     """Model the deferred-refresh contract with an explicit state flag."""
     state = {"needs_refresh": True, "refresh_calls": 0}
 
-    def fake_refresh(pending):
+    def fake_refresh(pending, wait=True):
         state["refresh_calls"] += 1
         if refresh_succeeds:
             state["needs_refresh"] = False

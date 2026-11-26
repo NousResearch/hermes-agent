@@ -31,7 +31,7 @@ class CredentialPoolSelectionMixin:
     def select(self, *, model: Optional[str] = None, endpoint_url: Optional[str] = None) -> Optional[PooledCredential]:
         entry, pending_refresh = self._select_under_lock(model=model, endpoint_url=endpoint_url)
         if pending_refresh:
-            self._refresh_pending_entries(pending_refresh)
+            self._refresh_pending_entries(pending_refresh, wait=entry is None)
             # Re-select now that the refreshed entries are back in the pool.
             if entry is None:
                 entry, _ = self._select_under_lock(model=model, endpoint_url=endpoint_url)

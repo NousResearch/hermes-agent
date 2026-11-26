@@ -201,13 +201,14 @@ def test_concurrent_hermes_pkce_refresh_loses_credential_despite_valid_token_on_
     )
 
 
-def test_concurrent_claude_code_refresh_recovers_via_credentials_file(monkeypatch):
+def test_concurrent_claude_code_refresh_recovers_via_credentials_file(tmp_path, monkeypatch):
     """Contrast case: entry.source == 'claude_code' DOES recover from a lost
     race, because ``_sync_anthropic_entry_from_credentials_file`` re-reads
     ``~/.claude/.credentials.json`` on failure. This asymmetry is itself
     evidence that hermes_pkce/dashboard-sourced credentials were simply
     never given the same treatment, not that recovery is impossible.
     """
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     server = _SingleUseTokenServer()
     monkeypatch.setattr(
         "agent.anthropic_credentials.refresh_anthropic_oauth_pure",

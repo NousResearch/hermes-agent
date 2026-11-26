@@ -146,7 +146,7 @@ def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: st
     cmd += ["--", reference]  # `--` so a reference can never parse as an op flag
 
     proc = run_cli(cmd, env=_op_child_env(token_value), timeout=_OP_RUN_TIMEOUT, label="op",
-                   timeout_message=f"op read timed out after {_OP_RUN_TIMEOUT}s for {reference!r}", stdin=None)
+                   timeout_message=f"op read timed out after {_OP_RUN_TIMEOUT}s for {reference!r}")
 
     if proc.returncode != 0:
         err = _scrub(proc.stderr or "")[:200]

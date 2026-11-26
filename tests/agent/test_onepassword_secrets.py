@@ -112,6 +112,26 @@ def test_fetch_happy_path(monkeypatch, tmp_path):
 
 
 
+def test_fetch_does_not_hand_op_our_stdin(monkeypatch, tmp_path):
+    """``hermes acp`` reads JSON-RPC from stdin; an ``op read`` that inherits it
+    swallows the client's ``initialize`` request (#160123)."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs.get("stdin"))
+        return _ok("v")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    secrets, _ = op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, binary=fake_op, use_cache=False
+    )
+    assert secrets == {"K": "v"}
+    assert seen == [subprocess.DEVNULL]
+
+
 def test_fetch_read_failure_becomes_warning(monkeypatch, tmp_path):
     fake_op = tmp_path / "op"
     fake_op.write_text("")

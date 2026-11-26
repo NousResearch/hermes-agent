@@ -1336,7 +1336,7 @@ SEARCH_FILES_SCHEMA = {
             "offset": {"type": "integer", "description": "Skip first N results for pagination.", "default": 0},
             "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File search only: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree.", "default": "discovery"},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Content search only: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file.", "default": "content"},
-            "context": {"type": "integer", "description": "Content search only: lines of context before and after each match.", "default": 0}
+            "context": {"type": "integer", "description": "Content search only: lines of context before and after each match. Context lines are marked and do not count toward total_count, limit, or offset.", "default": 0}
         },
         "required": ["pattern"]
     }

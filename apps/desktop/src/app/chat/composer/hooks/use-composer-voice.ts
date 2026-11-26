@@ -30,6 +30,7 @@ import { onComposerDictationRequest, onComposerVoiceToggleRequest } from '../foc
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
+import { salvageDictation } from './dictation-salvage'
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
@@ -115,6 +116,10 @@ export function useComposerVoice({
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
     focusInput,
     maxRecordingSeconds,
+    // A dictation that outlives this composer — the user switched chat or bot
+    // while it was still transcribing — is parked in that chat's persisted
+    // draft instead of being thrown away (#149000).
+    onSalvaged: text => salvageDictation(sessionId, text),
     onTranscript: insertText,
     onTranscribeAudio
   })

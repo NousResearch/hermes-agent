@@ -107,12 +107,14 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
 
 def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     """Import the plugin in a throwaway host process with no credentials and read its profiles."""
-    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, extraction_launcher
+    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, extraction_launcher, home_moved_refusal
     from hermes_constants import get_hermes_home
     repo_root = project_root_str()
     # Absolute: the child starts in the home, so a relative HERMES_HOME or plugin dir would resolve twice.
     # Links kept: a marked profile whose directory is a link out of the Hermes root is found by its name only.
     home = str(get_hermes_home().absolute())
+    if (moved := home_moved_refusal(Path(home))) is not None:
+        return {"error": moved}
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT") if key in os.environ}
     # Windows resolves Path.home() from USERPROFILE, never HOME: without it the child cannot start.
     env.update(HOME=str(Path.home()), USERPROFILE=str(Path.home()), HERMES_HOME=home,

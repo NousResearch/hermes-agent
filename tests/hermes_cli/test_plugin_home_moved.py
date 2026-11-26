@@ -139,6 +139,39 @@ def test_a_sibling_name_the_process_served_elsewhere_is_not_taken_over_when_repo
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
+def test_a_provider_extraction_for_a_home_whose_link_was_repointed_runs_no_launcher(tmp_path, monkeypatch):
+    """A model-provider extraction outside a host start, for a home whose name the process remembered and that now
+    leads to another directory, is refused (Greptile on #159450): the launcher that directory's config names never
+    runs with the remembered profile's values."""
+    from hermes_cli.plugin_host_profiles import load_hosted_profiles
+    from hermes_cli.plugin_host_wire import PluginHostUnavailable
+    from hermes_constants import hermes_home_key
+    from tests.hermes_cli.test_plugin_host import MODEL_PROVIDER_PLUGIN
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    old = _home_with_plugins(tmp_path / "old", monkeypatch, {})
+    new = _home_with_plugins(tmp_path / "new", monkeypatch, {})
+    plugin = new / "plugins" / "model-providers" / "hostmodel"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    (new / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    link = tmp_path / "root" / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(old, target_is_directory=True)
+    hermes_home_key(link)  # the process served the old directory under this name
+    link.unlink()
+    link.symlink_to(new, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    with pytest.raises(PluginHostUnavailable, match="restart Hermes"):
+        load_hosted_profiles(link / "plugins" / "model-providers" / "hostmodel", "hostmodel")
+    assert not ran.exists()
+
+
 def test_a_relative_home_looked_up_from_another_working_directory_gets_the_directory_it_names_there(
         tmp_path, monkeypatch):
     """A symbolic profile id bound as a home is a relative path. A lookup from another working directory gets the

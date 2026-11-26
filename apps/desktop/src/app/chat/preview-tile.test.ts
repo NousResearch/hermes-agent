@@ -295,3 +295,267 @@ describe('preview tiles mirror the visible session tabs', () => {
     expect(new Set(previews.map(id => model.findGroupOfPane(layout, id)?.id)).size).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// A grid of chats: focus follows the pointer, so the tree must follow the
+// sessions ON SCREEN instead — a session's previews stay while its chat is
+// visible, and open beside that chat.
+// ---------------------------------------------------------------------------
+
+describe('preview tiles follow the chats on screen, not the focus', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  async function setup() {
+    const preview = await import('@/store/preview')
+    const session = await import('@/store/session')
+    const focus = await import('@/store/session-focus')
+    const layout = await import('@/store/layout')
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+    const { watchPreviewTiles } = await import('./preview-tile')
+
+    registry.register({
+      area: 'panes',
+      data: { placement: 'main', uncloseable: true },
+      id: 'workspace',
+      render: () => null,
+      title: 'workspace'
+    })
+    tree.declareDefaultTree(model.group(['workspace'], { active: 'workspace', id: 'grp-main' }))
+    tree.watchContributedPanes()
+    watchPreviewTiles()
+
+    const tiles = new Map<string, () => void>()
+
+    const openTile = (sessionId: string) =>
+      tiles.set(
+        sessionId,
+        registry.register({
+          area: 'panes',
+          data: { dock: { pane: 'workspace', pos: 'right' }, placement: 'main' },
+          id: `session-tile:${sessionId}`,
+          render: () => null,
+          title: sessionId
+        })
+      )
+
+    const closeTile = (sessionId: string) => {
+      tiles.get(sessionId)?.()
+      tree.removeTreePane(`session-tile:${sessionId}`)
+    }
+
+    // What the composer's pointer tracking ends up doing: the chat under the
+    // pointer becomes the interacted zone's active pane.
+    const hover = (paneId: string) => {
+      const groupId = model.findGroupOfPane(tree.$layoutTree.get()!, paneId)!.id
+
+      tree.activateTreePane(groupId, paneId)
+      tree.noteActiveTreeGroup(groupId)
+    }
+
+    const previewPanes = () => tree.treePanesWithPrefix('preview-tile:')
+
+    // The pane of the tab showing `path` (a session-owned file tab's id carries its owner).
+    const paneFor = (path: string) =>
+      `preview-tile:${preview.$previewTabs.get().find(tab => tab.target.path === path)!.id}`
+
+    const dockFor = (path: string) =>
+      (registry.getArea('panes').find(entry => entry.id === paneFor(path))?.data as DockData)?.dock
+
+    const zoneOf = (paneId: string) => model.findGroupOfPane(tree.$layoutTree.get()!, paneId)
+
+    return {
+      closeTile,
+      dockFor,
+      focus,
+      hover,
+      layout,
+      openTile,
+      paneFor,
+      preview,
+      previewPanes,
+      registry,
+      session,
+      tree,
+      zoneOf
+    }
+  }
+
+  const pdf = (path: string) => fileTarget(path)
+
+  it('keeps a visible session preview in the tree while the pointer crosses another chat', async () => {
+    const { focus, hover, openTile, preview, previewPanes, registry, session } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    openTile('tile-a')
+    openTile('tile-b')
+    hover('session-tile:tile-a')
+    preview.openPreview(pdf('/work/a.pdf'))
+
+    const paneId = previewPanes()[0]!
+
+    expect(paneId).toBeDefined()
+
+    for (const other of ['session-tile:tile-b', 'workspace', 'session-tile:tile-b']) {
+      hover(other)
+      expect(focus.$focusedStoredSessionId.get()).not.toBe('tile-a')
+      // The pane and its contribution (the PDF body) are untouched…
+      expect(previewPanes()).toEqual([paneId])
+      expect(registry.getArea('panes').some(entry => entry.id === paneId)).toBe(true)
+      // …while the drawer (selection, ⌘W, toggles) still answers for the focus.
+      expect(preview.$visiblePreviewTabs.get()).toEqual([])
+    }
+  })
+
+  it('drops a preview from the tree once its session is on screen nowhere', async () => {
+    const { closeTile, hover, openTile, preview, previewPanes, session } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    openTile('tile-a')
+    openTile('tile-b')
+    hover('session-tile:tile-a')
+    preview.openPreview(pdf('/work/a.pdf'))
+    hover('session-tile:tile-b')
+
+    closeTile('tile-a')
+
+    expect(previewPanes()).toEqual([])
+    // The tab itself stays open for when the session comes back.
+    expect(preview.$previewTabs.get()).toHaveLength(1)
+
+    // The primary keeps the old rule: another selection hides its previews.
+    hover('workspace')
+    preview.openPreview(pdf('/work/main.pdf'))
+    expect(previewPanes()).toHaveLength(1)
+    session.$selectedStoredSessionId.set('other-sess')
+    expect(previewPanes()).toEqual([])
+  })
+
+  it("opens a session's first preview beside its own tile, else beside main", async () => {
+    const { dockFor, hover, openTile, preview, session } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    openTile('tile-a')
+
+    hover('session-tile:tile-a')
+    preview.openPreview(pdf('/work/a.pdf'))
+    expect(dockFor('/work/a.pdf')).toMatchObject({ pane: 'session-tile:tile-a', pos: 'right' })
+
+    hover('workspace')
+    preview.openPreview(pdf('/work/main.pdf'))
+    expect(dockFor('/work/main.pdf')).toMatchObject({ pane: 'workspace', pos: 'right' })
+  })
+
+  it('docks beside main when the owning session has no tile in the tree', async () => {
+    const { dockFor, preview, previewPanes, session } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    // An agent of a session that is not on screen opens a preview…
+    preview.openPreview(pdf('/work/bg.pdf'), 'bg-sess')
+    expect(previewPanes()).toEqual([])
+
+    // …and once pinned it shows with no tile of its session to sit beside.
+    preview.setPreviewTabPinned(preview.$previewTabs.get()[0]!.id, true)
+    expect(previewPanes()).toHaveLength(1)
+    expect(dockFor('/work/bg.pdf')).toMatchObject({ pane: 'workspace', pos: 'right' })
+  })
+
+  it("never stacks into another session's preview zone", async () => {
+    const { dockFor, hover, openTile, paneFor, preview, session } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    openTile('tile-a')
+    openTile('tile-b')
+
+    hover('session-tile:tile-a')
+    preview.openPreview(pdf('/work/a.pdf'))
+
+    hover('session-tile:tile-b')
+    preview.openPreview(pdf('/work/b.pdf'))
+    expect(dockFor('/work/b.pdf')).toMatchObject({ pane: 'session-tile:tile-b', pos: 'right' })
+
+    // The same session's next preview still stacks (#93610).
+    preview.openPreview(pdf('/work/b2.pdf'))
+    expect(dockFor('/work/b2.pdf')).toMatchObject({ pane: paneFor('/work/b.pdf'), pos: 'center' })
+  })
+
+  it('hands the focus to the chat whose preview the user works in', async () => {
+    const { focus, hover, layout, openTile, paneFor, preview, previewPanes, session } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    openTile('tile-a')
+    openTile('tile-b')
+    hover('session-tile:tile-a')
+    preview.openPreview(pdf('/work/a.pdf'))
+    hover('session-tile:tile-b')
+    preview.openPreview(pdf('/work/b.pdf'))
+
+    // A click on tile A's preview tab: its zone becomes the one worked in.
+    hover(paneFor('/work/a.pdf'))
+
+    const aTab = preview.$previewTabs.get().find(tab => tab.target.path === '/work/a.pdf')!.id
+
+    expect(focus.$focusedStoredSessionId.get()).toBe('tile-a')
+    expect(layout.$rightRailActiveTabId.get()).toBe(aTab)
+    expect(preview.$previewTarget.get()?.path).toBe('/work/a.pdf')
+
+    // The pointer crossing tile B still moves the focus there (#114245).
+    hover('session-tile:tile-b')
+    expect(focus.$focusedStoredSessionId.get()).toBe('tile-b')
+    expect(preview.$previewTarget.get()?.path).toBe('/work/b.pdf')
+    expect(previewPanes()).toHaveLength(2)
+  })
+
+  it("fronts a background chat's preview in that chat's own zone, leaving the focus alone", async () => {
+    const { focus, hover, layout, openTile, paneFor, preview, session, tree, zoneOf } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    openTile('tile-a')
+    openTile('tile-b')
+    hover('session-tile:tile-a')
+    preview.openPreview(pdf('/work/a.pdf'))
+    preview.openPreview(pdf('/work/a2.pdf'))
+    hover('session-tile:tile-b')
+
+    const workedIn = tree.$activeTreeGroup.get()
+    const selection = layout.$rightRailActiveTabId.get()
+
+    // Tile A's agent opens a.pdf again while the pointer is on tile B.
+    preview.openPreview(pdf('/work/a.pdf'), 'tile-a')
+    expect(zoneOf(paneFor('/work/a.pdf'))?.active).toBe(paneFor('/work/a.pdf'))
+
+    // …and a new one, which stacks into the same zone, in front.
+    preview.openPreview(pdf('/work/a3.pdf'), 'tile-a')
+    expect(zoneOf(paneFor('/work/a3.pdf'))?.id).toBe(zoneOf(paneFor('/work/a.pdf'))?.id)
+    expect(zoneOf(paneFor('/work/a3.pdf'))?.active).toBe(paneFor('/work/a3.pdf'))
+
+    expect(focus.$focusedStoredSessionId.get()).toBe('tile-b')
+    expect(tree.$activeTreeGroup.get()).toBe(workedIn)
+    expect(layout.$rightRailActiveTabId.get()).toBe(selection)
+  })
+
+  it('keeps a pinned preview on screen after its session leaves', async () => {
+    const { closeTile, hover, openTile, preview, previewPanes, session } = await setup()
+
+    session.$selectedStoredSessionId.set('main-sess')
+    openTile('tile-a')
+    hover('session-tile:tile-a')
+    preview.openPreview(pdf('/work/a.pdf'))
+    preview.setPreviewTabPinned(preview.$previewTabs.get()[0]!.id, true)
+
+    hover('workspace')
+    closeTile('tile-a')
+    session.$selectedStoredSessionId.set('other-sess')
+
+    expect(previewPanes()).toHaveLength(1)
+    expect(preview.$visiblePreviewTabs.get()).toHaveLength(1)
+  })
+})

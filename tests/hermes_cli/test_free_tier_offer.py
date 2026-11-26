@@ -111,3 +111,23 @@ def test_never_offered_off_the_free_tier(clock, monkeypatch):
     monkeypatch.setattr(anon_auth, "free_inference_active", lambda state=None: False)
     assert free_tier_offer.offer_due_in() is None
     assert free_tier_offer.claim_offer() is False
+
+
+@pytest.mark.parametrize("guest,connected,trial,allowed,offered", [
+    (True, True, False, True, True),     # a guest on its own key that connected an app
+    (True, False, False, True, False),   # a guest that connected nothing
+    (True, True, True, True, False),     # the trial makes its own offer
+    (False, True, False, True, False),   # signed in: no guest, no offer
+    (True, True, False, False, False),   # nous.guest: false, the guest left on disk
+], ids=["connector-guest", "nothing-connected", "on-trial", "signed-in", "guests-off"])
+def test_connector_offer_is_only_for_a_guest_that_connected_an_app_without_the_trial(
+        clock, monkeypatch, guest, connected, trial, allowed, offered):
+    state = {"auth_method": anon_auth.ANON_AUTH_METHOD if guest else "device_code"}
+    if connected:
+        state[free_tier_offer.CONNECTED_APP_FLAG] = True
+    monkeypatch.setattr(anon_auth, "current_nous_state", lambda: state)
+    monkeypatch.setattr(anon_auth, "free_inference_active", lambda state=None: trial)
+    monkeypatch.setattr(anon_auth, "guest_allowed", lambda: allowed)
+    free_tier_offer.record_task_done(free_tier_offer.CONNECTOR)
+    assert free_tier_offer.offer_due_in(free_tier_offer.CONNECTOR) == (DELAY if offered else None)
+    assert free_tier_offer.offer_due_in() is None  # the trial's record is its own

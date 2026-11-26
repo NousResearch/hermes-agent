@@ -1,0 +1,18 @@
+name: soldgraph
+title: Soldgraph
+repo: https://github.com/soldgraph/soldgraph-hermes
+sha: 8b65c678a0bc477aae251755a2c5e1baae15833a
+maintainer: soldgraph
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.0.0"
+docs_url: https://soldgraph.com/docs/guides/mcp
+readme: true
+platforms: []
+description: "Check what items sold for on eBay, Poshmark and Mercari, and search live resale listings on Depop, Whatnot, OfferUp, Facebook Marketplace, Vinted and TCGplayer. Portable Agent Plugin with one skill and Soldgraph's hosted MCP server (19 read-only tools). Disclosure — tool calls go to api.soldgraph.com with the user's own Soldgraph API key (SOLDGRAPH_KEY, sent as a bearer header), and the tool set is served by that remote server and is not covered by the pinned sha; each completed search uses 1 request from the user's Soldgraph allowance; listing text comes from marketplace sellers and is untrusted."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

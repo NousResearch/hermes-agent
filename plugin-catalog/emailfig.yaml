@@ -1,0 +1,19 @@
+name: emailfig
+title: EmailFig
+repo: https://github.com/EmailFig/mcp
+sha: c9ca5df81169f6470dc0099a4e53f214076d6e41
+subdir: hermes
+version: "1.0.0"
+description: "Work in your EmailFig email marketing account through EmailFig's hosted MCP server (Streamable HTTP at https://emailfig.com/mcp, OAuth sign-in, no keys in config): check campaign and automation results, look up and update contacts, lists and tags, add images, and draft campaigns that you review and send in EmailFig. Agent Plugins v1 package (plugin.json + mcp.json), configuration only. Disclosure: every tool call goes to EmailFig's hosted server (emailfig.com) and acts on the EmailFig account the user approved at sign-in; the tool set is served by that server at runtime and is not covered by the pinned sha. The server cannot send, schedule or delete a campaign; the only email it sends is a test of a draft to the user's own address, though adding someone to a double opt-in list emails them a confirmation and adding or tagging a contact can start the account's automations. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores the OAuth token under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: EmailFig
+tier: community
+category: tools
+docs_url: https://github.com/EmailFig/mcp/tree/main/hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

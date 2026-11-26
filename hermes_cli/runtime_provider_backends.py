@@ -156,6 +156,11 @@ def _resolve_openrouter_runtime(
                 and base_url == (env_openrouter_base_url or "").rstrip("/"))
         )
     )
+    # A ``providers:`` entry that owns the resolved URL and declares a credential supplies it: on a bare
+    # ``custom`` route, and on an OpenRouter mirror off openrouter.ai (the built-in key is another account's).
+    from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for, _owning_entry_credential
+    owned_route = requested_norm == "custom" or (is_openrouter_context and not is_openrouter_url)
+    declared, entry_key = _owning_entry_credential(rp, base_url) if owned_route else (False, "")
     if is_openrouter_context:
         # Same read order as the credential pool and _resolve_api_key_provider_secret
         # (.env, then scope-aware os.environ, raw op:// references yielding to the resolved
@@ -173,16 +178,16 @@ def _resolve_openrouter_runtime(
             openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
         else:
             openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
-        candidates = [explicit_api_key, get_env_value_prefer_dotenv("OPENROUTER_API_KEY"),
-                      openai_key if openai_key_ok else ""]
+        candidates = [explicit_api_key]
+        if not declared:  # an owning entry's declared credential replaces the implicit env keys
+            candidates += [get_env_value_prefer_dotenv("OPENROUTER_API_KEY"), openai_key if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
         # rung is what a bare ``provider: custom`` block relies on (#67453).
-        from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
         candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
                       (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
-                      *rp._host_gated_env_key_candidates(base_url, ollama=True)]
-    api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "")
+                      *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
+    api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "") or entry_key
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
     cfg_api_mode = rp._parse_api_mode(model_cfg.get("api_mode"))
     # Explicit "custom" stays "custom" rather than relabeling to "openrouter".

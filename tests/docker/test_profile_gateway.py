@@ -33,7 +33,7 @@ def _svstat(container: str) -> str:
     """Returns the raw s6-svstat output for the test profile's slot.
     /command/s6-svstat is called by absolute path because /command/
     isn't on PATH for docker-exec sessions."""
-    r = _sh(container, f"/command/s6-svstat /run/service/gateway-{PROFILE}")
+    r = _sh(container, f"/command/s6-svstat /run/hermes-service/gateway-{PROFILE}")
     return r.stdout if r.returncode == 0 else ""
 
 
@@ -86,7 +86,7 @@ def test_named_profile_gateway_start_refuses_without_force(
     assert r.returncode == 0, f"profile create failed: {r.stderr}"
 
     # Profile create's s6-register hook still produces the slot (registered DOWN).
-    r = _sh(container_name, f"test -d /run/service/gateway-{PROFILE}")
+    r = _sh(container_name, f"test -d /run/hermes-service/gateway-{PROFILE}")
     assert r.returncode == 0, "s6 service slot not created on profile create"
 
     r = _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)

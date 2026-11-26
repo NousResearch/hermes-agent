@@ -21,7 +21,9 @@ def _resolve_model() -> str:
     with contextlib.suppress(Exception):
         from hermes_cli.models import get_preferred_silent_default_model
         return get_preferred_silent_default_model()
-    return "z-ai/glm-5.2"
+    # Data-only module (no heavy imports), so this holds when the lookup above fails.
+    from hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
+    return PREFERRED_SILENT_DEFAULT_MODEL
 
 
 def _resolve_session_platform() -> str:
@@ -136,12 +138,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    model = str(row.get("model") or model_config.get("model") or "").strip()
-    # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
-    # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
-    from hermes_state import SessionDB
-    route = SessionDB.session_gateway_runtime(row)
-    provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+    # Canonical model + route readers shared with CLI --resume: the pick, not a fallback that rewrote the
+    # billing column; then nested ``gateway_runtime`` before the TUI's top-level keys, then a routable
+    # ``billing_provider`` (#125942).
+    from persistence.gateway.routing import resume_route
+    model, route = resume_route(model_config, model=row.get("model"), billing_provider=row.get("billing_provider"),
+                                billing_base_url=row.get("billing_base_url"))
+    provider, base_url, api_mode = (str(value or "").strip() for value in (route.provider, route.base_url, route.api_mode))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
@@ -162,7 +165,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             provider = healed
             base_url = ""  # the healed identity owns a registered endpoint; the snapshot URL must not override it
         else:
-            provider = ""
+            # The route is gone with its endpoint and wire: on the default provider they would send
+            # that provider's credentials to the stored URL.
+            provider = base_url = api_mode = ""
     if model:
         # Same dict-shaped override live /model switches use, so a DB-restored session keeps custom endpoint
         # metadata across resume and rebuilds (/new). Raw api_key is never persisted/restored.
@@ -177,23 +182,35 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     return overrides
 
 
+def _scoped_session_provider(agent, session: dict) -> str:
+    """The entry an agent on the ``custom`` adapter runs, resolved in the session's own profile: clients
+    reuse this identity for new chats without the endpoint or key, and callers need not be bound to it."""
+    with _profile_build_scope(session.get("profile_home") or _hermes_home):
+        return _runtime_model_config(agent).get("provider") or "custom"
+
+
+def _session_route_view(agent):
+    """The agent as the SESSION's own route: a voice turn's route and a turn-scoped provider fallback both
+    leave the live fields on another model until the next turn restores the primary, so a settings save in
+    between must persist the primary snapshot, never the route standing in for it."""
+    from agent.voice_turn_route import _SessionRuntimeView, session_runtime_view
+    view = session_runtime_view(agent)
+    primary = getattr(agent, "_primary_runtime", None)
+    if getattr(agent, "_provider_fallback_active", False) is True and isinstance(primary, dict) and primary.get("model"):
+        view = _SessionRuntimeView(view, {"snapshot": primary, "reasoning_config": getattr(view, "reasoning_config", None)})
+    return view
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     """Merge the agent's CURRENT runtime identity onto the row's persisted ``model_config``. Falsy agent
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
-    from agent.voice_turn_route import session_runtime_view
-    agent = session_runtime_view(agent)
+    agent = _session_route_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
-    model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
-    if provider.lower() == "custom":
-        # ``agent.provider`` resolves every named custom entry to the literal "custom", losing the entry
-        # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
-        try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
-        except Exception:
-            logger.debug("custom provider identity lookup failed", exc_info=True)
+    model, base_url = attr("model"), attr("base_url")
+    from hermes_cli.runtime_provider_custom import session_provider_identity
+    provider = session_provider_identity(attr("provider"), attr("requested_provider"), base_url, model)
     reasoning_config = getattr(agent, "reasoning_config", None)
     live = {
         "model": model, "provider": provider, "base_url": base_url, "api_mode": attr("api_mode"),
@@ -206,6 +223,11 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    if isinstance(nested := config.get("gateway_runtime"), dict) and nested.get("provider"):
+        # Resume reads the nested route first, and its model before the top-level pick: an older CLI or
+        # gateway route left in place would undo this pick on reopen, so it takes the live pair too.
+        config["gateway_runtime"] = {k: v for k, v in (
+            ("provider", provider), ("base_url", base_url), ("api_mode", attr("api_mode")), ("model", model)) if v}
     return config
 
 
@@ -215,21 +237,20 @@ def _persist_live_session_runtime(session: dict | None) -> None:
     if live is None:
         return
     agent, session_key, db = live
+    from persistence.conversation.sessions import ReplaceSessionConfig
     try:
-        row = db.get_session(session_key) or {}
-        model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
-        if isinstance(composer_profile := session.get("composer_override_profile"), dict):
-            model_config["composer_override_profile"] = composer_profile
-        elif "composer_override_profile" in session:
-            model_config.pop("composer_override_profile", None)
-        if (tier_override := session.get("create_service_tier_override")) is not None:
-            # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
-            model_config["service_tier"] = tier_override or "normal"
-        model = str(model_config.get("model") or "").strip()
-        if hasattr(db, "update_session_meta"):
-            db.update_session_meta(session_key, json.dumps(model_config), model or None)
-        elif model and hasattr(db, "update_session_model"):
-            db.update_session_model(session_key, model)
+        with _persistence_for(db) as persistence:
+            row = persistence.sessions.get(session_key)
+            model_config = _runtime_model_config(agent, row.model_config if row is not None else None)
+            if isinstance(composer_profile := session.get("composer_override_profile"), dict):
+                model_config["composer_override_profile"] = composer_profile
+            elif "composer_override_profile" in session:
+                model_config.pop("composer_override_profile", None)
+            if (tier_override := session.get("create_service_tier_override")) is not None:
+                # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
+                model_config["service_tier"] = tier_override or "normal"
+            model = str(model_config.get("model") or "").strip()
+            persistence.sessions.replace_session_config(session_key, ReplaceSessionConfig(model_config, model or None))
     except Exception:
         logger.debug("failed to persist live session runtime", exc_info=True)
 
@@ -516,12 +537,8 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-                fb_kwargs: dict = {"requested": fb_provider, "target_model": fb_model,
-                                   **({"explicit_base_url": entry["base_url"]} if entry.get("base_url") else {})}
-                if fb_api_key := resolve_entry_api_key(entry):
-                    fb_kwargs["explicit_api_key"] = fb_api_key
-                runtime = resolve_runtime_provider(**fb_kwargs)
+                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -545,15 +562,23 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         requested_provider = model_override.get("provider") or provider_override or None
         override_base_url = model_override.get("base_url")
         resolve_kwargs = {}
-        if str(requested_provider or "").strip().lower() == "custom":
+        provider_norm = str(requested_provider or "").strip().lower()
+        # An empty provider names no route either; once the main slot targets another model it 404s (#132648).
+        if provider_norm == "custom":
             from hermes_cli.runtime_provider import canonical_custom_identity
             if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
                 requested_provider = recovered
-            if override_base_url:
-                # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
-                resolve_kwargs["explicit_base_url"] = override_base_url
+        elif not provider_norm and _config_model_target()[0] != model:
+            from hermes_cli.runtime_provider_custom import empty_provider_identity
+            requested_provider = empty_provider_identity(override_base_url, model) or requested_provider
+        if provider_norm == "custom" and override_base_url:
+            # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
+            resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}
+        if not provider_norm and requested_provider:
+            # The healed entry supplies its own endpoint and wire; the row's may be stamps from misrouted turns.
+            overrides["base_url"] = overrides["api_mode"] = None
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -587,7 +612,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
 
 def _rederive_per_model_route(model: str, runtime: dict) -> None:
     """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
-    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
+    that pick the wire per model (OpenCode Zen/Go, Nous, profiles with api_mode_for_model) must re-derive both from the target model,
     or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
     other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
     from hermes_cli.model_switch import model_derived_api_mode
@@ -625,12 +650,13 @@ def _make_agent(
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    cwd_override: str | None = None, auth_user_id: str | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None, persistence=None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
+    from agent.onboarding_session import onboarding_toolsets
     from run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
@@ -650,7 +676,7 @@ def _make_agent(
     with _sessions_lock:
         session = _sessions.get(sid)
     agent = AIAgent(
-        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        model=model, max_iterations=_cfg_max_turns(cfg), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
@@ -659,7 +685,9 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_onboarding_toolsets(_load_enabled_toolsets(platform), session_db, session_id or key),
+        enabled_toolsets=onboarding_toolsets(_load_enabled_toolsets(platform),
+                                             session_db if session_db is not None else _get_db(), session_id or key,
+                                             persistence=persistence if session_db is not None else _launch_persistence()),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
@@ -669,7 +697,9 @@ def _make_agent(
         # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
-        session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+        session_db=session_db if session_db is not None else _get_db(),
+        persistence=persistence if session_db is not None else _launch_persistence(),
+        ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
@@ -680,7 +710,7 @@ def _make_agent(
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
     if fallback_notice:
-        # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
+        # Emitted once at the start of the next turn via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
     return agent
 

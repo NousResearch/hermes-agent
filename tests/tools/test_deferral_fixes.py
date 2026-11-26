@@ -28,7 +28,7 @@ import pytest
 
 from agent.tool_dispatch_helpers import _plan_tool_batch_segments
 from tools.tool_search import build_catalog, search_catalog
-from tools.tool_search_catalog import _short_desc
+from tools.tool_search_catalog import CATALOG_SUMMARY_MAX_CHARS, _short_desc
 
 
 def _tc(name, arguments="{}", call_id=None):
@@ -207,7 +207,7 @@ class TestShortDescSentenceBoundary:
 
     def test_long_text_still_clips_with_ellipsis(self):
         s = _short_desc("word " * 40)
-        assert len(s) <= 61
+        assert len(s) <= CATALOG_SUMMARY_MAX_CHARS + 1
         assert s.endswith("…")
 
 

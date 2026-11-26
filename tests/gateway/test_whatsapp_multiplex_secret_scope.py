@@ -143,7 +143,7 @@ class TestWhatsAppCloudAdapterUsesSecretScope:
         (tmp_path / ".env").write_text("WHATSAPP_DM_POLICY=allowlist\n")
         tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
         try:
-            from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+            from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
             # Cloud adapter won't fully init without creds, but we can at least
             # verify the dm_policy assignment path doesn't crash under scope.

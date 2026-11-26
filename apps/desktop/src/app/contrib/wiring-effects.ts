@@ -53,7 +53,7 @@ export function usePublishRestartPreviewServer(restartPreviewServer: RestartPrev
 
 // A profile switch/create drops to a fresh new-session draft so the
 // previously open session doesn't bleed across contexts. Skip initial value.
-export function useFreshSessionRequest(startFreshSessionDraft: () => void) {
+export function useFreshSessionRequest(startFreshSessionDraft: (options: { preserveProfileSwitch: true }) => void) {
   const freshSessionRequest = useStore($freshSessionRequest)
   const lastFreshRef = useRef(freshSessionRequest)
 
@@ -64,7 +64,7 @@ export function useFreshSessionRequest(startFreshSessionDraft: () => void) {
     }
 
     lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
+    startFreshSessionDraft({ preserveProfileSwitch: true })
   }, [freshSessionRequest, startFreshSessionDraft])
 }
 

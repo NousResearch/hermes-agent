@@ -10,7 +10,7 @@ def test_scoped_members_respect_disabled_and_keep_other_profiles(tmp_path, monke
     other = other_home / "plugins" / "same"
     for member in (current, other):
         member.mkdir(parents=True)
-        (member / "pyproject.toml").write_text('[project]\nname="test"\nversion="1"\n')
+        (member / "pyproject.toml").write_text('[project]\nname="test"\nversion="1"\ndependencies=["requests>=2"]\n')
     (home / "config.yaml").write_text('plugins:\n  enabled: [group/plugin]\n  disabled: []\n')
     (other_home / "config.yaml").write_text('plugins:\n  enabled: [same]\n')
     assert set(enabled_member_dirs()) == {current, other}
@@ -149,3 +149,23 @@ def test_buildable_member_without_a_version_gets_one_and_keeps_its_name(tmp_path
     member = _workspace_member(plugin, root, identity=plugin)
     project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     assert project == {"name": "noversion-plugin", "version": "0.0.0"}
+
+
+def test_tooling_only_pyproject_with_dev_group_stages_the_manifest_dependencies(tmp_path):
+    """A pyproject with no [project] table (lint config plus a dev group) is not the plugin's
+    package: the generated member carries plugin.yaml's dependencies, not the dev group."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "hermes-lcm"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: hermes-lcm\npip_dependencies: ['fixturedep>=1,<2']\n",
+                                        encoding="utf-8")
+    (plugin / "pyproject.toml").write_text(
+        '[tool.ruff]\ntarget-version = "py311"\n[dependency-groups]\ndev = ["ruff"]\n', encoding="utf-8")
+    root = tmp_path / "gen"
+    root.mkdir()
+    document = tomllib.loads((_workspace_member(plugin, root, identity=plugin) / "pyproject.toml").read_text(
+        encoding="utf-8"))
+    assert document["project"]["dependencies"] == ["fixturedep>=1,<2"]
+    assert "dependency-groups" not in document

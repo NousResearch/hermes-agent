@@ -1,0 +1,37 @@
+name: flowlight
+repo: https://github.com/ayinmodeolarewaju-bot/hermes-flowlight
+sha: 8d6aacb1babc9136316f7b1777d436027771676b
+description: "Watch public wallets and draw live on-chain money flows as glowing arcs. Read-only. Uses public NEAR, Blockscout, and RPC endpoints. When Intents Pay is installed, reads its invoice ledger and may GET 1-Click /v0/status. Never signs or sends transactions and never handles keys. Disclosure — sends the wallet addresses you watch to public third-party APIs (Blockscout, nearblocks.io, public EVM and Solana RPC nodes, CoinGecko) and, when Intents Pay is installed, reads its invoice ledger and queries 1-Click status for its deposit addresses; `hermes flowlight serve` opens an unauthenticated loopback page on 127.0.0.1."
+maintainer: ayinmodeolarewaju-bot
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.1.0"
+title: Flowlight
+docs_url: https://github.com/ayinmodeolarewaju-bot/hermes-flowlight
+image: https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/8d6aacb1babc9136316f7b1777d436027771676b/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/8d6aacb1babc9136316f7b1777d436027771676b/docs/screenshots/live-flows.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/8d6aacb1babc9136316f7b1777d436027771676b/docs/screenshots/arc-detail.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/8d6aacb1babc9136316f7b1777d436027771676b/docs/screenshots/invoice-pending.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/8d6aacb1babc9136316f7b1777d436027771676b/docs/screenshots/invoice-paid.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-flowlight/8d6aacb1babc9136316f7b1777d436027771676b/docs/screenshots/demo-fixture.png
+readme: true
+platforms: []
+known_issues:
+  - "Base and Arbitrum Blockscout often answer HTTP 403 from datacenter networks. Flowlight falls back to public JSON-RPC logs for major tokens and says so."
+  - "A busy address is summarized over the largest recent slice that fits the time budget, not every transfer in the requested 24h."
+  - "purefile1686.near had no fungible or native transfers in the public recent history during the 10 Nov 2026 live run. The node still draws."
+  - "Intents Pay is optional. If its ledger is missing, Flowlight reports that no Intents Pay invoices were found and keeps working."
+  - "The gold paid burst in the demo fixture is labeled DEMO FIXTURE. It is not a live settlement."
+capabilities:
+  provides_tools:
+    - flowlight_watch
+    - flowlight_unwatch
+    - flowlight_flows
+    - flowlight_summary
+    - flowlight_list
+    - flowlight_invoices
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

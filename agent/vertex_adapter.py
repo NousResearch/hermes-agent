@@ -13,6 +13,7 @@ import os
 import time
 from typing import Any, Optional, Tuple
 
+from agent.credential_source import VERTEX_OAUTH, tag_credential_source
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
 try:
@@ -230,6 +231,9 @@ def vertex_access_token() -> str:
     if not token:
         raise RuntimeError("Vertex AI OAuth token could not be minted (see the Vertex credential settings)")
     return token
+
+
+tag_credential_source(vertex_access_token, VERTEX_OAUTH)
 
 
 def has_vertex_credentials() -> bool:

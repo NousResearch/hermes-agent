@@ -1,0 +1,18 @@
+name: business-agent-os
+title: Business Agent OS
+repo: https://github.com/danielbilsborough/agent-skills
+sha: 6162598a6d71233f52bea940c9847003212c26c1
+version: "0.1.0"
+description: "Set up a file-based business operating system for an AI agent, for business owners who are not developers: one business folder of plain Markdown memory in two layers (a folder per client and project with state, dated changelog with a monthly archive, to-do and inbox; and a Karpathy-style wiki the agent maintains from saved sources: topic, entity and source pages with an index and a log), a daily log, a voice guide, session commands (/pickup with client, topic and daily modes, /wrap, /biz-status, /biz-review, /trace, /new-client, /ingest, /lint), optional local git save points and an optional tmux session menu. One skill plus a hosted MCP server (Streamable HTTP at https://mcp.danielbilsborough.com/mcp, no key, no sign-in) with four read-only tools: scaffold_business_os, house_rules, daily_routine and voice_guide_template. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: the MCP server is a stateless Cloudflare Worker whose source is in the repo; every tool call goes to mcp.danielbilsborough.com, which receives only the tool arguments (an optional business name and client or project names), returns static text, keeps no sessions, stores nothing and does not log inputs; every tool is annotated read-only and the package marks the server untrusted. The skill has the agent create and edit Markdown files only inside a business folder the user chooses, asking before each step; it installs nothing, uses no sudo, edits no shell or agent config outside that folder (the user adds one optional source line to ~/.zshrc themselves) and runs only local git commands inside that folder if the user opts in. No telemetry, no credentials stored or sent. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: danielbilsborough
+tier: community
+category: tools
+docs_url: https://github.com/danielbilsborough/agent-skills#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

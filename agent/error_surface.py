@@ -37,7 +37,9 @@ LAYER_DISK = "disk"
 _REASON_TO_LAYER = {
     "auth": LAYER_AUTH, "auth_permanent": LAYER_AUTH, "billing": LAYER_BILLING, "billing_unverified": LAYER_BILLING,
     "loop_error": LAYER_GATEWAY, "interpreter_shutdown": LAYER_GATEWAY, "session_busy": LAYER_GATEWAY,
-    "gateway_connection": LAYER_GATEWAY,
+    "gateway_connection": LAYER_GATEWAY, "host_error": LAYER_GATEWAY, "workspace_unavailable": LAYER_GATEWAY,
+    "launch_credentials_unavailable": LAYER_GATEWAY,
+    "local_runtime_unavailable": LAYER_ENDPOINT,  # the managed local model server is down
     "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
     "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
 }
@@ -54,8 +56,8 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 # Kept in sync with ``classify_api_error``'s retryable=False verdicts.
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
-    "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
-    "context_overflow", "interpreter_shutdown", "upstream_blocked",
+    "provider_policy_blocked", "data_policy_denied", "model_not_found", "format_error", "ssl_cert_verification",
+    "context_overflow", "interpreter_shutdown", "upstream_blocked", "guardrail_blocked",
 }
 
 # Providers whose base_url is user-supplied rather than a known vendor.
@@ -138,7 +140,7 @@ def auth_kind(provider: Optional[str]) -> str:
 
 def _disk_full(candidate: Any) -> bool:
     try:
-        from hermes_state_errors import is_disk_full_error
+        from storage_errors import is_disk_full_error
 
         return bool(is_disk_full_error(candidate))
     except Exception:  # pragma: no cover - defensive import guard
@@ -167,10 +169,22 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         if not error_text and not reason:
             return None
         # Disk-full wins outright: the fix (free space) is unrelated to the
-        # provider stack; hermes_state owns the pattern list.
+        # provider stack; storage_errors owns the pattern list.
         if error_text and _disk_full(error_text):
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
+            if window_message := str(result.get("usage_window_message") or ""):
+                # A window plan's limit, not an empty account: the card shows the stop-line sentence.
+                # Retry is the natural next click once Keep going / a top-up is on, and at the reset.
+                surface = _surface(LAYER_BILLING, "usage_window", True, provider, model)
+                surface["message"] = window_message
+                if isinstance(resets_at := result.get("failure_resets_at"), (int, float)) and not isinstance(resets_at, bool):
+                    surface["resets_at"] = float(resets_at)
+                if isinstance(limit := result.get("usage_limit"), dict):
+                    # What ran out, the plan's recommended models that still work, and the credits
+                    # option: the card's one-click buttons (agent/plan_limits.py).
+                    surface["usage_limit"] = limit
+                return surface
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
         # The Nous free tier refused or could not serve the turn (``agent/turn_recovery.py``
         # stamps ``free_tier``): its own code, so a client offers the free sign-in rather than an
@@ -181,6 +195,11 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             if message := str(free_tier.get("message") or ""):
                 surface["message"] = message
             return surface
+        # The primary's login lapsed at route time and the fallback was refused too: signing the primary
+        # back in is the fix, so the card names it. A fallback rate limit or overflow keeps its own card.
+        if (reason in ("auth", "auth_permanent") and isinstance(primary := result.get("primary_auth_failure"), dict)
+                and primary.get("provider")):
+            return _surface(LAYER_AUTH, "auth", False, str(primary["provider"]))
         if not reason:  # failed result without a classified reason (legacy paths)
             drop = _looks_like_stream_drop(error_text)
             return _surface(LAYER_STREAMING if drop else LAYER_PROVIDER, "stream_drop" if drop else "unknown", True, provider, model)

@@ -123,7 +123,10 @@ module.exports = {
   // rewritten file (#105629). afterPack keeps the signing/payload work.
   afterExtract: 'scripts/after-extract.mjs',
   afterPack: 'scripts/after-pack.mjs',
-  ...(process.platform === 'darwin' ? { afterSign: 'scripts/notarize.mjs' } : {}),
+  // dmg-builder's dmg.sign omits --timestamp and pre-dates stapling; artifactBuildCompleted signs, notarizes, staples, and refreshes blockmap/feed bytes before artifactCreated fires.
+  ...(process.platform === 'darwin'
+    ? { afterSign: 'scripts/notarize.mjs', artifactBuildCompleted: 'scripts/notarize-dmg.mjs' }
+    : {}),
   extraResources: [
     {
       from: 'build/install-stamp.json',
@@ -150,6 +153,8 @@ module.exports = {
     icon: macIconResource(__dirname),
     // The afterSign hook owns notarization, including keychain-profile builds.
     notarize: false,
+    // Electron 44 no longer supports macOS 11 or 12.
+    minimumSystemVersion: '13.0',
     // The packaged client reads this generated app-update.yml by default.
     publish: channelRequest?.receiverCandidate
       ? [{ provider: 'generic', url: `${channelRequest.publicBase}/releases/darwin/stable/`, channel: 'stable' }]

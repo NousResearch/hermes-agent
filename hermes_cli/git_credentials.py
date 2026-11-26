@@ -37,6 +37,7 @@ import urllib.parse
 from typing import Iterator, Mapping, Optional
 
 from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+from hermes_platform.resolver.git import resolve_usable_git
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def _github_token() -> Optional[str]:
 
 def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
     """``(username, password)`` from the user's own git credential helpers, never prompting."""
-    git = shutil.which("git")
+    git = resolve_usable_git()
     if not git:
         return None
     env = dict(os.environ)

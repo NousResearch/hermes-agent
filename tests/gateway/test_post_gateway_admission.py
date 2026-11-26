@@ -14,6 +14,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import _profile_runtime_scope
 from gateway.session import SessionSource
 from hermes_constants import get_hermes_home
+from tests.fixtures.storage_holder import raw_holder
 
 HOOK = "post_gateway_admission"
 
@@ -141,7 +142,7 @@ async def test_under_an_authority_the_hook_fires_once_at_ingress_never_at_execut
         admitted.append(event.text)
         return "admitted"
 
-    monkeypatch.setattr(authorities, "active_authority", lambda _runner: object())
+    monkeypatch.setattr(authorities, "active_authority", lambda _runner: SimpleNamespace(route_epoch=lambda _route: 0))
     monkeypatch.setattr(ingress, "admit_message", _admit)
 
     assert await runner._handle_message(_event("eat me")) == "consumed"
@@ -194,7 +195,7 @@ async def test_webhook_deliveries_fire_the_hook_once_per_admission_never_on_a_pr
             "X-GitHub-Delivery": delivery_id, "X-Hub-Signature-256": signature})
 
     async with TestClient(TestServer(app)) as client:
-        db = adapter._message_handler.__self__.session_authority.db
+        db = raw_holder(adapter._message_handler.__self__.session_authority.persistence)
         assert (await _post(client, "eat this", "d-eat")).status == 202
         assert sent == ["plugin took it"] and not db._read_all("SELECT 1 FROM session_admissions")
         assert (await _post(client, "keep this", "d-keep")).status == 202

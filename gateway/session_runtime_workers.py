@@ -20,7 +20,70 @@ def uncounted_runtime_work(runner):
                   for worker in getattr(authority, '_managed_workers', {}).values())
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
                 for authority in authorities for sid, live, _ in executing_sessions(authority))
-            + sum(len(mutation_tasks(authority)) for authority in authorities))
+            + sum(len(mutation_tasks(authority)) + len(side_agents(authority)) for authority in authorities))
+
+
+def managed_worker_units(authority):
+    """One ``active_work`` entry per live managed worker of *authority*: its session and its own process."""
+    return [{'kind': 'managed', 'session': sid, 'pid': (worker.worker or (worker.process.pid,))[0]}
+            for sid, worker in list(getattr(authority, '_managed_workers', {}).items()) if not worker.closed.is_set()]
+
+
+def wedged_managed_turn_count(runner, timeout):
+    """Live managed workers that sent no frame for ``timeout`` seconds and hold no open approval or
+    clarify prompt (a human may answer it any time): the restart wait must not hold for them."""
+    import time
+    now = time.monotonic()
+    return sum(1 for authority in all_authorities(runner)
+               for sid, worker in list(getattr(authority, '_managed_workers', {}).items())
+               if not worker.closed.is_set() and now - getattr(worker, 'last_frame_at', now) >= timeout
+               and not _open_prompts(authority, sid))
+
+
+def _open_prompts(authority, sid):
+    live = getattr(authority, 'sessions', {}).get(sid)
+    return bool(getattr(getattr(live, 'controls', None), 'remote_responders', None))
+
+
+def uncounted_runtime_work_units(runner):
+    """One ``active_work`` entry per unit ``uncounted_runtime_work`` counts, each naming the real
+    unit: a managed worker's session and process, an executing session's id and route, a tracked
+    mutation task, a side agent (/bg, /btw) thread."""
+    import os
+    running = getattr(runner, '_running_agents', {})
+    units = []
+    for authority in all_authorities(runner):
+        units.extend(managed_worker_units(authority))
+        workers = getattr(authority, '_managed_workers', {})
+        units.extend({'kind': 'session', 'session': sid, 'route': live.route, 'pid': os.getpid()}
+                     for sid, live, _ in executing_sessions(authority)
+                     if live.route not in running and sid not in workers)
+        units.extend({'kind': 'mutation', 'task': task.get_name(), 'pid': os.getpid()}
+                     for task in mutation_tasks(authority))
+        units.extend({'kind': 'side_agent', 'thread': thread.name, 'pid': os.getpid()}
+                     for thread, _ in side_agents(authority))
+    return units
+
+
+def side_agents(authority):
+    """``(thread, holder)`` for each detached side agent (/bg, /btw, preview restart) whose thread
+    has not unwound (``gateway/session_tui_side.py`` ``_spawn``). A stopped ``/btw`` whose fork
+    is gone (``_SideQuestionStop.abandoned``) is no longer owner work."""
+    from gateway.session_tui_side import _abandoned
+    return [(thread, holder) for thread, holder in list(getattr(authority, '_side_agents', {}).items())
+            if not _abandoned(holder)]
+
+
+def interrupt_side_agents(runner, reason):
+    """Hard-interrupt every counted side agent's holder across served authorities (the stop
+    drain waits for them, so its timed-out interrupt must reach them). Returns how many."""
+    from agent.interrupt_compat import request_hard_interrupt
+    count = 0
+    for authority in all_authorities(runner):
+        for _, holder in side_agents(authority):
+            if holder and holder[0] is not None:
+                count += bool(request_hard_interrupt(holder[0], reason))
+    return count
 
 
 def persist_work_count(authority, _task=None):
@@ -131,7 +194,7 @@ def stop_authority_work(authority):
     from gateway.run_runtime import stop_authority_turns
     from agent.interrupt_compat import request_hard_interrupt
     stop_authority_turns(authority, in_process=True)
-    for _, holder in physical_workers(authority):
+    for _, holder in [*physical_workers(authority), *side_agents(authority)]:
         if holder and holder[0] is not None:
             request_hard_interrupt(holder[0], 'Profile runtime is stopping')
     for cancel in getattr(authority, '_cron_cancellations', {}).values():
@@ -142,7 +205,8 @@ async def join_authority_work(authority, timeout):
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         stop_authority_work(authority)
-        if not list(physical_workers(authority)) and not list(executing_sessions(authority)) and not mutation_tasks(authority):
+        if (not list(physical_workers(authority)) and not list(executing_sessions(authority))
+                and not mutation_tasks(authority) and not side_agents(authority)):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError('Profile workers did not stop; ownership retained')

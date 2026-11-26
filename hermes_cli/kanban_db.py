@@ -31,6 +31,7 @@ from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
+from utils import unlink_files_older_than
 
 _log = logging.getLogger(__name__)
 
@@ -322,26 +323,6 @@ def _resolve_crash_grace_seconds() -> int:
 def _resolve_rate_limit_cooldown_seconds() -> int:
     """``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS`` (0 = next tick, for tests) else default."""
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
-
-
-def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
-    """``just now`` / ``18h ago`` / ``3d ago``; "" for a missing/invalid ts. An LLM
-    reads a bare absolute timestamp as current fact — the relative age is what
-    prompts a worker to re-verify stale sibling work."""
-    try:
-        ts = int(ts)
-    except (TypeError, ValueError):
-        return ""
-    if now is None:
-        now = int(time.time())
-    delta = now - ts
-    if delta < 60:  # includes negative = clock skew across machines; never claim "in the future"
-        return "just now"
-    if delta < 3600:
-        return f"{delta // 60}m ago"
-    if delta < 86400:
-        return f"{delta // 3600}h ago"
-    return f"{delta // 86400}d ago"
 
 
 # --- Paths ---
@@ -2142,10 +2123,10 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[int]:
-    """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    """CAS ``source_status -> running`` (and still ``expect_assignee``'s, when given), open a
+    run row, emit ``claimed``; None when the CAS lost. Caller holds the txn."""
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2155,9 +2136,9 @@ def _claim_and_open_run(
                started_at    = COALESCE(started_at, ?)
          WHERE id = ?
            AND status = '{source_status}'
-           AND claim_lock IS NULL
+           AND claim_lock IS NULL AND (? IS NULL OR assignee = ?)
         """,
-        (lock, expires, now, task_id),
+        (lock, expires, now, task_id, expect_assignee, expect_assignee),
     )
     if cur.rowcount != 1:
         return None
@@ -2189,12 +2170,12 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not ``ready``, or no longer ``expect_assignee``'s).
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2214,7 +2195,7 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, expect_assignee=expect_assignee)
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2224,7 +2205,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, expect_assignee: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2246,7 +2227,7 @@ def claim_review_task(
             return None
         run_id = _claim_and_open_run(
             conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
-        )
+            expect_assignee=expect_assignee)
         if run_id is None:
             return None
         return get_task(conn, task_id)
@@ -2372,9 +2353,9 @@ def release_stale_claims(
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill, reclaim_error
     for row in stale:
-        if owner_reclaim_paused(conn, row["id"]):
+        if owner_reclaim_blocked(conn, row["id"]):
             continue
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
         hb = _to_epoch(row["last_heartbeat_at"])
@@ -2398,7 +2379,11 @@ def release_stale_claims(
             )
             continue
         with write_txn(conn):
-            retry_status = _retry_status_for_run(conn, row["id"])
+            # Again under the write lock: an interpreter that bound since the check above
+            # changes neither claim_lock nor worker_pid, so the CAS below cannot see it.
+            if owner_reclaim_blocked_after_kill(conn, row["id"], signalled=bool(termination.get("termination_attempted"))):
+                continue
+            retry_status, error = _retry_status_for_run(conn, row["id"]), reclaim_error(conn, row["id"], row["claim_lock"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -2412,7 +2397,7 @@ def release_stale_claims(
                 continue
             run_id = _record_reclaim(
                 conn, row["id"], termination,
-                error=f"stale_lock={row['claim_lock']}",
+                error=error,
                 payload={
                     "stale_lock": row["claim_lock"],
                     "worker_pid": _opt_int(row["worker_pid"]),
@@ -2429,7 +2414,7 @@ def release_stale_claims(
         # the run ended without a verdict, so it counts toward the breaker and a
         # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
         _record_task_failure(
-            conn, row["id"], f"stale_lock={row['claim_lock']}",
+            conn, row["id"], error,
             outcome="reclaimed", failure_limit=failure_limit,
             release_claim=False, end_run=False,
             event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
@@ -3223,10 +3208,6 @@ def block_task(
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
-        if kind == "dependency":
-            # Historical ordering: the dependency lane fires inside the txn.
-            _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-            return True
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
 
@@ -4054,14 +4035,7 @@ def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[
     log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0
-    cutoff = time.time() - older_than_seconds
-    removed = 0
-    for p in log_dir.iterdir():
-        with contextlib.suppress(OSError):
-            if p.is_file() and p.stat().st_mtime < cutoff:
-                p.unlink()
-                removed += 1
-    return removed
+    return unlink_files_older_than(log_dir, "*", older_than_seconds)
 
 
 # --- Worker log accessor ---
@@ -4113,7 +4087,7 @@ def list_profiles_on_disk() -> list[str]:
         names.add("default")
     if profiles_dir.is_dir():
         try:
-            names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())
+            names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())  # config-reader: ok — profile directory discovery marker
         except OSError:
             pass
     return sorted(names)

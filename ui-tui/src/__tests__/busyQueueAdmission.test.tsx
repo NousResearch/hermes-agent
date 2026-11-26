@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 
 import { renderSync, Text } from '@hermes/ink'
+import { canonicalEvent, canonicalResult } from '@hermes/shared/gateway-canonical'
 import { useStore } from '@nanostores/react'
 import React from 'react'
 import { expect, it, vi } from 'vitest'
@@ -13,7 +14,6 @@ import { captureDestination } from '../app/submissionDestination.js'
 import { turnController } from '../app/turnController.js'
 import { $uiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { useSubmission } from '../app/useSubmission.js'
-import { canonicalEvent, canonicalResult } from '../canonicalGateway.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { loadPendingInputs } from '../lib/pendingInputs.js'
 
@@ -175,12 +175,12 @@ it('discards unknown execution with its generation, retaining the row on refusal
   try {
     h.request.mockImplementation(async (method, params) => { h.calls.push({method, params}); throw new Error('stale_generation') })
     h.fanout([{ ...row('unknown-admission', 'unknown-input', 'interrupted input', 'unknown'), execution_generation: 7 }])
-    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[unknown] interrupted input'])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[paused: lost in restart · ↑ select, Ctrl+X discard] interrupted input'])
     h.queue.removeQ(0)
     await expect.poll(() => h.calls.length).toBe(1)
     expect(h.calls[0]).toEqual({ method: 'prompt.resolve_unknown', params: { session_id: 'owner', admission_id: 'unknown-admission', execution_generation: 7 } })
     await expect.poll(() => $uiState.get().status).toContain('stale_generation')
-    expect(h.queue.queuedDisplay).toEqual(['[unknown] interrupted input'])
+    expect(h.queue.queuedDisplay).toEqual(['[paused: lost in restart · ↑ select, Ctrl+X discard] interrupted input'])
   } finally { h.cleanup() }
 })
 

@@ -15,7 +15,6 @@ from starlette.responses import JSONResponse
 HEADER = 'x-hermes-gateway-ticket'
 
 
-@contextmanager
 def native_profile_scope(request):
     """Resolve the request's implicit selectors (omitted / '' / 'current') in the TICKET's home.
 
@@ -26,7 +25,12 @@ def native_profile_scope(request):
     binds its home override too, so it never inherits a foreign override that happens to be
     ambient in the request context.
     """
-    grant = getattr(request.state, 'native_http_principal', None)
+    return grant_home_scope(getattr(request.state, 'native_http_principal', None))
+
+
+@contextmanager
+def grant_home_scope(grant):
+    """Bind *grant*'s home as the task-local home override; no-op without a grant."""
     if grant is None:
         yield
         return
@@ -82,10 +86,11 @@ async def _check_profile_scope(request, profile_id):
             raise PermissionError('profile_scope_mismatch')
     elif path.startswith('/api/profiles/'):
         suffix = path.removeprefix('/api/profiles/')
+        collection = profile_collection_route(path, request.method)
         aggregate_selector = {
             'sessions': 'profile', 'sessions/sidebar': 'recents_profile',
             'projects/tree': 'profile', 'sessions/pull-requests': 'profile',
-        }.get(suffix)
+        }.get(collection)
         if aggregate_selector:
             values = request.query_params.getlist(aggregate_selector)
             if not values:
@@ -93,48 +98,112 @@ async def _check_profile_scope(request, profile_id):
             for value in values:
                 # These routes interpret absent/all differently from /api/config.
                 _own_profile(value, profile_id, current=False)
-        elif suffix == 'active' and request.method == 'GET':
+        elif collection == 'active' and request.method == 'GET':
             return  # Discovery of sticky defaults does not switch this daemon.
-        elif suffix in {'active', 'import'}:
+        elif collection in {'active', 'import'}:
             raise PermissionError('profile_scope_mismatch')
         else:
             _own_profile(suffix.split('/', 1)[0], profile_id, current=False)
             if request.method in {'PATCH', 'DELETE'}:
-                # Moving/deleting the reserved home is not an in-place operation.
+                # Moving/deleting a home is a registry operation, not a profile REST write: it
+                # rides the dedicated ``native-profile-registry`` grant (_check_registry_scope).
                 raise PermissionError('profile_scope_mismatch')
 
 
+# ``/api/profiles/<suffix>`` collection routes, by method (hermes_cli/web_routers/profiles.py). Every
+# other method on these paths is the per-profile ``/api/profiles/{name}`` route of a profile NAMED
+# ``active``/``import``/``sessions``/…: valid profile names (PROFILE_ID_RE, not reserved).
+# Desktop mirror: apps/desktop/electron/profile-routes.ts.
+PROFILE_COLLECTION_ROUTES = {
+    'active': frozenset({'GET', 'POST'}), 'import': frozenset({'POST'}),
+    'projects/tree': frozenset({'GET'}), 'sessions': frozenset({'GET'}),
+    'sessions/pull-requests': frozenset({'POST'}), 'sessions/sidebar': frozenset({'GET'}),
+}
+
+
+def profile_collection_route(path, method):
+    """The collection suffix ``method path`` serves, or None when the path names a profile."""
+    suffix = path.rstrip('/').removeprefix('/api/profiles/')
+    if suffix == path.rstrip('/'):
+        return None
+    return suffix if method.upper() in PROFILE_COLLECTION_ROUTES.get(suffix, ()) else None
+
+
+def _registry_target(request):
+    """The profile a ``PATCH``/``DELETE /api/profiles/<name>`` names, or None for any other route."""
+    if request.method not in {'PATCH', 'DELETE'}:
+        return None
+    suffix = request.url.path.rstrip('/').removeprefix('/api/profiles/')
+    if suffix == request.url.path.rstrip('/') or not suffix or '/' in suffix:
+        return None
+    return suffix
+
+
+def _check_registry_scope(request, profile_id, launch_home):
+    """A registry grant renames or deletes exactly the profile it was minted for (#140345).
+
+    Never the gateway's launch home, which this live process is running in: deleting it or moving
+    its directory pulls the runtime out from under itself. The default root's rename stays allowed,
+    because it only sets a presentation ``display_name`` and never moves the directory.
+    """
+    target = _registry_target(request)
+    for value in request.query_params.getlist('profile'):
+        _own_profile(value, profile_id, current=False)
+    _own_profile(target, profile_id, current=False)
+    if launch_home is None:
+        # Fail closed: with no known launch home the guard below cannot tell it apart.
+        raise PermissionError('profile_scope_mismatch')
+    from hermes_constants import get_default_hermes_root, hermes_home_key
+    # Compared by hermes_home_key, as SessionAuthorities keys homes (symlinks, case, separators).
+    launch = hermes_home_key(launch_home)
+    if hermes_home_key(profile_id) == launch and not (
+            request.method == 'PATCH' and launch == hermes_home_key(get_default_hermes_root())):
+        raise PermissionError('profile_scope_mismatch')
+
+
 def _redeem_http_ticket(store, ticket, request):
+    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     try:
         grant = store.redeem(ticket, profile_id=None, purpose='native-http')
-        expected = frozenset({'http:owner'})
     except PermissionError:
-        # Only this host-management operation accepts the dedicated same-user grant.
+        # Only these host-management operations accept a dedicated same-user grant.
         # Wrong-purpose redemption does not consume a ticket; ordinary profile grants
-        # still reach _check_profile_scope and remain unable to create other profiles.
-        if request.method != 'POST' or request.url.path.rstrip('/') != '/api/profiles':
+        # still reach _check_profile_scope and remain unable to create, move or delete profiles.
+        if request.method == 'POST' and request.url.path.rstrip('/') == '/api/profiles':
+            grant = store.redeem(ticket, profile_id=None, purpose='native-profile-create')
+        elif _registry_target(request) is not None:
+            grant = store.redeem(ticket, profile_id=None, purpose='native-profile-registry')
+        else:
             raise
-        grant = store.redeem(ticket, profile_id=None, purpose='native-profile-create')
-        expected = frozenset({'profiles:create'})
-    if grant['capabilities'] != expected:
+    # The issuer's own purpose -> capability table, not a second copy of it.
+    if grant['capabilities'] != _PURPOSE_CAPABILITIES[grant['purpose']]:
         raise PermissionError('invalid native grant')
     return grant
 
 
-async def authenticate_native_http(request):
-    """Return a rejection or stamp a one-request principal; absent header is inert."""
-    tickets = request.headers.getlist(HEADER)
-    if not tickets:
-        return None
-    from gateway.session_authorities import all_authorities, authority_for_profile_id
-    runner = getattr(request.app.state, 'gateway_runner', None)
+def _launch_home(runner):
+    from gateway.session_authorities import all_authorities
+    registry = getattr(runner, 'session_authorities', None)
+    launch = registry.launch if registry is not None else (all_authorities(runner) or [None])[0]
+    return launch.profile_id if launch is not None else None
+
+
+def _native_store(conn, tickets):
+    """The runner's ticket store when *conn* may redeem a private grant here, else None."""
+    from gateway.drain_control import restart_wait_read
+    from gateway.session_authorities import all_authorities
+    runner = getattr(conn.app.state, 'gateway_runner', None)
     descriptor = getattr(runner, 'session_runtime_descriptor', {})
     authorities = all_authorities(runner)
     store = getattr(runner, 'session_ticket_store', None)
-    peer = request.scope.get('hermes.gateway_socket_peer')
-    if (len(tickets) != 1 or 'origin' in request.headers or not peer
+    peer = conn.scope.get('hermes.gateway_socket_peer')
+    if (len(tickets) != 1 or 'origin' in conn.headers or not peer
             or peer[0] not in {'127.0.0.1', '::1'}
-            or descriptor.get('state') != 'ready' or getattr(runner, '_draining', True)
+            or descriptor.get('state') != 'ready'
+            # A restart's after-turn wait still serves the reads that open a parked prompt (#139041).
+            # A websocket scope has no method, so a socket upgrade never matches that GET allowlist.
+            or (getattr(runner, '_draining', True)
+                and not restart_wait_read(runner, conn.scope.get('method'), conn.url.path))
             or not authorities or store is None
             or store.instance_id != descriptor.get('instance_id')
             or any(a is not None and a.instance_id != store.instance_id for a in authorities)
@@ -144,7 +213,87 @@ async def authenticate_native_http(request):
             or descriptor.get('served_profiles') != [
                 {'profile_id': a.profile_id, 'home': a.profile_id} for a in authorities
                 if a is not None and not getattr(a, 'retiring', False) and a.profile_id in store.profile_ids]):
+        return None
+    return runner, store
+
+
+def redeem_native_ws(conn):
+    """Redeem the ``native-http`` grant a Desktop plugin socket upgrade presents; None when refused.
+
+    Same issuer, header, peer/Origin and served-profile rules as HTTP: a plugin socket is the
+    live twin of the plugin REST call that already rides this grant on a local gateway. The
+    upgrade's ``profile`` selectors must name the grant's home. Plugin sockets only: ``/api/ws``
+    and other core streams keep their own purpose-bound credentials. Called once per upgrade, by
+    ``PluginApiWebSocketGate`` ahead of routing, so the grant's profile decides consent and scope
+    before any route dependency or plugin code runs.
+    """
+    tickets = conn.headers.getlist(HEADER)
+    gate = _native_store(conn, tickets) if conn.url.path.startswith('/api/plugins/') else None
+    if gate is None:
+        return None
+    runner, store = gate
+    from gateway.session_authorities import authority_for_profile_id
+    try:
+        grant = store.redeem(tickets[0], profile_id=None, purpose='native-http')
+        if (grant['capabilities'] != frozenset({'http:owner'})
+                or authority_for_profile_id(runner, grant['profile_id']) is None):
+            return None
+        for value in conn.query_params.getlist('profile'):
+            _own_profile(value, grant['profile_id'])
+    except PermissionError:
+        return None
+    return grant
+
+
+AUDIO_STREAM_PATHS = frozenset({'/api/audio/speak-stream', '/api/audio/transcribe-stream'})
+
+
+def redeem_audio_ws(ws):
+    """Redeem the ``interactive`` grant a local Desktop's audio stream upgrade presents; None when refused.
+
+    The voice sockets are siblings of the Desktop's ``/api/ws`` dial and ride the same one-use
+    grant in the same gateway subprotocol (``gateway/run_api.py``), under the HTTP seam's
+    peer/Origin/served-profile rules. The upgrade's ``profile`` selectors must name the grant's home.
+    """
+    from hermes_cli.web_server_boundary import _gateway_ws_ticket_from_subprotocol
+    ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
+    gate = _native_store(ws, [ticket]) if reason == 'ok' and ws.url.path in AUDIO_STREAM_PATHS else None
+    if gate is None:
+        return None
+    runner, store = gate
+    from gateway.session_authorities import authority_for_profile_id
+    try:
+        grant = store.redeem(ticket, profile_id=None, purpose='interactive')
+        if authority_for_profile_id(runner, grant['profile_id']) is None:
+            return None
+        for value in ws.query_params.getlist('profile'):
+            _own_profile(value, grant['profile_id'])
+    except PermissionError:
+        return None
+    return grant
+
+
+def authenticate_native_ws(ws):
+    """The grant :func:`redeem_native_ws` admitted for this plugin socket, or None (refused).
+
+    Never redeems: the gate already did, once, and bound the grant's home and secret scope for
+    the whole connection.
+    """
+    if not ws.url.path.startswith('/api/plugins/'):
+        return None
+    return getattr(ws.state, 'native_http_principal', None)
+
+
+async def authenticate_native_http(request):
+    """Return a rejection or stamp a one-request principal; absent header is inert."""
+    tickets = request.headers.getlist(HEADER)
+    if not tickets:
+        return None
+    from gateway.session_authorities import authority_for_profile_id
+    gate = _native_store(request, tickets)
+    if gate is None:
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
+    runner, store = gate
     try:
         # The ticket names the served profile it was minted for; that home's authority owns it.
         grant = _redeem_http_ticket(store, tickets[0], request)
@@ -153,7 +302,9 @@ async def authenticate_native_http(request):
     except PermissionError:
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:
-        if grant['purpose'] != 'native-profile-create':
+        if grant['purpose'] == 'native-profile-registry':
+            _check_registry_scope(request, grant['profile_id'], _launch_home(runner))
+        elif grant['purpose'] != 'native-profile-create':
             await _check_profile_scope(request, grant['profile_id'])
     except PermissionError:
         return JSONResponse({'detail': 'profile_scope_mismatch'}, status_code=403)

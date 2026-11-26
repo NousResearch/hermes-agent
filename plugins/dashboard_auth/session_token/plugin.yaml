@@ -1,0 +1,7 @@
+name: session-token
+version: 1.0.0
+description: "Dashboard auth provider — the deployment session token (HERMES_DASHBOARD_SESSION_TOKEN, including the file:<path> form the Nix modules render) as a first-class gated-mode credential. verify_session constant-time-compares the presented Authorization: Bearer / /api/ws ?token= credential against the provisioned token, so a token-only deployment satisfies the auth gate without basic-auth or OAuth — the shape the Desktop's 'Session token' remote-gateway field always promised. Not an interactive login: no login-page button, no cookies, no refresh (rotation is redeploying the secret). Disable with dashboard.session_token_auth.enabled: false."
+author: NousResearch
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_SESSION_TOKEN

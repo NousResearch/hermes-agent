@@ -30,6 +30,7 @@ import { markOnboardingDecided, ONBOARDING_DECIDE_OFFER_MS, setOnboardingSurface
 import { $onboardingSession } from './onboarding-session'
 import { ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
+import { requestForOwnedSession } from './session-states'
 import { dropSetupBeat } from './setup-beat'
 
 export type OnboardingRequest = <T = unknown>(
@@ -312,7 +313,8 @@ export function endOnboarding(outcome: 'done' | 'skipped'): void {
 /** Skip setup: the backend ends the run and closes the card that waits, and a new chat opens. A failed
  *  skip leaves the run going, so Skip setup stays on offer; the caller reports the error. */
 export async function skipOnboarding(request: OnboardingRequest, runtimeId: string): Promise<void> {
-  await request('onboarding.skip', { session_id: runtimeId })
+  // The run's chat may belong to a non-launch profile; only its owner can end it.
+  await requestForOwnedSession(runtimeId, request, 'onboarding.skip', { session_id: runtimeId })
   leaveSkipped()
 }
 

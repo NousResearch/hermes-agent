@@ -170,7 +170,8 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
       hold.open()
 
       // Teardown on request: the CLI stop takes the daemon and its tool child down.
-      const stopped = stopSandboxGateway(sandbox)
+      // The turn is still live, so the stop must be told to interrupt it.
+      const stopped = stopSandboxGateway(sandbox, { interrupt: true })
       expect(stopped.code, stopped.output).toBe(0)
       await expect
         .poll(

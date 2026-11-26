@@ -1,6 +1,6 @@
 """Lane-private harness for the compaction property / liveness suites (class C4).
 
-Everything real except the LLM: a real ``AIAgent`` with a real ``SessionDB`` on disk, real tools
+Everything real except the LLM: a real ``AIAgent`` with a real store on disk, real tools
 (``read_file`` on seeded files), real compaction, all talking to the recording loopback provider in
 ``tests/fakes/fake_llm_provider.py``. The provider is shared per module; each scenario installs its own
 main-turn and summarizer responders on the ``Dispatch`` object.
@@ -545,14 +545,14 @@ class Scenario:
 
     # agent side ---------------------------------------------------------------------------------
     def build_agent(self) -> Any:
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
         from run_agent import AIAgent
 
         if self.db is None:
-            self.db = SessionDB(db_path=self.db_path)
+            self.db = open_persistence(profile_scope(home=self.home))
         self.agent = AIAgent(
             provider="custom", base_url=self.server.base_url, api_key="sk-fake-e2e", model=MODEL_ID,
-            session_db=self.db, session_id=self.session_id, quiet_mode=True, platform=self.platform,
+            persistence=self.db, session_id=self.session_id, quiet_mode=True, platform=self.platform,
             enabled_toolsets=["file"], skip_context_files=True, skip_memory=True,
             status_callback=lambda *a, **_k: self.statuses.append(tuple(a)),
         )
@@ -562,7 +562,9 @@ class Scenario:
         """Gateway/Desktop shape: a fresh agent whose history is whatever state.db hands back."""
         self.close_agent()
         self.build_agent()
-        self.history = self.db.get_messages_as_conversation(self.session_id)
+        from tests.fixtures.storage_read import conversation
+
+        self.history = conversation(self.db, self.session_id)
 
     def close_agent(self) -> None:
         if self.agent is not None:

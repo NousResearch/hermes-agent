@@ -8,7 +8,8 @@
 #   docker build -f docker/sandbox-desktop.Dockerfile -t nousresearch/hermes-sandbox:desktop .
 #
 # Published as nousresearch/hermes-sandbox:desktop by .github/workflows/sandbox-image.yml
-# on releases and manual dispatch only: it carries no Hermes code, so it does not track main.
+# after each stable release, weekly, and on manual dispatch: it carries no Hermes code, so it
+# does not track main, but the weekly rebuild picks up base-image and apt security fixes.
 # The tag lives in the ARG so CI and a local build read one place; hadolint cannot
 # see through the substitution, hence the inline ignore.
 ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.13-nodejs26
@@ -17,6 +18,11 @@ FROM ${SANDBOX_BASE}
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 ARG CUA_DRIVER_VERSION=0.28.2
+# sha256 of cua-driver-rs-<version>-linux-<arch>-binary.tar.gz, checked before extraction:
+# the tarball becomes a root-owned binary on PATH in the published default sandbox, so a
+# replaced release asset must fail the build. Re-hash both assets when bumping the version.
+ARG CUA_DRIVER_X86_64_SHA256=a1d99fd04bb4927ef5ffdbe60eb91ed8b51a2bab60e10fc604a75bd59ce69c3e
+ARG CUA_DRIVER_ARM64_SHA256=55e8a32839a4ac369a773df4dac87b345bd4567779221ade4a5e39223a45a2e8
 ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -44,29 +50,28 @@ RUN apt-get -o Acquire::Retries=3 update && \
     rm -rf /var/lib/apt/lists/*
 
 # Headed Chromium through Playwright (the same build the Hermes -desktop image
-# uses), so agent-browser and the dock's Browser icon share one binary and one
-# --user-data-dir. --with-deps pulls the Chromium runtime libraries. agent-browser
-# itself is baked (the CLI the browser tools drive), pinned to the same range the
-# gateway resolves (tools/browser_tool.py AGENT_BROWSER_NPX_SPEC), scripts off:
-# the first browser_navigate in a fresh sandbox must not wait on an npm fetch.
+# uses), so the agent's browser and the dock's Browser icon share one binary and
+# one --user-data-dir: tools/bot_desktop/sandbox_host.py finds it under
+# /opt/playwright. --with-deps pulls the Chromium runtime libraries.
 RUN for i in 1 2 3; do \
         npx --yes playwright@1 install --with-deps chromium && break || \
         { [ "$i" = 3 ] && exit 1; echo "playwright chromium install failed (attempt $i); retrying in 10s"; sleep 10; }; \
-    done && chmod -R a+rX /opt/playwright && \
-    npm install -g --ignore-scripts --no-audit --fetch-retries=5 "agent-browser@^0.26.0" && \
-    agent-browser --version
+    done && chmod -R a+rX /opt/playwright
 
 # cua-driver: computer_use's MCP driver. Pinned release tarball from the
 # cua-driver-rs-v* tags (never releases/latest: prereleases publish 0 assets).
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
-        amd64) arch=x86_64 ;; \
-        arm64) arch=arm64 ;; \
+        amd64) arch=x86_64; sha="${CUA_DRIVER_X86_64_SHA256}" ;; \
+        arm64) arch=arm64; sha="${CUA_DRIVER_ARM64_SHA256}" ;; \
         *) echo "unsupported TARGETARCH ${TARGETARCH}"; exit 1 ;; \
     esac; \
     mkdir -p /opt/cua-driver; \
-    curl -fsSL "https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}/cua-driver-rs-${CUA_DRIVER_VERSION}-linux-${arch}-binary.tar.gz" \
-        | tar -xz -C /opt/cua-driver; \
+    curl -fsSL --retry 3 -o /tmp/cua-driver.tar.gz \
+        "https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}/cua-driver-rs-${CUA_DRIVER_VERSION}-linux-${arch}-binary.tar.gz"; \
+    printf '%s  %s\n' "${sha}" /tmp/cua-driver.tar.gz | sha256sum -c -; \
+    tar -xzf /tmp/cua-driver.tar.gz -C /opt/cua-driver; \
+    rm -f /tmp/cua-driver.tar.gz; \
     ln -sf /opt/cua-driver/cua-driver /usr/local/bin/cua-driver; \
     /usr/local/bin/cua-driver --version
 
@@ -88,7 +93,9 @@ RUN echo "pn ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pn && chmod 0440 /etc/sudo
 ENV XDG_RUNTIME_DIR=/tmp/hermes-runtime
 # Dockerfile ENV reaches `docker exec` only. When this image is the target of the
 # ssh backend (sshd added on top), a login session gets its environment from PAM,
-# so the browser location must also live where pam_env reads it or agent-browser
-# reports "Chrome not found" over ssh while working under docker exec.
+# so the browser location must also live where pam_env reads it, or Playwright
+# launched over ssh without an explicit executable path (agent or user scripts)
+# looks in ~/.cache/ms-playwright and finds no browser while working under
+# docker exec.
 RUN printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/playwright\nXDG_RUNTIME_DIR=/tmp/hermes-runtime\n' >> /etc/environment
 CMD ["sleep", "infinity"]

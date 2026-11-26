@@ -1,0 +1,19 @@
+name: coffee-vram
+repo: https://github.com/jimmy77733/coffee-vram
+sha: 43294ca4ea71187de87b42ecfdeca1ef102d3e3d
+subdir: ""
+description: "VRAM fit-check, call queue, keep-warm and idle eviction for local Ollama models, with a desktop status chip showing the active Hermes model (cloud or local), context, and tok/s, plus /vram. The panel includes a Performance pet and host stats (GPU, RAM, CPU, network). Disclosure — when a local Ollama model won't fit, Coffee holds that call for up to the queue timeout (default 600 s) and, by default, unloads idle Ollama models (including ones other apps loaded, unless pinned) to make room; it also refreshes keep-alive on loaded models and polls the configured Ollama URL and NVIDIA telemetry in the background."
+maintainer: jimmy77733
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+version: "0.1.4"
+image: https://raw.githubusercontent.com/jimmy77733/coffee-vram/43294ca4ea71187de87b42ecfdeca1ef102d3e3d/assets/cover.jpg
+screenshots:
+  - https://raw.githubusercontent.com/jimmy77733/coffee-vram/43294ca4ea71187de87b42ecfdeca1ef102d3e3d/assets/screenshots/01-desktop-overview.png
+  - https://raw.githubusercontent.com/jimmy77733/coffee-vram/43294ca4ea71187de87b42ecfdeca1ef102d3e3d/assets/screenshots/02-panel.png
+capabilities:
+  provides_tools: [vram_status]
+  provides_hooks: [post_api_request, api_request_error]
+  provides_middleware: [llm_execution]
+  requires_env: []

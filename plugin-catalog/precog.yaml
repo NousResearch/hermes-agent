@@ -1,0 +1,23 @@
+name: precog
+repo: https://github.com/0xNomind/precog
+sha: 6f989a2bdf257c35bfc9feb81eaf1ebc3ab77afb
+description: "Hermes stops repeating its own mistakes: learns every terminal command that failed for an environment reason (missing module, command not found, wrong package manager, bad flag, missing path) and the command that fixed it, then fixes the same mistake before it runs again, in any session, with no extra model calls. Disclosure — reads every terminal tool call's arguments and results and stores redacted commands and short error excerpts locally in <HERMES_HOME>/plugin-data/precog/; in auto mode (the default) rewrites a terminal command through tool_request middleware before Hermes's approval check, using a fix that already succeeded in the same project (a program or flag fix seen in two projects is applied machine-wide), and tells the model in the tool result; once per session blocks a command that already failed in the project and shows what worked, and adds a short lessons briefing to the user turn once per project; no network calls, no background processes, no telemetry."
+maintainer: 0xNomind
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+version: "0.1.1"
+docs_url: https://github.com/0xNomind/precog#readme
+image: https://raw.githubusercontent.com/0xNomind/precog/6f989a2bdf257c35bfc9feb81eaf1ebc3ab77afb/assets/dashboard.jpg
+screenshots:
+  - https://raw.githubusercontent.com/0xNomind/precog/6f989a2bdf257c35bfc9feb81eaf1ebc3ab77afb/assets/dashboard.jpg
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+    - pre_llm_call
+  provides_middleware:
+    - tool_request
+  requires_env: []

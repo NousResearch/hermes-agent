@@ -18,9 +18,13 @@ def _probe(tmp_path, source):
     print(result.stdout)
 
 
-@pytest.mark.parametrize('source', ['cli', 'tui', 'gui', 'watch'])
-def test_local_completion_joins_fifo_without_an_observer(tmp_path, source):
-    _probe(tmp_path, source)
+@pytest.mark.parametrize('source', ['cli', 'tui', 'gui'])
+def test_local_completion_without_an_observer_resumes_the_parent(tmp_path, source):
+    _probe(tmp_path, source)  # a process exit runs one turn with no viewer; the next turn sees it
+
+
+def test_local_watch_match_without_an_observer_is_a_note(tmp_path):
+    _probe(tmp_path, 'watch')
 
 
 def test_local_completion_survives_owner_kill_without_duplicate(tmp_path):

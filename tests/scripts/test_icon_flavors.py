@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 LAYERED_ICON = "icon.icon"  # apps/desktop/assets/icon.icon: the macOS 26 Icon Composer package
 DMG_VOLUME = Path("apps/desktop/packaging/dmg-volume.icns")  # hand-made drive artwork, not a tile
 
+# ``generate`` builds a fresh PM runtime environment, which provisions the locked toolchain.
+pytestmark = pytest.mark.allow_network
+
 
 @pytest.fixture(scope="module")
 def generate(tmp_path_factory):
@@ -29,7 +32,13 @@ def generate(tmp_path_factory):
     (foreign / "sitecustomize.py").write_text("raise SystemExit('foreign interpreter path leaked')\n", encoding="utf-8")
     shutil.copytree(ROOT / "assets", source / "assets")
     from scripts.build.icon_environment import prepare_icon_environment
-    python = prepare_icon_environment(ROOT, root / "runtime", root / "cache")
+    with pytest.MonkeyPatch.context() as patch:
+        # As the desktop builder does (desktop_toolchain.bootstrap_environment):
+        # Rust sdists (cryptography on win32-arm64) otherwise compile into
+        # target/ inside uv's nested sdist entry under this deep temp cache,
+        # past MSVC link.exe's MAX_PATH (LNK1104).
+        patch.setenv("CARGO_TARGET_DIR", str(root / "cargo"))
+        python = prepare_icon_environment(ROOT, root / "runtime", root / "cache")
     node = shutil.which("node")
     assert node, "icon acceptance requires prepared Node"
     outputs = {}
@@ -140,14 +149,14 @@ def test_renderer_canary_rule_is_the_canonical_one(monkeypatch):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    for tag in ("v1.2.3+canary.20260911T010203Z", "v2026.9.15+canary.20260916T120000Z",
+    for tag in ("canary.20260911T010203Z-v1.2.3", "canary.20260916T120000Z-v2026.9.15",
                 "v1.2.3", "v1.2.3-canary.20260911010203", "v1.2.3+canary.20260911010203", ""):
         assert bool(module._CANARY_TAG_RE.match(tag)) == is_canary_tag(tag), tag
 
 
 def test_canary_changes_only_desktop_background_preserving_art_and_native_geometry(generate):
     stable = generate("v1.2.3")
-    canary = generate("v1.2.3+canary.20260911T010203Z")
+    canary = generate("canary.20260911T010203Z-v1.2.3")
     for path in (stable / "apps/desktop").rglob("*"):
         if not path.is_file() or LAYERED_ICON in path.parts or path.relative_to(stable) == DMG_VOLUME:
             continue  # the layered macOS icon carries its flavor in icon.json; the DMG volume art is unflavoured (both tested below)
@@ -278,7 +287,7 @@ def test_layered_macos_icon_mono_layer_and_flavor_stays_in_the_fill(generate, mo
     flavors recolour the fill in icon.json only; the layers never change."""
     module = load_generator(monkeypatch)
     stable = generate("v1.2.3") / "apps/desktop/assets" / LAYERED_ICON
-    canary = generate("v1.2.3+canary.20260911T010203Z") / "apps/desktop/assets" / LAYERED_ICON
+    canary = generate("canary.20260911T010203Z-v1.2.3") / "apps/desktop/assets" / LAYERED_ICON
     commit = generate(commit="0123456" + "a" * 33) / "apps/desktop/assets" / LAYERED_ICON
 
     canvas = module.ICON_CANVAS

@@ -2,7 +2,7 @@
 
 Main's TUI owned its own sidecar and never depended on an external daemon, so an open TUI must come
 back on its own after ANY end of the shared gateway: a crash, its idle exit, or a planned
-`hermes gateway stop` while the TUI is open. The bounded recovery slot (gatewayClient.ts
+`hermes gateway stop` while the TUI is open. The bounded recovery slot (`@hermes/shared/gateway-client`
 OWNER_RECOVERY_LIMIT) is what keeps a crash-looping owner from being respawned forever."""
 
 from __future__ import annotations
@@ -121,3 +121,85 @@ def test_started_daemon_does_not_inherit_the_launch_time_kanban_board(monkeypatc
     with pytest.raises(RuntimeError):
         module.bootstrap(True)
     assert seen == [None]
+
+
+@pytest.mark.parametrize("start,recover", [(True, False), (False, True)])
+def test_restart_wait_owner_is_attachable_on_start_and_recover(monkeypatch, tmp_path, start, recover):
+    """GW-6: an owner in a restart's after-turn wait (draining/restart_wait) still owns its turns;
+    reopening the TUI to answer a parked prompt must attach, not refuse or re-ensure it."""
+    import io
+    import os
+    module = _load_bootstrap()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    endpoint = SimpleNamespace(profile_id=str(home), instance_id="draining-owner", api_origin="http://127.0.0.1:1",
+                               runtime_protocol=1, control_home=str(home))
+    receipt = SimpleNamespace(state="draining", endpoint=endpoint, reason_code="restart_wait", detail=None)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda h, timeout=5: receipt)
+    ensured = []
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime",
+                        lambda h, timeout=30, idle_exit=False: (ensured.append(h), receipt)[1])
+    reply = json.dumps({"ok": True, "protocol": 1, "id": 1, "result": {
+        "instance_id": endpoint.instance_id, "profile_id": endpoint.profile_id, "ticket": "grant",
+        "runtime_protocol": 1}}).encode() + b"\n"
+    if os.name == "nt":
+        import gateway.runtime_bootstrap_windows as windows_bootstrap
+        monkeypatch.setattr(windows_bootstrap, "query_runtime_control", lambda h, req, timeout: reply)
+    else:
+        import hermes_cli.gateway_runtime_discovery as discovery
+        stream = io.BytesIO(reply)
+
+        class Peer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def sendall(self, _request):
+                pass
+
+            def settimeout(self, _timeout):
+                pass
+
+            def recv(self, size):
+                return stream.read(size)
+
+        monkeypatch.setattr(discovery, "connect_private", lambda h, timeout: Peer())
+
+    result = module.bootstrap(start, recover=recover)
+
+    assert result["instance_id"] == "draining-owner"
+    assert ensured == ([home] if start else [])
+
+
+def test_recover_starts_no_gateway_for_a_marked_profile_whose_directory_is_a_link(monkeypatch, tmp_path):
+    """An open TUI runs this script again whenever its gateway is gone, and no command line refusal
+    runs before it. A profile a plugin has taken over since is refused here, also when its directory is
+    a link that leads out of the Hermes root: the home is asked about as the environment names it."""
+    import os
+
+    from hermes_cli import profiles_run_elsewhere as pre
+
+    module = _load_bootstrap()
+    root = tmp_path / ".hermes"
+    outside = tmp_path / "other-disk" / "ops"
+    outside.mkdir(parents=True)
+    link = root / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        if os.name != "nt":
+            pytest.skip(f"cannot create a directory symlink here: {exc}")
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(link))
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: link)
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda *a, **k: pytest.fail("discovered"))
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", lambda *a, **k: pytest.fail("ensured"))
+
+    with pytest.raises(RuntimeError, match="gateway inaccessible: profile_runs_elsewhere"):
+        module.bootstrap(True, recover=True)

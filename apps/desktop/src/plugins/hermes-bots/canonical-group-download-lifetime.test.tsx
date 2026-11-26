@@ -7,17 +7,21 @@ import { expectDownloaded, observeDownloads } from './canonical-download-test-ut
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
+  const { Textarea } = await import('@/components/ui/textarea')
+  const { captureGroupRequests } = await import('./canonical-group-contract-test-utils')
 
-  return { host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { ...await (await import('./group-test-utils')).pluginSdkMock({}), Textarea, atom: (await import('nanostores')).atom, MessageTextContent: undefined, Streamdown: undefined, host: { requestProfile: captureGroupRequests(request).request }, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })
+vi.mock('./group-chat-parts', () => ({ GroupMentionInput: () => null }))
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
   return { useCanonicalGroupLabels: () => ({ ...CANONICAL_GROUP_LOCALES.en, refresh: 'Refresh', retry: 'Retry',
     send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel' }) }
 })
+import { CANONICAL_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'owner-a', profile: 'reviewer', roomId: 'room-one' }
@@ -32,6 +36,8 @@ function setup() {
   let release!: (value: unknown) => void
   const held = new Promise(resolve => { release = resolve })
   request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
+
     if (method === 'groups.state') {return { room: { name: 'Room' } }}
 
     if (method === 'groups.log') {return { events: [{ seq: 1, room_id: binding.roomId, event_id: 'committed',

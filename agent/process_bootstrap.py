@@ -18,6 +18,7 @@ from typing import Any, Optional
 from hermes_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+from agent.thread_scoped_output import _ThreadRoutingStream
 
 
 _OPENAI_CLS_CACHE = None
@@ -292,11 +293,10 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
-        # Official Codex backend only: zstd request bodies when the stdlib codec exists (None otherwise).
-        from agent.codex_headers import codex_request_compression_hooks
+        from agent.codex_headers import codex_request_compression_hooks, codex_zstd_replay_client_cls
         hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
         if hooks:
-            client_cls = functools.partial(client_cls, event_hooks=hooks)
+            client_cls = functools.partial(codex_zstd_replay_client_cls(async_mode), event_hooks=hooks)
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole
@@ -334,7 +334,8 @@ def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
+        # The routing proxy already absorbs these errors; wrapping it stacks a new proxy per build (#139687).
+        if stream is not None and not isinstance(stream, (_SafeWriter, _ThreadRoutingStream)):
             setattr(sys, stream_name, _SafeWriter(stream))
 
 

@@ -7,6 +7,8 @@ import shlex
 import sys
 import traceback
 import weakref
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import transcript_rows
 
 
 async def probe(mode):
@@ -60,9 +62,9 @@ async def probe(mode):
                 loop = LoopState('OWNER_LOOP', status='paused', created_at=20, route={'token': 'PRIVATE_ROUTE'})
                 heartbeat = HeartbeatState('OWNER_HEARTBEAT', 600, status='paused', created_at=30)
                 for key, state in [('goal', goal), ('loop', loop), ('heartbeat', heartbeat)]:
-                    authority.db.set_meta(key + ':' + sid, state.to_json())
-                    authority.db.set_meta(key + ':' + live.route, state.to_json().replace('OWNER_', 'WRONG_ROUTE_'))
-                before = authority.db._conn.total_changes
+                    authority.persistence.state_meta.set(key + ':' + sid, state.to_json())
+                    authority.persistence.state_meta.set(key + ':' + live.route, state.to_json().replace('OWNER_', 'WRONG_ROUTE_'))
+                before = raw_holder(authority.persistence)._conn.total_changes
                 responses = [await rpc(ws, 'session.control.read', session_id=sid) for _ in range(2)]
                 assert 'result' in responses[0], responses
                 snap = responses[0]['result']['control']
@@ -71,13 +73,13 @@ async def probe(mode):
                 assert snap['heartbeat']['prompt'] == 'OWNER_HEARTBEAT' and snap['updated_at'] == 30
                 assert snap['goal']['wait_barrier']['target'] == 99999999
                 assert 'PRIVATE_' not in json.dumps(snap) and len(snap['revision']) == 64
-                assert authority.db._conn.total_changes == before
+                assert raw_holder(authority.persistence)._conn.total_changes == before
                 for method, expected in [('process.list', {'processes': []}),
                                          ('subagent.list', {'subagents': [], 'delegations': []})]:
                     result = await rpc(ws, method, session_id=sid)
                     assert result.get('result') == expected, result
                 assert authority.agent(ref) is None
-                assert not authority.db.get_messages(sid)
+                assert not transcript_rows(authority.persistence, sid)
                 authority.sessions.pop(sid)
                 result = await rpc(ws, 'session.control.read', session_id=sid)
                 assert result.get('error', {}).get('message') == 'not_found', result
@@ -144,6 +146,11 @@ async def probe(mode):
                         entry.session_id = 'replacement-conversation'
                     rejected = await rpc(ws, 'subagent.list', session_id=sid)
                     assert rejected.get('error', {}).get('message') == 'stale_generation', rejected
+                    # The control card is this session's own persisted state, keyed by its id: it
+                    # stays readable after its chat moved on (a messaging /new), as before the
+                    # shared gateway; only the live owner objects above are fenced.
+                    moved = await rpc(ws, 'session.control.read', session_id=sid)
+                    assert 'result' in moved and set(moved['result']['control']) >= {'goal', 'loop', 'heartbeat'}, moved
                     with runner.session_store._lock:
                         entry.session_id = sid
                     # Identical durable session IDs cannot transfer old-object read authority.

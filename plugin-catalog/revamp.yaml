@@ -1,0 +1,27 @@
+name: revamp
+repo: https://github.com/KeyArgo/hermes-revamp
+sha: 617436edf25822876afde5a8117f876906f58947
+description: "Winamp-style music, audiobook and radio player for Hermes Desktop. Disclosure — starts a token-protected HTTP server on 127.0.0.1 for as long as Hermes runs (Host-checked); scans `~/Music` (or the configured library folders) and stores its library index, playlists and a credential-masked agent-activity ticker in its own data dir, with automatic backups every 10 minutes under `~/.local/share/revamp/backups/`; contacts Radio Browser for station search, the radio stations (and their redirect/playlist/favicon hosts) you or the agent pick, `api.webamp.org` / `r2.webampskins.org` for the Skin Museum and `lrclib.net` for lyrics; may run `ffprobe` for audiobook chapters; the optional pop-out launches a local Chrome/Chromium with a private profile and, on Linux, writes desktop entries and icons under `~/.local/share`; its hooks observe tool calls and approvals without answering or changing them; no telemetry."
+maintainer: KeyArgo
+tier: community
+category: desktop
+docs_url: https://github.com/KeyArgo/hermes-revamp#readme
+version: "1.0.0-alpha.6"
+image: https://raw.githubusercontent.com/KeyArgo/hermes-revamp/617436edf25822876afde5a8117f876906f58947/assets/social-card.png
+screenshots:
+  - https://raw.githubusercontent.com/KeyArgo/hermes-revamp/617436edf25822876afde5a8117f876906f58947/assets/screenshots/full-player.png
+capabilities:
+  provides_tools:
+    - revamp_player
+    - revamp_library
+    - revamp_playlist
+    - revamp_radio
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

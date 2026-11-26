@@ -42,7 +42,8 @@ def _entry(*, origin=True) -> SessionEntry:
 
 def _runner(entry: SessionEntry | None, adapter=None) -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
-    runner.session_store = SimpleNamespace()
+    # The scheduler's synchronous profile check reads the store; dispatch reads the async facade.
+    runner.session_store = SimpleNamespace(lookup_by_session_key=lambda _key: None)
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store, lookup_by_session_key=AsyncMock(return_value=entry)
     )
@@ -109,7 +110,6 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
     runner._running = True
     runner._draining = False
     runner._background_tasks = set()
-    runner._queued_events = {}
     runner._is_user_authorized = MagicMock(return_value=True)
     adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
 
@@ -135,7 +135,7 @@ async def test_plugin_context_routes_through_live_gateway_to_existing_session(
         await asyncio.sleep(0)
 
         assert adapter._pending_messages[entry.session_key] is pending_user_event
-        queued = runner._queued_events[entry.session_key][0]
+        queued = runner._session_state(entry.session_key).conversation.queued_events[0]
         assert pending_user_event.text == "human follow-up"
         assert pending_user_event.media_urls == ["human.jpg"]
         assert pending_user_event.allow_gateway_control is True
@@ -462,7 +462,7 @@ async def test_under_a_session_authority_injection_enters_the_durable_fifo(monke
     admission into the session's FIFO; it never runs on the in-process adapter lane, and a
     refused admission is reported as not routed instead of falling back to that lane."""
     import gateway.session_authorities as authorities
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     adapter = SimpleNamespace(handle_message=AsyncMock())
     entry = _entry()
@@ -478,7 +478,7 @@ async def test_under_a_session_authority_injection_enters_the_durable_fifo(monke
     assert event.metadata == {"gateway_session_key": entry.session_key, "gateway_session_id": entry.session_id}
     assert event.text == "check the deployment" and "notify-plugin" in identity
 
-    authority.admit_automation.side_effect = RuntimeStoreError("not_found")
+    authority.admit_automation.side_effect = AuthorityRefusal("not_found")
     assert await runner._dispatch_plugin_message_injection(
         session_key=entry.session_key, content="again", plugin_id="notify-plugin") is False
     adapter.handle_message.assert_not_awaited()

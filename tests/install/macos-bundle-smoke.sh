@@ -2,9 +2,6 @@
 # Consumes receipt-verified bytes; never builds, repairs, or relaxes Gatekeeper.
 set -euo pipefail
 fail() { printf '%s\n' "bundle smoke: $*" >&2; exit 1; }
-[[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -s) == Darwin ]] ||
-  fail 'Disposable native GitHub-hosted macOS runner required'
-
 artifact= arch= commit= tag= channel_request= work= out=
 while (($#)); do
   (($# >= 2)) || fail "Missing value for $1"
@@ -52,8 +49,21 @@ trap 'exit 143' TERM
 /usr/bin/shasum -a 256 "$artifact" > "$out/artifact-before.sha256"
 mkdir "$work/install" "$work/home" "$work/user-data"
 shopt -s nullglob
+# The driver owns which artifacts need the outer DMG check. Asked before install it has no stamp yet, so it
+# answers for releases and channels and leaves commit claims to the installed app's stamp. The assignment keeps a
+# driver failure fatal under set -e.
+dmg_check_needed() {
+  need_dmg_verify=$("$node" "$metadata" should-verify-mac-dmg "${identity_args[@]}" "$@" \
+    | "$node" -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).verifyMacDmg ? "1" : "0")')
+}
+dmg_verified=0
 case "$artifact" in
   *.dmg)
+    dmg_check_needed
+    if [[ $need_dmg_verify == 1 ]]; then
+      "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
+      dmg_verified=1
+    fi
     mountpoint=$work/mount
     mkdir "$mountpoint"
     /usr/bin/hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$artifact"
@@ -71,6 +81,19 @@ apps=("$work/install"/*.app)
 ((${#apps[@]} == 1)) || fail 'Installed artifact must contain exactly one top-level .app'
 [[ -d ${apps[0]} && ! -L ${apps[0]} ]] || fail 'Installed application must not be a link'
 "$node" "$metadata" verify-mac --app "${apps[0]}" --arch "$arch" "${identity_args[@]}" --out "$out/installed-identity.json"
+if [[ $artifact == *.dmg ]]; then
+  if ((dmg_verified == 0)); then
+    dmg_check_needed --identity "$out/installed-identity.json"
+    if [[ $need_dmg_verify == 1 ]]; then
+      "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
+      dmg_verified=1
+    fi
+  fi
+  if ((dmg_verified == 1)); then
+    "$node" -e 'const d = require(process.argv[1]), a = require(process.argv[2]); if (d.teamIdentifier !== a.teamIdentifier) throw new Error(`DMG signing team ${d.teamIdentifier} disagrees with app team ${a.teamIdentifier}`)' \
+      "$out/dmg-identity.json" "$out/installed-identity.json"
+  fi
+fi
 exe=$("$node" -e 'console.log(require(process.argv[1]).exe)' "$out/installed-identity.json")
 root=$("$node" -e 'console.log(require(process.argv[1]).root)' "$out/installed-identity.json")
 /usr/bin/shasum -a 256 "$artifact" > "$out/artifact-after.sha256"
@@ -78,3 +101,19 @@ cmp "$out/artifact-before.sha256" "$out/artifact-after.sha256"
 cd "$work"
 "$node" "$assets/desktop-smoke.ts" --exe "$exe" --root "$root" --origin bundled \
   --home "$work/home" --user-data "$work/user-data" --out "$out" --phase installed --expect-commit "$commit"
+# The chat ran the bundle's own Python: a pyc written into the app breaks its seal, and Gatekeeper holds the next update.
+/usr/bin/codesign --verify --deep --strict --verbose=2 "${apps[0]}" || fail 'The app modified its own signed bundle while it ran'
+# The chat's processes keep their bytecode out of the app; the backend's detached actions (gateway
+# start/stop/restart, update, skill and MCP installs) run `python -I -c <bootstrap>`
+# (hermes_cli/_launchers.py runtime_command), where -I ignores PYTHONPYCACHEPREFIX. Run the
+# cheapest command of that shape: only bytecode baked fresh into the payload keeps it out.
+pythons=("$root"/tools/python-*/bin/python3)
+((${#pythons[@]} == 1)) || fail 'Expected exactly one bundled interpreter'
+/usr/bin/env -i HOME="$work/home" HERMES_HOME="$work/home" PATH=/usr/bin:/bin HERMES_RUNTIME_DIR="$root/tools" \
+  "${pythons[0]}" -I -B -c 'import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli._launchers import runtime_command
+command = runtime_command(Path(sys.argv[1]), sys.argv[2:])
+os.execv(command[0], command)' "$root/hermes-agent" --version
+/usr/bin/codesign --verify --deep --strict --verbose=2 "${apps[0]}" || fail 'A backend action wrote into the signed bundle'

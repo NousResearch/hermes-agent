@@ -1,11 +1,13 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { invalidateAllConnectors } from '@/app/capabilities/connectors/data/keys'
 import {
   cancelOAuthSession,
   getGlobalModelOptions,
   getRecommendedDefaultModel,
   listOAuthProviders,
+  OAUTH_LONG_POLL_SECONDS,
   pollOAuthSession,
   type ProfileScope,
   setEnvVar,
@@ -14,8 +16,11 @@ import {
   validateProviderCredential
 } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
+import { restOfLongPollGap } from '@/lib/long-poll'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { readKey, writeKey } from '@/lib/storage'
 import {
   $freeTierStatus,
   ackFreeTierNotice,
@@ -23,17 +28,33 @@ import {
   refreshFreeTierStatus,
   setFreeTierRoute
 } from '@/store/free-tier'
+import { followHandoff, handoffStillMoving } from '@/store/free-tier-sign-in'
 import { $gatewayBootGeneration } from '@/store/live-sync'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
-import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
+import { requestRoute } from '@/store/recovery-requests'
+import { setModelPickerOpen } from '@/store/session'
+import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
 
 export type OnboardingMode = 'apikey' | 'oauth'
+
+export interface OnboardingSignedIn {
+  email: null | string
+  handoff: AppHandoffStatus | null
+}
+
+function signedInFrom(result: OAuthPollResponse): OnboardingSignedIn | undefined {
+  const email = result.account_email ?? null
+  const handoff = result.handoff_status ?? null
+
+  return email || handoff ? { email, handoff } : undefined
+}
 
 export type OnboardingFlow =
   | { status: 'idle' }
@@ -55,6 +76,8 @@ export type OnboardingFlow =
       label: string
       providerSlug: string
       saving: boolean
+      // A Nous sign-in's account and what the free tier's apps did, shown on the screen it happened on.
+      signedIn?: OnboardingSignedIn
       status: 'confirming_model'
     }
   | { detail?: string; message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
@@ -104,7 +127,6 @@ export interface OnboardingContext {
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
-const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
 export const DEFAULT_MANUAL_ONBOARDING_REASON = 'Add or switch inference provider.'
@@ -137,31 +159,15 @@ function writeCachedConfigured(value: boolean) {
   }
 }
 
+// Through the storage choke point: the skip is a machine-level preference,
+// so every browser and origin of this machine honours it (#145600).
 function readCachedSkipped(): boolean {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  try {
-    return window.localStorage.getItem(SKIP_CACHE_KEY) === '1'
-  } catch {
-    return false
-  }
+  return typeof window !== 'undefined' && readKey(SKIP_CACHE_KEY) === '1'
 }
 
 function writeCachedSkipped(value: boolean) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  try {
-    if (value) {
-      window.localStorage.setItem(SKIP_CACHE_KEY, '1')
-    } else {
-      window.localStorage.removeItem(SKIP_CACHE_KEY)
-    }
-  } catch {
-    // localStorage unavailable — degrade silently.
+  if (typeof window !== 'undefined') {
+    writeKey(SKIP_CACHE_KEY, value ? '1' : null)
   }
 }
 
@@ -182,7 +188,6 @@ export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let flowGeneration = 0
 let flowScope: OnboardingScope | undefined
-let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -206,12 +211,8 @@ const setFlow = (flow: OnboardingFlow) => patch(flow.status === 'idle' ? { flow 
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
 
+// The poll loop itself ends with its flow (see `pollSession`); only the expiry floor is a timer.
 function clearPoll() {
-  if (pollTimer !== null) {
-    window.clearInterval(pollTimer)
-    pollTimer = null
-  }
-
   clearPollExpiry()
 }
 
@@ -303,6 +304,58 @@ function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, sta
     !state.requested &&
     isInsideBootRaceWindow()
   )
+}
+
+// The selected model is the managed local runtime and its server is down (Desktop closed and took
+// its server with it, still loading, or switched off). The provider IS set up, and provider sign-in
+// cannot start a local server, so this never opens onboarding: the app stays usable, the status bar
+// reads "inference unavailable", and a notice names the cause with the way forward.
+const LOCAL_RUNTIME_UNAVAILABLE = 'local_runtime_unavailable'
+const LOCAL_MODELS_ROUTE = '/settings?tab=providers&pview=local'
+
+const LOCAL_RUNTIME_NOTICE_ID = 'local-runtime-unavailable'
+
+function isLocalRuntimeDown(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  return runtime.source === 'runtime_check' && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE && !state.requested
+}
+
+/** True while the verdict is "the local model server is down": a server that is starting or being
+ *  switched back on announces nothing to this window, so the readiness tracker keeps re-checking. */
+export function isLocalRuntimeUnavailable(runtime: RuntimeReadinessResult | null): boolean {
+  return runtime?.ready === false && runtime.errorCode === LOCAL_RUNTIME_UNAVAILABLE
+}
+
+/** Readiness answered ready: the server came up, so the notice raised while it was down goes. The
+ *  onboarding exemption means no onboarding round runs on recovery to clear it there. */
+export function settleLocalRuntimeNotice(runtime: RuntimeReadinessResult) {
+  if (runtime.ready) {
+    dismissNotification(LOCAL_RUNTIME_NOTICE_ID)
+  }
+}
+
+// The Webapp has no Local models pane (the flag is Electron-only), so there the way forward it can
+// offer is another model, and the sentence must not send the user to a pane they cannot open.
+const WEBAPP_LOCAL_RUNTIME_DOWN =
+  "The local model server isn't serving. Start it from the Hermes desktop app or `hermes model` in a terminal, or choose another model."
+
+// Desktop has the pane, so its notice names it next to the button that opens it.
+const DESKTOP_LOCAL_RUNTIME_DOWN =
+  "The local model server isn't serving. It may still be starting, or it was turned off: check Settings → Providers → Local models, or choose another model."
+
+function keepConfiguredWithLocalRuntimeDown(reason: string) {
+  const pane = $localModelsEnabled.get()
+
+  writeCachedConfigured(true)
+  patch({ configured: true, reason })
+  notify({
+    action: pane
+      ? { label: 'Open Local models', onClick: () => requestRoute(LOCAL_MODELS_ROUTE) }
+      : { label: 'Choose another model', onClick: () => setModelPickerOpen(true) },
+    id: LOCAL_RUNTIME_NOTICE_ID,
+    kind: 'warning',
+    message: pane ? DESKTOP_LOCAL_RUNTIME_DOWN : WEBAPP_LOCAL_RUNTIME_DOWN,
+    title: 'Local model unavailable'
+  })
 }
 
 function notifyReady(provider: string) {
@@ -435,7 +488,8 @@ async function completeWithModelConfirm(
   // When true, a failing runtime check no longer blocks progression — the
   // user is allowed through onboarding regardless. Used by the API-key path,
   // where we intentionally don't validate the key (it blocked too many users).
-  ignoreRuntimeGate = false
+  ignoreRuntimeGate = false,
+  signedIn?: OnboardingSignedIn
 ) {
   const generation = flowGeneration
 
@@ -444,6 +498,9 @@ async function completeWithModelConfirm(
   if (!ctx.scope?.profile) {
     await ctx.requestGateway('reload.env').catch(() => undefined)
   }
+
+  // A sign-in can change the account the apps ride on.
+  invalidateAllConnectors()
 
   if (generation !== flowGeneration) {
     return
@@ -522,8 +579,36 @@ async function completeWithModelConfirm(
     providerSlug: defaults.providerSlug,
     currentModel: defaults.defaultModel,
     label: providerLabel,
-    saving: false
+    saving: false,
+    signedIn
   })
+
+  void followSignedInMove(signedIn, generation, ctx.scope)
+}
+
+// Keep the confirm screen's line about the moving apps current until the move settles or the screen goes.
+async function followSignedInMove(signedIn: OnboardingSignedIn | undefined, generation: number, scope?: ProfileScope) {
+  const moving = signedIn?.handoff
+
+  if (!signedIn || !moving || !handoffStillMoving(moving)) {
+    return
+  }
+
+  const shown = () => {
+    const { flow } = $desktopOnboarding.get()
+
+    return generation === flowGeneration && flow.status === 'confirming_model' ? flow : null
+  }
+
+  const publish = (handoff: AppHandoffStatus) => {
+    const flow = shown()
+
+    if (flow) {
+      setFlow({ ...flow, signedIn: { email: signedIn.email, handoff } })
+    }
+  }
+
+  await followHandoff(moving, () => shown() !== null, publish, scope)
 }
 
 function providerResolutionFailure(reason: null | string) {
@@ -718,6 +803,7 @@ export function closeManualOnboarding() {
 export function completeDesktopOnboarding(connected = false) {
   clearPoll()
   dismissNotification('runtime-not-ready')
+  dismissNotification(LOCAL_RUNTIME_NOTICE_ID)
   writeCachedConfigured(true)
 
   if (connected) {
@@ -819,6 +905,12 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   }
 
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+
+  if (isLocalRuntimeDown(runtime, state)) {
+    keepConfiguredWithLocalRuntimeDown(reason)
+
+    return false
+  }
 
   if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
     // The backend answered inside its boot window with a not-ready that is
@@ -946,7 +1038,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
         message: translateNow('onboarding.signInExpired')
       })
     )
-    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx, generation), POLL_MS)
+    void pollSession(provider, start, ctx, generation)
   } catch (error) {
     if (generation !== flowGeneration) {
       return
@@ -956,31 +1048,59 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   }
 }
 
-// Poll a session-backed device-code flow until it resolves.
+// Long-poll a session-backed device-code flow until it resolves. The loop ends with its flow: a
+// cancel, a newer flow, or the local expiry floor all move the flow off this session's `polling`.
 async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext, generation: number) {
+  const live = () => {
+    const { flow } = $desktopOnboarding.get()
+
+    return generation === flowGeneration && flow.status === 'polling' && sessionIdFor(flow) === start.session_id
+  }
+
   try {
-    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id, ctx.scope)
+    for (;;) {
+      const askedAt = Date.now()
+      const result = await pollOAuthSession(provider.id, start.session_id, ctx.scope, OAUTH_LONG_POLL_SECONDS)
 
-    if (generation !== flowGeneration) {
-      return
-    }
+      if (!live()) {
+        return
+      }
 
-    if (status === 'approved') {
-      clearPoll()
-      setFlow({ status: 'success', provider })
-      await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
+      if (result.status === 'approved') {
+        clearPoll()
+        setFlow({ status: 'success', provider })
+        await completeWithModelConfirm(
+          ctx,
+          provider.name,
+          [provider.id],
+          reason => setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) }),
+          false,
+          signedInFrom(result)
+        )
+
+        return
+      }
+
+      if (result.status !== 'pending') {
+        clearPoll()
         setFlow({
           status: 'error',
           provider,
-          message: providerResolutionFailure(reason)
+          start,
+          ...signInDidNotFinish(provider, result.error_message || result.status)
         })
-      )
-    } else if (status !== 'pending') {
-      clearPoll()
-      setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error_message || status) })
+
+        return
+      }
+
+      await restOfLongPollGap(askedAt)
+
+      if (!live()) {
+        return
+      }
     }
   } catch (error) {
-    if (generation !== flowGeneration) {
+    if (!live()) {
       return
     }
 
@@ -1053,7 +1173,7 @@ export function cancelOnboardingFlow() {
 
 async function copyAndFlash(text: string, predicate: (flow: OnboardingFlow) => boolean) {
   try {
-    await navigator.clipboard.writeText(text)
+    await writeClipboardText(text)
   } catch {
     return
   }

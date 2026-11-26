@@ -92,7 +92,11 @@ def restore_gateway_yolo(session_key: str, persisted: Optional[bool], *, launch:
 
 def transfer_session_yolo(old_key: str, new_key: str) -> None:
     """Move the live bypass when the conversation continues under a new id (compression rotation, /branch).
-    The new row records it at creation (``with_session_yolo``), so nothing is written here."""
+    The new row records it at creation (``with_session_yolo``), so nothing is written here. Every
+    continuation site calls this, so it also moves the chat's MCP spend total: a rotation must not hand a
+    chat that spent its limit a fresh budget."""
+    from tools.mcp_tool_costs import transfer_session
+    transfer_session(old_key, new_key)
     if not old_key or not new_key or old_key == new_key or not approval.is_session_yolo_enabled(old_key):
         return
     approval.enable_session_yolo(new_key)

@@ -120,7 +120,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
         # text-only: {"modalities": ["text"], "max_reference_images": 0}.
         # Optional keys: "supports_upscale" (bool) adds an `upscale` param, and
         # "creative_controls" lists the controls you honor from `creativity`,
-        # `intensity`, `complexity`, `movement`. Only declared controls appear
+        # `intensity`, `complexity`, `movement`, `thinking`, `resolution`. Only declared controls appear
         # in the schema and reach generate() as kwargs. "source_image_role": "style"
         # tells the model that image inputs set the look and are not edited.
         return {"modalities": ["text", "image"], "max_reference_images": 4}
@@ -289,8 +289,7 @@ export MY_BACKEND_API_KEY=your-test-key
 hermes plugins enable my-backend
 
 # Pick it as the active provider
-echo "image_gen:" >> $HERMES_HOME/config.yaml
-echo "  provider: my-backend" >> $HERMES_HOME/config.yaml
+hermes config set image_gen.provider my-backend
 
 # Exercise it
 hermes -z "Generate an image of a corgi in a spacesuit"

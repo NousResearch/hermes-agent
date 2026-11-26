@@ -9,6 +9,7 @@ import pytest
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 
@@ -180,7 +181,7 @@ def _slow_dispatch_harness(monkeypatch):
     def fake_dispatch(req, transport):
         method = req.get("method")
         log.append(f"dispatch:{method}")
-        if method == "slow":
+        if method in {"slow", "session.context_breakdown"}:
             release.wait(5)
         log.append(f"done:{method}")
         return {"jsonrpc": "2.0", "id": req.get("id"), "result": {"method": method}}
@@ -249,6 +250,28 @@ def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
     asyncio.run(scenario())
     assert log.index("done:slow") < log.index("dispatch:fast")
     assert ids().index("r1") < ids().index("r2")
+
+
+def test_ws_context_breakdown_does_not_block_a_later_control_read(monkeypatch):
+    """Regression for #140667: the expensive read-only context meter may finish after controls."""
+    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
+    ids = lambda: [frame.get("id") for frame in sent if "id" in frame]
+
+    async def scenario():
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        try:
+            inbound.put_nowait(_rpc("context", "session.context_breakdown"))
+            inbound.put_nowait(_rpc("control", "session.control.read"))
+            assert await _wait_for(lambda: "control" in ids())
+            assert "context" not in ids()
+        finally:
+            release.set()
+        assert await _wait_for(lambda: "context" in ids())
+        inbound.put_nowait(None)
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    assert log.index("done:session.context_breakdown") > log.index("done:session.control.read")
 
 
 def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
@@ -415,6 +438,9 @@ def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
         def __init__(self, authority, transport, identity, operator=False):
             self.actor = type("Actor", (), {"capabilities": frozenset(capabilities), "profile_id": profile_id})()
 
+        def awaits_profile_start(self, req, held):
+            return None  # no profile is starting
+
         async def dispatch(self, req):
             return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": "unknown method"}}
 
@@ -522,15 +548,16 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
     the authority holding a live session whose row is gone)."""
     from types import SimpleNamespace
     from gateway.session_authority import LiveSession, SessionAuthority
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        db.create_session("owned", source="tui")
-        revision = db.get_session("owned")["runtime_revision"]
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "owned", "tui")
+        revision = session_row(db, "owned")["runtime_revision"]
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
-                                     instance_id="current", db=db, epoch=begin_runtime_epoch(db, instance_id="current"))
+                                     instance_id="current", persistence=storage_handle(tmp_path), epoch=db.runtime.begin_epoch(instance_id="current"))
         authority.sessions["owned"] = LiveSession(None, "route")
         monkeypatch.setattr(server, "_profile_db", lambda *_a, **_k: contextlib.nullcontext(db))
         sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})]
@@ -555,6 +582,6 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
         asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "owner", "instance_id": "current"}))
         reply = next(frame for frame in sent if frame.get("id") == 1)
         assert reply["error"]["code"] == -32601, reply
-        row = db.get_session("owned")
+        row = session_row(db, "owned")
         assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
         assert "owned" in authority.sessions

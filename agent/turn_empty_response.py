@@ -26,10 +26,10 @@ logger = logging.getLogger("agent.conversation_loop")
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 
 # The persisted user-row display kinds the gateway types as machinery: the self-injected
-# internal_notification turn plus the producer-notice cards (background-process completions,
+# internal_notification / internal_event turn plus the producer-notice cards (background-process completions,
 # async delegation results). Mirrors gateway.response_filters.MACHINERY_DISPLAY_KINDS;
 # agent/ cannot import gateway/.
-_MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete", "async_delegation_complete"})
+_MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "internal_event", "process_complete", "async_delegation_complete"})
 
 # Loop exit stamped when a machinery turn ends with the model adding nothing.
 NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"

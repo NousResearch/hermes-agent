@@ -500,12 +500,18 @@ class TimelineNotification(str):
     display_text: str
     display_kind: str
     notification_category: str
+    display_metadata: dict
 
-    def __new__(cls, text: str, display_text: str, display_kind: str, notification_category: str = "result"):
+    def __new__(cls, text: str, display_text: str, display_kind: str,
+                notification_category: str = "result", display_metadata: dict | None = None):
         instance = super().__new__(cls, text)
         instance.display_text = display_text
         instance.display_kind = display_kind
         instance.notification_category = notification_category
+        instance.display_metadata = {
+            "display_text": display_text, "notification_category": notification_category,
+            **dict(display_metadata or {}),
+        }
         return instance
 
     def __getnewargs_ex__(self):  # copy/pickle rebuild via __new__, which needs the display fields
@@ -514,8 +520,11 @@ class TimelineNotification(str):
     @classmethod
     def for_delegation(cls, text: str, event: dict) -> "TimelineNotification":
         from agent.notification_presentation import diagnostic_process_event
-        return cls(text, async_delegation_display_text(event), "async_delegation_complete",
-                   "diagnostic" if diagnostic_process_event(event) else "result")
+        from tools.delegation_events import internal_event_persistence
+        display_kind, display_metadata = internal_event_persistence(event)
+        return cls(text, async_delegation_display_text(event), display_kind or "async_delegation_complete",
+                   "diagnostic" if diagnostic_process_event(event) else "result",
+                   display_metadata=display_metadata)
 
 
 def _delegation_attribution_line(evt: dict) -> str | None:

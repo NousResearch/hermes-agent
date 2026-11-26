@@ -30,6 +30,7 @@ from tools.thread_context import propagate_context_to_thread
 from tools.async_delegation_worker import worker_ledger, require_ledger_owner
 from tools.delegate_tool_progress import SUBAGENT_FAILURE_STATUSES
 from tools.delegation_redaction import redact_child_result, redact_completion_event
+from tools.delegation_events import internal_event_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +308,7 @@ def _recoveries(ledger, alive: Callable[[Any, Any], bool], recovered: dict[str, 
             diagnostics.update({"waiting_to_resume": promised} if silent else {})
         event = {
             "type": "async_delegation", "delegation_id": delegation_id, "session_key": row.origin_session,
+            **internal_event_envelope(delegation_id),
             "origin_ui_session_id": row.origin_ui_session_id, "origin_session_id": row.origin_session_id or "",
             "parent_session_id": row.parent_session_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
             "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
@@ -368,6 +370,8 @@ def _offer_pending(completions, target_queue, *, startup: bool = False) -> int:
         evt = completion.event
         if isinstance(evt, dict):
             evt = redact_completion_event(evt)
+            # Identity on legacy replay is additive; the durable payload and ownership stay intact.
+            evt.update(internal_event_envelope(delegation_id))
         with _orphan_lock:
             if startup:
                 _startup_replayed.add(delegation_id)
@@ -751,7 +755,7 @@ def has_live_for_session(session_key: str = "", origin_ui_session_id: str = "", 
 
 
 def _new_delegation_id() -> str:
-    return f"deleg_{uuid.uuid4().hex[:8]}"
+    return f"deleg_{uuid.uuid4().hex}"
 
 
 def _prune_completed_locked() -> None:
@@ -1049,6 +1053,7 @@ def completion_event(record: dict[str, Any], result: dict[str, Any], status: str
             "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
+        **internal_event_envelope(record.get("delegation_id")),
         # session_key routes back to the originating gateway session; "" => CLI.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),

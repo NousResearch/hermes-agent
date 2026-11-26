@@ -176,6 +176,58 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
     assert meta["duration_seconds"] == 12.5
 
 
+@pytest.mark.parametrize("suppressed", [False, True])
+def test_persist_canonical_delegation_delivery_projects_internal_envelope(tmp_path, suppressed):
+    from pathlib import Path
+
+    from gateway.wake import persist_delegation_delivery
+    from persistence.conversation.messages import DelegationDelivery
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_session
+
+    store = open_persistence(profile_scope(home=Path(tmp_path)))
+    sid = "canonical-sid"
+    seed_session(store, sid, "api_server")
+
+    class DbAdapter(ApiServerLikeAdapter):
+        def _ensure_store(self):
+            return store
+
+        def _store_beside(self, _db):
+            return store
+
+    delegation_id = "deleg_0123456789abcdef0123456789abcdef"
+    evt = {"type": "async_delegation", "delegation_id": delegation_id,
+           "event_schema": "hermes.internal_event.v1", "event_id": f"async_delegation:{delegation_id}:terminal",
+           "event_kind": "workflow.async_delegation.terminal", "workflow_id": f"delegation:{delegation_id}",
+           "display_kind": "internal_event", "user_originated": False, "terminal": True}
+    if suppressed:
+        from gateway.wake import _delegation_display_metadata
+        store.messages.append_delegation_delivery(sid, DelegationDelivery(
+            "hidden result", {**_delegation_display_metadata(evt), "presentation_suppressed": True}))
+    asyncio.run(persist_delegation_delivery(
+        DbAdapter(), text="[ASYNC DELEGATION COMPLETE]", session_id=sid, evt=evt,
+    ))
+
+    delivery = transcript_rows(store, sid)[-1]
+    assert delivery["role"] == "user"
+    assert delivery["display_kind"] == ("hidden" if suppressed else "internal_event")
+    assert delivery["display_metadata"]["event_schema"] == "hermes.internal_event.v1"
+    assert delivery["display_metadata"]["event_id"] == f"async_delegation:{delegation_id}:terminal"
+    assert delivery["display_metadata"]["user_originated"] is False
+    # A replay after compression finds both visible and suppressed ancestor deliveries.
+    child = "canonical-child"
+    seed_session(store, child, "api_server", parent_session_id=sid)
+    store.sessions.end(sid, "compression")
+    asyncio.run(persist_delegation_delivery(
+        DbAdapter(), text="[ASYNC DELEGATION COMPLETE]", session_id=child, evt=evt,
+    ))
+    assert len(transcript_rows(store, sid)) == 1
+    assert transcript_rows(store, child) == []
+    store.close()
+
+
 def test_persist_delegation_delivery_raises_without_db():
     """DB unavailable must RAISE so the durable claim is released for retry."""
     from gateway.wake import persist_delegation_delivery

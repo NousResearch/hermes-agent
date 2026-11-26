@@ -70,9 +70,10 @@ value goes to DEBUG (HX017).
 without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
 § Background process notifications.
 
-Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
-FIFO as human input (private launch policy, `internal_notification` display kind); observers never
-own or consume those turns, and an interrupted started turn stays unknown and pauses its followers.
+Local completions and watches share the durable human-input FIFO
+(private launch policy; `internal_notification` or validated `internal_event` presentation).
+Observers never own turns; interrupted started turns stay unknown and pause followers.
+Delegation metadata grants no authority.
 
 ## `/login` (off-turn, paired DM only)
 

@@ -355,6 +355,8 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 | `divert_session_transcript_jsonl(session_id, messages)` | `session_rescue.divert_session_transcript_jsonl(session_id, messages, sessions_dir=get_hermes_home() / "sessions")` |
 | `session_db`, the `SessionDB` a context engine's `bind_session_state` and `on_session_start` receive | `persistence`, the agent's store handle, passed beside it to a hook that accepts that keyword ([Context engine plugins](../context-engine-plugin.md#session-storage)) |
 
+The old class's `get_compression_lineage(session_id)` is not carried by the stand-in. Read it from the handle instead: `store.lineage.lineage(session_id)` returns the ids of the compression chain the read walks as a tuple, root first, so `[0]` is the first id of the returned chain, not necessarily the original session. It is `(session_id,)` for a session with no compression chain, for a fork child or any `tool`-sourced session (the read treats `tool` sessions as forks, so a `tool` run that continued after compression returns only its own id), or for a session outside the oldest-continuation chain the lookup follows (such as a later sibling continuation). It is `()` for an unknown id, and works on a read-only handle.
+
 `NewSession` and `SessionQuery`/`SessionWindow` come from `persistence.conversation.sessions`; `NewMessage` and `ReplaceMode` from `persistence.conversation.messages`. A dashboard route that listed sessions migrates like this:
 
 ```python
@@ -2379,6 +2381,37 @@ def register(ctx):
         if tool_name == "deploy" and (run is None or run.scheduled_instant is None):
             return {"action": "block", "message": "deploy only runs from its scheduled cron job"}
     ctx.register_hook("pre_tool_call", guard)
+```
+
+### Schedule a job once and read where cron delivers it
+
+`cron.plugin_api` is for plugin code that works with cron jobs directly, including code with no `ctx` (a dashboard route, a standalone process). Both functions call the code cron itself runs.
+
+`ensure_named_job(name, *, prompt, schedule, repeat=None, deliver=None, enabled_toolsets=None, home=None)` returns the stored job named exactly `name` (a job dict, as `hermes cron list` stores it) and creates it when no job has that name:
+
+- `name` must be a non-empty string with no leading or trailing whitespace; cron could not find any other name again. Anything else raises `ValueError` and nothing is created.
+- Disabled jobs count. Two or more jobs with that name raise `AmbiguousJobReference` (importable from the same module) and nothing is created.
+- An existing enabled job has its trigger registered with the active scheduler provider again. Its prompt and schedule are not updated.
+- A new job is created and registered the way `hermes cron add` does it. When registration fails, for a new job or an existing one, the call raises `CronSchedulerRegistrationError` (importable from the same module): a `RuntimeError` whose `.job` is the saved job and `.cause` the provider's error. The job is already saved: call `ensure_named_job` again and it registers that job instead of creating a second one.
+- The lookup and the create are not atomic across processes. If your plugin can call it from two places at once, serialize those calls yourself (a file lock, for example).
+
+`ctx.cron_delivery_platforms(job_id=None)` and `delivery_platforms(job_id=None, *, home=None)` return the platforms cron would deliver the job's output to right now, as a tuple of lower-cased names in cron's order, each once. `()` means the job delivers nowhere (`local`). They answer for the job's normal delivery (`deliver`); a `failure_deliver` override, which routes failure notices, is not consulted. With `job_id=None`, they answer for the firing cron run using the settings that run started with — edits or deletions saved to the job store mid-run do not change the answer — and return `None` outside a cron run (or in a delegated child). Passing an explicit `job_id` previews the saved job currently in the store (returning `None` when no stored job has that id). Under `plugins.isolation: host`, a hook runs in the plugin host process where no cron run is bound, so hooks call `ctx.cron_delivery_platforms()` — which runs in the gateway in the calling hook's context and works in both isolation modes. Use `delivery_platforms(job_id, home=...)` when code has no `ctx` or targets another profile. They use cron's own resolver, so `all`, the `origin` fallback to a home channel and `bot-chat` follow cron's rules. They return no chat ids, thread ids or tokens. Use them to skip a notification of your own when cron already delivers the output to your platform. They do the work cron does when it delivers: for `all`, that reads the gateway config once for each platform whose home channel is not set in the environment. Call once per run and keep the answer.
+
+Both `cron.plugin_api` functions take `home`: a profile's Hermes home, with `~` and environment variables expanded once. `delivery_platforms` requires an explicit `job_id` whenever `home` is not `None` and raises `ValueError` otherwise. To look up the firing job's delivery, omit both arguments; the lookup stays in the firing profile. With an explicit `home`, the call runs with that profile's home, cron store, secrets (its `.env`, so its home channels too) and settings (its time zone for a schedule), and yours are restored afterwards, also when it raises. The secrets are read from that profile's own files, also when you name the profile that is already active. For a profile other than the process's own that configures an external secret source, the first call runs that source, as Hermes does when it starts work for that profile. For the process's own profile the call runs no source: it reads the profile's `.env` and the external values this process has already loaded, so a standalone process that has not loaded them does not see them. A `home` that is not an existing directory is never created: `ensure_named_job` raises `FileNotFoundError` and `delivery_platforms` returns `None`. A hosted activity cannot act for a profile, so a call that has to bind `home` raises there. `home=None` uses the active profile.
+
+```python
+from cron.plugin_api import AmbiguousJobReference, ensure_named_job
+
+def register(ctx):
+    def on_post_llm_call(**kwargs):
+        if "push" in (ctx.cron_delivery_platforms() or ()):
+            return  # cron delivers this run's output through push already
+        try:
+            ensure_named_job("follow-up", prompt="Check on the deploy.", schedule="in 30m")
+        except AmbiguousJobReference:
+            pass  # the user has two jobs with that name; leave them alone
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
 ```
 
 ### Add Automation Blueprints

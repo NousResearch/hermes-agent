@@ -66,6 +66,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/multi-connection-desktop',
         'user-guide/git-worktrees',
         'user-guide/docker',
+        'user-guide/mobile-access',
         'user-guide/security',
         'user-guide/checkpoints-and-rollback',
       ],

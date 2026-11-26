@@ -326,6 +326,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         !hasSendable ||
         (!serverQueue &&
           !options?.fromQueue &&
+          !options?.bypassBusyGate &&
           isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
       ) {
         return false

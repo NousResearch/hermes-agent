@@ -832,6 +832,13 @@ export interface SubmitTextOptions {
    *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
   voiceTurn?: boolean
   fromQueue?: boolean
+  /** A machine-generated turn the user did not type (a `/goal` kickoff, a skill dispatch).
+   *  The busy gate exists to stop a stray Enter from double-submitting into a live turn; it
+   *  must not swallow a dispatch that *is* the next turn. Without this a `/goal` set from the
+   *  composer returned "⊙ Goal set …" and then nothing ran: the submit was refused silently
+   *  while the slash command still held the session busy, so no turn existed for the post-turn
+   *  judge to continue and the goal sat active at 0 turns. */
+  bypassBusyGate?: boolean
   /** Called once with the EXACT session identity the backend accepted the
    *  prompt into — the live runtime id after any stale-runtime recovery, plus
    *  the durable stored id when the caller knows it. A caller that must prove

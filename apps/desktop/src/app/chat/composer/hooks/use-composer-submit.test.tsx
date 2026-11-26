@@ -43,6 +43,7 @@ interface SubmitHarnessOptions {
   sessionKey?: string | null
   submitOnHide?: boolean
   surfaceId?: string | null
+  takeDraftRetry?: (text: string, attachments: ComposerAttachment[]) => unknown
   text?: string
   visible?: boolean
 }
@@ -59,6 +60,7 @@ function renderSubmitHook({
   sessionKey = 'stored-session',
   submitOnHide = false,
   surfaceId,
+  takeDraftRetry,
   text = '',
   visible = true
 }: SubmitHarnessOptions = {}) {
@@ -138,7 +140,8 @@ function renderSubmitHook({
         queuedPrompts: [],
         sessionId: 'runtime-session',
         setComposerText: vi.fn(),
-        stashAt
+        stashAt,
+        takeDraftRetry: takeDraftRetry as never
       }),
     { wrapper: Wrapper }
   )
@@ -186,6 +189,25 @@ describe('useComposerSubmit external request routing', () => {
       clearQueuedPrompts('stored-session')
     }
   )
+
+  it('sends a busy payload instead of parking it when a draft retry is waiting', async () => {
+    // Regression: the retry was consumed before the payload branch, so a media follow-up went to the
+    // outbox ("1 Queued") and never reached the gateway — no busy interrupt, the turn ran on.
+    const draftFile = { id: 'draft-file', kind: 'file', label: 'shot.png' } as never
+    const takeDraftRetry = vi.fn(() => ({ id: 'retry-1', text: 'look', attachmentIds: ['draft-file'] }) as never)
+    const h = renderSubmitHook({ attachments: [draftFile], busy: true, takeDraftRetry, text: 'look' })
+
+    act(() => h.hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(h.onSubmit).toHaveBeenCalledWith(
+        'look',
+        expect.objectContaining({ attachments: [draftFile], submission_id: 'retry-1' })
+      )
+    )
+    expect(getQueuedPrompts('stored-session')).toEqual([])
+    expect(h.queueCurrentDraft).not.toHaveBeenCalled()
+  })
 
   it('routes a refused native steer through canonical queue admission', async () => {
     $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
@@ -558,7 +580,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onCancel).not.toHaveBeenCalled()
   })
 
-  it('queues an attachment-bearing follow-up while busy', () => {
+  it('runs an attachment-bearing follow-up now instead of queueing it, without a hard interrupt', async () => {
     const attachment: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.txt' }
 
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
@@ -571,10 +593,19 @@ describe('useComposerSubmit busy-turn routing', () => {
       hook.result.current.submitDraft()
     })
 
-    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
-    expect(onSteer).not.toHaveBeenCalled()
-    expect(onSubmit).not.toHaveBeenCalled()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // Messages are never queued: the payload rides the gateway's busy-submit
+    // path, which soft-interrupts the live turn. The client must NOT call
+    // session.interrupt itself — that is a HARD stop which drops pending
+    // steers and wipes the session's queued prompts (#86134 burst loss).
     expect(onCancel).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('read this', expect.objectContaining({ attachments: [attachment] }))
   })
 
   it('stops an active turn only with an empty composer', () => {

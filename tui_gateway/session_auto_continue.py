@@ -442,14 +442,18 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         if envelope is not None:
             _persist_queued_user_row(session, envelope, display_kind)
         session["last_active"] = time.time()
-    # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
-    # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``
-    # (earlier accepted steers); steer fall-throughs stay FIFO-queued.
-    # A burst of user messages while the agent is busy can land as a mix of accepted steers (stashed in
-    # ``AIAgent._pending_steer``) and fall-through queue envelopes (payload not steerable, ``steer()``
-    # rejected/raised). A hard interrupt here kills the live turn AND ``AIAgent.interrupt()`` drops the
-    # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
-    if mode == "interrupt" and not image_paths:
+    # Attachments need their own model invocation, so they cannot ride a steer or a
+    # redirect — they are admitted as the next turn. Under ``interrupt`` the live
+    # turn is ended as well, so the admitted payload runs as soon as the turn
+    # settles instead of waiting for a long turn to finish (policy: messages are
+    # never queued). The interrupt is SOFT (``agent.interrupt()`` defaults to
+    # ``hard_cancel=False``), so an already-accepted steer in
+    # ``AIAgent._pending_steer`` survives and is handed off by the turn
+    # finalizer — a burst of messages is not destroyed by a later one.
+    # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live
+    # turn AND drop ``AIAgent._pending_steer`` (earlier accepted steers); steer
+    # fall-throughs stay FIFO-queued.
+    if mode == "interrupt":
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 

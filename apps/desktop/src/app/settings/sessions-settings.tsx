@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,7 @@ import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { confirm } from '@/store/confirm'
 import { bindingsFor } from '@/store/keybinds'
+import { $sessionsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection, applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
 import { untombstoneSessions } from '@/store/session-removal'
@@ -45,6 +46,9 @@ function newSessionShortcut(): null | string {
 }
 
 const DEFAULT_AUTO_ARCHIVE_DAYS = 3
+// A session tick can also be a live chat writing messages. Batch archive
+// scans at the same cadence as the sidebar's session-list reconciliation.
+const ARCHIVE_CHANGE_REFRESH_MS = 10_000
 
 interface SessionsSettingsProps {
   subpage?: string
@@ -70,22 +74,80 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-
-    try {
-      setLocalSessions(await listEveryArchivedSession())
-    } catch (err) {
-      notifyError(err, s.failedLoad)
-    } finally {
-      setLoading(false)
-    }
-  }, [s.failedLoad])
+  const mutationRevision = useRef(0)
 
   useEffect(() => {
-    void load()
-  }, [load])
+    let mounted = true
+    let reading = false
+    let queued = false
+    let timer: number | undefined
+
+    // A deep archive spans multiple requests. Serialize reads, retaining one
+    // trailing refresh if another change lands while a page is in flight.
+    const refresh = async () => {
+      queued = true
+
+      if (reading) {
+        return
+      }
+
+      reading = true
+
+      while (mounted && queued) {
+        queued = false
+        const revision = mutationRevision.current
+
+        try {
+          const rows = await listEveryArchivedSession()
+
+          if (mutationRevision.current !== revision) {
+            queued = true
+          } else if (mounted) {
+            setLocalSessions(rows)
+          }
+        } catch (err) {
+          if (mounted) {
+            notifyError(err, s.failedLoad)
+          }
+        }
+
+        if (mounted) {
+          setLoading(false)
+        }
+      }
+
+      reading = false
+    }
+
+    const schedule = (delay: number) => {
+      if (document.hidden || (delay > 0 && timer !== undefined)) {
+        return
+      }
+
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        timer = undefined
+
+        if (!document.hidden) {
+          void refresh()
+        }
+      }, delay)
+    }
+
+    void refresh()
+    const refreshVisible = () => schedule(0)
+    const unsubscribe = $sessionsChangeTick.listen(() => schedule(ARCHIVE_CHANGE_REFRESH_MS))
+    window.addEventListener('focus', refreshVisible)
+    document.addEventListener('visibilitychange', refreshVisible)
+
+    return () => {
+      mounted = false
+      unsubscribe()
+      window.clearTimeout(timer)
+      window.removeEventListener('focus', refreshVisible)
+      document.removeEventListener('visibilitychange', refreshVisible)
+    }
+  }, [s.failedLoad])
 
   const unarchive = useCallback(
     async (session: SessionInfo) => {
@@ -93,6 +155,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
       try {
         await setSessionArchived(session.id, false, session.profile)
+        mutationRevision.current++
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
@@ -134,6 +197,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         // stored tip and the durable lineage root — the journal keys on the
         // stored id and the row may carry either.
         purgeInFlightTurnJournals([session.id, session._lineage_root_id])
+        mutationRevision.current++
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {

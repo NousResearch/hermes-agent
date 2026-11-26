@@ -28,7 +28,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar, cast
 
 from hermes_constants import mkdir_under_hermes_home
-from persistence.sqlite._state.common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from persistence.sqlite._state.common import (
+    escape_like as _escape_like, register_sql_functions, stat_db_file_identity as _stat_db_file_identity,
+)
 from persistence.sqlite._state.holders import read_only_db_uri
 from persistence.sqlite._state.health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
@@ -497,6 +499,7 @@ class StoreHolder:
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
+        register_sql_functions(conn)
         return conn
 
     def _handle_quarantine_if_invalid(self, already_locked: bool = False) -> None:
@@ -530,6 +533,7 @@ class StoreHolder:
         )
         try:
             conn.row_factory = sqlite3.Row
+            register_sql_functions(conn)
             mode = apply_wal_with_fallback(conn, db_label="state.db")
             # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
             # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.

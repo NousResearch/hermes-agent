@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 from session_rules.activity import ActivityProvenance, bound_activity_description, normalize_activity_provenance
 from persistence.sqlite._state.errors import SessionActiveWriteGuardError
-from persistence.sqlite._state.common import _shape_preview
+from persistence.sqlite._state.common import _shape_preview, casefold_sql
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _sql_json_extract
 from persistence.sqlite.conversation._store.sql_common import (
@@ -1077,16 +1077,18 @@ def _chain_search_where(where_sql: str, id_needle: str, search_needle: str) -> t
         )
         params.append(like(id_needle))
     if search_needle:
+        # Titles compare casefolded in any script (``search_needle`` arrives casefolded); ids stay ASCII.
+        title_sql = casefold_sql("COALESCE(cs.title, '')")
         compact_needle = re.sub(r"[\W_]+", "", search_needle)
         search_clause = (
             "EXISTS (SELECT 1 FROM chain cq JOIN sessions cs ON cs.id = cq.cur_id"
-            " WHERE cq.root_id = s.id AND (LOWER(COALESCE(cs.title, '')) LIKE ? ESCAPE '\\'"
+            f" WHERE cq.root_id = s.id AND ({title_sql} LIKE ? ESCAPE '\\'"
             " OR LOWER(cq.cur_id) LIKE ? ESCAPE '\\'"
         )
         params.extend([like(search_needle)] * 2)
         if compact_needle:
             search_clause += (
-                " OR REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE(cs.title, '')),"
+                f" OR REPLACE(REPLACE(REPLACE(REPLACE({title_sql},"
                 " '-', ''), '_', ''), '.', ''), ' ', '') LIKE ? ESCAPE '\\'"
             )
             params.append(like(compact_needle))
@@ -1348,7 +1350,7 @@ def list_sessions_rich(
         # every page: ~12s of a 13s list on a 25k-session store where 1 row had
         # a child, at LIMIT 1 or 200.
         id_needle = (id_query or "").strip().lower()
-        search_needle = (search_query or "").strip().lower()
+        search_needle = (search_query or "").strip().casefold()
         seed_where = where_sql if (id_needle or search_needle) else _where_sql(where_clauses + [
             "EXISTS (SELECT 1 FROM sessions _seed_c WHERE _seed_c.parent_session_id = s.id)"])
         outer_where, id_params = _chain_search_where(where_sql, id_needle, search_needle)

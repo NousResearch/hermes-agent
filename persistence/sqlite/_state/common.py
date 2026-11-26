@@ -30,6 +30,24 @@ def escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _sql_casefold(value: Any) -> Any:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return value.casefold() if isinstance(value, str) else value
+
+
+def casefold_sql(expr: str) -> str:
+    """SQL for *expr* folded like ``str.casefold()``; compare it with a casefolded needle. SQLite's
+    LOWER() and LIKE fold ASCII only, so "пост" never found "Пост-запуск". The BLOB cast hands the
+    function raw bytes, so a row holding invalid UTF-8 folds with U+FFFD instead of failing the query."""
+    return f"hermes_casefold(CAST({expr} AS BLOB))"
+
+
+def register_sql_functions(conn: Any) -> None:
+    """SQL functions the store's queries call; registered on every connection the holder opens."""
+    conn.create_function("hermes_casefold", 1, _sql_casefold, deterministic=True)
+
+
 def _shape_preview(raw: Any) -> str:
     """Turn a ``_preview_raw`` column into the short preview callers show."""
     text = str(raw or "").strip()

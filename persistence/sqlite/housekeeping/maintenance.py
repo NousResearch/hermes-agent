@@ -26,6 +26,7 @@ from ..conversation._store.core import _delete_unreferenced_system_prompts
 from ..conversation._store.retirement import retire_prunable
 from ..conversation._store.sessions import _cwd_prefix_clause, _set_lineage_column_in_transaction
 from ..conversation._store.sql_common import _non_continuation_child_sql
+from .._state.common import casefold_sql
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._routes import _sql_session_last_active
 from ._portability import SessionPortability
@@ -61,7 +62,12 @@ def _escape_like(text: str) -> str:
 
 
 def _like(value: str) -> str:
-    return f"%{_escape_like(value.lower())}%"
+    return f"%{_escape_like(value.casefold())}%"
+
+
+def _contains(column: str):
+    """Case-insensitive substring filter on *column* in any script (``%``/``_`` match literally)."""
+    return _one(casefold_sql(f"COALESCE({column}, '')") + " LIKE ? ESCAPE '\\'", _like)
 
 
 def _cwd_prefix_filter(value: str) -> tuple[list[str], list]:
@@ -85,17 +91,17 @@ _PRUNE_FILTERS = (
     ("started_before", "notnone", _one("s.started_at < ?")),
     ("started_after", "notnone", _one("s.started_at >= ?")),
     ("source", "truthy", _one("s.source = ?")),
-    ("title_like", "truthy", _one("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("title_like", "truthy", _contains("s.title")),
     ("end_reason", "truthy", _one("s.end_reason = ?")),
     ("cwd_prefix", "truthy", _cwd_prefix_filter),
     ("min_messages", "notnone", _one("s.message_count >= ?")),
     ("max_messages", "notnone", _one("s.message_count <= ?")),
-    ("model_like", "truthy", _one("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("model_like", "truthy", _contains("s.model")),
     ("provider", "truthy", _one("LOWER(COALESCE(s.billing_provider, '')) = ?", str.lower)),
     ("user_id", "truthy", _one("s.user_id = ?")),
     ("chat_id", "truthy", _one("s.chat_id = ?")),
     ("chat_type", "truthy", _one("s.chat_type = ?")),
-    ("branch_like", "truthy", _one("LOWER(COALESCE(s.git_branch, '')) LIKE ? ESCAPE '\\'", _like)),
+    ("branch_like", "truthy", _contains("s.git_branch")),
     ("min_tokens", "notnone", _one(_TOKENS_SQL + " >= ?")),
     ("max_tokens", "notnone", _one(_TOKENS_SQL + " <= ?")),
     ("min_cost", "notnone", _one(_COST_SQL + " >= ?")),

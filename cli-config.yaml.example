@@ -1767,6 +1767,11 @@ stt:
   # cloud_trim_silence: true   # set false to always upload the original audio
   # cloud_trim_threshold_db: -40  # audio quieter than this counts as silence
   # cloud_trim_keep_ms: 300    # how much of each pause survives (keeps natural pacing)
+  # --- Opt-in input gain normalization (every provider, before the trim) ---
+  # Phone voice notes whose speech sits 30-40 dB below a handling click make Whisper
+  # hallucinate an outro. Compresses the crest factor with ffmpeg, then levels to
+  # -16 LUFS; on any failure the original audio is transcribed untouched.
+  # normalize_input: false
   # Optional static transcription prompt: vocabulary/context hints for
   # prompt-capable backends. Composition is deterministic: this config value
   # is the base, then `pre_transcription` hooks run in registration order with

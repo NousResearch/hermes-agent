@@ -2667,6 +2667,7 @@ stt:
   cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
   cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
   cloud_trim_keep_ms: 300      # how much of each pause survives the trim (keeps natural pacing)
+  normalize_input: false       # compress crest factor + level to -16 LUFS before ANY provider (default: false)
   # prompt: "Hermes, Teknium, Nous Research, kanban"   # Static vocabulary hint (see below)
   local:
     model: "base"              # tiny, base, small, medium, large-v3, turbo
@@ -2734,6 +2735,14 @@ Provider behavior:
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
 Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
+
+### Input gain normalization (`stt.normalize_input`)
+
+Phone voice notes routinely arrive with a 25–35 dB crest factor: the speech sits 30–40 dB below a single handling click, and Whisper levels against that peak, so the speech is effectively inaudible and the decoder fills the window with an outro it learned from YouTube transcripts (`Merci d'avoir regardé cette vidéo`, `Sous-titrage ST' 501`, `Thank you for watching`). Roughly 1 % of Whisper transcriptions contain such invented phrases, and the rate rises with non-vocal duration and low speech level.
+
+`stt.normalize_input: true` runs one ffmpeg pass over the audio **before any backend** (and therefore before the cloud silence trim, which would otherwise cut quiet speech below its −40 dB threshold): `highpass=f=100`, `acompressor=threshold=-30dB:ratio=4`, then `loudnorm=I=-16:TP=-1.5:LRA=11`, delivered as 16 kHz mono WAV. Compression comes **first on purpose** — a plain `loudnorm` pass only moves the peak, not the speech, and measurably fails on this input class. It applies to cloud, local, command and plugin providers alike; if ffmpeg is missing or the pass fails, the original audio is transcribed untouched.
+
+It is off by default so nothing changes for existing users, and it is not a substitute for a decent capture: it recovers speech that was buried, it does not recreate speech that was never recorded.
 
 Recordings over the provider's per-request upload limit (25 MB for OpenAI/Groq/DeepInfra, 500 MB for Mistral and xAI, about 5 GB for ElevenLabs, plus per-model length limits for OpenAI's `gpt-4o-transcribe` family and `whisper-1`) are re-encoded to compact AAC and, if still too large, split at pauses and transcribed piece by piece. See [Long recordings and upload limits](features/voice-mode.md#long-recordings-and-upload-limits).
 

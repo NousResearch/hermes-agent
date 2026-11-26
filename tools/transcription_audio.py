@@ -277,3 +277,64 @@ def _trim_silence_for_cloud_stt(file_path: str, stt_config: dict[str, Any]) -> O
     finally:
         if not keep_result:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---- Pre-STT gain normalization (opt-in: ``stt.normalize_input``) ----------
+# Phone voice notes routinely arrive with a 25-35 dB crest factor: the speech sits
+# 30-40 dB below a single handling click. Whisper levels against that peak, so the
+# speech ends up effectively inaudible and the decoder fills the window with an outro
+# it learned from YouTube transcripts ("Merci d'avoir regardé cette vidéo",
+# "Sous-titrage ST' 501", "Thank you for watching"). A plain ``loudnorm`` pass is NOT
+# enough - it moves the peak, not the speech - so the chain compresses first, then
+# levels to the usual mobile-speech target. Measured on a real 29 s French voice note
+# (speech RMS -42.8 dB, peak -0.8 dBFS, 6.5 s of silence): raw input -> stock
+# hallucination; the same file through this chain -> coherent transcript.
+_STT_NORMALIZE_FILTER = (
+    "highpass=f=100,"
+    "acompressor=threshold=-30dB:ratio=4:attack=10:release=200,"
+    "loudnorm=I=-16:TP=-1.5:LRA=11"
+)
+
+
+def _normalize_stt_input_enabled(stt_config: Any) -> bool:
+    """``stt.normalize_input`` as a bool (default off; YAML/str spellings accepted)."""
+    raw = stt_config.get("normalize_input") if isinstance(stt_config, dict) else None
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(raw) if isinstance(raw, (bool, int)) else False
+
+
+def _normalize_stt_input(file_path: str, stt_config: Any) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(normalized_path, work_dir)``: a 16 kHz mono WAV copy of *file_path* whose
+    dynamic range is compressed before it is levelled to -16 LUFS, so a loud transient no
+    longer buries the speech. ``(None, None)`` means "use the original": the setting is off,
+    ffmpeg is missing, or the pass failed. The caller owns removing *work_dir*.
+
+    Runs before the provider dispatch (and therefore before the cloud silence trim), so both
+    the cloud and the local backends see the normalized signal.
+    """
+    if not _normalize_stt_input_enabled(stt_config):
+        return None, None
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        logger.warning("stt.normalize_input is on but ffmpeg is not installed; "
+                       "transcribing %s without input normalization", file_path)
+        return None, None
+    work_dir = tempfile.mkdtemp(prefix="hermes-stt-norm-")
+    normalized_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-norm.wav")
+    try:
+        # WAV 16 kHz mono: accepted by every cloud provider and by local backends, and it
+        # keeps loudnorm's internal 192 kHz resampling out of the delivered file.
+        _run_quiet([ffmpeg, "-y", "-i", file_path, "-af", _STT_NORMALIZE_FILTER,
+                    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", normalized_path],
+                   timeout=120)
+        if not os.path.getsize(normalized_path):
+            raise RuntimeError("ffmpeg produced an empty normalized file")
+        logger.info("Normalized %s for STT (crest-factor compression + -16 LUFS)",
+                    Path(file_path).name)
+        return normalized_path, work_dir
+    except Exception as exc:
+        logger.warning("stt.normalize_input: normalization failed for %s: %s - "
+                       "transcribing the original", file_path, exc)
+        shutil.rmtree(work_dir, ignore_errors=True)
+        return None, None

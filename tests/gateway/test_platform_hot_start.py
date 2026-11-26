@@ -23,6 +23,16 @@ def _free_port():
         return probe.getsockname()[1]
 
 
+def _reconcile(root, params=None):
+    """Ask the gateway to apply the files just written. An apply past the verb's window answers ``pending``
+    and goes on; asking again answers that same apply's receipt once it settles (the sync point: a loaded
+    host takes longer than the window, never a different outcome)."""
+    def _settled():
+        answer = control(root, "reconcile-platforms", params, timeout=60)
+        return None if answer.get("pending") else answer
+    return wait_until(_settled, timeout=180, interval=0.1, what="the reconcile to settle")
+
+
 def _accepts(port):
     with socket.socket() as peer:
         peer.settimeout(1)
@@ -45,19 +55,19 @@ def test_single_profile_gateway_starts_restarts_and_stops_a_platform_live(tmp_pa
         first, second = _free_port(), _free_port()
         dotenv = root / ".env"
         dotenv.write_text(f"WEBHOOK_ENABLED=true\nWEBHOOK_PORT={first}\n", encoding="utf-8")
-        answer = control(root, "reconcile-platforms", timeout=20)
+        answer = _reconcile(root)
         assert answer["applied"] is True and answer["started"] == ["webhook"], (answer, tail(mux))
         assert answer["platforms"]["webhook"] == "connected"
         wait_until(lambda: _accepts(first), timeout=10, interval=0.1, what="webhook listening")
 
         dotenv.write_text(f"WEBHOOK_ENABLED=true\nWEBHOOK_PORT={second}\n", encoding="utf-8")
-        answer = control(root, "reconcile-platforms", timeout=20)
+        answer = _reconcile(root)
         assert answer["restarted"] == ["webhook"] and answer["platforms"]["webhook"] == "connected", answer
         wait_until(lambda: _accepts(second) and not _accepts(first), timeout=10, interval=0.1,
                    what="webhook moved to the new port")
 
         dotenv.write_text(f"WEBHOOK_ENABLED=false\nWEBHOOK_PORT={second}\n", encoding="utf-8")
-        answer = control(root, "reconcile-platforms", timeout=20)
+        answer = _reconcile(root)
         assert answer["stopped"] == ["webhook"], answer
         wait_until(lambda: not _accepts(second), timeout=10, interval=0.1, what="webhook stopped")
         assert proc.poll() is None, tail(mux)
@@ -85,7 +95,7 @@ def test_a_platform_configured_by_the_launch_environment_survives_a_reconcile(tm
     try:
         wait_until(lambda: _accepts(port), timeout=15, interval=0.1, what="webhook listening")
         (root / ".env").write_text("SOME_UNRELATED_SETTING=1\n", encoding="utf-8")
-        answer = control(root, "reconcile-platforms", timeout=20)
+        answer = _reconcile(root)
         assert answer["stopped"] == [] and answer["platforms"].get("webhook") == "connected", (answer, tail(mux))
         assert _accepts(port), tail(mux)
     finally:
@@ -121,10 +131,10 @@ def test_named_profile_restart_with_the_same_token_comes_back_up_live(tmp_path):
     mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
     proc, _desc = start_daemon(mux)
     try:
-        first = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        first = _reconcile(root, {"home": str(named)})
         assert first["profile"] == "b" and first["platforms"].get("line") == "connected", (first, tail(mux))
         dotenv.write_text("LINE_CHANNEL_ACCESS_TOKEN=same-token\nLINE_CHANNEL_SECRET=second\n", encoding="utf-8")
-        answer = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        answer = _reconcile(root, {"home": str(named)})
         assert answer["restarted"] == ["line"], (answer, tail(mux))
         assert answer["platforms"]["line"] == "connected", (answer, tail(mux))
         assert "with the same credential" not in tail(mux)
@@ -152,6 +162,7 @@ class _RunnerState:
         self.torn_down_with = None
         self.status = {}
         self.sources = {}
+        self._lock = asyncio.Lock()
 
     def _snapshot_running_agents(self):
         return dict(self.turns)
@@ -167,6 +178,12 @@ class _RunnerState:
 
     def _update_platform_runtime_status(self, key, **fields):
         self.status[key] = fields
+
+    def _reconcile_lock(self):
+        return self._lock
+
+    def _retain_background_task(self, task):
+        pass
 
 
 def test_disabled_platform_finishes_its_in_flight_turn_before_it_goes_down(monkeypatch):
@@ -294,12 +311,21 @@ def test_a_verb_answer_past_its_window_names_what_is_still_starting(monkeypatch)
     runner._primary_platform_home = lambda: Path("primary-home")
     release = asyncio.Event()
 
-    async def slow_apply(name, *, reason):
+    planned = threading.Event()
+
+    async def slow_apply(name):
         runner._primary_platform_plan = reconcile.PlatformPlan((Platform.TELEGRAM,), (), ())
+        planned.set()
         await release.wait()
         return {}
 
-    runner.reconcile_profile_platforms = slow_apply
+    runner.answer_platform_reconcile = slow_apply
+    in_flight = runner.platform_plan_in_flight
+
+    def plan_once_planned(name):  # the window may close before a loaded loop thread runs the apply at all
+        assert planned.wait(30), "the apply never started"
+        return in_flight(name)
+    runner.platform_plan_in_flight = plan_once_planned
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
@@ -312,6 +338,48 @@ def test_a_verb_answer_past_its_window_names_what_is_still_starting(monkeypatch)
         loop.close()
     assert answer == {"applied": True, "pending": True, "starting": ["telegram"], "restarting": [], "stopping": [],
                       "installing": False}
+
+
+def test_an_ask_answers_the_reconcile_that_applied_its_files(tmp_path, monkeypatch):
+    """``hermes config set`` / a dashboard save writes the files, then asks. A reconcile that already applied
+    them (the watcher's tick, or this caller's earlier ask that answered ``pending``) left nothing for a fresh
+    one to do, so the ask answered "nothing changed" for a platform that had just started."""
+    import threading
+    from gateway import run_platform_reconcile as reconcile
+    runner = _runner(types.SimpleNamespace())
+    runner._primary_platform_home = lambda: tmp_path
+    runner._primary_platform_states = lambda: {"webhook": "connected"}
+    gate, plans = threading.Event(), []
+
+    async def apply(reason):  # each change is applied once; whatever reconciles next finds nothing to do
+        await asyncio.to_thread(gate.wait, 30)
+        return (plans.pop() if plans else reconcile.PlatformPlan((), (), ())), []
+    runner._apply_primary_platform_plan = apply
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    ask = reconcile.reconcile_platforms_verb(runner, loop)
+    try:
+        (tmp_path / ".env").write_text("WEBHOOK_ENABLED=true\n", encoding="utf-8")
+        plans.append(reconcile.PlatformPlan((Platform.WEBHOOK,), (), ()))
+        gate.set()
+        asyncio.run_coroutine_threadsafe(runner.reconcile_profile_platforms(None, reason="watcher"), loop).result(30)
+        assert ask({})["started"] == ["webhook"]
+        assert ask({})["changed"] is False  # taken: asked again about the same files, it reconciles afresh
+
+        (tmp_path / ".env").write_text("WEBHOOK_ENABLED=true\nWEBHOOK_PORT=1\n", encoding="utf-8")
+        plans.append(reconcile.PlatformPlan((), (Platform.WEBHOOK,), ()))
+        gate.clear()
+        monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 0.2)
+        assert ask({})["pending"] is True
+        monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 30.0)
+        gate.set()
+        assert ask({})["restarted"] == ["webhook"]
+    finally:
+        gate.set()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
 
 
 def _webhook_yaml(port, home_chat="old"):
@@ -340,7 +408,7 @@ def test_an_unreadable_config_keeps_the_running_platforms_until_it_is_fixed(tmp_
         wait_until(lambda: _accepts(first), timeout=15, interval=0.1, what="webhook listening")
         config.write_text("platforms: [\n", encoding="utf-8")
         for _ in range(2):  # a second ask about the same broken file warns no more
-            answer = control(root, "reconcile-platforms", timeout=20)
+            answer = _reconcile(root)
             assert answer["applied"] is False and answer["reason"] == "config_unreadable", (answer, tail(mux))
             assert answer["stopped"] == [] and answer["platforms"].get("webhook") == "connected", answer
             assert "config.yaml cannot be read" in answer["error"]
@@ -348,7 +416,7 @@ def test_an_unreadable_config_keeps_the_running_platforms_until_it_is_fixed(tmp_
         assert tail(mux).count("config.yaml cannot be read; keeping its current platforms") == 1, tail(mux)
 
         config.write_text(_webhook_yaml(second), encoding="utf-8")
-        answer = control(root, "reconcile-platforms", timeout=20)
+        answer = _reconcile(root)
         assert answer["applied"] is True and answer["restarted"] == ["webhook"], (answer, tail(mux))
         wait_until(lambda: _accepts(second) and not _accepts(first), timeout=10, interval=0.1,
                    what="webhook moved to the port the fixed config names")
@@ -379,14 +447,14 @@ def test_an_unreadable_named_profile_config_keeps_its_platforms(tmp_path):
     mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
     proc, _desc = start_daemon(mux)
     try:
-        first = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        first = _reconcile(root, {"home": str(named)})
         assert first["platforms"].get("line") == "connected", (first, tail(mux))
         (named / "config.yaml").write_text("platforms: [\n", encoding="utf-8")
-        answer = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        answer = _reconcile(root, {"home": str(named)})
         assert answer["applied"] is False and answer["reason"] == "config_unreadable", (answer, tail(mux))
         assert answer["stopped"] == [] and answer["platforms"].get("line") == "connected", (answer, tail(mux))
         (named / "config.yaml").write_text(good, encoding="utf-8")
-        answer = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        answer = _reconcile(root, {"home": str(named)})
         assert answer["applied"] is True and answer["changed"] is False, (answer, tail(mux))
         assert answer["platforms"].get("line") == "connected", (answer, tail(mux))
         assert proc.poll() is None, tail(mux)

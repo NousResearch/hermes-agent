@@ -252,6 +252,19 @@ export function createBrowserConnectionBridge({
     }
   }
 
+  // Every saved gateway's served profiles as routes, as Electron lists every registry source's: a
+  // chat on a gateway the window is not on keeps its route. `primary` marks the window socket's own.
+  const relayedRoutes = async (primary?: string) =>
+    (await relayedRoster()).agents
+      .filter(row => row.reachable !== false)
+      .map(row => ({
+        connectionId: row.connectionId,
+        mode: 'remote' as const,
+        ...(row.connectionId === primary ? { primary: true as const } : {}),
+        profile: row.profile,
+        targetProfile: row.targetProfile || row.profile
+      }))
+
   const getRelayedWsUrl = async ({ connectionId, relays }: RelayTarget, profile?: null | string) => {
     try {
       return { ok: true as const, wsUrl: await relays.socketUrl(connectionId, '/api/ws', profile) }
@@ -389,27 +402,27 @@ export function createBrowserConnectionBridge({
       return getGatewayWsUrl(profile)
     },
     getProfileRoutes: async (profiles: string[]) => {
-      if (hosted) {
-        // Only the profiles that agent has and serves, as for the serving gateway's own below.
-        const connectionId = await hosted.agentFor()
-        const roster = await hosted.relays.rosterAgents(connectionId)
-        const available = new Set(roster.filter(row => row.reachable !== false).map(row => row.profile))
+      const home = await homeOf()
 
-        return [...new Set(profiles.map(profile => profile.trim() || 'default'))]
-          .filter(profile => available.has(profile))
-          .map(profile => ({ connectionId, mode: 'remote' as const, profile, targetProfile: profile }))
+      if (home) {
+        return relayedRoutes(home.connectionId)
       }
 
-      const available = new Set((await installedProfiles()).filter(reachesSocket))
+      // The serving gateway's: only the named profiles it has and serves.
+      const [installed, remote] = await Promise.all([installedProfiles(), relayedRoutes()])
+      const available = new Set(installed.filter(reachesSocket))
 
-      return [...new Set(profiles.map(profile => profile.trim() || 'default'))]
-        .filter(profile => available.has(profile))
-        .map(profile => ({
-          connectionId: LOCAL_CONNECTION_ID,
-          mode: 'local' as const,
-          profile,
-          targetProfile: profile
-        }))
+      return [
+        ...[...new Set(profiles.map(profile => profile.trim() || 'default'))]
+          .filter(profile => available.has(profile))
+          .map(profile => ({
+            connectionId: LOCAL_CONNECTION_ID,
+            mode: 'local' as const,
+            profile,
+            targetProfile: profile
+          })),
+        ...remote
+      ]
     },
     oauthLoginConnectionConfig: async (remoteUrl: string, identity?: DesktopOauthLoginOptions) => {
       // Another gateway's sign-in runs on the serving gateway for its saved connection.

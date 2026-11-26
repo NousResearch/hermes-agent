@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
+import { pluginRouteStillRegistered } from '@/sdk/profile-request'
 import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
@@ -292,7 +293,9 @@ describe('a Webapp whose host runs no agent', () => {
     const audio = await desktop.getAudioWsUrl!({ connectionId: 'local', path: '/api/audio/transcribe-stream' })
     expect(new URL(audio).pathname).toBe('/api/relay/beta/api/audio/transcribe-stream')
     expect((await desktop.getConnectionFor!({ connectionId: 'local' })).connectionId).toBe('beta')
-    expect((await desktop.getProfileRoutes!(['research'])).map(route => route.connectionId)).toEqual(['beta'])
+    expect((await desktop.getProfileRoutes!(['research'])).find(route => route.profile === 'research')).toMatchObject({
+      connectionId: 'beta'
+    })
     expect((await desktop.getAgentRoster!()).primaryConnectionId).toBe('beta')
     expect(ownRequests(requests).every(request => HOST_SURFACE.has(request))).toBe(true)
   })
@@ -327,11 +330,28 @@ describe('a Webapp whose host runs no agent', () => {
     expect((await desktop.getConnection()).connectionId).toBe('beta')
   })
 
-  it('routes only the profiles the agent has', async () => {
+  it("routes every agent's profiles, the window socket's agent marked primary", async () => {
     dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] } })
     const routes = await install().getProfileRoutes!(['research', 'deleted', ''])
 
-    expect(routes.map(route => `${route.connectionId}/${route.profile}`)).toEqual(['alpha/research', 'alpha/default'])
+    expect(routes.map(route => `${route.connectionId}/${route.profile}${route.primary ? ' primary' : ''}`)).toEqual([
+      'alpha/default primary',
+      'alpha/research primary',
+      'beta/default'
+    ])
+  })
+
+  // A Bot Chat on Alpha that is slow to load retries only while its route is still registered.
+  it('still registers a chat route on an agent the window is not on', async () => {
+    dashboardHost({ profiles: { alpha: ['default', 'bot'], beta: ['default'] } })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    $connection.set(await desktop.getConnectionFor!({ connectionId: 'beta' }))
+
+    const route = { connectionId: 'alpha', mode: 'remote' as const, profile: 'bot', targetProfile: 'bot' }
+
+    await expect(pluginRouteStillRegistered(route)).resolves.toBe(true)
+    await expect(pluginRouteStillRegistered({ ...route, connectionId: 'beta' })).resolves.toBe(false)
   })
 
   it("adopts the profile the window's agent runs as, as a served page adopts its server's", async () => {

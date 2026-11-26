@@ -385,6 +385,7 @@ def test_missing_client_env_fails_before_any_request(idp, api, monkeypatch):
     {"authorize_params": {"access_type": "online"}},
     {"scope_separator": ","},
     {"redirect_port": 8650},
+    {"redirect_host": "localhost"},
 ])
 def test_entry_changed_since_sign_in_is_not_used(idp, api, change):
     allowed, _ = api
@@ -418,9 +419,22 @@ def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_worki
     old = plugin_oauth.OAuthClient(id="x", authorize_url="https://a.example/auth", token_url="https://a.example/t",
                                    scopes=("s",), client_id_env="X_ID", hosts=("api.example.com",))
     legacy = {k: v for k, v in dataclasses.asdict(old).items()
-              if k not in ("scope_separator", "redirect_port", "redirect_path")}
+              if k not in ("scope_separator", "redirect_port", "redirect_path", "redirect_host")}
     assert old.fingerprint == hashlib.sha256(
         json.dumps(legacy, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def test_localhost_redirect_host_signs_in_through_the_loopback_listener(idp, api):
+    """An IdP that refuses IP-address redirect URIs (QuickBooks) gets ``localhost`` in the redirect URI,
+    and the browser's callback to that name still reaches the 127.0.0.1 listener."""
+    from urllib.parse import parse_qs, urlparse
+
+    plugin = _signed_in(idp, redirect_host="localhost")
+    redirect = parse_qs(urlparse(idp.opened[-1]).query)["redirect_uri"][0]
+    assert urlparse(redirect).hostname == "localhost"
+    assert idp.token_requests[-1]["redirect_uri"] == redirect
+    allowed, _ = api
+    assert plugin.call("google", allowed.url).status == 200
 
 
 def test_partial_consent_saves_nothing_and_names_what_is_missing(idp):

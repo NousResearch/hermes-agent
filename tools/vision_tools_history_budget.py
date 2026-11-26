@@ -90,7 +90,7 @@ def _image_key(image_url: str) -> str:
     are NOT part of the key — the incident loop alternated full loads and crops of the same files."""
     if image_url.startswith("data:"):
         return "data:" + hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()[:32]
-    from agent.gemini_native_adapter import normalize_youtube_url
+    from agent.gemini_urls import normalize_youtube_url
     if yt_url := normalize_youtube_url(image_url):
         return "url:" + yt_url
     stripped = image_url.split("#", 1)[0].strip()

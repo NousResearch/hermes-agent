@@ -44,6 +44,7 @@ logs_router = APIRouter()
 _collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_cli.web_server_gateway")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
+_default_hermes_root_is_opt_data = late("_default_hermes_root_is_opt_data", "hermes_cli.web_server_files")
 _load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
 _require_token = late("_require_token")
@@ -511,6 +512,34 @@ def _status_local_reads() -> dict[str, Any]:
             "nous_session_valid": _nous_session_validity()}
 
 
+#: What the Portal stamps on every agent it runs (``HERMES_HOSTING``).
+_NOUS_CLOUD_HOSTING = "nous_cloud"
+
+
+def _hosted_webapp_move() -> Optional[dict[str, Optional[str]]]:
+    """Where a Hermes Cloud agent's dashboard is moving: the Webapp's ``state`` and, once the
+    gateway serves it, its public ``url``. None anywhere else.
+
+    ``ready`` is the gateway serving the Webapp its config asks for, ``starting`` one still coming
+    up or not yet restarted onto that config, ``down`` one that is stopped or cannot serve it, and
+    ``not_available`` an agent whose Webapp the Portal has not turned on. Cloud is the Portal's own
+    stamp, or the hosted ``/opt/data`` layout with the Webapp the Portal seeds: the Docker image
+    shares that layout, so there the layout alone says nothing."""
+    # health: allow HX002 -- read-only deployment stamp the Portal sets on its agents, not a setting; DigitalOcean agents keep their home outside /opt/data, so nothing else marks them
+    stamped = os.environ.get("HERMES_HOSTING", "").strip() == _NOUS_CLOUD_HOSTING
+    if not stamped and not _default_hermes_root_is_opt_data():
+        return None
+    from hermes_cli import webapp_access
+    access = webapp_access.access_status()
+    url = access["public_url"] or None
+    if not access["enabled"] or not url:
+        return {"state": "not_available", "url": None} if stamped else None
+    if webapp_access.serves_config(access):
+        return {"state": "ready", "url": url}
+    coming_up = access["gateway"].get("state") in ("starting", "serving")
+    return {"state": "starting" if coming_up else "down", "url": None}
+
+
 def _fts_rebuild_status() -> Optional[dict[str, Any]]:
     """Deferred FTS rebuild progress of this home's state.db (read-only open), or None."""
     from persistence_assembly import open_persistence_reader, profile_scope, store_exists
@@ -664,6 +693,19 @@ async def get_status(profile: Optional[str] = None,
                 "hermes_home": str(get_hermes_home()), "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
+
+        # The standalone dashboard of a Hermes Cloud agent is being replaced by its Webapp: a
+        # signed-in caller there gets the Webapp's state and, once it serves, the address to move to
+        # (the SPA's "dashboard is moving" modal). Never on a loopback bind, and never from the
+        # Webapp itself. Asked only for such a caller: it queries the gateway, which the anonymous
+        # health probes must not pay for.
+        from hermes_cli.web_server_surface import surface
+        if (verified and auth["auth_required"] and request is not None
+                and surface(request.app.state) == "dashboard"):
+            if move := await run_in_threadpool(_hosted_webapp_move):
+                status["webapp_state"] = move["state"]
+                if move["url"]:
+                    status["webapp_url"] = move["url"]
 
         if not verified:
             redact_status_for_unverified(status)

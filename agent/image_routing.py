@@ -559,7 +559,8 @@ def is_native_gemini_video_route(
     from providers import routed_model_rejects_vision_tool_messages
     if routed_model_rejects_vision_tool_messages(p, m):
         return False
-    from agent.gemini_native_adapter import gemini_supports_multimodal_tool_responses, is_native_gemini_base_url
+    from agent.gemini_model_family import gemini_supports_multimodal_tool_responses
+    from agent.gemini_urls import is_native_gemini_base_url
     if not gemini_supports_multimodal_tool_responses(m):
         return False
     resolved_url = _provider_base_url_for_video_route(cfg, p, base_url=base_url)

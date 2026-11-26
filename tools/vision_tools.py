@@ -552,7 +552,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in _TOOL_RESULT_MEDIA_PROVIDERS:
         return True
     if p in _GEMINI_PROVIDERS:
-        from agent.gemini_native_adapter import gemini_supports_multimodal_tool_responses
+        from agent.gemini_model_family import gemini_supports_multimodal_tool_responses
         return gemini_supports_multimodal_tool_responses(model)
     try:
         from providers import get_provider_profile
@@ -1419,7 +1419,7 @@ async def _video_analyze_native(
         from tools.hosted_tool_policy import host_feature_enabled
         if not host_feature_enabled("media_processing"):
             return tool_error("Video processing is not available to a hosted agent.", success=False)
-        from agent.gemini_native_adapter import normalize_youtube_url
+        from agent.gemini_urls import normalize_youtube_url
         if yt_url := normalize_youtube_url(video_url):
             blocked = check_website_access(video_url) or check_website_access(yt_url)
             if blocked:

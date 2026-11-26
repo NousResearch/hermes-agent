@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -17,6 +18,9 @@ from hermes_cli.doctor_report import (
 )
 from hermes_constants import is_termux as _is_termux
 from hermes_cli._startup_fast import project_root_str
+from hermes_cli.steward import is_bundled_payload, read_install_stamp
+from hermes_platform.resolver import LookupContext, locate_command
+from pm.environments import cli_command_name, inherited_path, payload_command_dir
 
 
 def _python_repair_hint() -> str:
@@ -599,6 +603,382 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_windows_gateway_autostart(should_fix, f)
 
 
+# The commands that put entries on PATH, the unquoted characters that end each one's value, and whether
+# a ":" in a value separates entries: a PATH= value is one colon list; zsh's path array runs to ")" and
+# fish_add_path takes directories, one per word; fish's set splits PATH on colons. Outside zsh,
+# path=(...) is an ordinary array.
+_PATH_ASSIGNMENT = (re.compile(r"(?<![\w$])PATH(?P<append>\+?)="), " \t;&|", True)
+_PATH_SETTERS = {
+    "posix": (_PATH_ASSIGNMENT,),
+    "zsh": (_PATH_ASSIGNMENT, (re.compile(r"(?<![\w$])path\+?=\("), ";&|)", False)),
+    "fish": ((re.compile(r"(?<![\w$-])fish_add_path\b"), ";&|", False),
+             (re.compile(r"(?<![\w$-])set\s+(?:-[-\w]*\s+)*PATH\b"), ";&|", True)),
+}
+# Stands in for an expansion doctor can't know (another variable, PATH's old value): it names no directory.
+_UNKNOWN = "\0"
+# A setter changes PATH only as a command of its own: after other assignments, after a builtin whose
+# NAME=value arguments set shell variables, or after a reserved word that starts a command. As anything
+# else's argument (env PATH=..., echo export PATH=...) it changes nothing.
+_COMMAND_SEPARATOR = re.compile(r"[;&|(){}`]")
+# A command substitution, $(...) or `...`, is part of the word it sits in, not a command boundary.
+_SUBSTITUTION = re.compile(r"\$\([^()]*\)|`[^`]*`")
+# A comment starts at an unquoted # that begins a word, not at one inside a word (bin#backup, ${#x}).
+_COMMENT_START = re.compile(r"(?:^|(?<=[\s;&|()]))#")
+# Words that lead into a command without being it: reserved words and fish's and/or/not/begin.
+_COMMAND_LEADERS = frozenset({"!", "{", "if", "elif", "then", "else", "do", "while", "until", "time",
+                              "and", "or", "not", "begin"})
+_DECLARATIONS = frozenset({"export", "declare", "typeset", "readonly"})
+_ASSIGNMENT_WORD = re.compile(r"[A-Za-z_]\w*\+?=")
+_DECLARATION_ARGUMENT = re.compile(r"-\S*|[A-Za-z_]\w*(?:\+?=.*)?")  # an option, a name, or NAME=value
+# A redirection (2>/dev/null, > file) is no command word; its target is attached or the next word.
+_REDIRECTION = re.compile(r"\d*[<>]+(.*)")
+# The & and | inside >&, <&, >| and &> belong to the redirection, not a command separator: split them off.
+_REDIRECTION_OPERATOR = re.compile(r"(?<=[<>])[&|]|&(?=>)")
+
+
+def _expand_user_path(raw: str, home: Path) -> Path:
+    if raw == "~":
+        return home
+    if raw.startswith(("~/", "~\\")):
+        return home / raw[2:]
+    return Path(raw)
+
+
+def _resolved_path_entry(entry: str) -> Path:
+    # Taken as written: a literal ~ left in PATH is no home directory to sh or exec.
+    try:
+        return Path(entry).resolve()
+    except (OSError, RuntimeError):  # Python < 3.13 raises RuntimeError on a symlink loop
+        return Path(os.path.normpath(entry))
+
+
+def _dir_on_path(directory: Path, path_env: str | None = None) -> bool:
+    raw_path = os.environ.get("PATH", "") if path_env is None else path_env
+    try:
+        target = directory.resolve()
+    except OSError:
+        target = directory
+    return any(entry and _resolved_path_entry(entry) == target for entry in raw_path.split(os.pathsep))
+
+
+def _shell_rc_targets() -> tuple[str, list[Path], str, list[Path]]:
+    """The shell, the rc files a new terminal reads, where to add the PATH line, and rc files it skips."""
+    default_shell = "/bin/zsh" if sys.platform == "darwin" else "/bin/bash"
+    shell = Path(os.environ.get("SHELL") or default_shell).name
+    home = Path.home()
+    if shell == "zsh":
+        zdotdir_env = os.environ.get("ZDOTDIR", "").strip()
+        if zdotdir_env:
+            zdir = _expand_user_path(zdotdir_env, home)
+            return shell, [zdir / ".zprofile", zdir / ".zshrc"], f"{zdotdir_env.rstrip('/')}/.zprofile", []
+        return shell, [home / ".zprofile", home / ".zshrc"], "~/.zprofile", []
+    if shell == "fish":
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if os.path.isabs(xdg_config):  # the XDG spec ignores a relative value
+            return shell, [Path(xdg_config) / "fish" / "config.fish"], f"{xdg_config.rstrip('/')}/fish/config.fish", []
+        return shell, [home / ".config" / "fish" / "config.fish"], "~/.config/fish/config.fish", []
+    *logins, bashrc = candidates = [home / ".bash_profile", home / ".bash_login", home / ".profile", home / ".bashrc"]
+    if shell != "bash":
+        preferred = "~/.bash_profile" if logins[0].is_file() and not bashrc.is_file() else "~/.bashrc"
+        return shell, candidates, preferred, []
+    # A login bash reads only the first of its login files that exists and is readable; other
+    # interactive bash shells read ~/.bashrc (bash(1), INVOCATION). The advice names both, as
+    # install.sh writes both.
+    login = next((path for path in logins if path.is_file() and os.access(path, os.R_OK)), None)
+    advice = f"~/.bashrc and ~/{login.name if login else '.profile'}"
+    return shell, [*([login] if login else []), bashrc], advice, [path for path in logins if path != login]
+
+
+def _open_quote(code: str, pos: int) -> str:
+    """The quote character still open at ``code[pos]``, or "" outside quotes."""
+    quote, escaped = "", False
+    for ch in code[:pos]:
+        if escaped:
+            escaped = False
+        elif ch == "\\" and quote != "'":
+            escaped = True
+        elif ch == quote:
+            quote = ""
+        elif not quote and ch in "\"'":
+            quote = ch
+    return quote
+
+
+def _expand_variable(text: str, i: int, variables: dict[str, str]) -> tuple[str, int]:
+    """The value of the $NAME or ${...} at ``text[i]``, and the index just past it."""
+    if text.startswith("${", i):
+        depth, j = 0, i + 1
+        while j < len(text):
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            if depth == 0:
+                break
+            j += 1
+        body = text[i + 2 : j]
+        if body.startswith("PATH:+:"):  # ${PATH:+:${PATH}} adds ":" and the old PATH when PATH is set
+            return ":" + _UNKNOWN, j + 1
+        return variables.get(body, _UNKNOWN), j + 1
+    name = re.match(r"[A-Za-z_]\w*", text[i + 1 :])
+    if name is None:
+        return "$", i + 1
+    return variables.get(name[0], _UNKNOWN), i + 1 + name.end()
+
+
+def _shell_words(text: str, stops: str, variables: dict[str, str]) -> list[tuple[str, str]]:
+    """Each word up to the first unquoted stop character, as written and as the shell expands it:
+    quotes removed, escaped characters literal, known variables and an unquoted leading ~ replaced."""
+    words: list[tuple[str, str]] = []
+    word, begin, quote, i = "", -1, "", 0
+    while i < len(text):
+        ch = text[i]
+        if not quote and ch in stops:
+            break
+        if not quote and ch in " \t":
+            words.extend([(text[begin:i], word)] if begin >= 0 else [])
+            word, begin, i = "", -1, i + 1
+            continue
+        begin, i = (i if begin < 0 else begin), i + 1
+        # A backslash escapes any character unquoted, only $ ` " \ inside double quotes, nothing in single quotes.
+        if ch == "\\" and i < len(text) and (not quote or quote == '"' and text[i] in '$`"\\'):
+            word, i = word + text[i], i + 1
+        elif ch == quote:
+            quote = ""
+        elif not quote and ch in "\"'":
+            quote = ch
+        elif ch == "$" and quote != "'":
+            value, i = _expand_variable(text, i - 1, variables)
+            word += value
+        elif ch == "~" and not quote and (not word or word.endswith(":")) and text[i : i + 1] in ("", "/", ":"):
+            word += variables["HOME"]
+        else:
+            word += ch
+    return [*words, (text[begin:i], word)] if begin >= 0 else words
+
+
+def _setter_words(text: str, stops: str, variables: dict[str, str]) -> list[str]:
+    return [value for _written, value in _shell_words(text, stops, variables)]
+
+
+def _words_before(code: str, pos: int, variables: dict[str, str]) -> list[tuple[str, str]]:
+    """The words of the setter's own command that come before ``code[pos]``, reserved words dropped."""
+    masked = code[:pos]
+    while (blanked := _SUBSTITUTION.sub(lambda m: "_" * len(m[0]), masked)) != masked:
+        masked = blanked  # innermost first, so $(dirname $(pwd)) goes too
+    starts = [m.end() for m in _COMMAND_SEPARATOR.finditer(masked) if not _open_quote(code, m.start())]
+    words = _shell_words(masked[starts[-1] if starts else 0 :], "", variables)
+    while words and words[0][1] in _COMMAND_LEADERS:
+        words.pop(0)
+    return words
+
+
+# Whether a word is an assignment or a redirection is decided as written, before quotes are removed:
+# "LC_ALL"=C is a command name, not an assignment.
+def _setter_counts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
+    if _open_quote(code, found.start()):
+        return False  # inside a string: an alias body or an echo
+    before = _words_before(code, found.start(), variables)
+    while before and _ASSIGNMENT_WORD.match(before[0][0]):
+        before.pop(0)  # LC_ALL=C export PATH=...: a prefix assignment, then the builtin
+    if before and before[0][1] in _DECLARATIONS:
+        return all(_DECLARATION_ARGUMENT.fullmatch(value) for _written, value in before[1:])
+    if before:
+        return False  # an argument of another command: env PATH=..., echo export PATH=...
+    return "append" not in found.groupdict() or _assignment_lasts(code, found, variables)
+
+
+def _assignment_lasts(code: str, found: re.Match[str], variables: dict[str, str]) -> bool:
+    """False for PATH=x cmd, which sets PATH for that one command only."""
+    command = _REDIRECTION_OPERATOR.sub(" ", code[found.end() :])
+    _value, *rest = _shell_words(command, ";&|", variables) or [("", "")]
+    words = iter(rest)
+    for written, _word in words:
+        redirection = _REDIRECTION.fullmatch(written)
+        if redirection and not redirection[1]:
+            next(words, None)
+        elif not redirection and not _ASSIGNMENT_WORD.match(written):
+            return False
+    return True
+
+
+def _puts_dir_on_path(line: str, setters: tuple, variables: dict[str, str], target: str) -> bool:
+    comment = next((m.start() for m in _COMMENT_START.finditer(line) if not _open_quote(line, m.start())), None)
+    code = line[:comment]
+    for setter, stops, colon_lists in setters:
+        for found in setter.finditer(code):
+            if not _setter_counts(code, found, variables):
+                continue
+            words = _setter_words(code[found.end() :], stops, variables)
+            entries = [entry for word in words for entry in word.split(":")] if colon_lists else words
+            if found.groupdict().get("append"):
+                entries = entries[1:]  # PATH+=x extends the last entry; only what follows a ":" is new
+            if any(entry and os.path.normpath(entry) == target for entry in entries):
+                return True
+    return False
+
+
+def _configured_shell_rc(link_dir: Path, shell: str, candidates: list[Path], *, termux: bool) -> Path | None:
+    variables = {"HOME": str(Path.home()), **({"PREFIX": str(link_dir.parent)} if termux else {})}
+    setters = _PATH_SETTERS.get(shell, _PATH_SETTERS["posix"])
+    target = os.path.normpath(str(link_dir))
+    for rc_path in candidates:
+        if not rc_path.is_file():
+            continue
+        try:
+            text = rc_path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        if any(_puts_dir_on_path(line, setters, variables, target) for line in text.splitlines()):
+            return rc_path
+    return None
+
+
+def _display_rc_path(rc_path: Path) -> str:
+    home = Path.home()
+    try:
+        rel = rc_path.resolve().relative_to(home.resolve())
+        return f"~/{rel.as_posix()}"
+    except (OSError, ValueError):
+        return str(rc_path)
+
+
+def _check_link_dir_on_path(
+    link_dir: Path, display: str, cmd_name: str, entry_point: Path, termux: bool, f: Finding
+) -> None:
+
+    # Startup put Hermes's own command dirs first on this PATH; a new terminal won't have them.
+    terminal_path = inherited_path()
+    if _dir_on_path(link_dir, terminal_path):
+        return
+    found = locate_command(cmd_name, LookupContext(path=terminal_path)).command
+    if found:
+        try:
+            if Path(found[0]).resolve() == entry_point.resolve():
+                return
+        except OSError:
+            pass
+    shell, candidates, rc_display, skipped = _shell_rc_targets()
+    configured = _configured_shell_rc(link_dir, shell, candidates, termux=termux)
+    if configured is not None:
+        check_info(
+            f"{display} is not on this shell's PATH yet "
+            f"(configured in {_display_rc_path(configured)}; open a new terminal or reload your shell)"
+        )
+        return
+    path_var = "$PREFIX/bin" if termux else "$HOME/.local/bin"
+    path_cmd = f'fish_add_path "{path_var}"' if shell == "fish" else f'export PATH="{path_var}:$PATH"'
+    unread = _configured_shell_rc(link_dir, shell, skipped, termux=termux)
+    hint = f"; a login {shell} skips {_display_rc_path(unread)}" if unread is not None else ""
+    check_warn(f"{display} is not on your PATH", f"(add to {rc_display}: {path_cmd}{hint})")
+    f.manual_issues.append(f"Add {display} to your PATH (in {rc_display}: {path_cmd})")
+
+
+def _bundled_launcher_target(project_root: Path) -> Path:
+
+    root = Path(project_root).resolve()
+    payload_root = root.parent
+    command_dir = payload_command_dir(root)
+    if command_dir is not None:
+        return command_dir / cli_command_name(root)
+    runtime = read_install_stamp(root).get("runtime")
+    commands = runtime.get("commands") if isinstance(runtime, dict) else None
+    rel = commands.get("hermes") if isinstance(commands, dict) else None
+    if isinstance(rel, str) and rel:
+        candidate = (payload_root / rel).resolve()
+        if not candidate.is_relative_to(payload_root):
+            raise RuntimeError("payload launcher escapes its root")
+        return candidate
+    return payload_root / "bin" / "hermes"
+
+
+def _is_owned_bundle_link(link: Path, expected: Path) -> bool:
+    try:
+        raw = os.readlink(link)
+    except OSError:
+        return False
+    if not os.path.isabs(raw):
+        return False
+    raw_path = Path(raw)
+    if (
+        raw_path.name != expected.name
+        or raw_path.parent.name != "bin"
+        or raw_path.parent.parent.name != "agent-payload"
+    ):
+        return False
+    if not link.exists():
+        return True
+    raw_resolved = link.resolve()
+    # AppImage unpacks each build beside its predecessor (<bundles>/<build>/agent-payload/bin/<cmd>).
+    return (
+        len(raw_resolved.parents) > 3
+        and len(expected.parents) > 3
+        and raw_resolved.parents[2] != expected.parents[2]
+        and raw_resolved.parents[3] == expected.parents[3]
+    )
+
+
+def _replace_symlink(link: Path, target: Path) -> None:
+    staged = link.with_name(f".{link.name}.doctor-{os.getpid()}.tmp")
+    staged.unlink(missing_ok=True)
+    staged.symlink_to(target)
+    try:
+        os.replace(staged, link)
+    except OSError:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _resolve_command_entry_point(project_root: Path, f: Finding) -> tuple[Path, str, bool, bool] | None:
+
+    if is_bundled_payload(project_root):
+        try:
+            entry = _bundled_launcher_target(project_root)
+        except (OSError, ValueError, RuntimeError) as exc:
+            check_fail("Cannot resolve bundled launcher", str(exc))
+            f.manual_issues.append("Reinstall the Hermes desktop app bundle")
+            return None
+        return entry, entry.name, True, False
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import base_venv, selected_venv
+
+    try:
+        selected = selected_venv(project_root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        check_fail("Cannot resolve selected dependencies", str(exc))
+        f.manual_issues.append(_python_repair_hint())
+        return None
+    pm_launcher = selected != base_venv(project_root) or resolve_store_python(project_root) is not None
+    entry = project_root / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    return entry, "hermes", False, pm_launcher
+
+
+def _repair_command_link(
+    link: Path, link_dir: Path, display: str, cmd_name: str, venv_bin: Path,
+    *, project_root: Path, pm_launcher: bool, verb: str, f: Finding,
+) -> None:
+    if pm_launcher:
+        from hermes_cli._launchers import stage_launcher
+
+        if stage_launcher(cmd_name, project_root, link_dir) is None:
+            check_fail("Could not publish Hermes launcher")
+            f.manual_issues.append(
+                "Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'"
+            )
+            return
+        check_ok(f"{verb} PM launcher: {display}/{cmd_name}")
+    elif verb == "Created":
+        try:
+            link.symlink_to(venv_bin)
+        except FileExistsError:
+            # Something published the command after the check; it isn't ours to replace.
+            check_warn(f"{display}/{cmd_name} appeared while doctor was creating it", "(left unchanged)")
+            f.manual_issues.append(f"Rerun '{cmd_name} doctor' to check {display}/{cmd_name}")
+            return
+        check_ok(f"{verb} symlink: {display}/{cmd_name} → {venv_bin}")
+    else:
+        _replace_symlink(link, venv_bin)
+        check_ok(f"{verb} symlink: {display}/{cmd_name} → {venv_bin}")
+    f.fixed += 1
+
+
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Check the install-owned launch contract without replacing custom commands."""
@@ -617,57 +997,49 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             check_warn(f"Hermes command not on PATH ({method}-managed)")
             f.manual_issues.append(_python_repair_hint())
         return
-    from hermes_cli._launchers import resolve_store_python
-    from pm.environments import base_venv, selected_venv
-
-    try:
-        selected = selected_venv(PROJECT_ROOT)
-    except (OSError, ValueError, RuntimeError) as exc:
-        check_fail("Cannot resolve selected dependencies", str(exc))
-        return f.manual_issues.append(_python_repair_hint())
-    pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
-    venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    resolved = _resolve_command_entry_point(PROJECT_ROOT, f)
+    if resolved is None:
+        return
+    venv_bin, cmd_name, bundled, pm_launcher = resolved
     if not venv_bin.is_file():
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
     check_ok(f"Hermes entry point exists ({venv_bin})")
-    # Expected command link directory (mirrors install.sh logic).
     prefix = os.environ.get("PREFIX", "")
-    termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+    termux = bool(prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix))
     link_dir, display = (Path(prefix) / "bin", "$PREFIX/bin") if termux else (Path.home() / ".local" / "bin", "~/.local/bin")
-    link = link_dir / "hermes"
+    link, expected = link_dir / cmd_name, venv_bin.resolve()
+    verb: str | None = None
     if link.is_symlink():
-        target, expected = link.resolve(), venv_bin.resolve()
+        target = link.resolve()
         if target == expected:
-            return check_ok(f"{display}/hermes → correct target")
-        check_warn(f"{display}/hermes points to wrong target", f"(→ {target}, expected → {expected})")
-        owned_targets = {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
-        if target not in owned_targets:
-            return f.manual_issues.append(f"Review {display}/hermes manually; its target is user-managed and was not changed")
-        if not should_fix:
-            return f.issues.append(f"Broken symlink at {display}/hermes — run 'hermes doctor --fix'")
-        verb = "Fixed"
-    elif link.exists():  # regular file (wrapper script), not a symlink
-        return check_ok(f"{display}/hermes exists (non-symlink)")
+            check_ok(f"{display}/{cmd_name} → correct target")
+        else:
+            check_warn(f"{display}/{cmd_name} points to wrong target", f"(→ {target}, expected → {expected})")
+            owned = (
+                _is_owned_bundle_link(link, expected)
+                if bundled
+                else target in {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
+            )
+            if not owned:
+                f.manual_issues.append(f"Review {display}/{cmd_name} manually; its target is user-managed and was not changed")
+            elif not should_fix:
+                f.issues.append(f"Broken symlink at {display}/{cmd_name} — run '{cmd_name} doctor --fix'")
+            else:
+                verb = "Fixed"
+    elif link.exists():
+        check_ok(f"{display}/{cmd_name} exists (non-symlink)")
     else:
-        check_fail(f"{display}/hermes not found", "(hermes command may not work outside the venv)")
+        detail = f"({cmd_name} command may not work in a terminal)" if bundled else "(hermes command may not work outside the venv)"
+        check_fail(f"{display}/{cmd_name} not found", detail)
         if not should_fix:
-            return f.issues.append(f"Missing {display}/hermes symlink — run 'hermes doctor --fix'")
-        link_dir.mkdir(parents=True, exist_ok=True)
-        verb = "Created"
-    if pm_launcher:
-        from hermes_cli._launchers import stage_launcher
-
-        if stage_launcher("hermes", PROJECT_ROOT, link_dir) is None:
-            check_fail("Could not publish Hermes launcher")
-            return f.manual_issues.append("Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'")
-        check_ok(f"{verb} PM launcher: {display}/hermes")
-    else:
-        if link.is_symlink():
-            link.unlink()
-        link.symlink_to(venv_bin)
-        check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
-    f.fixed += 1
-    if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
-        check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")
-        f.manual_issues.append(f"Add {display} to your PATH")
+            f.issues.append(f"Missing {display}/{cmd_name} symlink — run '{cmd_name} doctor --fix'")
+        else:
+            link_dir.mkdir(parents=True, exist_ok=True)
+            verb = "Created"
+    if verb is not None:
+        _repair_command_link(
+            link, link_dir, display, cmd_name, venv_bin,
+            project_root=PROJECT_ROOT, pm_launcher=pm_launcher, verb=verb, f=f,
+        )
+    _check_link_dir_on_path(link_dir, display, cmd_name, venv_bin, termux, f)

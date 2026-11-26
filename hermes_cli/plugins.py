@@ -278,7 +278,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # The home as the profile was named (see ``owner_home``). Made absolute now, links kept: a relative
         # home (a symbolic profile id) must keep naming the directory ``home_path`` keys.
         self._named_home = Path(owner_home).expanduser().absolute() if owner_home is not None else self.home_path
-        self._saw_home = False  # whether a name has led to the directory while it existed (``_leads_here``)
+        # Whether the directory has existed while this manager served it (``_leads_here``): one removed before the
+        # first lookup (background discovery) is removed, not never created.
+        self._saw_home = os.path.isdir(self.home_path)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and

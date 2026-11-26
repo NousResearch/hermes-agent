@@ -163,6 +163,25 @@ def test_a_profile_directory_removed_or_renamed_after_its_plugins_loaded_refuses
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+def test_a_profile_directory_removed_before_its_first_discovery_refuses_plugin_work(tmp_path, monkeypatch):
+    """A directory that existed when its manager opened and is removed before discovery first looks it up (the
+    background discovery thread) is a removed home, not one that was never created."""
+    import shutil
+
+    from hermes_cli.plugins_loader import PluginHomeMoved
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    try:
+        shutil.rmtree(home)
+        with pytest.raises(PluginHomeMoved):
+            manager.discover_and_load()
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_a_home_not_created_yet_is_not_refused(tmp_path, monkeypatch):
     """A home that has never existed (a first run, or a profile about to be created) still discovers plugins."""
     _home_with_plugins(tmp_path, monkeypatch, {})

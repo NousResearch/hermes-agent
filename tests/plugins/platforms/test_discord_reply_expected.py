@@ -33,6 +33,13 @@ pytest_plugins = ["tests.gateway.test_discord_free_response"]
     pytest.param({"reply_author": 999, "cached": True}, True, id="cached-reply-to-bot"),
     pytest.param({"reply_author": 42}, False, id="reply-to-peer"),
     pytest.param({"reply_author": None}, None, id="unknown-reply"),
+    pytest.param({"role_ping": 777, "bot_roles": [777]}, True, id="own-role-ping"),
+    pytest.param({"role_ping": 777, "bot_roles": [777], "raw_role": True},
+                 True, id="raw-role-ping"),
+    pytest.param({"role_ping": 888, "bot_roles": [777]}, False, id="other-role-ping"),
+    pytest.param({"role_ping": 777}, None, id="uncached-bot-member-role-ping"),
+    pytest.param({"role_ping": 777, "bot_roles": [777], "member_id": 123},
+                 None, id="wrong-member-role-ping"),
     pytest.param({"thread": True, "config": {"free_response_channels": []}}, None, id="joined-thread"),
 ])
 async def test_admitted_message_carries_reply_expectation(adapter, options, expected):
@@ -49,6 +56,14 @@ async def test_admitted_message_carries_reply_expectation(adapter, options, expe
         adapter._voice_text_channels["guild"] = 123
     message = make_message(channel=channel, content=options.get("content", "clawd awake?"),
                            mentions=[adapter._client.user] if options.get("mentions") else [])
+    if "role_ping" in options:
+        message.content = f"<@&{options['role_ping']}> are you awake?"
+        message.raw_role_mentions = [options["role_ping"]]
+        message.role_mentions = [] if options.get("raw_role") else [SimpleNamespace(id=options["role_ping"])]
+        member = None if "bot_roles" not in options else SimpleNamespace(
+            id=options.get("member_id", 999),
+            roles=[SimpleNamespace(id=role_id) for role_id in options["bot_roles"]])
+        message.guild = SimpleNamespace(id=111, me=member)
     if "reply_author" in options:
         target = None if options["reply_author"] is None else SimpleNamespace(
             author=SimpleNamespace(id=options["reply_author"]),

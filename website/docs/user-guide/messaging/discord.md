@@ -27,7 +27,7 @@ If you want a normal bot-help channel where people can talk to Hermes without ta
 
 ### Intentional silence in free-response channels
 
-Mention-free admission lets Hermes listen without obligating it to join every exchange. For an unaddressed message in a free-response channel, an exact intentional-silence response is suppressed rather than replaced with a warning. DMs, commands, explicit bot mentions and known replies to the bot retain the normal visible fallback. If Discord cannot identify a referenced message's author, Hermes conservatively retains that fallback too. This does not change channel admission, authorization or how ordinary answers are delivered.
+Mention-free admission lets Hermes listen without obligating it to join every exchange. For an unaddressed message in a free-response channel, an exact intentional-silence response is suppressed rather than replaced with a warning. DMs, commands, explicit bot mentions, pings to a role the bot belongs to and known replies to the bot retain the normal visible fallback. If Discord cannot identify a referenced message's author or the bot's membership in a mentioned role, Hermes conservatively retains that fallback too. This does not change channel admission, authorization or how ordinary answers are delivered.
 
 ### Discord Gateway Model
 

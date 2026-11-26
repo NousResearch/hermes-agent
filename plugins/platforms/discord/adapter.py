@@ -6066,7 +6066,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 is_dm=_is_dm, addressed=(mention_prefix or msg_type == MessageType.COMMAND
                                         or self._is_bot_tag_debounce_continuation(message)),
                 free_response=not _is_dm and (is_free_channel or not require_mention),
-                reference=reference),
+                message=message),
         )
         if is_automated_message(message) and self._is_bot_tag_debounce_continuation(message):
             event._bot_tag_debounce = True  # type: ignore[attr-defined]

@@ -1477,6 +1477,7 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
         if not latched and not hasattr(agent, "steer"):
             return _steer_refused(_openai_error, run_id)
         if latched:
+            _person_steer_joined(owned)
             _mark_run_event(self, run_id, "run.steered", accepted=True)
             return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
     try:
@@ -1487,8 +1488,21 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
     if not accepted:
         return _json_error(
             _openai_error, f"Run did not accept steer text: {run_id}", code="steer_not_accepted", status=409)
+    if owned is not None:
+        _person_steer_joined(owned)
     _mark_run_event(self, run_id, "run.steered", accepted=True)
     return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
+
+
+def _person_steer_joined(owned):
+    """An accepted steer into an owned run's turn: it now carries the caller's input too."""
+    from gateway.session_busy_controls import person_input_joined
+    from gateway.session_contract import SessionRef
+    authority, row = owned
+    try:
+        person_input_joined(authority, SessionRef(authority.profile_id, row['target_session_id']))
+    except KeyError:
+        pass  # the session left the authority meanwhile: no turn to clear
 
 
 async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Response:

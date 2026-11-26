@@ -127,6 +127,10 @@ class RemotePluginContext:
             raise TypeError("on_unload() callback must be callable")
         self._runtime.unload_callbacks.setdefault(self._plugin_key, []).append(callback)
 
+    def cron_delivery_platforms(self, job_id: Optional[str] = None) -> Optional[tuple[str, ...]]:
+        result = self._runtime.ctx_call(self._plugin_key, "cron_delivery_platforms", job_id)
+        return None if result is None else tuple(result)
+
     def spawn_task(self, coro: Any, *, name: Optional[str] = None) -> Any:
         return self._runtime.spawn(coro, name=name)
 

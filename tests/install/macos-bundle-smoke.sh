@@ -49,8 +49,21 @@ trap 'exit 143' TERM
 /usr/bin/shasum -a 256 "$artifact" > "$out/artifact-before.sha256"
 mkdir "$work/install" "$work/home" "$work/user-data"
 shopt -s nullglob
+# The driver owns which artifacts need the outer DMG check. Asked before install it has no stamp yet, so it
+# answers for releases and channels and leaves commit claims to the installed app's stamp. The assignment keeps a
+# driver failure fatal under set -e.
+dmg_check_needed() {
+  need_dmg_verify=$("$node" "$metadata" should-verify-mac-dmg "${identity_args[@]}" "$@" \
+    | "$node" -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).verifyMacDmg ? "1" : "0")')
+}
+dmg_verified=0
 case "$artifact" in
   *.dmg)
+    dmg_check_needed
+    if [[ $need_dmg_verify == 1 ]]; then
+      "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
+      dmg_verified=1
+    fi
     mountpoint=$work/mount
     mkdir "$mountpoint"
     /usr/bin/hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$artifact"
@@ -68,6 +81,19 @@ apps=("$work/install"/*.app)
 ((${#apps[@]} == 1)) || fail 'Installed artifact must contain exactly one top-level .app'
 [[ -d ${apps[0]} && ! -L ${apps[0]} ]] || fail 'Installed application must not be a link'
 "$node" "$metadata" verify-mac --app "${apps[0]}" --arch "$arch" "${identity_args[@]}" --out "$out/installed-identity.json"
+if [[ $artifact == *.dmg ]]; then
+  if ((dmg_verified == 0)); then
+    dmg_check_needed --identity "$out/installed-identity.json"
+    if [[ $need_dmg_verify == 1 ]]; then
+      "$node" "$metadata" verify-mac-dmg --dmg "$artifact" --out "$out/dmg-identity.json"
+      dmg_verified=1
+    fi
+  fi
+  if ((dmg_verified == 1)); then
+    "$node" -e 'const d = require(process.argv[1]), a = require(process.argv[2]); if (d.teamIdentifier !== a.teamIdentifier) throw new Error(`DMG signing team ${d.teamIdentifier} disagrees with app team ${a.teamIdentifier}`)' \
+      "$out/dmg-identity.json" "$out/installed-identity.json"
+  fi
+fi
 exe=$("$node" -e 'console.log(require(process.argv[1]).exe)' "$out/installed-identity.json")
 root=$("$node" -e 'console.log(require(process.argv[1]).root)' "$out/installed-identity.json")
 /usr/bin/shasum -a 256 "$artifact" > "$out/artifact-after.sha256"

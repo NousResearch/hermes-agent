@@ -66,3 +66,20 @@ def test_reload_drops_a_removed_line_for_a_platform_plugin_loaded_after_import(t
     (home / ".env").write_text("LATEPLAT_TOKEN=t\n")
     config.reload_env()
     assert "LATEPLAT_SANDBOX" not in os.environ and os.environ.get("LATEPLAT_TOKEN") == "t"
+
+
+def test_a_platform_manifest_with_an_empty_requires_env_key_still_loads_with_the_others(tmp_path, monkeypatch):
+    """``requires_env:`` with no value reads as no env names, as the loader always treated it: noting a loading
+    platform's env names for /reload must not raise on it and take the rest of the discovery down."""
+    from hermes_cli.plugins import PluginManager
+    home = tmp_path / "home"
+    for name, env in (("emptyenv", "requires_env:\n"), ("otherplat", "requires_env: [OTHERPLAT_TOKEN]\n")):
+        plugin = home / "plugins" / name
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text(f"name: {name}\nkind: platform\n{env}", encoding="utf-8")
+        (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [emptyenv, otherplat]\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    manager = PluginManager()
+    manager.discover_and_load()
+    assert {"emptyenv", "otherplat"} <= {key for key, plugin in manager._plugins.items() if not plugin.error}

@@ -572,7 +572,7 @@ def parse_manifest_file(
         return PluginManifest(
             name=name, version=str(data.get("version", "")),
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
-            requires_env=data.get("requires_env", []), optional_env=data.get("optional_env") or [],
+            requires_env=data.get("requires_env") or [], optional_env=data.get("optional_env") or [],
             provides_tools=data.get("provides_tools", []),
             # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
             # must keep declaring the same thing (#108371).

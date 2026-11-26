@@ -379,11 +379,15 @@ def _dir_row(item: dict) -> str:
     size = str(item["size"])
     name = item["name"] + ("/" if item["type"] == "dir" else "")
     link = f" -> {item['target']}" if item["type"] == "link" else ""
-    return f"{size:>10}  {item['mtime']}  {name}{link}"
+    display = name + link
+    if not display.isprintable():  # a newline in a name must not split one entry over two rows
+        display = repr(display)
+    return f"{size:>10}  {item['mtime']}  {display}"
 
 
-def directory_listing(path: str, *, structured: bool) -> dict:
-    """``ls -la`` for one directory: dirs first, then by name, capped at ``DIR_LISTING_MAX_ENTRIES``.
+def directory_listing(path: str, *, structured: bool, max_chars: int | None = None) -> dict:
+    """``ls -la`` for one directory: dirs first, then by name, capped at ``DIR_LISTING_MAX_ENTRIES``
+    and, when given, at ``max_chars`` in whole rows (the model's read budget).
     ``structured`` (a cell's read) adds the same shown entries as a list of dicts."""
     with os.scandir(path) as it:
         items = [e for e in map(_dir_entry, it) if e is not None]
@@ -391,8 +395,15 @@ def directory_listing(path: str, *, structured: bool) -> dict:
     shown = items[:DIR_LISTING_MAX_ENTRIES]
     dirs = sum(1 for e in items if e["type"] == "dir")
     header = f"{path}: {len(items)} entries ({dirs} dirs, {len(items) - dirs} other). size  mtime  name"
-    result = {"path": path, "is_directory": True, "total_entries": len(items),
-              "content": "\n".join([header, *map(_dir_row, shown)])}
+    rows, used = [header], len(header)
+    for item in shown:
+        row = _dir_row(item)
+        used += 1 + len(row)
+        if max_chars is not None and used > max_chars:
+            shown = shown[:len(rows) - 1]
+            break
+        rows.append(row)
+    result = {"path": path, "is_directory": True, "total_entries": len(items), "content": "\n".join(rows)}
     if len(items) > len(shown):
         result["truncated"] = True
         result["hint"] = (f"Showing {len(shown)} of {len(items)} entries. Use search_files with "

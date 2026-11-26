@@ -363,9 +363,30 @@ def _masked_literals(line: str) -> str:
 # The launcher's lines after its env block; None slots hold values, which _vbs_identity checks one by one.
 _LAUNCHER_TAIL = ('existing_pp = env.Item("PYTHONPATH")', 'If Len(existing_pp) > 0 Then', None, 'Else', None,
                   'End If', None, None)
-# The waiting launcher (#146976) maps stop exits to 0 (the owned-exit line is shape-checked by
-# _vbs_identity) and quits with the gateway's code.
-_WAITING_LAUNCHER_TAIL = (*_LAUNCHER_TAIL, "If code = 78 Then code = 0", None, "WScript.Quit code")
+# The waiting launcher (#146976) retries exit 75 itself (the Startup-folder fallback has no Task
+# Scheduler RestartOnFailure): at most 5 restarts per rolling hour, 15s between tries (#156780).
+# It maps stop exits to 0 (the owned-exit line is shape-checked by _vbs_identity) and quits with the
+# gateway's code.
+_WAITING_LAUNCHER_TAIL = (
+    *_LAUNCHER_TAIL[:7],
+    "Dim restarts, windowStart",
+    "restarts = 0",
+    "windowStart = Now",
+    "Do",
+    None,  # the Run line; _vbs_identity checks it (indented inside the loop)
+    "  If code <> 75 Then Exit Do",
+    '  If DateDiff("n", windowStart, Now) >= 60 Then',
+    "    restarts = 0",
+    "    windowStart = Now",
+    "  End If",
+    "  restarts = restarts + 1",
+    "  If restarts > 5 Then Exit Do",
+    "  WScript.Sleep 15000",
+    "Loop",
+    "If code = 78 Then code = 0",
+    None,
+    "WScript.Quit code",
+)
 
 
 def launcher_pid_file(hermes_home: str) -> str:
@@ -417,13 +438,14 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
         _unverified("the launcher's PYTHONPATH lines are not the installer's")
     if not re.fullmatch(r'sh.CurrentDirectory = ' + literal, tail[6]):
         _unverified("the launcher's working-directory line is not the installer's")
+    run_line = tail[11] if waits else tail[7]
     run = re.fullmatch(r'code = sh\.Run\((' + literal + r'), 0, True\)' if waits else r'sh.Run (' + literal + r'), 0, False',
-                       tail[7])
+                       run_line.strip())
     if not run or not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified("the launcher has no Run line or does not set HERMES_SUPERVISED_CHILD")
     if waits:
         owned = re.fullmatch(r'If code = 1 And CreateObject\("Scripting\.FileSystemObject"\)\.FileExists\(('
-                             + literal + r')\) Then code = 0', tail[9])
+                             + literal + r')\) Then code = 0', tail[22])
         pid_file = owned[1][1:-1].replace('""', '"') if owned else None
         if pid_file is None or pid_file != launcher_pid_file(env.get("HERMES_HOME", "")):
             _unverified("the launcher's exit mapping is not the installer's")

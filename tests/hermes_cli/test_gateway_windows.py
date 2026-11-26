@@ -394,6 +394,43 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_gateway_vbs_script_retries_exit_75_with_hourly_cap(monkeypatch):
+    """The .vbs launcher retries the gateway after exit 75, capped at 5 restarts per rolling hour
+    (#156780): the Startup-folder fallback has no Task Scheduler RestartOnFailure, so without the
+    loop the gateway stays down until the next logon."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\pythonw.exe", Path(r"C:\venv"), []),
+    )
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "--profile work",
+    )
+    loop = [
+        "Dim restarts, windowStart",
+        "restarts = 0",
+        "windowStart = Now",
+        "Do",
+        'code = sh.Run("',
+        "If code <> 75 Then Exit Do",
+        'If DateDiff("n", windowStart, Now) >= 60 Then',
+        "restarts = restarts + 1",
+        "If restarts > 5 Then Exit Do",
+        "WScript.Sleep 15000",
+        "Loop",
+    ]
+    positions = [content.index(line) for line in loop]
+    assert positions == sorted(positions), "the exit-75 retry loop is out of order"
+    assert content.count("sh.Run(") == 1
+    assert content.count("restarts = 0") == 2  # init, then the hourly window reset
+    assert content.count("windowStart = Now") == 2  # init, then the hourly window reset
+    assert content.index("Loop") < content.index("If code = 78 Then code = 0")
+    assert content.rstrip().endswith("WScript.Quit code")
+
+
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
     """The Startup folder is the staging dir: a leftover .tmp there is opened by Windows at every login."""
     startup = tmp_path / "Startup"

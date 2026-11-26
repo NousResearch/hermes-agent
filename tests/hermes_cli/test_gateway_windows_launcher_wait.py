@@ -23,10 +23,12 @@ def _launcher(tmp_path, monkeypatch, python):
 def _pre_146976(script: str) -> str:
     """The launcher installs made before #146976 still run: the same template, returning at once."""
     lines = script.split("\r\n")
-    run = next(i for i, line in enumerate(lines) if line.startswith("code = sh.Run("))
+    run = next(i for i, line in enumerate(lines) if line.strip().startswith("code = sh.Run("))
     lines[2] = "Dim sh, env, existing_pp"
-    lines[run] = "sh.Run " + lines[run][len("code = sh.Run("):-len(", 0, True)")] + ", 0, False"
-    del lines[run + 1:run + 4]
+    stripped = lines[run].strip()
+    lines[run] = "sh.Run " + stripped[len("code = sh.Run("):-len(", 0, True)")] + ", 0, False"
+    del lines[run + 1:]  # the rest of the exit-75 retry loop, the exit mappings, and WScript.Quit
+    del lines[run - 4:run]  # Dim restarts, restarts = 0, windowStart = Now, Do
     return "\r\n".join(lines)
 
 

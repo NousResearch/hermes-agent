@@ -437,9 +437,8 @@ class MattermostAdapter(BasePlatformAdapter):
                     loaded = await self._load_batch_image(image_url, len(file_ids))
                     if loaded is None and not image_url.startswith("file://"):
                         # Refused/failed remote image already left the reply text: keep the link.
-                        sent = await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
-                                               metadata=metadata)
-                        delivered = delivered or sent.success
+                        await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
+                                        metadata=metadata)
                         retry.remove((image_url, alt_text))
                         continue
                     if alt_text:

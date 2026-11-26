@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 from datetime import UTC, datetime
+from typing import TypeGuard
 
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
 MAX_SERIALIZED_BYTES = 32 * 1024 * 1024
@@ -298,16 +299,33 @@ def redact_transcript(value):
     return value
 
 
-def _safe_tool_identity(value):
+def _safe_tool_identity(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and 0 < len(value) <= 512 and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+
+
+def _transcript_call_uids(row):
+    # Display rows carry the public wire names; live fixtures may carry the in-memory names.
+    value = row.get('_tool_call_uids', row.get('tool_call_uids'))
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, RecursionError):
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: uid for key, uid in value.items() if isinstance(key, str) and key and (
+            isinstance(uid, str) and uid or
+            isinstance(uid, list) and uid and all(isinstance(part, str) and part for part in uid)
+        )
+    }
 
 
 def _tool_calls(row):
     from agent.message_sanitization import coalesce_tool_call_id
-    from hermes_state_identity import _tool_call_uid_map
 
     calls = []
-    uids = _tool_call_uid_map(row)
+    uids = _transcript_call_uids(row)
     occurrences = {}
     for call in row['tool_calls']:
         if not isinstance(call, dict):
@@ -337,9 +355,8 @@ def _add_tool_fields(turn, row, role, options):
         if calls:
             turn['tool_calls'] = calls
     if options['include_tools'] and role == 'tool':
-        from hermes_state_identity import _tool_call_uid_or_none
         for field, value in (('tool_call_id', row.get('tool_call_id')),
-                             ('tool_call_uid', _tool_call_uid_or_none(row))):
+                             ('tool_call_uid', row.get('_tool_call_uid', row.get('tool_call_uid')))):
             if _safe_tool_identity(value):
                 turn[field] = value
 

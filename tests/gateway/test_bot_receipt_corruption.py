@@ -5,27 +5,23 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.session_authority import admission_row
 from gateway.session_bot import _migrate, recover_bot_deliveries
 from gateway.session_results import retain_result
-from hermes_state import SessionDB
-from hermes_state_runtime import (
-    admit_session_input,
-    begin_runtime_epoch,
-    claim_session_input,
-)
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tools.bot_live_delivery import _locked, _read, _write
 
 
 def _settled_admission(db, epoch, request_id, text, reply):
-    admission = admit_session_input(
-        db,
+    admission, _ = db.admissions.admit(
         epoch=epoch,
         principal_id="owner",
         session_id="bot",
         request_id=request_id,
         payload={"text": text},
     )
-    row = claim_session_input(db, epoch=epoch, session_id="bot")
+    row = admission_row(db.admissions.claim(epoch=epoch, session_id="bot"))
     retain_result(
         db,
         epoch=epoch,
@@ -37,10 +33,10 @@ def _settled_admission(db, epoch, request_id, text, reply):
 
 @pytest.mark.asyncio
 async def test_recovery_skips_structurally_corrupt_canonical_neighbor(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("bot", source="gui")
-        epoch = begin_runtime_epoch(db, instance_id="owner")
+        seed_session(db, "bot", "gui")
+        epoch = db.runtime.begin_epoch(instance_id="owner")
         healthy = _settled_admission(db, epoch, "healthy", "hello", "recovered")
         damaged = _settled_admission(db, epoch, "damaged", "bad", "should-not-be-read")
 
@@ -51,7 +47,7 @@ async def test_recovery_skips_structurally_corrupt_canonical_neighbor(tmp_path):
                 root / f"{healthy_key}.json",
                 {
                     "status": "canonical",
-                    "admission_id": healthy["admission_id"],
+                    "admission_id": healthy.admission_id,
                     "delivery_id": healthy_key,
                     "profile_home": str(tmp_path),
                     "session_id": "bot",
@@ -63,7 +59,7 @@ async def test_recovery_skips_structurally_corrupt_canonical_neighbor(tmp_path):
                 root / f"{damaged_key}.json",
                 {
                     "status": "canonical",
-                    "admission_id": damaged["admission_id"],
+                    "admission_id": damaged.admission_id,
                     "delivery_id": damaged_key,
                     "profile_home": str(tmp_path),
                     "session_id": "bot",
@@ -72,7 +68,7 @@ async def test_recovery_skips_structurally_corrupt_canonical_neighbor(tmp_path):
                 },
             )
 
-        await recover_bot_deliveries(SimpleNamespace(db=db, waiters={}))
+        await recover_bot_deliveries(SimpleNamespace(db=db, persistence=db, waiters={}))
 
         with _locked(tmp_path) as root:
             recovered = _read(root / f"{healthy_key}.json")
@@ -89,10 +85,10 @@ async def test_recovery_skips_structurally_corrupt_canonical_neighbor(tmp_path):
 async def test_recovery_does_not_hide_real_admission_lookup_failure(tmp_path, caplog):
     """A live session missing a receipt's admission is a storage fault: recovery logs it by
     delivery and reason and leaves the receipt as it was, but never stops the owner's start."""
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("bot", source="gui")
-        begin_runtime_epoch(db, instance_id="owner")
+        seed_session(db, "bot", "gui")
+        db.runtime.begin_epoch(instance_id="owner")
         key = "c" * 32
         with _locked(tmp_path) as root:
             _write(
@@ -108,7 +104,7 @@ async def test_recovery_does_not_hide_real_admission_lookup_failure(tmp_path, ca
                 },
             )
 
-        await recover_bot_deliveries(SimpleNamespace(db=db, waiters={}))
+        await recover_bot_deliveries(SimpleNamespace(db=db, persistence=db, waiters={}))
         assert f"Bot delivery {key} not recovered: storage_unavailable" in caplog.text
         with _locked(tmp_path) as root:
             assert _read(root / f"{key}.json")["status"] == "canonical"
@@ -142,7 +138,7 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
         _write(root / f"{damaged_key}.json", {"owner": {}})
 
         authority = SimpleNamespace(
-            db=SimpleNamespace(get_compression_tip=lambda session_id: "tip"),
+            persistence=SimpleNamespace(lineage=SimpleNamespace(tip=lambda session_id: "tip")),
         )
         ref = SimpleNamespace(session_id="tip")
         live = object()

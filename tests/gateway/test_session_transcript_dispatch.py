@@ -3,13 +3,14 @@
 The chooser sends the eight boolean ``transcript_options`` and expects the filtered
 persisted transcript plus ``transcript_version`` 1. A payload without options stays
 the old ``/save`` snapshot. Dispatch, ``export_session`` and authorization are real;
-the database is a synthetic ``SessionDB`` under the test tmp dir.
+the database is a synthetic persistence handle under the test tmp dir.
 """
 import json
 
 import pytest
 
 from gateway.config import Platform
+from tests.fixtures.storage_seed import seed_messages
 from tests.gateway.test_session_authority_cancel_settlement import _authority
 
 CHOOSER = {
@@ -28,9 +29,8 @@ PRIVATE = 'private system prompt'
 
 
 def _seed(db):
-    db.append_message('s', 'system', PRIVATE)
-    db.append_message('s', 'user', KEPT)
-    db.append_message('s', 'tool', SECRET, tool_name='lookup')
+    seed_messages(db, 's', {'role': 'system', 'content': PRIVATE}, {'role': 'user', 'content': KEPT},
+                  {'role': 'tool', 'content': SECRET, 'tool_name': 'lookup'})
 
 
 def _connection(authority, **identity):
@@ -68,7 +68,7 @@ async def test_chooser_dispatch_returns_filtered_persisted_transcript(tmp_path, 
         doc = json.loads(result['content'])
         assert [row['text'] for row in doc['messages']] == [KEPT]
         assert SECRET not in result['content'] and PRIVATE not in result['content']
-        stored = [row['content'] for row in db.get_messages('s')]
+        stored = [row.content for row in db.messages.read_transcript('s')]
         assert KEPT in stored and SECRET in stored and PRIVATE in stored
     finally:
         db.close()
@@ -85,7 +85,7 @@ async def test_legacy_dispatch_keeps_unfiltered_snapshot_without_version(tmp_pat
         assert 'transcript_version' not in result
         assert result['format'] == 'json' and KEPT in result['content']
         assert SECRET in result['content'] and PRIVATE in result['content']
-        stored = [row['content'] for row in db.get_messages('s')]
+        stored = [row.content for row in db.messages.read_transcript('s')]
         assert SECRET in stored
     finally:
         db.close()
@@ -132,7 +132,7 @@ async def test_chooser_dispatch_denies_wrong_owner_profile_and_capability(
         assert SECRET not in json.dumps(reply)
         assert _reason(reply) == reason, reply
         assert 'result' not in reply
-        assert SECRET in [row['content'] for row in db.get_messages('s')]
+        assert SECRET in [row.content for row in db.messages.read_transcript('s')]
     finally:
         db.close()
 
@@ -153,6 +153,24 @@ async def test_invalid_transcript_options_fail_closed(tmp_path, monkeypatch, opt
         assert SECRET not in json.dumps(reply)
         assert _reason(reply) == 'invalid_params', reply
         assert 'result' not in reply
-        assert SECRET in [row['content'] for row in db.get_messages('s')]
+        assert SECRET in [row.content for row in db.messages.read_transcript('s')]
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_chooser_checks_export_limit_before_reading_transcript(tmp_path, monkeypatch):
+    db, authority = _authority(tmp_path, monkeypatch)
+    try:
+        _seed(db)
+        monkeypatch.setattr('storage_limits.resolved_max_export_messages', lambda: 1)
+
+        def unexpected_read(*args, **kwargs):
+            pytest.fail('transcript body was read before enforcing the export limit')
+
+        monkeypatch.setattr(type(db.messages), 'read_transcript', unexpected_read)
+        reply = await _export(authority, format='json', transcript_options=CHOOSER)
+        assert _reason(reply) == 'export_too_large', reply
+        assert 'result' not in reply
     finally:
         db.close()

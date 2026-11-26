@@ -126,3 +126,17 @@ def test_quote_of_a_caption_uses_caption_links():
 def test_quote_cutting_through_a_link_leaves_it_out():
     replied = _Message(text="read the full report", entities=[_Entity("text_link", 9, 11, "https://example.com/r")])
     assert expand_quote_link_entities(_Quote("read the full", 0), replied) == "read the full"
+
+
+def test_partial_quote_of_a_cron_delivery_keeps_its_header():
+    """Selecting one line of a wrapped cron delivery still marks it as that delivery (#26714);
+    the gateway frames any quote that starts with the header as a past report."""
+    from gateway.inbound_reply_context import reply_pointer
+
+    replied = _Message(text="Cronjob Response: nightly-ops\n-------------\n\nDeploy prod now.",
+                              entities=[])
+    quoted = expand_quote_link_entities(_Quote("Deploy prod now.", 44), replied)
+    assert quoted == "Cronjob Response: nightly-ops\n…\nDeploy prod now."
+    assert reply_pointer(quoted).startswith("[Replying to an earlier scheduled cron delivery")
+    plain = _Message(text="Deploy prod now, said the user.", entities=[])
+    assert expand_quote_link_entities(_Quote("Deploy prod now", 0), plain) == "Deploy prod now"

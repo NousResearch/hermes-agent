@@ -32,6 +32,14 @@ def _repo(path):
     return path
 
 
+def _store_path(parent):
+    """The ``state.db`` of the profile the parent's storage handle opened."""
+    from persistence_assembly import store_location
+    path = store_location(parent.persistence.scope)
+    assert path is not None
+    return path
+
+
 def _run(parent, sid):
     child = SimpleNamespace(session_id="child", model="m", _parent_session_id=parent.session_id,
                             _delegate_resume={"goal": "g", "route": SimpleNamespace(request={})})
@@ -66,10 +74,10 @@ def test_a_running_continuation_pins_the_tree_it_moved_to_not_only_where_it_last
     a, b = repo / ".worktrees" / "subagent-old", repo / ".worktrees" / "subagent-new"
     _git("worktree", "add", "-qb", "old", str(a), cwd=repo)
     _git("worktree", "add", "-qb", "new", str(b), cwd=repo)
-    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
-        r._upsert(conn, "sa-pins", {"owners": [parent.session_id], "session_id": "child", "cwd": str(a),
-                                    "pin_paths": [str(a)], "worktrees_at_start": [str(repo), str(a), str(b)]},
-                  state="resumable", pinned=True, expires_at=time.time() + 3600)
+    assert r._write(r._db_path_for(parent), lambda ledger: r._upsert(
+        ledger, "sa-pins", {"owners": [parent.session_id], "session_id": "child", "cwd": str(a),
+                            "pin_paths": [str(a)], "worktrees_at_start": [str(repo), str(a), str(b)]},
+        state="resumable", pinned=True, expires_at=time.time() + 3600, expected=None))
     run = _run(parent, "sa-pins")
     with patch.object(r, "_child_cwd", return_value=str(a)):
         r.record_start(run)  # the continue resumes in A ...
@@ -122,8 +130,12 @@ def test_a_late_record_write_never_recreates_a_removed_profile_and_stays_owner_o
         assert stat.S_IMODE(live.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("child", ["crashed", "stopped-by-shutdown"])
 @pytest.mark.parametrize("independent", [True, False], ids=["independent-units", "one-unit"])
-def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_them(independent):
+def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_them(independent, child):
+    """A crash leaves the children's records running; a gateway restart (SIGTERM) lets each child record its
+    resumable stop while the owner exits before the unit's row turns terminal. Either way the recovered notice
+    names every child the parent can continue."""
     from hermes_constants import get_hermes_home
     from tools import async_delegation as ad
     from tools.delegate_tool import delegate_task
@@ -135,16 +147,19 @@ def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_th
         units = [u["delegation_id"] for u in out["units"]] if independent else [out["delegation_id"]]
         assert len(units) == (2 if independent else 1), out
         _completions(units)
-    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
-        # The owner died before either ledger row or child record turned terminal.
+    with sqlite3.connect(_store_path(parent)) as conn:  # health: allow HX015 -- temp-home store
+        # The owner died before either ledger row turned terminal.
         conn.execute("UPDATE async_delegations SET state='running', owner_pid=?, owner_started_at=NULL, "
                      "result_json=NULL", (_DEAD_PID,))
-        conn.execute("UPDATE resumable_subagents SET state='running', owner_pid=?, owner_started_at=NULL",
-                     (_DEAD_PID,))
+        if child == "crashed":
+            conn.execute("UPDATE resumable_subagents SET state='running', owner_pid=?, owner_started_at=NULL",
+                         (_DEAD_PID,))
+        else:
+            conn.execute("UPDATE resumable_subagents SET state='resumable', stop_cause='gateway_shutdown'")
 
     assert ad.recover_abandoned_delegations() == len(units)
 
-    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+    with sqlite3.connect(_store_path(parent)) as conn:  # health: allow HX015 -- temp-home store
         events = {d: json.loads(raw) for d, raw in conn.execute("SELECT delegation_id, event_json FROM async_delegations")}
     named = sorted(sid for evt in events.values() for sid in evt.get("resumable_subagent_ids") or ())
     assert all(events[u].get("resumable_subagent_ids") for u in units), events

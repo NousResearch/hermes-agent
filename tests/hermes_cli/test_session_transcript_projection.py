@@ -88,21 +88,25 @@ def test_redaction_never_turns_distinct_sensitive_tool_ids_into_a_false_match():
 
 
 def test_real_database_lineage_preserves_stored_tool_occurrences(tmp_path):
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=tmp_path / 'identity.db')
+    from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView
+    from tests.fixtures.storage_seed import seed_session, seed_messages
+    from tests.gateway.fixtures.storage_handles import storage_handle
+    db = storage_handle(tmp_path)
     try:
-        db.create_session('parent', source='webui')
-        db.append_messages_batch('parent', [
+        seed_session(db, 'parent', 'webui')
+        messages = [
             {'role': 'assistant', 'content': 'working', 'reasoning': 'thinking', 'tool_calls': [
                 {'id': 'a', 'function': {'name': 'shell', 'arguments': '{}'}},
                 {'id': 'b', 'function': {'name': 'shell', 'arguments': '{}'}}]},
             {'role': 'tool', 'tool_call_id': 'b', 'content': 'second'},
             {'role': 'tool', 'tool_call_id': 'a', 'content': 'first'},
-        ])
-        db.end_session('parent', 'compression')
-        db.create_session('child', source='webui', parent_session_id='parent')
-        db.append_message('child', 'assistant', 'answer')
-        rows = db.get_messages('child', include_compacted=True, include_ancestors=True)
+        ]
+        db.messages.append_batch('parent', tuple(NewMessage.from_live(message) for message in messages))
+        db.sessions.end('parent', 'compression')
+        seed_session(db, 'child', 'webui', parent_session_id='parent')
+        seed_messages(db, 'child', {'role': 'assistant', 'content': 'answer'})
+        rows = [row.as_wire_row() for row in db.messages.read_transcript(
+            'child', TranscriptRead(view=TranscriptView.DISPLAY, include_lineage=True))]
         doc = project_transcript({'id': 'child', 'messages': rows}, options(include_tools=True, include_reasoning=True), home=tmp_path)
         turns = doc['messages']
         calls = turns[0]['tool_calls']

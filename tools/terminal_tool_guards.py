@@ -12,6 +12,7 @@ keeps resolving.
 import functools
 import json
 import logging
+import os
 import re
 import shlex
 import stat
@@ -470,14 +471,17 @@ def _strip_trailing_amp(command: str) -> str:
 
 
 def _approval_identity(command: str) -> tuple:
-    """Everything the approval path keys a decision on for *command*: hardline verdict, the
-    dangerous pattern key/description (what session/permanent approvals are stored under), the
-    sudo-stdin floor, runtime self-delete, the user's deny rules and the permanent allowlist."""
+    """Everything the approval path keys a decision on for *command*: hardline verdict and whether
+    that scan finished (an unfinished one asks for a one-shot approval), the dangerous pattern
+    key/description (what session/permanent approvals are stored under), the sudo-stdin floor,
+    runtime self-delete, the user's deny rules and the permanent allowlist."""
     from agent.runtime_self_protection import command_deletes_runtime
     from tools.approval import _command_matches_permanent_allowlist, _match_user_deny_rule
-    from tools.approval_detection import _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command
+    from tools.approval_detection import (
+        _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command, hardline_scan_incomplete)
     return (
         tuple(detect_hardline_command(command)),
+        hardline_scan_incomplete(command),
         tuple(detect_dangerous_command(command)),
         tuple(_check_sudo_stdin_guard(command)),
         command_deletes_runtime(command),
@@ -616,6 +620,9 @@ def gateway_lifecycle_block(
     unsafe, refusal = scan_gateway_lifecycle(
         command,
         cwd=guard_cwd,
+        # Local backend only: the command shares this process's PID namespace, and the probe above
+        # proved this process IS the supervised gateway (#149944).
+        gateway_pid=os.getpid() if env_type == "local" else None,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
     )
     if unsafe and refusal:

@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - httpx is a hermes dependency
     httpx = None  # type: ignore[assignment]
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 import contextlib
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ def _load_auth() -> dict[str, Any]:
 
 def _save_auth(data: dict[str, Any]) -> None:
     path = _auth_json_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)  # a dead profile home raises instead of coming back
     # Random per-process temp name (no collisions / pre-planted symlinks), created 0o600
     # atomically via O_EXCL so the bearer token is never world-readable at umask.
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")

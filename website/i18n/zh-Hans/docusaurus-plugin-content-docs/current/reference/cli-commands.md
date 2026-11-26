@@ -478,6 +478,7 @@ hermes webhook subscribe <name> [options]
 | `--deliver` | 投递目标：`log`（默认）、`telegram`、`discord`、`slack`、`github_comment`。 |
 | `--deliver-chat-id` | 跨平台投递的目标聊天/频道 ID。 |
 | `--secret` | 自定义 HMAC 密钥。省略时自动生成。 |
+| `--signature` | 路由接受的签名方案：`generic`（新路由默认；`X-Webhook-Signature-V2` + `X-Webhook-Timestamp` 或 Standard Webhooks）、`github`、`gitlab` 或 `linear`。其他请求头一律拒绝。更新时省略则保留原值。参见[固定签名方案](../user-guide/messaging/webhooks.md#pin-the-signature-scheme)。 |
 | `--deliver-only` | 跳过 agent——将渲染后的 `--prompt` 作为字面消息投递。零 LLM 成本，亚秒级投递。要求 `--deliver` 为真实目标（非 `log`）。 |
 | `--script` | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入；JSON stdout 会替换 payload，空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。参见[脚本过滤与转换](../user-guide/messaging/webhooks.md#script-filters-and-transforms)。 |
 
@@ -575,23 +576,25 @@ config_overrides:
 hermes debug share [options]
 ```
 
-将调试报告（系统信息 + 近期日志）上传到粘贴服务并获取可分享的 URL。适用于快速支持请求——包含帮助者诊断问题所需的一切信息。
+将调试摘要上传到公共粘贴服务并获取可分享的 URL；或使用 `--nous` 将完整的脱敏日志发送到 Nous 私有存储。
 
 | 选项 | 说明 |
 |--------|-------------|
-| `--lines <N>` | 每个日志文件包含的日志行数（默认：200）。 |
-| `--expire <days>` | 粘贴过期天数（默认：7）。 |
+| `--lines <N>` | 每个日志文件的行数：用于摘要中的错误计数，并在 `--nous` / `--local` 中（脱敏后）包含（默认：200）。 |
+| `--expire <days>` | dpaste.com 备用粘贴的保留天数（默认：1）。 |
+| `--nous` | 上传到 Nous 内部诊断存储，而非公共粘贴服务。 |
 | `--local` | 在本地打印报告而非上传。 |
+| `--no-redact` | 关闭 `--nous` / `--local` 日志的密钥脱敏。对公共粘贴无影响，公共粘贴从不包含日志文本。 |
 
-报告包含系统信息（操作系统、Python 版本、Hermes 版本）、近期 agent 和 gateway 日志（每文件 512 KB 限制）以及脱敏的 API 密钥状态。密钥始终脱敏——不会上传任何密钥；这也涵盖系统 dump（包括 `fallback_providers` 条目及其 URL 中的凭据）和 gateway 的 `/debug` 报告。
+**公共粘贴（默认）。** 上传内容是白名单摘要，绝不包含日志行或消息文本：Hermes、Python 和操作系统版本；安装方式；已连接平台和已配置内置工具集的名称；`config.yaml` 中设置了哪些键（仅键名，无值；提供商、MCP 服务器等用户命名的条目只计数不列名）；以及近期日志中按 logger、异常类和 HTTP 状态统计的警告/错误数。gateway 的 `/debug upload` 命令和仪表盘的 **Share debug report** 按钮上传的也是这份摘要。依次尝试的粘贴服务：paste.rs、dpaste.com。
 
-依次尝试的粘贴服务：paste.rs、dpaste.com。
+**私有包（`--nous`）。** 完整调试报告、系统 dump 以及 agent、gateway、GUI/仪表盘和桌面端日志（每文件 512 KB），以及存在时的更新与桌面更新交接日志，会发送到 Nous 私有诊断存储。除非设置 `--no-redact`，密钥会被脱敏；日志中的其他个人数据（名称、ID、消息文本）不会被脱敏。返回的查看链接仅供 Nous 团队使用，14 天后自动删除。
 
 ### 示例
 
 ```bash
 hermes debug share              # 上传调试报告，打印 URL
-hermes debug share --lines 500  # 包含更多日志行
+hermes debug share --lines 500  # 为摘要扫描更多日志行
 hermes debug share --expire 30  # 粘贴保留 30 天
 hermes debug share --local      # 在终端打印报告（不上传）
 ```
@@ -1156,6 +1159,7 @@ hermes dashboard [options]
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
 | `--insecure` | 关闭 | **已弃用 / 无实际作用。** 此参数曾用于在非回环绑定上绕过鉴权；自 2026 年 6 月安全加固后，公网绑定始终需要用户名/密码或 OAuth 鉴权提供方。若需保持仅本地访问，请绑定 `127.0.0.1` 并通过隧道连接。 |
+| `--isolated` | 关闭 | 从具名 profile 启动时（`worker dashboard`），运行该 profile 专用的服务器，而不是路由到本机 Dashboard。它只列出该 profile。这只是路由/运维便利，**不是**安全边界：同一操作系统用户下的 profile 可以互相读取（接受 profile 选择参数的路由、`/api/fs/*` 以及 agent 自身的工具仍可访问同级 profile）；要隔离租户，请使用不同的操作系统用户或容器。 |
 | `--stop` | — | 停止正在运行的 `hermes dashboard` 进程并退出。 |
 | `--status` | — | 列出正在运行的 `hermes dashboard` 进程并退出。 |
 

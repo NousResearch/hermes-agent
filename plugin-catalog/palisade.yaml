@@ -1,0 +1,21 @@
+name: palisade
+title: Palisade
+repo: https://github.com/palisadeemail/palisade-mcp
+sha: 6a9a9e78dd1458d6b8b9cd341b62d36a7403bdb5
+description: "Email authentication for your domains with Palisade: audit SPF, DKIM, DMARC, MTA-STS and BIMI, read DMARC reports, check SPF lookup counts and DKIM selectors, and get the exact DNS records to publish. Portable Agent Plugins v1 package (plugin.json, stdio mcp.json, one skill), submitted by Palisade, which runs the service. Disclosure: no code of its own runs in Hermes. mcp.json runs the pinned mcp-remote@0.1.49 through npx (Node.js and npm required) against Palisade's hosted MCP server at https://api.palisade.email/mcp. Sign-in is OAuth with PKCE through Palisade's public connector client in the browser; mcp-remote listens on http://localhost:8765/oauth/callback during sign-in and stores its tokens under ~/.mcp-auth. Write tools change Palisade account state (domains, groups, tasks, webhooks, prospecting reports, hosted DMARC and MTA-STS), and two return links to Stripe-hosted billing pages; no tool writes a record at an external DNS provider. The package marks the server `trust: untrusted`, so Hermes asks before every call that is not annotated readOnlyHint. Domain, report and DNS data returned by the tools reach the user's model provider. The remote tool list can change without a new pin of this package. No telemetry, no background process, no self-update."
+maintainer: Palisade
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://www.palisade.email/mcp
+version: "0.3.0"
+readme: true
+known_issues:
+  - "Sign-in opens a browser and listens on port 8765 of the machine running Hermes, so free that port first. Cron, the messaging gateway and other unattended runs cannot complete the sign-in."
+  - "Hermes offers to install Node dependencies because the repository root also holds the npm bridge's package.json. It declares none; answering no is safe."
+  - "Auditing a domain without an account: add https://api.palisade.email/mcp/public to mcp_servers with no auth. It serves audit_domain and validate_spf_include."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

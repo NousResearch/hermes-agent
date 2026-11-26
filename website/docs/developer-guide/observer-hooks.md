@@ -207,6 +207,48 @@ where the agent blocks for a person: sudo password prompts (`kind="sudo"`),
 The typed password or answer is never included. Smart (aux-LLM) approvals do
 not fire it. Source: `tools/human_input_hooks.py`.
 
+### Session Prompt Lifecycle
+
+`on_session_prompt` / `on_session_prompt_settled` fire in the gateway when the
+session owner opens a prompt that a person answers for a session's viewers
+(CLI, Ink TUI, Desktop or a phone app attached to that session), and again
+when it stops being open. Unlike `on_human_input_request`, each call carries
+the id that answers the prompt:
+
+| `kind` | Opened when the owner | `prompt_id` answers it through |
+| --- | --- | --- |
+| `approval` | publishes an `approval.request` event | `approval.respond` |
+| `clarify` | publishes a `clarify.request` event | `clarify.respond` |
+| `sudo`, `secret`, `clarify`, `vault.unlock_prompt`, `vault.code`, `vault.save_login` | writes that server-to-client request frame (`clarify` here is the batch panel) | a response frame with that `srq-` id, or `clarify.lock` |
+
+Window requests a client app answers on its own (`theme.*`, `tour`,
+`preview.*`, `window.read`, `terminal.read`, `setup_beat`) and requests that
+are never replayed to a reconnecting viewer do not fire, and neither does a
+prompt nobody could be asked (no viewer attached).
+
+Fields: `session_id`, `kind`, `prompt_id`, `execution_generation` (the turn's
+generation for `approval` / `clarify`, `None` for request frames), and on the
+opened hook `params`: a deep copy of what the viewers received, with every
+string force-redacted the way `on_human_input_request` redacts `prompt` (even
+with `security.redact_secrets: false`). The settled hook adds `reason`: the
+`request.cancel` reason for a frame (`resolved`, `timeout`, `interrupted`) or
+`settled` for an `approval.settled` / `clarify.settled` event. What the person
+typed is never included. Each prompt id gets exactly one opened and one
+settled call, in that order.
+
+Calls are queued and run in order on one worker thread, never under the
+session's locks, on the agent thread or on the event loop, and always in the
+scope of the profile that owns the session, so on a multi-profile gateway only
+that profile's plugins see them. A slow callback delays later calls of these
+two hooks, nothing else.
+
+Use these hooks when you need to answer or track a specific prompt of a
+gateway session (a notification someone answers in place); use
+`on_human_input_request` for a surface-neutral "Hermes is waiting on you"
+signal, which also covers messaging platforms and the CLI's in-process
+prompts but has no answerable id and fires once per `clarify` call. Source:
+`gateway/session_prompt_hooks.py`.
+
 ### Approval Lifecycle
 
 Approval hooks describe dangerous-command approval prompts:

@@ -97,20 +97,21 @@ def test_oversized_image_is_rejected_by_rich_redaction(monkeypatch):
 def test_real_owner_redacted_export_preserves_image_and_scrubs_reference(tmp_path):
     from gateway import session_tui_ops
     from gateway.session_authority import SessionAuthority
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    from tests.gateway.fixtures.storage_handles import storage_handle
 
     png, encoded = _png_with_token_pattern()
     url = 'data:image/png;base64,' + encoded
     home = tmp_path / 'home'
     home.mkdir()
-    db = SessionDB(db_path=tmp_path / 'owner.db')
+    db = storage_handle(home)
     try:
-        db.create_session('s', source='webui')
-        db.append_message('s', 'user', [
+        seed_session(db, 's', 'webui')
+        seed_messages(db, 's', {'role': 'user', 'content': [
             {'type': 'text', 'text': 'https://u:p@example.invalid/?x=privatevalue'},
             {'type': 'file', 'url': 'https://u:p@example.invalid/?x=privatevalue'},
-            {'type': 'image_url', 'image_url': {'url': url}}])
-        authority = SessionAuthority(SimpleNamespace(), profile_id=str(home), instance_id='test', db=db, epoch=1)
+            {'type': 'image_url', 'image_url': {'url': url}}]})
+        authority = SessionAuthority(SimpleNamespace(), profile_id=str(home), instance_id='test', persistence=db, epoch=1)
         authority.sessions['s'] = SimpleNamespace(source=None, route='test')
         actor = SimpleNamespace(profile_id=str(home), subject='owner', capabilities={'session:read'})
         conn = SimpleNamespace(authority=authority, actor=actor)

@@ -4,12 +4,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from gateway.config import Platform
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=')
 
@@ -19,10 +22,10 @@ async def test_upload_is_authorized_private_staging_not_legacy_execution(tmp_pat
     monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'wrong-home'))
     home = tmp_path / 'owner'
     home.mkdir()
-    with SessionDB(db_path=home / 'state.db') as db:
-        db.create_session('s', source='test')
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, 's', 'test')
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(home),
-            instance_id='current', db=db, epoch=begin_runtime_epoch(db, instance_id='current'))
+            instance_id='current', epoch=db.runtime.begin_epoch(instance_id='current'), persistence=storage_handle(home))
         owner = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
         live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=Platform.LOCAL,
             user_id=owner.actor.subject), 'route')
@@ -40,8 +43,8 @@ async def test_upload_is_authorized_private_staging_not_legacy_execution(tmp_pat
         assert result['mime'] == 'image/png' and result['bytes'] == len(PNG)
         second = await upload()
         assert second['result']['path'] != str(path)
-        assert live.task is None and not db.get_messages('s')
-        with db._read_ctx() as conn:
+        assert live.task is None and not transcript_rows(db, 's')
+        with raw_holder(db)._read_ctx() as conn:
             assert conn.execute('SELECT count(*) FROM session_admissions').fetchone()[0] == 0
         before = sorted((home / 'cache/images').iterdir())
         for identity, subscribed, reason in [

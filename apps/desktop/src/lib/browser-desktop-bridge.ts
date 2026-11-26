@@ -82,15 +82,15 @@ export function installBrowserDesktopBridge(): boolean {
       ? createHostedRoute({
           launchAgent: windowConnectionOverride,
           onUnavailable: error => {
-            // An address naming that agent, or naming none while the window is still on it (it
+            // A window on another listed agent (it moved there, whatever agent its address still
+            // names) keeps its route, and the address names that agent so Retry reopens on it. An
+            // address naming the agent that left, or naming none while the window is still on it (it
             // opened on the primary that left), holds that agent's profile, chat and watch flag too;
-            // without them, Retry opens the primary on a new chat. A window on another listed agent
-            // (it moved there) keeps its route, and the address names that agent so Retry reopens
-            // on it.
+            // without them, Retry opens the primary on a new chat.
             const named = windowConnectionOverride()
             const current = $connection.get()?.connectionId
             const movedTo = current && current !== error.agentId && relays.gateway(current) ? current : null
-            const address = !named && movedTo ? new URL(window.location.href) : null
+            const address = movedTo ? new URL(window.location.href) : null
 
             if (address && movedTo) {
               // The profile with it: one the address names may be the agent's that left.

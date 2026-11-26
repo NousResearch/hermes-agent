@@ -457,13 +457,17 @@ describe('a Webapp whose host runs no agent', () => {
   })
 
   // A connection pick moves the window without writing its agent into the address.
-  it("keeps the chat route of a window that moved to another agent, naming that agent, when the one its socket opened on leaves", async () => {
+  it.each([
+    ['names no agent', 'profile=default'],
+    ['still names the agent that left', 'connectionId=alpha&profile=default']
+  ])("keeps the chat route of a window that moved to another agent when its address %s and the one its socket opened on leaves", async (_case, launch) => {
     const agents = [ALPHA, BETA]
     dashboardHost({ agents })
+    window.history.replaceState(null, '', `/?${launch}`)
     const desktop = install()
     $connection.set(await desktop.getConnection())
     $connection.set(await desktop.getConnectionFor!({ connectionId: 'beta', profile: 'research' }))
-    window.history.replaceState(null, '', '/?profile=default#/beta-chat')
+    window.history.replaceState(null, '', `/?${launch}#/beta-chat`)
 
     agents.splice(0, 1)
     await desktop.connections!.list()

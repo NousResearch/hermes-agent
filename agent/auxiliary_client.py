@@ -3317,12 +3317,13 @@ _TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"
 def _should_skip_same_provider_retry(task: Optional[str], failure: aux_errors.Failure) -> bool:
     """True when a transient error on a critical-path task should go straight to fallback.
 
-    Carve-out: a fast first-token fail (dead stream within the no-progress window, zero output —
-    see ``_timeout_message``) is cheap and keeps the same-provider retry; mid-stream stalls and
-    hard-ceiling timeouts skip to fallback.
+    A first-output timeout has already spent the no-progress window on the
+    current route. Compression blocks the turn, so it falls back immediately.
+    Vision and title generation retain their first-output retry.
     """
-    return (task in _TIMEOUT_NO_RETRY_TASKS and failure.verdict.error_context.get("transport") == "timeout"
-            and "no-progress timeout" not in str(failure.error))
+    if task not in _TIMEOUT_NO_RETRY_TASKS or failure.verdict.error_context.get("transport") != "timeout":
+        return False
+    return task == "compression" or "no-progress timeout" not in str(failure.error)
 
 
 def _evict_cached_clients(provider: str) -> None:
@@ -8061,7 +8062,7 @@ def _call_llm_impl(
             if exc is None:
                 return resp
             failure = _primary_failure(req, exc)
-            if not aux_errors.same_provider_retry(failure.verdict):
+            if not _should_retry_same_provider(task, failure, ""):
                 break
 
     def _perform(step: _LadderStep) -> Any:

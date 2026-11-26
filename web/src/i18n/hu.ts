@@ -799,4 +799,17 @@ export const hu: Translations = {
     logTruncated: "(az utolsó 100 KB látható — teljes napló: ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Telepíthető",
+    hint: "Üzenetküldő platformok a Hermes bővítménykatalógusából. A telepítés hozzáadja és engedélyezi a bővítményt, majd megnyitja a beállítását.",
+    badgeOfficial: "Hivatalos",
+    badgeVerified: "Ellenőrzött",
+    disclosure: "Közzététel:",
+    lazyInstallsOff: "Az automatikus bővítménytelepítés ki van kapcsolva (security.allow_lazy_installs).",
+    run: "Futtasd:",
+    install: "Telepítés",
+    installing: "Telepítés…",
+    installed: (title: string) => `${title} telepítve. Add meg a hitelesítő adatait a csatlakoztatáshoz.`,
+    installFailed: (title: string) => `Nem sikerült telepíteni: ${title}`,
+  },
 };

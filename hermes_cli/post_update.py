@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 from hermes_cli._launchers import expose_cli
+from hermes_cli.default_plugins import step_install_default_plugins
 from pm.paths import install_root
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,9 @@ def _backup_existing(paths: Iterable[Path]) -> dict:
             continue
         dest = _backup_path(path, stamp)
         shutil.copy2(path, dest)
+        from hermes_cli.config import _secure_file  # copy2 keeps the source's (possibly 0644) mode
+
+        _secure_file(dest)
         backups[path] = dest
     return backups
 
@@ -335,6 +339,7 @@ HOME_STEPS: tuple = (
     ("state_db_guard", step_state_db_guard),
     ("drop_live_plugin_catalog", step_drop_live_plugin_catalog),
     ("expose_cli", expose_cli),
+    ("install_default_plugins", step_install_default_plugins),
 )
 
 # Startup skill syncing belongs to each entry point. Boot bootstrap must

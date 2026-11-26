@@ -10,6 +10,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_seed import seed_messages
 
 
 def _server(home):
@@ -41,8 +42,7 @@ def _owner_pair(hosted_owner, tmp_path):
 def test_watcher_delivers_terminal_once_with_bounded_polls_past_the_response_cap(hosted_owner, tmp_path, monkeypatch):
     from gateway import session_hosted_transport as transport
     from gateway.control_socket import _MAX_RESPONSE_BYTES
-    from gateway.hosted_room_driver import TaskIdentity
-    from hermes_state_runtime import claim_session_input, settle_session_input
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
     from tui_gateway.hosted_room_driver import _bounded_terminal_result
     authority, loop, _, _ = hosted_owner
     polls, real_request = [], transport.owner_request
@@ -58,17 +58,17 @@ def test_watcher_delivers_terminal_once_with_bounded_polls_past_the_response_cap
         sid = rpc.create(**coords, title='Group: room')['session_id']
         # A long member conversation: the transcript alone exceeds the response line cap.
         for _ in range(3):
-            authority.db.append_message(sid, 'assistant', 'transcript ' * 25_000)
+            seed_messages(authority.persistence, sid, {'role': 'assistant', 'content': 'transcript ' * 25_000})
         received, done = [], threading.Event()
         def terminal(receipt):
             received.append(receipt)
             done.set()
-        receipt = rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+        receipt = rpc.submit(**coords, session_id=sid, prompt='input', task=HostedTaskIdentity('room', 'task', 'thread', 'turn'),
                              execution_generation=1, on_terminal=terminal)
         final = '\u20ac' * 100_000  # 300 KB UTF-8, 600 KB as an escaped JSON string
-        row = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
-        settle_session_input(authority.db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'],
-                             outcome='completed', result={'result': {'final_response': final}, 'usage': {}})
+        row = authority.persistence.admissions.claim(epoch=authority.epoch, session_id=sid)
+        authority.persistence.admissions.settle(epoch=authority.epoch, admission_id=row.admission_id, generation=row.generation,
+                                                outcome='completed', result={'result': {'final_response': final}, 'usage': {}})
         assert done.wait(10), 'a completed turn must reach its callback despite the transcript size'
         rpc._monitor.join(5)
         assert not rpc._monitor.is_alive() and not rpc.callbacks
@@ -93,7 +93,7 @@ def test_watcher_delivers_terminal_once_with_bounded_polls_past_the_response_cap
 def test_oversized_owner_response_is_a_distinct_structured_error(hosted_owner, tmp_path):
     from gateway.control_socket import _MAX_RESPONSE_BYTES
     from gateway.session_hosted_transport import HostedRoomOwnerRPC
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     _, loop, _, _ = hosted_owner
     source, target, servers = _owner_pair(hosted_owner, tmp_path)
     try:
@@ -104,7 +104,7 @@ def test_oversized_owner_response_is_a_distinct_structured_error(hosted_owner, t
         assert response['error'] == response['code'] == 'response_too_large'
         assert response['limit'] == _MAX_RESPONSE_BYTES
         rpc = HostedRoomOwnerRPC(home=target, source_home=source, room_id='room', member_id='member', profile='default')
-        with pytest.raises(RuntimeStoreError) as exc:
+        with pytest.raises(AuthorityRefusal) as exc:
             rpc.info(profile='default', session_id='s', source='bot_room')
         assert exc.value.reason == 'response_too_large'
     finally:

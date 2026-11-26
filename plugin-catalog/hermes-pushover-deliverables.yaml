@@ -1,0 +1,21 @@
+name: hermes-pushover-deliverables
+repo: https://github.com/Jessy-Boo/hermes-pushover-deliverables
+sha: 91327e7036b7ba3ce44d41a459a8154c12c02ba0
+description: "Pushover deliverables for Hermes Agent (send-only). Registers four severity-tiered cron delivery platforms — pushover-quiet, pushover-normal, pushover-high and pushover-critical (emergency: repeats until acknowledged), so a cron job picks an intent with a plain deliver=pushover-<severity> — and a pushover_send_file agent tool that delivers an image as a real Pushover attachment (png/jpeg/gif, 5 MB, magic-byte verified against the 5,242,880-byte limit), returning the Pushover request id and, at emergency priority, the receipt id needed to cancel the repeating alert. Disclosure — sends HTTPS requests only to api.pushover.net carrying your Pushover app token, user key, message text and, through pushover_send_file, the bytes of the one png/jpeg/gif file the agent points it at (up to 5 MB); the pushover-critical target and priority 2 send emergency alerts that repeat on your devices until acknowledged or expired (default one hour); credentials are read only through Hermes's scoped secret route; writes nothing to disk and runs no background processes or telemetry."
+maintainer: Jessy-Boo
+tier: community
+category: platform
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Jessy-Boo/hermes-pushover-deliverables#readme
+version: "1.0.0"
+readme: true
+image: https://raw.githubusercontent.com/Jessy-Boo/hermes-pushover-deliverables/91327e7036b7ba3ce44d41a459a8154c12c02ba0/assets/hero.png
+platforms: []
+capabilities:
+  provides_tools:
+  - pushover_send_file
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - PUSHOVER_APP_TOKEN
+  - PUSHOVER_USER_KEY

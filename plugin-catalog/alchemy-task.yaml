@@ -1,0 +1,75 @@
+name: alchemy-task
+repo: https://github.com/Darengb/alchemy-task
+sha: a3f90e0d358c132447b6eda1f774475f0aa3ccfc
+description: "Alchemy Task does the work before the work: it turns messy real-world work into finely researched tasks, ready for your agent to do for you. Disclosure — research and discovery start read-only Hermes subagents on your model that can read your files, past sessions, Hermes memory files and the Git history of repositories under your home folder (credential files excluded; a pre_tool_call hook blocks write, shell, send and credential reads); discovery readers must be read-only tools and scheduled runs cannot create or change scheduled jobs unless you set cron.allow_agent_scheduling; task files are Markdown in a Git workspace you choose, committed and pushed with your own git setup; setup copies loader scripts into $HERMES_HOME/scripts/ and creates scheduled jobs after you approve them (a 30-minute research sweep, an hourly script, and one per discovery stream that checks every 30 minutes and wakes the agent only at your chosen time, on a manual run or for a pending follow-up), and can change Hermes's timezone if you agree; background threads poll the Start-in-chat queue every second and, for chats linked to a task, write automatic checkpoints (one small model call, a commit and push) after 30 idle minutes; Start in chat posts into your messaging chat only if you grant allow_gateway_injection; optional iPhone Reminders sync uses the Hermes mobile connector. No telemetry."
+maintainer: Darengb
+title: "Alchemy Task"
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Darengb/alchemy-task/a3f90e0d358c132447b6eda1f774475f0aa3ccfc/docs/cover.jpg
+platforms:
+  - linux
+  - macos
+known_issues:
+  - "iPhone Reminders sync needs the Hermes mobile app (beta) with Reminders access; the current app beta does not offer it for Nous Cloud agents."
+screenshots:
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/a3f90e0d358c132447b6eda1f774475f0aa3ccfc/docs/screenshots/task-research.png
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/a3f90e0d358c132447b6eda1f774475f0aa3ccfc/docs/screenshots/discovery.png
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/a3f90e0d358c132447b6eda1f774475f0aa3ccfc/docs/screenshots/phone.png
+  - https://raw.githubusercontent.com/Darengb/alchemy-task/a3f90e0d358c132447b6eda1f774475f0aa3ccfc/docs/screenshots/tasks-week.png
+capabilities:
+  provides_tools:
+    - task_create
+    - task_update
+    - task_find
+    - task_research
+    - task_research_sweep
+    - task_work_start
+    - task_checkpoint
+    - task_setup
+    - task_ios
+    - discovery_stream
+    - discovery_start
+    - discovery_submit
+    - discovery_decide
+    - discovery_config
+    - discovery_collect
+    - discovery_context
+    - discovery_research_run
+    - discovery_research_fetch
+    - discovery_research_submit
+    - discovery_research_accept
+    - discovery_actions
+    - discovery_reconcile
+    - discovery_join
+    - discovery_recover
+    - discovery_release_hold
+    - discovery_match
+    - discovery_decision
+    - discovery_conversion_recover
+    - discovery_digest
+    - discovery_runs
+    - discovery_link_audit
+    - discovery_replay
+    - research_skills_list
+    - research_skill_view
+    - research_capabilities
+    - research_submit
+    - research_git_find_repos
+    - research_git_log
+    - research_git_show
+    - research_git_grep
+    - research_git_ls_files
+  provides_hooks:
+    - pre_tool_call
+    - subagent_start
+    - subagent_stop
+    - pre_llm_call
+    - post_llm_call
+    - on_session_finalize
+    - post_compaction
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

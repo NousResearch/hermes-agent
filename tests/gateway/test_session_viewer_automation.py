@@ -19,28 +19,30 @@ async def owner(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
     from hermes_cli import goals
+    from persistence_assembly import open_persistence
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path / 'fixture'), instance_id='owner')
-    monkeypatch.setattr(goals, '_get_session_db', lambda: authority.db)  # the owner's own store
+    owner_store = open_persistence(authority.persistence.scope)
+    monkeypatch.setattr(goals, '_get_session_db', lambda: owner_store)  # the owner's own store
     viewer = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': str(tmp_path / 'fixture')})
     ref = create_local_session(authority, viewer.actor, {'request_id': 'r', 'source': 'cli',
                                                          'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
-    target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
+    target = authority.persistence.bindings.receipt(ref.session_id).current_target
 
     async def call(kind, name, *args, **kwargs):
         reply = await viewer.dispatch({'id': 1, 'method': 'session.automation', 'params': {
             'session_id': ref.session_id, 'kind': kind, 'call': name, 'args': list(args), 'kwargs': kwargs}})
         return reply.get('result', reply.get('error'))
     try:
-        yield SimpleNamespace(call=call, db=authority.db, target=target, authority=authority, ref=ref, viewer=viewer)
+        yield SimpleNamespace(call=call, db=authority.persistence, target=target, authority=authority, ref=ref, viewer=viewer)
     finally:
+        owner_store.close()
         store.close_all_db_handles()
 
 
@@ -49,16 +51,16 @@ async def test_goal_mutations_land_in_the_owners_row(owner):
     reply = await owner.call('goal', 'set', 'ship it', max_turns=5)
     state = json.loads(reply['state'])
     assert (state['goal'], state['status'], state['max_turns']) == ('ship it', 'active', 5)
-    assert json.loads(owner.db.get_meta('goal:' + owner.target))['goal'] == 'ship it'
+    assert json.loads(owner.db.state_meta.get('goal:' + owner.target))['goal'] == 'ship it'
     reply = await owner.call('goal', 'add_subgoal', 'and test it')
     assert reply['value'] == 'and test it'
-    assert json.loads(owner.db.get_meta('goal:' + owner.target))['subgoals'] == ['and test it']
+    assert json.loads(owner.db.state_meta.get('goal:' + owner.target))['subgoals'] == ['and test it']
     reply = await owner.call('goal', 'remove_subgoal', 9)
     assert reply['error'] == {'type': 'IndexError', 'message': 'index out of range (1..1)'}
     await owner.call('goal', 'pause', reason='user-paused')
-    assert json.loads(owner.db.get_meta('goal:' + owner.target))['status'] == 'paused'
+    assert json.loads(owner.db.state_meta.get('goal:' + owner.target))['status'] == 'paused'
     await owner.call('goal', 'clear')
-    assert json.loads(owner.db.get_meta('goal:' + owner.target))['status'] == 'cleared'
+    assert json.loads(owner.db.state_meta.get('goal:' + owner.target))['status'] == 'cleared'
 
 
 @pytest.mark.asyncio
@@ -77,7 +79,7 @@ async def test_the_goal_judge_runs_on_the_owner(owner, monkeypatch):
     assert decision['should_continue'] is True
     assert decision['message'] == '↻ Continuing toward goal (1/20): only the outline exists'
     assert decision['continuation_prompt'].startswith('[Continuing toward your standing goal]')
-    assert json.loads(owner.db.get_meta('goal:' + owner.target))['turns_used'] == 1
+    assert json.loads(owner.db.state_meta.get('goal:' + owner.target))['turns_used'] == 1
 
     from gateway.session_viewer_automation import viewer_driven
     assert not viewer_driven(owner.authority, owner.ref.session_id), 'no subscription: the gateway hooks run'
@@ -92,11 +94,11 @@ async def test_loop_and_heartbeat_ticks_are_claimed_on_the_owner(owner):
     assert wake.startswith('[/loop wakeup #1')
     reply = await owner.call('loop', 'complete_tick', 'nothing new')
     assert reply['value']['message'] == '✓ Loop finished — ran 1/1 times.'
-    assert json.loads(owner.db.get_meta('loop:' + owner.target))['status'] == 'done'
+    assert json.loads(owner.db.state_meta.get('loop:' + owner.target))['status'] == 'done'
     reply = await owner.call('heartbeat', 'set', 'pulse', 60)
     assert json.loads(reply['state'])['interval_seconds'] == 60
     assert (await owner.call('heartbeat', 'clear'))['value'] is True
-    assert json.loads(owner.db.get_meta('heartbeat:' + owner.target))['status'] == 'cleared'
+    assert json.loads(owner.db.state_meta.get('heartbeat:' + owner.target))['status'] == 'cleared'
 
 
 @pytest.mark.asyncio

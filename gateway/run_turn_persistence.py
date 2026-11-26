@@ -20,6 +20,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
+from storage_user_copy import error_type_name
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent
@@ -48,10 +49,10 @@ logger = logging.getLogger("gateway.run")
 def _acp_launch(runner, source) -> bool:
     """An editor session: ACP shows no reasoning event yet, so its reply keeps the projected block."""
     from gateway.session_setting_commands import local_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     try:
         return getattr(local_policy(runner, source), "source", None) == "acp"
-    except RuntimeStoreError:  # a local route with no restored policy is not an editor launch
+    except AuthorityRefusal:  # a local route with no restored policy is not an editor launch
         return False
 
 
@@ -218,24 +219,30 @@ class GatewayTurnPersistenceMixin:
         block = self._hmwa_reasoning_block(agent_result, response, source, _intentional_silence)
         return f"{block}\n\n{response}" if block else response
 
-    def _hmwa_reasoning_block(self, agent_result, response, source, _intentional_silence) -> str:
-        """The rendered reasoning block for this turn's reply, or "" when none is shown."""
+    def _show_reasoning_for_source(self, source) -> bool:
+        """Whether ``show_reasoning`` is effectively on for this source's platform.
+
+        LOCAL viewers (Desktop/TUI) read reasoning from their event stream, never the projected
+        block, so they are always False here. The single resolver for the block renderer AND the
+        stream gate that keeps reasoning above a streamed answer (one combined message)."""
         if source.platform == Platform.LOCAL and not _acp_launch(self, source):
-            # Local viewers receive reasoning.delta through their event stream; projecting it into
-            # the final response duplicates it and leaks messaging-platform formatting into Desktop.
-            return ""
+            return False
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
-            _show_reasoning_effective = _resolve_gateway_display_bool(
+            return _resolve_gateway_display_bool(
                 _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
                 default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
                 require_platform_override_for={Platform.MATTERMOST},
             )
         except Exception:
             logger.debug("show_reasoning resolution failed; using the gateway default", exc_info=True)
-            _show_reasoning_effective = (
-                False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
+            return (
+                False if source.platform == Platform.MATTERMOST else bool(getattr(self, "_show_reasoning", False))
             )
+
+    def _hmwa_reasoning_block(self, agent_result, response, source, _intentional_silence) -> str:
+        """The rendered reasoning block for this turn's reply, or "" when none is shown."""
+        _show_reasoning_effective = self._show_reasoning_for_source(source)
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return ""
@@ -249,6 +256,7 @@ class GatewayTurnPersistenceMixin:
         # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
         try:
             from gateway.display_config import resolve_display_setting
+            from gateway.run import _load_gateway_config, _platform_config_key
             _reasoning_style = resolve_display_setting(
                 _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
             )
@@ -468,12 +476,12 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_fresh_session_has_pending_input(self, session_entry) -> bool:
         """Whether the authority FIFO of the fresh session already holds an admitted input."""
         from gateway.session_authorities import active_authority
-        from hermes_state_runtime import list_session_admissions
+        from gateway.session_persistence import authority_persistence
         authority = active_authority(self)
         if authority is None or session_entry is None:
             return False
         owner = authority.logical_owner(session_entry.session_id)
-        return bool(list_session_admissions(authority.db, session_id=owner))
+        return bool(authority_persistence(authority).admissions.list(session_id=owner))
 
     def _hmwa_defer_exhaustion_reset(self, session_entry, session_key, source):
         """True when the reset was handed to the authority drain. A LOCAL session (the Bot Chat a
@@ -807,19 +815,10 @@ class GatewayTurnPersistenceMixin:
                 _footer_captioned = await self._deliver_media_from_response(
                     response, event, adapter, footer_line="" if _intentional_silence else _footer_line,
                     thread_metadata=_mark_notify_metadata(self._event_thread_metadata(event, source)))
-            ledgered = bool(response and adapter and agent_result.get("delivery_uncertain")) and (
-                await self._ledger_uncertain_streamed_final(event, session_key, response, adapter))
-            # The stream showed only the answer: the reasoning block prepended to ``response`` for
-            # show_reasoning never reached the chat, so it follows as its own message (#7251). A
-            # ledgered final already carries it: its redelivery sends reasoning and answer together.
-            reasoning_block = "" if ledgered else self._hmwa_reasoning_block(
-                agent_result, response, source, _intentional_silence)
-            # A bot peer would take a second message as fresh input: gated like the footer line.
-            if reasoning_block and adapter and automatic_notices_allowed(source):
-                try:
-                    await adapter.send(source.chat_id, reasoning_block, metadata=self._event_thread_metadata(event, source))
-                except Exception:
-                    logger.debug("trailing reasoning send failed", exc_info=True)
+            # An uncertain streamed final is ledgered for marked resend (non-reasoning turns only:
+            # when show_reasoning is on, the answer is not streamed, so this turn is not already_sent).
+            if response and adapter and agent_result.get("delivery_uncertain"):
+                await self._ledger_uncertain_streamed_final(event, session_key, response, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter and not _intentional_silence and not _footer_captioned:
                 try:
@@ -906,7 +905,7 @@ class GatewayTurnPersistenceMixin:
             return record_unexecuted_failure(launch_credentials_copy(e), 'launch_credentials_unavailable')
         # A local client (CLI, TUI, Desktop) is the operator at this host: its result carries the
         # real cause, so its details line is not the chat apology with the log pointer cut off.
-        local_error = f"{type(e).__name__}: {e}"[:500] if source.platform == Platform.LOCAL else None
+        local_error = f"{error_type_name(e)}: {e}"[:500] if source.platform == Platform.LOCAL else None
         return record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
         ), error=local_error)

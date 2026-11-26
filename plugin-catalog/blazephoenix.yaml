@@ -1,9 +1,9 @@
 name: blazephoenix
 title: BlazePhoenix
 repo: https://github.com/blazephoenixxyz-crypto/blazephoenix-hermes-plugin
-sha: a277468e0116b6cbbe610ebb000a325a61bd9527
+sha: 77ca23d308361a5eeb9ea9d3d953d7719a12a57b
 version: "1.0.0"
-description: "Swap quotes from BlazePhoenix, the on-chain DEX aggregator, measured on the user's own RPC and verified locally: net output, Phoenix Check verdict and unsigned Router calldata checked field by field before anything is signed. Base, Ethereum, Optimism, Arbitrum, Robinhood Chain. Disclosure: HTTPS calls to blazephoenix.xyz (prepare/decode, pure, no RPC; receives token addresses, amount, recipient and minimum, never the RPC URL) and eth_chainId/eth_call to the RPC URL the user sets. Never signs, never sends, never handles keys; no shell, no files, no background processes, no telemetry. Standard library only."
+description: "Swap quotes from BlazePhoenix, the on-chain DEX aggregator, measured on the user's own RPC and verified locally: net output, Phoenix Check verdict and unsigned Router calldata checked field by field before anything is signed, plus the dollar value of a token amount measured through Multicall3 on that RPC. Base, Ethereum, Optimism, Arbitrum, Robinhood Chain. Disclosure: HTTPS calls to blazephoenix.xyz (prepare/decode, pure, no RPC; receives token addresses, amount, recipient and minimum, never the RPC URL) and eth_chainId/eth_call/eth_getBlockByNumber to the RPC URL the user sets. Never signs, never sends, never handles keys; no shell, no files, no background processes, no telemetry. Standard library only."
 maintainer: Mitra
 tier: community
 category: tools
@@ -12,7 +12,7 @@ requires_hermes: ">=0.23.0"
 readme: true
 platforms: []
 capabilities:
-  provides_tools: [blazephoenix_quote, blazephoenix_verify_calldata, blazephoenix_chains]
+  provides_tools: [blazephoenix_quote, blazephoenix_verify_calldata, blazephoenix_usd_value, blazephoenix_chains]
   provides_hooks: []
   provides_middleware: []
   requires_env: [BLAZEPHOENIX_RPC_BASE]

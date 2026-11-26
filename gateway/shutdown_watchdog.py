@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import faulthandler
+import itertools
 import json
 import logging
 import os
@@ -20,8 +21,11 @@ import threading
 import time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
+# Top-level, not lazy: at fire time the host may be thrashing, and a first import reads disk.
+from gateway.lifecycle_ledger import sample_memory, sample_oom_kills, sample_pressure_stall
+from gateway.memory_status import PRESSURE_CRITICAL, _mb, classify_pressure
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_json_write
@@ -41,6 +45,18 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 # the loop it monitors) is fixed at the root by the off-loop heartbeat write + two-witness probe (#90502),
 # so the default stays tight for genuine wedges.
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+# Liveness-kill forensics (log lines, memory sample, dump, stamp, log drain) run in a worker the kill
+# waits on for at most _FIRE_FORENSICS_BUDGET_S; inside it the memory sample gets at most
+# _FIRE_SAMPLE_BUDGET_S so a stalled procfs read still leaves time for the dump and stamp (#148527).
+_FIRE_FORENSICS_BUDGET_S = 5.0
+_FIRE_SAMPLE_BUDGET_S = 2.0
+_DECISION_LOCK_S = 0.1  # commit-vs-stand-down lock: held only for a flag check
+# Bound on the pre-``os._exit`` drain of the async file-log queue (both watchdogs).
+_LOG_DRAIN_S = 1.0
+# Thread and frame counts for the Python-rendered stacks, the same counts faulthandler's file copy
+# stops at: the stderr copy then grows with these caps, not with how many threads the gateway runs.
+_STDERR_STACK_THREADS = 100
+_STDERR_STACK_FRAMES = 100
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -94,6 +110,12 @@ def start_loop_liveness_watchdog(
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
     opt-out."""
     stop_event = threading.Event()
+    # The thread a post-mortem has to read first is the loop's own. ``BaseEventLoop`` records it
+    # while the loop runs, and this starter runs on the loop thread, so its own ident covers the
+    # mock and not-yet-running cases.
+    loop_thread_id = getattr(loop, "_thread_id", None)
+    if not isinstance(loop_thread_id, int):
+        loop_thread_id = threading.get_ident()
 
     def _watchdog() -> None:
         strikes = 0
@@ -123,21 +145,10 @@ def start_loop_liveness_watchdog(
                 continue
             if stop_event.is_set():
                 return
-            with contextlib.suppress(Exception):
-                logger.critical(
-                    "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
-                    "stacks and exiting with code %d so the service supervisor can restart it.",
-                    strikes, exit_code)
-            # File + stderr: a console-less launcher (Windows .vbs login item) discards stderr, so a
-            # liveness death used to leave no stack anywhere (#120356, #91097).
-            _write_watchdog_dump(
-                get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
-                snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
-                event="loop_liveness_watchdog_fired")
-            if stop_event.is_set():
-                return
-            _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
-            _hard_exit(exit_code)
+            if _run_liveness_forensics(stop_event, strikes=strikes, exit_code=exit_code,
+                                       probe_interval=probe_interval, probe_timeout=probe_timeout,
+                                       loop_thread_id=loop_thread_id):
+                _hard_exit(exit_code)
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
         thread.start()
@@ -147,16 +158,120 @@ def start_loop_liveness_watchdog(
     return _LoopLivenessWatchdogHandle(stop_event, thread)
 
 
+def _run_liveness_forensics(stop_event: threading.Event, *, strikes: int, exit_code: int,
+                            probe_interval: float, probe_timeout: float,
+                            loop_thread_id: Optional[int] = None) -> bool:
+    """Log, sample, dump, stamp and drain in one daemon worker the kill waits on for at most
+    ``_FIRE_FORENSICS_BUDGET_S``, so a Python-level stall (wedged log handler, stalled disk) costs
+    the forensics, not the exit (#148527).  Returns False when a ``stop()`` won the race against
+    the worker's commit point (the caller stands down); True otherwise, including when the worker
+    stalled or could not start and no ``stop()`` arrived.  Never raises."""
+    decided = threading.Lock()  # commit vs stand-down: exactly one wins; no I/O while held
+    committed = False
+
+    def work() -> None:
+        nonlocal committed
+        with contextlib.suppress(Exception):
+            logger.critical(
+                "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
+                "stacks and exiting with code %d so the service supervisor can restart it.",
+                strikes, exit_code)
+        memory = _sample_fire_memory()  # bounded, never raises; {} when sampling failed or stalled
+        # File + stderr: a console-less launcher (Windows .vbs login item) discards stderr, so a
+        # liveness death used to leave no stack anywhere (#120356, #91097).
+        _write_watchdog_dump(
+            get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
+            snapshot={"strikes": strikes, "probe_interval_s": probe_interval, **memory},
+            event="loop_liveness_watchdog_fired", loop_thread_id=loop_thread_id)
+        with decided:
+            if stop_event.is_set():  # the last stand-down point
+                return
+            committed = True  # from here the kill happens
+        # Stamp before the drain: the stamp is what the next boot reads, the drain only flushes logs.
+        _mark_exited_quietly(exit_code, "loop_liveness_watchdog",
+                             host_memory_pressure=memory.get("host_memory_pressure"))
+        _drain_log_queue_quietly()
+
+    # A worker that cannot even be built still leaves the exit to the decision below.
+    _run_bounded_worker(work, "gateway-liveness-forensics", _FIRE_FORENSICS_BUDGET_S)
+    # Bounded: a worker descheduled inside the critical section must not hold up the kill.  When
+    # the decision can't be taken, exit; standing down needs the lock, so the worker can't stamp
+    # a process that keeps running.
+    if not decided.acquire(timeout=_DECISION_LOCK_S):
+        return True
+    try:
+        return committed or not stop_event.is_set()
+    finally:
+        decided.release()
+
+
+def _sample_fire_memory() -> dict[str, Any]:
+    """Run :func:`_liveness_memory_snapshot` in a short-lived daemon worker and wait at most
+    ``_FIRE_SAMPLE_BUDGET_S``; return whatever snapshot it published by then (``{}`` if none), so
+    the kill proceeds even when procfs or a log handler stalls.  Never raises."""
+    out: dict[str, Any] = {}
+    _run_bounded_worker(lambda: _liveness_memory_snapshot(out), "gateway-liveness-memory-sample",
+                        _FIRE_SAMPLE_BUDGET_S)
+    return dict(out.get("snapshot") or {})
+
+
+def _run_bounded_worker(target: Callable[[], None], name: str, timeout: float) -> None:
+    """Run ``target`` in a named daemon thread and wait at most ``timeout`` for it.  Building or
+    starting a thread allocates, so on a starved host either can raise: the caller then goes on
+    without the worker.  No logging: the kill must not wait on a handler.  Never raises."""
+    with contextlib.suppress(MemoryError, RuntimeError):
+        worker = threading.Thread(target=target, daemon=True, name=name)
+        worker.start()
+        worker.join(timeout)
+
+
+def _liveness_memory_snapshot(out: dict[str, Any]) -> None:
+    """Publish fresh host-memory evidence ``{mem, psi, host_memory_pressure}`` as
+    ``out["snapshot"]``, then, at critical pressure only, log one ERROR line saying a restart may
+    not help.  Sampled in the watchdog's worker from procfs, not read from the heartbeat, which the
+    wedged loop has left stale by at least the strike window.  The line prints the gateway's own
+    RSS because the gateway itself may be the hog.  Never raises (#148527)."""
+    try:
+        mem = sample_memory()
+        psi = sample_pressure_stall()
+        pressure = classify_pressure(mem.get("mem_available_kib"), mem.get("mem_total_kib"))
+        out["snapshot"] = {"mem": mem, "psi": psi, "host_memory_pressure": pressure}
+        if pressure != PRESSURE_CRITICAL:
+            return
+        mib = [_mb(mem.get(key)) for key in ("mem_available_kib", "mem_total_kib", "rss_kib")]
+        logger.error(  # ERROR, not CRITICAL: the kill itself is the one CRITICAL line
+            "Host memory pressure is critical at the liveness-watchdog kill (MemAvailable %s MiB "
+            "of %s MiB, gateway RSS %s MiB, PSI memory full avg10=%s): a restart frees only the "
+            "gateway's own memory; if other processes hold the rest, the next gateway will be "
+            "starved the same way.",
+            *("n/a" if value is None else value for value in mib),
+            psi.get("memory", {}).get("full_avg10", "n/a"))
+    except Exception:
+        with contextlib.suppress(Exception):
+            logger.debug("Fire-time memory snapshot failed", exc_info=True)
+
+
+def _drain_log_queue_quietly() -> None:
+    """Bounded flush of the async file-log queue so queued lines land before ``os._exit`` skips
+    atexit.  Never raises."""
+    with contextlib.suppress(Exception):
+        from hermes_logging import drain_log_queue
+        drain_log_queue(timeout=_LOG_DRAIN_S)
+
+
 def _hard_exit(exit_code: int) -> None:
     """``os._exit`` skips every cleanup: SIGKILL in-flight foreground commands first, they run in their
     own process group and would outlive the gateway, reparented to init."""
-    with contextlib.suppress(Exception):
-        from tools.environments.base import kill_live_foreground_processes
-        kill_live_foreground_processes(now=True)
+    # Only if already imported: a first import on a thrashing host could stall the kill, and a
+    # process that never imported it has no foreground children to reap.
+    base = sys.modules.get("tools.environments.base")
+    if base is not None:
+        with contextlib.suppress(Exception):
+            base.kill_live_foreground_processes(now=True)
     os._exit(exit_code)
 
 
-def _mark_exited_quietly(exit_code: int, reason: str) -> None:
+def _mark_exited_quietly(exit_code: int, reason: str, *, host_memory_pressure: Optional[str] = None) -> None:
     """Best-effort terminal stamp on BOTH lifecycle records before ``os._exit`` skips teardown:
     the lifecycle ledger (so the next boot names the watchdog, not SIGKILL/OOM) and
     ``gateway_state.json`` (so ``hermes gateway status`` and every other reader of that file stop
@@ -164,7 +279,7 @@ def _mark_exited_quietly(exit_code: int, reason: str) -> None:
     LAST: it is the record housekeeping refreshes, so nothing may overwrite it after we stamp it."""
     with contextlib.suppress(Exception):
         from gateway.lifecycle_ledger import mark_exited
-        mark_exited(exit_code, reason=reason)
+        mark_exited(exit_code, reason=reason, host_memory_pressure=host_memory_pressure)
     with contextlib.suppress(Exception):  # os._exit skips atexit: stamp the exit-metrics marker now
         from hermes_cli.observability.shared_metrics_process import stamp_exit
         stamp_exit("watchdog")
@@ -207,6 +322,11 @@ def get_shutdown_watchdog_dump_path(home: Optional[Path] = None) -> Path:
     return _home(home).joinpath(*_WATCHDOG_DUMP_RELATIVE)
 
 
+def _thread_name(ident: Optional[int]) -> Optional[str]:
+    """Name of the live thread with this ident, or None once it has exited."""
+    return next((thread.name for thread in threading.enumerate() if thread.ident == ident), None)
+
+
 def write_loop_heartbeat(
     *, pid: Optional[int] = None, start_time: Optional[float] = None,
     home: Optional[Path] = None, extra: Optional[dict[str, Any]] = None) -> Path:
@@ -219,9 +339,11 @@ def write_loop_heartbeat(
     if start_time is not None:
         payload["start_time"] = float(start_time)
     with contextlib.suppress(Exception):  # after an unclean death this is the last memory record
-        from gateway.lifecycle_ledger import sample_memory
         if mem := sample_memory():
             payload["mem"] = mem
+    with contextlib.suppress(Exception):  # lets the next boot see kernel OOM-kill activity after this life
+        if oom := sample_oom_kills():
+            payload["oom"] = oom
     if extra:
         payload.update(extra)
     try:
@@ -239,14 +361,28 @@ def resolve_shutdown_watchdog_delay(
 
 
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
-                         event: str = "shutdown_watchdog_fired") -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr)."""
-    header = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
-              "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
+                         event: str = "shutdown_watchdog_fired",
+                         loop_thread_id: Optional[int] = None) -> None:
+    """Best-effort metadata + all-thread stack dump before hard-exit: the file copy via
+    faulthandler, then the stderr copy rendered in Python (``_format_thread_stacks``).
+
+    ``loop_thread_id`` names the monitored event loop's thread, whose own stack is written before
+    the all-threads dump: that dump does not say which thread runs the loop, which is the first
+    thing a post-mortem of a liveness death needs.
+    """
+    header: dict[str, Any] = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
+                              "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
+    loop_section = ""
+    if loop_thread_id is not None:
+        header["monitored_loop_thread_id"] = loop_thread_id
+        header["monitored_loop_thread_name"] = _thread_name(loop_thread_id)
+        loop_section = _format_loop_thread_section(loop_thread_id)
     with contextlib.suppress(OSError):  # unwritable dir: skip only the file copy, stderr still runs
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
+        fh.write(json.dumps(header, default=str) + "\n" + loop_section)
+        fh.flush()
+        fh.write("--- faulthandler dump (all threads) ---\n")
         fh.flush()
         try:
             faulthandler.dump_traceback(file=fh, all_threads=True)
@@ -255,10 +391,58 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
         fh.write("--- end dump ---\n")
         fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
+        # The loop section goes to stderr as well: with the disk wedged, journald/launchd keep only
+        # this copy.
         sys.stderr.write(f"Gateway {event.replace('_', ' ')} after {delay_s:.0f}s "
-                         f"(pid={os.getpid()}); dumping all thread stacks.\n")
+                         f"(pid={os.getpid()}); dumping all thread stacks.\n" + loop_section)
         sys.stderr.flush()
-        faulthandler.dump_traceback(all_threads=True)
+        # Not faulthandler: it writes with the GIL held, so a full supervisor pipe would freeze
+        # every thread, the deadline that bounds this worker included. Python stream writes
+        # release the GIL while they block (#148853).
+        sys.stderr.write(_format_thread_stacks())
+        sys.stderr.flush()
+
+
+def _format_frame_stack(frame: Any) -> str:
+    """``File "<path>", line N, in <function>`` lines, innermost frame last, for at most
+    ``_STDERR_STACK_FRAMES`` innermost frames. File, line and function only: never frame locals
+    (no token or message text a frame holds), and no source line, since a linecache read of
+    every frame's source is more disk I/O on a host stalled enough to fire the watchdog."""
+    lines = []
+    while frame is not None and len(lines) < _STDERR_STACK_FRAMES:
+        code = frame.f_code
+        lines.append(f'  File "{code.co_filename}", line {frame.f_lineno}, in {code.co_name}\n')
+        frame = frame.f_back
+    return "".join(reversed(lines))
+
+
+def _format_thread_stacks() -> str:
+    """Every thread's stack (``_format_frame_stack``) for the stderr copy, at most
+    ``_STDERR_STACK_THREADS`` threads, like the file copy's faulthandler dump. Never raises."""
+    try:
+        frames = sys._current_frames()
+        names = {thread.ident: thread.name for thread in threading.enumerate()}  # one snapshot
+        out = ["--- Python thread stacks (innermost frame last) ---\n"]
+        for ident, frame in itertools.islice(frames.items(), _STDERR_STACK_THREADS):
+            out.append(f"\nThread {ident:#x} ({names.get(ident)}):\n" + _format_frame_stack(frame))
+        if len(frames) > _STDERR_STACK_THREADS:
+            out.append(f"\n({len(frames) - _STDERR_STACK_THREADS} more threads not shown)\n")
+        return "".join(out)
+    except Exception as exc:  # health: allow BLE001 -- a hard-exit diagnostic path must never raise
+        return f"(thread stacks unavailable: {type(exc).__name__})\n"
+
+
+def _format_loop_thread_section(loop_thread_id: int) -> str:
+    """The monitored loop thread's stack (``_format_frame_stack``), formatted once for both dump
+    copies. ``faulthandler`` cannot be asked for one thread, and its all-threads list stops after
+    100 threads, newest first: the loop thread, started before every worker, is the one it drops."""
+    try:
+        frame = sys._current_frames().get(loop_thread_id)
+        stack = (_format_frame_stack(frame) if frame is not None
+                 else "(monitored loop thread stack unavailable: thread may have exited)\n")
+    except Exception as exc:  # health: allow BLE001 -- a hard-exit diagnostic path must never raise
+        stack = f"(monitored loop thread stack unavailable: {type(exc).__name__})\n"
+    return "--- monitored gateway loop thread stack ---\n" + stack
 
 
 def arm_shutdown_watchdog(
@@ -301,9 +485,7 @@ def arm_shutdown_watchdog(
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
             release_gateway_runtime_lock()
-        with contextlib.suppress(Exception):
-            from hermes_logging import drain_log_queue
-            drain_log_queue(timeout=1.0)
+        _drain_log_queue_quietly()
         _mark_exited_quietly(exit_code, "shutdown_watchdog")
         _hard_exit(exit_code)
     try:
@@ -311,6 +493,36 @@ def arm_shutdown_watchdog(
     except Exception:
         logger.debug("Failed to arm shutdown watchdog", exc_info=True)
     return done
+
+
+@contextlib.contextmanager
+def disarm_after_teardown(done_event: threading.Event, shutdown_event: Optional[asyncio.Event] = None,
+                          owner: Any = None) -> Iterator[None]:
+    """Disarm the shutdown watchdog only once the teardown it guards has run to completion.
+
+    A teardown that raises, or is cancelled, before ``shutdown_event`` is set leaves the stop as
+    unfinished as one that hangs: nothing releases ``wait_for_shutdown()``, so the process would stay
+    up holding its lock until SIGKILL (#158360). The watchdog stays armed and forces the exit on its
+    leash. Once ``shutdown_event`` is set the caller runs the shutdown tail and exits on its own, as
+    after a completed teardown, so a later raise disarms too. Either ending is logged here, because
+    the watchdog's later stack dump cannot show an exception that has unwound. ``owner`` (the runner)
+    gets ``_stop_guard_entered``, so a caller can tell a failure this guard logged from one before it."""
+    if owner is not None:
+        owner._stop_guard_entered = True
+    try:
+        yield
+    except Exception:
+        if shutdown_event is not None and shutdown_event.is_set():
+            logger.exception("Gateway stop failed after the shutdown began; the shutdown tail still runs")
+            done_event.set()
+        else:
+            logger.exception("Gateway stop failed; the shutdown watchdog stays armed to force the exit")
+        raise
+    except BaseException as exc:
+        logger.warning("Gateway stop interrupted (%s); the shutdown watchdog stays armed to force the exit",
+                       type(exc).__name__)
+        raise
+    done_event.set()
 
 
 async def _tick_socket_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

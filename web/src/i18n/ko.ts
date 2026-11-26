@@ -798,4 +798,17 @@ export const ko: Translations = {
     logTruncated: "(마지막 100 KB 표시 중 — 전체 로그 위치: ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "설치 가능",
+    hint: "Hermes 플러그인 카탈로그의 메시징 플랫폼입니다. 설치하면 플러그인이 추가되고 활성화된 뒤 설정이 열립니다.",
+    badgeOfficial: "공식",
+    badgeVerified: "검증됨",
+    disclosure: "고지:",
+    lazyInstallsOff: "자동 플러그인 설치가 꺼져 있습니다(security.allow_lazy_installs).",
+    run: "실행:",
+    install: "설치",
+    installing: "설치 중…",
+    installed: (title: string) => `${title} 설치됨. 연결하려면 자격 증명을 입력하세요.`,
+    installFailed: (title: string) => `${title}을(를) 설치할 수 없습니다`,
+  },
 };

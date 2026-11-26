@@ -25,9 +25,14 @@ from fastapi import APIRouter, HTTPException
 from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.catalog_platform_listing import (
+    available_catalog_platforms,
+    install_catalog_platform,
+    platform_list_signature,
+)
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from hermes_constants import get_process_hermes_home
+from hermes_constants import get_hermes_home, get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_whatsapp_session import _backup_whatsapp_session
@@ -39,7 +44,7 @@ from hermes_cli.web_routers._common import (
     redacted_credential_preview,
 )
 from hermes_cli.web_models import (
-    MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
+    MessagingCatalogInstall, MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
 
@@ -136,8 +141,10 @@ def _validate_messaging_env_value(rules: dict[str, tuple[Any, str]], key: str, v
 _ALLOWLIST_KEY_RE = re.compile(r"_ALLOWED(?:_[A-Z]+)?$")
 
 
-def _messaging_env_info(key: str) -> dict[str, Any]:
-    info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+def _messaging_env_info(key: str, declared: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Field copy and secrecy for *key*: ``declared`` is the card's own declaration (its plugin
+    manifest, read when the card was built), so a plugin installed mid-run is labelled and masked."""
+    info = declared or OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
     is_password = bool(info.get("password", False))
     return {
         "description": info.get("description", ""),
@@ -256,7 +263,7 @@ def _messaging_platform_payload(
 
     env_vars = []
     for key in entry["env_vars"]:
-        value, info = env_value(key), _messaging_env_info(key)
+        value, info = env_value(key), _messaging_env_info(key, entry.get("env_info", {}).get(key))
         env_vars.append({
             "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
@@ -995,11 +1002,44 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
         with _profile_scope(profile) as scoped_dir:
+            # Taken before the list is built: a move while it builds shows up as a changed signature on
+            # the page's next poll instead of being lost.
+            signature = platform_list_signature(get_hermes_home())
             return {
+                "signature": signature,
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
                 "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                # Catalog platforms this profile can add: picking one installs it (POST below).
+                "available": [row.to_dict() for row in available_catalog_platforms()],
             }
+
+    return await asyncio.to_thread(_run)
+
+
+@router.get("/api/messaging/platforms/signature")
+async def get_messaging_platforms_signature(profile: Optional[str] = None):
+    """The digest ``GET /api/messaging/platforms`` returns as ``signature``, without building the list:
+    the Channels page polls it while visible and reloads when it moves (a platform plugin the background
+    default install or another terminal added, the gateway coming up), the dashboard's twin of Desktop's
+    ``platforms.changed``. Stat-cheap, so it skips ``_profile_scope``'s process-wide lock."""
+    def _run():
+        with _config_profile_scope(profile):
+            return {"signature": platform_list_signature(get_hermes_home())}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.post("/api/messaging/catalog/{name}/install")
+async def install_messaging_catalog_platform(name: str, body: MessagingCatalogInstall, profile: Optional[str] = None):
+    """Install and enable one catalog platform into the target profile, through the catalog install
+    every surface uses (pinned commit, kill list, scan). A refusal is ``ok: false`` with the reason and
+    the one command that installs it; the card's platforms are the ids it registered. The install
+    clones and resolves dependencies, so it runs outside ``_profile_scope``'s process-wide lock (the
+    installer serializes its own config writes), like the Plugins page's installs."""
+    def _run():
+        with _config_profile_scope(body.profile or profile):
+            return install_catalog_platform(name)
 
     return await asyncio.to_thread(_run)
 
@@ -1107,10 +1147,61 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             "env_keys=%s cleared_keys=%s",
             platform_id, target_profile or "current", body.enabled, sorted(body.env), sorted(body.clear_env),
         )
-        # A live multiplexer serving this named profile builds the adapter from the new token now
-        # (its periodic rescan would otherwise pick it up within a cycle); no gateway restart.
-        hot_served = await asyncio.to_thread(_notify_multiplexer_hot_serve, target_profile)
-        return {"ok": True, "platform": platform_id, "hot_served": hot_served}
+        # The running gateway serving this profile starts/restarts/stops the platform's adapter now
+        # and says whether it could; only a "no" (or no answer) leaves a restart to the user.
+        live = await asyncio.to_thread(_apply_platform_live, target_profile, platform_id)
+        return {"ok": True, "platform": platform_id, "hot_served": live["applied"], "live": live}
+
+
+# Platform states after which a restart would change nothing: it runs (or is reconnecting) live, or
+# the saved config does not enable it.
+_LIVE_SETTLED_STATES = frozenset({"connected", "retrying", "disabled", "not_configured", "shared", None})
+
+
+def _apply_platform_live(profile: Optional[str], platform_id: str) -> dict:
+    """Ask the gateway serving ``profile`` (its own, or the multiplexer serving it) to reconcile that
+    profile's platforms now. ``{"applied", "state"?, "detail"?}``: ``applied`` False means only a restart
+    applies the save (no gateway answered, one predating the verb, or the adapter could not be built)."""
+    from hermes_cli.gateway import _current_profile_name
+    from hermes_cli.gateway_platform_live import reconcile_running_gateway_platforms
+    from hermes_constants import get_hermes_home
+    name = (profile or "").strip() or _current_profile_name() or "default"
+    with _profile_scope(profile):
+        home = Path(get_hermes_home())
+    answer = reconcile_running_gateway_platforms(name, home)
+    if answer is None:
+        # A multiplexer predating the verb still rebuilds a named profile from its rescan.
+        return {"applied": _notify_multiplexer_hot_serve(profile)}
+    if answer.get("pending"):
+        return {"applied": True, "state": "connecting"}
+    state = (answer.get("platforms") or {}).get(platform_id)
+    if state not in _LIVE_SETTLED_STATES and (missing := _missing_credentials(profile, platform_id)):
+        # Enabled before its credentials were saved: a restart would not start it either.
+        return {"applied": True, "state": "not_configured", "detail": f"needs {', '.join(missing)}"}
+    live = {"applied": bool(answer.get("applied")) and state in _LIVE_SETTLED_STATES, "state": state}
+    if answer.get("error"):
+        live["detail"] = str(answer["error"])
+    elif state == "unavailable":
+        live["detail"] = ((answer.get("reasons") or {}).get(platform_id)
+                          or "the running gateway could not build this platform's adapter")
+    return live
+
+
+def _missing_credentials(profile: Optional[str], platform_id: str) -> list[str]:
+    """What ``profile`` still lacks for the gateway to call the platform configured (its own
+    ``get_connected_platforms`` verdict over the env-overlaid config): the registration's unset
+    ``required_env`` names, or ``["credentials"]`` when it names none. Empty when it is configured."""
+    from gateway.config import load_gateway_config
+    from gateway.platform_registry import platform_registry
+    with _profile_scope(profile):
+        config = load_gateway_config()
+        platform = next((p for p in config.platforms if p.value == platform_id), None)
+        if platform is None or platform in config.get_connected_platforms():
+            return []
+        entry = platform_registry.get(platform_id)
+        env = load_env()
+        names = list(entry.required_env) if entry is not None else []
+        return [n for n in names if not str(env.get(n) or "").strip()] or ["credentials"]
 
 
 def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:

@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from hermes_cli.dashboard_auth import ws_tickets
+from tests.bot_desktop_lease import reset_lease
 
 
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
@@ -40,9 +41,9 @@ def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch)
 @pytest.fixture
 def _fresh_lease():
     from tools.bot_desktop import lease
-    lease._reset_for_tests()
+    reset_lease()
     yield lease
-    lease._reset_for_tests()
+    reset_lease()
 
 
 def _call(server, method, params):
@@ -133,7 +134,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
     from tui_gateway import server
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
-    lease._reset_for_tests()
+    reset_lease()
     broadcasts = []
     monkeypatch.setattr(server, "_broadcast_global_event", lambda ev, payload=None: broadcasts.append((ev, payload)))
     try:
@@ -165,7 +166,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
         lease_events = [p for ev, p in broadcasts if ev == "display.lease"]
         assert lease_events and all(holder not in json.dumps(p) for p in lease_events)
     finally:
-        lease._reset_for_tests()
+        reset_lease()
 
 
 def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _fresh_lease):

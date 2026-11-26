@@ -98,13 +98,9 @@ def format_subagent_failure_line(
 class DelegateEvent(str, enum.Enum):
     """Formal delegation progress event types. The relay normalises incoming legacy strings (``tool.started``,
     ``_thinking``, …) to these via ``_LEGACY_EVENT_MAP``; external consumers (gateway SSE, ACP adapter, CLI) still
-    receive the legacy strings during the deprecation window. TASK_SPAWNED / TASK_COMPLETED / TASK_FAILED are
-    reserved for future orchestrator lifecycle events, not emitted yet."""
+    receive the legacy strings during the deprecation window."""
 
-    TASK_SPAWNED = "delegate.task_spawned"
     TASK_PROGRESS = "delegate.task_progress"
-    TASK_COMPLETED = "delegate.task_completed"
-    TASK_FAILED = "delegate.task_failed"
     TASK_THINKING = "delegate.task_thinking"
     TASK_TOOL_STARTED = "delegate.tool_started"
     TASK_TOOL_COMPLETED = "delegate.tool_completed"
@@ -119,7 +115,7 @@ _LEGACY_EVENT_MAP: dict[str, DelegateEvent] = {
 }
 
 # Event → _ChildProgressRelay method name. Lifecycle strings are emitted by the orchestrator itself (not
-# DelegateEvent). Any other DelegateEvent (TASK_TOOL_STARTED and the reserved TASK_* values) takes the tool-started
+# DelegateEvent). Any other DelegateEvent (TASK_TOOL_STARTED) takes the tool-started
 # path; None means "recognised but ignored".
 _LIFECYCLE_EVENTS = frozenset({"subagent.spawn_requested", "subagent.start", "subagent.complete", "subagent.text"})
 _EVENT_HANDLERS: dict[Any, Optional[str]] = {

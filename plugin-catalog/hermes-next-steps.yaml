@@ -1,0 +1,21 @@
+name: hermes-next-steps
+title: "Next Steps"
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: f86eba30779da11cc3bb6750ffa67fa1aa7dcc12
+subdir: public/hermes-next-steps
+description: "Clickable next steps under a Hermes Desktop reply: the agent offers two to six concrete options; a click marks one option, and a Confirm button under the list sends it back as the user's next message. Several options can be ticked and sent together as one turn, options a decision classifier reads as worth taking now carry a Recommended tag and start ticked, options that could damage something can carry a RISKY pill once that setting is on, a chip can explain a misleading label in a dim second line, and, with the carry setting on, options an earlier reply left unanswered follow the newest reply with an age label and a dismiss cross. The classifier is optional: with no classifier plugin loaded the chips work and are simply never marked. This edition stays inside the plugin SDK and drops the injected chip-border animation and the scroll back to an offering reply, both of which reach into the app's own DOM; the personal edition carries both. Follow-up Chips draws the same slot under a reply, so disable it before enabling this. Makes no network calls of its own. Disclosure — Derived from followup-chips (MIT). Adds a system-prompt section to every new session that tells the agent to end a choice with next-step chips on Hermes Desktop (a numbered list elsewhere), and a reply hook that rewrites the chip directive in Desktop replies; turning a prose offer into chips and carrying unanswered options forward are opt-in and change every reply when on. With a decision-classifier plugin (nerve or jev) loaded, the agent calls that plugin's tool once per reply that offers a choice. A chip sends its text as your next message only from the Confirm button under the list. The multi-select row ends with Send and a small Steer button that sends the picks into the running turn instead of queueing them. A directive-only answer form is available for replies that ask for several typed answers; the next_steps tool always draws chips. No network calls, file access or credentials of its own."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/hermes-next-steps
+version: "1.1.6"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/f86eba30779da11cc3bb6750ffa67fa1aa7dcc12/public/hermes-next-steps/docs/hero.png
+screenshots:
+  - https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/f86eba30779da11cc3bb6750ffa67fa1aa7dcc12/public/hermes-next-steps/docs/screenshot.png
+platforms: []
+capabilities:
+  provides_tools: [next_steps, next_steps_recommend]
+  provides_hooks: [transform_llm_output]
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.0"

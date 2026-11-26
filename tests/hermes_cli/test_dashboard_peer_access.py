@@ -375,7 +375,7 @@ def test_dashboard_credentials_never_open_peer_paths(peer):
     register_provider(session_token_plugin.SessionTokenProvider(token=deployment_token))
     session = _sign({"sub": "stub-user-1", "email": "stub@example.test", "name": "Stub User",
                      "org_id": "stub-org-1", "exp": 4102444800})
-    for credentials in ({"Cookie": f"hermes_session_at={session}"},
+    for credentials in ({"Cookie": f"__Host-hermes_session_at={session}"},
                         {"X-Hermes-Session-Token": deployment_token}, _bearer(deployment_token)):
         assert peer.client.get("/api/auth/me", headers=credentials).status_code == 200, credentials
         resp = peer.client.get("/api/peer/health", headers=credentials)
@@ -424,7 +424,8 @@ def test_the_default_profiles_handle_reaches_the_default_profile(peer):
 def test_an_unknown_profile_gets_the_api_servers_unknown_profile_answer(peer):
     """``hermes peer`` reads this exact body as the peer's own "no such profile" verdict."""
     resp = peer.client.get("/api/peer/p/nosuch/health", headers=_bearer("pass-message"))
-    assert resp.status_code == 404 and resp.json() == {"error": "Unknown or unconfigured profile"}
+    assert resp.status_code == 404 and resp.json() == {"error": "Unknown or unconfigured profile",
+                                                       "code": "profile_unknown"}
     assert peer.seen == []
 
 

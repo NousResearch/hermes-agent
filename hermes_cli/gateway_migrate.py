@@ -350,33 +350,36 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
     if kind == "s6":
         return _s6_slot_op(verb, home)
     from hermes_cli import gateway as gw
-    with _home_env(home):
-        if verb == "install":
-            if kind == "launchd":
-                gw.launchd_install()
-            elif kind == "windows":
-                # Non-interactive: the migration already asked; prompting here would hang a
-                # supervised/`--yes` run on a console that has no operator.
-                from hermes_cli import gateway_windows as gww
-                gww.install(start_now=True, start_on_login=True)
-            else:
-                gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
-            return
-        if verb == "enable":
-            # Boot enablement only: the migration's uninstall of every secondary destroys their
-            # boot enablement (systemd: disable + default.target.wants unlink), so the survivor's is
-            # load-bearing for the whole host — and `restart` on a disabled unit succeeds, so a
-            # reboot came up with no gateway while the migration reported success (#124922).
-            # launchd (RunAtLoad plist) and the Windows logon task are their own enablement and the
-            # migration never removes the survivor's.
-            if kind != "systemd":
+    try:
+        with _home_env(home):
+            if verb == "install":
+                if kind == "launchd":
+                    gw.launchd_install()
+                elif kind == "windows":
+                    # Non-interactive: the migration already asked; prompting here would hang a
+                    # supervised/`--yes` run on a console that has no operator.
+                    from hermes_cli import gateway_windows as gww
+                    gww.install(start_now=True, start_on_login=True)
+                else:
+                    gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
                 return
-            enabled = gw._run_systemctl(["enable", gw.get_service_name()], system=system, check=False, timeout=30)
-            if getattr(enabled, "returncode", 0) != 0:
-                raise RuntimeError(f"could not enable {gw.get_service_name()} at boot (systemctl enable "
-                                   f"exited {enabled.returncode}); a reboot would come up with no gateway")
-            return
-        gw._service_call(kind, verb, system)
+            if verb == "enable":
+                # Boot enablement only: the migration's uninstall of every secondary destroys their
+                # boot enablement (systemd: disable + default.target.wants unlink), so the survivor's is
+                # load-bearing for the whole host — and `restart` on a disabled unit succeeds, so a
+                # reboot came up with no gateway while the migration reported success (#124922).
+                # launchd (RunAtLoad plist) and the Windows logon task are their own enablement and the
+                # migration never removes the survivor's.
+                if kind != "systemd":
+                    return
+                enabled = gw._run_systemctl(["enable", gw.get_service_name()], system=system, check=False, timeout=30)
+                if getattr(enabled, "returncode", 0) != 0:
+                    raise RuntimeError(f"could not enable {gw.get_service_name()} at boot (systemctl enable "
+                                       f"exited {enabled.returncode}); a reboot would come up with no gateway")
+                return
+            gw._service_call(kind, verb, system)
+    except SystemExit as exc:
+        raise RuntimeError(f"{kind} {verb} exited with status {exc.code}") from None
 
 
 def _stop_gateway_process(home: Path) -> None:
@@ -1227,14 +1230,25 @@ def _host_supports_migration() -> Optional[str]:
     return None
 
 
+_BACKEND_FLAGS = ("apply", "restore", "status", "address", "keep_webapp_address", "force_interrupt", "detach",
+                  "expect")
+
+
 def cmd_migrate(args) -> None:
     """``hermes gateway migrate [--multiplex] [--dry-run] [--yes]``; ``--backends`` is a report that changes no service."""
     if getattr(args, "backends", False):
+        if any(getattr(args, flag, None) for flag in _BACKEND_FLAGS):
+            from hermes_cli.gateway_migrate_backends_apply import cmd_backends
+            cmd_backends(args)
+            return
         from hermes_cli.gateway_migrate_backends import cmd_backends_report
         cmd_backends_report(args)
         return
     if getattr(args, "json", False):
         print("✗ --json is only supported with --backends.", file=sys.stderr)
+        sys.exit(2)
+    if any(getattr(args, flag, None) for flag in _BACKEND_FLAGS):
+        print("✗ --apply/--restore/--status and their options go with --backends.", file=sys.stderr)
         sys.exit(2)
     reason = _host_supports_migration()
     if reason:

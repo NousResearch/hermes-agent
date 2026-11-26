@@ -1,21 +1,21 @@
 name: unblockbruecke
 title: Unblockbrücke
 repo: https://github.com/studioluftbruecke/hermes-unblockbruecke
-sha: f11471187d1aa25b81e4644da08a22148035841a
-description: "Cards to unblock yourself or your agent, drawn by you when you are stuck and by Hermes when its tool calls keep failing. Disclosure — With auto-draw switched on (off by default), adds one card's text to a failing tool result after several failed calls in a row, so the model reads it; the agent's deck tool can import a deck from any file path and export a .yaml deck file to any folder you name (attended chats only, never overwriting a non-deck file)."
+sha: 0aeeb7dbfff8650b21fe19e6d339af8b2a79e502
+description: "Cards to unblock yourself or your agent, drawn by you when you are stuck and by Hermes when its tool calls keep failing. Disclosure — With auto-draw switched on (off by default), once 3 of the last 5 tool calls in a turn failed it adds one card's text to that failing result (one card per turn), so the model reads it, and adds one line naming the card after that turn's reply (not in scheduled jobs, webhooks, the API server or single-query runs); the agent's deck tool can import a deck from any file path and export a .yaml deck file to any folder you name (attended chats only, never overwriting a non-deck file); the page's settings switches save through a short `hermes config set` child process."
 maintainer: studioluftbruecke
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://unblockbruecke.luftbruecke.studio
-version: "0.1.4"
-image: https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/banner.png
+version: "0.2.3"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/0aeeb7dbfff8650b21fe19e6d339af8b2a79e502/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-1.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-2.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-3.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-4.png
-  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/f11471187d1aa25b81e4644da08a22148035841a/docs/screenshot-5.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/0aeeb7dbfff8650b21fe19e6d339af8b2a79e502/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/0aeeb7dbfff8650b21fe19e6d339af8b2a79e502/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/0aeeb7dbfff8650b21fe19e6d339af8b2a79e502/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/0aeeb7dbfff8650b21fe19e6d339af8b2a79e502/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-unblockbruecke/0aeeb7dbfff8650b21fe19e6d339af8b2a79e502/docs/screenshot-5.png
 readme: true
 platforms: [linux, macos]
 known_issues:
@@ -27,5 +27,6 @@ capabilities:
     - unblockbruecke_decks
   provides_hooks:
     - transform_tool_result
+    - transform_llm_output
   provides_middleware: []
   requires_env: []

@@ -14,13 +14,13 @@ import time
 from pathlib import Path, PurePosixPath
 
 from agent.runtime_self_protection import split_entry
+from tools.terminal_tool_config import _is_container_backend
 
 logger = logging.getLogger(__name__)
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "modal", "daytona", "vercel_sandbox"})
 # Backend name inferred from the live environment's class name (first match wins).
 _ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "modal", "daytona")
 # Container task id -> monotonic time of the last failed environment bring-up in path resolution (an SSH
@@ -105,13 +105,7 @@ def _uses_container_paths(task_id: str = "default") -> bool:
     from tools.environments.sandbox_scope import hosted_scope
     if hosted_scope() is not None:
         return True  # a hosted agent's paths name its sandbox: never anchored or dereferenced on this host
-    env_type = _terminal_env_type_for_task(task_id)
-    try:
-        from tools.terminal_tool import _is_container_backend
-
-        return _is_container_backend(env_type)
-    except Exception:
-        return env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
+    return _is_container_backend(_terminal_env_type_for_task(task_id))
 
 
 def container_backend_for_task(task_id: str = "default") -> str | None:

@@ -27,6 +27,7 @@ import difflib
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -79,6 +80,9 @@ def _pin_environment() -> None:
     socket.socket.connect = refuse  # type: ignore[method-assign]
     socket.create_connection = refuse  # type: ignore[assignment]
     socket.getaddrinfo = refuse  # type: ignore[assignment]
+    # Third-party packages pick a native backend at import time from ``sys.platform``
+    # (psutil loads ``_pslinux`` and its POSIX-only imports); load them for the real host first.
+    import psutil
     sys.platform = "linux"  # skills index ``platforms:`` gate
 
     import hermes_time
@@ -92,6 +96,16 @@ def _pin_environment() -> None:
     # The toolchain probe line reports the host's python/node/pip; it is environment, not code.
     from tools import env_probe
     env_probe.get_environment_probe_line = lambda **_k: ""  # type: ignore[assignment]
+    # Workspace detection walks up from the cwd; the throwaway home sits under the host's temp
+    # dir, whose ancestors (on Windows the real user profile, which may hold a package.json or
+    # a git repo) are the host's, not the code's. Only roots inside the throwaway home count.
+    from agent import coding_context
+    home = Path(os.environ["HOME"]).resolve()
+    for name in ("_marker_root", "_git_root"):
+        def inside_home(cwd, _find=getattr(coding_context, name)):
+            root = _find(cwd)
+            return root if root is not None and root.is_relative_to(home) else None
+        setattr(coding_context, name, inside_home)
 
 
 class _ImportFailures(logging.Handler):
@@ -113,7 +127,20 @@ def _scrub(text: str, home: Path) -> str:
         f"{_platform.system()} ({_platform.release()})": "<HOST_OS>",
     }.items(), key=lambda kv: -len(kv[0])):
         text = text.replace(raw, token)
-    return text
+    # A scrubbed path's tail uses the host separator; render it POSIX so every host matches.
+    return re.sub(r"<(?:HERMES_HOME|HOME)>[^\s\"'`]*", lambda m: m.group(0).replace("\\", "/"), text)
+
+
+def _scrub_obj(obj, home: Path):
+    """``_scrub`` every string in a JSON value (a path inside ``json.dumps`` output has its
+    Windows backslashes escaped, so scrubbing the serialized text would miss it)."""
+    if isinstance(obj, str):
+        return _scrub(obj, home)
+    if isinstance(obj, list):
+        return [_scrub_obj(v, home) for v in obj]
+    if isinstance(obj, dict):
+        return {_scrub_obj(k, home): _scrub_obj(v, home) for k, v in obj.items()}
+    return obj
 
 
 def _enabled_toolsets(platform: str) -> list[str]:
@@ -141,7 +168,7 @@ def _render_surface(home: Path, platform: str, model: str, code: bool) -> tuple[
         session_id=SESSION_ID, enabled_toolsets=_enabled_toolsets(platform),
     )
     tiers = {tier: _scrub(text, home) for tier, text in build_system_prompt_parts(agent).items()}
-    tools = json.loads(_scrub(json.dumps(agent.tools), home))
+    tools = _scrub_obj(json.loads(json.dumps(agent.tools)), home)
     return tiers, {t["function"]["name"]: t["function"] for t in tools}
 
 
@@ -176,7 +203,7 @@ def _write_snapshot(out: Path, prompts: dict[str, dict[str, str]], tools_by_surf
     manifest: dict[str, dict] = {}
     for surface, tiers in prompts.items():
         text = "\n\n".join(f"===== {tier} =====\n{tiers[tier]}" for tier in ("stable", "context", "volatile"))
-        (out / "prompts" / f"{surface}.txt").write_text(text + "\n", encoding="utf-8")
+        (out / "prompts" / f"{surface}.txt").write_text(text + "\n", encoding="utf-8", newline="\n")
         tools = tools_by_surface[surface]
         manifest[surface] = {
             "prompt_tokens": {tier: len(tiers[tier]) // CHARS_PER_TOKEN for tier in tiers},
@@ -187,11 +214,11 @@ def _write_snapshot(out: Path, prompts: dict[str, dict[str, str]], tools_by_surf
         variants = {s: json.dumps(t[name], indent=2, sort_keys=True, ensure_ascii=False) + "\n"
                     for s, t in tools_by_surface.items() if name in t}
         common = Counter(variants.values()).most_common(1)[0][0]
-        (out / "tools" / f"{name}.json").write_text(common, encoding="utf-8")
+        (out / "tools" / f"{name}.json").write_text(common, encoding="utf-8", newline="\n")
         for surface, text in variants.items():
             if text != common:
-                (out / "tools" / f"{name}.{surface}.json").write_text(text, encoding="utf-8")
-    (out / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                (out / "tools" / f"{name}.{surface}.json").write_text(text, encoding="utf-8", newline="\n")
+    (out / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
 
 
 def render(out: Path) -> int:
@@ -205,6 +232,8 @@ def render(out: Path) -> int:
             "PATH": os.environ.get("PATH", ""), "HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
             "TZ": "UTC", "LANG": "C.UTF-8", "PYTHONHASHSEED": "0", "PYTHONPATH": str(ROOT),
             "TMPDIR": tmp, "PYTHONDONTWRITEBYTECODE": "1",
+            # Windows resolves ``Path.home()`` from USERPROFILE, never HOME.
+            "USERPROFILE": str(home),
         }
         for key in ("HERMES_RUNTIME_DIR", "SYSTEMROOT"):
             if os.environ.get(key):

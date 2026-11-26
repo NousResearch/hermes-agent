@@ -43,7 +43,6 @@ runs:
       if: ${{ !cancelled() }}
       shell: bash
       env:
-        CACHE_ACTION: ${{ github.action_path }}
         CACHE_PHASE: ${{ inputs.phase }}
         CACHE_SOURCE: ${{ inputs.source }}
         CACHE_ROOT: ${{ inputs.cache }}
@@ -60,7 +59,8 @@ runs:
         # Description must not create CACHE_WORK: only preparation may claim it.
         # Paths go straight to Actions; no job-local manifest is transported.
         if [ "$RUNNER_OS" = Windows ]; then bootstrap=python; else bootstrap=python3; fi
-        "$bootstrap" -S "$CACHE_ACTION/../../../scripts/ci/desktop_build_cache.py" describe \
+        # Not github.action_path: inside a job container it names the host path (actions/runner#2185).
+        "$bootstrap" -S "$GITHUB_ACTION_PATH/../../../scripts/ci/desktop_build_cache.py" describe \
           --source "$CACHE_SOURCE" --cache "$CACHE_ROOT" --work "$CACHE_WORK" --producer "$CACHE_PRODUCER"
 
     - name: Restore dependency candidates

@@ -64,6 +64,8 @@ def test_folder_glob_matches_from_the_search_root_not_the_cwd(tmp_path, monkeypa
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     content = ops.search("hello", path="repo", file_glob="migrations/main/*.js")
     assert [m.path for m in content.matches] == ["repo/migrations/main/a.js"]
+    listed = ops.search("hello", path="repo", file_glob="migrations/main/*.js", output_mode="files_only")
+    assert listed.files == ["repo/migrations/main/a.js"]
     files = ops.search("main/*.js", path="repo", target="files")
     assert files.files == ["repo/main/c.js"]
     assert ops._exec("pwd").stdout.strip() == str(tmp_path)

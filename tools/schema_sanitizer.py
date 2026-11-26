@@ -294,6 +294,9 @@ def _normalize_type_array(value: list, out: dict) -> None:
         out.setdefault("nullable", True)
 
 
+normalize_type_array = _normalize_type_array
+
+
 def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment: bare-string schemas → ``{"type": <value>}``
     (unknown strings → permissive object); object nodes gain ``properties: {}``; ``type`` arrays

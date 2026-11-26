@@ -536,4 +536,37 @@ class TestNativeVideoFastPath:
                 assert "video_analyze refused: this video" in ref2
 
 
+def test_native_video_security_nul_nt_namespace_fifo_and_windows_lstat(tmp_path, monkeypatch):
+    """Verify NUL-byte, NT-namespace, POSIX FIFO (O_NONBLOCK), and Windows lstat nofollow hardening."""
+    import os
+    from tools.vision_tools import _read_and_encode_video_bounded, _video_analyze_native
+    from tools.vision_tools_history_budget import _image_key
 
+    # 1. NUL byte and Windows NT-namespace rejected before Path.resolve()
+    res_nul = json.loads(asyncio.run(_video_analyze_native("/tmp/bad\x00.mp4", "describe")))
+    assert res_nul["success"] is False and "null byte" in res_nul["error"].lower()
+
+    res_nt = json.loads(asyncio.run(_video_analyze_native(r"\\?\UNC\evil\share\clip.mp4", "describe")))
+    assert res_nt["success"] is False
+    assert _image_key(r"\\?\UNC\evil\share\clip.mp4").startswith("nt:")
+    assert _image_key("/tmp/bad\x00.mp4").startswith("raw:")
+
+    # 2. POSIX FIFO rejected immediately via O_NONBLOCK without hanging
+    if hasattr(os, "mkfifo"):
+        fifo = tmp_path / "hang.mp4"
+        os.mkfifo(fifo)
+        _, data_url, err = _read_and_encode_video_bounded(
+            fifo, "video/mp4", max_raw_bytes=1024 * 1024, max_base64_bytes=2 * 1024 * 1024,
+            strict_container=True, check_file_safety=False,
+        )
+        assert data_url is None and err is not None
+
+    # 3. Windows no-O_NOFOLLOW fallback uses lstat and refuses symlinks
+    target = tmp_path / "real.mp4"
+    target.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32)
+    link = tmp_path / "sym.mp4"
+    link.symlink_to(target)
+    from tools.vision_tools import _open_regular_video_nofollow
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    fd, st, open_err = _open_regular_video_nofollow(link)
+    assert fd is None and st is None and open_err is not None

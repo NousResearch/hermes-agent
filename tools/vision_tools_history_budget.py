@@ -84,21 +84,35 @@ def _file_uri_to_local_path(raw: str) -> str:
     return path
 
 
+def _safe_local_key(raw_path: str) -> str:
+    """Resolve a local path safely without touching NT/device namespaces (Windows SMB/NTLM leak)
+    or raising on NUL bytes / symlink loops."""
+    if "\x00" in raw_path:
+        return "raw:" + hashlib.sha256(raw_path.encode("utf-8", "ignore")).hexdigest()[:32]
+    from agent.file_safety import is_nt_namespace_path
+    if is_nt_namespace_path(raw_path):
+        return "nt:" + hashlib.sha256(raw_path.encode("utf-8", "ignore")).hexdigest()[:32]
+    try:
+        return "file:" + str(Path(os.path.expanduser(raw_path)).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return "file:" + raw_path
+
+
 def _image_key(image_url: str) -> str:
     """Stable identity for a media source: local paths resolve (symlinks, ``~``, ``file://``),
     YouTube URLs canonicalize, other URLs drop their fragment, data URLs hash. Region crops
     are NOT part of the key — the incident loop alternated full loads and crops of the same files."""
-    if image_url.startswith("data:"):
+    if image_url.lower().startswith("data:"):
         return "data:" + hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()[:32]
     from agent.gemini_urls import normalize_youtube_url
     if yt_url := normalize_youtube_url(image_url):
         return "url:" + yt_url
     stripped = image_url.split("#", 1)[0].strip()
     if stripped.lower().startswith("file://"):
-        return "file:" + str(Path(os.path.expanduser(_file_uri_to_local_path(stripped))).resolve())
+        return _safe_local_key(_file_uri_to_local_path(stripped))
     if "://" in stripped:
         return "url:" + stripped
-    return "file:" + str(Path(os.path.expanduser(stripped)).resolve())
+    return _safe_local_key(stripped)
 
 
 def _count_key(image_url: str) -> tuple[str, str, str]:

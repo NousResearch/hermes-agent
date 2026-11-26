@@ -94,10 +94,13 @@ _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404
 
 # ── OpenAI messages -> Interactions steps ────────────────────────────────────
 def _image_content(item: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """``image`` content for an ``image_url`` item carrying a ``data:`` URL; None otherwise (remote URLs
+    """``image`` content for an ``image_url``/``input_image`` item carrying a ``data:`` URL; None otherwise (remote URLs
     are dropped, as on the generateContent path)."""
-    url = (item.get("image_url") or {}).get("url") or ""
-    if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
+    if item.get("type") not in ("image_url", "input_image"):
+        return None
+    raw = item.get("image_url")
+    url = (raw.get("url") if isinstance(raw, dict) else raw) or item.get("url") or ""
+    if not isinstance(url, str) or not url.startswith("data:"):
         return None
     try:
         header, encoded = url.split(",", 1)

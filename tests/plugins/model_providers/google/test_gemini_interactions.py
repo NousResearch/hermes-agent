@@ -699,3 +699,10 @@ def test_interactions_video_content_negative_and_boundary_cases(gemini):
         assert wire._video_content(bad) is None, bad
 
 
+def test_interactions_image_content_handles_input_image_string_url(gemini):
+    _, interactions = gemini
+    block = interactions._image_content({
+        "type": "input_image",
+        "image_url": "data:image/png;base64,AAAA",
+    })
+    assert block == {"type": "image", "mime_type": "image/png", "data": "AAAA"}

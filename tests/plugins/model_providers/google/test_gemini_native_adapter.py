@@ -1273,3 +1273,18 @@ def test_parallel_tool_calls_with_youtube_file_data_merge_into_one_user_turn():
     assert sum(1 for p in parts if "fileData" in p) == 1
 
 
+def test_inline_data_part_does_not_upgrade_image_url_youtube_and_accepts_input_image_string():
+    from plugins.model_providers.google.native_adapter import _inline_data_part
+
+    # YouTube URL on image_url must NOT become a video/mp4 fileData part
+    assert _inline_data_part({
+        "type": "image_url",
+        "image_url": {"url": "https://youtu.be/jNQXAC9IVRw"},
+    }) is None
+
+    # Responses-shape input_image with string image_url translates cleanly
+    part = _inline_data_part({
+        "type": "input_image",
+        "image_url": "data:image/png;base64,AAAA",
+    })
+    assert part == {"inlineData": {"mimeType": "image/png", "data": "AAAA"}}

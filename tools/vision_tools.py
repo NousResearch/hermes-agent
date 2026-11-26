@@ -1140,6 +1140,46 @@ def _validate_video_header_bytes(
     return None
 
 
+def _open_regular_video_nofollow(resolved: Path) -> tuple[Optional[int], Optional[os.stat_result], Optional[str]]:
+    """Open *resolved* as a regular file without following symlinks or blocking on FIFOs."""
+    has_nofollow = hasattr(os, "O_NOFOLLOW")
+    lst = None
+    if not has_nofollow:
+        try:
+            lst = os.lstat(str(resolved))
+        except OSError as exc:
+            return None, None, f"Could not stat video file: {exc}"
+        if stat.S_ISLNK(lst.st_mode) or not stat.S_ISREG(lst.st_mode):
+            return None, None, "Video source is not a regular file."
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(str(resolved), flags)
+    except OSError as exc:
+        return None, None, f"Could not open video file: {exc}"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            os.close(fd)
+            return None, None, "Video source is not a regular file."
+        if lst is not None and (
+            (lst.st_ino and st.st_ino != lst.st_ino) or (lst.st_dev and st.st_dev != lst.st_dev)
+        ):
+            os.close(fd)
+            return None, None, "Video source changed concurrently during open."
+        return fd, st, None
+    except OSError as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return None, None, f"Could not read video file: {exc}"
+
+
 def _read_and_encode_video_bounded(
     video_path: Path,
     mime_type: str,
@@ -1152,29 +1192,30 @@ def _read_and_encode_video_bounded(
     """TOCTOU-safe single-fd bounded read, magic-byte validation, and base64 data-URL encoding.
 
     Resolves the path, enforces ``raise_if_read_blocked`` on the canonical path, opens once with
-    ``O_NOFOLLOW`` (rejecting concurrent symlink swaps), checks ``fstat`` regular-file + byte cap,
-    reads at most ``max_raw_bytes + 1`` bytes, validates magic bytes on the in-memory buffer, and
-    encodes from that same validated buffer. Returns ``(size_bytes, data_url_or_none, error_or_none)``.
+    ``O_NOFOLLOW`` + ``O_NONBLOCK`` (rejecting concurrent symlink swaps and FIFOs), checks ``fstat``
+    regular-file + byte cap, reads at most ``max_raw_bytes + 1`` bytes, validates magic bytes on the
+    in-memory buffer, and encodes from that same validated buffer. Returns ``(size_bytes, data_url_or_none, error_or_none)``.
     """
+    raw_path_str = str(video_path)
+    if "\x00" in raw_path_str:
+        return 0, None, "Invalid video source: path contains null byte."
+    if check_file_safety:
+        from agent.file_safety import get_nt_namespace_error, raise_if_read_blocked
+        if nt_err := get_nt_namespace_error(raw_path_str, verb="Read"):
+            return 0, None, nt_err
     try:
         resolved = video_path.resolve(strict=True)
-    except OSError as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return 0, None, f"Could not resolve video file: {exc}"
     if check_file_safety:
-        from agent.file_safety import raise_if_read_blocked
         try:
             raise_if_read_blocked(str(resolved))
-        except PermissionError as exc:
+        except (PermissionError, ValueError) as exc:
             return 0, None, str(exc)
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd, st, open_err = _open_regular_video_nofollow(resolved)
+    if fd is None or st is None:
+        return 0, None, open_err or "Could not open video file."
     try:
-        fd = os.open(str(resolved), flags)
-    except OSError as exc:
-        return 0, None, f"Could not open video file: {exc}"
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            return 0, None, "Video source is not a regular file."
         if st.st_size > max_raw_bytes:
             return st.st_size, None, (
                 f"Video too large for API: file is {st.st_size / (1024 * 1024):.1f} MB "
@@ -1245,6 +1286,8 @@ async def _materialize_video(
     if not host_feature_enabled("media_processing"):
         raise ValueError("Video processing is not available to a hosted agent.")  # it would cache here
     video_url = (video_url or "").strip()
+    if "\x00" in video_url:
+        raise ValueError("Invalid video source: path contains null byte.")
     lowered = video_url.lower()
     if lowered.startswith("data:"):
         raise ValueError(
@@ -1410,6 +1453,13 @@ async def _video_analyze_native(
     """Fast path for video-capable native Gemini main models: returns a ``_multimodal`` envelope dict."""
     if not isinstance(video_url, str) or not video_url.strip():
         return tool_error("video_url is required", success=False)
+    if "\x00" in video_url:
+        return tool_error("Invalid video source: path contains null byte.", success=False)
+    stripped_url = video_url.strip()
+    if not stripped_url.lower().startswith(("http://", "https://", "data:")):
+        from agent.file_safety import get_nt_namespace_error
+        if nt_err := get_nt_namespace_error(_parse_file_uri(stripped_url), verb="Read"):
+            return tool_error(nt_err, success=False)
     refusal, reserved_key = _reserve_embed(video_url, tool_name="video_analyze", media_label="video")
     if refusal is not None:
         return refusal

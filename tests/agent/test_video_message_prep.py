@@ -130,10 +130,13 @@ def test_video_token_estimation_compaction_bedrock_and_sanitization():
     assert any("video" in b.get("text", "").lower() for b in converse_blocks)
     assert all(huge_b64 not in str(b) for b in converse_blocks)
 
-    # Message sanitization strips rejected video parts cleanly
+    # Corrupt-image stripping preserves healthy video; broad all-media strip removes video cleanly
+    from agent.message_sanitization import _strip_all_media_from_messages
+
     san_copy = [dict(video_msg, content=list(video_msg["content"]))]
     assert _messages_carry_images(san_copy) is True
-    assert _strip_images_from_messages(san_copy) is True
+    assert _strip_images_from_messages(san_copy) is False
+    assert _strip_all_media_from_messages(san_copy) is True
     assert all(p.get("type") != "video_url" for p in san_copy[0]["content"] if isinstance(p, dict))
 
     # Trace upload _tool_result_message never dumps base64 for in-memory list content
@@ -245,3 +248,110 @@ def test_persistence_trajectory_and_trace_upload_never_leak_base64_video_or_scre
 
     trace_block = _part_to_block(content[1], redact=False)
     assert trace_block == {"type": "text", "text": "[video omitted]"}
+
+
+def test_video_hardening_no_base64_leaks_ema_isolation_and_rejection_isolation():
+    """Verify Anthropic/Bedrock no-leak guards, EMA isolation, video rejection isolation, api_mode gating, and models_dev sparse overrides."""
+    import base64
+    import struct
+    from types import SimpleNamespace
+    from agent.anthropic_message_convert import _tool_result_content
+    from agent.bedrock_adapter import convert_messages_to_converse
+    from agent.context_compressor import evict_stale_outbound_tool_images
+    from agent.image_routing import supports_video_in_tool_results
+    from agent.message_sanitization import record_media_rejection, strip_images_for_rejecting_model
+    from agent.model_metadata import _count_image_tokens, estimate_messages_tokens_rough
+    from agent.models_dev import _merge_catalog_entry_with_override, get_model_capabilities
+
+    huge_b64 = "V" * 16384
+    video_list_tool = {
+        "role": "tool",
+        "tool_call_id": "call_vid_leak",
+        "content": [
+            {"type": "text", "text": "Clip attached"},
+            {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{huge_b64}"}},
+        ],
+    }
+
+    # 1. Anthropic list-typed tool_result never falls through to json.dumps(content)
+    ant_out = _tool_result_content(video_list_tool)
+    assert huge_b64 not in str(ant_out)
+    assert "Clip attached" in str(ant_out)
+
+    # 2. Bedrock Converse tool_result (both list and _multimodal dict) never leaks base64
+    converse_msgs, _ = convert_messages_to_converse([video_list_tool])
+    assert huge_b64 not in str(converse_msgs)
+    mm_tool = {"role": "tool", "tool_call_id": "call_mm", "content": _video_envelope()}
+    converse_mm, _ = convert_messages_to_converse([mm_tool])
+    assert "AAAA" not in str(converse_mm)
+
+    # 3. _count_image_tokens returns 0 for video (never poisons image_token_costs.json EMA);
+    #    string api_content sidecar zeroes non-wire video estimate
+    assert _count_image_tokens(video_list_tool, 1000) == 0
+    assert estimate_messages_tokens_rough([video_list_tool]) >= 1_500
+    sidecar_msg = {
+        "role": "user",
+        "content": [{"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{huge_b64}"}}],
+        "api_content": "text replacement only",
+    }
+    assert estimate_messages_tokens_rough([sidecar_msg]) < 100
+
+    # 4. Video rejection (explicit & generic) never poisons _image_rejecting_models
+    agent = SimpleNamespace(
+        provider="gemini", model="gemini-3.8-flash", _image_rejecting_models=set(),
+    )
+    mixed = [
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,BBBB"}},
+        ]},
+    ]
+    assert record_media_rejection(agent, "unexpected item type in content", mixed) == "video"
+    assert ("gemini", "gemini-3.8-flash") not in agent._image_rejecting_models
+    assert strip_images_for_rejecting_model(agent, mixed) is True
+    assert [p["type"] for p in mixed[0]["content"]] == ["image_url"]
+
+    # 5. api_mode gating blocks non-native transports even if provider/model look Gemini-like
+    assert supports_video_in_tool_results("gemini", "gemini-3.8-flash", {}, api_mode="anthropic_messages") is False
+    assert supports_video_in_tool_results("gemini", "gemini-3.8-flash", {}, api_mode="bedrock_converse") is False
+    assert supports_video_in_tool_results("gemini", "gemini-3.8-flash", {}, api_mode="codex_responses") is False
+    assert supports_video_in_tool_results("solstice", "gemini-3.8-flash", {}) is True
+    assert supports_video_in_tool_results(
+        "gemini", "gemini-3.8-flash", {}, base_url="https://generativelanguage.googleapis.com/v1",
+    ) is True
+
+    # 6. YouTube video URL alongside small PNGs never falsely disables many_image_safe
+    png_100 = b"\x89PNG\r\n\x1a\n" + struct.pack(">I4sII", 13, b"IHDR", 100, 100) + b"\x08\x02\x00\x00\x00" + b"\x00" * 4
+    png_url = "data:image/png;base64," + base64.b64encode(png_100).decode("ascii")
+    msgs = [
+        {"role": "tool", "tool_call_id": f"img_{i}", "content": [{"type": "image_url", "image_url": {"url": png_url}}]}
+        for i in range(21)
+    ]
+    msgs.append({
+        "role": "tool", "tool_call_id": "yt_1",
+        "content": [{"type": "video_url", "video_url": {"url": "https://www.youtube.com/watch?v=jNQXAC9IVRw"}}],
+    })
+    assert evict_stale_outbound_tool_images(msgs) == 0
+
+    # 7. Catalog-miss supports_video override preserves supports_vision=None and strict bool coercion
+    merged = _merge_catalog_entry_with_override({}, {"supports_video": True})
+    assert "modalities" not in merged
+    assert merged["_modality_overrides"] == {"video": True}
+    from unittest.mock import patch
+
+    overrides = {
+        "custom-unknown-provider": {
+            "custom-vid-model": {"supports_video": True},
+            "custom-vid-model-2": {"supports_vision": "false"},
+        }
+    }
+    with patch("agent.models_dev._load_model_overrides", return_value=overrides), patch(
+        "agent.models_dev.fetch_models_dev", return_value={}
+    ):
+        caps = get_model_capabilities("custom-unknown-provider", "custom-vid-model", allow_network=False)
+        caps_false = get_model_capabilities("custom-unknown-provider", "custom-vid-model-2", allow_network=False)
+    assert caps is not None
+    assert caps.supports_video is True
+    assert caps.supports_vision is None
+    assert caps_false is not None
+    assert caps_false.supports_vision is False

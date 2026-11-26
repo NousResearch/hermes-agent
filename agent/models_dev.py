@@ -810,6 +810,20 @@ def _default_override_context(provider: str) -> Optional[int]:
     return _override_int(default, "context_window") if default is not None else None
 
 
+def _coerce_override_bool(raw: Any) -> Optional[bool]:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str):
+        low = raw.strip().lower()
+        if low in ("true", "yes", "on", "1"):
+            return True
+        if low in ("false", "no", "off", "0"):
+            return False
+    return None
+
+
 def _override_to_catalog_shape(
     override: dict[str, Any],
 ) -> tuple[dict[str, Any], Optional[bool], Optional[bool]]:
@@ -827,16 +841,12 @@ def _override_to_catalog_shape(
             patch[catalog_key] = bool(override[override_key])
     vision: Optional[bool] = None
     if "supports_vision" in override:
-        vision = patch["attachment"] = bool(override["supports_vision"])
+        coerced_vision = _coerce_override_bool(override["supports_vision"])
+        if coerced_vision is not None:
+            vision = patch["attachment"] = coerced_vision
     video: Optional[bool] = None
     if "supports_video" in override:
-        raw_video = override["supports_video"]
-        if isinstance(raw_video, bool):
-            video = raw_video
-        elif isinstance(raw_video, int) and raw_video in (0, 1):
-            video = bool(raw_video)
-        elif isinstance(raw_video, str) and raw_video.strip().lower() in ("true", "yes", "on", "1", "false", "no", "off", "0"):
-            video = raw_video.strip().lower() in ("true", "yes", "on", "1")
+        video = _coerce_override_bool(override["supports_video"])
     if "model_family" in override:
         patch["family"] = str(override["model_family"] or "")
     return patch, vision, video
@@ -850,17 +860,27 @@ def _merge_catalog_entry_with_override(raw: dict[str, Any], override: dict[str, 
     limit_patch = shaped.pop("limit", None)
     if limit_patch:
         merged["limit"] = {**_dict_or_empty(raw.get("limit")), **limit_patch}
-    if vision_override is not None or video_override is not None:
+    modality_flags = {
+        token: flag
+        for flag, token in ((vision_override, "image"), (video_override, "video"))
+        if flag is not None
+    }
+    if modality_flags:
         base_mods = dict(_dict_or_empty(raw.get("modalities")))
-        input_mods = base_mods.get("input")
-        input_mods = list(input_mods) if isinstance(input_mods, list) else []
-        for flag, token in ((vision_override, "image"), (video_override, "video")):
-            if flag is True and token not in input_mods:
-                input_mods.append(token)
-            elif flag is False and token in input_mods:
-                input_mods.remove(token)
-        base_mods["input"] = input_mods
-        merged["modalities"] = base_mods
+        raw_input = base_mods.get("input")
+        if isinstance(raw_input, list):
+            input_mods = list(raw_input)
+            for token, flag in modality_flags.items():
+                if flag is True and token not in input_mods:
+                    input_mods.append(token)
+                elif flag is False and token in input_mods:
+                    input_mods.remove(token)
+            base_mods["input"] = input_mods
+            merged["modalities"] = base_mods
+        else:
+            # Catalog-miss / partial base: keep unspecified modalities unknown (None) instead of synthesizing
+            # a complete ``modalities.input`` list that turns every other modality into False.
+            merged["_modality_overrides"] = {**_dict_or_empty(raw.get("_modality_overrides")), **modality_flags}
     merged.update(shaped)
     return merged
 
@@ -947,14 +967,22 @@ def get_model_capabilities(
     raw = _apply_overrides(provider, model, entry, config=config)
     if raw is None:
         return None
+    sparse_mods = raw.get("_modality_overrides")
+    sparse = dict(sparse_mods) if isinstance(sparse_mods, dict) and sparse_mods else None
+    vision_val = (
+        sparse["image"]
+        if sparse and "image" in sparse
+        else (None if unknown_base and "attachment" not in raw and "modalities" not in raw else _entry_supports_vision(raw))
+    )
+    video_val = (
+        sparse["video"]
+        if sparse and "video" in sparse
+        else (None if unknown_base and "modalities" not in raw else _entry_supports_video(raw))
+    )
     return ModelCapabilities(
         supports_tools=bool(raw.get("tool_call", False)),
-        supports_vision=(
-            None
-            if unknown_base and "attachment" not in raw and "modalities" not in raw
-            else _entry_supports_vision(raw)
-        ),
-        supports_video=None if unknown_base and "modalities" not in raw else _entry_supports_video(raw),
+        supports_vision=vision_val,
+        supports_video=video_val,
         supports_reasoning=None if unknown_base and "reasoning" not in raw else bool(raw.get("reasoning", False)),
         context_window=_extract_limit(raw, "context") or 200000,
         max_output_tokens=_extract_limit(raw, "output"),
@@ -1007,7 +1035,14 @@ def _parse_model_info(model_id: str, raw: dict[str, Any], provider_id: str) -> M
     modalities = _dict_or_empty(raw.get("modalities"))
     def _mods(key: str) -> tuple[str, ...]:
         mods = modalities.get(key) or []
-        return tuple(mods) if isinstance(mods, list) else ()
+        out = list(mods) if isinstance(mods, list) else []
+        if key == "input" and isinstance(raw.get("_modality_overrides"), dict):
+            for token, enabled in raw["_modality_overrides"].items():
+                if enabled is True and token not in out:
+                    out.append(token)
+                elif enabled is False and token in out:
+                    out.remove(token)
+        return tuple(out)
     def _cost(key: str) -> Optional[float]:
         return float(cost[key]) if cost.get(key) is not None else None
     return ModelInfo(

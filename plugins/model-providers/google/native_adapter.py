@@ -229,11 +229,11 @@ def _inline_data_part(item: dict[str, Any]) -> Optional[dict[str, Any]]:
     part_type = item.get("type")
     if part_type not in _MEDIA_URL_PART_TYPES:
         return None
-    payload = item.get(part_type)
+    payload = (item.get("image_url") or item.get("input_image")) if part_type == "input_image" else item.get(part_type)
     url = (payload.get("url") if isinstance(payload, dict) else payload) or item.get("url") or ""
     if not isinstance(url, str):
         return None
-    if yt_url := normalize_youtube_url(url):
+    if part_type in ("video_url", "input_video") and (yt_url := normalize_youtube_url(url)):
         return {"fileData": {"fileUri": yt_url, "mimeType": "video/mp4"}}
     if not url.startswith("data:"):
         return None

@@ -1391,23 +1391,16 @@ def _retire_stale_tool_result_images(
     return pruned
 
 
-def _image_payload(msg: dict[str, Any]) -> list[str]:
-    """Data URL / base64 string of each image block in a message (``""`` when unmeasurable).
-
-    The provider counts BLOCKS (one ``tool_result`` with three screenshots is three), so the
-    block count is the list length. Bytes are the summed string lengths: the payload is ASCII and
-    the JSON framing around it is noise against a 24 MB budget. The strings also let the caller
-    read dimensions from headers only, without a second walk or a full decode.
-    """
+def _image_payload(msg: dict[str, Any], *, images_only: bool = False) -> list[str]:
+    """Data URL / base64 string of each media block in a message (``""`` when unmeasurable)."""
     parts = _tool_result_parts(msg.get("content"))
     if not isinstance(parts, list):
         return []
     sources: list[str] = []
     for p in parts:
-        if not _is_image_part(p):
+        if not _is_image_part(p) or (images_only and p.get("type") in _VIDEO_PART_TYPES):
             continue
-        media = p.get("image_url") or p.get("video_url") or p.get("input_video")
-        source = p.get("source")
+        media, source = p.get("image_url") or p.get("video_url") or p.get("input_video"), p.get("source")
         data = (media.get("url") if isinstance(media, dict) else media) or (source.get("data") if isinstance(source, dict) else None)
         sources.append(data if isinstance(data, str) else "")
     return sources
@@ -1428,11 +1421,14 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
     Returns the number of messages rewritten.
     ``retired_ids`` latches the frontier per session: see :func:`latched_retire_count`.
     """
-    carriers: list[tuple[int, list[str]]] = []  # (index, image sources), newest first
+    carriers: list[tuple[int, list[str]]] = []  # (index, media sources), newest first
     reserved: list[str] = []
+    image_sources: list[str] = []
     for i in range(len(api_messages) - 1, -1, -1):
         msg = api_messages[i]
         sources = _image_payload(msg) if isinstance(msg, dict) else []
+        if sources:
+            image_sources.extend(_image_payload(msg, images_only=True))
         if sources and msg.get("role") == "tool":
             carriers.append((i, sources))
         else:
@@ -1442,7 +1438,7 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
         len(reserved),
         carrier_bytes_newest_first=[sum(map(len, sources)) for _, sources in carriers],
         reserved_bytes=sum(map(len, reserved)),
-        many_image_safe=images_all_within_many_image_limit([x for x in (*reserved, *(s for _, ss in carriers for s in ss)) if not x.startswith("data:video/")]),
+        many_image_safe=images_all_within_many_image_limit(image_sources),
     )
     retire = latched_retire_count(retire, [api_messages[i].get("tool_call_id") for i, _ in carriers], retired_ids)
     pruned = 0

@@ -173,8 +173,9 @@ class VisionMessagePrepMixin:
             model = (getattr(self, "model", "") or "").strip()
             base_url = (getattr(self, "base_url", "") or "").strip()
             requested_provider = (getattr(self, "requested_provider", "") or "").strip()
+            api_mode = (getattr(self, "api_mode", "") or "").strip()
             cfg = load_config()
-            if not supports_video_in_tool_results(provider, model, cfg, base_url=base_url):
+            if not supports_video_in_tool_results(provider, model, cfg, base_url=base_url, api_mode=api_mode):
                 return False
             verdict = _lookup_supports_video(
                 provider, model, cfg, requested_provider=requested_provider, allow_network=False,

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _VALID_MODES = frozenset({"auto", "native", "text"})
 _VALID_VIDEO_MODES = frozenset({"auto", "native", "auxiliary"})
 _VIDEO_MODE_ALIASES = {"text": "auxiliary"}
-_GEMINI_NATIVE_VIDEO_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-ai-studio", "google-vertex-gemini"})
+_GEMINI_NATIVE_VIDEO_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-ai-studio", "google-vertex-gemini", "solstice"})
 
 
 # Extensions extract_image_refs() auto-attaches. Documents/archives are excluded:
@@ -565,8 +565,6 @@ def is_native_gemini_video_route(
         return False
     resolved_url = _provider_base_url_for_video_route(cfg, p, base_url=base_url)
     if resolved_url:
-        if resolved_url.rstrip("/").lower().endswith("/v1"):
-            return False
         return is_native_gemini_base_url(resolved_url)
     return p in _GEMINI_NATIVE_VIDEO_PROVIDERS
 
@@ -577,8 +575,11 @@ def supports_video_in_tool_results(
     cfg: Optional[dict[str, Any]] = None,
     *,
     base_url: str = "",
+    api_mode: str = "",
 ) -> bool:
     """Whether provider+model accepts video media inside tool-result messages."""
+    if api_mode in ("anthropic_messages", "bedrock_converse", "codex_responses"):
+        return False
     return is_native_gemini_video_route(provider, model, cfg, base_url=base_url)
 
 

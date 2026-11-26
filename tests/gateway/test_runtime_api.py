@@ -3,11 +3,32 @@
 import asyncio
 import json
 import signal
+import socket
 
 import httpx
 import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
+
+
+@pytest.mark.asyncio
+async def test_private_api_serves_ipv6_loopback(tmp_path):
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.run_api import start_gateway_api, stop_gateway_api
+
+    if not socket.has_ipv6:
+        pytest.skip("IPv6 unavailable")
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "gateway-sessions"))
+    handle = await start_gateway_api(runner, host="::1")
+    try:
+        assert handle.api_origin.startswith("http://[::1]:")
+        async with httpx.AsyncClient(base_url=handle.api_origin, trust_env=False) as client:
+            assert (await client.get("/api/config/raw")).status_code == 401
+    finally:
+        await stop_gateway_api(handle)
+        if runner._session_db is not None:
+            await runner._session_db.close()
 
 
 @pytest.mark.asyncio

@@ -191,6 +191,31 @@ def test_a_gateway_without_the_webapp_starts_mains_private_listener(monkeypatch,
     assert runner.webapp_status == {"state": "off", "url": None, "reason": None}
 
 
+def test_private_gateway_api_can_bind_ipv6_without_webapp(monkeypatch, tmp_path):
+    runner, calls, _ = _start_runtime_api(
+        monkeypatch, tmp_path, "gateway:\n  api_bind_host: '::1'\n")
+    assert calls == [("::1", 0, None)]
+    assert runner.webapp_status["state"] == "off"
+
+
+def test_webapp_failure_uses_configured_private_bind(monkeypatch, tmp_path):
+    _, calls, _ = _start_runtime_api(
+        monkeypatch, tmp_path,
+        "gateway:\n  api_bind_host: '::1'\nwebapp:\n  enabled: true\n  port: 9555\n",
+        busy=True,
+    )
+    assert [(host, port) for host, port, _ in calls] == [
+        ("127.0.0.1", 9555), ("::1", 0),
+    ]
+
+
+@pytest.mark.parametrize("value", ["0.0.0.0", "::", "localhost", "192.168.1.2", "none"])
+def test_private_gateway_api_rejects_non_numeric_or_public_bind(tmp_path, value):
+    home = _home(tmp_path, f"gateway:\n  api_bind_host: '{value}'\n")
+    with pytest.raises(ValueError, match="gateway.api_bind_host"):
+        webapp.listener_plan(home)
+
+
 def test_the_launcher_reads_the_webapp_state_from_its_gateway(monkeypatch, tmp_path):
     off, _, _ = _start_runtime_api(monkeypatch, tmp_path / "off", None)
     assert _ask(off, "webapp-status")["result"] == {"state": "off", "url": None, "reason": None}

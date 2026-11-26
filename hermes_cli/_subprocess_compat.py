@@ -515,24 +515,15 @@ _MAX_INCLUDE_TARGETS = 16
 # Each discovered key costs two env entries; a repo with tens of thousands of filters would make
 # every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
 _MAX_FILTER_KEYS = 256
+# Repositories (superproject + nested submodules) walked per hardened call; refuse past this many.
+_MAX_SUBMODULE_REPOS = 64
 # Stand-in stderr for a git call refused because filter discovery could not be trusted.
 FILTER_DISCOVERY_FAILED = "git filter discovery failed"
 
 
-def noninteractive_repo_git_env(
-    cwd: str | os.PathLike[str],
-    base: Mapping[str, str] | None = None,
-) -> dict[str, str] | None:
-    """Harden internal git for one repository, including named clean/smudge/process filters.
-
-    The static environment can pin fixed config keys such as core.fsmonitor and
-    core.hooksPath, but a repository chooses filter driver names through .gitattributes.
-    Discover the effective filter command keys for this checkout and append empty command
-    overrides plus required=false to the already-isolated config block. Discovery is
-    bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
-    automatic git operation instead of running with only partial hardening.
-    """
-    env = noninteractive_git_env(base)
+def _repo_filter_names(cwd: str | os.PathLike[str], env: Mapping[str, str]) -> list[str] | None:
+    """Filter-command and include keys git would load for the repository at *cwd*, or None when
+    discovery cannot be trusted (see :func:`noninteractive_repo_git_env`)."""
     # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
     # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
     # One probe lists the filter keys and the include paths with their origin file: -z --show-origin
@@ -583,6 +574,56 @@ def noninteractive_repo_git_env(
         if any(_INCLUDE_KEY.fullmatch(name) for name in found):
             return None
         names.extend(found)
+
+    return names
+
+
+def _initialized_submodules(cwd: str | os.PathLike[str], env: Mapping[str, str]) -> list[Path] | None:
+    """Checked-out submodule roots (gitlinks with a ``.git`` entry) of the repository at *cwd*."""
+    # ``:/`` lists the whole index from any subdirectory; paths stay relative to *cwd*. A non-zero
+    # exit (not a repository, unreadable index) is "no submodules": status would die on the same
+    # index read. Only a timeout is untrusted.
+    proc = bounded_probe_run(["git", "-C", str(cwd), "ls-files", "--stage", "-z", ":/"], timeout=5, env=env)
+    if proc is None:
+        return None
+    if proc.returncode != 0:
+        return []
+    roots = []
+    for entry in proc.stdout.split("\0"):
+        meta, _, path = entry.partition("\t")
+        if meta.startswith("160000 ") and os.path.lexists(Path(cwd) / path / ".git"):
+            roots.append(Path(cwd) / path)
+    return roots
+
+
+def noninteractive_repo_git_env(
+    cwd: str | os.PathLike[str],
+    base: Mapping[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Harden internal git for one repository, including named clean/smudge/process filters.
+
+    The static environment can pin fixed config keys such as core.fsmonitor and
+    core.hooksPath, but a repository chooses filter driver names through .gitattributes.
+    Discover the effective filter command keys for this checkout and append empty command
+    overrides plus required=false to the already-isolated config block. Discovery is
+    bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
+    automatic git operation instead of running with only partial hardening.
+    """
+    env = noninteractive_git_env(base)
+    # ``status``/``diff`` recurse into every checked-out submodule to report it dirty, and that
+    # nested git loads the SUBMODULE's own config, filters included (openai/codex#60669). The
+    # neutralizing overrides travel in the inherited env, so discover each submodule's names too.
+    names: list[str] = []
+    pending, visited = [Path(cwd)], 0
+    while pending:
+        repo = pending.pop()
+        visited += 1
+        found = _repo_filter_names(repo, env) if visited <= _MAX_SUBMODULE_REPOS else None
+        subs = _initialized_submodules(repo, env) if found is not None else None
+        if found is None or subs is None:
+            return None
+        names.extend(found)
+        pending.extend(subs)
 
     keys: list[str] = []
     required: list[str] = []

@@ -519,8 +519,8 @@ def _policy_denied(pool: Any) -> bool:
         from agent.usage_admission.policy import usage_admission_policy_denied
         provider = str(getattr(pool, "provider", "") or "")
         return bool(provider and usage_admission_policy_denied(provider))
-    except Exception as exc:
-        logger.debug("Failed to inspect child credential admission: %s", exc)
+    except Exception:
+        logger.debug("Failed to inspect child credential admission", exc_info=True)
         return False
 
 
@@ -529,6 +529,7 @@ def _usage_limited(pool: Any) -> bool:
         from agent.usage_admission.policy import get_pool_usage_limits
         return bool(get_pool_usage_limits(str(getattr(pool, "provider", "") or "")))
     except Exception:
+        logger.debug("Failed to read child credential usage limits", exc_info=True)
         return False
 
 
@@ -553,8 +554,8 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
             if callable(activate):
                 try:
                     activated = bool(activate())
-                except Exception as exc:
-                    logger.debug("Failed to activate child fallback after policy denial: %s", exc)
+                except Exception:
+                    logger.debug("Failed to activate child fallback after policy denial", exc_info=True)
             child_pool = getattr(child, "_credential_pool", None) if activated else None
             leased_cred_id = child_pool.acquire_lease() if child_pool is not None else None
             if leased_cred_id is None and (child_pool is None or _policy_denied(child_pool)):

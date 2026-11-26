@@ -295,11 +295,13 @@ def usage_admission_credential_denied(provider: str, api_key: str) -> bool:
             for entry in pool.entries()
         )
     except Exception:
+        logger.debug("credential pool: usage admission pool lookup failed", exc_info=True)
         return False
     if not matching_entry:
         return False
     try:
         pool._refresh_usage_admission_cache()
     except Exception:
+        logger.debug("credential pool: usage admission refresh failed", exc_info=True)
         return False
     return _cached_denial()

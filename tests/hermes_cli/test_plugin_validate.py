@@ -261,7 +261,7 @@ class TestCapabilityProbe:
 
 
 class TestExclusiveProviderProbe:
-    """Computer-use plugins register through their family's collector, not
+    """Computer-use and cron-scheduler plugins register through their family's collector, not
     PluginContext; the probe must accept that registrar and still refuse a misspelt one."""
 
     @pytest.mark.parametrize("base,registrar", [
@@ -270,6 +270,7 @@ class TestExclusiveProviderProbe:
          "    name = 'fixture'\n"
          "    def create_backend(self, *, permission_mode):\n"
          "        raise NotImplementedError\n", "register_computer_use_provider"),
+        ("class Provider:\n    name = 'fixture'\n", "register_cron_scheduler"),
     ])
     def test_family_registrar_passes(self, tmp_path, base, registrar):
         d = _make_plugin(

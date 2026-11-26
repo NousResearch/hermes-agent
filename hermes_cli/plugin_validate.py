@@ -373,13 +373,15 @@ emit(recorded)
 def _probe_options(manifest: dict) -> dict:
     from hermes_cli.plugins import PluginContext
     from plugins.computer_use import _ProviderCollector as ComputerUseCollector
+    from plugins.cron_providers import _ProviderCollector as CronCollector
 
     public = [n for n in dir(PluginContext) if not n.startswith("_")]
     return {
         "kind": str(manifest.get("kind") or ""),
-        # Exclusive computer-use plugins receive the dedicated collector, not PluginContext.
+        # Exclusive computer-use and cron-scheduler plugins are loaded with their family's collector,
+        # not PluginContext, so its registrar is part of the surface they run against.
         "context_methods": sorted({
-            n for context in (PluginContext, ComputerUseCollector) for n in dir(context)
+            n for context in (PluginContext, ComputerUseCollector, CronCollector) for n in dir(context)
             if not n.startswith("_") and callable(getattr(context, n))
         }),
         "context_properties": sorted(

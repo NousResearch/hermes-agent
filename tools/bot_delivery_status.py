@@ -23,7 +23,7 @@ FAILED_VISIBLE_SECONDS = 24 * 3600
 PREVIEW_CHARS = 140
 
 _PENDING_RECEIPTS = frozenset({"queued", "claimed", "canonical"})
-_FAILED_RECEIPTS = frozenset({"failed", "cancelled", "ambiguous"})
+_FAILED_RECEIPTS = frozenset({"failed", "ambiguous"})
 # ``session_admissions.status`` of the admission the receipt follows → strip state.
 _ADMISSION_STATES = {"queued": "queued", "started": "working", "terminal": "claimed"}
 
@@ -59,8 +59,6 @@ def _failure_reason(record: dict, admission_status: str | None) -> str:
     wrote one). Unknown outcomes say so: the user must not resend those."""
     if record.get("status") == "ambiguous" or admission_status == "unknown":
         return "unknown_outcome"
-    if record.get("status") == "cancelled":
-        return str(record.get("reason") or "cancelled")
     return str(record.get("reason") or "unknown")
 
 
@@ -151,8 +149,8 @@ def list_sender_deliveries(
     """Every unsettled local delivery ``sender`` made, newest first.
 
     ``root`` is the install root (``bot_mode_probe._hermes_root``); ``profiles`` overrides the
-    roster (``bot_mode_probe._roster``) for callers that already hold it. Settled replies drop
-    off; failed ones stay for ``FAILED_VISIBLE_SECONDS``."""
+    roster (``bot_mode_probe._roster``) for callers that already hold it. Settled and cancelled
+    deliveries drop off; failed and ambiguous receipts stay for ``FAILED_VISIBLE_SECONDS``."""
     from tools.bot_mode_probe import _handle, _roster
 
     now = time.time() if now is None else now

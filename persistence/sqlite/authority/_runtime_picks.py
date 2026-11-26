@@ -7,7 +7,7 @@ import json
 from persistence.authority.runtime import parse_mutation
 from persistence.core.errors import AuthorityRefusal
 
-from ._runtime import _epoch, _json, replay_mutation_receipt
+from ._runtime import _epoch, _json, _sqlite_payload_json, _sqlite_text, replay_mutation_receipt
 
 DEFERRED_PICK_PREFIX = 'gateway.deferred_pick.v1.'
 
@@ -205,7 +205,7 @@ def commit_chat_pick(holder, *, epoch, key, digest, session_id, params, result):
         revision = conn.execute('SELECT runtime_revision FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
         committed = {**result, 'revision': revision}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
-                     (key, _json({'digest': digest, 'result': committed})))
+                     (key, _sqlite_text(_json({'digest': digest, 'result': committed}))))
         return committed
     return holder._execute_write(write)
 
@@ -245,8 +245,8 @@ def defer_pick(holder, *, epoch, key, digest, session_id, operation, principal_i
         result = {'session_id': session_id, 'operation': operation, 'status': 'deferred', **picked,
                   'revision': row[0], 'execution_generation': row[1]}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                     (DEFERRED_PICK_PREFIX + session_id, _json(value)))
-        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, _json({'digest': digest, 'result': result})))
+                     (DEFERRED_PICK_PREFIX + session_id, _sqlite_payload_json(value)))
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, _sqlite_text(_json({'digest': digest, 'result': result}))))
         return result
     return holder._execute_write(write)
 

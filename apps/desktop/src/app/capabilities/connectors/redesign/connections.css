@@ -1,0 +1,1227 @@
+@import './connections-sheet.css';
+
+/* Connections redesign (Figma `1515:11577`, `1591:17731`, `1649:30098`, `1649:29813`).
+   One vocabulary for the directory, a category's See-All page, the 640px app drawer and
+   Review all tools. Every colour, radius, type size and duration is a portal token so both
+   themes follow the shell; spacing and geometry stay here. */
+
+:root[data-shell='portal'] .conn-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1.75rem;
+  width: 100%;
+  min-height: 0;
+  padding-block: 1.5rem var(--portal-page-end-space);
+  padding-inline: max(2rem, calc((100% - 62rem) / 2));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A drill-down draws the header itself, so its first row clears the floating window chrome. */
+:root[data-shell='portal'] .conn-page[data-owns-header='true'] {
+  padding-block-start: calc(var(--titlebar-height) + var(--portal-page-top));
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-xl-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+}
+
+:root[data-shell='portal'] .conn-subtitle {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .conn-subtitle-divider {
+  color: var(--portal-text-quaternary);
+}
+
+:root[data-shell='portal'] .conn-back-link {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-brand);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] .conn-back-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:root[data-shell='portal'] .conn-back-link:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* ── Notices and banners ───────────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+:root[data-shell='portal'] .conn-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid transparent;
+  border-radius: var(--portal-radius-card);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.45;
+}
+
+:root[data-shell='portal'] .conn-banner-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+:root[data-shell='portal'] .conn-banner-text > strong {
+  color: var(--portal-text-primary);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .conn-banner-success {
+  border-color: color-mix(in srgb, var(--portal-status-online) 35%, transparent);
+  background: color-mix(in srgb, var(--portal-status-online) 12%, transparent);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-banner-error {
+  border-color: var(--portal-stroke-danger);
+  background: var(--portal-surface-danger);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-retry {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-danger);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:root[data-shell='portal'] .conn-retry:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* ── Search, filter trigger, chips ─────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-toolbar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-search {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 20rem;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.5rem;
+  padding-inline: 0.75rem;
+  border: 1px solid var(--portal-stroke-field);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-field);
+  color: var(--portal-text-secondary);
+}
+
+:root[data-shell='portal'] .conn-search:focus-within {
+  border-color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .conn-search-icon {
+  flex-shrink: 0;
+  color: var(--portal-text-tertiary);
+  font-size: var(--portal-type-body-size);
+}
+
+:root[data-shell='portal'] .conn-search input {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  outline: none;
+}
+
+:root[data-shell='portal'] .conn-search input::placeholder {
+  color: var(--portal-text-tertiary);
+  opacity: 1;
+}
+
+:root[data-shell='portal'] .conn-search-clear {
+  display: grid;
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-chip);
+  background: none;
+  color: var(--portal-text-tertiary);
+  cursor: pointer;
+}
+
+:root[data-shell='portal'] .conn-search-clear:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-keycap {
+  display: inline-grid;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  place-items: center;
+  padding-inline: 0.25rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-micro-size);
+  font-weight: 500;
+  line-height: 1;
+}
+
+:root[data-shell='portal'] .conn-filter-btn {
+  height: 2.5rem;
+  gap: 0.5rem;
+  padding-inline: 1rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-filter-btn:hover {
+  background: var(--portal-surface-control-hover);
+}
+
+:root[data-shell='portal'] .conn-filter-btn.is-active,
+:root[data-shell='portal'] .conn-filter-btn[data-state='open'] {
+  border-color: var(--portal-text-brand);
+  color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .conn-filter-count {
+  display: inline-grid;
+  min-width: 1.25rem;
+  min-height: 1.125rem;
+  height: auto;
+  place-items: center;
+  padding-inline: 0.3125rem;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+  font-size: var(--portal-type-micro-size);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-toolbar-extra {
+  margin-inline-start: auto;
+}
+
+:root[data-shell='portal'] .conn-add-btn {
+  height: 2.5rem;
+  gap: 0.375rem;
+  padding-inline: 0.875rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+
+:root[data-shell='portal'] .conn-add-btn:hover {
+  background: var(--portal-surface-control-hover);
+}
+
+:root[data-shell='portal'] .conn-add-btn:disabled {
+  opacity: var(--portal-text-quiet-opacity);
+}
+
+/* Figma 1649:29813: the row of applied filters under the toolbar. */
+:root[data-shell='portal'] .conn-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-chips-label {
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 1.75rem;
+  padding: 0 0.5rem 0 0.625rem;
+  border: 1px solid color-mix(in srgb, var(--portal-text-brand) 40%, transparent);
+  border-radius: var(--portal-radius-round);
+  background-color: var(--portal-surface-brand-selected);
+  color: var(--portal-text-primary);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1;
+}
+
+:root[data-shell='portal'] .conn-chip:hover {
+  border-color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .conn-chip:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-chip-remove {
+  display: grid;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-chip);
+  background: none;
+  color: var(--portal-text-secondary);
+  cursor: pointer;
+  font-size: var(--portal-type-micro-size);
+}
+
+:root[data-shell='portal'] .conn-chip-remove:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+:root[data-shell='portal'] .conn-chip:hover .conn-chip-remove {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-chips-divider {
+  color: var(--portal-text-quaternary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1;
+}
+
+:root[data-shell='portal'] .conn-chips-clear {
+  display: inline-flex;
+  align-items: center;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-brand);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:root[data-shell='portal'] .conn-chips-clear:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-chips-clear:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* ── Filter popover (1649:30098) ───────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-filter-popover {
+  width: min(26.25rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  max-height: min(38rem, calc(100vh - 4rem));
+  padding: 1.25rem;
+  overflow-y: auto;
+  border: 1px solid var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-panel);
+  background: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-filter-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+:root[data-shell='portal'] .conn-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+:root[data-shell='portal'] .conn-filter-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: calc(var(--portal-type-section-size) * 1.5);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+}
+
+:root[data-shell='portal'] .conn-filter-clear {
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-brand);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-filter-clear:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:root[data-shell='portal'] .conn-filter-clear:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-filter-label {
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-filter-hint {
+  margin-top: -0.25rem;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-status-chips,
+:root[data-shell='portal'] .conn-filter-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 2rem;
+  padding-inline: 0.75rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-secondary);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1;
+}
+
+:root[data-shell='portal'] .conn-filter-pill:hover {
+  background: var(--portal-surface-control-hover);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-filter-pill.is-selected,
+:root[data-shell='portal'] .conn-filter-pill[data-selected],
+:root[data-shell='portal'] .conn-filter-pill[aria-checked='true'] {
+  border-color: var(--portal-text-brand);
+  background: color-mix(in srgb, var(--portal-surface-brand) 18%, transparent);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-filter-pill:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-filter-pill .conn-filter-count {
+  background: color-mix(in srgb, var(--portal-text-brand) 18%, transparent);
+  color: var(--portal-text-brand);
+}
+
+/* The category picker's closed row and its searchable panel. */
+:root[data-shell='portal'] .conn-filter-area-toggle,
+:root[data-shell='portal'] .conn-picker-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--portal-stroke-field);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-field);
+  color: var(--portal-text-primary);
+  cursor: pointer;
+  text-align: start;
+}
+
+:root[data-shell='portal'] .conn-filter-area-toggle:hover,
+:root[data-shell='portal'] .conn-picker-trigger:hover {
+  background: var(--portal-surface-control-hover);
+}
+
+:root[data-shell='portal'] .conn-filter-area-toggle.is-open,
+:root[data-shell='portal'] .conn-picker-trigger[aria-expanded='true'] {
+  border-color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .conn-filter-area-toggle:focus-visible,
+:root[data-shell='portal'] .conn-picker-trigger:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-filter-area-value,
+:root[data-shell='portal'] .conn-filter-area-summary,
+:root[data-shell='portal'] .conn-picker-value {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-filter-area-meta,
+:root[data-shell='portal'] .conn-picker-meta {
+  flex-shrink: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-ui);
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-filter-chevron {
+  flex-shrink: 0;
+  color: var(--portal-text-tertiary);
+  transition: transform var(--portal-motion-fast) var(--portal-ease);
+}
+
+:root[data-shell='portal'] .conn-filter-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+:root[data-shell='portal'] .conn-filter-area {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  padding: 0.375rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-field);
+}
+
+:root[data-shell='portal'] .conn-filter-area-search,
+:root[data-shell='portal'] .conn-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2rem;
+  padding-inline: 0.5rem;
+  border-bottom: 1px solid var(--portal-stroke-divider);
+  color: var(--portal-text-tertiary);
+}
+
+:root[data-shell='portal'] .conn-filter-area-search input,
+:root[data-shell='portal'] .conn-picker-search input {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  outline: none;
+}
+
+:root[data-shell='portal'] .conn-filter-area-search input::placeholder,
+:root[data-shell='portal'] .conn-picker-search input::placeholder {
+  color: var(--portal-text-tertiary);
+  opacity: 1;
+}
+
+:root[data-shell='portal'] .conn-filter-area-list,
+:root[data-shell='portal'] .conn-picker-list {
+  display: flex;
+  max-height: 10.5rem;
+  flex-direction: column;
+  gap: 0.125rem;
+  overflow-y: auto;
+  padding: 0.125rem;
+}
+
+:root[data-shell='portal'] .conn-filter-area-option,
+:root[data-shell='portal'] .conn-picker-row {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-secondary);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  text-align: start;
+}
+
+:root[data-shell='portal'] .conn-filter-area-option:hover,
+:root[data-shell='portal'] .conn-picker-row:hover {
+  background: var(--portal-surface-floating-hover);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-filter-area-option.is-selected,
+:root[data-shell='portal'] .conn-filter-area-option[aria-selected='true'],
+:root[data-shell='portal'] .conn-filter-area-option[aria-pressed='true'],
+:root[data-shell='portal'] .conn-picker-row.is-selected {
+  background: var(--portal-surface-brand-selected);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-filter-area-option:focus-visible,
+:root[data-shell='portal'] .conn-picker-row:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+:root[data-shell='portal'] .conn-filter-area-name,
+:root[data-shell='portal'] .conn-picker-row-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-filter-area-count,
+:root[data-shell='portal'] .conn-picker-row-count {
+  flex-shrink: 0;
+  color: var(--portal-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+:root[data-shell='portal'] .conn-filter-area-empty,
+:root[data-shell='portal'] .conn-picker-empty {
+  margin: 0;
+  padding: 0.5rem;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+}
+
+:root[data-shell='portal'] .conn-filter-apply {
+  width: 100%;
+  height: 2.5rem;
+  border: 0;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-filter-apply:hover {
+  background: var(--portal-surface-brand-hover);
+}
+
+:root[data-shell='portal'] .conn-primary {
+  height: 2.5rem;
+  border: 0;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .conn-primary:hover {
+  background: var(--portal-surface-brand-hover);
+}
+
+/* The two-by-two facet grid Review all tools uses under "What it does". */
+:root[data-shell='portal'] .conn-check-grid,
+:root[data-shell='portal'] .conn-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+:root[data-shell='portal'] .conn-filter-option,
+:root[data-shell='portal'] .conn-check {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-secondary);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  text-align: start;
+}
+
+:root[data-shell='portal'] .conn-filter-option:hover,
+:root[data-shell='portal'] .conn-check:hover {
+  background: var(--portal-surface-control-hover);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-filter-option.is-selected,
+:root[data-shell='portal'] .conn-filter-option[aria-checked='true'],
+:root[data-shell='portal'] .conn-check.is-selected,
+:root[data-shell='portal'] .conn-check[aria-checked='true'] {
+  border-color: var(--portal-text-brand);
+  background: var(--portal-surface-brand-selected);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-filter-option:focus-visible,
+:root[data-shell='portal'] .conn-check:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+/* Facet rows count plainly; the toolbar's applied-filter badge keeps the brand pill. */
+:root[data-shell='portal'] .conn-filter-option .conn-filter-count {
+  padding: 0;
+  background: none;
+  color: var(--portal-text-tertiary);
+}
+
+:root[data-shell='portal'] .conn-check-mark {
+  display: inline-grid;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  place-items: center;
+  border: 1px solid var(--portal-stroke-strong);
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-field);
+  color: var(--portal-text-on-brand);
+}
+
+:root[data-shell='portal'] .conn-check[aria-checked='true'] .conn-check-mark,
+:root[data-shell='portal'] .conn-check.is-selected .conn-check-mark {
+  border-color: var(--portal-surface-brand);
+  background: var(--portal-surface-brand);
+}
+
+/* ── Sections, card surfaces and app rows ──────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-section-head {
+  display: flex;
+  min-height: 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+:root[data-shell='portal'] .conn-section-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.3;
+}
+
+:root[data-shell='portal'] .conn-section-link {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-brand);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.3;
+}
+
+:root[data-shell='portal'] .conn-section-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:root[data-shell='portal'] .conn-section-link:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-section-count {
+  flex-shrink: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-card-surface {
+  padding: 1.5rem 2rem;
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-settings-card);
+}
+
+:root[data-shell='portal'] .conn-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 2rem;
+  row-gap: 1rem;
+}
+
+:root[data-shell='portal'] .conn-app-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.875rem;
+  margin-inline: -0.5rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--portal-radius-surface);
+  transition: background-color var(--portal-motion-fast) var(--portal-ease);
+}
+
+:root[data-shell='portal'] .conn-app-row:hover {
+  background: var(--portal-surface-row-hover);
+}
+
+/* The row's one interactive target for opening the app; the CTA beside it is its own button. */
+:root[data-shell='portal'] .conn-app-trigger {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-surface);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+:root[data-shell='portal'] .conn-app-trigger:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-logo-tile {
+  display: grid;
+  width: 3.125rem;
+  height: 3.125rem;
+  flex-shrink: 0;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-secondary);
+}
+
+:root[data-shell='portal'] .conn-logo-mark {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--portal-radius-control);
+  font-size: var(--portal-type-body-size);
+}
+
+:root[data-shell='portal'] .conn-app-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+:root[data-shell='portal'] .conn-app-name {
+  overflow: hidden;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-app-desc {
+  overflow: hidden;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-cta-btn {
+  height: 2rem;
+  flex-shrink: 0;
+  padding-inline: 0.875rem;
+  border: 1px solid transparent;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-cta-btn:hover {
+  background: var(--portal-surface-control-hover);
+}
+
+:root[data-shell='portal'] .conn-cta-btn.is-manage {
+  border-color: var(--portal-stroke-control);
+  background: transparent;
+  color: var(--portal-text-secondary);
+}
+
+:root[data-shell='portal'] .conn-cta-btn.is-manage:hover {
+  background: var(--portal-surface-control-hover);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-cta-btn:disabled {
+  cursor: default;
+  opacity: var(--portal-text-quiet-opacity);
+}
+
+/* ── Empty, loading ────────────────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 3.5rem 1rem;
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-settings-card);
+  text-align: center;
+}
+
+:root[data-shell='portal'] .conn-empty-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-empty-body {
+  max-width: 28rem;
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .conn-empty .conn-chips-clear {
+  margin-top: 0.5rem;
+  font-size: var(--portal-type-body-size);
+}
+
+:root[data-shell='portal'] .conn-skeleton-heading {
+  width: 8rem;
+  height: 0.875rem;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-skeleton);
+  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
+}
+
+:root[data-shell='portal'] .conn-skeleton-row {
+  cursor: default;
+  pointer-events: none;
+}
+
+:root[data-shell='portal'] .conn-skeleton-row:hover {
+  background: none;
+}
+
+:root[data-shell='portal'] .conn-skeleton-tile {
+  width: 3.125rem;
+  height: 3.125rem;
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-surface-skeleton);
+  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
+}
+
+:root[data-shell='portal'] .conn-skeleton-lines {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+:root[data-shell='portal'] .conn-skeleton-line {
+  width: 72%;
+  height: 0.625rem;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-skeleton);
+  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
+}
+
+:root[data-shell='portal'] .conn-skeleton-line.is-short {
+  width: 46%;
+}
+
+:root[data-shell='portal'] .conn-skeleton-cta {
+  width: 4rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-control);
+  background: var(--portal-surface-skeleton);
+  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
+}
+
+@keyframes conn-pulse {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-shell='portal'] .conn-skeleton-heading,
+  :root[data-shell='portal'] .conn-skeleton-tile,
+  :root[data-shell='portal'] .conn-skeleton-line,
+  :root[data-shell='portal'] .conn-skeleton-cta {
+    animation: none;
+  }
+}
+
+/* ── Narrow viewports ─────────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 699.98px) {
+  :root[data-shell='portal'] .conn-page,
+  :root[data-shell='portal'] .conn-tools-page {
+    gap: 1.25rem;
+    padding-inline: var(--portal-frame-inset);
+    padding-block: 1rem var(--portal-page-end-space);
+  }
+
+  :root[data-shell='portal'] .conn-page[data-owns-header='true'],
+  :root[data-shell='portal'] .conn-tools-page {
+    padding-block-start: calc(var(--titlebar-height) + var(--portal-page-top));
+  }
+
+  :root[data-shell='portal'] .conn-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-shell='portal'] .conn-card-surface {
+    padding: 1rem;
+  }
+
+  :root[data-shell='portal'] .conn-app-row {
+    margin-inline: 0;
+  }
+
+  :root[data-shell='portal'] .conn-toolbar,
+  :root[data-shell='portal'] .conn-tools-toolbar {
+    gap: 0.75rem;
+  }
+
+  :root[data-shell='portal'] .conn-search,
+  :root[data-shell='portal'] .conn-tools-search {
+    flex-basis: 100%;
+  }
+
+  :root[data-shell='portal'] .conn-toolbar-extra {
+    margin-inline-start: 0;
+  }
+
+  :root[data-shell='portal'] .conn-sheet-head,
+  :root[data-shell='portal'] .conn-sheet-header {
+    padding-inline: 1rem;
+  }
+
+  :root[data-shell='portal'] .conn-sheet-body {
+    padding-inline: 1rem;
+  }
+
+  :root[data-shell='portal'] .conn-sheet-card,
+  :root[data-shell='portal'] .conn-card {
+    padding: 0.875rem 1rem;
+  }
+
+  :root[data-shell='portal'] .conn-tool-row,
+  :root[data-shell='portal'] .conn-tools-row-main,
+  :root[data-shell='portal'] .conn-tool-details {
+    padding-inline: 1rem;
+  }
+
+  :root[data-shell='portal'] .conn-dirty-bar,
+  :root[data-shell='portal'] .conn-save-bar {
+    padding-inline: 1rem;
+  }
+
+  :root[data-shell='portal'] .conn-check-grid,
+  :root[data-shell='portal'] .conn-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

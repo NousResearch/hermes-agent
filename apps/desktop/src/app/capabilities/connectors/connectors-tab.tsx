@@ -20,12 +20,13 @@ import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects } from './data/account-operations'
 import { claimRouteLink } from './data/deep-link'
 import { useHostedActions } from './data/hosted-actions'
-import { joinBundledEntries, joinLocalServers } from './data/join'
+import { accountsFor, joinBundledEntries, joinLocalServers } from './data/join'
 import { invalidateConnectors } from './data/keys'
-import { useRenameAccount } from './data/mutations'
+import { useRenameAccount, type WriteOutcome } from './data/mutations'
 import { seedLocalServers, startConnectorPersistence, storeLocalServers } from './data/persist'
 import { prefetchConnectorTools, usePrefetchConnectedTools } from './data/prefetch'
 import { useHostedConnectors, usePluginServers } from './data/queries'
+import { asConnectorError } from './data/rpc'
 import {
   cardKey,
   deriveCards,
@@ -39,6 +40,7 @@ import { HostedConnectorDialog, type PendingRename } from './hosted-dialog'
 import { HostedNotice } from './hosted-notice'
 import { LocalConnectorDialog } from './local-dialog'
 import { RemoveServerConfirm } from './local-slots'
+import { ConnectionsView } from './redesign/connections-view'
 import { openToolsList, resetOpenedTools } from './tools-summary'
 import type { AccountRow, ConnectorCardModel, ConnectorsFilter } from './types'
 
@@ -51,6 +53,10 @@ export interface ConnectorsTabProps {
   /** The agent whose connectors these are, where the page can show more than one agent's. */
   ownerLabel?: string
   agentLayout?: boolean
+  /** The portal shell's redesigned Connections page rather than the classic directory. */
+  redesignLayout?: boolean
+  /** The redesigned page entered a category See-All or an app's Tools page. */
+  onSubviewChange?: (inSubview: boolean) => void
 }
 
 export function ConnectorsTab({
@@ -58,7 +64,9 @@ export function ConnectorsTab({
   profile,
   agentControls = true,
   agentLayout = false,
-  ownerLabel
+  ownerLabel,
+  redesignLayout = false,
+  onSubviewChange
 }: ConnectorsTabProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -211,6 +219,30 @@ export function ConnectorsTab({
       }
     : undefined
 
+  const redesigned = redesignLayout && !agentLayout
+
+  // The app-level disconnect speaks for every active account the summary names, one after another.
+  const disconnectApp = async (card: ConnectorCardModel): Promise<WriteOutcome> => {
+    const accounts = accountsFor(hosted.accounts, card.slug)
+
+    if (accounts.length === 0) {
+      return {
+        error: asConnectorError(new Error(copy.page.disconnectNoAccount)),
+        ok: false
+      }
+    }
+
+    for (const account of accounts) {
+      const outcome = await remover.disconnect(account.connection_id)
+
+      if (!outcome.ok) {
+        return outcome
+      }
+    }
+
+    return { ok: true }
+  }
+
   return (
     <div
       className={
@@ -246,6 +278,46 @@ export function ConnectorsTab({
             selectedKey={openKey}
           />
         </>
+      ) : redesigned ? (
+        <ConnectionsView
+          addDisabled={mcp.profilePending}
+          agentControls={agentControls}
+          busyKey={busyKey}
+          cards={cards}
+          controller={mcp}
+          hosted={hosted}
+          hostedFailed={hosted.phase === 'failed'}
+          installFieldsFor={card => bundledEntry(card)?.required_env}
+          installingKey={installing}
+          loading={loading}
+          notices={notices}
+          onAddServer={() => setAddOpen(true)}
+          onCloseCard={() => setOpenKey(null)}
+          onConnect={(card, alias) =>
+            connectAccount(card, false, alias === undefined ? undefined : { alias })
+          }
+          onDisconnectApp={disconnectApp}
+          onGiveUp={opId => void write(connector.giveUp(opId))}
+          onInstall={(card, env) => void startInstall(card, env)}
+          onOpenCard={card => setOpenKey(cardKey(card))}
+          onPrefetch={card => prefetchConnectorTools(profile, card)}
+          onReconnect={(card, account) => void startConnect(card, true, account)}
+          onRemoveAccount={(_, account) => remover.disconnect(account.connection_id)}
+          onRemoveLocalServer={setRemoveServer}
+          onRenameAccount={renamer.rename}
+          onRenameOpened={renameOpened}
+          onRetryHosted={hosted.refetch}
+          onStopWaiting={card => {
+            void hostedActions.runHostedVerb({ ...card, verb: 'stopWaiting' })
+          }}
+          onSubviewChange={onSubviewChange}
+          onToggleForMe={(card, next) => void write(switcher.setEnabled(card.slug, next))}
+          onVerb={runVerb}
+          openCard={openCard}
+          pendingRename={pendingRename}
+          profile={profile}
+          togglePendingKey={switcher.pending}
+        />
       ) : (
         <ConnectorsDirectory
           addYourOwn={
@@ -270,7 +342,7 @@ export function ConnectorsTab({
         />
       )}
 
-      {openCard && openCard.ways.hosted === null ? (
+      {!redesigned && openCard && openCard.ways.hosted === null ? (
         <LocalConnectorDialog
           agentControls={agentControls}
           card={openCard}
@@ -286,7 +358,7 @@ export function ConnectorsTab({
         />
       ) : null}
 
-      {openCard?.ways.hosted ? (
+      {!redesigned && openCard?.ways.hosted ? (
         <HostedConnectorDialog
           accountActions={{
             add: async alias => {
@@ -334,13 +406,15 @@ export function ConnectorsTab({
         onRemoved={() => setOpenKey(null)}
       />
 
-      <DisconnectConfirm
-        accounts={hosted.accounts}
-        disconnect={remover.disconnect}
-        onClose={() => setDisconnecting(null)}
-        onDisconnected={() => setOpenKey(null)}
-        target={disconnecting}
-      />
+      {redesigned ? null : (
+        <DisconnectConfirm
+          accounts={hosted.accounts}
+          disconnect={remover.disconnect}
+          onClose={() => setDisconnecting(null)}
+          onDisconnected={() => setOpenKey(null)}
+          target={disconnecting}
+        />
+      )}
     </div>
   )
 }

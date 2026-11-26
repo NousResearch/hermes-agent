@@ -23,6 +23,8 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   children: ReactNode
   /** Full-page V2 heading. Embedded surfaces omit it. */
   pageTitle?: string
+  /** A drill-down surface draws its own header (back link and title); the shell omits its own. */
+  hideHeader?: boolean
   /** The redesign's one-line description under the heading (919:9095). */
   pageDescription?: string
   tabs?: PageShellTab[]
@@ -65,10 +67,68 @@ function ShellTabs({
   )
 }
 
+interface ShellHeaderProps {
+  hideHeader: boolean
+  redesigned: boolean
+  pageTitle?: string
+  pageDescription?: string
+  search: React.ReactNode
+  searchHidden: boolean
+  searchTrailingAction?: React.ReactNode
+  tabStrip: React.ReactNode
+  tabsAlign: 'center' | 'start'
+}
+
+function ShellHeader({
+  hideHeader,
+  redesigned,
+  pageTitle,
+  pageDescription,
+  search,
+  searchHidden,
+  searchTrailingAction,
+  tabStrip,
+  tabsAlign
+}: ShellHeaderProps) {
+  if (hideHeader) {
+    return null
+  }
+
+  if (redesigned) {
+    return (
+      <PageHeader
+        actions={
+          (search || searchTrailingAction) && (
+            <>
+              {search && <div className="page-header-search">{search}</div>}
+              {searchTrailingAction}
+            </>
+          )
+        }
+        className="page-header"
+        description={pageDescription}
+        tabs={tabStrip}
+        title={pageTitle!}
+      />
+    )
+  }
+
+  return (
+    <ClassicPageHeader
+      actions={searchTrailingAction}
+      search={search}
+      searchHidden={searchHidden}
+      tabs={tabStrip}
+      tabsAlign={tabsAlign}
+    />
+  )
+}
+
 export function PageSearchShell({
   children,
   className,
   pageTitle,
+  hideHeader = false,
   pageDescription,
   tabs,
   activeTab,
@@ -83,7 +143,7 @@ export function PageSearchShell({
   searchTrailingAction,
   ...props
 }: PageSearchShellProps) {
-  const redesigned = usePortalShell() && Boolean(pageTitle)
+  const redesigned = usePortalShell() && (Boolean(pageTitle) || Boolean(hideHeader))
   const hasTabs = (tabs?.length ?? 0) > 0
 
   const search = !searchHidden && onSearchChange && (
@@ -133,30 +193,17 @@ export function PageSearchShell({
         (see app-shell.tsx), so window dragging still works here.
       */}
       <div className="shrink-0">
-        {redesigned ? (
-          <PageHeader
-            actions={
-              (search || searchTrailingAction) && (
-                <>
-                  {search && <div className="page-header-search">{search}</div>}
-                  {searchTrailingAction}
-                </>
-              )
-            }
-            className="page-header"
-            description={pageDescription}
-            tabs={tabStrip}
-            title={pageTitle!}
-          />
-        ) : (
-          <ClassicPageHeader
-            actions={searchTrailingAction}
-            search={search}
-            searchHidden={searchHidden}
-            tabs={tabStrip}
-            tabsAlign={tabsAlign}
-          />
-        )}
+        <ShellHeader
+          hideHeader={hideHeader}
+          pageDescription={pageDescription}
+          pageTitle={pageTitle}
+          redesigned={redesigned}
+          search={search}
+          searchHidden={searchHidden}
+          searchTrailingAction={searchTrailingAction}
+          tabsAlign={tabsAlign}
+          tabStrip={tabStrip}
+        />
         {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}
       </div>
       <div className="page-search-body min-h-0 flex-1 overflow-hidden bg-(--ui-chat-surface-background)">

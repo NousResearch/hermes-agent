@@ -1,0 +1,707 @@
+/* ── App drawer (640px, Figma 1524:26133) ──────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-sheet-backdrop {
+  position: fixed;
+  z-index: var(--portal-layer-sheet-scrim);
+  inset: 0;
+  background: color-mix(in srgb, var(--portal-surface-scrim) 80%, transparent);
+}
+
+:root[data-shell='portal'] .conn-sheet {
+  position: fixed;
+  z-index: var(--portal-layer-sheet);
+  inset-block: 0;
+  inset-inline-end: 0;
+  display: flex;
+  width: min(40rem, 100vw);
+  max-width: 100vw;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border-inline-start: 1px solid var(--portal-stroke-floating);
+  background: color-mix(in srgb, var(--portal-surface-elevated) 94%, transparent);
+  box-shadow: var(--portal-shadow-floating);
+  backdrop-filter: blur(1.25rem);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  padding: 1.5rem 2rem 1rem;
+  background: var(--portal-surface-elevated);
+}
+
+/* The drawer's own header stacks its top row (close, menu) over the app line; the
+   directory's simpler head is the flex row above. */
+:root[data-shell='portal'] .conn-sheet-header {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 2rem 1.25rem;
+  background: var(--portal-surface-elevated);
+}
+
+:root[data-shell='portal'] .conn-sheet-logo {
+  display: grid;
+  width: 3.5rem;
+  height: 3.5rem;
+  flex-shrink: 0;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--portal-radius-tile);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-secondary);
+}
+
+:root[data-shell='portal'] .conn-sheet-logo .conn-logo-mark {
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--portal-radius-control);
+}
+
+:root[data-shell='portal'] .conn-sheet-heading {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+:root[data-shell='portal'] .conn-sheet-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: calc(var(--portal-type-display-lg-size) * 1.2);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.05;
+}
+
+:root[data-shell='portal'] .conn-sheet-subtitle {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.45;
+}
+
+:root[data-shell='portal'] .conn-connected-pill,
+:root[data-shell='portal'] .conn-pill-connected,
+:root[data-shell='portal'] .conn-status-pill {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.25rem;
+  height: 1.375rem;
+  padding-inline: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--portal-status-online) 35%, transparent);
+  border-radius: var(--portal-radius-round);
+  background: color-mix(in srgb, var(--portal-status-online) 14%, transparent);
+  color: var(--portal-status-online);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-chip-size);
+  font-weight: 700;
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-sheet-close,
+:root[data-shell='portal'] .conn-sheet-menu,
+:root[data-shell='portal'] .conn-tools-menu {
+  display: grid;
+  width: var(--portal-row-chrome);
+  height: var(--portal-row-chrome);
+  flex-shrink: 0;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-secondary);
+  cursor: pointer;
+}
+
+:root[data-shell='portal'] .conn-sheet-close:hover,
+:root[data-shell='portal'] .conn-sheet-menu:hover,
+:root[data-shell='portal'] .conn-tools-menu:hover {
+  background: var(--portal-surface-control-hover);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-account-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-block: 0.5rem;
+  list-style: none;
+}
+
+:root[data-shell='portal'] .conn-account-row + .conn-account-row {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+:root[data-shell='portal'] .conn-sheet-close:focus-visible,
+:root[data-shell='portal'] .conn-sheet-menu:focus-visible,
+:root[data-shell='portal'] .conn-tools-menu:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.5rem 2rem 2rem;
+}
+
+:root[data-shell='portal'] .conn-sheet-card,
+:root[data-shell='portal'] .conn-card {
+  padding: 0.875rem 2rem;
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-settings-card);
+}
+
+:root[data-shell='portal'] .conn-sheet-section-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-sheet-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2.5rem;
+  padding-block: 0.5rem;
+}
+
+:root[data-shell='portal'] .conn-sheet-row + .conn-sheet-row {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+:root[data-shell='portal'] .conn-sheet-actions,
+:root[data-shell='portal'] .conn-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+:root[data-shell='portal'] .conn-inline-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--portal-stroke-danger);
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-surface-danger);
+  color: var(--portal-text-primary);
+}
+
+/* The layer positions its panel; only the scrim paints, never both. */
+:root[data-shell='portal'] .conn-sheet-modal-scrim {
+  background-color: var(--portal-surface-scrim);
+}
+
+:root[data-shell='portal'] .conn-disconnect-modal {
+  position: relative;
+  z-index: calc(var(--portal-layer-sheet) + 2);
+  display: flex;
+  width: min(25rem, 100vw);
+  max-width: 100%;
+  height: 100%;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+  padding: 1.5rem;
+  border-inline-end: 3px solid var(--portal-surface-brand);
+  background: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-disconnect-modal h2 {
+  margin: 0;
+  font-family: var(--portal-font-display);
+  font-size: calc(var(--portal-type-display-lg-size) * 0.8);
+  font-weight: 400;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.15;
+}
+
+:root[data-shell='portal'] .conn-disconnect-modal p {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.5;
+}
+
+/* ── Review all tools (Figma 1565:31077) ───────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .conn-tools-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1.75rem;
+  width: 100%;
+  min-height: 0;
+  padding-block: calc(var(--titlebar-height) + var(--portal-page-top)) var(--portal-page-end-space);
+  padding-inline: max(2rem, calc((100% - 62rem) / 2));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+:root[data-shell='portal'] .conn-tools-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-tools-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-tools-title {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-xl-size);
+  font-weight: 300;
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-tools-subtitle {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .conn-tools-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+:root[data-shell='portal'] .conn-tools-search {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 20rem;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.5rem;
+  padding-inline: 0.75rem;
+  border: 1px solid var(--portal-stroke-field);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-field);
+  color: var(--portal-text-tertiary);
+}
+
+:root[data-shell='portal'] .conn-tools-search:focus-within {
+  border-color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .conn-tools-search-input {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  outline: none;
+}
+
+:root[data-shell='portal'] .conn-tools-search-input::placeholder {
+  color: var(--portal-text-tertiary);
+  opacity: 1;
+}
+
+:root[data-shell='portal'] .conn-tools-filter-button {
+  height: 2.5rem;
+  gap: 0.5rem;
+  padding-inline: 1rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+}
+
+:root[data-shell='portal'] .conn-tools-filter-button:hover {
+  background: var(--portal-surface-control-hover);
+}
+
+:root[data-shell='portal'] .conn-tools-filter-button.is-active {
+  border-color: var(--portal-text-brand);
+  color: var(--portal-text-brand);
+}
+
+:root[data-shell='portal'] .conn-tools-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+:root[data-shell='portal'] .conn-tools-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-tools-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+:root[data-shell='portal'] .conn-tools-group-header {
+  display: flex;
+  min-height: 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+:root[data-shell='portal'] .conn-tools-group-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-tools-group-action {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-brand);
+  cursor: pointer;
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 500;
+}
+
+:root[data-shell='portal'] .conn-tools-group-card {
+  overflow: hidden;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-settings-card);
+}
+
+:root[data-shell='portal'] .conn-tool-row,
+:root[data-shell='portal'] .conn-tools-row {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+  text-align: start;
+}
+
+:root[data-shell='portal'] .conn-tool-row {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 2rem;
+  cursor: pointer;
+}
+
+/* The tools page's row is a block: its main line and its disclosure detail stack. */
+:root[data-shell='portal'] .conn-tools-row {
+  display: block;
+  padding: 0;
+}
+
+:root[data-shell='portal'] .conn-tools-row-main {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 2rem;
+}
+
+:root[data-shell='portal'] .conn-tool-row + .conn-tool-row,
+:root[data-shell='portal'] .conn-tools-row + .conn-tools-row {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+:root[data-shell='portal'] .conn-tool-row:hover,
+:root[data-shell='portal'] .conn-tools-row:hover {
+  background: var(--portal-surface-row-hover);
+}
+
+:root[data-shell='portal'] .conn-tool-row:focus-visible,
+:root[data-shell='portal'] .conn-tools-row:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+:root[data-shell='portal'] .conn-tool-chevron {
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--portal-radius-control);
+  background: none;
+  color: var(--portal-text-tertiary);
+  cursor: pointer;
+  transition: transform var(--portal-motion-fast) var(--portal-ease);
+}
+
+:root[data-shell='portal'] .conn-tool-chevron:hover {
+  color: var(--portal-text-primary);
+}
+
+:root[data-shell='portal'] .conn-tool-name-button {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+:root[data-shell='portal'] .conn-tool-name-button:focus-visible,
+:root[data-shell='portal'] .conn-tool-chevron:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+:root[data-shell='portal'] .conn-tools-row-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+:root[data-shell='portal'] .conn-tools-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+:root[data-shell='portal'] .conn-tools-row[data-off] .conn-tool-name {
+  color: var(--portal-text-tertiary);
+}
+
+:root[data-shell='portal'] .conn-tool-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: var(--portal-type-body-size);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-tool-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 2rem 1rem;
+  border-top: 1px solid var(--portal-stroke-divider);
+  background: color-mix(in srgb, var(--portal-surface-control) 40%, transparent);
+}
+
+:root[data-shell='portal'] .conn-tool-description {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.5;
+}
+
+:root[data-shell='portal'] .conn-tool-slug {
+  margin: 0;
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+}
+
+:root[data-shell='portal'] .conn-tool-badge,
+:root[data-shell='portal'] .conn-badge,
+:root[data-shell='portal'] .conn-badge-read,
+:root[data-shell='portal'] .conn-badge-write,
+:root[data-shell='portal'] .conn-badge-destructive,
+:root[data-shell='portal'] .conn-badge-off {
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+  padding-inline: 0.4375rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-surface-control);
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-micro-size);
+  font-weight: 600;
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] .conn-badge-write {
+  border-color: color-mix(in srgb, var(--portal-status-pending) 40%, transparent);
+  background: color-mix(in srgb, var(--portal-status-pending) 14%, transparent);
+  color: var(--portal-status-pending);
+}
+
+:root[data-shell='portal'] .conn-badge-destructive {
+  border-color: var(--portal-stroke-danger);
+  background: var(--portal-surface-danger);
+  color: var(--portal-text-danger);
+}
+
+:root[data-shell='portal'] .conn-badge-off {
+  border-color: transparent;
+  background: transparent;
+  color: var(--portal-text-tertiary);
+}
+
+:root[data-shell='portal'] .conn-dirty-bar,
+:root[data-shell='portal'] .conn-save-bar {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 2rem;
+  border-top: 1px solid var(--portal-stroke-divider);
+  background: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
+}
+
+:root[data-shell='portal'] .conn-save-count {
+  color: var(--portal-text-secondary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-meta-size);
+  font-weight: 500;
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-conflict-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--portal-stroke-danger);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-danger);
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-body);
+  font-size: var(--portal-type-body-size);
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+:root[data-shell='portal'] .conn-conflict-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+:root[data-shell='portal'] .conn-conflict-title {
+  margin: 0;
+  color: var(--portal-text-primary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: 600;
+}
+
+:root[data-shell='portal'] .conn-conflict-body {
+  margin: 0;
+  color: var(--portal-text-secondary);
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.45;
+}
+
+:root[data-shell='portal'] .conn-tools-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 3.5rem 1rem;
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-settings-card);
+  color: var(--portal-text-tertiary);
+  text-align: center;
+}
+
+:root[data-shell='portal'] .conn-tools-error {
+  display: grid;
+  min-height: 12rem;
+  place-items: center;
+  padding: 2rem 1rem;
+  border: 1px solid var(--portal-stroke-danger);
+  border-radius: var(--portal-radius-frame);
+  background: var(--portal-surface-danger);
+  color: var(--portal-text-primary);
+  text-align: center;
+}
+
+:root[data-shell='portal'] .conn-tools-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 2rem;
+}
+
+:root[data-shell='portal'] .conn-tools-skeleton-row {
+  display: block;
+  width: 100%;
+  height: 2.5rem;
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-skeleton);
+  animation: conn-pulse var(--portal-motion-slow) var(--portal-ease) infinite alternate;
+}

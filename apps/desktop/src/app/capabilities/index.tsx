@@ -33,6 +33,7 @@ import { syncCatalogArcs } from './catalog/catalog-arc'
 import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { CatalogSkeleton } from './catalog/catalog-skeleton'
 import { ConnectorsTab } from './connectors/connectors-tab'
+import { type ConnectionsCopy, useConnectionsCopy } from './connectors/redesign/connections-copy'
 import { useCapabilitiesPageDescription } from './page-copy'
 import { PluginsTab } from './plugins/plugins-tab'
 import {
@@ -107,10 +108,19 @@ export function CapabilitiesView({
   const [selectedMode, setMode] = useSelectedMode(modes, embedded)
   const mode = fixedMode ?? selectedMode
   const pageDescription = useCapabilitiesPageDescription(mode === 'connectors')
+  const connCopy = useConnectionsCopy()
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
   const reloadsOwnerChat = useReloadsOwnerChat()
 
   const [query, setQuery] = useState('')
+  const [connectorsSubview, setConnectorsSubview] = useState(false)
+
+  // A drill-down belongs to the tab it was opened on; leaving Connectors forgets it.
+  useEffect(() => {
+    if (mode !== 'connectors') {
+      setConnectorsSubview(false)
+    }
+  }, [mode])
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
 
@@ -150,8 +160,8 @@ export function CapabilitiesView({
   )
 
   // MCP and Plugins load independently of the installed Skills/Tools lists.
-  const gated = mode === 'toolsets'
-  const pending = gated && !(skills && toolsets)
+  const pending = mode === 'toolsets' && !(skills && toolsets)
+  const redesignedInventory = presentation.inventoryFrame
 
   const tabContent = {
     // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
@@ -165,8 +175,10 @@ export function CapabilitiesView({
         agentLayout={presentation.agentLayout}
         gateway={scope.crossBackend || !reloadsOwnerChat ? null : gateway}
         key={`connectors-${scope.key}`}
+        onSubviewChange={setConnectorsSubview}
         ownerLabel={inventoryOwnerLabel(presentation, scope)}
         profile={scope.profile}
+        redesignLayout={redesignedInventory}
       />
     ),
     plugins: () =>
@@ -220,45 +232,58 @@ export function CapabilitiesView({
       )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
+  // The redesigned inventory names Connectors "Connections"; its own page owns the title, and a
+  // category See-All or an app's Tools page owns the header entirely while open.
+  const { drilldown: connectorsDrilldown, frame: connectorsFrame } = connectorsShellState(
+    redesignedInventory,
+    mode,
+    connectorsSubview
+  )
+  const meta = capabilitiesShellMeta({
+    connCopy,
+    connectorsDrilldown,
+    connectorsFrame,
+    connectorsLabel: redesignedInventory ? connCopy.page.title : undefined,
+    description: pageDescription,
+    fixedMode,
+    modes,
+    presentation,
+    skills,
+    t,
+    toolsets
+  })
+
   const shellProps: React.ComponentProps<typeof PageSearchShell> & { 'data-capabilities-v2'?: true } = {
     ...props,
     activeTab: mode,
     'data-capabilities-v2': presentation.pageFrame || undefined,
+    hideHeader: meta.hideHeader,
     onTabChange: id => setMode(id as CapabilityMode),
-    pageDescription: presentation.pageTitle ? pageDescription : undefined,
-    pageTitle: presentation.pageTitle ? t.sidebar.nav.capabilities : undefined,
+    pageDescription: meta.pageDescription,
+    pageTitle: meta.pageTitle,
     // Every tab renders the shared CapabilitySearch beside its own results.
     searchHidden: true,
-    searchTrailingAction: presentation.headerScope
-      ? mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />
-      : !agentControls && (
-          <CapabilityInventoryScope
-            managedHere={mode === 'connectors'}
-            onOpenAgentSettings={openAgentSettings}
-            scope={scope}
-          />
-        ),
-    tabs: fixedMode ? [] : capabilityTabs(modes, t, skills, toolsets),
+    searchTrailingAction: capabilitiesHeaderAction(
+      presentation,
+      mode,
+      scope,
+      agentControls,
+      openAgentSettings
+    ),
+    tabs: meta.tabs,
     tabsAlign: 'start',
     children: (
-      // An agent editor scrolls as one page, so its capability list sizes to content.
-      <div className={presentation.agentLayout ? 'grid' : 'flex h-full flex-col'}>
-        <div className={presentation.agentLayout ? 'grid' : 'flex min-h-0 flex-1 flex-col'}>
-          <CapabilityLoadGate
-            error={skillsError}
-            failed={skillsFailed || toolsetsFailed}
-            onRefresh={refreshCapabilities}
-            pending={pending}
-            skeleton={
-              presentation.agentLayout || presentation.pageFrame ? (
-                <ToolsetsSkeleton agentLayout={presentation.agentLayout} onQueryChange={setQuery} query={query} />
-              ) : undefined
-            }
-          >
-            {tabContent[mode]()}
-          </CapabilityLoadGate>
-        </div>
-      </div>
+      <CapabilitiesBody agentLayout={presentation.agentLayout}>
+        <CapabilityLoadGate
+          error={skillsError}
+          failed={skillsFailed || toolsetsFailed}
+          onRefresh={refreshCapabilities}
+          pending={pending}
+          skeleton={capabilitiesSkeleton(presentation, query, setQuery)}
+        >
+          {tabContent[mode]()}
+        </CapabilityLoadGate>
+      </CapabilitiesBody>
     )
   }
 
@@ -329,6 +354,8 @@ interface CapabilitiesPresentation {
   pageTitle: boolean
   /** One agent's enablement editor (agent settings, Bot Mode) rather than the inventory. */
   agentLayout: boolean
+  /** The redesigned inventory proper: the page frame, not an agent's editor. */
+  inventoryFrame: boolean
   /** The agent's own settings page lists only the plugins it has installed, and says so itself
    *  (`installedPluginsOnly`). A dialog that pins the same layout (creating or editing a bot) does
    *  not, and keeps the library and its ways in. */
@@ -344,11 +371,15 @@ function capabilitiesPresentation(
   pinned: boolean,
   installedPluginsOnly: boolean
 ): CapabilitiesPresentation {
+  const pageFrame = redesign && !embedded
+  const agentLayout = redesign && pinned
+
   return {
-    pageFrame: redesign && !embedded,
+    pageFrame,
     pageTitle: !embedded && !(redesign && pinned),
-    agentLayout: redesign && pinned,
-    installedPlugins: redesign && pinned && installedPluginsOnly,
+    agentLayout,
+    inventoryFrame: pageFrame && !agentLayout,
+    installedPlugins: agentLayout && installedPluginsOnly,
     headerScope: !redesign
   }
 }
@@ -429,6 +460,119 @@ function useReloadsOwnerChat(): boolean {
 const capabilityModes = (redesign: boolean, pinned: boolean): readonly CapabilityMode[] =>
   redesign && !pinned ? PORTAL_CAPABILITY_MODES : CAPABILITY_MODES
 
+/** The Connectors tab's drill-down owns the page header; both the frame and its state derive here. */
+function connectorsShellState(
+  inventoryFrame: boolean,
+  mode: CapabilityMode,
+  subview: boolean
+): { drilldown: boolean; frame: boolean } {
+  const frame = inventoryFrame && mode === 'connectors'
+
+  return { drilldown: frame && subview, frame }
+}
+
+interface CapabilitiesShellMeta {
+  hideHeader: boolean
+  pageDescription?: string
+  pageTitle?: string
+  tabs: PageShellTab[]
+}
+
+interface CapabilitiesShellMetaInput {
+  connCopy: ConnectionsCopy
+  connectorsDrilldown: boolean
+  connectorsFrame: boolean
+  connectorsLabel?: string
+  description?: string
+  fixedMode?: CapabilityMode
+  modes: readonly CapabilityMode[]
+  presentation: CapabilitiesPresentation
+  skills?: unknown[]
+  t: Translations
+  toolsets?: Parameters<typeof visibleToolsetCount>[0]
+}
+
+/** The shell's own title, description and tabs: a drill-down hides the header (its surface draws the
+ *  back link), the inventory names Connections, and a pinned agent editor drops the tabs. */
+function capabilitiesShellMeta({
+  connCopy,
+  connectorsDrilldown,
+  connectorsFrame,
+  connectorsLabel,
+  description,
+  fixedMode,
+  modes,
+  presentation,
+  skills,
+  t,
+  toolsets
+}: CapabilitiesShellMetaInput): CapabilitiesShellMeta {
+  const tabs =
+    fixedMode || connectorsDrilldown ? [] : capabilityTabs(modes, t, skills, toolsets, connectorsLabel)
+
+  if (connectorsFrame) {
+    return {
+      hideHeader: connectorsDrilldown,
+      pageDescription: connectorsDrilldown ? undefined : connCopy.page.subtitle,
+      pageTitle: connCopy.page.title,
+      tabs
+    }
+  }
+
+  return {
+    hideHeader: false,
+    pageDescription: presentation.pageTitle ? description : undefined,
+    pageTitle: presentation.pageTitle ? t.sidebar.nav.capabilities : undefined,
+    tabs
+  }
+}
+
+/** Classic keeps the scope selector beside the search; the inventory hands off to agent settings. */
+function capabilitiesHeaderAction(
+  presentation: CapabilitiesPresentation,
+  mode: CapabilityMode,
+  scope: CapabilityScope,
+  agentControls: boolean,
+  onOpenAgentSettings: () => void
+): React.ReactNode {
+  if (presentation.headerScope) {
+    return mode === 'plugins' ? undefined : <CapabilityScopeSelector scope={scope} />
+  }
+
+  if (agentControls) {
+    return undefined
+  }
+
+  return (
+    <CapabilityInventoryScope
+      managedHere={mode === 'connectors'}
+      onOpenAgentSettings={onOpenAgentSettings}
+      scope={scope}
+    />
+  )
+}
+
+/** An agent editor scrolls as one page, so its capability list sizes to content. */
+function CapabilitiesBody({ agentLayout, children }: { agentLayout: boolean; children: React.ReactNode }) {
+  return (
+    <div className={agentLayout ? 'grid' : 'flex h-full flex-col'}>
+      <div className={agentLayout ? 'grid' : 'flex min-h-0 flex-1 flex-col'}>{children}</div>
+    </div>
+  )
+}
+
+function capabilitiesSkeleton(
+  presentation: CapabilitiesPresentation,
+  query: string,
+  onQueryChange: (query: string) => void
+): React.ReactNode {
+  if (!presentation.agentLayout && !presentation.pageFrame) {
+    return undefined
+  }
+
+  return <ToolsetsSkeleton agentLayout={presentation.agentLayout} onQueryChange={onQueryChange} query={query} />
+}
+
 /** Plugins is small enough to warm from any other tab. An agent's own pages list only what it has
  *  installed: nothing there reads the library. */
 function usePluginCatalogWarmup(mode: CapabilityMode, installedOnly: boolean) {
@@ -451,12 +595,14 @@ function capabilityTabs(
   modes: readonly CapabilityMode[],
   t: Translations,
   skills?: unknown[],
-  toolsets?: Parameters<typeof visibleToolsetCount>[0]
+  toolsets?: Parameters<typeof visibleToolsetCount>[0],
+  /** The redesign calls the surface Connections; classic keeps Connectors. */
+  connectorsLabel?: string
 ): PageShellTab[] {
   const tabs: Record<CapabilityMode, Omit<PageShellTab, 'id'>> = {
     skills: { label: t.skills.tabSkills, meta: skills?.length ?? null },
     plugins: { label: t.skills.tabPlugins },
-    connectors: { label: t.connectorsPage.title },
+    connectors: { label: connectorsLabel ?? t.connectorsPage.title },
     toolsets: { label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
   }
 

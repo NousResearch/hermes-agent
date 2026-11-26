@@ -29,7 +29,7 @@ def counted_profiles(monkeypatch):
 
 
 @pytest.mark.parametrize("name, expected", [
-    ("gemini", "gemini"), ("Anthropic", "anthropic"), ("openrouter", "openrouter"), ("custom", "custom"),
+    ("deepseek", "deepseek"), ("Anthropic", "anthropic"), ("openrouter", "openrouter"), ("custom", "custom"),
     ("nous", "nous"), ("claude", "anthropic"), ("kimi-coding", "kimi-for-coding"),
 ])
 def test_builtin_names_skip_the_profile_scan(counted_profiles, name, expected):

@@ -58,6 +58,9 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     for name in ("__init__.py", "runtime_state.py"):
         shutil.copy2(source / "hermes_cli" / name, repo / "hermes_cli" / name)
     shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
+    # The Windows launcher imports the payload's bootstrap before the entry
+    # point; the real one needs all of hermes_cli, which this fixture omits.
+    (repo / "hermes_bootstrap.py").write_text('"""Fixture payload bootstrap."""\n', encoding="utf-8")
     wheels = repo / "wheels"
     wheels.mkdir()
     witness = tmp_path / "inventory-python.json"

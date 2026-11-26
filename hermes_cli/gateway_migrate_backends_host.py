@@ -28,6 +28,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli import gateway_migrate_backends_timeouts as _timeouts
+
 _ENV_FILE_ENTRY = re.compile(r"(\S+) \(ignore_errors=(yes|no)\)")
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,23 @@ def _systemctl(scope: str, args: list[str], *, timeout: int = _TIMEOUT) -> subpr
     from hermes_cli import gateway as gw
     return gw._run_systemctl(args, system=scope != "user", check=False, timeout=timeout,
                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+def _gateway_verb_timeout(verb: str) -> int:
+    """``systemctl --user <verb>`` timeout in seconds, aligned with the migration's handoff/verify budgets.
+
+    ``restart`` can block across both the old gateway's in-band drain (``RESTART_HANDOFF_SECONDS``) and a
+    ``Type=notify`` startup (``VERIFY_SECONDS``); ``start`` can block on startup; ``stop`` can block on drain.
+    These are the migration's caps, not the unit's: a raised ``agent.cron_drain_timeout`` or
+    ``agent.restart_drain_timeout`` gives the unit a ``TimeoutStopSec`` longer than they wait.
+    """
+    if verb == "restart":
+        return max(90, int(_timeouts.RESTART_HANDOFF_SECONDS + _timeouts.VERIFY_SECONDS))
+    if verb == "start":
+        return max(90, int(_timeouts.VERIFY_SECONDS))
+    if verb == "stop":
+        return max(90, int(_timeouts.RESTART_HANDOFF_SECONDS))
+    return 90
 
 
 def _launchctl(args: list[str]) -> subprocess.CompletedProcess:
@@ -834,9 +853,12 @@ class SystemHost:
         """Stop, disable and delete this user's legacy units (``gateway.remove_legacy_hermes_units``)."""
         from hermes_cli import gateway as gw
         units = [u["unit"] for u in self.legacy_unit_records() if not u["system"]]
-        run_quietly(lambda: gw.remove_legacy_hermes_units(interactive=False))
-        if left := [u["unit"] for u in self.legacy_unit_records() if not u["system"]]:
-            raise RuntimeError(f"could not remove {', '.join(left)}")
+
+        def remove() -> None:  # raises inside run_quietly, so systemctl's own reason is shown with it
+            gw.remove_legacy_hermes_units(interactive=False)
+            if left := [u["unit"] for u in self.legacy_unit_records() if not u["system"]]:
+                raise RuntimeError(f"could not remove {', '.join(left)}")
+        run_quietly(remove)
         for unit in units:  # a stopped gateway may exit non-zero: no deleted unit is left listed as failed
             _systemctl("user", ["reset-failed", unit])
 
@@ -949,7 +971,8 @@ class SystemHost:
             return
         if verb == "stop":
             gw._mark_planned_stop()
-        self._require(_systemctl("user", [verb, gw.get_service_name()], timeout=90), f"{verb} the gateway service")
+        timeout = _gateway_verb_timeout(verb)
+        self._require(_systemctl("user", [verb, gw.get_service_name()], timeout=timeout), f"{verb} the gateway service")
 
     def uninstall_gateway(self) -> None:
         from hermes_cli import gateway as gw

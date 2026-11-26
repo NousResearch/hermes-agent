@@ -3993,6 +3993,8 @@ export const zhOverrides = {
       messagingPlatforms: '消息平台'
     },
     approvalMode: {
+      perProfile: '按配置档案设置',
+      perProfileDescription: '审批模式按配置档案单独设置。打开对应的机器人或配置档案以更改其模式。',
       title: '审批模式',
       ariaLabel: mode => `审批模式：${mode}`,
       manual: '手动',

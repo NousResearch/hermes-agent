@@ -1148,6 +1148,13 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     if safe_worker_enabled() or not host_feature_enabled("builtin_memory"):  # hosted: not the agent's memory
         agent._memory_manager = None
         return
+    from agent.chat_scope import CHAT_SCOPE_GROUP, chat_scope as _agent_chat_scope
+    if _agent_chat_scope(getattr(agent, "_chat_type", None)) == CHAT_SCOPE_GROUP:
+        # A group-scoped turn never touches DM-scoped memory: no MEMORY.md/USER.md blocks,
+        # no external provider prefetch or tools, no store for the memory tool. The gate
+        # sits before skip_memory/toolset logic so no caller flag can widen it back.
+        agent._memory_manager = None
+        return
     # skip_memory skips the external *provider*; enabled_toolsets=["memory"] still gets the
     # built-in store so the memory tool never sees store=None.
     # Flush/background agents can still pass enabled_toolsets=["memory"] so the built-in file store exists

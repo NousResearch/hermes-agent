@@ -436,7 +436,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
+from gateway.platforms.helpers import fence_state_after, hash_for_log, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
@@ -3400,6 +3400,26 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if emoji:
             await add(chat_id, message_id, emoji)
 
+    async def _emit_processing_outcome(self, event: MessageEvent, outcome: ProcessingOutcome,
+                                       *, delivered: bool) -> None:
+        """The one seam every processing outcome passes: watchdog first, then the lifecycle hook.
+
+        ``mention_unanswered`` fires when an admitted @mention (``event.mention_trigger``) ends
+        with nothing delivered to the chat — the zero-silent-failures contract. No user content
+        is logged (HX017): ids and a hashed chat id only."""
+        if getattr(event, "mention_trigger", False) and (
+                outcome is ProcessingOutcome.FAILURE
+                or (outcome is ProcessingOutcome.SUCCESS and not delivered)):
+            src = getattr(event, "source", None)
+            logger.error(
+                "[%s] mention_unanswered event=%s chat=%s chat_type=%s user_id=%s "
+                "outcome=%s delivered=%s",
+                self.name, getattr(event, "message_id", None),
+                hash_for_log(getattr(src, "chat_id", None)),
+                getattr(src, "chat_type", None), getattr(src, "user_id", None),
+                outcome.name, delivered)
+        await self._run_processing_hook("on_processing_complete", event, outcome)
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
@@ -4351,6 +4371,13 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            # A streamed/edited final reaches the chat mid-turn: the handler stashes the delivered
+            # body on the event (``_hmwa_deliver_turn_response``) and returns None, so the send
+            # paths below never run and ``delivery_attempted`` stays False — while the user already
+            # reads the reply. Count the stash as the delivery it records, or the mention watchdog
+            # false-fires on every streamed group mention.
+            if getattr(event, "_streamed_final_response", None):
+                delivery_attempted = delivery_succeeded = True
             generation = getattr(interrupt_event, "_hermes_run_generation", None)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
@@ -4416,9 +4443,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
-            await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            await self._emit_processing_outcome(
+                event,
+                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+                delivered=delivery_attempted)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4435,12 +4463,14 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
-            await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+            await self._emit_processing_outcome(
+                event,
+                ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE,
+                delivered=delivery_attempted)
             raise
         except BaseException as e:
-            await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            await self._emit_processing_outcome(event, ProcessingOutcome.FAILURE,
+                                                delivered=delivery_attempted)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             await self._notify_turn_error(event, e)
             from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only

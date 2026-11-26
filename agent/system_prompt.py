@@ -545,6 +545,23 @@ def _timestamp_line(agent: Any) -> str:
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
 
 
+def _chat_scope_part(agent: Any) -> Optional[str]:
+    """Explicit typed-scope marker for group conversations.
+
+    DM scope is the stock surface and needs no marker — emitting one only for group keeps the
+    stable/volatile prompt byte-identical for every existing caller while a group turn always
+    carries ``chat_scope=group`` plus its multi-user chat metadata in the assembled context."""
+    from agent.chat_scope import CHAT_SCOPE_GROUP, chat_scope
+    if chat_scope(getattr(agent, "_chat_type", None)) != CHAT_SCOPE_GROUP:
+        return None
+    meta = ["chat_scope=group"]
+    for key in ("_chat_type", "_chat_name"):
+        value = getattr(agent, key, None)
+        if value:
+            meta.append(f"{key.lstrip('_')}={value}")
+    return "[chat] " + "; ".join(meta) + " — multi-user chat; DM-scoped memory and history are unavailable here."
+
+
 def _memory_parts(agent: Any) -> list[str]:
     """Built-in memory/USER.md blocks plus the external provider block (gated on
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
@@ -816,7 +833,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
-    volatile_parts: list[str] = [skills_prompt, *_memory_parts(agent)]
+    volatile_parts: list[str] = [skills_prompt, _chat_scope_part(agent), *_memory_parts(agent)]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))

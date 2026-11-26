@@ -130,6 +130,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
         from storage_user_copy import format_session_db_unavailable
 
         return json.dumps({"success": False, "error": format_session_db_unavailable()})
+    from agent.chat_scope import chat_scope as _chat_scope
     return _call_tool(
         "tools.session_search_tool", "session_search", args,
         (
@@ -140,10 +141,18 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("exclude_session_ids", "exclude_session_ids"),
         ),
         db=session_db, persistence=getattr(agent, "persistence", None), current_session_id=agent.session_id,
+        chat_scope=_chat_scope(getattr(agent, "_chat_type", None)),
     )
 
 
 def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
+    from agent.chat_scope import CHAT_SCOPE_GROUP, chat_scope as _chat_scope
+    if _chat_scope(getattr(agent, "_chat_type", None)) == CHAT_SCOPE_GROUP:
+        return json.dumps({
+            "success": False,
+            "error": "memory is unavailable in group chats — the owner's DM memory is "
+                     "out of scope here; keep anything worth remembering inside this chat.",
+        })
     result = _call_tool(
         "tools.memory_tool", "memory_tool", args,
         (

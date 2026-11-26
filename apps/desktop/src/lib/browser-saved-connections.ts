@@ -151,6 +151,15 @@ export function hostedWindowConnection(registry: DesktopConnectionsRegistry | nu
  */
 export const RELAYED_ROSTER_TIMEOUT_MS = 8_000
 
+// The profile `/api/profiles/active` says a gateway runs as. One run from its own HERMES_HOME
+// answers `custom`, describing that home: it names no profile, as its own page names none
+// (`serving_profile_name`).
+const profileName = (current?: string) => {
+  const name = String(current ?? '').trim()
+
+  return name && name !== 'custom' ? name : undefined
+}
+
 /** The connection kinds the serving gateway reaches for this page (SSH needs a tunnel it does not hold yet). */
 const REACHED_KINDS = new Set(['remote', 'cloud'])
 
@@ -333,8 +342,10 @@ export function createBrowserSavedConnections({
       set = createServedProfiles(
         relayed,
         async () =>
-          (await relayed<{ current?: string }>({ path: '/api/profiles/active', timeoutMs: SERVED_SET_READ_TIMEOUT_MS }))
-            ?.current
+          profileName(
+            (await relayed<{ current?: string }>({ path: '/api/profiles/active', timeoutMs: SERVED_SET_READ_TIMEOUT_MS }))
+              ?.current
+          )
       )
       served.set(key, set)
     }
@@ -410,7 +421,7 @@ export function createBrowserSavedConnections({
         path: '/api/profiles/active',
         timeoutMs: SERVED_SET_READ_TIMEOUT_MS
       }).then(
-        answer => String(answer?.current ?? '').trim() || undefined,
+        answer => profileName(answer?.current),
         () => {
           // Not kept: the next window that asks reads again.
           launchProfiles.delete(connectionId)

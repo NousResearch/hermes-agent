@@ -361,6 +361,15 @@ describe('a Webapp whose host runs no agent', () => {
     expect(browserLaunchProfile()).toBe('research')
   })
 
+  // `/api/profiles/active` answers `custom` for an agent run from its own HERMES_HOME: a description
+  // of that home, not a profile. The agent's own page names no profile then, and neither does this one.
+  it('adopts no profile from an agent that runs from a custom home', async () => {
+    dashboardHost({ runsAs: { alpha: 'custom' } })
+    await install().getConnection()
+
+    expect(browserLaunchProfile()).toBe('')
+  })
+
   it('refuses to add or remove an agent before sending anything, and says the account manages the list', async () => {
     const requests = dashboardHost()
     const connections = install().connections!

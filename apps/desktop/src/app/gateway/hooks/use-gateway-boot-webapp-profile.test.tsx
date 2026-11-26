@@ -195,6 +195,16 @@ it('a bare tab opens on the saved default the same way, and records it in its ad
   expect(new URLSearchParams(window.location.search).get('profile')).toBe('research')
 })
 
+// A hosted Webapp's New Window names the agent and leaves the profile out when the tab is on the
+// agent's own profile: that address already says where the tab opens.
+it("a tab whose address names its agent but no profile stays on the agent's own, not the saved default", async () => {
+  window.localStorage.setItem('hermes:webapp:default-profile:/', JSON.stringify({ connectionId: 'local', profile: 'research' }))
+  await bootWebappTab('/?connectionId=local#/')
+
+  expect($activeGatewayProfile.get()).toBe('default')
+  expect(FakeWebSocket.instances).toHaveLength(1)
+})
+
 it("a tab loaded on a profile the gateway no longer has stays on the gateway's own and names it in its address", async () => {
   await bootWebappTab('/?profile=gone#/')
 

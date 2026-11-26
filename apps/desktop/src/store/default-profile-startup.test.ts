@@ -135,4 +135,18 @@ describe('startup default route', () => {
     expect($connection.get()).toMatchObject({ connectionId: 'local', profile: 'personal' })
     expect(openGatewayForAgent).not.toHaveBeenCalled()
   })
+
+  // A hosted Webapp's New Window names the agent and leaves the profile out when the tab is on the
+  // agent's own profile: the address still says where the window opens.
+  it.each([
+    ['the saved default', { connectionId: 'lab', profile: 'research' }],
+    ['the last-used source', null]
+  ])('leaves a window whose address names its agent on that agent rather than restoring %s', async (_what, route) => {
+    window.history.replaceState(null, '', '/?connectionId=local')
+    window.hermesDesktop.profile.getDefault = async () => route
+    await initializeConnectionsRegistry()
+    expect($connection.get()).toMatchObject({ connectionId: 'local', profile: 'personal' })
+    expect(openGatewayForAgent).not.toHaveBeenCalled()
+    expect(ensureGatewayForAgent).not.toHaveBeenCalled()
+  })
 })

@@ -42,7 +42,7 @@ import {
 } from '@/store/session'
 import { currentUserSessionOpen, LAUNCH_USER_SESSION_OPEN } from '@/store/session-open-intent'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
-import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
+import { isPeerInstanceWindow, windowNamesItsRoute } from '@/store/windows'
 
 import { launchTargetUnreachable, servedProfileSet, startupProfileForConnection } from './startup-profile-restore'
 
@@ -496,8 +496,9 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   ])
 
   // Main may already have opened the explicit default. A failed preference
-  // read is not evidence of an absent preference; keep that live route.
-  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowProfileOverride()) {
+  // read is not evidence of an absent preference; keep that live route. An
+  // address that names the window's route already said where it opens.
+  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowNamesItsRoute()) {
     return registry
   }
 

@@ -168,6 +168,12 @@ export function windowConnectionOverride(): null | string {
   }
 }
 
+// The address names the window's profile or its agent: a hosted Webapp's New
+// Window names only the agent when the tab is on that agent's own profile.
+export function windowNamesItsRoute(): boolean {
+  return Boolean(windowProfileOverride() || windowConnectionOverride())
+}
+
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {

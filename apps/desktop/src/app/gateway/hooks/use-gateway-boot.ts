@@ -112,7 +112,7 @@ import {
   resetTileRuntimeBindings
 } from '@/store/session-states'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
-import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
+import { isPeerInstanceWindow, windowConnectionOverride, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { notifyPrimaryReauth } from './primary-reauth-notice'
@@ -185,9 +185,12 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
  * origin's saved default, is selected on top of the primary instead of becoming it.
  */
 async function openWebappTabProfile(desktop: Window['hermesDesktop'], primary: string, startup: boolean) {
+  // An address naming the tab's agent but no profile (a hosted New Window on the agent's own profile)
+  // says where the tab opens as much as one naming a profile does: the saved default does not apply.
+  const savedDefault = startup && !isPeerInstanceWindow() && !windowConnectionOverride()
+
   const profile =
-    windowProfileOverride() ??
-    (startup && !isPeerInstanceWindow() ? (await desktop.profile?.getDefault?.())?.profile?.trim() : null)
+    windowProfileOverride() ?? (savedDefault ? (await desktop.profile?.getDefault?.())?.profile?.trim() : null)
 
   if (!profile || normalizeProfileKey(profile) === primary) {
     return

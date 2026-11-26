@@ -160,6 +160,35 @@ class TestFileHandleClosedOnError:
         assert adapter._bridge_log_fh is None
 
 
+class TestBridgeDependencyInstallOffLoop:
+    @pytest.mark.asyncio
+    async def test_dependency_install_never_blocks_the_event_loop(self):
+        """``npm install`` runs on a cold bridge and again after an update changes package.json, and can
+        take minutes on a slow host; on the loop thread every other platform on the gateway would stall
+        behind it."""
+        adapter = _make_adapter()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        on_loop = []
+
+        def ensure_deps(bridge_dir):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return True
+
+        patches = _connect_patches(mock_proc, MagicMock())
+        with patch.object(adapter, "_ensure_bridge_deps", ensure_deps), \
+             patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5], patches[6], patches[7], patches[8]:
+            await adapter.connect()
+
+        assert on_loop == [False], on_loop
+
+
 class TestBridgeTokenOffLoop:
     @pytest.mark.asyncio
     async def test_token_minting_never_blocks_the_event_loop(self):

@@ -494,6 +494,18 @@ def _fresh_account_info(state: dict[str, Any], force_fresh: bool, portal_base_ur
                            portal_base_url=portal_base_url, account_tier=_coerce_str(state.get("account_tier")))
 
 
+def stored_token_account_info() -> Optional[NousPortalAccountInfo]:
+    """The portal account read with the profile's stored Nous token as it is: None when signed out, a guest
+    without inference, or a token about to expire. Never refreshes: a refresh writes the auth store, and a
+    balance read for a session on another provider must not touch the Nous credential."""
+    from hermes_cli.anon_auth import guest_without_free_tier, held_connectors_token
+    from hermes_cli.auth import get_provider_auth_state
+    state = get_provider_auth_state("nous") or {}
+    if guest_without_free_tier(state) or not (token := held_connectors_token(state, skew_seconds=60)):
+        return None
+    return _info_from_fetched_account(token, state, _portal_base_url(state))
+
+
 def _info_from_inference_key_pool(portal_base_url: Optional[str]) -> Optional[NousPortalAccountInfo]:
     """Return an explicit unknown-entitlement snapshot for opaque Nous keys."""
     try:

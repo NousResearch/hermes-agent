@@ -51,11 +51,8 @@ def client(monkeypatch, profiles_on_disk):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
-    from hermes_constants import get_hermes_home
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
@@ -69,31 +66,23 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None,
     ``tokens`` is an (input, output) pair; both it and ``cost`` are written
     straight to the row, the shape a finished turn leaves behind.
     """
-    import sqlite3
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=home / "state.db")
-    try:
-        db.create_session(session_id, source=source, cwd=str(cwd) if cwd else None)
-        db.append_message(session_id=session_id, role="user", content="hi")
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, session_id, source, cwd=str(cwd) if cwd else None)
+        seed_messages(db, session_id, {"role": "user", "content": "hi"})
         if pinned:
-            assert db.set_session_pinned(session_id, True)
-    finally:
-        db.close()
+            assert db.sessions.set_pinned(session_id, True)
 
-    if tokens is None and cost is None:
-        return
+        if tokens is None and cost is None:
+            return
 
-    conn = sqlite3.connect(home / "state.db")
-    try:
-        conn.execute(
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
             "UPDATE sessions SET input_tokens = ?, output_tokens = ?, estimated_cost_usd = ? WHERE id = ?",
             (*(tokens or (0, 0)), cost or 0.0, session_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        ))
 
 
 def _seed_project(home, name, folder):
@@ -304,16 +293,14 @@ class TestSidebarShowSubagents:
 
     @staticmethod
     def _seed_subagent(home, parent_id, child_id):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_messages, seed_session
 
         _seed_session(home, parent_id, source="desktop")
-        db = SessionDB(db_path=home / "state.db")
-        try:
-            db.create_session(child_id, source="subagent", parent_session_id=parent_id,
-                              model_config={"_delegate_from": parent_id})
-            db.append_message(session_id=child_id, role="user", content="audit billing")
-        finally:
-            db.close()
+        with open_persistence(profile_scope(home=home)) as db:
+            seed_session(db, child_id, "subagent", parent_session_id=parent_id,
+                         model_config={"_delegate_from": parent_id})
+            seed_messages(db, child_id, {"role": "user", "content": "audit billing"})
 
     def test_recents_list_subagent_runs_only_for_the_profile_that_opted_in(self, client, profiles_on_disk):
         (profiles_on_disk["worker"] / "config.yaml").write_text("sessions:\n  show_subagents: true\n")

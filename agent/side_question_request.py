@@ -204,7 +204,7 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
 
 def _answer_text(fork: Any, assistant_message: Any) -> Optional[str]:
     """Visible text of the reply; its ``tool_calls`` are dropped, never dispatched."""
-    from agent.message_content import flatten_message_text
+    from session_rules.turns import flatten_message_text
 
     content = assistant_message.content
     text = content if isinstance(content, str) else flatten_message_text(content)
@@ -232,6 +232,7 @@ def ask_text_only(
     max_tokens, tool_choice) are the parent's verbatim: changing any of them changes the cache
     key, and an inherited thinking budget 400s against a smaller max_tokens."""
     from agent.background_review import release_cache_parity_fork
+    from agent.turn_facade import bind_detached_fork_origin
 
     audit = _Audit(plugin_id)
     parent = capture.parent_ref()
@@ -266,7 +267,9 @@ def ask_text_only(
         if runtime_key(parent) != capture.runtime:
             audit.outcome = "refused:runtime_changed"
             return None
-        assistant_message = _send(fork, capture, prompt, audit)
+        # Plugin side questions skip run_conversation(), but still fire auxiliary hooks.
+        with bind_detached_fork_origin(SIDE_QUESTION_ORIGIN):
+            assistant_message = _send(fork, capture, prompt, audit)
         if assistant_message is None:
             return None
         answer = _answer_text(fork, assistant_message)

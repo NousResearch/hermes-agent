@@ -61,8 +61,10 @@ _GIT_TEXT_KW = {"text": True, "encoding": "utf-8", "errors": "replace"}
 def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, text: bool = True,
              git: str = "git"):
     """Read Git state without prompts, optional index writes, or inherited targeting."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_cli._subprocess_compat import _git_argv0_unusable, windows_hide_flags
 
+    if _git_argv0_unusable([git]):
+        return None
     kwargs: dict = {"creationflags": windows_hide_flags(), "env": source_git_env(), "stdin": subprocess.DEVNULL}
     try:
         return subprocess.run(
@@ -70,6 +72,20 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
             **(_GIT_TEXT_KW if text else {}), **kwargs, check=False)
     except Exception:
         return None
+
+
+def remote_git_run(argv: list[str], *, cwd, timeout: float) -> Optional[subprocess.CompletedProcess]:
+    """A git command that talks to a remote, or None when it timed out (spawn failure raises).
+
+    ``ls-remote`` forks ``git remote-https``. The passive update check runs it from a daemon
+    thread, so over a slow network a plain ``subprocess.run`` child outlived the CLI on ``/exit``
+    together with its helper, and a timeout killed only ``git``. Owned (``bounded_probe_run``),
+    the group dies with this process however it exits, and a timeout kills all of it.
+    """
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
+    return bounded_probe_run(argv, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
+                             env=source_git_env(), raise_on_spawn_failure=True, owned=True)
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5, git: str = "git") -> Optional[str]:
@@ -167,8 +183,11 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
             failure = "api.github.com returned no commit for the branch."
         if branch == "main" and remote == "origin":
             return None, False, failure
-    result = _git_run(["ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}"],
-                      cwd=root, git=git, timeout=10)
+    try:
+        result = remote_git_run([git, "ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}"],
+                                cwd=root, timeout=10)
+    except OSError:
+        result = None
     if result is None:
         return None, False, failure or f"`git ls-remote {remote}` could not run."
     sha = result.stdout.split()[0] if result.returncode == 0 and result.stdout else None
@@ -291,6 +310,31 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
+def _list_directory(directory: str, listed: dict, root_listing, listing) -> bool:
+    """Fill ``listed[path]`` for *directory* and each parent, root first, by walking tree entries by
+    name. False when a listing could not be read (no claim either way); a directory this tree does
+    not have is simply not listed."""
+    if "" not in listed:
+        entries = root_listing()
+        if entries is None:
+            return False
+        listed[""] = entries
+    here = ""
+    for part in filter(None, directory.split("/")):
+        child = f"{here}/{part}".lstrip("/")
+        if child not in listed:
+            sub = next((e.get("sha") for e in listed[here] if isinstance(e, dict) and e.get("path") == part
+                        and e.get("type") == "tree" and isinstance(e.get("sha"), str)), None)
+            if sub is None:
+                return True
+            entries = listing(sub)
+            if entries is None:
+                return False
+            listed[child] = entries
+        here = child
+    return True
+
+
 def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
     """Read the tree and at most four schema blobs at once, within one lookup deadline."""
     from contextvars import copy_context
@@ -299,7 +343,7 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
     from queue import Empty, Queue
     from threading import Thread
 
-    from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
+    from hermes_cli.update_downgrade_guard import SCHEMA_SOURCES, defines_runtime
 
     deadline = time.monotonic() + _RUNTIME_LOOKUP_SECONDS
     replies: Queue[Optional[str]] = Queue()
@@ -318,14 +362,23 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
             raise Empty
         return replies.get(timeout=remaining)
 
-    launch(f"https://api.github.com/repos/{repository}/git/trees/{sha}", api=True)
-    try:
+    def listing(ref: str) -> Optional[list]:
+        launch(f"https://api.github.com/repos/{repository}/git/trees/{ref}", api=True)
         tree = _quiet(lambda: json.loads(receive() or ""))
         entries = tree.get("tree") if isinstance(tree, dict) and not tree.get("truncated") else None
-        if not isinstance(entries, list):
-            return None
-        paths = [e["path"] for e in entries if isinstance(e, dict) and e.get("type") == "blob"
-                 and isinstance(e.get("path"), str) and fnmatchcase(e["path"], STATE_MODULES)]
+        return entries if isinstance(entries, list) else None
+
+    try:
+        # Only the directories SCHEMA_SOURCES names, one small listing each (a recursive listing of a
+        # release is several MiB): the root today, hermes_agent/ and its hermes_state/ after the move,
+        # and the SQLite backend's folder.
+        listed: dict[str, list] = {}
+        for directory in dict.fromkeys(pattern.rpartition("/")[0] for pattern in SCHEMA_SOURCES):
+            if not _list_directory(directory, listed, lambda: listing(sha), listing):
+                return None
+        paths = [f"{prefix}/{e['path']}".lstrip("/") for prefix, entries in listed.items() for e in entries
+                 if isinstance(e, dict) and e.get("type") == "blob" and isinstance(e.get("path"), str)]
+        paths = [path for path in paths if any(fnmatchcase(path, p) for p in SCHEMA_SOURCES)]
         if not paths:
             return None  # not a recognised Hermes tree: no claim either way
         urls = iter(f"https://raw.githubusercontent.com/{repository}/{sha}/{quote(path)}" for path in paths)

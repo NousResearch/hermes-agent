@@ -67,7 +67,7 @@ def _wire(adapter, fail_first_send_of=None):
         content = kw.get("content", "")
         if fail_first_send_of and not failed and fail_first_send_of in content:
             failed.append(content)
-            return SimpleNamespace(success=False, error="timeout")
+            return SimpleNamespace(success=False, error="timeout", retryable=True)
         sends.append((content, (kw.get("metadata") or {}).get("notify")))
         return SimpleNamespace(success=True, message_id=f"m{len(sends)}")
 

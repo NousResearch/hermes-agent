@@ -107,6 +107,7 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
 
     def _parse_identifier(self, identifier: str) -> Optional[dict]:
         raw = identifier.removeprefix("well-known:")
+        explicit = raw != identifier
         if not raw.startswith(("http://", "https://")):
             return None
         parsed_url = urlparse(raw)
@@ -118,7 +119,9 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
             skill_url = f"{base_url}/{skill_name}"
         else:
             skill_url = clean_url[:-len("/SKILL.md")] if clean_url.endswith("/SKILL.md") else clean_url.rstrip("/")
-            if f"{self.BASE_PATH}/" not in skill_url:
+            # A bare URL is claimed only under BASE_PATH; a ``well-known:`` one is what _wrap_identifier
+            # recorded for an index at any path, so it must read back or check/update lose the skill.
+            if not explicit and f"{self.BASE_PATH}/" not in skill_url:
                 return None
             base_url, skill_name = skill_url.rsplit("/", 1)
         return {"index_url": f"{base_url}/index.json", "base_url": base_url,
@@ -404,7 +407,7 @@ class BrowseShSource(SkillSource):
             return None
         slug = item["slug"]
         md_url = self._resolve_skill_md_url(slug, item)
-        content = _get_text(md_url, follow_redirects=True) if md_url else None
+        content = _get_text(md_url) if md_url else None
         if content is None:
             return None
         meta = self._item_to_meta(item)
@@ -417,7 +420,7 @@ class BrowseShSource(SkillSource):
 
     def _resolve_skill_md_url(self, slug: str, item: dict) -> Optional[str]:
         """``skillMdUrl`` from ``/api/skills/{slug}``; fallback to a ``raw.githubusercontent.com`` ``sourceUrl``."""
-        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug), follow_redirects=True)
+        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug))
         md_url = data.get("skillMdUrl") if isinstance(data, dict) else None
         if isinstance(md_url, str) and md_url.startswith("http"):
             return md_url

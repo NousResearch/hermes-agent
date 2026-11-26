@@ -19,7 +19,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_envelope import snapshot_native
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def _clear_authz_env(monkeypatch) -> None:
@@ -85,7 +85,7 @@ async def test_non_upstream_adapter_still_default_denies_without_allowlist(
         user_name="someone",
         chat_type="dm",
     )
-    with pytest.raises(RuntimeStoreError, match="permission_denied"):
+    with pytest.raises(AuthorityRefusal, match="permission_denied"):
         snapshot_native(runner, _fresh_native_event(discord_source))
 
 
@@ -98,7 +98,6 @@ async def test_upstream_authorized_a2a_input_admits_durally_with_provenance(
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.a2a.adapter import A2AAdapter
 
     _clear_authz_env(monkeypatch)
@@ -120,9 +119,9 @@ async def test_upstream_authorized_a2a_input_admits_durally_with_provenance(
     event = _fresh_native_event(source, text="a2a task from a bearer-authenticated peer")
     with native_callback(runner, event, get_hermes_home()):
         receipt = await authority.admit_native(event)
-    payload = list_session_admissions(
-        authority.db, session_id=receipt.ref.session_id, pending_only=False
-    )[-1]["payload"]
+    payload = authority.persistence.admissions.list(
+        session_id=receipt.ref.session_id, pending_only=False
+    )[-1].payload
     assert payload["text"] == "a2a task from a bearer-authenticated peer"
     assert payload["native_text_v1"]["provenance"]["platform"] == "a2a"
 
@@ -165,6 +164,6 @@ async def test_same_principal_without_adapter_declaration_is_refused_by_native_a
         vars(source)["authorization_is_upstream"] = True
     event = _fresh_native_event(source, text="a2a task from a bearer-authenticated peer")
     with native_callback(runner, event, get_hermes_home()):
-        with pytest.raises(RuntimeStoreError, match="permission_denied") as refused:
+        with pytest.raises(AuthorityRefusal, match="permission_denied") as refused:
             await authority.admit_native(event)
     assert refused.value.field == "user_not_authorized"

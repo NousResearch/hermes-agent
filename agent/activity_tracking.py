@@ -89,7 +89,7 @@ class ActivityTrackingMixin:
         self._persist_session_activity_if_due()
 
     def _persist_session_activity_if_due(self) -> None:
-        """Best-effort durable activity heartbeat for SessionDB consumers.
+        """Best-effort durable activity heartbeat for session store consumers.
 
         Cadence pinned by ``SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS`` (config-independent). Fail-open:
         a failed write never raises into the agent loop.
@@ -98,7 +98,9 @@ class ActivityTrackingMixin:
         session_db = getattr(self, "_session_db", None)
         if not session_id or session_db is None:
             return
-        touch = getattr(session_db, "touch_session_activity", None)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(self)
+        touch = store.sessions.touch_activity if store is not None else getattr(session_db, "touch_session_activity", None)
         if not callable(touch):
             return
         from agent.session_activity import (
@@ -131,7 +133,7 @@ class ActivityTrackingMixin:
         """Drop mid-turn activity labels once the turn is no longer running.
 
         Keeps ``_last_activity_ts`` so idle/watchdog clocks stay continuous across turns; clears description +
-        provenance so idle agents / SessionDB listings stop advertising the last mid-turn stamp.
+        provenance so idle agents / session store listings stop advertising the last mid-turn stamp.
 
         See #15654, #72039.
         """
@@ -141,7 +143,10 @@ class ActivityTrackingMixin:
         session_db = getattr(self, "_session_db", None)
         if not session_id or session_db is None:
             return
-        clear = getattr(session_db, "clear_session_activity_labels", None)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(self)
+        clear = (store.sessions.clear_activity_labels if store is not None
+                 else getattr(session_db, "clear_session_activity_labels", None))
         if not callable(clear):
             return
         from agent.runtime_session_store import call_off_event_loop

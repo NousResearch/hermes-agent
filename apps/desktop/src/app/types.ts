@@ -188,9 +188,20 @@ export interface ClientSessionState {
    *  heartbeat (#119569); when it lands it settles onto this bubble instead of
    *  appending a duplicate. Cleared by the next message.start or complete. */
   heartbeatSettledStreamId?: null | string
+  /** The turns message.complete ended whose end-of-turn report (session.info
+   *  running=false) is still to come, by when each completed. Core sends that
+   *  report after it releases the session, so a turn started right after the
+   *  completion (a queued send drained at once) can see its message.start first;
+   *  the report then describes a completed turn and must not settle the live
+   *  one. Each message.complete adds one, each running=false report pays one,
+   *  and one nothing paid lapses (gateway-event/turn-end-report.ts). */
+  turnEndReportsOwed?: number[]
   /** `turn_id` of the newest message.start (tui_gateway/stream_segments.py): a
    *  re-sent start of the same turn is not a new occurrence. */
   streamTurnId?: null | string
+  /** The owner admission the live turn executes, from its frames' execution stamp (`admission_id`). The in-flight
+   *  journal stores it so a reopen can ask the owner whether that exact execution is still pending. */
+  turnAdmissionId?: null | string
   /** Newest row on screen when that message.start arrived: rows above it are
    *  earlier turns, even when an interim seal left them marked `interim`. */
   turnAnchorId?: null | string

@@ -1,0 +1,38 @@
+name: tmux-watch
+repo: https://github.com/Dofeyna/hermes-tmux-watch
+sha: "b048fdbce4e4f9241ca6e325f544db02c5107bce"
+version: "0.1.0"
+title: "Tmux Watch"
+description: >-
+  Hermes Desktop pane and status-bar chip showing live tmux sessions on any
+  number of SSH-reachable hosts, with real ANSI colour and an active / idle /
+  possibly-stuck signal per session. Built to watch coding agents (Claude Code,
+  Codex, Hermes) on remote dev boxes without attaching. Disclosure: the backend
+  shells out to the system ssh client (BatchMode, your own ~/.ssh/config and
+  keys) and runs only "tmux list-sessions" and "tmux capture-pane -e" on the
+  hosts you list in ~/.config/hermes-tmux-watch/config.json (an example file is
+  written there on first run); an optional per-host shell prefix you configure
+  is prepended to those commands. Every terminal escape except SGR colour codes
+  is stripped server-side. An opt-in per-host allow_control flag (off by
+  default) enables a confirm-gated "tmux kill-session", re-checked by the
+  backend. Polls every 5 seconds while Desktop is open. No
+  credentials handled, no telemetry, no other network calls, no self-updater.
+maintainer: Dofeyna
+tier: community
+category: desktop
+requires_hermes: ">=0.21.0"
+platforms: [linux, macos]
+docs_url: https://github.com/Dofeyna/hermes-tmux-watch#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Dofeyna/hermes-tmux-watch/b048fdbce4e4f9241ca6e325f544db02c5107bce/docs/pane.png
+  - https://raw.githubusercontent.com/Dofeyna/hermes-tmux-watch/b048fdbce4e4f9241ca6e325f544db02c5107bce/docs/chip.png
+known_issues:
+  - "When Desktop connects to a remote Hermes, the pane is installed per Desktop machine; tick the desktop component on each one."
+  - "A 5-second snapshot view, not a live PTY: it never sends keys into a session."
+  - "Possibly stuck means the screen has not changed for 5 minutes, so a session that is simply idle (a quiet shell) is flagged the same way."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

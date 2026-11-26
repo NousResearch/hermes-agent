@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -40,7 +41,7 @@ def _native_machine() -> str:
     try:
         from hermes_platform.host.facts import native_arch
     except ModuleNotFoundError as exc:
-        if exc.name != "hermes_platform":
+        if exc.name != "hermes_platform" and not "hermes_platform".startswith(f"{exc.name}."):
             raise
     else:
         return native_arch()
@@ -378,6 +379,25 @@ def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
     return digest.hexdigest()
 
 
+def entry_component(name: str) -> str:
+    """A store entry name built from lock fields (package name, version,
+    target) that is removed or published must be exactly one component, or
+    the rmtree/rename aims outside the store root (#138359)."""
+    if (not isinstance(name, str) or name in ("", ".", "..") or "/" in name or "\\" in name
+            or Path(name).name != name):
+        raise ValueError(f"store entry name is not a single path component: {name!r}")
+    return name
+
+
+def fetch_entry_name(digest: str) -> str:
+    """Fetch-cache entries are keyed `fetch-<sha256>` and the digest becomes
+    a path component under the store root, so anything off the 64-hex shape
+    fails closed here instead of traversing out of the store (#138359)."""
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError(f"malformed artifact sha256: {digest!r}")
+    return f"fetch-{digest}"
+
+
 class Store:
     """One directory of immutable published entries plus a scratch area.
     Hash-keyed archives survive failed installs. Publication releases them."""
@@ -411,7 +431,7 @@ class Store:
             if pause_event is not None and pause_event.is_set():
                 raise DownloadPaused("download paused")
             url, digest = artifact["url"], artifact["sha256"]
-            entry_name = f"fetch-{digest}"
+            entry_name = fetch_entry_name(digest)
             entry = self.entry(entry_name)
             files = list(entry.iterdir()) if entry.is_dir() else []
             if len(files) == 1 and files[0].is_file():
@@ -419,7 +439,10 @@ class Store:
             else:
                 if entry.exists():
                     shutil.rmtree(entry)
-                destination = scratch / entry_name / url.rsplit("/", 1)[-1]
+                filename = url.rsplit("/", 1)[-1]
+                if filename in ("", ".", "..") or "\\" in filename or Path(filename).name != filename:
+                    raise ValueError(f"artifact url does not end in a file name: {url}")
+                destination = scratch / entry_name / filename
             sources.append(pinned_source(url, destination, digest))
 
         # Progress keeps the lockfile URL even when the transport is a mirror (#123132).
@@ -435,8 +458,8 @@ class Store:
             # Only finalized, hash-verified files can exist at these paths.
             for source in sources:
                 if source.dest.is_relative_to(scratch) and source.dest.is_file():
-                    self.publish(source.dest.parent, f"fetch-{source.sha256}")
-        return [self.entry(f"fetch-{source.sha256}") / source.dest.name for source in sources]
+                    self.publish(source.dest.parent, fetch_entry_name(source.sha256))
+        return [self.entry(fetch_entry_name(source.sha256)) / source.dest.name for source in sources]
 
     @contextmanager
     def scratch(self):

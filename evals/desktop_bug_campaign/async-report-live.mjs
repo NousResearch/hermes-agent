@@ -1,6 +1,8 @@
-import { chromium } from '../../node_modules/playwright/index.mjs'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
+// Playwright comes from the desktop workspace that declares it.
+const { chromium } = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))('@playwright/test')
 const a=process.env.ASYNC_REPORT_ARTIFACT_DIR
 if (!a) throw new Error('Set ASYNC_REPORT_ARTIFACT_DIR to an offline artifact directory')
 const tag=process.argv[2]??'after'

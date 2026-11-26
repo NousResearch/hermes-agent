@@ -14,6 +14,9 @@ After changing `pyproject.toml`, run `hermes pm lock`, re-source `./activate`, a
 PM owns Hermes Python dependency changes. Use `pm.sync_venv(['extra'], explicit=True)`
 for declared runtime extras, `hermes pm install` for setup/sync, and `hermes pm repair`
 for damaged dependencies. Do not mutate Hermes environments with raw pip or uv.
+Developer-only tools (`just`) are optional packages in `pm.testenv.DEVELOPER_TOOLS`: the
+`--test-environment` install provisions those the lockfile pins; a user install or desktop bundle
+never does.
 Use `pm.build_environment` for fresh build outputs and `pm.ensure_environment` for
 isolated tool environments. Callers receive an interpreter or tool path, not uv.
 Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
@@ -29,3 +32,6 @@ may move a transitive core package within core's declared ranges
 (`tests/pm/test_workspace_build_inputs.py::test_plugin_can_move_compatible_transitive_but_not_exact_requirement`).
 Plugin `python_dependencies` follow the plugin's own policy. Teknium's rulings: "plugins dont have to abide by our 14 day rule … Only hermes'
 dependencies themselves have to"; dates are checked by us, not users; pinned deps need >3 days.
+JS: `minimumReleaseAge` (14 days) in `pnpm-workspace.yaml`; an exemption is one exact
+`- name@1.2.3  # why` line in `minimumReleaseAgeExclude`, which `hermes pm update --pnpm` names
+and later drops (`website/docs/reference/package-management.md` § Release age and package mirrors).

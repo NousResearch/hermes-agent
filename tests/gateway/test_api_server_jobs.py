@@ -139,6 +139,20 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
+    @pytest.mark.asyncio
+    async def test_a_job_created_through_the_dashboard_peer_route_names_its_creator(self, adapter):
+        """The dashboard's /api/peer route signs a peer pass holder's calls with the Portal user it
+        verified, so a job they create stays attributable after their pass expires."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(f"{_MOD}._cron_create", mock_create):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "nightly", "schedule": "0 3 * * *", "prompt": "summarise the day"},
+                    headers={"X-Hermes-Peer-Principal": "usr_abc"})
+                assert resp.status == 200
+                assert mock_create.call_args[1]["origin"]["peer_principal"] == "usr_abc"
+
 
     @pytest.mark.asyncio
     async def test_create_job_reports_saved_but_unregistered(self, adapter):
@@ -167,6 +181,26 @@ class TestCreateJob:
                 assert data["scheduler_registered"] is False
                 assert data["retry_create"] is False
                 assert "private callback URL and token" not in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_and_update_carry_the_pinned_timezone(self, adapter):
+        """POST and PATCH /api/jobs accept ``timezone`` like every other create/edit door; the
+        handler used to drop it on create and filter it out on PATCH, so the pin was lost."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create", mock_create
+            ), patch(f"{_MOD}._cron_update", mock_update):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "pre-market", "schedule": "0 9 * * 1-5", "prompt": "p",
+                    "timezone": "America/New_York"})
+                assert resp.status == 200
+                assert mock_create.call_args[1]["timezone"] == "America/New_York"
+                resp = await cli.patch(f"/api/jobs/{VALID_JOB_ID}", json={"timezone": "Asia/Hong_Kong"})
+                assert resp.status == 200
+                assert mock_update.call_args[0][1] == {"timezone": "Asia/Hong_Kong"}
 
 
     @pytest.mark.asyncio
@@ -240,6 +274,33 @@ class TestUpdateJob:
                 assert "name" in sanitized
                 assert "evil_field" not in sanitized
                 assert "__proto__" not in sanitized
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("patch_body", [
+        {"timezone": "Not/AZone"}, {"schedule": "bogus schedule"}, {"repeat": "often"}, {"name": 7},
+    ], ids=["timezone", "schedule", "repeat", "non-string-name"])
+    async def test_an_invalid_value_is_a_400_like_post_and_leaves_the_job(
+            self, adapter, tmp_path, monkeypatch, patch_body):
+        """PATCH rejects a bad value as POST does (400 ``{"error": ...}``), against the real store."""
+        from cron import jobs
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        job = jobs.create_job(prompt="p", schedule="0 9 * * *", name="pre-market")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(f"{_MOD}._cron_update", jobs.update_job), \
+                    patch(f"{_MOD}._cron_create", jobs.create_job):
+                resp = await cli.patch(f"/api/jobs/{job['id']}", json=patch_body)
+                assert resp.status == 400
+                assert set(await resp.json()) == {"error"}
+                if "timezone" in patch_body:
+                    created = await cli.post("/api/jobs", json={
+                        "name": "n", "schedule": "0 9 * * *", "prompt": "p", **patch_body})
+                    assert created.status == 400 and set(await created.json()) == {"error"}
+        assert jobs.get_job(job["id"])["schedule"] == job["schedule"]
+        assert jobs.get_job(job["id"]).get("timezone") == job.get("timezone")
 
 
 # ---------------------------------------------------------------------------

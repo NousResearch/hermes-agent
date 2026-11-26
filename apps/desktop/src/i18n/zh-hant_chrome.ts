@@ -326,6 +326,8 @@ export const zhHantChrome = {
       messagingPlatforms: '訊息平台'
     },
     approvalMode: {
+      perProfile: '依設定檔',
+      perProfileDescription: '核准模式依設定檔分別設定。開啟對應的機器人或設定檔以變更其模式。',
       title: '核准模式',
       ariaLabel: mode => `核准模式：${mode}`,
       manual: '手動',
@@ -401,6 +403,15 @@ export const zhHantChrome = {
           subagent_definitions: '子代理定義',
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
+        },
+        compact: {
+          action: '壓縮對話',
+          busyHint: '請先完成或停止目前的回覆',
+          confirm: '壓縮',
+          hint: '摘要較早的上下文以騰出空間，繼續目前的對話。',
+          question: '將此對話壓縮為摘要？',
+          questionNamed: title => `將「${title}」壓縮為摘要？`,
+          working: '正在壓縮…'
         },
         empty: '尚無上下文資料',
         loading: '正在載入明細…',

@@ -3,6 +3,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_holder import policy_key, raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.mark.asyncio
@@ -13,44 +16,54 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import (RuntimeStoreError, admit_session_input, claim_session_input,
-                                      get_session_admission, list_session_admissions)
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     def runner():
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        return SimpleNamespace(session_store=store, _session_db=store._db,
+        return SimpleNamespace(session_store=store, _session_db=store.persistence,
                                adapters={}, _draining=False)
     first = runner()
     authority = await initialize_session_authority(first, profile_id='fixture', instance_id='first')
     actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
     params = dict(request_id='lineage', source='gui', cwd=str(tmp_path), model='frozen', toolsets=[])
     ref = create_local_session(authority, actor, params)
-    db = authority.db
+    db = authority.persistence
     live = authority.sessions[ref.session_id]
-    original = local_receipt(db, ref.session_id)
-    queued = admit_session_input(db, epoch=authority.epoch, principal_id=actor.subject,
-                                session_id=ref.session_id, request_id='pending', payload={'text': 'pending'})
+    original = db.bindings.receipt(ref.session_id)
+    queued, _ = db.admissions.admit(epoch=authority.epoch, principal_id=actor.subject,
+                                    session_id=ref.session_id, request_id='pending', payload={'text': 'pending'})
     history = [{'role': 'user', 'content': 'retained'}, {'role': 'assistant', 'content': 'history'}]
+    def publish(parent, child):
+        db.lineage.publish_compression_child(parent, CompressionChild(session_id=child, source='gui'),
+                                             [NewMessage.from_live(m) for m in history],
+                                             compression_lock_holder='fixture')
     def compress(parent, child):
-        assert db.try_acquire_compression_lock(parent, 'fixture')
+        assert db.coordination.try_acquire_compression_lock(session_id=parent, holder='fixture')
         try:
-            db.publish_compression_child(parent_session_id=parent, child_session_id=child,
-                                         source='gui', messages=history, compression_lock_holder='fixture')
+            publish(parent, child)
         finally:
-            db.release_compression_lock(parent, 'fixture')
-    publish_row = db._publish_child_session_row
-    def abort_publication(*args, **kwargs):
-        publish_row(*args, **kwargs)
-        raise RuntimeError('publication abort')
-    monkeypatch.setattr(db, '_publish_child_session_row', abort_publication)
-    with pytest.raises(RuntimeError, match='publication abort'):
-        compress(ref.session_id, 'aborted-child')
-    monkeypatch.setattr(db, '_publish_child_session_row', publish_row)
-    assert db.get_session('aborted-child') is None
-    assert local_receipt(db, ref.session_id) == original
-    assert db.get_session(ref.session_id)['end_reason'] is None
+            db.coordination.release_compression_lock(session_id=parent, holder='fixture')
+    holder = raw_holder(db)
+    publish_write = holder._execute_write
+    def abort_publication(callback, **kwargs):
+        def fail(conn):
+            callback(conn)
+            raise RuntimeError('publication abort')
+        return publish_write(fail, **kwargs)
+    assert db.coordination.try_acquire_compression_lock(session_id=ref.session_id, holder='fixture')
+    try:
+        monkeypatch.setattr(holder, '_execute_write', abort_publication)
+        with pytest.raises(RuntimeError, match='publication abort'):
+            publish(ref.session_id, 'aborted-child')
+        monkeypatch.setattr(holder, '_execute_write', publish_write)
+    finally:
+        db.coordination.release_compression_lock(session_id=ref.session_id, holder='fixture')
+    assert db.sessions.get('aborted-child') is None
+    assert db.bindings.receipt(ref.session_id) == original
+    assert db.sessions.get(ref.session_id).end_reason is None
     compress(ref.session_id, 'compressed')
     second = runner()
     cold = await initialize_session_authority(second, profile_id='fixture', instance_id='second')
@@ -58,66 +71,66 @@ async def test_local_lineage_transitions_preserve_owner_or_roll_back(tmp_path, m
     assert create_local_session(cold, actor, params) == ref
     snapshot = await cold.attach(actor, ref)
     assert [(m['role'], m['content']) for m in snapshot.history] == [(m['role'], m['content']) for m in history]
-    assert snapshot.pending[0].admission_id == queued['admission_id']
+    assert snapshot.pending[0].admission_id == queued.admission_id
     assert second.session_store._entries[live.route].session_id == 'compressed'
-    assert local_receipt(db, ref.session_id)['policy'] == original['policy']
-    write = db._execute_write
+    assert db.bindings.receipt(ref.session_id).policy == original.policy
+    write = raw_holder(db)._execute_write
     def abort(callback, **kwargs):
         def fail(conn):
             callback(conn)
             raise RuntimeError('transaction abort')
         return write(fail, **kwargs)
-    # Use the owning SessionStore DB: reset must not publish any in-memory target on failure.
-    db = cold.db
-    write = db._execute_write
-    before = local_receipt(db, ref.session_id)
-    monkeypatch.setattr(db, '_execute_write', abort)
+    # Use the owning SessionStore's store: reset must not publish any in-memory target on failure.
+    db = cold.persistence
+    write = (holder := raw_holder(second.session_store._persistence_for_key(live.route)))._execute_write
+    before = db.bindings.receipt(ref.session_id)
+    monkeypatch.setattr(holder, '_execute_write', abort)
     with pytest.raises(RuntimeError, match='transaction abort'):
         second.session_store.reset_session(live.route)
-    monkeypatch.setattr(db, '_execute_write', write)
-    assert local_receipt(db, ref.session_id) == before
+    monkeypatch.setattr(holder, '_execute_write', write)
+    assert db.bindings.receipt(ref.session_id) == before
     assert second.session_store._entries[live.route].session_id == 'compressed'
     reset = second.session_store.reset_session(live.route)
     assert reset.session_id != 'compressed'
-    assert db.get_session(reset.session_id)['cwd'] == params['cwd']
-    assert db.get_session(reset.session_id)['model'] == params['model']
+    assert session_row(db, reset.session_id)['cwd'] == params['cwd']
+    assert session_row(db, reset.session_id)['model'] == params['model']
     third = runner()
     recovered = await initialize_session_authority(third, profile_id='fixture', instance_id='third')
     snapshot = await recovered.attach(actor, ref)
     assert snapshot.history == ()  # reset is a deliberate history boundary, not a fork
-    assert snapshot.pending[0].admission_id == queued['admission_id']
+    assert snapshot.pending[0].admission_id == queued.admission_id
     assert create_local_session(recovered, actor, params) == ref
     policy = third.adapters[Platform.LOCAL].policies[live.source.chat_id]
     assert policy.cwd == params['cwd'] and policy.source == params['source']
     # An interrupted claim remains owned by the logical conversation, even after another rotation.
-    claimed = claim_session_input(recovered.db, epoch=recovered.epoch, session_id=ref.session_id)
+    claimed = recovered.persistence.admissions.claim(epoch=recovered.epoch, session_id=ref.session_id)
     compress(reset.session_id, 'compressed-again')
     fourth = runner()
     restarted = await initialize_session_authority(fourth, profile_id='fixture', instance_id='fourth')
-    assert get_session_admission(restarted.db, admission_id=claimed['admission_id'])['status'] == 'unknown'
-    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
-        claim_session_input(restarted.db, epoch=restarted.epoch, session_id=ref.session_id)
-    assert len(list_session_admissions(restarted.db, session_id=ref.session_id)) == 1
-    receipt = local_receipt(db, ref.session_id)
-    db.set_meta('gateway.local_policy.v1:' + ref.session_id, json.dumps(dict(receipt, profile_id='foreign')))
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+    assert restarted.persistence.admissions.get(admission_id=claimed.admission_id).status == 'unknown'
+    with pytest.raises(AuthorityRefusal, match='unknown_execution'):
+        restarted.persistence.admissions.claim(epoch=restarted.epoch, session_id=ref.session_id)
+    assert len(restarted.persistence.admissions.list(session_id=ref.session_id)) == 1
+    receipt = json.loads(db.state_meta.get(policy_key(ref.session_id)))
+    db.state_meta.set(policy_key(ref.session_id), json.dumps(dict(receipt, profile_id='foreign')))
+    with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
         compress('compressed-again', 'foreign-child')
-    assert db.get_session('foreign-child') is None
-    db.set_meta('gateway.local_policy.v1:' + ref.session_id, json.dumps(receipt))
+    assert db.sessions.get('foreign-child') is None
+    db.state_meta.set(policy_key(ref.session_id), json.dumps(receipt))
     foreign = SessionActor('foreign', 'fixture', actor.capabilities, 'foreign')
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await restarted.attach(foreign, ref)
     wrong_profile = SessionActor('owner', 'other-profile', actor.capabilities, 'other-profile')
-    with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
+    with pytest.raises(AuthorityRefusal, match='profile_mismatch'):
         await restarted.attach(wrong_profile, ref)
-    db.create_session('unrelated-fork', source='gui', parent_session_id='compressed-again',
-                      model_config={'_branched_from': 'compressed-again'}, chat_id=live.source.chat_id,
-                      user_id=actor.subject, session_key=live.route)
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+    seed_session(db, 'unrelated-fork', 'gui', parent_session_id='compressed-again',
+                 model_config={'_branched_from': 'compressed-again'}, chat_id=live.source.chat_id,
+                 user_id=actor.subject, session_key=live.route)
+    with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
         await restarted.attach(actor, SessionRef('fixture', 'unrelated-fork'))
     # Copying the receipt onto a fork does not turn it into the canonical owner.
-    db.set_meta('gateway.local_policy.v1:unrelated-fork', json.dumps(local_receipt(db, ref.session_id)))
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+    db.state_meta.set(policy_key('unrelated-fork'), db.state_meta.get(policy_key(ref.session_id)))
+    with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
         await restarted.attach(actor, SessionRef('fixture', 'unrelated-fork'))
     # Route reuse by a native reset must not pick a departed logical owner's generation.
     from gateway.run_turn_runner import TurnRunner

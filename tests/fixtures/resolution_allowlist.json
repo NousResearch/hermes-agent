@@ -128,11 +128,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/boot_bootstrap.py",
-    "symbol": "_git_binary",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/cli_session_mixin.py",
     "symbol": "CLISessionMixin._clear_terminal_on_exit",
     "kind": "bare_which"
@@ -205,11 +200,6 @@
   {
     "path": "hermes_cli/gateway_windows.py",
     "symbol": "_exec_schtasks",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/git_credentials.py",
-    "symbol": "_credential_fill",
     "kind": "bare_which"
   },
   {
@@ -289,17 +279,7 @@
   },
   {
     "path": "hermes_cli/main_tui_launch.py",
-    "symbol": "_apply_tui_python_env",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_make_tui_argv",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/main_tui_launch.py",
-    "symbol": "_restore_tui_workspace",
     "kind": "bare_which"
   },
   {
@@ -313,11 +293,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/plugins_cmd.py",
-    "symbol": "_resolve_git_executable",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/profiles.py",
     "symbol": "create_wrapper_script",
     "kind": "bare_which"
@@ -328,9 +303,10 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/session_lost_and_found.py",
+    "path": "persistence/sqlite/admin/_lost_and_found.py",
     "symbol": "find_sqlite3_cli",
-    "kind": "bare_which"
+    "kind": "bare_which",
+    "reason": "the SQLite backend's salvage resolves the sqlite3 CLI the way hermes_cli/session_lost_and_found.py::find_sqlite3_cli does"
   },
   {
     "path": "hermes_cli/setup_tts.py",
@@ -451,21 +427,6 @@
   {
     "path": "tools/browser_lightpanda.py",
     "symbol": "find_lightpanda_binary",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/checkpoint_manager.py",
-    "symbol": "_init_store",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/checkpoint_manager.py",
-    "symbol": "_run_git",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/checkpoint_manager_profile_rename.py",
-    "symbol": "migrate_profile_checkpoint_projects",
     "kind": "bare_which"
   },
   {
@@ -606,11 +567,6 @@
   {
     "path": "tools/voice_mode.py",
     "symbol": "_wsl_powershell_tts_available",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/working_diff.py",
-    "symbol": "_run",
     "kind": "bare_which"
   },
   {

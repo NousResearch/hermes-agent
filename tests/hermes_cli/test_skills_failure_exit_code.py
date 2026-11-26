@@ -95,3 +95,33 @@ def test_cli_exit_code_follows_the_action_outcome(monkeypatch, tmp_path, capsys,
     if target == "scan_gate":
         assert installs == [] and "Not installed:" in capsys.readouterr().out
         assert audit and audit[0][0] == "BLOCKED"
+
+
+@pytest.mark.parametrize("verdict", ["caution", "dangerous"])
+def test_update_enforces_the_scan_verdict_it_prints(monkeypatch, tmp_path, capsys, verdict):
+    """#38041: `skills update` printed "Decision: BLOCKED" yet re-ran the gate with force=True and
+    installed a caution-verdict community update. The update must honour the displayed decision."""
+    import tools.skills_hub_install as hub_install
+    installs, audit = _scan_gate_env(monkeypatch, tmp_path, verdict=verdict,
+                                     installed={"install_path": "risky-skill"})
+    monkeypatch.setattr(hub_install, "check_for_skill_updates", lambda **_kw: [{
+        "name": "risky-skill", "identifier": "org/repo/risky-skill", "source": "skills-sh",
+        "status": "update_available"}])
+
+    assert cli_hub.do_update() is False
+    assert installs == []
+    out = capsys.readouterr().out
+    assert "Not installed:" in out and "Updated 1 skill" not in out
+    assert audit and audit[0][0] == "BLOCKED"
+
+
+def test_update_still_replaces_an_installed_skill_the_scan_allows(monkeypatch, tmp_path):
+    import tools.skills_hub_install as hub_install
+    installs, _audit = _scan_gate_env(monkeypatch, tmp_path, verdict="safe",
+                                      installed={"install_path": "risky-skill"})
+    monkeypatch.setattr(hub_install, "check_for_skill_updates", lambda **_kw: [{
+        "name": "risky-skill", "identifier": "org/repo/risky-skill", "source": "skills-sh",
+        "status": "update_available"}])
+
+    assert cli_hub.do_update() is None
+    assert installs == ["risky-skill"]

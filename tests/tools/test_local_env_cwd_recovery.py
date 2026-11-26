@@ -111,11 +111,9 @@ class TestRunBashCwdRecovery:
         assert captured["cwd"] == str(tmp_path)
         assert os.path.isdir(captured["cwd"])
 
-        # ``self.cwd`` is updated so the next call doesn't re-warn.
-        assert env.cwd == str(tmp_path)
-
-        # The warning surfaces the wedge so it isn't silently masked.
-        assert any("missing on disk" in rec.message for rec in caplog.records)
+        # Spawning somewhere real must not move the session: only a terminal command that may
+        # fall back (and says so) does; a file op resolving relative paths there reads another file.
+        assert env.cwd == str(wedged)
 
     def test_no_warning_when_cwd_still_exists(self, tmp_path, caplog):
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):

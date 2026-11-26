@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hermes_cli import gateway as gw
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_migrate_backends as gmb
 from hermes_cli import main_dashboard
@@ -113,6 +114,13 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
     monkeypatch.setattr(main_dashboard, "_loaded_launchd_backend_jobs", list)
     monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
+    # On Linux every scan sets the user bus env up from /run/user/<uid>: start without it, never read this
+    # machine's runtime dir, and restore both vars afterwards (setenv records them; a bare delenv would not).
+    for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: False)
+    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: False)
     home = tmp_path / "hermes-home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -210,36 +218,35 @@ def test_user_unit_dashboard_is_one_systemd_backend_from_a_shell_without_the_use
 
 
 @pytest.mark.platforms("linux")
-def test_headless_shell_populates_dbus_address_to_avoid_duplicate_user_unit(host, no_writes, monkeypatch):
-    """When `systemctl --user show` needs DBUS_SESSION_BUS_ADDRESS while `list-unit-files` still works
-    offline, missing bus env made the running user unit appear twice (manual + installed unit)."""
+def test_a_rescan_after_a_user_systemctl_call_finds_the_same_systemd_backend(host, no_writes, monkeypatch):
+    """#160028: the plan picks the backend from a first scan, a later `systemctl --user` step through the
+    gateway sets the bus env up, and _owner_blockers' rescan then saw the same PID as its unit (a second
+    backend). Real systemctl fails `show` and `list-unit-files` alike without XDG_RUNTIME_DIR."""
     uid = os.getuid()  # windows-footgun: ok — linux-only test
-    expected_bus = f"unix:path=/run/user/{uid}/bus"
     env = {k: v for k, v in os.environ.items() if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
     monkeypatch.setattr(os, "environ", env)
     monkeypatch.setattr("hermes_cli.gateway._runtime_dir_is_ours", lambda path: path == f"/run/user/{uid}")
-    monkeypatch.setattr("hermes_cli.gateway._path_exists_safe", lambda path: str(path) == f"/run/user/{uid}/bus")
     fake_run = host.run
 
-    def run_needing_dbus_for_show(cmd, *args, **kwargs):
-        if (cmd[0] == "systemctl" and "--user" in cmd and "show" in cmd
-                and os.environ.get("DBUS_SESSION_BUS_ADDRESS") != expected_bus):
+    def run_needing_the_user_bus(cmd, *args, **kwargs):
+        if cmd[0] == "systemctl" and "--user" in cmd and "XDG_RUNTIME_DIR" not in os.environ:
             host.calls.append([str(c) for c in cmd])
             return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No medium found")
         return fake_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "run", run_needing_dbus_for_show)
+    monkeypatch.setattr(subprocess, "run", run_needing_the_user_bus)
     host.proc(4302, _argv("dashboard", "--port", "9119"), ppid=900,
               cgroup=f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/hermes-dashboard.service")
     host.unit("user", "hermes-dashboard.service", main_pid=4302,
               path="/home/u/.config/systemd/user/hermes-dashboard.service")
 
-    items = gmb.collect_backends()
+    def scan():
+        return [(i.supervisor, i.pid, i.unit, i.scope) for i in gmb.collect_backends()]
 
-    assert [(i.supervisor, i.pid, i.unit, i.scope) for i in items] == [
-        ("systemd", 4302, "hermes-dashboard.service", "user")]
-    assert os.environ["XDG_RUNTIME_DIR"] == f"/run/user/{uid}"
-    assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == expected_bus
+    first = scan()
+    gw._systemctl_cmd()  # what each SystemHost `systemctl --user` step runs first
+    want = [("systemd", 4302, "hermes-dashboard.service", "user")]
+    assert (first, scan()) == (want, want)
 
 
 @pytest.mark.platforms("linux")

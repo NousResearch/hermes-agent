@@ -75,3 +75,23 @@ describe('inline preview frame width', () => {
     expectColumnWide(box)
   })
 })
+
+describe('inline preview frame height', () => {
+  it('lets the first measurement shrink below the placeholder height', async () => {
+    const { box, report } = await mountFrame()
+
+    await report({ height: 41 })
+
+    expect(box?.style.height).toBe('41px')
+  })
+
+  it('shrinks when a later report is smaller than the current height', async () => {
+    const { box, report } = await mountFrame()
+
+    await report({ height: 600 })
+    expect(box?.style.height).toBe('600px')
+
+    await report({ height: 90 })
+    expect(box?.style.height).toBe('90px')
+  })
+})

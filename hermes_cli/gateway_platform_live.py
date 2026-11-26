@@ -46,7 +46,9 @@ def config_set_live_note(key: str) -> Optional[str]:
     # that installs it), now instead of at the next turn someone sees.
     from hermes_cli.left_core_migration import claim_kept_notices
     lines = [f"  {notice}" for notice in claim_kept_notices()]
-    if answer.get("pending"):
+    if answer.get("reason") == "config_unreadable":
+        lines.append(f"  ⚠ Running gateway did not apply it: {answer.get('error')}")
+    elif answer.get("pending"):
         lines.append(_pending_note(answer))
     elif answer.get("changed"):
         lines.append(_live_note(answer))

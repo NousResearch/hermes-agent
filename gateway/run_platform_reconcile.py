@@ -152,6 +152,44 @@ def _receipt(profile: str, started, restarted, stopped, states: dict, reasons: d
             "installed": list(installed)}
 
 
+class PlatformConfigUnreadable(Exception):
+    """A served profile's ``config.yaml`` cannot be loaded: the reconcile keeps the last good
+    configuration (adapters, runner settings, ``os.environ``) and acknowledges nothing, so the next
+    readable edit is applied as usual."""
+
+
+def _unreadable_receipt(profile: str, error: Exception, states: dict) -> dict:
+    """The ``reconcile-platforms`` answer when the profile's config cannot be read: nothing applied,
+    every platform keeps running as it was (``platforms``), and why (``error``)."""
+    return {"applied": False, "profile": profile, "changed": False, "started": [], "restarted": [],
+            "stopped": [], "platforms": states, "reasons": {}, "installed": [],
+            "reason": "config_unreadable",
+            "error": f"config.yaml cannot be read; the running gateway kept its current platforms ({error})"}
+
+
+def load_platform_config_strict():
+    """The live reconcile's ONE config read: the startup loader's fallback to ``.env`` /
+    ``gateway.json`` on a YAML failure would read as "every YAML-only platform is gone"."""
+    from gateway.config import load_gateway_config
+    try:
+        return load_gateway_config(strict=True)
+    except Exception as exc:  # any read failure keeps the last good config
+        raise PlatformConfigUnreadable(f"{type(exc).__name__}: {' '.join(str(exc).split())}") from exc
+
+
+def publish_runner_owned_settings(live_platforms: dict, fresh_platforms: dict) -> None:
+    """Copy the settings the runner (not the adapter) reads, e.g. ``home_channel``, from a fresh load
+    into the live platform configs in place: no rebuild is owed, and every holder of the live object
+    (the delivery router, the adapter's ``config``) sees the new value."""
+    for platform, current in live_platforms.items():
+        new = fresh_platforms.get(platform)
+        if new is None or new is current:
+            continue
+        for name in _RUNNER_OWNED_FIELDS:
+            if getattr(current, name) != getattr(new, name):
+                setattr(current, name, getattr(new, name))
+
+
 def _read_dotenv(home: Path) -> dict:
     from agent.secret_scope import load_env_file
     return load_env_file(home / ".env")
@@ -194,6 +232,20 @@ class GatewayPlatformReconcileMixin:
     _primary_credential_print: Optional[str] = None
     _primary_dotenv: Optional[dict] = None  # the .env values the last read put into os.environ (standalone)
     _primary_installing: bool = False  # the reconcile is installing a plugin the new credentials need
+    _unreadable_signatures: Optional[dict] = None  # profile -> the file signature whose config failed to load
+
+    @property
+    def _unreadable_platform_configs(self) -> dict:
+        if self._unreadable_signatures is None:
+            self._unreadable_signatures = {}
+        return self._unreadable_signatures
+
+    def _note_unreadable_platform_config(self, profile: str, signature, error: Exception) -> None:
+        """One WARNING per unreadable edit, not one per watcher tick."""
+        if self._unreadable_platform_configs.get(profile) != signature:
+            logger.warning("Platform reconcile: profile '%s' config.yaml cannot be read; keeping its current "
+                           "platforms until it is fixed: %s", profile, error)
+        self._unreadable_platform_configs[profile] = signature
 
     # ── triggers ─────────────────────────────────────────────────────────────────────────────────
 
@@ -219,7 +271,8 @@ class GatewayPlatformReconcileMixin:
         """Watcher tick: rebuild the launch profile's changed platforms when its config/.env changed."""
         from gateway.run_profile_reconcile import profile_serve_signature
         signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
-        if signature != self._primary_platform_signature:
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        if signature not in (self._primary_platform_signature, self._unreadable_platform_configs.get(primary)):
             await self.reconcile_profile_platforms(None, reason=reason)
 
     def _schedule_platform_reconcile(self, profile_name: Optional[str], reason: str) -> None:
@@ -246,9 +299,14 @@ class GatewayPlatformReconcileMixin:
                 signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
                 try:
                     plan, installed = await self._apply_primary_platform_plan(reason)
+                except PlatformConfigUnreadable as exc:
+                    # Not acknowledged: the edit that makes it readable again is applied as usual.
+                    self._note_unreadable_platform_config(primary, signature, exc)
+                    return _unreadable_receipt(primary, exc, self._primary_platform_states())
                 finally:
                     self._primary_platform_plan = None
                 self._primary_platform_signature = signature
+                self._unreadable_platform_configs.pop(primary, None)
             return _receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
                             dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed)
         home = (self._served_profile_homes or {}).get(profile_name)
@@ -257,8 +315,11 @@ class GatewayPlatformReconcileMixin:
         async with self._reconcile_lock():
             before = self._secondary_running_platforms(profile_name)
             (getattr(self, "_profile_platform_plans", None) or {}).pop(profile_name, None)
-            await self._apply_profile_changes(dict(self._served_profile_homes or {}), [], [], [profile_name],
-                                              reason=reason)
+            applied = await self._apply_profile_changes(
+                dict(self._served_profile_homes or {}), [], [], [profile_name], reason=reason)
+            unreadable = (applied.get("unreadable") or {}).get(profile_name)
+            if unreadable is not None:
+                return _unreadable_receipt(profile_name, unreadable, self._secondary_platform_states(profile_name))
             plan = (getattr(self, "_profile_platform_plans", None) or {}).pop(
                 profile_name, PlatformPlan((), (), ()))
             after = self._secondary_running_platforms(profile_name)
@@ -348,39 +409,63 @@ class GatewayPlatformReconcileMixin:
         dependencies do not import here, and the plugins the recovery installed. Standalone re-reads
         ``.env`` changes into ``os.environ`` first (:meth:`_apply_dotenv_changes`: its adapters read it
         there); under multiplex the default profile's scope is the credential source, never ``os.environ``."""
-        from gateway.config import load_gateway_config
-        from gateway.run import _profile_runtime_scope
         home = self._primary_platform_home()
+        credentials = self._primary_credential_print
         installed = self._recover_primary_plugins(home)
+        try:
+            return self._read_primary_platforms(home, installed)
+        except PlatformConfigUnreadable:
+            self._primary_credential_print = credentials  # the fixed config re-runs this recovery too
+            raise
+
+    def _read_primary_platforms(self, home: Path, installed: list) -> tuple:
+        from gateway.run import _profile_runtime_scope
         if self._multiplex_on():
             from agent.secret_scope import invalidate_env_file_cache
             invalidate_env_file_cache(home / ".env")
             with _profile_runtime_scope(home):
-                fresh = load_gateway_config()
+                fresh = load_platform_config_strict()
                 wanted = [(p, c) for p, c in fresh.platforms.items() if self._primary_platform_wanted(p, c)]
         else:
-            self._apply_dotenv_changes(home)
-            fresh = load_gateway_config()
+            undo = self._apply_dotenv_changes(home)
+            try:
+                fresh = load_platform_config_strict()
+            except PlatformConfigUnreadable:
+                undo()  # the running adapters keep reading the environment they were built from
+                raise
             wanted = [(p, c) for p, c in fresh.platforms.items() if self._primary_platform_wanted(p, c)]
         prints = {p: (c, self._primary_build_print(p, c)) for p, c in wanted}
         return fresh, prints, _dependency_blocked(fresh), installed
 
-    def _apply_dotenv_changes(self, home: Path) -> None:
+    def _apply_dotenv_changes(self, home: Path):
         """Standalone: what changed in ``home``'s ``.env`` since the last read, into ``os.environ`` (its
         adapters read it there). A key leaves ``os.environ`` only when the ``.env`` held it and no longer
         does: a value the process was launched with (Docker ``-e``, a unit's ``Environment=``) and the
-        ``.env`` never named is not the ``.env``'s to remove."""
+        ``.env`` never named is not the ``.env``'s to remove. Returns the undo for a reconcile that
+        cannot go on (its config is unreadable): the environment and the last read, as they were."""
         import os
         from hermes_constants import is_launch_only_env_key
         current = _read_dotenv(home)
-        previous = self._primary_dotenv or {}
+        previous = self._primary_dotenv
+        before = {}
         for key, value in current.items():
             if not is_launch_only_env_key(key) and os.environ.get(key) != value:
+                before.setdefault(key, os.environ.get(key))
                 os.environ[key] = value
-        for key, value in previous.items():
+        for key, value in (previous or {}).items():
             if key not in current and os.environ.get(key) == value:
+                before.setdefault(key, value)
                 os.environ.pop(key, None)
         self._primary_dotenv = current
+
+        def _undo() -> None:
+            for key, value in before.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            self._primary_dotenv = previous
+        return _undo
 
     async def _apply_primary_platform_plan(self, reason: str) -> tuple:
         """``(plan applied, plugins installed first)``."""
@@ -393,6 +478,9 @@ class GatewayPlatformReconcileMixin:
         plan = plan_platform_changes({p: bp for p, (_c, bp) in wanted.items()}, built, live)
         for platform in plan.forget:
             built.pop(platform, None)
+        # Runner-read settings (the home channel) are live at once, whatever the adapter plan says.
+        publish_runner_owned_settings(self.config.platforms, fresh.platforms)
+        publish_runner_owned_settings({p: a.config for p, a in self.adapters.items()}, fresh.platforms)
         if not plan:
             return plan, installed
         self._primary_platform_plan = plan  # what a ``pending`` verb answer reports while this runs
@@ -478,6 +566,7 @@ class GatewayPlatformReconcileMixin:
         profile_map = self._profile_adapters.get(profile_name) or {}
         queued = (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}
         built = (getattr(self, "_profile_build_prints", None) or {}).setdefault(profile_name, {})
+        publish_runner_owned_settings({p: a.config for p, a in profile_map.items()}, current.platforms)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             wanted_cfg = {p: c for p, c in current.platforms.items()
                           if c.enabled and _platform_has_bot_credential(p, c)}

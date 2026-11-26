@@ -312,3 +312,108 @@ def test_a_verb_answer_past_its_window_names_what_is_still_starting(monkeypatch)
         loop.close()
     assert answer == {"applied": True, "pending": True, "starting": ["telegram"], "restarting": [], "stopping": [],
                       "installing": False}
+
+
+def _webhook_yaml(port, home_chat="old"):
+    return (f"gateway:\n  multiplex_profiles: false\nplatforms:\n  webhook:\n    enabled: true\n"
+            f"    extra:\n      port: {port}\n    home_channel:\n      platform: webhook\n      chat_id: {home_chat}\n")
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.spawns_gateway_lookalike
+def test_an_unreadable_config_keeps_the_running_platforms_until_it_is_fixed(tmp_path):
+    """A half-written config.yaml (an editor mid-save, a typo) must not read as "no platforms": the
+    startup loader's env-only fallback stopped every YAML-configured adapter. The gateway keeps what
+    runs, says it could not apply the edit, and applies the next readable one as usual."""
+    user, root = tmp_path / "user", tmp_path / "state"
+    user.mkdir()
+    root.mkdir(mode=0o700)
+    first, second = _free_port(), _free_port()
+    config = root / "config.yaml"
+    config.write_text(_webhook_yaml(first), encoding="utf-8")
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
+    env.update(HOME=str(user), HERMES_HOME=str(root), PYTHONPATH=str(repo), PYTHONUNBUFFERED="1")
+    mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
+    proc, _desc = start_daemon(mux)
+    try:
+        wait_until(lambda: _accepts(first), timeout=15, interval=0.1, what="webhook listening")
+        config.write_text("platforms: [\n", encoding="utf-8")
+        for _ in range(2):  # a second ask about the same broken file warns no more
+            answer = control(root, "reconcile-platforms", timeout=20)
+            assert answer["applied"] is False and answer["reason"] == "config_unreadable", (answer, tail(mux))
+            assert answer["stopped"] == [] and answer["platforms"].get("webhook") == "connected", answer
+            assert "config.yaml cannot be read" in answer["error"]
+        assert _accepts(first), tail(mux)
+        assert tail(mux).count("config.yaml cannot be read; keeping its current platforms") == 1, tail(mux)
+
+        config.write_text(_webhook_yaml(second), encoding="utf-8")
+        answer = control(root, "reconcile-platforms", timeout=20)
+        assert answer["applied"] is True and answer["restarted"] == ["webhook"], (answer, tail(mux))
+        wait_until(lambda: _accepts(second) and not _accepts(first), timeout=10, interval=0.1,
+                   what="webhook moved to the port the fixed config names")
+        assert proc.poll() is None, tail(mux)
+    finally:
+        stop(proc, expect=None)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.spawns_gateway_lookalike
+def test_an_unreadable_named_profile_config_keeps_its_platforms(tmp_path):
+    """The same for a multiplexed named profile: its rescan keeps the last good config and adapters."""
+    user, root = tmp_path / "user", tmp_path / "state"
+    user.mkdir()
+    root.mkdir(mode=0o700)
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+    named = root / "profiles" / "b"
+    named.mkdir(parents=True, mode=0o700)
+    good = "platforms:\n  line:\n    token: same-token\n"
+    (named / "config.yaml").write_text(good, encoding="utf-8")
+    (named / ".env").write_text("LINE_CHANNEL_ACCESS_TOKEN=same-token\nLINE_CHANNEL_SECRET=s\n", encoding="utf-8")
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
+    closed = _closed_port()
+    env.update(HOME=str(user), HERMES_HOME=str(root), PYTHONPATH=str(repo), PYTHONUNBUFFERED="1",
+               HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"), HTTPS_PROXY=closed, HTTP_PROXY=closed,
+               https_proxy=closed, http_proxy=closed, NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
+    mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
+    proc, _desc = start_daemon(mux)
+    try:
+        first = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        assert first["platforms"].get("line") == "connected", (first, tail(mux))
+        (named / "config.yaml").write_text("platforms: [\n", encoding="utf-8")
+        answer = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        assert answer["applied"] is False and answer["reason"] == "config_unreadable", (answer, tail(mux))
+        assert answer["stopped"] == [] and answer["platforms"].get("line") == "connected", (answer, tail(mux))
+        (named / "config.yaml").write_text(good, encoding="utf-8")
+        answer = control(root, "reconcile-platforms", {"home": str(named)}, timeout=20)
+        assert answer["applied"] is True and answer["changed"] is False, (answer, tail(mux))
+        assert answer["platforms"].get("line") == "connected", (answer, tail(mux))
+        assert proc.poll() is None, tail(mux)
+    finally:
+        stop(proc, expect=None)
+
+
+def test_a_home_channel_change_is_live_without_a_reconnect(tmp_path, monkeypatch):
+    """``home_channel`` is read by the runner (deliveries, notices), not the adapter: changing it is no
+    rebuild, yet the running gateway must deliver to the new destination, not keep the old one."""
+    from gateway.config import load_gateway_config
+    from gateway.run import GatewayRunner
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(_webhook_yaml(_free_port()), encoding="utf-8")
+    runner = GatewayRunner(load_gateway_config())
+    live = types.SimpleNamespace(config=runner.config.platforms[Platform.WEBHOOK])
+    runner.adapters[Platform.WEBHOOK] = live
+    runner._primary_build_prints = {
+        Platform.WEBHOOK: runner._primary_build_print(Platform.WEBHOOK, runner.config.platforms[Platform.WEBHOOK])}
+    from gateway.run_platform_reconcile import _credential_print
+    runner._primary_credential_print = _credential_print(tmp_path)  # no credential change: no plugin recovery
+    runner._running = True
+    config.write_text(_webhook_yaml(runner.config.platforms[Platform.WEBHOOK].extra["port"], home_chat="new"),
+                      encoding="utf-8")
+    answer = asyncio.run(runner.reconcile_profile_platforms(None, reason="test"))
+    assert answer["applied"] is True and answer["changed"] is False, answer
+    assert runner.adapters[Platform.WEBHOOK] is live  # not rebuilt
+    assert runner.delivery_router.config.get_home_channel(Platform.WEBHOOK).chat_id == "new"
+    assert live.config.home_channel.chat_id == "new"

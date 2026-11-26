@@ -237,8 +237,9 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
             retry_parked = reason == "control-socket"
             added = [n for n in live if n not in known and n != active and (retry_parked or n not in parked)]
             removed = [n for n in known if n not in live and n != active]
+            unreadable = self._unreadable_platform_configs
             changed = [n for n in live if n in known and n != active and n not in added
-                       and profile_serve_signature(live[n]) != sigs.get(n)]
+                       and profile_serve_signature(live[n]) not in (sigs.get(n), unreadable.get(n))]
             current = {n: h for n, h in live.items() if n in known or n == active}
             return await self._apply_profile_changes(
                 current, added, removed, changed, reason=reason, live=live, result=result)
@@ -249,6 +250,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
         serve/unserve control verbs. New profiles first get a runtime (reservation + store); one
         whose home another gateway owns or whose store is unusable is parked, not served."""
         from gateway.run import MultiplexConfigError
+        from gateway.run_platform_reconcile import PlatformConfigUnreadable
         from gateway.run_runtime import park_profile, unpark_profile
         from hermes_cli.profiles import profiles_to_serve
         active = getattr(self, "_primary_profile_name", None) or "default"
@@ -293,6 +295,11 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
                 result["parked"].append(name)
                 config_parked.add(name)
                 continue
+            except PlatformConfigUnreadable as exc:
+                # Its adapters and cached config stay as they are; the signature stays unacknowledged.
+                self._note_unreadable_platform_config(name, scan_signature, exc)
+                result.setdefault("unreadable", {})[name] = str(exc)
+                continue
             except Exception:
                 logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                 connected = 0
@@ -301,6 +308,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
                 transient_failed.add(name)
             else:
                 sigs[name] = scan_signature
+                self._unreadable_platform_configs.pop(name, None)
             if name in added:
                 logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                 result["added"].append(name)

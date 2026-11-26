@@ -22,6 +22,7 @@ import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-v
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
+import { $liveKeyIds } from '@/store/editing-rows'
 import {
   COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
@@ -424,7 +425,9 @@ export function liveTailStart(
 export function transcriptRowKey(message: { id: string; metadata?: { custom?: Record<string, unknown> } }): string {
   const rowId = message.metadata?.custom?.rowId
 
-  return typeof rowId === 'number' ? `row:${rowId}` : message.id
+  // Read outside the render cycle on purpose: the set only changes the key of a row whose edit box is
+  // open, and that row's key must not move when the box opens or closes (#145872).
+  return typeof rowId === 'number' && !$liveKeyIds.get().has(message.id) ? `row:${rowId}` : message.id
 }
 
 /**

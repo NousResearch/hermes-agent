@@ -470,7 +470,7 @@ class SessionPersistenceMixin:
         # Heal before the fallback baseline: a heal after it reads as a caller edit, and recovery
         # would then keep the stale mirror entry over the newer DB row.
         self._heal_missing_origins(self._entries.values())
-        self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
+        self._routing_fallback_baseline = None if db_load_succeeded else self._routing_data_locked()
         if mirror_retired and db_load_succeeded:
             # Rewrite the mirror while the fences that kept those routes out still hold: a prune's
             # ages out, and the import would then restore the retired route.
@@ -674,8 +674,12 @@ class SessionPersistenceMixin:
         for key, entry_json in durable.items():
             durable_entry = self._routing_entry_from_json(key, entry_json)
             if durable_entry is None:
-                if key not in self._entries:
-                    self._keep_unparsed_route(key, entry_json)  # state.db copy wins over a held mirror copy
+                held = getattr(self, "_unparsed_routes", None) or {}
+                if key not in self._entries and (
+                        key not in baseline or (key in held and held[key] == baseline[key])):
+                    # A DB-only row is held; an unchanged held mirror copy yields to the DB copy, a changed
+                    # one (a boot marker verdict) or a removed one stays as it is.
+                    self._keep_unparsed_route(key, entry_json)
                 continue
             if key not in baseline:
                 # A key created while on fallback wins over a DB-only key; otherwise restore the

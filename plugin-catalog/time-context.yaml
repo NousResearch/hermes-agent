@@ -1,0 +1,21 @@
+name: time-context
+repo: https://github.com/trappka/hermes-time-context
+sha: 774fdbddb71b3baceb5fa7341f330fedc714a241
+description: "Tells the agent what time it is: the current date, clock time, session age and previous turn duration in every turn, plus user-defined time windows (office hours, night, quiet hours) carrying notes on what to avoid inside them, and a `now` tool for an exact reading. The block rides Hermes's per-turn user-message context, never the cached system prompt, so it cannot break the prompt cache. Disclosure — reads only the machine clock and its own plugin settings, and keeps session and turn durations in process memory; the `/time-context add` and `remove` commands save time windows to the plugin's own settings in config.yaml; no network, shell, credentials, subprocesses or reads outside its own settings; does not modify history, tool results or gate any action."
+maintainer: trappka
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+version: "0.3.0"
+title: "Time Context"
+docs_url: https://github.com/trappka/hermes-time-context#readme
+image: https://raw.githubusercontent.com/trappka/hermes-time-context/774fdbddb71b3baceb5fa7341f330fedc714a241/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/trappka/hermes-time-context/774fdbddb71b3baceb5fa7341f330fedc714a241/assets/shot-block.png
+  - https://raw.githubusercontent.com/trappka/hermes-time-context/774fdbddb71b3baceb5fa7341f330fedc714a241/assets/shot-command.png
+readme: true
+capabilities:
+  provides_tools: [now]
+  provides_hooks: [pre_llm_call, post_llm_call]
+  provides_middleware: []
+  requires_env: []

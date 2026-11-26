@@ -1,14 +1,14 @@
 ---
-title: "Unbroker — Autonomously remove your info from data-broker sites"
+title: "Unbroker — Remove your info from data-broker sites, by name or phone"
 sidebar_label: "Unbroker"
-description: "Autonomously remove your info from data-broker sites"
+description: "Remove your info from data-broker sites, by name or phone"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Unbroker
 
-Autonomously remove your info from data-broker sites.
+Remove your info from data-broker sites, by name or phone.
 
 ## Skill metadata
 
@@ -42,7 +42,8 @@ The Python CLI (`scripts/pdd.py`) owns the deterministic state - config, dossier
 broker database, tier planning, the ledger, drafts, reports, **email sending (SMTP), verification-link
 polling (IMAP), and the autonomous action queue (`next`)**. You (the agent) do the scanning and
 form-driving with native tools: `web_extract` and `browser_exec` for searching and web forms, and
-`cronjob` for recurring re-scans.
+`cronjob` for recurring re-scans. Runs can be entered from a phone number alone (spam-call
+scrubbing), with the FTC Do Not Call registry one-shot (`dnc`) alongside the opt-outs.
 
 ## Autonomy contract
 
@@ -53,8 +54,10 @@ digest at the end of the run (`$PDD tasks`). Between those:
 - **Never ask the operator to choose configuration.** `$PDD setup --auto` detects capabilities and
   picks the most autonomous valid config itself.
 - **Never pause before individual submissions** when `autonomy=full` (the default): the consent
-  recorded at intake is standing authorization for T0-T2 opt-outs. (`autonomy=assisted` restores
-  per-submission confirmation for cautious operators - honor `confirm_first` flags in `next` output.)
+  recorded at intake is standing authorization for T0-T2 opt-outs. The one exception: an action
+  carrying `confirm_first: true` (always set on `dnc_register`, a registry signup the intake consent
+  does not cover) waits for the operator's yes in every mode. (`autonomy=assisted` sets
+  `confirm_first` on every submission for cautious operators.)
 - **Never interrupt the run for human-only work.** Record it (`record ... human_task_queued
   --reason "..."`) and keep going; it all surfaces once in the final digest.
 - **Drive the whole run as a loop over `$PDD next <subject>`** - it returns the exact ordered actions
@@ -72,6 +75,8 @@ verifying re-scan.
 - "Opt me out", "delete me from Spokeo/Whitepages/etc.", "clean up after a doxxing."
 - "Set up recurring privacy monitoring" (brokers re-list people).
 - Checking which brokers still expose someone and why.
+- "My number keeps getting spam calls" - phone-led scrub: find where the number is listed, opt
+  out, register it on the Do Not Call Registry, and re-check on a schedule.
 
 ## Prerequisites
 
@@ -126,14 +131,15 @@ breaks reading the dossier).
 | `$PDD setup --auto` | **Autonomous setup**: detect capabilities, pick the most autonomous valid config (no questions) |
 | `$PDD doctor` | Readiness check: config, broker count, and which upgrades are on/available |
 | `$PDD cdp [--check] [--print] [--port N]` | Launch/detect the operator's Chrome over CDP for Phase-2 browser + webmail (dedicated debug profile; the reliable way to send webmail and clear session-bound gates) |
-| `$PDD intake --full-name "..." [--alias ...] [--email ... --phone ...] [--city --state] [--prior-location "City,ST"] --consent` | Create a consenting subject; captures aliases + multiple emails/phones + prior locations; prints `subject_id` |
+| `$PDD intake --full-name "..." [--alias ...] [--email ... --phone ...] [--focus-phone ...] [--city --state] [--prior-location "City,ST"] --consent` | Create a consenting subject; captures aliases + multiple emails/phones + prior locations; prints `subject_id`. Phone-led (spam-call) runs may start from `--phone` alone + `--focus-phone` (the number being scrubbed); a missing name is warned, not required |
 | `$PDD next <subject>` | **The autonomous loop driver**: ordered agent actions right now + human digest + `next_wake_at` |
 | `$PDD brokers [--priority crucial]` | List the people-search broker database (curated + live) |
 | `$PDD refresh-brokers` | Pull the latest BADBOOL people-search list **and the CA Data Broker Registry** (`next` requeues this automatically when the cache is stale) |
 | `$PDD registry [--search NAME]` | State registry coverage (CA ~545 ingested; VT/OR/TX portals surfaced); the DROP/email lane, not scanned |
 | `$PDD drop <subject> [--filed]` | **The one-shot legal lever**: one CA DROP request deletes from ALL registered brokers; `--filed` records it |
+| `$PDD dnc <subject> [--filed]` | **The spam-call lever**: register the subject's US personal numbers on the FTC National Do Not Call Registry (sales calls stop within 31 days, never expires); `--filed` records it |
 | `$PDD plan <subject> [--priority crucial]` | Per-broker tier + method + `search_vectors` + the exact fields to disclose |
-| `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/found/indirect/blocked/in_progress/done), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |
+| `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/unsearchable/found/indirect/blocked/in_progress/human/done/not_found; defunct brokers are excluded and listed under `defunct`), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |
 | `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_task` subagents (auto for large runs; batches of 5 - 8+ time out) |
 | `$PDD record <subject> <broker> <state> [--found true] [--evidence JSON] [--disclosed F --channel C] [--reason "..."]` | Update the ledger (validated state machine); **auto-stamps `next_recheck_at`** |
 | `$PDD show <subject> <broker>` | Read back a case's recorded state + evidence + disclosure log (so the parent re-verifies a subagent's `found` without re-deriving the listing URL) |
@@ -231,8 +237,8 @@ recording `found` and before any deletion.
    crawl - see step 4), `poll_verification` (in-flight email confirmations), `verify_removal` (due
    re-checks), `optout_web_form`/`optout_email_send` (Phase 2, parents-first with playbook steps),
    `indirect_email_send`, and `stealth_rescan`. Human-only work never appears as an action - it
-   accumulates in `q.human_digest`. In `autonomy=full`, execute actions without pausing; honor
-   `confirm_first` in `assisted` mode.
+   accumulates in `q.human_digest`. In `autonomy=full`, execute actions without pausing, except any
+   action with `confirm_first: true`, which waits for the operator in every mode.
 4. **Scanning (when `next` says so).** For `fanout_scan`: run `$PDD fanout <subject>` and **spawn one
    `delegate_task` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
    not scan all brokers yourself sequentially. For `scan_inline`: scan the few brokers yourself.
@@ -263,8 +269,9 @@ recording `found` and before any deletion.
       exists - the **rescue lane** (verified Whitepages pattern). Draft-only falls back to
       `render-email` + a digest entry.
    - **captcha** → soft/managed challenges clear automatically on the default cloud browser (proceed
-     as normal); only a hard interactive/behavioral challenge it can't pass is recorded `blocked`
-     (requeued for the stealth/operator-browser pass). Never a solver service.
+     as normal); a hard interactive/behavioral challenge it can't pass is recorded
+     `human_task_queued` with the reason (a `blocked` case re-scans, re-finds the listing and
+     re-queues the opt-out). Never a solver service.
    - **phone_callback / account / gov_id / fax / mail / voice (T3)** *without a deletion email* →
      never an agent action; `next` already routed these to the digest. Record them:
      `$PDD record <subject> <broker> human_task_queued --reason "..."`.
@@ -283,6 +290,32 @@ recording `found` and before any deletion.
    unbroker loop for &lt;subject_id>: `$PDD next` and execute all actions"*). Processing
    windows, verification polls, and reappearance sweeps all flow through the same queue, so the case
    keeps advancing with zero human attention.
+
+## Spam-call scrubber (phone-led run)
+
+A number that keeps getting spam calls is almost always published on people-search sites - that
+is where lead buyers get it. The same engine, entered from the number:
+
+1. **Intake from the number.** `$PDD intake --phone "+1-555-0100" --focus-phone "+1-555-0100"
+   --full-name "..." --email ... --consent`. `--focus-phone` marks the number being scrubbed: it is
+   added to the search vectors and becomes the `phone` field any opt-out form discloses (instead of
+   `phones[0]`). A name is not required to scan - phone/email/address vectors run, and brokers with
+   no runnable vector group as `unsearchable` (excluded from the crawl, never wedging the loop) -
+   but collect the full name + contact email at intake anyway: every opt-out form and legal request
+   needs them.
+2. **The loop is unchanged.** `$PDD next <subject>` drives the same crawl / opt-out / re-check
+   queue; the reverse-phone sites (14 of the live curated records declare `by: phone`; five curated
+   brokers are defunct - dead domains, excluded from planning) are scanned with the phone vector, and the re-check schedule watches for the number re-listing
+   (per the subject's `rescan_interval_days`).
+3. **DNC one-shot.** For a US personal number, `next` also surfaces `dnc_register` once: the FTC
+   National Do Not Call Registry (free, never expires, sales calls stop within 31 days; up to 3
+   numbers per pass, one confirmation email per number - open each link within 72 hours). `$PDD
+   dnc <subject>` prints the steps; `$PDD dnc <subject> --filed` records it and
+   `$PDD dnc <subject> --declined` opts the subject out without recording a filing that never
+   happened. Surfaced only for phone-led runs (`--focus-phone`) and only for NANP numbers,
+   always with `confirm_first` - intake consent covers broker removal, not a new registry
+   disclosure. DNC stops lawful
+   telemarketers, not scammers - broker removal is what cuts the lead lists, so do both.
 
 ## Pitfalls
 
@@ -311,7 +344,8 @@ recording `found` and before any deletion.
   actually gone; note paid-tier retention in the report.
 - **Soft CAPTCHAs clear by default; don't fight the hard ones.** The default cloud browser passes
   managed/soft challenges as normal operation (those brokers stay T1). For a hard interactive one it
-  genuinely can't pass, record `blocked` and let the stealth/operator-browser pass take it - never a
+  genuinely can't pass, record `human_task_queued --reason "..."` so it parks as one standing
+  digest task (a `blocked` case re-scans, re-finds the listing and re-queues the opt-out) - never a
   third-party solver service or fingerprint spoofing.
 - **Broker pages change.** If a flow breaks, `$PDD record ... blocked` and flag the broker file in
   `references/brokers/` for re-verification instead of guessing.

@@ -60,12 +60,13 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
     ``GATEWAY_MULTIPLEX_PROFILES``, else ``gateway.multiplex_profiles`` (or the top-level alias) as
     written in its config.yaml; ``None`` when neither is set. Raw read on purpose: the callers are
     other processes (``hermes -p X ...`` has X's config loaded) asking about the default's file."""
+    from hermes_cli.config_backend import config_exists
     from gateway.config import _bool_token, _env_multiplex_profiles_override
     env = _env_multiplex_profiles_override()
     if env is not None:
         return env
     cfg_path = Path(default_home) / "config.yaml"
-    if not cfg_path.exists():
+    if not config_exists(cfg_path):
         return None
     from hermes_cli.config import read_user_config_raw
     cfg = read_user_config_raw(cfg_path) or {}
@@ -167,8 +168,9 @@ def implicit_multiplex_blocker() -> Optional[str]:
     # Cheap and first: a single-profile install has nothing to multiplex, and the fail-closed secret
     # scope the multiplexer arms buys it nothing. (Also keeps every embedded/test runner off the
     # service-manager probes below.) Create a second profile and restart to start serving it.
-    # Parking is reversible without a host restart, so keep the reconcile watcher alive.
-    if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
+    # Parking and running elsewhere are reversible without a host restart, so keep the reconcile
+    # watcher alive.
+    if len(profiles_to_serve(multiplex=True, include_parked=True, include_run_elsewhere=True)) < 2:
         return SINGLE_PROFILE_REASON
     from hermes_cli.gateway_migrate import MIGRATE_COMMAND, _host_supports_migration, build_migration_plan
     host_reason = _host_supports_migration()
@@ -196,13 +198,14 @@ def persist_resolved_default(decision: MultiplexDecision, default_home: Optional
     is made explicit ("left unset" was read as "off"), a retired ``false`` is rewritten in place and
     leaves a one-time marker for the boxed notice. Comment-preserving writer, once, and NEVER on a guard
     refusal (the file must not say true while the runtime is standalone). Returns True on a write."""
+    from hermes_cli.config_backend import config_exists
     if not decision.enabled or decision.source == "guard":
         return False
     default_home = Path(default_home) if default_home is not None else _default_profile_home()
     cfg_path = default_home / "config.yaml"
     try:
         from hermes_cli.config import read_user_config_raw
-        cfg = read_user_config_raw(cfg_path) or {} if cfg_path.exists() else {}
+        cfg = read_user_config_raw(cfg_path) or {} if config_exists(cfg_path) else {}
         section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
         in_file = cfg.get("multiplex_profiles", section.get("multiplex_profiles"))
         if in_file is True:

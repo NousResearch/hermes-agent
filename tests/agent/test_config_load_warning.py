@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+import hermes_logging
+
 
 @pytest.fixture
 def make_agent(monkeypatch):
@@ -65,6 +67,7 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
 
     home = get_hermes_home()
     configured = (
+        # 1h, not the auto default (which starts this platform-less agent on 5m), so a fallback is visible.
         "prompt_caching:\n  cache_ttl: 1h\n"
         "model:\n  reasoning_echo: true\n"
         "compression:\n  enabled: false\n"
@@ -134,6 +137,8 @@ def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
         "sections": "memory",
     }
     messages = [record.getMessage() for record in warnings]
+    # errors.log is written by the logging QueueListener thread: drain it before reading the file.
+    hermes_logging.flush_log_queue()
     persisted = (home / "logs" / "errors.log").read_text(encoding="utf-8-sig")
     for scope in affected:
         assert any(expected_sections[scope] in message for message in messages)

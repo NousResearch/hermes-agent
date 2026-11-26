@@ -807,7 +807,7 @@ def _bare_collection_enabled() -> Optional[bool]:
     from hermes_constants import get_hermes_home
 
     try:
-        (get_hermes_home() / "config.yaml").stat()
+        (get_hermes_home() / "config.yaml").stat()  # config-reader: ok — bare interpreter has no config stack; presence probe only
     except FileNotFoundError:
         return False
     except OSError:
@@ -1246,8 +1246,8 @@ _FLEET_ROW_LINES = {
     "down": "  ✗ {profile} — DOWN (gateway was running before the update; pid {pid} is gone and nothing replaced it)",
     "external": "  ◆ {profile} (pid {pid}) @ {short} — separate checkout, not updated by this run",
     RESTART_PENDING_STATE: (
-        "  ↻ {profile} (pid {pid}) @ {short} — restart pending (deferred until this process exits;"
-        " the update runs inside this gateway)"
+        "  ↻ {profile} (pid {pid}) @ {short} — restart pending (it restarts itself once its live work"
+        " is done, or once this update exits when the update runs inside it)"
     ),
 }
 _FLEET_ROW_UNKNOWN = "  ? {profile} (pid {pid}) — version unknown (gateway predates version stamping; restart to enable)"

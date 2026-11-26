@@ -1,0 +1,17 @@
+name: lavish-status
+repo: https://github.com/Senci/hermes-lavish-status
+sha: 50c6ab053ece338a606d5bcdad68f56ae837afa6
+description: "A status-bar badge in Hermes Desktop for Lavish review pages (lavish-axi) that wait on you: a red count of pages that block and an orange count of pages that need a decision, hidden when both are 0 or when the data is stale. The tooltip lists the waiting pages and a click opens the sessions board in your browser. It only reads a summary file, ~/.hermes/lavish-kit/summary.json, that a Lavish status writer keeps fresh (the writer is not part of this plugin); without a fresh file the badge stays hidden. Disclosure — Reads one file, ~/.hermes/lavish-kit/summary.json in your real home directory (outside the plugin's own data), read-only, every 10 seconds through its dashboard route; a click opens the board URL from that file in your browser (http or https only). No writes, network calls, shell commands, background processes, credentials or telemetry."
+maintainer: Senci
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Senci/hermes-lavish-status
+version: "0.1.4"
+image: https://raw.githubusercontent.com/Senci/hermes-lavish-status/50c6ab053ece338a606d5bcdad68f56ae837afa6/docs/assets/cover.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

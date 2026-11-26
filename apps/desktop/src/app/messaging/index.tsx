@@ -17,9 +17,11 @@ import {
   approvePairing,
   getMessagingPlatforms,
   getPairing,
+  type MessagingCatalogPlatform,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
+  type MessagingPlatformUpdateResponse,
   type PairingUser,
   revokePairing,
   type TelegramOnboardingApplyResponse,
@@ -31,6 +33,7 @@ import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icon
 import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
@@ -47,7 +50,17 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
+import {
+  type CatalogInstallHandlers,
+  CatalogPlatformDetail,
+  CatalogPlatformList,
+  catalogRowId,
+  catalogRowsWithKept,
+  visibleCatalogRows
+} from './catalog-platforms'
+import { appliedLive, needsCredentials, optimisticToggleState, restartPendingAfter, restartReason } from './live-apply'
 import { PlatformAvatar } from './platform-icon'
+import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
@@ -153,10 +166,18 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // the active profile; the API helpers treat null as "target primary").
   const scopeProfile = useStore($settingsRequestProfile)
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+  // Catalog platforms this profile has not installed: picking one installs it, then its card takes over.
+  const [available, setAvailable] = useState<MessagingCatalogPlatform[]>([])
+  // A catalog row stays listed only while this page's install of it runs: the plugin lands on disk (and the
+  // platforms.changed refresh drops the row) before the install call returns with the card to open. A row
+  // installed elsewhere (background default install, another terminal) leaves with the refreshed list.
+  const [keptCatalog, setKeptCatalog] = useState<MessagingCatalogPlatform | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
   // actually happens (dashboard parity). Cleared on a completed restart.
   const [restartNeeded, setRestartNeeded] = useState(false)
+  // Platforms whose last save the running gateway could not apply (see restartPendingAfter).
+  const [restartPlatforms, setRestartPlatforms] = useState<ReadonlySet<string>>(() => new Set())
   const gatewayRestarting = useStore($gatewayRestarting)
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
@@ -171,7 +192,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [statusFilter, setStatusFilter] = useState<'all' | StatusTone>('all')
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
-  const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
+
+  const platformIds = useMemo(() => {
+    const catalogIds = catalogRowsWithKept(available, keptCatalog).map(catalogRowId)
+
+    return [...(platforms?.map(p => p.id) ?? []), ...new Set(catalogIds)]
+  }, [available, keptCatalog, platforms])
+
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
   const restartGatewayNow = useCallback(async () => {
@@ -181,20 +208,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     if (ok) {
       setRestartNeeded(false)
+      setRestartPlatforms(new Set())
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
   }, [])
 
-  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
-  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
-  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
-    if (hotServed) {
+  // The running gateway applied the save itself (any profile): no restart banner; re-read status once
+  // the adapter had a moment to connect. Only a gateway that could not (or an older one) needs a restart.
+  const settleAfterUpdate = useCallback((platformId: string, result: MessagingPlatformUpdateResponse) => {
+    setRestartPlatforms(pending => restartPendingAfter(pending, platformId, result))
+
+    if (appliedLive(result)) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
-
-      return
     }
-
-    setRestartNeeded(true)
   }, [])
 
   // The scope each in-flight fetch was issued for. A→B: A's request can resolve
@@ -216,6 +242,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
         if (scopeRef.current === scopeProfile) {
           setPlatforms(result.platforms)
+          setAvailable(result.available ?? [])
         }
       } catch (err) {
         if (!silent) {
@@ -280,6 +307,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   if (prevScope !== scopeProfile) {
     setPrevScope(scopeProfile)
     setPlatforms(null)
+    setAvailable([])
+    setKeptCatalog(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
   }
@@ -333,13 +362,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [changeEventsAvailable, refreshAll])
 
+  const selectedCatalog = useMemo(
+    () =>
+      catalogRowsWithKept(available, keptCatalog).find(row => catalogRowId(row) === selectedId) ?? null,
+    [available, keptCatalog, selectedId]
+  )
+
   const selected = useMemo(() => {
-    if (!platforms) {
+    if (!platforms || selectedCatalog) {
       return null
     }
 
     return platforms.find(platform => platform.id === selectedId) || platforms[0] || null
-  }, [platforms, selectedId])
+  }, [platforms, selectedCatalog, selectedId])
 
   const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
   const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
@@ -357,6 +392,46 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     () => platforms?.filter(platform => platformMatches(platform, activeStatusFilter, query)) ?? [],
     [activeStatusFilter, platforms, query]
   )
+
+  const visibleAvailable = useMemo(
+    () => visibleCatalogRows(available, query, activeStatusFilter),
+    [activeStatusFilter, available, query]
+  )
+
+  // An install from this page: re-read the list (the plugin's card replaces its catalog row) and open
+  // the card it registered, whose credential form is what the user picked the row for. Only while the
+  // page still shows that row under the same profile: a newer pick, a profile switch or leaving
+  // Messaging wins over an install that finishes late. One owner object per mount, updated in place, so
+  // the unmount below marks the very object a late completion reads.
+  const ownerRef = useRef({ mounted: true, profile: scopeProfile, selectedId })
+  ownerRef.current.profile = scopeProfile
+  ownerRef.current.selectedId = selectedId
+  useEffect(() => {
+    const owner = ownerRef.current
+    owner.mounted = true
+
+    return () => {
+      owner.mounted = false
+    }
+  }, [])
+
+  const catalogInstall: CatalogInstallHandlers = {
+    onInstallStart: row => setKeptCatalog(row),
+    onInstallEnd: row => setKeptCatalog(kept => (kept?.name === row.name ? null : kept)),
+    onInstalled: async (row, platformIdsAdded, profile) => {
+      const samePage = () => ownerRef.current.mounted && ownerRef.current.profile === profile
+
+      if (!samePage()) {
+        return
+      }
+
+      await refreshPlatforms(true)
+
+      if (platformIdsAdded[0] && samePage() && ownerRef.current.selectedId === catalogRowId(row)) {
+        setSelectedId(platformIdsAdded[0])
+      }
+    }
+  }
 
   // Picking a filter moves the detail pane into it. Only on that click: a
   // platform that leaves the filter because you just enabled it stays open.
@@ -384,16 +459,20 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               ? {
                   ...row,
                   enabled,
-                  state: enabled ? (row.configured ? 'pending_restart' : 'not_configured') : 'disabled'
+                  state: optimisticToggleState(enabled, row.configured, result)
                 }
               : row
           ) ?? current
       )
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: result.hot_served ? m.appliedLive : m.restartToApply
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.appliedLive
+            : restartReason(result, m.restartToApply)
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -416,11 +495,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
       setEdits(current => ({ ...current, [platform.id]: {} }))
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: result.hot_served ? m.connectingLive : m.restartToReconnect
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.connectingLive
+            : restartReason(result, m.restartToReconnect)
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -442,7 +525,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
@@ -591,6 +674,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     </li>
                   ))}
                 </ul>
+                <CatalogPlatformList
+                  activeName={selectedCatalog?.name}
+                  onSelect={row => setSelectedId(catalogRowId(row))}
+                  rows={visibleAvailable}
+                  title={<SectionTitle>{m.catalog.sectionTitle}</SectionTitle>}
+                />
               </ListColumn>
 
               <DetailColumn
@@ -606,7 +695,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   )
                 }
               >
-                {restartNeeded && (
+                {(restartNeeded || restartPlatforms.size > 0) && (
                   <Alert variant="warning">
                     <AlertTriangle />
                     <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
@@ -622,6 +711,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       </Button>
                     </AlertDescription>
                   </Alert>
+                )}
+                {selectedCatalog && (
+                  <CatalogPlatformDetail
+                    {...catalogInstall}
+                    row={selectedCatalog}
+                    scopeProfile={scopeProfile}
+                  />
                 )}
                 {selected && (
                   <PlatformDetail
@@ -743,12 +839,8 @@ function PlatformDetail({
 }) {
   const { t } = useI18n()
   const m = t.messaging
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
-  const hiddenCount = advancedFields.length
+  const connectionId = useStore($activeConnectionId)
+  const viaRelay = Boolean(platform.relay_exclusive)
 
   return (
     <>
@@ -757,9 +849,13 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-            <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            {viaRelay ? (
+              <SetupPill active>{m.relayLink.title}</SetupPill>
+            ) : (
+              <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            )}
             {/* Resting states earn no pill — only actionable ones. */}
-            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
+            {!platform.configured && !viaRelay && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {/* The state pill already reads "gateway stopped" when that is the
                 platform's whole story; only add the hint when it is not. */}
             {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
@@ -835,6 +931,68 @@ function PlatformDetail({
         </section>
       )}
 
+      {platform.relay_fronted && (
+        <section>
+          <RelayLinkSetup
+            // A new backend or profile is a new flow: no code, poll or account list carries over.
+            key={`${connectionId ?? 'local'}:${scopeProfile ?? ''}:${platform.id}`}
+            platform={platform}
+            scopeProfile={scopeProfile}
+          />
+        </section>
+      )}
+
+      {/* Not carried by the shared bot yet switched off at every start: say so instead of a toggle
+          that reverts (#141175). */}
+      {platform.disabled_by_relay && !platform.relay_exclusive && (
+        <p className="text-xs text-muted-foreground">{m.relayLink.managedNote(platform.name)}</p>
+      )}
+
+      {/* Under an exclusive relay a direct bot is switched off at every start: the shared-bot link
+          above is the whole setup, so the credential sections would only lead nowhere (#141546). */}
+      {!platform.relay_exclusive && (
+        <DirectSetupSections
+          edits={edits}
+          onClear={onClear}
+          onEdit={onEdit}
+          onTelegramApplied={onTelegramApplied}
+          platform={platform}
+          saving={saving}
+          scopeProfile={scopeProfile}
+        />
+      )}
+    </>
+  )
+}
+
+function DirectSetupSections({
+  edits,
+  onClear,
+  onEdit,
+  onTelegramApplied,
+  platform,
+  saving,
+  scopeProfile
+}: {
+  edits: Record<string, string>
+  onClear: (key: string) => void
+  onEdit: (key: string, value: string) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
+  platform: MessagingPlatformInfo
+  saving: string | null
+  scopeProfile: string | undefined
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const requiredFields = platform.env_vars.filter(field => field.required)
+  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
+  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const hiddenCount = advancedFields.length
+
+  return (
+    <>
       {platform.id === 'telegram' && (
         <section>
           <SectionTitle>{m.telegramQr.quickSetup}</SectionTitle>
@@ -963,17 +1121,22 @@ function PlatformActionBar({
   const m = t.messaging
   const isSavingEnv = saving === `env:${platform.id}`
 
+  // Under an exclusive relay the direct adapter never runs; the link panel is the whole setup.
+  if (platform.relay_exclusive) {
+    return null
+  }
+
   return (
     <>
       <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
         <Switch
           aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
           checked={platform.enabled}
-          disabled={saving === `enabled:${platform.id}`}
+          disabled={platform.disabled_by_relay || saving === `enabled:${platform.id}`}
           onCheckedChange={onToggle}
           size="xs"
         />
-        {platform.enabled ? m.enabled : m.disabled}
+        {platform.disabled_by_relay ? m.relayLink.managed : platform.enabled ? m.enabled : m.disabled}
       </label>
 
       <div className="ml-auto flex items-center gap-2">

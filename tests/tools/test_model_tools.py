@@ -363,25 +363,25 @@ class TestDisabledToolsetsPlatformBundle:
     must not remove core tools from other enabled toolsets."""
 
     def test_disabling_platform_bundle_preserves_core_tools(self):
-        """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
+        """Disabling hermes-feishu should not strip core tools from hermes-telegram."""
         from model_tools import get_tool_definitions
 
         tools_telegram = get_tool_definitions(
             enabled_toolsets=["hermes-telegram"],
             quiet_mode=True,
         )
-        tools_telegram_no_yuanbao = get_tool_definitions(
+        tools_telegram_no_feishu = get_tool_definitions(
             enabled_toolsets=["hermes-telegram"],
-            disabled_toolsets=["hermes-yuanbao"],
+            disabled_toolsets=["hermes-feishu"],
             quiet_mode=True,
         )
         names_telegram = {t["function"]["name"] for t in tools_telegram}
-        names_no_yuanbao = {t["function"]["name"] for t in tools_telegram_no_yuanbao}
+        names_no_feishu = {t["function"]["name"] for t in tools_telegram_no_feishu}
 
         # Disabling a *different* platform bundle must not remove any tools
-        assert names_telegram == names_no_yuanbao, (
-            f"Tools lost after disabling hermes-yuanbao: "
-            f"{names_telegram - names_no_yuanbao}"
+        assert names_telegram == names_no_feishu, (
+            f"Tools lost after disabling hermes-feishu: "
+            f"{names_telegram - names_no_feishu}"
         )
 
     def test_disabling_platform_bundle_removes_own_tools(self):
@@ -555,6 +555,37 @@ def test_browser_exec_points_at_vision_analyze_only_when_the_session_has_it(monk
                         if d["function"]["name"] == "browser_exec")["function"]["description"]
         assert ("pass its capture_screenshot() path to vision_analyze" in rendered) is (
             not native and "vision_analyze" in names)
+
+
+@pytest.mark.parametrize("toolsets, steers, names_exec", [
+    (["terminal"], False, False),
+    (["terminal", "file"], True, False),
+    (["terminal", "code_execution"], False, False),
+    (["terminal", "file", "code_execution"], True, True),
+])
+def test_terminal_steers_file_work_only_to_tools_the_session_has(toolsets, steers, names_exec):
+    """A terminal-only session must not be told to avoid its only file route, and execute_code is
+    named only when the session exposes it."""
+    from model_tools import get_tool_definitions
+
+    term = next(t for t in get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+                if t["function"]["name"] == "terminal")["function"]["description"]
+    assert ("write_file do that and are tracked" in term) is steers
+    assert ("execute_code" in term) is names_exec
+
+
+@pytest.mark.parametrize("missing", ["read_file", "search_files", "patch", "write_file"])
+def test_terminal_keeps_shell_route_with_partial_file_tools(monkeypatch, missing):
+    """Missing any one file tool keeps the shell as the file route (all four or no steer)."""
+    from model_tools import get_tool_definitions
+    from toolsets import TOOLSETS
+
+    monkeypatch.setitem(TOOLSETS, "omit_one", {"tools": [missing]})
+    defs = get_tool_definitions(enabled_toolsets=["terminal", "file", "code_execution"],
+                                disabled_toolsets=["omit_one"], quiet_mode=True)
+    tools = {d["function"]["name"]: d["function"] for d in defs}
+    assert missing not in tools
+    assert "Do not use it to read" not in tools["terminal"]["description"]
 
 
 def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path):

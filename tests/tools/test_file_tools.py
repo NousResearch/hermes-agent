@@ -357,9 +357,8 @@ class TestSensitivePathCheck:
     """Verify that _check_sensitive_path blocks writes to protected locations."""
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
@@ -369,8 +368,7 @@ class TestSensitivePathCheck:
 
 
     def test_system_path_still_blocked(self, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._get_hermes_config_resolved", lambda: "/some/other/path")
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/etc/passwd", "evil"))
@@ -393,8 +391,7 @@ class TestSensitivePathCheck:
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._get_hermes_config_resolved", lambda: "/home/user/.hermes/config.yaml")
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
@@ -951,6 +948,7 @@ class TestSecretFileReadRedaction:
             self.matches = matches
             self.files = []
             self.counts = {}
+            self.total_count = len(matches)
 
         def to_dict(self, densify=False):
             return {
@@ -1005,6 +1003,7 @@ class TestSecretFileReadRedaction:
         ops = MagicMock()
         ops.search.return_value = self._SearchResult(
             [self._Match(str(config), f"      ADS_API_TOKEN: {self.SYNTH}")])
+        ops.hidden_match_counts.return_value = None
         mock_get.return_value = ops
 
         from tools.file_tools import search_tool

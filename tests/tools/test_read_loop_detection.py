@@ -42,15 +42,19 @@ class _FakeSearchResult:
     """Minimal stand-in for FileOperations.search return value."""
     def __init__(self):
         self.matches = []
+        self.files = []
+        self.counts = {}
+        self.total_count = 1
 
     def to_dict(self, densify=False):
-        return {"matches": [{"file": "test.py", "line": 1, "text": "match"}]}
+        return {"total_count": 1, "matches": [{"file": "test.py", "line": 1, "text": "match"}]}
 
 
 def _make_fake_file_ops():
     fake = MagicMock()
     fake.read_file = _fake_read_file
     fake.search = lambda **kw: _FakeSearchResult()
+    fake.hidden_match_counts = lambda *a: None
     return fake
 
 

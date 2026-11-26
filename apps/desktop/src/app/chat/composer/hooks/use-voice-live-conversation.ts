@@ -1,3 +1,4 @@
+import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
@@ -118,7 +119,14 @@ export function useVoiceLiveConversation({
   const voiceCopy = t.notifications.voice
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
-  const [level, setLevel] = useState(0)
+  // Level is a coarse speaking/quiet signal here, but it shares the composer's
+  // level-store contract so the meter never lands in ChatBar's render path.
+  // Lazily initialized inside the ref: useRef(atom(0)) would allocate and
+  // discard an atom on every render of the composer.
+  const levelStoreRef = useRef<WritableAtom<number> | null>(null)
+  levelStoreRef.current ??= atom(0)
+
+  const levelStore = levelStoreRef.current
   // Mirrors delegationRef for the reply-drive effect: a new delegation must
   // restart the feed loop, and a ref write alone does not re-render.
   const [activeDelegation, setActiveDelegation] = useState<null | string>(null)
@@ -222,9 +230,9 @@ export function useVoiceLiveConversation({
     speakingRef.current = false
     session?.close()
     setMuted(false)
-    setLevel(0)
+    levelStore.set(0)
     setStatus('idle')
-  }, [setDelegation])
+  }, [levelStore, setDelegation])
 
   const start = useCallback(async () => {
     if (sessionRef.current || startingRef.current) {
@@ -332,7 +340,7 @@ export function useVoiceLiveConversation({
         },
         onSpeakingChange: speaking => {
           speakingRef.current = speaking
-          setLevel(speaking ? 0.6 : 0)
+          levelStore.set(speaking ? 0.6 : 0)
           refreshStatus()
         }
       },
@@ -372,7 +380,7 @@ export function useVoiceLiveConversation({
       setStatus('idle')
       latest.current.onFatalError?.()
     }
-  }, [end, refreshStatus, setDelegation, voiceCopy])
+  }, [end, levelStore, refreshStatus, setDelegation, voiceCopy])
 
   // Drive the reply back into the voice: stream commentary as Hermes writes
   // it (sentence-chunked), quiet tool progress as thinking appends, and clear
@@ -490,5 +498,5 @@ export function useVoiceLiveConversation({
 
   useEffect(() => () => void end(), [end])
 
-  return { end, level, muted, start, status, stopTurn, toggleMute }
+  return { end, levelStore, muted, start, status, stopTurn, toggleMute }
 }

@@ -1,17 +1,17 @@
 name: codex-theme
-repo: https://github.com/ethanz-code/hermes-codex-theme
-sha: 13f74d8a4105365a540eefd13a202fcceee65078
-description: "Codex × ChatGPT inspired theme for the Hermes Desktop chat: dual light/dark palettes that follow the system appearance, graphite-on-paper typography (weight-carried hierarchy) with a 1.7 root line height, a 10px radius system, hairline borders instead of shadows, the 6/10/16/24 spacing rhythm, and an 880px reading column with 768/880/992px presets. Settings → Plugins → Codex Theme offers an appearance-mode picker (follow system / dark / light) and reading-column width as native segmented controls; the theme paints theme-level tokens only and never writes user-configurable settings such as --chat-text-scale. Disclosure — no network calls, no telemetry, no credentials; registers only through the Desktop plugin SDK (THEMES_AREA, PALETTE_AREA, ctx.registerSettingsPage, ctx.i18n), switches the active theme to Codex once on first install, and keeps its preferences in plugin-scoped ctx.storage."
-maintainer: ethanz-code
+repo: https://github.com/hey-yx/hermes-codex-theme
+sha: 5d0e94aa5a80e02f755b1ab5783f727df7bb1ecd
+description: "Codex × ChatGPT inspired theme for the Hermes Desktop chat: dual light/dark palettes that follow the system appearance, graphite-on-paper typography with a 1.625 root line height (measured from ZCode's chat body) and content-spacing presets (1.5/1.625/1.75), the OpenAI radius scale (inline 4px / rows 8px / controls 10px / cards 12px / composer 20px), hairline borders instead of shadows, and an 880px reading column with 768/880/992px presets. Settings → Plugins → Codex Theme offers appearance mode, reading width, content spacing, text & code font presets, user/assistant chat bubble colors and a bilingual (EN/中文) UI as native controls; the theme paints theme-level tokens only and never writes user-configurable settings such as --chat-text-scale. v1.2.0 is a compliance release — the composer-drag and input-focus-guard features of the v1.1 line were removed because they patched prototypes and captured global events, which catalog rule 8 forbids. Disclosure — no network calls, no telemetry, no credentials; registers only through the Desktop plugin SDK (THEMES_AREA, PALETTE_AREA, ctx.registerSettingsPage, ctx.i18n), switches the active theme to Codex once on first install, and keeps its preferences in plugin-scoped ctx.storage."
+maintainer: hey-yx
 tier: community
 category: desktop
 requires_hermes: ">=0.22.0"
-version: "1.0.1"
+version: "1.2.0"
 title: "Codex Theme"
-image: https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/13f74d8a4105365a540eefd13a202fcceee65078/assets/cover.png
+image: https://raw.githubusercontent.com/hey-yx/hermes-codex-theme/5d0e94aa5a80e02f755b1ab5783f727df7bb1ecd/assets/cover.png
 screenshots:
-  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/13f74d8a4105365a540eefd13a202fcceee65078/assets/theme-light.png
-  - https://raw.githubusercontent.com/ethanz-code/hermes-codex-theme/13f74d8a4105365a540eefd13a202fcceee65078/assets/theme-dark.png
+  - https://raw.githubusercontent.com/hey-yx/hermes-codex-theme/5d0e94aa5a80e02f755b1ab5783f727df7bb1ecd/assets/theme-light.png
+  - https://raw.githubusercontent.com/hey-yx/hermes-codex-theme/5d0e94aa5a80e02f755b1ab5783f727df7bb1ecd/assets/theme-dark.png
 readme: true
 capabilities:
   provides_tools: []

@@ -1,0 +1,25 @@
+name: hermes-scout
+title: Hermes Scout
+repo: https://github.com/Shizoqua/hermes-scout
+sha: 27a4635b30574cca30cdc403bc7d21246b10becb
+subdir: hermes_scout
+version: "0.5.0"
+description: "Search a folder of local notes, docs, code, PDFs and Word, Excel, PowerPoint and OpenDocument files by meaning and exact words with scout_search, and find related files with scout_similar. Questions are ranked by meaning; queries made of code-like names such as ERR_4291 put exact matches first (SQLite full-text BM25). Embeddings come from any OpenAI-compatible /embeddings endpoint (a local Ollama server by default), and an incremental SQLite index re-embeds only changed files. Each result from a document names its page, slide or sheet. Adds a /scout command (doctor, status, index, clear) and a bundled skill. Standard library only. Disclosure: sends file chunks and search queries to the configured embeddings endpoint (localhost by default; a hosted endpoint receives the text of the files searched), and /scout doctor sends one fixed test sentence there; reads text files, and PDF, .docx, .xlsx, .pptx, .odt, .ods and .odp files whose text it extracts locally with the standard library, under the folder the model names, skipping hidden, dependency, gitignored, binary and oversized files and every path Hermes's file tools refuse; writes only its index under the plugin's data folder, which /scout clear empties; the optional SCOUT_API_KEY is read through Hermes's secret store and sent only to the configured endpoint."
+maintainer: Shizoqua
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://shizoqua.github.io/hermes-scout/
+image: https://raw.githubusercontent.com/Shizoqua/hermes-scout/27a4635b30574cca30cdc403bc7d21246b10becb/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Shizoqua/hermes-scout/27a4635b30574cca30cdc403bc7d21246b10becb/docs/screenshots/exact-search.png
+  - https://raw.githubusercontent.com/Shizoqua/hermes-scout/27a4635b30574cca30cdc403bc7d21246b10becb/docs/screenshots/doctor.png
+  - https://raw.githubusercontent.com/Shizoqua/hermes-scout/27a4635b30574cca30cdc403bc7d21246b10becb/docs/screenshots/scout-command.png
+  - https://raw.githubusercontent.com/Shizoqua/hermes-scout/27a4635b30574cca30cdc403bc7d21246b10becb/docs/screenshots/benchmark.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [scout_search, scout_similar]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

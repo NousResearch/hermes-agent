@@ -92,6 +92,14 @@ export const de: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktiver Speicheranbieter",
+    noProvider: "keiner — nur integriert",
+    builtinLayer: "Integrierte Ebene",
+    builtinNote: "MEMORY.md und USER.md sind Hermes’ eigener Speicher, unabhängig von externen Anbietern. Beide werden standardmäßig in Sitzungen geladen; die Konfigurationsschalter (memory.memory_enabled / memory.user_profile_enabled) schalten sie einzeln ab. Ein Anbieter ergänzt sie, er ersetzt sie nie.",
+  },
+
   status: {
     actionFailed: "Aktion fehlgeschlagen",
     actionFinished: "Abgeschlossen",
@@ -362,6 +370,13 @@ export const de: Translations = {
     authRequired: "Authentifizierung erforderlich",
     authRequiredHint: "Führe diesen Befehl aus, um dich zu authentifizieren:",
     updateGit: "Git pull",
+    updateAll: "Alle aktualisieren",
+    updatingAll: "Plugins werden aktualisiert…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Aktualisiert ${updated}, Prüfung nötig ${needsReview}, fehlgeschlagen ${failed}`,
+    autoUpdate: "Automatisch aktualisieren",
+    autoUpdateDesc: (hours: number) =>
+      `Plugin-Updates automatisch anwenden, wenn das Gateway prüft (alle ${hours} h). Aktualisierter Code wird in neuen Sitzungen geladen.`,
     versionBadge: "Version",
     showInSidebar: "In Sidebar anzeigen",
     hideFromSidebar: "Aus Sidebar ausblenden",
@@ -782,5 +797,18 @@ export const de: Translations = {
       "Arbeitsbereichs-Pfad (optional, wird aus zuständiger Person abgeleitet, wenn leer)",
     logTruncated: "(zeige die letzten 100 KB — vollständiges Log unter ",
     logAt: ")",
+  },
+  channelsCatalog: {
+    title: "Zur Installation verfügbar",
+    hint: "Messaging-Plattformen aus dem Hermes-Plugin-Katalog. Bei der Installation wird das Plugin hinzugefügt und aktiviert, danach öffnet sich die Einrichtung.",
+    badgeOfficial: "Offiziell",
+    badgeVerified: "Verifiziert",
+    disclosure: "Offenlegung:",
+    lazyInstallsOff: "Automatische Plugin-Installationen sind aus (security.allow_lazy_installs).",
+    run: "Ausführen:",
+    install: "Installieren",
+    installing: "Wird installiert…",
+    installed: (title: string) => `${title} installiert. Gib die Zugangsdaten ein, um es zu verbinden.`,
+    installFailed: (title: string) => `${title} konnte nicht installiert werden`,
   },
 };

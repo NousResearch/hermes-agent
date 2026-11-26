@@ -1,0 +1,30 @@
+# Submitted: https://github.com/NousResearch/hermes-agent/pull/159051
+# El sha fija el commit publicado; cualquier cambio de código requiere un SHA nuevo.
+name: hermes-quota-live
+repo: https://github.com/fgvilches/hermes-quota-live
+sha: "495b1ed2f2e6debdc03d4a32800f89cfab6bbf32"
+subdir: ""
+title: "Hermes Quota Live"
+description: "Real provider quota (OpenCode Go, OpenRouter, Copilot) inside the Hermes desktop app. Disclosure — calls OpenCode Go (opencode.ai), OpenRouter, GitHub (api.github.com/copilot_internal/user) and Z.ai/BigModel with the matching key you configured to read your own quota, every 30 seconds while the panel or status chip is shown; with HERMES_QUOTA_OQG=1 it also polls a local opencode-quota-gui on 127.0.0.1:4144; reads token usage, session titles and working directories from Hermes' state.db (read-only); writes nothing and sends no data elsewhere."
+maintainer: "Felipe González"
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: ""
+image: https://raw.githubusercontent.com/fgvilches/hermes-quota-live/495b1ed2f2e6debdc03d4a32800f89cfab6bbf32/docs/screenshots/panel-cuota.png
+screenshots:
+  - https://raw.githubusercontent.com/fgvilches/hermes-quota-live/495b1ed2f2e6debdc03d4a32800f89cfab6bbf32/docs/screenshots/panel-cuota.png
+  - https://raw.githubusercontent.com/fgvilches/hermes-quota-live/495b1ed2f2e6debdc03d4a32800f89cfab6bbf32/docs/screenshots/vista-usado.png
+readme: true
+platforms: []
+onboarding: false
+default: false
+known_issues:
+  - "Z.ai shows an inactive card when the API key has no coding plan; no quota is invented."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  # All provider keys are optional_env in plugin.yaml; no install prompts.
+  requires_env: []

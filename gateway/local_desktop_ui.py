@@ -22,6 +22,12 @@ execution stream, and the process sinks route by the process's ``session_key`` t
 session's event stream (a background process outlives the turn that started it). The callbacks
 are installed per turn on the cached agent and restored with the other turn sinks.
 
+``desktop_project`` switch (``tools/project_tools.py``) moves the chat like the user's Move to
+project: the tool records the folder (``moved: pending``) and the running turn keeps its own; the
+session's ``workspace`` mutation (policy cwd, state.db row, terminal drop, ``session.info``) is
+committed at the turn boundary, where a policy mutation is allowed (``apply_pending_workspace``).
+``create`` only creates, and a delegated child never moves its parent.
+
 Card for ``manage_connections``: ``connection_callback`` publishes ``connection.request`` on the turn, and each later change of an operation is published as ``connection.update`` on the session that owns it (looked up by its session key, the route); the card answers through ``connection.respond`` (``gateway/session_connections.py``).
 """
 from __future__ import annotations
@@ -75,6 +81,8 @@ _preview_bridge: dict[str, dict] = {}
 _tour_bridge: dict[str, str] = {}
 # process ``session_key`` -> (authority, canonical session id) of the session that last ran a turn with it
 _process_routes: dict[str, tuple] = {}
+# turn key (the turn's task id, ``ctx.session_id``) -> (authority, canonical session id, route session key, publish)
+_workspace_routes: dict[str, tuple] = {}
 _emitter_installed = False
 _process_sinks_installed = False
 
@@ -154,6 +162,59 @@ def _install_connection_hook() -> None:
     ConnectionOperation.on_change = staticmethod(on_change)
 
 
+def _move_workspace(task_id, path):
+    """``desktop_project``'s move for a turn of ours: None when *task_id* is not one (another host's
+    session), False when its chat is gone, True when the chat is already there, else ``"pending"``:
+    the folder is committed at the end of the turn, as the user's Move to project, so the running
+    turn keeps its own. A folder that does not exist raises, so the tool reports why."""
+    import os
+    key = str(task_id or "")
+    with _lock:
+        # Only the chat's own turn: a delegated child never moves its parent (and never gets the tool).
+        route = _workspace_routes.get(key)
+    if route is None:
+        return None
+    authority, session_id, _session_key, _publish = route
+    live = authority.sessions.get(session_id)
+    if live is None:
+        return False
+    from gateway.config import Platform
+    if live.source.platform != Platform.LOCAL:
+        return None  # only a local chat's drain commits the move: a messaging chat keeps its folder
+    resolved = os.path.abspath(os.path.expanduser(str(path)))
+    if not os.path.isdir(resolved):
+        raise FileNotFoundError(f"folder does not exist: {resolved}")
+    from gateway.session_local_recovery import local_adapter_map
+    # The chat's current folder, as its last committed move published it.
+    policy = local_adapter_map(authority)[Platform.LOCAL].policies.get(live.source.chat_id)
+    if policy is not None and policy.source not in ("gui", "tui"):
+        return None  # a CLI chat on the gateway keeps its folder: only the active project changes
+    if policy is not None and os.path.realpath(policy.cwd) == os.path.realpath(resolved):
+        live.pending_workspace = None  # already there: an earlier call's pending move is taken back
+        return True
+    live.pending_workspace = resolved
+    return "pending"
+
+
+def _install_workspace_hook() -> None:
+    """``set_project_workspace_callback`` for our turns; any other task goes to the callback this one
+    wraps (the TUI sidecar's, for its own sessions). Re-wraps whenever another wiring replaced it (the
+    sidecar installs its own per session), so install order does not matter."""
+    from tools.project_tools import get_project_workspace_callback, set_project_workspace_callback
+    previous = get_project_workspace_callback()
+    if getattr(previous, "_local_desktop_ui", False):
+        return
+
+    def move(task_id, path, name=""):
+        moved = _move_workspace(task_id, path)
+        if moved is None:
+            return previous(task_id, path, name) if previous is not None else False
+        return moved
+
+    move._local_desktop_ui = True
+    set_project_workspace_callback(move)
+
+
 def _ask_result(turn, agent, method, params, timeout):
     """One structured server request; the viewer's ``result`` dict, or None when none answered."""
     from gateway.session_server_requests import ask_viewer_result
@@ -203,7 +264,7 @@ def _tour(turn, agent, payload) -> str:
 
 
 def _setup_beat(turn, agent, payload):
-    from agent.onboarding_flow import CARD_TIMEOUT_S
+    from session_rules.onboarding_flow import CARD_TIMEOUT_S
     return _ask_result(turn, agent, "setup_beat", payload, CARD_TIMEOUT_S)
 
 
@@ -258,6 +319,7 @@ def wire(turn, agent):
         _install_emitter()
         _install_process_sinks()
         _install_connection_hook()
+        _install_workspace_hook()
     except Exception:  # health: allow BLE001 -- the window bridges are optional; the turn must run
         logger.warning("Desktop UI sink install failed", exc_info=True)
     key = str(getattr(turn._ctx, "session_id", "") or owner[1])
@@ -265,6 +327,7 @@ def wire(turn, agent):
     process_key = str(getattr(turn._ctx, "session_key", "") or "")
     with _lock:
         _turns[key] = publish
+        _workspace_routes[key] = (owner[0], owner[1], process_key, publish)
         if process_key:
             _process_routes[process_key] = (owner[0], owner[1])
     agent.read_terminal_callback = _read_block(turn, agent, "terminal.read", _TERMINAL_READ_TIMEOUT_S)
@@ -287,3 +350,5 @@ def release(token) -> None:
     with _lock:
         if _turns.get(key) is publish:
             _turns.pop(key, None)
+        if (_workspace_routes.get(key) or (None,) * 4)[3] is publish:
+            _workspace_routes.pop(key, None)

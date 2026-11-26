@@ -19,9 +19,13 @@ cannot drift apart.
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
 import logging
 import os
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional
+import sys
+from types import ModuleType
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -33,6 +37,8 @@ _ISOLATION_MODES = frozenset({ISOLATION_IN_PROCESS, ISOLATION_HOST})
 # raw platform SDK clients, argparse parsers, adapter classes bound to the gateway's event loop, the
 # launch-scope dashboard auth registry. A plugin calling one of these runs only in-process.
 HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
+    "register_login_backend": "browser-vault fills hold a server-local context manager",
+    "register_browser_page_backend": "browser-vault fill scripts carry credentials that stay in the Hermes process",
     "register_platform": "platform adapters run on the gateway's event loop with native SDK clients",
     "register_platform_handler": "the handler factory receives the platform's native SDK client",
     "register_telegram_handler": "the handler factory receives the native Telegram Application",
@@ -41,6 +47,7 @@ HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
     "register_approval_transport": "approval transports hold the live approval request/response channel",
     "post_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "apost_message": "the returned handle is bound to the gateway's event loop and live adapter",
+    "fork_session": "the returned handle tracks a fork thread of the live session agent in the Hermes process",
 }
 
 # Registered in-process only; skipped (with a warning, the plugin still loads) inside the host
@@ -104,8 +111,14 @@ def isolation_mode(config: Optional[Mapping[str, Any]] = None) -> str:
     return mode
 
 
-def host_launcher(config: Optional[Mapping[str, Any]] = None) -> list[str]:
-    """``plugins.host.launcher``: argv prefix the host process runs under (a sandbox runner)."""
+def host_launcher(config: Optional[Mapping[str, Any]] = None, *, home: Any = None) -> list[str]:
+    """``plugins.host.launcher``: argv prefix the host process runs under (a sandbox runner). For a profile a
+    plugin runs elsewhere (*home*, else this process's) only the managed overlay's counts: that backend
+    writes the profile's config.yaml."""
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    if config is None and run_elsewhere_refusal(home) is not None:
+        from hermes_cli.managed_scope import apply_managed_overlay
+        config = apply_managed_overlay({})  # the overlay alone, its ${VAR} refs expanded as for any profile
     host = _plugins_config(config).get("host")
     launcher = host.get("launcher") if isinstance(host, Mapping) else None
     if not launcher:
@@ -129,6 +142,28 @@ def in_process_import_refusal(what: str, *, source: str = "user",
             f"never runs inside the Hermes process); set plugins.isolation: in_process to load it")
 
 
+def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:
+    """Import the Python file *path* as *module_name* into this process: shared import steps for
+    loaders that execute a single file of plugin code in-process. ``None`` when *path* has no module
+    spec.
+
+    The module sits in ``sys.modules`` while its body runs (forward references under ``from
+    __future__ import annotations`` resolve by module name) and is removed again if the body raises.
+    It applies no ``plugins.isolation`` check; callers keep their own.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
 def user_plugin_host() -> Any:
     """The active profile's plugin host when ``plugins.isolation`` is ``host``, else ``None``.
 
@@ -139,3 +174,32 @@ def user_plugin_host() -> Any:
         return None
     from hermes_cli.plugins import get_plugin_manager
     return get_plugin_manager()._plugin_host()
+
+
+@contextlib.contextmanager
+def transient_plugin_host() -> Iterator[Any]:
+    """A throwaway plugin manager for a one-shot load in the active profile (a profile lifecycle
+    hook), or ``None`` when ``plugins.isolation`` is not ``host``. Its own scope key and host
+    process keep it apart from the profile's shared manager, so the teardown on exit (dispose its
+    registrations, stop its host) cannot touch a concurrent user of that profile's shared host."""
+    if isolation_mode() != ISOLATION_HOST:
+        yield None
+        return
+    import uuid
+
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    # One scope per manager, so two overlapping hook loads never share registry slots; home_path stays
+    # the profile's home.
+    manager.scope_key = f"{manager.scope_key}#transient-{uuid.uuid4().hex}"
+    try:
+        yield manager
+    finally:
+        try:
+            manager.unload()
+        finally:
+            # Any host this manager made, alive or not: one whose channel closed can still have a running
+            # process, and shutdown() waits for or kills it.
+            host = getattr(manager, "_plugin_host_instance", None)
+            if host is not None:
+                host.shutdown()

@@ -27,6 +27,9 @@ def _git_repo_files(root: str):
 
     :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): runs on a keystroke in the session cwd,
     and ``ls-files`` reads the index, which executes a repo-configured ``core.fsmonitor``."""
+    from hermes_platform.resolver.git import resolve_usable_git
+    if resolve_usable_git() is None:
+        return
     from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
     run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL,
                   creationflags=windows_hide_flags(), env=noninteractive_git_env())
@@ -137,7 +140,8 @@ def _model_picker_context(agent):
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
             provider = canonical_custom_identity(
-                base_url=base_url or None, config_provider=ctx.current_provider, model=model or None) or provider
+                base_url=base_url or None, config_provider=ctx.current_provider, model=model or None,
+                requested=getattr(agent, "requested_provider", None)) or provider
         except Exception:
             logger.debug("custom provider identity recovery failed (model picker)", exc_info=True)
     return ctx.with_overrides(

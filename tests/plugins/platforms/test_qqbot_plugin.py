@@ -102,3 +102,88 @@ async def test_standalone_sender_reports_missing_credentials(monkeypatch):
 
     result = await standalone_send(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
     assert "QQ_APP_ID" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_qq_c2c_attachment_metadata_stays_out_of_info(caplog, monkeypatch):
+    """A QQ DM's attachment URL/filename may contain private user data (#46006)."""
+    import logging
+    from unittest.mock import AsyncMock
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={}))
+    ingest = AsyncMock()
+    monkeypatch.setattr(adapter, "_ingest", ingest)
+    attachment = {
+        "content_type": "application/pdf",
+        "url": "https://files.example.test/attachment?signature=private-sentinel",
+        "filename": "Private medical report for Alice.pdf",
+    }
+    caplog.set_level(logging.DEBUG, logger="plugins.platforms.qqbot.adapter")
+    await adapter._handle_c2c_message(
+        {"attachments": [attachment]}, "msg-1", "hello", {"user_openid": "qq-user-1"}, "2026-11-12T18:00:00Z",
+    )
+    ingest.assert_awaited_once()
+    messages = [
+        r.getMessage() for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno >= logging.INFO
+    ]
+    assert any("attachment[0]" in line for line in messages), messages
+    assert all(
+        attachment["filename"] not in line and "private-sentinel" not in line
+        for line in messages
+    ), messages
+    assert any(
+        attachment["filename"] in r.getMessage()
+        for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno == logging.DEBUG
+    )
+
+
+@pytest.mark.asyncio
+async def test_qq_voice_stt_failure_keeps_the_attachment_url_out_of_info(caplog, monkeypatch):
+    """The STT-failure warning must not carry the inbound voice URL (#46006)."""
+    import logging
+    from unittest.mock import AsyncMock
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={}))
+    monkeypatch.setattr(adapter, "_stt_voice_attachment", AsyncMock(return_value=None))
+    url = "https://files.example.test/v?sig=private-sentinel"
+    caplog.set_level(logging.DEBUG, logger="plugins.platforms.qqbot.adapter")
+    result = await adapter._process_attachments([{"content_type": "voice", "url": url, "filename": "a.silk"}])
+    assert result["voice_transcripts"]
+    info = [
+        r.getMessage() for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno >= logging.INFO
+    ]
+    assert any("Voice STT failed" in line for line in info), info
+    assert all("private-sentinel" not in line and "files.example.test" not in line for line in info), info
+
+
+@pytest.mark.asyncio
+async def test_qq_voice_download_http_error_keeps_the_url_out_of_warning(caplog, monkeypatch):
+    """httpx's HTTPStatusError text carries the signed download URL (#46006)."""
+    import logging
+
+    import httpx
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={}))
+    adapter._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(403, request=request)))
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+    caplog.set_level(logging.DEBUG, logger="plugins.platforms.qqbot.adapter")
+    assert await adapter._stt_voice_attachment("https://files.example.test/v?sig=private-sentinel", "voice", "a.silk") is None
+    info = [
+        r.getMessage() for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno >= logging.INFO
+    ]
+    assert any("status=403" in line for line in info), info
+    assert all("private-sentinel" not in line for line in info), info

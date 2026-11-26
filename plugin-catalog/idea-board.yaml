@@ -1,0 +1,22 @@
+name: idea-board
+repo: https://github.com/bmanturner/hermes-idea-board
+sha: fc824ef3ea22df8bc1c63da4657ea72f08005bb6
+description: "A nightly board of things your agent can take off your plate, each tied to your own words. Code finds signals in your last 14 days of chats (things asked on several days, remind-me loops, upcoming dates, corrections, failing tools, things the agent said it couldn't reach); a model drafts ideas, a second pass critiques them, and code checks every idea (evidence ids must exist, named capabilities must be installed, links and @file/@url references you never typed are rejected). Click an idea and a new chat opens with the prompt in the composer; you press send, nothing is sent for you. Dismiss with a reason and it becomes a rule applied on every later run. Also ranks which Portal connector to add next by how many ideas it would unlock that match your chats (no model call). Desktop board and setup page plus a Python half. Disclosure — no network calls of its own and no telemetry; all model calls go through Hermes (two per run, ideation and critique, on the auxiliary task idea_board; unset it follows your main model; about 70–80k tokens for two weeks of heavy use). Reads outside its own data: state.db chats from the last 7/14/30 days you pick (scheduled-job runs, subagents, hidden and group chats skipped; only text you typed is quoted, other content is wrapped as untrusted), this profile's toolsets, MCP servers, connectors, skills, messaging platforms and scheduled jobs, Hermes's suggested cron jobs, and memories/USER.md; some of that goes to your configured model inside the ideation prompt. Three imports of undocumented Hermes internals (hermes_cli.tools_config._get_platform_tools, toolsets.resolve_toolset, cron.suggestions.load_suggestions) trigger the catalog's rule 9 warning; each has a tested fallback (tests/test_compat.py) and a public-API request is open at NousResearch/hermes-agent#149576. Stores ideas, dismissals, rules and run history in <HERMES_HOME>/plugin-data/idea-board/data.db. A pre_llm_call hook only links a chat started from a card back to its card (no injection). Nothing is scheduled until you press Schedule it in setup, which creates one cron job (nightly, time you pick) through Hermes's cron API; that job wakes the agent for one short turn (about 30k prompt tokens, mostly cached) to call idea_board_run. No shell commands, no stored credentials, no background process of its own."
+maintainer: bmanturner
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/bmanturner/hermes-idea-board/blob/fc824ef3ea22df8bc1c63da4657ea72f08005bb6/README.md
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - idea_board_run
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []
+
+known_issues:
+  - "Three undocumented Hermes internals are imported (see the disclosure); each falls back cleanly if a release moves it."
+  - "Desktop connected to a remote Hermes: install the agent half on the server, and the Desktop half from Git on the laptop (the desktop half of a remote plugin can't be read from another machine)."

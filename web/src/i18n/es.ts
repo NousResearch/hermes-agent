@@ -92,6 +92,14 @@ export const es: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Proveedor de memoria activo",
+    noProvider: "ninguno — solo integrada",
+    builtinLayer: "Capa integrada",
+    builtinNote: "MEMORY.md y USER.md son la memoria propia de Hermes, independiente de cualquier proveedor externo. Ambos se cargan en las sesiones por defecto; los interruptores de configuración (memory.memory_enabled / memory.user_profile_enabled) desactivan cada uno. Un proveedor se suma a ellos; nunca los reemplaza.",
+  },
+
   status: {
     actionFailed: "Acción fallida",
     actionFinished: "Finalizado",
@@ -363,6 +371,13 @@ export const es: Translations = {
     authRequired: "Autenticación requerida",
     authRequiredHint: "Ejecuta este comando para autenticarte:",
     updateGit: "Git pull",
+    updateAll: "Actualizar todo",
+    updatingAll: "Actualizando complementos…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Actualizados ${updated}, requieren revisión ${needsReview}, fallidos ${failed}`,
+    autoUpdate: "Actualización automática",
+    autoUpdateDesc: (hours: number) =>
+      `Aplica las actualizaciones de complementos automáticamente cuando el gateway comprueba (cada ${hours} h). El código actualizado se carga en sesiones nuevas.`,
     versionBadge: "Versión",
     showInSidebar: "Mostrar en barra lateral",
     hideFromSidebar: "Ocultar de la barra lateral",
@@ -783,5 +798,18 @@ export const es: Translations = {
       "ruta del workspace (opcional, derivada del asignado si está vacía)",
     logTruncated: "(mostrando los últimos 100 KB — registro completo en ",
     logAt: ")",
+  },
+  channelsCatalog: {
+    title: "Disponible para instalar",
+    hint: "Plataformas de mensajería del catálogo de plugins de Hermes. Al instalar una se añade y activa su plugin, y luego se abre su configuración.",
+    badgeOfficial: "Oficial",
+    badgeVerified: "Verificado",
+    disclosure: "Aviso:",
+    lazyInstallsOff: "Las instalaciones automáticas de plugins están desactivadas (security.allow_lazy_installs).",
+    run: "Ejecuta:",
+    install: "Instalar",
+    installing: "Instalando…",
+    installed: (title: string) => `${title} instalado. Introduce sus credenciales para conectarlo.`,
+    installFailed: (title: string) => `No se pudo instalar ${title}`,
   },
 };

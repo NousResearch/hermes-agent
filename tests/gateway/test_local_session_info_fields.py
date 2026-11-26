@@ -22,7 +22,7 @@ async def test_session_info_carries_the_classic_cli_fields(tmp_path, monkeypatch
     agent = SimpleNamespace(model='m', provider='custom', api_mode='chat_completions',
                             api_key='sk-abcdefghijklmnop1234', tools=[{'function': {'name': 'a'}}] * 3)
     authority.runner._cached_agent_for = lambda route: agent
-    authority.db.set_session_title('s', 'Some Title')
+    authority.persistence.sessions.set_title('s', 'Some Title')
     info = local_session_info(authority, SessionRef('p', 's'))
     assert info['title'] == 'Some Title'
     assert isinstance(info['started_at'], float) and isinstance(info['last_active_at'], float)

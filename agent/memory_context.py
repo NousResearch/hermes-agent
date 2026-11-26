@@ -9,22 +9,23 @@ from __future__ import annotations
 
 import logging
 import re
+from session_rules.turns import sanitize_context
 
 logger = logging.getLogger(__name__)
 
-_FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
-_INTERNAL_CONTEXT_RE = re.compile(r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>', re.IGNORECASE)
-_INTERNAL_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
-    re.IGNORECASE,
-)
 
+def fence_recalled_context(text: str) -> str:
+    """Drop recalled-context spans from a completed reply with the streaming grammar.
 
-def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
-    for pattern in (_INTERNAL_CONTEXT_RE, _INTERNAL_NOTE_RE, _FENCE_TAG_RE):
-        text = pattern.sub('', text)
-    return text
+    Unlike ``sanitize_context`` this keeps inline prose mentioning the tag (only block-shaped
+    spans are dropped), so it is safe on model output; an unterminated span drops its tail.
+    Unchanged text is returned as-is, changed text is stripped of the gap the span left.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    scrubber = StreamingContextScrubber()
+    fenced = scrubber.feed(text) + scrubber.flush()
+    return text if fenced == text else fenced.strip()
 
 
 class StreamingContextScrubber:

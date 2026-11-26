@@ -292,6 +292,10 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+_GOAL_BARRIER_FIELDS = ("waiting_on_pid", "waiting_on_session", "waiting_until", "waiting_on_delegations",
+                        "waiting_reason", "waiting_since")
+
+
 def _goal_is_parked(state) -> bool:
     """An active /goal holding a wait barrier (pid, process session or deadline). Read-only: unlike
     ``GoalManager.is_waiting`` it never clears a satisfied barrier."""
@@ -304,8 +308,9 @@ def _maybe_resume_tui_parked_goal(sid: str, session: dict) -> None:
 
     The barrier is otherwise re-checked only after a turn (``evaluate_after_turn``): with nothing else
     arriving the session stayed parked indefinitely, the goal still shown active. Mirrors the classic
-    CLI's ``_maybe_resume_parked_goal`` idle hook. Barrier first, claim second: a turn that wins the
-    claim re-judges the goal in its own post-turn hook, so nothing is lost when the claim fails.
+    CLI's ``_maybe_resume_parked_goal`` idle hook. Claim first, barrier second: ``is_waiting`` durably
+    clears a satisfied barrier, so only a poll holding the turn may consume it, and a dispatch that
+    does not start restores it for the next poll.
     """
     from hermes_cli.goals import GoalManager
     if not (sid_key := session.get("session_key") or ""):
@@ -313,10 +318,12 @@ def _maybe_resume_tui_parked_goal(sid: str, session: dict) -> None:
     mgr = GoalManager(session_id=sid_key)
     if not _goal_is_parked(mgr.state) or _notif_gateway_owns_heartbeat(session, sid_key):
         return  # not parked, or the gateway owns the routed conversation
-    if mgr.is_waiting():
+    if not _notif_claim_turn(session):
+        return  # busy, Stop pending or not admitted: the barrier stays for the next poll
+    barrier = {f: getattr(mgr.state, f) for f in _GOAL_BARRIER_FIELDS}
+    if mgr.is_waiting() or not (prompt := mgr.next_continuation_prompt()):
+        _notif_release_turn(session)
         return  # barrier still holds (is_waiting also applies the pid/session age cap)
-    if not (prompt := mgr.next_continuation_prompt()) or not _notif_claim_turn(session):
-        return  # busy: the live turn's post-turn judge picks the goal up
     started = False
     try:
         _emit("status.update", sid, {"kind": "goal", "text": "▶ Goal barrier lifted — resuming."})
@@ -326,6 +333,20 @@ def _maybe_resume_tui_parked_goal(sid: str, session: dict) -> None:
         logger.warning("parked goal resume failed for %s", sid_key, exc_info=True)
     if not started:
         _notif_release_turn(session)
+        _restore_goal_barrier(mgr, barrier)
+
+
+def _restore_goal_barrier(mgr, barrier: dict) -> None:
+    """Put back a barrier ``is_waiting`` cleared for a resume that never started, unless the goal moved on."""
+    try:
+        fresh = type(mgr)(session_id=mgr.session_id)
+        if fresh.state is None or fresh.state.status != "active" or _goal_is_parked(fresh.state):
+            return
+        for field, value in barrier.items():
+            setattr(fresh.state, field, value)
+        fresh._save()
+    except Exception:  # health: allow BLE001 -- best effort; the poller must stay alive
+        logger.warning("parked goal barrier restore failed for %s", mgr.session_id, exc_info=True)
 
 
 def _loop_route_is_gateway_chat(state) -> bool:

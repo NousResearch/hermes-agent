@@ -126,3 +126,15 @@ def test_a_parked_goal_keeps_the_detached_session_alive(server, session):
     assert server._session_owns_live_wakeup_schedule(s) is True
     mgr.clear()
     assert server._session_owns_live_wakeup_schedule(s) is False
+
+
+@pytest.mark.parametrize("case", ["cancel_requested", "dispatch_refused"])
+def test_a_failed_resume_keeps_the_satisfied_barrier(server, session, case):
+    """A resume that does not start a turn must leave the barrier for the next poll, or the goal goes invisible."""
+    sid, key, s = session
+    _park(key, expired=True)
+    s["_turn_cancel_requested"] = case == "cancel_requested"
+    with patch.object(server, "_run_prompt_submit", MagicMock(return_value=False)), patch.object(server, "_emit"):
+        server._maybe_resume_tui_parked_goal(sid, s)
+    assert s["running"] is False
+    assert server._goal_is_parked(_load(key)) is True  # the next poll still sees it parked

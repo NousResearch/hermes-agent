@@ -37,10 +37,20 @@ def test_an_enabled_webapp_binds_its_configured_address(tmp_path):
     assert default.bind == ("127.0.0.1", webapp.DEFAULT_PORT)
 
 
+def test_an_enabled_webapp_binds_its_environment_expanded_port(tmp_path, monkeypatch):
+    home = _home(tmp_path, "webapp:\n  enabled: true\n  port: ${WEBAPP_PORT}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("WEBAPP_PORT", "9555")
+    assert webapp.webapp_settings(home).bind == ("127.0.0.1", 9555)
+
+
 @pytest.mark.parametrize("block", [
     "webapp: yes\n",
     "webapp:\n  enabled: true\n  port: 70000\n",
     "webapp:\n  enabled: true\n  port: http\n",
+    "webapp:\n  enabled: true\n  port: true\n",
+    "webapp:\n  enabled: true\n  port: '0'\n",
+    "webapp:\n  enabled: true\n  port: '65536'\n",
     "webapp:\n  enabled: true\n  host: ''\n",
     "webapp:\n  enabled: 'true'\n",
     "webapp:\n  enabled: true\n  host: 127.0.0.2\n",

@@ -488,20 +488,22 @@ def test_claim_loss_during_judge_prevents_continuation(worker, monkeypatch, call
             assert task is not None and task.status == 'scheduled'
 
 
-@pytest.mark.parametrize('parent_finishes', [False, True])
-def test_dependency_block_requires_current_judged_parents(worker, monkeypatch, parent_finishes):
+@pytest.mark.parametrize('parents', ['open', 'finish_during_judge', 'none'])
+def test_dependency_block_requires_current_judged_parents(worker, monkeypatch, parents):
     from tools import kanban_tools
 
     tid = worker.context['task_id']
     with connect_closing() as conn:
         parent = kb.create_task(conn, title='Produce source data', assignee='default')
         other = kb.create_task(conn, title='Review unrelated notes', assignee='default')
-        for pid in (parent, other):
-            kb.link_tasks(conn, pid, tid, expected_child_run_id=worker.context['run_id'])
+        if parents != 'none':
+            for pid in (parent, other):
+                kb.link_tasks(conn, pid, tid, expected_child_run_id=worker.context['run_id'])
 
     def judge(goal, last_response):
+        assert parents != 'none', 'a dependency without an open parent must not reach the judge'
         assert parent in last_response and other in last_response
-        if parent_finishes:
+        if parents == 'finish_during_judge':
             with connect_closing() as conn:
                 assert kb.complete_task(conn, parent, summary='Source data is ready.')
         return 'blocked', 'source data is required', False, None, False
@@ -511,11 +513,11 @@ def test_dependency_block_requires_current_judged_parents(worker, monkeypatch, p
     with connect_closing() as conn:
         task = kb.get_task(conn, tid)
         assert task is not None
-        if parent_finishes:
+        if parents == 'open':
+            assert response['ok'] and task.status == 'todo' and task.block_kind == 'dependency'
+        else:
             assert 'error' in response and task.status == 'running'
             assert task.current_run_id == worker.context['run_id']
-        else:
-            assert response['ok'] and task.status == 'todo' and task.block_kind == 'dependency'
 
 
 @pytest.mark.parametrize('surface', ['tool', 'cli'])
@@ -565,6 +567,21 @@ def test_goal_worker_handoff_requires_live_lease_at_write(worker, monkeypatch, s
         else:
             assert task.status == status and run.outcome == outcome and run.summary == evidence
     assert accepted is not expire
+
+
+@pytest.mark.parametrize('worker', [{'goal_mode': False}], indirect=True)
+def test_ordinary_worker_handoff_keeps_its_lease_rules(worker):
+    from tools import kanban_tools
+
+    tid, run_id = worker.context['task_id'], worker.context['run_id']
+    with connect_closing() as conn, kb.write_txn(conn):
+        conn.execute('UPDATE tasks SET claim_expires = 0 WHERE id = ?', (tid,))
+        conn.execute('UPDATE task_runs SET claim_expires = 0 WHERE id = ?', (run_id,))
+    # Outside goal mode an unreaped worker still completes its own run, as before.
+    assert json.loads(kanban_tools._handle_complete({'summary': 'Both sections verified.'}))['ok']
+    with connect_closing() as conn:
+        task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        assert task.status == 'done' and run.id == run_id and run.outcome == 'completed'
 
 
 @pytest.mark.parametrize('run_pin', ['', 'invalid'])

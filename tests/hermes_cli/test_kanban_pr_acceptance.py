@@ -135,14 +135,16 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.parametrize("expires_at", [None, "bind", "receipt"])
+@pytest.mark.parametrize("expires_at", [None, "prepare", "bind", "receipt"])
 def test_goal_pr_acceptance_writes_require_live_lease(github, monkeypatch, expires_at):
     from hermes_cli import kanban_pr_acceptance_store as store
 
     repo = "acme/repo"
     pr = f"https://github.com/{repo}/pull/7"
     with connect() as conn:
-        tid = kb.create_task(conn, title="Publish", completion_contract=repo, goal_mode=True)
+        # "prepare": the PR is already bound, so only the preparation snapshot stands before gh.
+        contract = pr if expires_at == "prepare" else repo
+        tid = kb.create_task(conn, title="Publish", completion_contract=contract, goal_mode=True)
         owner = kb.claim_task(conn, tid)
         assert owner is not None and owner.current_run_id is not None
         run_id = owner.current_run_id
@@ -165,13 +167,15 @@ def test_goal_pr_acceptance_writes_require_live_lease(github, monkeypatch, expir
             monkeypatch.setattr(store, "write_txn", after_lease_expires)
         elif expires_at == "receipt":
             github["race"] = expire_lease
+        elif expires_at == "prepare":
+            expire_lease()
 
         ok = kb.complete_task(conn, tid, result="Published", expected_run_id=run_id,
                               metadata={"published_pr": pr})
         task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
         assert task is not None and run is not None
         assert task.completion_contract == (repo if expires_at == "bind" else pr)
-        if expires_at == "bind":
+        if expires_at in {"prepare", "bind"}:
             assert not github["requests"]
         receipts = conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'",
                                 (tid,)).fetchone()[0]

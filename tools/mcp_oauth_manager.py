@@ -127,8 +127,9 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 prm = await handle_protected_resource_response(resp) if resp is not None else None
                 if prm:
                     self.context.protected_resource_metadata = prm
-                    if prm.authorization_servers:
-                        self.context.auth_server_url = str(prm.authorization_servers[0])
+                    if prm.authorization_servers:  # same choice as the SDK's 401 branch (honours oauth.auth_server_url)
+                        self.context.auth_server_url = self._select_authorization_server(
+                            [str(url) for url in prm.authorization_servers])
                     break
             # ASM discovery against auth_server_url (server_url fallback for legacy providers).
             for url in build_oauth_authorization_server_metadata_discovery_urls(self.context.auth_server_url, server_url):

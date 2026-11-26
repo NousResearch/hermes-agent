@@ -86,12 +86,28 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
+                 auth_server_override: str | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
+        # oauth.auth_server_url — see ``tools.mcp_oauth.configured_auth_server_override``.
+        self._hermes_auth_server_override = auth_server_override
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+
+    def _select_authorization_server(self, advertised: list[str]) -> str:
+        """The configured ``oauth.auth_server_url`` when set, else the SDK's choice. The SDK's browser
+        flow sets ``auth_server_url`` from this, and its expected issuer, credential binding and metadata
+        discovery all follow, so a pinned Entra tenant authority is checked against its own concrete
+        issuer by the SDK's unmodified RFC 8414 §3.3 check."""
+        override = getattr(self, "_hermes_auth_server_override", None)  # tests build via __new__
+        if override:
+            if override not in advertised:
+                self._hermes_logger.debug("MCP OAuth: using configured authorization server %s instead of "
+                                          "advertised %s", override, advertised)
+            return override
+        return super()._select_authorization_server(advertised)
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -639,4 +655,5 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        "auth_server_override": mo.configured_auth_server_override(cfg),
         **mo.cimd_provider_kwargs(cfg)}

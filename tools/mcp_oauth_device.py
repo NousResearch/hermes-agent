@@ -43,6 +43,11 @@ async def _discover(client, provider):
     # RFC 9728 lets a resource advertise several authorization servers; a browser-only
     # server often comes first and the device-code one later, so try each in order.
     servers = [str(url) for url in prm.authorization_servers] if prm else [None]
+    # oauth.auth_server_url pins the server, e.g. an Entra tenant authority instead of PRM's "common",
+    # whose metadata names a "{tenantid}" template issuer that the exact issuer check rejects.
+    override = getattr(provider, "_hermes_auth_server_override", None)
+    if override:
+        servers = [override]
     failures = []
     for auth_server_url in servers:
         try:
@@ -203,7 +208,7 @@ async def _authorize(client, provider, cfg):
 
 async def login_device(name, server_url, oauth_config):
     """Authorize then commit state in the active profile; failed grants preserve old state."""
-    from tools.mcp_oauth import _build_client_metadata
+    from tools.mcp_oauth import _build_client_metadata, configured_auth_server_override
     from tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
     from tools.mcp_oauth_provider import prepare_oauth_config
     from tools.mcp_tool import sdk_httpx
@@ -213,7 +218,8 @@ async def login_device(name, server_url, oauth_config):
     cfg["_resolved_port"] = cfg.get("redirect_port", 8420)
     provider = HermesMCPOAuthProvider(server_url=server_url, server_name=name, storage=storage,
                                      client_metadata=_build_client_metadata(cfg),
-                                     token_user_agent=cfg.get("user_agent"))
+                                     token_user_agent=cfg.get("user_agent"),
+                                     auth_server_override=configured_auth_server_override(cfg))
     httpx = sdk_httpx()
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:

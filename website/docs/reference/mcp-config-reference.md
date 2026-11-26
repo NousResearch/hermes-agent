@@ -370,7 +370,8 @@ login scans them in order and uses the first one whose metadata issuer matches i
 URL and that offers the `device_code` grant (a browser-only server listed first is skipped);
 the only accepted difference is the path-scoped shape described under "OAuth-authenticated HTTP servers"
 in the MCP feature guide (a server advertised as `https://host/path` whose document at
-`/.well-known/oauth-authorization-server/path` names `https://host`).
+`/.well-known/oauth-authorization-server/path` names `https://host`). `oauth.auth_server_url`
+replaces that list with the one server it names (see "Optional per-server keys" below).
 
 Set `oauth.flow: device` on the server to make `hermes mcp login` and `hermes mcp reauth`
 (including `reauth --all`) use device authorization. `login --flow browser` overrides that
@@ -426,11 +427,14 @@ mcp_servers:
       client_metadata_url: "https://example.com/my-cimd.json"  # self-hosted document
       cimd: false                                              # force DCR
       user_agent: "My-MCP-Client/1.0"                          # token-request User-Agent
+      auth_server_url: "https://login.microsoftonline.com/<tenant-id>/v2.0"  # pin the authorization server
 ```
 
 `client_metadata_url` must be an HTTPS URL with a path (no bare origin, no fragment, no userinfo, no `.`/`..` segments) that returns `200` and `Content-Type: application/json` with **no redirect** — authorization servers are forbidden from following redirects when fetching it. Hermes still pins its callback to the same `27890`–`27894` range, so a self-hosted document must declare all ten loopback URIs (`http://127.0.0.1:<port>/callback` and `http://localhost:<port>/callback` for each port), and its `client_id` must be its own URL.
 
 `user_agent` replaces the default `User-Agent` on **token-endpoint requests only** (authorization-code exchange, refresh and the device-flow token poll). Without it Hermes sends `Hermes-Agent/<version>` — never a header-less request, which WAF-fronted authorization servers answer with `403`. It never applies to MCP traffic, and no other token-request headers are configurable. Empty or null values are ignored. A failed exchange reports the status plus a short, redacted excerpt of the error body (a WAF's "Request blocked" page vs the issuer's `invalid_grant`), so the cause is visible without packet captures. `hermes mcp login` clears the stale grant and client registration before re-authorizing but keeps the cached authorization-server metadata, so the announced authorize URL stays the discovered one even when the metadata document cannot be re-fetched.
+
+`auth_server_url` (alias `issuer`) replaces the authorization server the resource's protected-resource metadata advertises, for browser and device login alike. Its metadata must still name it as the issuer exactly; nothing about issuer validation is relaxed. Microsoft Entra-fronted servers such as Dynamics 365 Business Central need it: they advertise the tenant-agnostic `https://login.microsoftonline.com/common/v2.0`, whose metadata names the templated issuer `https://login.microsoftonline.com/{tenantid}/v2.0`, so login fails with `Authorization server metadata issuer mismatch`. Set it to your tenant's authority, `https://login.microsoftonline.com/<tenant-id>/v2.0`, whose metadata names itself.
 
 OAuth discovery and dynamic-client-registration requests (the `/.well-known/...` metadata documents and the `registration_endpoint` POST) always carry `User-Agent: Hermes-Agent/<version>`. The MCP SDK builds those requests without any client default headers, and WAF-fronted authorization servers answer a header-less request with `403` — the metadata document then looks unreadable, registration falls back to a guessed `/register` on the MCP host, and the login fails with `Registration failed: 404`. When every metadata fetch does fail, the error now leads with those statuses (`Could not read authorization-server metadata (403 from https://…/.well-known/oauth-authorization-server; …)`) before the registration fallback's own error.
 

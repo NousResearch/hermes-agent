@@ -1,0 +1,20 @@
+name: context-tracker
+version: "1.2.0"
+repo: https://github.com/mu1ze/hermes-context-tracker
+sha: dacc41548760089d65fa08caf802dffbb2a46247
+title: Context Tracker
+description: "A small titlebar ring for context headroom, with cumulative session input/output and explicit compaction in the pinned panel."
+maintainer: mu1ze
+tier: community
+category: desktop
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/mu1ze/hermes-context-tracker#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/mu1ze/hermes-context-tracker/dacc41548760089d65fa08caf802dffbb2a46247/screenshots/context-tracker-pinned-dark.png
+  - https://raw.githubusercontent.com/mu1ze/hermes-context-tracker/dacc41548760089d65fa08caf802dffbb2a46247/screenshots/context-tracker-pinned-light.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -212,7 +212,9 @@ def test_cookie_upload_accepts_trusted_proxy_origin_only(upload_app, monkeypatch
                     headers={
                         **headers,
                         "Origin": origin,
-                        "Cookie": "; ".join(f"{k}={v}" for k, v in client.cookies.items()),
+                        # Behind the /hermes prefix the server sets __Secure- names, not __Host-.
+                        "Cookie": "; ".join(f"{k.replace('__Host-', '__Secure-')}={v}"
+                                            for k, v in client.cookies.items()),
                     },
                 )
                 assert response.status_code == expected, response.text

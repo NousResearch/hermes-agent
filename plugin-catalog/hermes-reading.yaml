@@ -1,0 +1,28 @@
+name: hermes-reading
+repo: https://github.com/forgoneops/hermes-reading
+sha: 15ee1768aaa54bc854f3b2056627ba4080963296
+description: "Discover public feeds and GitHub projects; read articles, PDFs and YouTube transcripts. On request, source text is sent to the configured Hermes model for summaries and Q&A. Disclosure — the reader fetches the feeds and pages you open directly from their sites (default feeds: hnrss.org, lobste.rs, rss.arxiv.org, simonwillison.net, openai.com), searches api.github.com without a token, reads YouTube captions through yt-dlp, and, if the optional faster-whisper extra is installed, downloads a Whisper model from Hugging Face to transcribe videos without captions; source text is sent to your configured Hermes model only when you ask for a summary or answer."
+maintainer: forgoneops
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+version: "0.1.1"
+title: "Hermes Reading"
+readme: true
+platforms: []
+onboarding: false
+capabilities:
+  provides_tools:
+    - reading_search
+    - reading_open
+    - reading_summarize
+    - reading_ask
+    - reading_save
+    - reading_note
+    - reading_delete
+    - reading_list
+    - reading_sources
+    - reading_projects
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

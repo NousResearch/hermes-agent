@@ -2,6 +2,7 @@
 import asyncio
 
 import pytest
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.mark.asyncio
@@ -14,7 +15,6 @@ async def test_refused_followups_are_each_told_they_were_not_answered(tmp_path, 
     from gateway.session_ingress import admit_message
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)  # B and C wait queued
@@ -36,11 +36,11 @@ async def test_refused_followups_are_each_told_they_were_not_answered(tmp_path, 
                 await asyncio.sleep(0.01)
     key = runner.session_store._generate_session_key(source)
     owner = runner.session_store.peek_session_id(key)
-    db = authority.db
+    db = authority.persistence
     # The chat moves to an older conversation while B and C wait (the real /resume handler).
-    db.create_session('older', source='discord', user_id='42', session_key=key, chat_id='42', chat_type='dm')
-    db.append_message('older', 'user', 'earlier')
-    db.set_session_title('older', 'older-chat')
+    seed_session(db, 'older', 'discord', title='older-chat', user_id='42', session_key=key, chat_id='42',
+                 chat_type='dm')
+    seed_messages(db, 'older', {'role': 'user', 'content': 'earlier'})
     resume = MessageEvent(text='/resume older-chat', source=source)
     with native_callback(runner, resume, get_hermes_home()):
         await runner._handle_message(resume)
@@ -54,8 +54,8 @@ async def test_refused_followups_are_each_told_they_were_not_answered(tmp_path, 
     await asyncio.wait_for(SessionAuthority._drain(authority, SessionRef(authority.profile_id, owner)), 10)
     replies = await asyncio.wait_for(asyncio.gather(*waiters), 5)
 
-    rows = {r['request_id']: (r['status'], r['outcome'])
-            for r in list_session_admissions(db, session_id=owner, pending_only=False)}
+    rows = {r.request_id: (r.status, r.outcome)
+            for r in db.admissions.list(session_id=owner, pending_only=False)}
     assert (ran, rows) == ([], {'B': ('terminal', 'cancelled'), 'C': ('terminal', 'cancelled')})
     for reply in replies:  # each refused message gets its own notice, and none claims it was saved
         assert reply and 'saved' not in reply and 'paused' not in reply, replies

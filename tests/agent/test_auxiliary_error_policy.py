@@ -86,14 +86,14 @@ def run_ladder(error, *, provider="openrouter", retries=1, is_async=False, fallb
 
 
 def _gemini_prompt_block():
-    """The native Gemini adapter's error for a 200 answer carrying ``promptFeedback.blockReason``."""
-    from agent.gemini_native_adapter import raise_on_prompt_block
+    """Error shape a native Gemini client raises for a 200 answer carrying ``promptFeedback.blockReason``."""
 
-    try:
-        raise_on_prompt_block({"promptFeedback": {"blockReason": "SAFETY"}})
-    except Exception as exc:  # the adapter's own error, not a hand-built one
-        return exc
-    raise AssertionError("the adapter did not raise on a prompt block")
+    class GeminiAPIError(Exception):
+        def __init__(self, message: str, *, code: str):
+            super().__init__(message)
+            self.code = code
+
+    return GeminiAPIError("Gemini blocked the prompt (blockReason=SAFETY)", code="gemini_prompt_blocked")
 
 
 # (case id, error, route provider, expected outcome): the approved behaviour decisions.

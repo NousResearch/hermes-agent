@@ -1181,3 +1181,45 @@ def test_router_never_builds_a_child_handler_under_a_lock_logging_shutdown_takes
     assert shutdown_got_router_lock == [True], (
         "lock-order inversion: logging.shutdown (under logging._lock) could not take the router's "
         "lock while the router built a child handler (which needs logging._lock)")
+
+
+def test_quiet_noisy_loggers_covers_httpx2():
+    """mcp SDK >= 2.0 rides on ``httpx2``, whose INFO request lines interpolate the
+    full URL (query credentials included) — it must be pinned at WARNING like httpx
+    (issue #133713)."""
+    hermes_logging._quiet_noisy_loggers()
+    assert logging.getLogger("httpx2").level == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_access_line_never_writes_a_query_credential_to_disk(hermes_home):
+    """The listener serving multiplexed profiles logs every request target with aiohttp's default
+    access logger, so a webhook's query-string auth (BlueBubbles ``?password=``) reached agent.log
+    despite the adapter's own ``access_log=None`` (#143550)."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    hermes_logging.setup_logging(hermes_home=hermes_home)
+    secret = "s3cr3t" + "P4ss" + "w0rd"
+    app = web.Application()
+    app.router.add_post("/p/work/bluebubbles-webhook", lambda _req: web.Response(text="ok"))
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(f"/p/work/bluebubbles-webhook?password={secret}&event=new-message")
+        assert resp.status == 200
+    hermes_logging.flush_log_queue()
+
+    log = (hermes_home / "logs" / "agent.log").read_text(encoding="utf-8-sig")
+    assert "/p/work/bluebubbles-webhook?password=***&event=new-message" in log
+    assert secret not in log
+
+
+def test_strict_url_pass_covers_absolute_urls_on_every_log_line():
+    """A log file is a persistence sink (#133713): an absolute URL's credential params are masked on
+    every logger, not only aiohttp's access line (whose relative request target keeps its own pass)."""
+    from agent.redact import RedactingFormatter
+
+    fmt = RedactingFormatter("%(message)s")
+    line = "open https://example.com/magic?token=abcdef123456 to continue"
+    for name in ("aiohttp.access", "gateway.run"):
+        formatted = fmt.format(logging.LogRecord(name, logging.INFO, __file__, 1, line, None, None))
+        assert formatted == "open https://example.com/magic?token=*** to continue", name

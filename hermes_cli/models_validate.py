@@ -431,7 +431,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)
-    catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
+    catalog = list(_m.static_catalog(normalized))
     if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
         return None
     if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):
@@ -748,19 +748,25 @@ def _is_custom(req: _Request) -> bool:
     return req.normalized == "custom" or req.normalized.startswith("custom:")
 
 
+def _is_openrouter_host(req: _Request) -> bool:
+    """Native OpenRouter, or a custom provider pointed at openrouter.ai: its account-scoped presets are
+    absent from /v1/models either way, so probing one only yields a false "not found" note (#97907)."""
+    return req.normalized == "openrouter" or bool(req.base_url and base_url_host_matches(req.base_url, "openrouter.ai"))
+
+
 def _for(*providers: str) -> Callable[[_Request], bool]:
     return lambda req: req.normalized in providers
 
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
 # BEHAVIOR: moa → whitespace (skipped only for self-hosted providers and a user-configured
-# base_url) → OpenRouter preset parse → LM Studio → Ollama native → custom →
+# base_url) → OpenRouter preset parse (native or openrouter.ai host) → LM Studio → Ollama native → custom →
 # codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
 # Anthropic Messages → external process → live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
     (lambda req: True, _reject_whitespace),
-    (_for("openrouter"), _parse_openrouter_preset),
+    (_is_openrouter_host, _parse_openrouter_preset),
     (_for("lmstudio"), _validate_lmstudio),
     (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),

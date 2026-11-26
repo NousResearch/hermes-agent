@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_read import session_row
 from tests.gateway.test_stored_history_mount import _connect
 from agent.prompt_refresh import stamp_prompt_epoch
 from agent.turn_facade_lease import admit_durable_turn_lease
@@ -72,9 +74,9 @@ async def test_published_children_open_before_any_child_starts(
         if event == "subagent.spawn_requested":
             sid = payload["child_session_id"]
             # Check at publication, not just after the constructor returns.
-            published.append((sid, connection.authority.db.get_session(sid)))
+            published.append((sid, session_row(connection.authority.persistence, sid)))
 
-    parent = _parent(connection.authority.db, parent_ref.session_id, on_progress)
+    parent = _parent(connection.authority.persistence, parent_ref.session_id, on_progress)
     children = []
     try:
         # All batch children are built before the executor starts them. The second child
@@ -135,7 +137,7 @@ async def test_published_children_open_before_any_child_starts(
                 # freeze the reserved row's config and drop the lineage marker.
                 stamp_prompt_epoch(child, 17)
                 child._ensure_db_session()
-                ready = connection.authority.db.get_session(sid)
+                ready = session_row(connection.authority.persistence, sid)
                 config = json.loads(ready["model_config"])
                 assert config["_delegate_from"] == parent_ref.session_id
                 assert config["synthetic_startup_setting"] == "ready"
@@ -143,10 +145,10 @@ async def test_published_children_open_before_any_child_starts(
                 assert config["prompt_refresh_epoch"] == 17
                 # Without the marker the parent's resume followed the child as a continuation,
                 # so opening the parent showed the subagent transcript.
-                db = connection.authority.db
-                db.append_message(parent_ref.session_id, "user", "parent turn")
-                db.append_message(sid, "assistant", "child report")
-                assert db.resolve_resume_session_id(parent_ref.session_id) == parent_ref.session_id
+                db = connection.authority.persistence
+                db.messages.append(parent_ref.session_id, NewMessage(role="user", content="parent turn"))
+                db.messages.append(sid, NewMessage(role="assistant", content="child report"))
+                assert db.lineage.resolve_resume_target(parent_ref.session_id) == parent_ref.session_id
                 assert ready["system_prompt"] == "Synthetic completed prompt"
                 assert ready["model"] == "synthetic-model"
                 assert child._session_db_created
@@ -163,27 +165,31 @@ async def test_failed_reservation_closes_unpublished_child_and_a_later_build_can
     monkeypatch,
     offline_children,
 ):
-    from hermes_state import SessionDB
-    from hermes_state_registry import stats
+    import persistence_assembly
+    from tests.fixtures.storage_holder import session_repository_type
+
+    def open_handles():
+        return sum(entry[1] for entry in persistence_assembly._shared.values())
 
     connection, parent_ref = await _connect(tmp_path, monkeypatch, "sub-1")
     published = []
     parent = _parent(
-        connection.authority.db,
+        connection.authority.persistence,
         parent_ref.session_id,
         lambda *a, **kw: published.append(kw),
     )
-    create_session = SessionDB.create_session
+    repository = session_repository_type()
+    create_session = repository.create
     failed = []
 
-    def fail_once(db, session_id, source, **kwargs):
-        if source == "subagent" and not failed:
-            failed.append(db)
+    def fail_once(sessions, spec):
+        if spec.source == "subagent" and not failed:
+            failed.append(sessions)
             raise sqlite3.OperationalError("synthetic reservation failure")
-        return create_session(db, session_id, source, **kwargs)
+        return create_session(sessions, spec)
 
-    monkeypatch.setattr(SessionDB, "create_session", fail_once)
-    references_before = stats()["total_refcounts"]
+    monkeypatch.setattr(repository, "create", fail_once)
+    references_before = open_handles()
     build = partial(
         _build_child_agent,
         task_index=0,
@@ -199,12 +205,12 @@ async def test_failed_reservation_closes_unpublished_child_and_a_later_build_can
         build()
     assert not published
     assert not parent._active_children
-    assert stats()["total_refcounts"] == references_before
-    assert connection.authority.db.get_session(parent_ref.session_id) is not None
+    assert open_handles() == references_before
+    assert session_row(connection.authority.persistence, parent_ref.session_id) is not None
 
     child = build()
     try:
-        assert connection.authority.db.get_session(child.session_id) is not None
+        assert session_row(connection.authority.persistence, child.session_id) is not None
         assert published
     finally:
         child.close()

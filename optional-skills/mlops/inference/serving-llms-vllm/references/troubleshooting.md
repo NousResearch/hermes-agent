@@ -271,10 +271,7 @@ vllm serve MODEL --quantization gptq  # For GPTQ models
 **Diagnostic**:
 
 1. **Verify model is correctly quantized**:
-```bash
-# Check model config.json for quantization_config
-cat ~/.cache/huggingface/hub/models--MODEL/config.json
-```
+`read_file` `~/.cache/huggingface/hub/models--MODEL/config.json` and check `quantization_config`.
 
 2. **Try different quantization method**:
 ```bash

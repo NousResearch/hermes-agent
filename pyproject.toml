@@ -7,12 +7,13 @@ name = "hermes-agent"
 version = "0.0.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-# 3.14 is the newest python we know we have wheels for.
+# 3.14 is the python we ship. 3.15 is allowed so it can be tested ahead of
+# a switch; extras with no 3.15 wheels are gated off it.
 # we *only* support 3.14, BUT we need to allow old hermes installs on <3.14
 # to get thru their update step on old python.
 # Shortly after they do, we update to our latest python.
 # See tests/compat/README.md for the updater contract this keeps.
-requires-python = ">=3.11,<3.15"
+requires-python = ">=3.11,<3.16"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -57,7 +58,8 @@ dependencies = [
   # 0.18.16 only pulls in its C parser below 3.14, so every 3.14 install parsed YAML
   # (plugin manifests, config) in pure Python: ~5 s of gateway startup on 1 vCPU.
   # Declared where clib ships a cp314 wheel; elsewhere hermes_yaml falls back to pure.
-  "ruamel.yaml.clib==0.2.15; python_version >= '3.14' and platform_python_implementation == 'CPython' and (sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine in 'x86_64 aarch64 i686') or (sys_platform == 'win32' and platform_machine in 'AMD64 x86'))",
+  # 0.2.15 has no 3.15 wheels; ruamel.yaml falls back to its pure-Python loader there.
+  "ruamel.yaml.clib==0.2.15; python_version >= '3.14' and python_version < '3.15' and platform_python_implementation == 'CPython' and (sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine in 'x86_64 aarch64 i686') or (sys_platform == 'win32' and platform_machine in 'AMD64 x86'))",
   "requests==2.34.2; python_version >= '3.14'",  # CVE-2026-25645
   "jinja2==3.1.6; python_version >= '3.14'",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,
@@ -148,7 +150,7 @@ dependencies = [
   # we declare the working components inline and gate uvloop behind the
   # [uvloop] optional extra — desktop/server profiles pull it via [all].
   "uvicorn>=0.31.0,<1; python_version >= '3.14'",
-  "httptools>=0.6.3,<0.9; python_version >= '3.14'",
+  "httptools>=0.9.0,<0.11; python_version >= '3.14'",  # 0.9.0: first with 3.15 wheels
   "watchfiles>=0.20,<2; python_version >= '3.14'",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
@@ -162,7 +164,7 @@ dependencies = [
   # Desktop SSH's Windows remote runtime (hermes_cli/windows_ssh_runtime.py)
   # imports win32security/win32file/etc. directly — declare pywin32 rather than
   # relying on the concurrent-log-handler → portalocker transitive chain.
-  "pywin32>=306,<312; sys_platform == 'win32' and python_version >= '3.14'",
+  "pywin32>=306,<313; sys_platform == 'win32' and python_version >= '3.14'",
   # App Installer checks use Package from ApplicationModel. Foundation
   # supplies the URI and async result types projected when the checker runs.
   "winrt-windows-applicationmodel>=3.2.1,<4; sys_platform == 'win32' and python_version >= '3.14'",
@@ -250,18 +252,18 @@ edge-tts = ["edge-tts==7.3.1"]
 # setup requests report unavailable rather than succeeding with an empty set.
 neutts = ["neutts[all]==1.4.1; python_version < '3.14'"]
 kittentts = [
-  "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl ; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
+  "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl ; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android' and python_version < '3.15'",
   # KittenTTS requires misaki[en]>=0.9.4, and PyPI's misaki 0.9.4 caps Python
   # below 3.13. The NousResearch fork is the same 0.9.4 code with the cap
   # raised to <3.15. Declaring it here makes KittenTTS's transitive
   # requirement resolve to the fork. Drop this line when upstream misaki
   # publishes a release that allows 3.14.
-  "misaki[en] @ git+https://github.com/NousResearch/misaki.git@f03fd2be7346952a83d3d4845c217fc7667f322d ; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
-  "soundfile==0.14.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
+  "misaki[en] @ git+https://github.com/NousResearch/misaki.git@f03fd2be7346952a83d3d4845c217fc7667f322d ; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android' and python_version < '3.15'",
+  "soundfile==0.14.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android' and python_version < '3.15'",
 ]
 # onnxruntime has no Intel macOS or Android wheel. Piper has no Windows ARM64 wheel.
 piper = [
-  "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
+  "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android' and python_version < '3.15'",
 ]
 modal = ["modal==1.6.2"]
 daytona = ["daytona==0.225.0"]
@@ -309,12 +311,12 @@ voice = [
   # targets: ctranslate2 has no win_arm64 wheel/sdist (win32-arm64), and
   # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
   # STT path off both; sounddevice/numpy still ship.
-  "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android' and python_version < '3.15'",
   # faster-whisper 1.2.1 passes `metadata_errors` to av.open(), a kwarg PyAV 19
   # removed, so every local transcription dies with a TypeError (#135245). The fix
   # (SYSTRAN/faster-whisper#1495) is unreleased and faster-whisper declares only
   # av>=11, so pin av until a faster-whisper release carries it.
-  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android' and python_version < '3.15'",
   "sounddevice==0.5.6",
   "numpy==2.5.4",
 ]
@@ -325,14 +327,15 @@ wake = [
   # Its universal2 wheel contains an ARM64-only library, so Intel Macs cannot
   # load it. There is no native Windows ARM64 wheel either.
   "pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
-  "sherpa-onnx==1.13.8",
+  # sherpa-onnx 1.13.8 has no 3.15 wheels.
+  "sherpa-onnx==1.13.8; python_version < '3.15'",
   # uv reads sherpa-onnx metadata from its cp311-linux_armv7l wheel, which
   # omits this pin. Every wheel the bundles install requires it. Without the
   # pin a frozen sync installs sherpa-onnx alone, and desktop dependency
   # preparation fails on `uv pip check`.
-  "sherpa-onnx-core==1.13.8",
+  "sherpa-onnx-core==1.13.8; python_version < '3.15'",
   # text2token imports both tokenizers even for English phrases.
-  "sentencepiece==0.2.2",
+  "sentencepiece==0.2.2; python_version < '3.15'",
   "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.6",
@@ -347,9 +350,9 @@ telegram = ["python-telegram-bot[webhooks]==22.8"]
 discord = ["discord.py[voice]==2.7.1"]
 # stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
 stt-whisper = [
-  "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android' and python_version < '3.15'",
   # Same av pin as [voice]: PyAV 19 breaks faster-whisper 1.2.1 (#135245).
-  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android' and python_version < '3.15'",
 ]
 audio-io = ["sounddevice==0.5.6", "numpy==2.5.4"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).
@@ -360,10 +363,10 @@ wake-openwakeword = [
   "pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
 ]
 wake-sherpa = [
-  "sherpa-onnx==1.13.8",
+  "sherpa-onnx==1.13.8; python_version < '3.15'",
   # Required by the sherpa-onnx wheel. See [wake] for why it is explicit.
-  "sherpa-onnx-core==1.13.8",
-  "sentencepiece==0.2.2",
+  "sherpa-onnx-core==1.13.8; python_version < '3.15'",
+  "sentencepiece==0.2.2; python_version < '3.15'",
   "pypinyin==0.55.0",
 ]
 wake-porcupine = ["pvporcupine==4.0.3"]
@@ -636,13 +639,15 @@ wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') an
 # extra, rebuild the whole dependency environment and still fail the anchor on every retry.
 # Gate the extra that carries only faster-whisper; [voice] also has ungated deps (sounddevice,
 # numpy) and stays installable, see test_declared_extra_gates_match_dependency_selection.
-stt-whisper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'"
+stt-whisper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android' and python_version < '3.15'"
 # NeuTTS excludes Python 3.14.
 neutts = "python_version < '3.14'"
 # KittenTTS: onnxruntime has no Intel macOS or Android wheel; misaki[en]'s torch has no
-# Windows ARM64 wheel.
-kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
-piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'"
+# Windows ARM64 wheel. onnxruntime has no 3.15 wheels, and the misaki fork caps Python <3.15.
+kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android' and python_version < '3.15'"
+piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android' and python_version < '3.15'"
+# sherpa-onnx 1.13.8 has no 3.15 wheels.
+wake-sherpa = "python_version < '3.15'"
 # no playwright on android
 google-meet = "sys_platform != 'android'"
 
@@ -650,7 +655,7 @@ google-meet = "sys_platform != 'android'"
 # uv otherwise enables the dev group by default, including in payload builds.
 default-groups = []
 # 3.11 is an install bridge for pre-PM updaters, never a runtime, so the lock
-# covers 3.14 only. Without this the lock must resolve every supported version,
+# covers 3.14 and later. Without this the lock must resolve every supported version,
 # where extras that only ever coexist on 3.14 (kittentts vs neutts) conflict.
 environments = ["python_version >= '3.14'"]
 override-dependencies = [

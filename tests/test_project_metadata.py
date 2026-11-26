@@ -27,7 +27,7 @@ def test_wake_dependencies_and_runtime_gate_agree_on_supported_targets():
         ("win32", "Windows", "ARM64", False),
     ]
     for system, platform_system, machine, supported in targets:
-        environment = {**default_environment(), "sys_platform": system,
+        environment = {**default_environment(), "sys_platform": system, "python_version": "3.14",
                        "platform_system": platform_system, "platform_machine": machine}
         for extra in ("wake", "wake-openwakeword"):
             requirement = next(req for spec in optional[extra]

@@ -101,11 +101,11 @@ def test_faster_whisper_targets_are_gated(monkeypatch):
     monkeypatch.setattr(extras, "_PLATFORM_GATES", None)
     targets = {
         "win32-arm64": {"sys_platform": "win32", "platform_system": "Windows",
-                        "platform_machine": "ARM64", "os_name": "nt"},
+                        "platform_machine": "ARM64", "os_name": "nt", "python_version": "3.14"},
         "darwin-x64": {"sys_platform": "darwin", "platform_system": "Darwin",
-                       "platform_machine": "x86_64", "os_name": "posix"},
+                       "platform_machine": "x86_64", "os_name": "posix", "python_version": "3.14"},
         "linux-x64": {"sys_platform": "linux", "platform_system": "Linux",
-                      "platform_machine": "x86_64", "os_name": "posix"},
+                      "platform_machine": "x86_64", "os_name": "posix", "python_version": "3.14"},
     }
     supported = {
         target: extras.extra_supported("stt-whisper", environment=environment,

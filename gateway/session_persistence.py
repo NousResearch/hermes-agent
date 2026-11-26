@@ -670,11 +670,11 @@ class SessionPersistenceMixin:
         except Exception as exc:
             logger.warning("gateway.session: recovered state.db routing load failed: %s", exc)
             return
-        current = self._entries_as_dicts()
+        current = self._routing_data_locked()  # a held row counts as loaded too (its plugin may register meanwhile)
+        held = self._lazy("_unparsed_routes", dict)
         for key, entry_json in durable.items():
             durable_entry = self._routing_entry_from_json(key, entry_json)
             if durable_entry is None:
-                held = getattr(self, "_unparsed_routes", None) or {}
                 if key not in self._entries and (
                         key not in baseline or (key in held and held[key] == baseline[key])):
                     # A DB-only row is held; an unchanged held mirror copy yields to the DB copy, a changed
@@ -689,6 +689,7 @@ class SessionPersistenceMixin:
                 continue  # loaded from fallback and deliberately removed
             elif current[key] == baseline[key]:
                 self._entries[key] = durable_entry  # unchanged fallback data yields to the DB copy
+                held.pop(key, None)
         self._heal_missing_origins(self._entries.values())
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None

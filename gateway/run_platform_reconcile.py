@@ -7,6 +7,13 @@ registers a platform mid-run fires the ``on_plugin_loaded`` subscription (``run_
 ``reconcile-platforms`` control verb (dashboard/Desktop save, ``hermes config set``) runs it at once and
 answers each platform's live state, so a caller can say "applied" or "restart needed" truthfully.
 
+A platform whose plugin is not installed yet arrives the same way: when the profile's credential layer
+(its ``.env``) changed, the reconcile first runs the gateway-start plugin recovery for that profile
+(``gateway.run_startup.recover_left_core_in``: the catalog plugin of a platform it now has credentials
+for), then starts what the installed plugin registers. A gateway start runs that recovery beside the
+start (:func:`recover_plugins_beside_start`), never long ahead of the platforms that are ready: a plugin
+it (or another installer) lands later is started by this reconcile once it loads.
+
 The diff is generic: every build attempt (boot's and a mid-run one, through the one prepare path) records
 a :class:`BuildPrint` of what it read (typed settings, ``extra``, plugin registration, the ``.env`` values
 the platform owns); a reconcile compares the prints of what the reloaded config wants (enabled, and under
@@ -42,6 +49,10 @@ _RUNNER_OWNED_FIELDS = frozenset({"home_channel"})
 _TURN_POLL_SECS = 0.5
 # The control verb answers within this; a longer connect keeps running and the answer says ``pending``.
 _VERB_WAIT_SECS = 10.0
+# A gateway start gives its plugin recovery this head start: an install that lands within it is in the
+# runner's first config (served by the start itself); a longer one (a clone, another installer's lock)
+# goes on beside the start and its platform is started live when it lands.
+_RECOVERY_HEAD_START_SECS = 5.0
 
 
 # ── build prints ─────────────────────────────────────────────────────────────────────────────────
@@ -132,11 +143,23 @@ def _turn_platform(session_key: str) -> str:
     return parts[2] if len(parts) > 2 else ""
 
 
-def _receipt(profile: str, started, restarted, stopped, states: dict, reasons: dict) -> dict:
-    """The one ``reconcile-platforms`` answer shape, primary and secondary alike."""
+def _receipt(profile: str, started, restarted, stopped, states: dict, reasons: dict, installed=()) -> dict:
+    """The one ``reconcile-platforms`` answer shape, primary and secondary alike. ``installed``: plugins
+    this reconcile installed for the profile (its credentials named a platform that had none)."""
     return {"applied": True, "profile": profile, "changed": bool(started or restarted or stopped),
             "started": [p.value for p in started], "restarted": [p.value for p in restarted],
-            "stopped": [p.value for p in stopped], "platforms": states, "reasons": reasons}
+            "stopped": [p.value for p in stopped], "platforms": states, "reasons": reasons,
+            "installed": list(installed)}
+
+
+def _credential_print(home: Path) -> str:
+    """Digest of ``home``'s ``.env``: the layer a platform's credentials arrive in (``hermes config set``,
+    the dashboard / Desktop save, an edit). Only its change re-runs the plugin recovery, so other config
+    writes never re-attempt an install that keeps failing."""
+    try:
+        return hashlib.sha256((home / ".env").read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _dependency_blocked(config: Any) -> dict:
@@ -163,6 +186,8 @@ class GatewayPlatformReconcileMixin:
 
     _primary_platform_signature: Optional[tuple] = None
     _primary_platform_plan: Optional[PlatformPlan] = None
+    _primary_credential_print: Optional[str] = None
+    _primary_installing: bool = False  # the reconcile is installing a plugin the new credentials need
 
     # ── triggers ─────────────────────────────────────────────────────────────────────────────────
 
@@ -170,9 +195,10 @@ class GatewayPlatformReconcileMixin:
         """Startup, before any adapter is built: the files the boot config was just read from are the
         baseline, so an edit landing during a slow startup reads as a change at the watcher's start."""
         from gateway.run_profile_reconcile import profile_serve_signature
+        home = self._primary_platform_home()
         with _log_suppressed(logging.DEBUG, "primary platform baseline failed", exc_info=True):
-            self._primary_platform_signature = await asyncio.to_thread(
-                profile_serve_signature, self._primary_platform_home())
+            self._primary_credential_print = await asyncio.to_thread(_credential_print, home)
+            self._primary_platform_signature = await asyncio.to_thread(profile_serve_signature, home)
 
     async def _start_primary_platform_watch(self) -> None:
         """Watcher start: apply at once whatever changed since boot read its config."""
@@ -212,12 +238,12 @@ class GatewayPlatformReconcileMixin:
                 # Taken before the read: an edit landing during this apply is seen by the next tick.
                 signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
                 try:
-                    plan = await self._apply_primary_platform_plan(reason)
+                    plan, installed = await self._apply_primary_platform_plan(reason)
                 finally:
                     self._primary_platform_plan = None
                 self._primary_platform_signature = signature
             return _receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
-                            dict(getattr(self, "_primary_blocked_platforms", None) or {}))
+                            dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed)
         home = (self._served_profile_homes or {}).get(profile_name)
         if home is None:
             return {"applied": False, "error": f"profile '{profile_name}' is not served by this gateway"}
@@ -287,15 +313,38 @@ class GatewayPlatformReconcileMixin:
             self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
         return None
 
+    def _recover_primary_plugins(self, home: Path) -> list:
+        """Blocking. When ``home``'s credential layer changed since the last look: the gateway-start
+        plugin recovery for it (a platform whose credentials just arrived gets its catalog plugin, loaded
+        in this process), so the reconcile below starts it. Returns the installed plugin names."""
+        from gateway.run_startup import recover_left_core_in
+        from hermes_constants import get_process_hermes_home, hermes_home_key
+        credentials = _credential_print(home)
+        if credentials == self._primary_credential_print:
+            return []
+        self._primary_installing = True
+        try:
+            # The launch home's secret sources were hydrated at boot (as recover_left_core_at_gateway_start).
+            launch = hermes_home_key(home) == hermes_home_key(get_process_hermes_home())
+            installed = recover_left_core_in(home, hydrate_secrets=not launch)
+        finally:
+            self._primary_installing = False
+        self._primary_credential_print = credentials
+        if installed:
+            logger.info("Platform reconcile: installed %s for the credentials this profile now has", installed)
+        return installed
+
     def _load_primary_platforms_now(self) -> tuple:
-        """Blocking (off-loop). ``(config, wanted prints, blocked)``: the launch profile's gateway config
-        as the files say now, the build print of every platform it wants, and the configured plugin
-        platforms the config sweep dropped because their dependencies do not import here. Standalone
-        re-reads ``.env`` into ``os.environ`` first (main's ``/reload``: its adapters read it there);
-        under multiplex the default profile's scope is the credential source, never ``os.environ``."""
+        """Blocking (off-loop). ``(config, wanted prints, blocked, installed)``: the launch profile's gateway
+        config as the files say now (after :meth:`_recover_primary_plugins`), the build print of every
+        platform it wants, the configured plugin platforms the config sweep dropped because their
+        dependencies do not import here, and the plugins the recovery installed. Standalone re-reads
+        ``.env`` into ``os.environ`` first (main's ``/reload``: its adapters read it there); under multiplex
+        the default profile's scope is the credential source, never ``os.environ``."""
         from gateway.config import load_gateway_config
         from gateway.run import _profile_runtime_scope
         home = self._primary_platform_home()
+        installed = self._recover_primary_plugins(home)
         if self._multiplex_on():
             from agent.secret_scope import invalidate_env_file_cache
             invalidate_env_file_cache(home / ".env")
@@ -307,10 +356,12 @@ class GatewayPlatformReconcileMixin:
             reload_env()
             fresh = load_gateway_config()
             wanted = [(p, c) for p, c in fresh.platforms.items() if self._primary_platform_wanted(p, c)]
-        return fresh, {p: (c, self._primary_build_print(p, c)) for p, c in wanted}, _dependency_blocked(fresh)
+        prints = {p: (c, self._primary_build_print(p, c)) for p, c in wanted}
+        return fresh, prints, _dependency_blocked(fresh), installed
 
-    async def _apply_primary_platform_plan(self, reason: str) -> PlatformPlan:
-        fresh, wanted, self._primary_blocked_platforms = await self._run_housekeeping_in_executor(
+    async def _apply_primary_platform_plan(self, reason: str) -> tuple:
+        """``(plan applied, plugins installed first)``."""
+        fresh, wanted, self._primary_blocked_platforms, installed = await self._run_housekeeping_in_executor(
             self._load_primary_platforms_now)
         built = getattr(self, "_primary_build_prints", None)
         if built is None:
@@ -320,7 +371,7 @@ class GatewayPlatformReconcileMixin:
         for platform in plan.forget:
             built.pop(platform, None)
         if not plan:
-            return plan
+            return plan, installed
         self._primary_platform_plan = plan  # what a ``pending`` verb answer reports while this runs
         logger.info("Platform reconcile (%s): start=%s restart=%s stop=%s", reason,
                     [p.value for p in plan.start], [p.value for p in plan.restart], [p.value for p in plan.stop])
@@ -333,7 +384,7 @@ class GatewayPlatformReconcileMixin:
             else:
                 self.config.platforms.pop(platform, None)
         await self._hot_start_primary_platforms([(p, *wanted[p]) for p in (*plan.restart, *plan.start)])
-        return plan
+        return plan, installed
 
     async def _hot_start_primary_platforms(self, items: list) -> None:
         """Boot's prepare -> connect -> publish-or-queue path for platforms started mid-run. Under multiplex
@@ -540,6 +591,60 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
             # Still connecting (or draining a turn): name what it is doing, so callers can say so.
             plan = runner.platform_plan_in_flight(name) or PlatformPlan((), (), ())
             return {"applied": True, "pending": True, "starting": [p.value for p in plan.start],
-                    "restarting": [p.value for p in plan.restart], "stopping": [p.value for p in plan.stop]}
+                    "restarting": [p.value for p in plan.restart], "stopping": [p.value for p in plan.stop],
+                    "installing": name is None and bool(getattr(runner, "_primary_installing", False))}
 
     return _handler
+
+
+def recover_plugins_beside_start() -> asyncio.Future:
+    """Gateway start: the left-core / catalog plugin recovery for the homes the runner loads first, run
+    beside the start instead of ahead of it, so an install (or a wait on another installer's lock) never
+    holds back the platforms that are ready. Await :func:`recovered_before_start` on it, then hand it to
+    :func:`start_recovered_platforms` when it was still running."""
+    import contextvars
+    import threading
+    from gateway.run_startup import recover_left_core_at_gateway_start
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    context = contextvars.copy_context()
+
+    def _settle(outcome, error) -> None:
+        if not future.done():
+            future.set_exception(error) if error is not None else future.set_result(outcome)
+
+    def _run() -> None:
+        try:
+            outcome, error = context.run(recover_left_core_at_gateway_start), None
+        except Exception as exc:  # health: allow BLE001 -- handed to the awaiting start, never lost
+            outcome, error = None, exc
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(_settle, outcome, error)
+
+    # A daemon thread, not the loop's executor: a clone that hangs must not hold a gateway stop.
+    threading.Thread(target=_run, name="gateway-start-plugin-recovery", daemon=True).start()
+    return future
+
+
+async def recovered_before_start(recovery: asyncio.Future) -> Optional[bool]:
+    """The recovery's verdict (a platform plugin installed) when it finishes within
+    :data:`_RECOVERY_HEAD_START_SECS`; None while it still runs (it then goes on beside the start)."""
+    done, _pending = await asyncio.wait({recovery}, timeout=_RECOVERY_HEAD_START_SECS)
+    if not done:
+        logger.info("Plugin install for this profile's platforms continues beside the start; "
+                    "the platforms it brings start when it lands")
+        return None
+    return bool(recovery.result())
+
+
+def start_recovered_platforms(runner: Any, recovery: asyncio.Future) -> None:
+    """Once the runner runs: when the still-running recovery installs a platform plugin, reconcile the
+    launch profile, which starts the platform the plugin registers."""
+    def _done(future: asyncio.Future) -> None:
+        if future.cancelled():
+            return
+        if future.exception() is not None:
+            logger.warning("gateway-start plugin recovery failed: %s", future.exception())
+        elif future.result():
+            runner._schedule_platform_reconcile(None, "plugin-installed")
+    recovery.add_done_callback(_done)

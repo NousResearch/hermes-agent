@@ -772,6 +772,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._foreign_bridge_session = None
         self._bridge_probe_timed_out = False
         self._bridge_holder_unproven = False
+        if not self._bridge_token:
+            self._bridge_token = await self._mint_bridge_token()
         try:
             ok, data = await self._probe_bridge_health()
             if not ok:

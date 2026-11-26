@@ -703,12 +703,21 @@ class TestReconnectFastPath:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         bridge = tmp_path / "bridge.js"
         bridge.write_text("// bridge identity v1\n", encoding="utf-8")
+        (tmp_path / "bridge_auth.js").write_text("// auth v1\n", encoding="utf-8")
+        (tmp_path / "package.json").write_text('{"name":"test-bridge"}\n', encoding="utf-8")
         session_dir = tmp_path / "session"
         session_dir.mkdir()
         (session_dir / "creds.json").write_text("{}", encoding="utf-8")
+        token = whatsapp._load_or_create_bridge_token(session_dir)
         adapter = whatsapp.WhatsAppAdapter(PlatformConfig(extra={
             "bridge_script": str(bridge), "session_path": str(session_dir),
         }))
+        adapter._bridge_token = token
+        whatsapp._write_bridge_fingerprint(
+            session_dir,
+            whatsapp._bridge_config_fingerprint(adapter._bridge_env(), adapter._bridge_package_hash()),
+        )
+        adapter._bridge_token = ""  # verify reconnect loads the persisted token before probing
         events = []
         monkeypatch.setattr(whatsapp, "check_whatsapp_requirements", lambda: True)
         # Isolate machine-global lock files and the external npm boundary only.
@@ -719,17 +728,24 @@ class TestReconnectFastPath:
         monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: events.append("unlock"))
         monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda directory: events.append("npm") or False)
         app = web.Application()
+        async def auth_proof(request):
+            assert events[0] == "lock"
+            challenge = request.headers.get("X-Hermes-Bridge-Challenge", "")
+            return web.json_response({"authProof": whatsapp._bridge_auth_proof(token, challenge)})
         async def health(request):
             assert events[0] == "lock"
+            assert request.headers.get("Authorization") == f"Bearer {token}"
             events.append("health")
             return web.json_response({
-                "status": "connected", "scriptHash": whatsapp._file_content_hash(bridge),
-                "sendReadReceipts": False,
+                "status": "connected", "scriptHash": whatsapp._bridge_source_hash(bridge),
+                "sendReadReceipts": False, "session": str(session_dir),
             })
         async def messages(request):
             return web.json_response([])
+        app.router.add_get("/auth-proof", auth_proof)
         app.router.add_get("/health", health)
         app.router.add_get("/messages", messages)
+        app["auth_proof_handler"] = auth_proof
         return adapter, app, events
 
     @pytest.mark.asyncio
@@ -803,6 +819,7 @@ class TestReconnectFastPath:
             assert adapter._running is lock_allowed
             if lock_allowed:
                 assert adapter._bridge_process is None
+                assert adapter._bridge_token != ""
                 assert adapter._http_session is not None
                 assert adapter._poll_task is not None
         finally:
@@ -815,12 +832,14 @@ class TestReconnectFastPath:
         from aiohttp import web
 
         adapter, app, events = live_bridge
+        auth_proof = app["auth_proof_handler"]
         if change == "script":
             # The server keeps the old identity while the local file changes.
             async def health(request):
                 events.append("health")
                 return web.json_response({"status": "connected", "scriptHash": "stale", "sendReadReceipts": False})
             app = web.Application()
+            app.router.add_get("/auth-proof", auth_proof)
             app.router.add_get("/health", health)
         elif change == "receipts":
             adapter._send_read_receipts = True
@@ -830,6 +849,7 @@ class TestReconnectFastPath:
                 return (web.Response(text="not json") if change == "json" else
                         web.json_response({"status": "connecting"}, status=503 if change == "http" else 200))
             app = web.Application()
+            app.router.add_get("/auth-proof", auth_proof)
             app.router.add_get("/health", health)
         runner = web.AppRunner(app)
         await runner.setup()

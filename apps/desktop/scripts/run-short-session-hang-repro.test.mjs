@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { test } from 'vitest'
 
 import { teardownOrder } from './run-short-session-hang-repro.mjs'
 

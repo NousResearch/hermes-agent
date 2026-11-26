@@ -397,7 +397,8 @@ def test_entry_changed_since_sign_in_is_not_used(idp, api, change):
     assert len(idp.token_requests) == posts and allowed.seen == []
 
 
-def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_working(idp, api):
+@pytest.mark.parametrize("granted", ["read write", "read,write"])
+def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_working(idp, api, granted):
     """An IdP that allowlists one redirect URI and wants ``read,write`` scopes (Linear) can be signed in to;
     an entry that declares neither keeps the fingerprint its existing grants were stored under."""
     import socket
@@ -406,7 +407,7 @@ def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_worki
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    idp.granted_scope = "read write"  # Linear answers space-joined whatever the request used
+    idp.granted_scope = granted  # read back whichever separator the IdP answers with
     plugin = _signed_in(idp, scopes=["read", "write"], scope_separator=",", redirect_port=port,
                         redirect_path="/linear/callback")
     query = parse_qs(urlparse(idp.opened[-1]).query)
@@ -415,6 +416,12 @@ def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_worki
     assert idp.token_requests[-1]["redirect_uri"] == f"http://127.0.0.1:{port}/linear/callback"
     allowed, _ = api
     assert plugin.call("google", allowed.url).status == 200
+
+    for bad in ("//linear/callback", "/linear/callback\n"):  # the HTTP server would fold/strip these
+        assert any("redirect_path" in p for p in plugin_oauth._entry_problems(
+            {**_entry(idp), "redirect_path": bad}, "oauth[0]"))
+    positional = pkce.OAuthPKCEConfig("cid", "https://a.example/auth", "https://a.example/t", ("s",), 8650)
+    assert positional.redirect_port == 8650 and positional.scope_separator == " "
 
     old = plugin_oauth.OAuthClient(id="x", authorize_url="https://a.example/auth", token_url="https://a.example/t",
                                    scopes=("s",), client_id_env="X_ID", hosts=("api.example.com",))

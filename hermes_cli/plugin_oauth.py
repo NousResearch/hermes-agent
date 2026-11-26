@@ -61,7 +61,7 @@ class OAuthClient:
 
 
 _DEFAULTED = {"scope_separator": " ", "redirect_port": 0, "redirect_path": "/callback", "redirect_host": "127.0.0.1"}
-_REDIRECT_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+_REDIRECT_PATH_RE = re.compile(r"/(?!/)[A-Za-z0-9._~/-]*")  # fullmatch; no leading "//" (the server folds it)
 
 
 # ── Manifest ───────────────────────────────────────────────────────────────────────────────────────
@@ -124,8 +124,8 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
     if isinstance(port, bool) or not isinstance(port, int) or not (port == 0 or 1024 <= port <= 65535):
         problems.append(f"{where}.redirect_port: must be a port number from 1024 to 65535")
     path = entry.get("redirect_path", "/callback")
-    if not (isinstance(path, str) and _REDIRECT_PATH_RE.match(path)):
-        problems.append(f"{where}.redirect_path: must be a URL path starting with / (letters, digits, ._~-/)")
+    if not (isinstance(path, str) and _REDIRECT_PATH_RE.fullmatch(path)):
+        problems.append(f"{where}.redirect_path: must be a URL path starting with a single / (letters, digits, ._~-/)")
     if entry.get("redirect_host", "127.0.0.1") not in ("127.0.0.1", "localhost"):
         problems.append(f"{where}.redirect_host: must be 127.0.0.1 or localhost")
     return problems

@@ -59,6 +59,26 @@ export function testMessagingPlatform(
   })
 }
 
+/** `POST /api/messaging/discord/check`: what Discord reports for the saved bot token. */
+export interface DiscordBotCheckResponse {
+  app_id: string
+  bot_name: string
+  bot_settings_url: string
+  invite_url: string
+  message_content: boolean
+  owners: { id: string; username: string }[]
+  server_count: null | number
+  server_members: boolean
+}
+
+export function checkDiscordBot(profile?: null | string): Promise<DiscordBotCheckResponse> {
+  return hermesApi<DiscordBotCheckResponse>({
+    ...profileScoped(profile),
+    path: '/api/messaging/discord/check',
+    method: 'POST'
+  })
+}
+
 // -- Team Gateway account links -----------------------------------------------
 // A relay-fronted instance reaches Telegram/Discord/Slack only through the shared bot; these mint
 // the one-time `/link <code>` that binds a chat account to this agent. The profile tag picks the

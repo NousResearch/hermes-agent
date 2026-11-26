@@ -97,13 +97,57 @@ def test_a_retried_bootout_that_lands_still_uninstalls(uninstall, capsys):
     assert _bootouts(uninstall) == 2
 
 
-def test_an_unanswerable_launchctl_does_not_block_the_uninstall(uninstall, monkeypatch, capsys):
-    """No launchctl (or a timeout) must not strand the definition: nothing can supervise it."""
+def test_an_unanswerable_launchctl_keeps_the_definition(uninstall, monkeypatch, capsys):
+    """No launchctl (or a timeout) is an unanswered question, not a "gone": keep the plist.
+
+    Only macOS runs this path and launchctl ships with it, so a read that cannot run means the
+    job may still be loaded — deleting the definition there is the orphan bug this fixes."""
     def fake_run(cmd, *a, **k):
         uninstall.calls.append(cmd)
         if cmd[:2] == ["launchctl", "print"]:
             raise FileNotFoundError("launchctl")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        gateway_cli.launchd_uninstall()
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 1
+    assert uninstall.plist.exists(), "an unanswered read must not be read as 'gone'"
+    assert "Service uninstalled" not in out
+    assert "did not confirm" in out
+    assert "hermes gateway uninstall" in out
+
+
+def test_a_launchctl_error_that_is_not_not_found_keeps_the_definition(uninstall, monkeypatch, capsys):
+    """An ``EIO``/domain error is an unreadable answer; the retry loop gives up and keeps the plist."""
+    def fake_run(cmd, *a, **k):
+        uninstall.calls.append(cmd)
+        return SimpleNamespace(returncode=5, stdout="", stderr="Input/output error")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        gateway_cli.launchd_uninstall()
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 1
+    assert uninstall.plist.exists()
+    assert _bootouts(uninstall) == 3, "an unreadable answer is retried before it is believed"
+    assert "did not confirm" in out
+
+
+def test_a_not_found_message_counts_as_dropped(uninstall, monkeypatch, capsys):
+    """launchctl can say "no such job" as a message on a non-zero exit, not only as code 113."""
+    def fake_run(cmd, *a, **k):
+        uninstall.calls.append(cmd)
+        if cmd[:2] == ["launchctl", "print"]:
+            return SimpleNamespace(
+                returncode=5, stdout="",
+                stderr=f'Could not find service "{LABEL}" in domain for user gui: 501')
+        return SimpleNamespace(returncode=5, stdout="", stderr="Input/output error")
 
     monkeypatch.setattr("subprocess.run", fake_run)
 

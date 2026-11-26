@@ -31,15 +31,14 @@ def _api(failures):
                                  ListenerAddressError=run_api.ListenerAddressError), calls
 
 
-def _start(api, *, webapp="mount", host="100.64.0.5", port=9119):
+def _start(api, *, webapp="mount", host="100.64.0.5", port=9119, wait_seconds=5.0):
     return asyncio.run(run_runtime_listener._start_gateway_api_waiting_for_address(
-        api, object(), host=host, port=port, webapp=webapp))
+        api, object(), host=host, port=port, webapp=webapp, wait_seconds=wait_seconds))
 
 
 @pytest.fixture
 def fast(monkeypatch):
     monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
     return monkeypatch
 
 
@@ -98,7 +97,6 @@ def test_ipv6_loopback_eaddrnotavail_falls_back_immediately_without_retrying(mon
         "webapp:\n  enabled: true\n  host: '::1'\n  port: 9119\n", encoding="utf-8"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
     monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
 
     calls = []
@@ -115,25 +113,23 @@ def test_ipv6_loopback_eaddrnotavail_falls_back_immediately_without_retrying(mon
         session_authorities=[],
         session_control_server=GatewayControlServer(home),
     )
-    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner, address_wait=5.0))
     assert calls == ["::1", "127.0.0.1"]
     assert runner.webapp_status["state"] == "unavailable"
 
 
 def test_the_wait_is_bounded_and_the_last_error_is_raised(fast):
-    fast.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "0.05")
     api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")] * 100)
     with pytest.raises(OSError) as caught:
-        _start(api)
+        _start(api, wait_seconds=0.05)
     assert caught.value.errno == errno.EADDRNOTAVAIL
     assert len(calls) > 1, "it retried before giving up"
 
 
 def test_zero_disables_the_wait(fast):
-    fast.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "0")
     api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
     with pytest.raises(OSError):
-        _start(api)
+        _start(api, wait_seconds=0.0)
     assert len(calls) == 1, "one attempt, then the usual 'Webapp unavailable' report"
 
 
@@ -154,16 +150,6 @@ def test_the_loopback_companion_failure_is_not_waited_for(fast):
     assert len(calls) == 1
 
 
-def test_a_garbage_override_falls_back_to_the_default(monkeypatch):
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "soon")
-    assert run_runtime_listener._webapp_address_wait_seconds() == run_runtime_listener.WEBAPP_ADDRESS_WAIT_SECONDS
-
-
-def test_no_override_uses_the_default(monkeypatch):
-    monkeypatch.delenv("HERMES_WEBAPP_ADDRESS_WAIT", raising=False)
-    assert run_runtime_listener._webapp_address_wait_seconds() == run_runtime_listener.WEBAPP_ADDRESS_WAIT_SECONDS
-
-
 def test_start_gateway_runtime_api_waits_for_late_webapp_host_and_warns_once(monkeypatch, tmp_path, caplog):
     home = tmp_path / "home"
     home.mkdir()
@@ -171,7 +157,6 @@ def test_start_gateway_runtime_api_waits_for_late_webapp_host_and_warns_once(mon
         "webapp:\n  enabled: true\n  host: 100.64.0.5\n  port: 9119\n", encoding="utf-8"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
     monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
 
     webapp_calls = []
@@ -193,7 +178,7 @@ def test_start_gateway_runtime_api_waits_for_late_webapp_host_and_warns_once(mon
     )
 
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
-        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner, address_wait=5.0))
 
     assert runner.webapp_status == {
         "state": "serving",
@@ -231,7 +216,6 @@ def test_non_eaddrnotavail_oserrors_fail_immediately_without_sleeping(fast, capl
 
 
 def test_zero_wait_does_not_sleep_or_warn(fast, caplog):
-    fast.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "0")
     sleeps = []
 
     async def record_sleep(delay):
@@ -241,40 +225,14 @@ def test_zero_wait_does_not_sleep_or_warn(fast, caplog):
     api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
         with pytest.raises(OSError) as caught:
-            _start(api)
+            _start(api, wait_seconds=0.0)
     assert caught.value.errno == errno.EADDRNOTAVAIL
     assert len(calls) == 1
     assert sleeps == []
     assert not any("not assigned to any interface yet" in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
-def test_non_finite_override_falls_back_to_default(monkeypatch, caplog, raw):
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", raw)
-    with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
-        assert run_runtime_listener._webapp_address_wait_seconds() == run_runtime_listener.WEBAPP_ADDRESS_WAIT_SECONDS
-    assert any("HERMES_WEBAPP_ADDRESS_WAIT" in r.getMessage() for r in caplog.records)
-
-
-def test_negative_override_clamps_to_zero_without_waiting(fast):
-    fast.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "-5")
-    sleeps = []
-
-    async def record_sleep(delay):
-        sleeps.append(delay)
-
-    fast.setattr(run_runtime_listener.asyncio, "sleep", record_sleep)
-    assert run_runtime_listener._webapp_address_wait_seconds() == 0.0
-    api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
-    with pytest.raises(OSError) as caught:
-        _start(api)
-    assert caught.value.errno == errno.EADDRNOTAVAIL
-    assert len(calls) == 1
-    assert sleeps == []
-
-
 def test_cancellation_during_wait_sleep_propagates(monkeypatch):
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
     monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 10.0)
     real_sleep = asyncio.sleep
 
@@ -288,7 +246,7 @@ def test_cancellation_during_wait_sleep_propagates(monkeypatch):
         monkeypatch.setattr(run_runtime_listener.asyncio, "sleep", tracked_sleep)
         api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")] * 5)
         task = asyncio.create_task(run_runtime_listener._start_gateway_api_waiting_for_address(
-            api, object(), host="100.64.0.5", port=9119, webapp="mount"))
+            api, object(), host="100.64.0.5", port=9119, webapp="mount", wait_seconds=5.0))
         await asyncio.wait_for(entered_sleep.wait(), timeout=2.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -324,7 +282,6 @@ def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(
         "webapp:\n  enabled: true\n  host: 192.0.2.77\n  port: 9119\n", encoding="utf-8"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
     monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 5.0)
     monkeypatch.setattr(status, "consume_takeover_marker_for_self", lambda: False)
     monkeypatch.setattr(shutdown_forensics, "snapshot_shutdown_context", lambda sig: None)
@@ -363,7 +320,7 @@ def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(
             return types.SimpleNamespace(api_origin="http://127.0.0.1:50001")
 
         monkeypatch.setattr(run_api, "start_gateway_api", start)
-        await asyncio.wait_for(run_runtime_listener.start_gateway_runtime_api(runner), timeout=2.0)
+        await asyncio.wait_for(run_runtime_listener.start_gateway_runtime_api(runner, address_wait=5.0), timeout=2.0)
         assert completed.is_set(), "operator stop ran while the address wait was active"
         assert calls == [("192.0.2.77", False)], "no retry and no private fallback after operator stop"
         assert runner.session_api is None
@@ -374,7 +331,6 @@ def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(
 
 
 def test_restart_requested_during_wait_aborts_without_binding(monkeypatch):
-    monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
     monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
 
     async def run_scenario():
@@ -388,12 +344,53 @@ def test_restart_requested_during_wait_aborts_without_binding(monkeypatch):
 
         api = types.SimpleNamespace(start_gateway_api=start, ListenerAddressError=run_api.ListenerAddressError)
         result = await run_runtime_listener._start_gateway_api_waiting_for_address(
-            api, runner, host="100.64.0.5", port=9119, webapp="mount"
+            api, runner, host="100.64.0.5", port=9119, webapp="mount", wait_seconds=5.0
         )
         assert result is None
         assert len(calls) == 1
 
     asyncio.run(run_scenario())
+
+
+@pytest.mark.parametrize(("failure", "binds", "closed"), [
+    (None, 1, 1),
+    (OSError(errno.EADDRINUSE, "Address already in use"), 2, 1),
+    (SystemExit("the sign-in gate refused"), 1, 0),
+], ids=["webapp-bound", "private-fallback-bound", "webapp-refused"])
+def test_a_stop_during_a_bind_publishes_no_listener(monkeypatch, tmp_path, failure, binds, closed):
+    """A stop that begins while a listener binds: nothing is published after teardown, no fallback starts."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "webapp:\n  enabled: true\n  host: 100.64.0.5\n  port: 9119\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    calls, stopped = [], []
+
+    async def start(r, *, host="127.0.0.1", port=0, webapp=None):
+        calls.append(host)
+        if webapp is not None and failure is not None:
+            if isinstance(failure, SystemExit):
+                r._stop_requested_by_signal = True  # the stop lands while the gate refuses
+            raise failure
+        r._stop_requested_by_signal = True  # the stop lands while this bind succeeds
+        return types.SimpleNamespace(api_origin="http://127.0.0.1:50001")
+
+    async def stop(handle):
+        stopped.append(handle)
+
+    monkeypatch.setattr(run_api, "start_gateway_api", start)
+    monkeypatch.setattr(run_api, "stop_gateway_api", stop)
+    runner = types.SimpleNamespace(
+        session_runtime_descriptor={},
+        session_authorities=[],
+        session_control_server=GatewayControlServer(home),
+    )
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
+    assert len(calls) == binds
+    assert len(stopped) == closed
+    assert runner.session_api is None
+    assert "api_origin" not in runner.session_runtime_descriptor
 
 
 def test_unified_startup_abort_handles_restart_flags_and_minimal_test_doubles():
@@ -452,7 +449,7 @@ def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(
         called_runner = []
         stop_calls = []
 
-        async def fake_start_api(r):
+        async def fake_start_api(r, **kwargs):
             r._stop_requested_by_signal = True
             r.session_api = None
 
@@ -488,3 +485,46 @@ def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(
         assert called_runner == []
 
     asyncio.run(run_scenario())
+
+
+@pytest.mark.parametrize(("idle_exit", "webapp_binds", "state"), [(True, 1, "unavailable"), (False, 3, "serving")],
+                         ids=["client-idle-exit-start", "supervised"])
+def test_only_a_supervised_gateway_waits_for_the_address(monkeypatch, tmp_path, idle_exit, webapp_binds, state):
+    """A TUI or ``chat -q`` client waits on its own idle-exit gateway with a hard start budget (Ink: 30 s)."""
+    from gateway import lifecycle_ledger, run_bootstrap
+    from hermes_cli import nous_auth_keepalive
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "webapp:\n  enabled: true\n  host: 100.64.0.5\n  port: 9119\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(lifecycle_ledger, "record_startup", lambda: None)
+    monkeypatch.setattr(nous_auth_keepalive, "start_nous_auth_keepalive", lambda: None)
+    monkeypatch.setattr(run_api, "preload_session_socket", lambda: None)
+    monkeypatch.setattr(run_bootstrap, "preload_stop_path_modules", lambda: None)
+
+    async def run_runner(r, sig):
+        return None
+
+    monkeypatch.setattr(run_bootstrap, "_start_gateway_run_runner", run_runner)
+    binds = []
+
+    async def start(r, *, host="127.0.0.1", port=0, webapp=None):
+        if webapp is not None:
+            binds.append(host)
+            if len(binds) < 3:  # the address arrives on the third try
+                raise OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")
+        return types.SimpleNamespace(api_origin="http://127.0.0.1:50001")
+
+    monkeypatch.setattr(run_api, "start_gateway_api", start)
+    runner = types.SimpleNamespace(
+        session_runtime_descriptor={},
+        session_authorities=[],
+        session_control_server=GatewayControlServer(home),
+    )
+    asyncio.run(run_bootstrap._start_gateway_listener_and_runner(runner, [False], idle_exit=idle_exit))
+    assert len(binds) == webapp_binds
+    assert runner.webapp_status["state"] == state

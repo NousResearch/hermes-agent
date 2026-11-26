@@ -89,7 +89,7 @@ import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
-import { $composerModelMenuOpen } from './model-pill'
+import { useComposerModelMenuOpen } from './model-pill'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { enterLocked, pausedReplyControls } from './paused-reply'
 import { PreparedImageRecovery } from './prepared-image-recovery'
@@ -104,6 +104,7 @@ import {
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
 import { SendTargetHint } from './send-target-hint'
+import { shortHeightCollapse } from './short-height'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
@@ -439,7 +440,8 @@ export function ChatBar({
   })
 
   const shortViewport = useShortViewport()
-  const modelMenuOpen = useStore($composerModelMenuOpen)
+  // This composer's OWN menu, not "a" menu: a neighbour's open picker must not keep this row expanded.
+  const modelMenuOpen = useComposerModelMenuOpen(scope.target)
 
   const hasComposerPayload = hasText || attachments.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
@@ -1184,7 +1186,7 @@ export function ChatBar({
       // without bringing the voice row back. Genuine narrow-width minimal still wins.
       // Non-touch retains the open-menu exception so a search field's keyboard
       // does not unmount the menu mid-pick.
-      minimal={minimal || chatOnboardingSolo || (shortViewport && (touchPointer || !modelMenuOpen))}
+      minimal={minimal || chatOnboardingSolo || shortHeightCollapse(shortViewport, touchPointer, modelMenuOpen)}
       onDictate={dictate}
       onQueue={() => {
         // Queueing clears the draft too, so the list over it closes with it.

@@ -152,6 +152,11 @@ def _receipt(profile: str, started, restarted, stopped, states: dict, reasons: d
             "installed": list(installed)}
 
 
+def _read_dotenv(home: Path) -> dict:
+    from agent.secret_scope import load_env_file
+    return load_env_file(home / ".env")
+
+
 def _credential_print(home: Path) -> str:
     """Digest of ``home``'s ``.env``: the layer a platform's credentials arrive in (``hermes config set``,
     the dashboard / Desktop save, an edit). Only its change re-runs the plugin recovery, so other config
@@ -187,6 +192,7 @@ class GatewayPlatformReconcileMixin:
     _primary_platform_signature: Optional[tuple] = None
     _primary_platform_plan: Optional[PlatformPlan] = None
     _primary_credential_print: Optional[str] = None
+    _primary_dotenv: Optional[dict] = None  # the .env values the last read put into os.environ (standalone)
     _primary_installing: bool = False  # the reconcile is installing a plugin the new credentials need
 
     # ── triggers ─────────────────────────────────────────────────────────────────────────────────
@@ -198,6 +204,7 @@ class GatewayPlatformReconcileMixin:
         home = self._primary_platform_home()
         with _log_suppressed(logging.DEBUG, "primary platform baseline failed", exc_info=True):
             self._primary_credential_print = await asyncio.to_thread(_credential_print, home)
+            self._primary_dotenv = await asyncio.to_thread(_read_dotenv, home)
             self._primary_platform_signature = await asyncio.to_thread(profile_serve_signature, home)
 
     async def _start_primary_platform_watch(self) -> None:
@@ -339,8 +346,8 @@ class GatewayPlatformReconcileMixin:
         config as the files say now (after :meth:`_recover_primary_plugins`), the build print of every
         platform it wants, the configured plugin platforms the config sweep dropped because their
         dependencies do not import here, and the plugins the recovery installed. Standalone re-reads
-        ``.env`` into ``os.environ`` first (main's ``/reload``: its adapters read it there); under multiplex
-        the default profile's scope is the credential source, never ``os.environ``."""
+        ``.env`` changes into ``os.environ`` first (:meth:`_apply_dotenv_changes`: its adapters read it
+        there); under multiplex the default profile's scope is the credential source, never ``os.environ``."""
         from gateway.config import load_gateway_config
         from gateway.run import _profile_runtime_scope
         home = self._primary_platform_home()
@@ -352,12 +359,28 @@ class GatewayPlatformReconcileMixin:
                 fresh = load_gateway_config()
                 wanted = [(p, c) for p, c in fresh.platforms.items() if self._primary_platform_wanted(p, c)]
         else:
-            from hermes_cli.config import reload_env
-            reload_env()
+            self._apply_dotenv_changes(home)
             fresh = load_gateway_config()
             wanted = [(p, c) for p, c in fresh.platforms.items() if self._primary_platform_wanted(p, c)]
         prints = {p: (c, self._primary_build_print(p, c)) for p, c in wanted}
         return fresh, prints, _dependency_blocked(fresh), installed
+
+    def _apply_dotenv_changes(self, home: Path) -> None:
+        """Standalone: what changed in ``home``'s ``.env`` since the last read, into ``os.environ`` (its
+        adapters read it there). A key leaves ``os.environ`` only when the ``.env`` held it and no longer
+        does: a value the process was launched with (Docker ``-e``, a unit's ``Environment=``) and the
+        ``.env`` never named is not the ``.env``'s to remove."""
+        import os
+        from hermes_constants import is_launch_only_env_key
+        current = _read_dotenv(home)
+        previous = self._primary_dotenv or {}
+        for key, value in current.items():
+            if not is_launch_only_env_key(key) and os.environ.get(key) != value:
+                os.environ[key] = value
+        for key, value in previous.items():
+            if key not in current and os.environ.get(key) == value:
+                os.environ.pop(key, None)
+        self._primary_dotenv = current
 
     async def _apply_primary_platform_plan(self, reason: str) -> tuple:
         """``(plan applied, plugins installed first)``."""

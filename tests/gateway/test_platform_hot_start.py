@@ -65,6 +65,33 @@ def test_single_profile_gateway_starts_restarts_and_stops_a_platform_live(tmp_pa
         stop(proc, expect=None)
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.spawns_gateway_lookalike
+def test_a_platform_configured_by_the_launch_environment_survives_a_reconcile(tmp_path):
+    """Docker ``-e`` / a unit's ``Environment=`` configures a platform the ``.env`` never names. A reconcile
+    (a plugin loading, any ``.env`` save) re-read the ``.env`` the way ``/reload`` does, which drops every
+    known key the file lacks: the launch-configured platform read as unwanted and was stopped."""
+    user, root = tmp_path / "user", tmp_path / "state"
+    user.mkdir()
+    root.mkdir(mode=0o700)
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: false\n", encoding="utf-8")
+    port = _free_port()
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
+    env.update(HOME=str(user), HERMES_HOME=str(root), PYTHONPATH=str(repo), PYTHONUNBUFFERED="1",
+               WEBHOOK_ENABLED="true", WEBHOOK_PORT=str(port))
+    mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
+    proc, _desc = start_daemon(mux)
+    try:
+        wait_until(lambda: _accepts(port), timeout=15, interval=0.1, what="webhook listening")
+        (root / ".env").write_text("SOME_UNRELATED_SETTING=1\n", encoding="utf-8")
+        answer = control(root, "reconcile-platforms", timeout=20)
+        assert answer["stopped"] == [] and answer["platforms"].get("webhook") == "connected", (answer, tail(mux))
+        assert _accepts(port), tail(mux)
+    finally:
+        stop(proc, expect=None)
+
+
 def _closed_port():
     port = _free_port()  # nothing listens: an outbound API call through it is refused at once
     return f"http://127.0.0.1:{port}"

@@ -133,14 +133,22 @@ def test_queued_satellite_delivery_drains_through_the_process_relay(satellite_ho
         reset_hermes_home_override(token)
 
     loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    running = threading.Event()
+    loop.call_soon(running.set)  # set only once run_forever dispatches: the drain needs is_running()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True), _profile_adapters={"fitness": {}})
     monkeypatch.setattr(gateway_run, "_handoff_watch_scopes", lambda _r: [("fitness", home)])
     try:
+        assert running.wait(timeout=10), "event loop never started"
         with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             gateway_run._drain_restart_safe_cron_deliveries({Platform.RELAY: relay}, loop, runner)
     finally:
         loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "event loop thread did not stop"
+        loop.run_until_complete(loop.shutdown_default_executor())
+        loop.close()
 
     token = set_hermes_home_override(str(home))
     try:

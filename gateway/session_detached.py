@@ -130,6 +130,17 @@ def session_env_source(runner, source):
     return local_source(active_authority(runner), detached_session_id(key), source.user_id)
 
 
+def received_transport_profile(received, env_source) -> str:
+    """The bot that received *received* when the turn's session variables still name its chat, else "".
+
+    Read from the received source: the route copy a shared chat binds drops the pinned identity, and a
+    detached conversation binds the local view, whose deliveries never go back through that bot."""
+    from gateway.session_identity import transport_profile_of
+    if env_source.platform != received.platform:
+        return ""
+    return transport_profile_of(received) or ""
+
+
 def _route_authority(runner, store, route):
     """The authority owning *route*: its key names the profile, whatever scope the writer runs in."""
     from gateway.session_authorities import authority_for_home

@@ -1,6 +1,7 @@
 """Task graph initialization and atomic decomposition persistence."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from typing import Any, Optional
@@ -15,11 +16,23 @@ def inherit_creator_origin(
     from hermes_cli.kanban_db import _inherit_notify_subs
 
     conn.execute(
-        "UPDATE tasks SET session_id = COALESCE(session_id, "
+        "UPDATE tasks SET origin = COALESCE(origin, CASE WHEN session_id IS NULL OR "
+        "session_id = (SELECT session_id FROM tasks WHERE id = ?) THEN "
+        "(SELECT origin FROM tasks WHERE id = ?) END), "
+        "session_id = COALESCE(session_id, "
         "(SELECT session_id FROM tasks WHERE id = ?)) WHERE id = ?",
-        (creator_task_id, task_id),
+        (creator_task_id, creator_task_id, creator_task_id, task_id),
     )
     _inherit_notify_subs(conn, task_id, (creator_task_id,), created_at=created_at)
+
+
+def origin_column(origin: Optional[dict]) -> Optional[str]:
+    """The ``tasks.origin`` value ``create_task`` stores: the sanitized object as JSON, or NULL."""
+    from hermes_cli.kanban_db_origin import sanitize_origin
+    if origin is not None and not isinstance(origin, dict):
+        raise ValueError("origin must be an object/dict")
+    clean = sanitize_origin(origin)
+    return None if clean is None else json.dumps(clean, ensure_ascii=False, sort_keys=True)
 
 
 def initial_task_state(

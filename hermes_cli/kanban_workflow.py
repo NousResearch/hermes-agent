@@ -123,7 +123,7 @@ DEFAULT_WORKFLOW = Workflow(
         Column("done", "Done", "✓"),
     ),
     manual=_frozen_manual({
-        "triage": ("todo", "ready"),
+        "triage": ("todo", "ready", "done"),
         "todo": ("triage", "scheduled", "ready"),
         "scheduled": ("triage", "todo", "ready"),
         "ready": ("triage", "todo", "scheduled", "blocked", "review", "done"),

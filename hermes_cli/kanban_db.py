@@ -634,6 +634,7 @@ class Task:
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
     session_id: Optional[str] = None         # originating HERMES_SESSION_ID; NULL from CLI/dashboard
+    origin: Optional[dict] = None            # structured conversation/message provenance (JSON on disk)
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
@@ -653,7 +654,7 @@ class Task:
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
-            skills=skills_value,
+            skills=skills_value, origin=_json_or(g("origin")),
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -1164,10 +1165,9 @@ def create_task(
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
-    session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
-    project_source_task_id: Optional[str] = None,
-    creator_task_id: Optional[str] = None,
-    completion_contract: Optional[str] = None,
+    session_id: Optional[str] = None, origin: Optional[dict] = None, board: Optional[str] = None,
+    project_id: Optional[str] = None, project_source_task_id: Optional[str] = None,
+    creator_task_id: Optional[str] = None, completion_contract: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1184,7 +1184,7 @@ def create_task(
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
-    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin, origin_column
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
@@ -1267,8 +1267,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, origin, completion_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1277,7 +1277,7 @@ def create_task(
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
-                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, origin_column(origin), completion_contract,
                     ),
                 )
                 for pid in parents:
@@ -2643,7 +2643,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
+    """``running|ready|blocked|triage|review -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
     approval. A ``running`` task under a live claim is only completed with
@@ -2702,7 +2702,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND status IN ('running', 'ready', 'blocked', 'triage', 'review')
                 """
         params: tuple = (result, now, task_id)
         if expected_run_id is not None:

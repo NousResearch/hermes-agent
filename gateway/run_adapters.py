@@ -1294,6 +1294,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         configs[profile_name] = profile_cfg
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
+        # Credential intent survives a factory refusal (no live adapter and no reconnect slot).
+        configured = self.__dict__.setdefault("_profile_configured_platforms", {})
+        configured[profile_name] = set(profile_map) | set(
+            (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {})
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
@@ -1330,6 +1334,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                     "not starting a second listener", profile_name, platform.value, profile_name,
                 )
                 continue
+            configured[profile_name].add(platform)
             with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                 try:
                     adapter = await self._create_adapter_off_loop_deps(platform, platform_config)

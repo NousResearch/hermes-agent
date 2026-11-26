@@ -679,7 +679,7 @@ import { filenameFromUrl } from './url-filename'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
-import { guardedWatch } from './watch-storm-breaker'
+import { guardedWatch, watchFallbackLogs } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
@@ -5773,8 +5773,7 @@ async function watchPreviewFile(owner, rawUrl) {
       return `${stat.mtimeMs}:${stat.size}`
     },
     onPollChange: emit,
-    onTrip: ({ events, windowMs }) =>
-      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
+    ...watchFallbackLogs(watchDir)
   })
 
   previewWatchers.set(id, {
@@ -5864,8 +5863,7 @@ function watchDirectory(owner, rawDir) {
     },
     snapshot: () => fs.readdirSync(watchDir).sort().join('\0'),
     onPollChange: emit,
-    onTrip: ({ events, windowMs }) =>
-      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
+    ...watchFallbackLogs(watchDir)
   })
 
   previewWatchers.set(id, {

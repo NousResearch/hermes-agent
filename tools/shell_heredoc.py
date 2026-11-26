@@ -17,12 +17,19 @@ import re
 # shell at runtime), so they are masked for UX-grade scanners only: a security guard scanning for
 # forbidden substrings must pass ``mask_code_consumers=False`` or the payload hides in the blanked
 # body (#127698).
+# Safe `env` options that only adjust environment variables (never `-S`/`--split-string`, which
+# re-parses arbitrary strings into commands). Disjoint prefixes keep matching strictly linear.
+_ENV_SAFE_PREFIX = (
+    r"(?:env\s+(?:(?:-i|--ignore-environment|-0|--null|"
+    r"-u\s+[A-Za-z_][A-Za-z0-9_]*|--unset=[A-Za-z_][A-Za-z0-9_]*|"
+    r"[A-Za-z_][A-Za-z0-9_]*=\S+)\s+)*(?:--\s+)?)?"
+)
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*" + _ENV_SAFE_PREFIX + r"(?:[A-Za-z0-9_./-]+/)?"
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
 _STRICT_INERT_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*" + _ENV_SAFE_PREFIX + r"(?:[A-Za-z0-9_./-]+/)?"
     r"cat(?=\s|$)",
     re.IGNORECASE)
 # The subset whose body is pure data (written out, never interpreted): `cat` only.

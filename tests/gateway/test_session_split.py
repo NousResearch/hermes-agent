@@ -3,8 +3,8 @@
 An async subagent's session came back as the agent's session id after a gateway turn. Both split
 syncs treated the change as compression and saved the route onto the subagent, and the peer record
 then refused ``admission_conflict`` with the route already saved: every later lookup, resume and
-delivery for the conversation was refused. These tests run the shared checks against a real
-``SessionDB`` and the agent-result sync in ``_hmwa_shape_agent_response``.
+delivery for the conversation was refused. These tests run the shared checks against a real store
+(through the storage interface) and the agent-result sync in ``_hmwa_shape_agent_response``.
 """
 import threading
 import time
@@ -14,32 +14,45 @@ import pytest
 
 from gateway.run_turn import GatewayTurnMixin
 from gateway.session_split import is_compression_continuation, restore_route
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError
+from persistence.conversation.sessions import NewSession, SessionLineageKind
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 KEY = "agent:main:telegram:dm:12345"
 
 
+def _create(db, session_id, source, parent=None, *, delegate=False):
+    db.sessions.create(NewSession(
+        session_id=session_id, source=source, parent_session_id=parent,
+        lineage_kind=SessionLineageKind.DELEGATE if delegate else SessionLineageKind.NONE))
+
+
+def _say(db, session_id, role, content):
+    seed_messages(db, session_id, {"role": role, "content": content})
+
+
 @pytest.fixture
 def db(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     base = int(time.time()) - 10_000
-    db.create_session("root", source="telegram")
-    db.append_message("root", role="user", content="before compression")
-    db.end_session("root", "compression")
-    db.create_session("cont", source="telegram", parent_session_id="root")
-    db.append_message("cont", role="assistant", content="after compression")
+    _create(db, "root", "telegram")
+    _say(db, "root", "user", "before compression")
+    db.sessions.end("root", "compression")
+    _create(db, "cont", "telegram", "root")
+    _say(db, "cont", "assistant", "after compression")
     # Async batch children as #154994 found them: source=subagent, no _delegate_from marker.
-    db.create_session("subagent", source="subagent", parent_session_id="root")
-    db.append_message("subagent", role="assistant", content="subagent report")
-    db.create_session("delegate", source="subagent", parent_session_id="root",
-                      model_config={"_delegate_from": "root"})
-    conn = db._conn
-    # Subagents hanging off a compressed parent were spawned before the compression ended it.
-    conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (base, base + 50))
-    for started, sid in ((base + 10, "subagent"), (base + 20, "delegate"), (base + 100, "cont")):
-        conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (started, sid))
-    conn.commit()
+    _create(db, "subagent", "subagent", "root")
+    _say(db, "subagent", "assistant", "subagent report")
+    _create(db, "delegate", "subagent", "root", delegate=True)
+
+    def backdate(conn):
+        # Subagents hanging off a compressed parent were spawned before the compression ended it.
+        conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (base, base + 50))
+        for started, sid in ((base + 10, "subagent"), (base + 20, "delegate"), (base + 100, "cont")):
+            conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (started, sid))
+    raw_holder(db)._execute_write(backdate)
     return db
 
 
@@ -50,7 +63,7 @@ class _Store:
         self._lock = threading.Lock()
         self.saved = []
 
-    def _db_for_key(self, session_key):
+    def _persistence_for_key(self, session_key):
         assert session_key == KEY
         return self.db
 
@@ -88,42 +101,43 @@ def test_restore_route_never_overwrites_a_concurrent_route_change():
 
 def test_a_live_markerless_subagent_never_becomes_the_compression_tip(db):
     # Even live and most recently active, a subagent child is not the compressed parent's continuation.
-    db.append_message("subagent", role="assistant", content="still running")
-    assert db.get_compression_tip("root") == "cont"
+    _say(db, "subagent", "assistant", "still running")
+    assert db.lineage.tip("root") == "cont"
     assert is_compression_continuation(_Store(db), KEY, "root", "subagent") is False
 
 
 def test_a_subagents_own_compression_chain_still_walks(db):
-    db.create_session("sub-a", source="subagent")
-    db.end_session("sub-a", "compression")
-    db.create_session("sub-b", source="subagent", parent_session_id="sub-a")
-    assert db.get_compression_tip("sub-a") == "sub-b"
+    _create(db, "sub-a", "subagent")
+    db.sessions.end("sub-a", "compression")
+    _create(db, "sub-b", "subagent", "sub-a")
+    assert db.lineage.tip("sub-a") == "sub-b"
 
 
 def test_a_sourceless_parents_compression_child_still_walks(db):
     # _compression_child_source falls back to the agent's platform when the parent row has no source.
-    db.create_session("legacy", source="")
-    db.end_session("legacy", "compression")
-    db.create_session("legacy-next", source="subagent", parent_session_id="legacy")
-    assert db.get_compression_tip("legacy") == "legacy-next"
+    _create(db, "legacy", "telegram")
+    raw_holder(db)._execute_write(lambda conn: conn.execute("UPDATE sessions SET source = '' WHERE id = 'legacy'"))
+    db.sessions.end("legacy", "compression")
+    _create(db, "legacy-next", "subagent", "legacy")
+    assert db.lineage.tip("legacy") == "legacy-next"
 
 
 def test_the_resume_walk_skips_a_markerless_subagent_child(db):
     # The lease-wait reload adopts resolve_resume_session_id(); before the fix it walked into the
     # newest child with messages, the async subagent, and the turn ran on that session.
-    assert db.resolve_resume_session_id("cont") == "cont"
-    db.create_session("chat", source="telegram")
-    db.append_message("chat", role="user", content="hi")
-    db.create_session("chat-subagent", source="subagent", parent_session_id="chat")
-    db.append_message("chat-subagent", role="assistant", content="subagent report")
-    assert db.resolve_resume_session_id("chat") == "chat"
+    assert db.lineage.resolve_resume_target("cont") == "cont"
+    _create(db, "chat", "telegram")
+    _say(db, "chat", "user", "hi")
+    _create(db, "chat-subagent", "subagent", "chat")
+    _say(db, "chat-subagent", "assistant", "subagent report")
+    assert db.lineage.resolve_resume_target("chat") == "chat"
 
 
 def test_a_subagents_own_continuation_stays_walkable(db):
-    db.create_session("sub-root", source="subagent")
-    db.create_session("sub-next", source="subagent", parent_session_id="sub-root")
-    db.append_message("sub-next", role="assistant", content="later turn")
-    assert db.resolve_resume_session_id("sub-root") == "sub-next"
+    _create(db, "sub-root", "subagent")
+    _create(db, "sub-next", "subagent", "sub-root")
+    _say(db, "sub-next", "assistant", "later turn")
+    assert db.lineage.resolve_resume_target("sub-root") == "sub-next"
 
 
 class _Runner(GatewayTurnMixin):
@@ -144,7 +158,7 @@ class _Runner(GatewayTurnMixin):
 
     async def _record(self, session_id, session_key, source):
         if self.refuse_peer:
-            raise RuntimeStoreError("admission_conflict")
+            raise AuthorityRefusal("admission_conflict")
 
     async def _clear_restart_failure_count(self, *_a, **_k):
         return None
@@ -184,7 +198,7 @@ async def test_agent_result_sync_still_follows_a_compression_child(db):
 @pytest.mark.asyncio
 async def test_agent_result_sync_rolls_back_a_refused_publication(db):
     runner = _Runner(_Store(db), refuse_peer=True)
-    with pytest.raises(RuntimeStoreError, match="admission_conflict"):
+    with pytest.raises(AuthorityRefusal, match="admission_conflict"):
         await _shape(runner, "cont")
     assert runner.session_store.entry.session_id == "root"
     assert runner.session_store.saved == ["cont", "root"]

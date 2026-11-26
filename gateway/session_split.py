@@ -19,19 +19,20 @@ def is_compression_continuation(store, session_key, session_id, new_session_id) 
 
     Both compression rotations publish the parent→child chain before the agent's id moves
     (``publish_compression_child`` in one transaction, ``_adopt_live_compression_child`` after
-    re-reading the tip), so a real split is on ``get_compression_chain``. A row the store holds
-    that is not on the chain is another conversation. Anything unverifiable (no store for the key,
-    no row yet, a read error) keeps the previous behaviour and allows the move."""
-    db = None
+    re-reading the tip), so a real split is on the session's compression chain. A row the store
+    holds that is not on the chain is another conversation. Anything unverifiable (no store for the
+    key, no row yet, a read error) keeps the previous behaviour and allows the move."""
+    from persistence.core.identity import SessionId
+    persistence = None
     with contextlib.suppress(Exception):
-        db_for_key = getattr(store, "_db_for_key", None)
-        db = db_for_key(session_key) if callable(db_for_key) else None
-    if db is None or not callable(getattr(db, "get_compression_chain", None)):
+        persistence_for_key = getattr(store, "_persistence_for_key", None)
+        persistence = persistence_for_key(session_key) if callable(persistence_for_key) else None
+    if persistence is None:
         return True
     try:
-        if db.get_session(new_session_id) is None:
+        if persistence.sessions.get(SessionId(new_session_id)) is None:
             return True
-        return new_session_id in db.get_compression_chain(session_id)
+        return SessionId(new_session_id) in persistence.lineage.chain(SessionId(session_id))
     except Exception:
         logger.warning("Could not verify session split %s → %s; allowing it as before",
                        session_id, new_session_id, exc_info=True)

@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import shlex
 import stat
 import sys
 import time
@@ -991,29 +992,48 @@ def _old_never_stopped(m: dict) -> bool:
     return m.get("kind") == "apply" and not _entered(m, "stop_old_backend")
 
 
-def _launchd_stop_progress(m: dict, unit_path: str) -> tuple[bool, bool, bool]:
+def _plist_already_restored(unit_path: str) -> bool:
+    """Whether *unit_path* is already back in place with no ``.disabled`` sibling on disk."""
+    return bool(unit_path) and Path(unit_path).exists() and not os.path.lexists(f"{unit_path}.disabled")
+
+
+def _launchd_stop_progress(m: dict, unit_path: str) -> tuple[Optional[bool], bool, bool]:
     """``(stopped, disabled, renamed)`` for a launchd manual rollback step.
 
-    Uses the manifest's recorded progress when present; for manifests written before those fields
-    existed, falls back to whether ``stop_old_backend`` finished (or the run is a restore) and whether
-    ``<unit_path>.disabled`` exists on disk.
+    ``stopped`` is ``True`` when the job was unloaded (bootout), ``False`` when explicitly recorded
+    as not stopped, and ``None`` when unknown (legacy manifest where ``stop_old_backend`` failed).
+    For manifests written before those fields existed, ambiguous ``stop_old_backend`` progress treats
+    the job as possibly disabled so recovery includes ``launchctl enable``; ``mv`` is omitted when
+    the original plist is already back on disk and ``<unit_path>.disabled`` is absent.
     """
     stop_state = next((s.get("state") for s in m.get("steps") or [] if s.get("name") == "stop_old_backend"), None)
     completed = m.get("kind") == "restore" or m.get("state") == "done" or stop_state == "done"
-    stopped = m["old_backend_stopped"] if "old_backend_stopped" in m else completed
+    stop_entered = completed or stop_state not in (None, "pending") or _entered(m, "stop_old_backend")
+    if "old_backend_stopped" in m:
+        stopped: Optional[bool] = bool(m["old_backend_stopped"])
+    else:
+        stopped = True if completed else None
+    has_disabled_file = bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
     if "old_backend_disabled" in m:
         raw_disabled = m["old_backend_disabled"]
         disabled = bool(raw_disabled)
         if raw_disabled is True:
-            renamed = bool(unit_path)
+            renamed = bool(unit_path) and not _plist_already_restored(unit_path)
         elif raw_disabled == "disabling":
-            renamed = bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
+            renamed = has_disabled_file
         else:
             renamed = False
     else:
-        disabled = completed or bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
-        renamed = bool(unit_path) and (completed or os.path.lexists(f"{unit_path}.disabled"))
-    return bool(stopped), disabled, renamed
+        disabled = stop_entered or has_disabled_file
+        renamed = has_disabled_file or (bool(unit_path) and completed and not _plist_already_restored(unit_path))
+    return stopped, disabled, renamed
+
+
+def _launchd_missing_plist_step(prefix: list[str], scope: str, unit: str) -> str:
+    """Manual recovery guidance when ``unit_path`` is unknown and the job may have been booted out."""
+    bootstrap = f"{shlex.join([*prefix, 'launchctl', 'bootstrap', scope])} <plist-path>"
+    target = f" for {unit}" if unit else ""
+    return f"locate the original plist{target} and run: {bootstrap}"
 
 
 def _launchd_manual_rollback_step(m: dict, rec: dict) -> str:
@@ -1023,25 +1043,26 @@ def _launchd_manual_rollback_step(m: dict, rec: dict) -> str:
     scope = (rec.get("scope") or "").strip()
     unit = (rec.get("unit") or "").strip()
     is_system = not _is_user_launchd_scope(scope) or unit_path.startswith(_SYSTEM_LAUNCHD_DIRS)
-    sudo = "sudo " if is_system else ""
+    prefix = ["sudo"] if is_system else []
     if not scope and is_system:
         scope = "system"
     stopped, disabled, renamed = _launchd_stop_progress(m, unit_path)
     parts: list[str] = []
     if renamed and unit_path:
-        parts.append(f"{sudo}mv {unit_path}.disabled {unit_path}")
+        parts.append(shlex.join([*prefix, "mv", f"{unit_path}.disabled", unit_path]))
     if disabled and scope and unit:
-        parts.append(f"{sudo}launchctl enable {scope}/{unit}")
-    if stopped:
-        if scope and unit_path:
-            parts.append(f"{sudo}launchctl bootstrap {scope} {unit_path}")
-        elif scope and unit:
-            parts.append(f"{sudo}launchctl kickstart {scope}/{unit}")
-    elif scope and unit:
-        load = f" || {sudo}launchctl bootstrap {scope} {unit_path}" if unit_path else ""
-        parts.append(f"{sudo}launchctl kickstart {scope}/{unit}{load}")
-    elif scope and unit_path:
-        parts.append(f"{sudo}launchctl bootstrap {scope} {unit_path}")
+        parts.append(shlex.join([*prefix, "launchctl", "enable", f"{scope}/{unit}"]))
+    if scope:
+        if unit_path:
+            bootstrap = shlex.join([*prefix, "launchctl", "bootstrap", scope, unit_path])
+            if stopped is True or not unit:
+                parts.append(bootstrap)
+            else:
+                parts.append(f"{shlex.join([*prefix, 'launchctl', 'kickstart', f'{scope}/{unit}'])} || {bootstrap}")
+        elif stopped is False and unit:
+            parts.append(shlex.join([*prefix, "launchctl", "kickstart", f"{scope}/{unit}"]))
+        else:
+            parts.append(_launchd_missing_plist_step(prefix, scope, unit))
     return "; ".join(parts) or (
         f"start the old launchd backend again so it serves {m.get('old_address') or 'its address'} again"
     )

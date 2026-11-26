@@ -65,7 +65,7 @@ def test_helper_runs_without_optional_dependencies(tmp_path):
 
     assert result.returncode == 0, result.stderr
     marker = tmp_path / ".gateway-planned-stop.json"
-    record = json.loads(marker.read_text(encoding="utf-8"))
+    record = json.loads(marker.read_text(encoding="utf-8-sig"))
     assert record["target_pid"] == os.getpid()
     assert record["trigger_watcher"] is False
 
@@ -91,7 +91,7 @@ libc = ctypes.CDLL(None, use_errno=True)
 assert libc.prctl(15, ctypes.c_char_p(bytes.fromhex(sys.argv[1])), 0, 0, 0) == 0
 assert helper.main([str(os.getpid())]) == 0
 marker = Path(os.environ["HERMES_HOME"]) / ".gateway-planned-stop.json"
-record = json.loads(marker.read_text(encoding="utf-8"))
+record = json.loads(marker.read_text(encoding="utf-8-sig"))
 assert marker.stat().st_mode & 0o777 == 0o600
 assert status.consume_planned_stop_marker_for_self()
 assert record["target_start_time"] == status._get_process_start_time(os.getpid())

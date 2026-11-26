@@ -91,6 +91,39 @@ def _text(value):
 _json = canonical_json
 
 
+def _join_surrogate_pairs(text: str) -> str:
+    """Normalize explicit UTF-16 surrogate pairs without changing lone surrogates."""
+    repaired = []
+    index = 0
+    while index < len(text):
+        high = ord(text[index])
+        if 0xD800 <= high <= 0xDBFF and index + 1 < len(text):
+            low = ord(text[index + 1])
+            if 0xDC00 <= low <= 0xDFFF:
+                repaired.append(chr(0x10000 + ((high - 0xD800) << 10) + low - 0xDC00))
+                index += 2
+                continue
+        repaired.append(text[index])
+        index += 1
+    return "".join(repaired)
+
+
+def _sqlite_text(text: str) -> str:
+    """Make JSON text safe for SQLite UTF-8 binding, preserving valid surrogate pairs."""
+    text = _join_surrogate_pairs(text)
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return "".join(chr(0xFFFD) if 0xD800 <= ord(char) <= 0xDFFF else char for char in text)
+
+
+def _sqlite_payload_json(value: dict) -> str:
+    """Canonical JSON safe for SQLite while retaining lone surrogates losslessly as JSON escapes."""
+    encoded = _join_surrogate_pairs(canonical_json(value))
+    return "".join(chr(92) + f"u{ord(char):04x}" if 0xD800 <= ord(char) <= 0xDFFF else char for char in encoded)
+
+
 def _epoch(conn, epoch):
     row = conn.execute('SELECT epoch FROM runtime_epoch WHERE singleton=1').fetchone()
     if type(epoch) is not int or row is None or row[0] != epoch:
@@ -260,7 +293,7 @@ def retry_terminal_admission(holder, *, epoch, principal_id, session_id, request
     for value in (principal_id, session_id, request_id):
         _text(value)
     digest = admission_fingerprint(canonical_target=session_id,
-        payload={'input': retry_input(json.loads(_json(payload))), 'intent': intent})
+        payload={'input': retry_input(json.loads(_sqlite_payload_json(payload))), 'intent': intent})
     with holder._read_ctx() as conn:
         _epoch(conn, epoch)
         from ..conversation._store.retirement import RETIRED_PREFIX

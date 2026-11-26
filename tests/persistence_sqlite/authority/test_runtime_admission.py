@@ -1,4 +1,5 @@
 """Transactional contracts against exclusively owned temporary profile databases."""
+import json
 import sqlite3
 
 import pytest
@@ -7,7 +8,7 @@ from persistence.conversation.sessions import NewSession
 from persistence.core.errors import AuthorityRefusal
 from persistence.sqlite.authority._admission_store import (
     admit_session_input, cancel_session_input, claim_session_input, get_session_admission, list_session_admissions,
-    recover_session_inputs, settle_session_input,
+    recover_session_inputs, rehome_queued_inputs, resolve_unknown_session_input, settle_session_input,
 )
 from persistence.sqlite.authority._runtime_ends import begin_runtime_epoch
 from persistence.sqlite.conversation._store.sessions import get_session
@@ -91,3 +92,67 @@ def test_sqlite_failure_never_acknowledges_or_partially_claims(store):
             admit_session_input(holder, **(args | {'request_id': 'busy'}))
         peer.rollback()
     assert len(list_session_admissions(holder, session_id='s')) == 1
+
+
+_SURROGATE_TEXT = 'truncated byte \udcc3; explicit pair \ud83c\udfae'
+_NORMALIZED_TEXT = 'truncated byte \udcc3; explicit pair 🎮'
+
+
+def test_surrogate_admission_payload_is_lossless_through_rehome(store):
+    holder = _holder(store)
+    store.sessions.create(NewSession(session_id='s2', source='test'))
+    epoch = begin_runtime_epoch(holder, instance_id='boot')
+    args = dict(epoch=epoch, principal_id='human', session_id='s', request_id='surrogate',
+                payload={'text': _SURROGATE_TEXT})
+    first, created = admit_session_input(holder, **args)
+    assert created
+
+    assert rehome_queued_inputs(holder, epoch=epoch, old_session_id='s', new_session_id='s2',
+                                principal_prefix='human') == [first['admission_id']]
+    replay, created = admit_session_input(holder, **(args | {'session_id': 's2'}))
+    assert not created and replay['admission_id'] == first['admission_id']
+    # A valid pair and its scalar representation have the same retry identity.
+    replay, created = admit_session_input(holder, **(args | {'session_id': 's2',
+        'payload': {'text': _NORMALIZED_TEXT}}))
+    assert not created and replay['admission_id'] == first['admission_id']
+    with pytest.raises(AuthorityRefusal) as exc:
+        admit_session_input(holder, **(args | {'session_id': 's2',
+            'payload': {'text': 'truncated byte ' + chr(0xFFFD) + '; explicit pair 🎮'}}))
+    assert exc.value.reason == 'admission_conflict'
+
+    raw = holder._conn.execute('SELECT payload_json FROM session_admissions WHERE admission_id=?',
+                                (first['admission_id'],)).fetchone()[0]
+    raw.encode('utf-8')
+    assert json.loads(raw)['text'] == _NORMALIZED_TEXT
+
+
+def test_settlement_and_captured_recovery_sanitize_only_unpaired_surrogates(store):
+    from persistence.sqlite.conversation._store.terminal import RESULT_PREFIX, load_result
+
+    holder = _holder(store)
+    epoch = begin_runtime_epoch(holder, instance_id='boot')
+    row, _ = admit_session_input(holder, epoch=epoch, principal_id='human', session_id='s',
+                                 request_id='settle', payload={'text': 'hello'})
+    claimed = claim_session_input(holder, epoch=epoch, session_id='s')
+    result = {'note': _SURROGATE_TEXT}
+    settle_session_input(holder, epoch=epoch, admission_id=row['admission_id'],
+                         generation=claimed['generation'], outcome='completed', result=result)
+    raw = holder._conn.execute('SELECT value FROM state_meta WHERE key=?',
+                               (RESULT_PREFIX + row['admission_id'],)).fetchone()[0]
+    raw.encode('utf-8')
+    stored = load_result(raw)['note']
+    assert stored == 'truncated byte ' + chr(0xFFFD) + '; explicit pair 🎮'
+
+    row2, _ = admit_session_input(holder, epoch=epoch, principal_id='human', session_id='s',
+                                  request_id='recover', payload={'text': 'hello again'})
+    claimed2 = claim_session_input(holder, epoch=epoch, session_id='s')
+    holder._conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?",
+                         (row2['admission_id'],))
+    resolved = resolve_unknown_session_input(holder, epoch=epoch, admission_id=row2['admission_id'],
+                                             generation=claimed2['generation'],
+                                             _captured=('completed', {'note': _SURROGATE_TEXT}))
+    assert resolved['status'] == 'terminal' and resolved['outcome'] == 'completed'
+    raw2 = holder._conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                (RESULT_PREFIX + row2['admission_id'],)).fetchone()[0]
+    raw2.encode('utf-8')
+    assert load_result(raw2)['note'] == 'truncated byte ' + chr(0xFFFD) + '; explicit pair 🎮'

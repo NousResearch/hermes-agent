@@ -10,6 +10,16 @@ from __future__ import annotations
 import re
 
 
+def _source_literal(value: str) -> str:
+    """Undo the escaping a Python string literal uses for Windows paths inside ``-c`` source.
+
+    The inline source carries paths as ``'C:\\\\dir\\\\main.py'``; readers that normalize every
+    backslash to ``/`` before parsing turn that into ``C://dir//main.py`` and the entry-point match
+    fails. Decode only the values we take out of the source, never the source text itself.
+    """
+    return value.replace("\\\\", "\\")
+
+
 def inline_source_flag_index(tokens: list[str]) -> int | None:
     """Index of the ``-c`` token when *tokens* is an interpreter running INLINE SOURCE, else None.
 
@@ -113,6 +123,8 @@ def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
     if match is None:
         return None
     target = match["target"]
+    if kind == "path":
+        target = _source_literal(target)
     if kind == "base64":
         import base64
         import binascii
@@ -124,7 +136,7 @@ def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
         # The launcher source is a string literal here, and readers normalize its escapes (``\\n`` ->
         # ``/n``), so it is matched in place by the launcher row's anchors, never decoded.
         if assigned := _ASSIGNED_ARGV.search(source):
-            argv = [item.strip().strip("'\"") for item in assigned.group(1).split(",")][1:]
+            argv = [_source_literal(item.strip().strip("'\"")) for item in assigned.group(1).split(",")][1:]
         if wrapped := _EXEC_BASE64.search(target):  # the .cmd launcher: its script, base64-encoded
             import base64
             import binascii
@@ -139,7 +151,7 @@ def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
     if kind == "entry":  # the launcher script's own ``--run-module <module>`` switch
         return ["-m", argv[1], *argv[2:]] if argv[:1] == ["--run-module"] and len(argv) > 1 else ["-m", target, *argv]
     if assigned := _ASSIGNED_ARGV.search(source):
-        argv = [item.strip().strip("'\"") for item in assigned.group(1).split(",")][1:]
+        argv = [_source_literal(item.strip().strip("'\"")) for item in assigned.group(1).split(",")][1:]
     return [target, *argv] if kind == "path" else ["-m", target, *argv]
 
 

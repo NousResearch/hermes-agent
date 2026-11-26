@@ -259,9 +259,12 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     # inline source carries for a LATER spawn, not to this holder (#107002) -- unless the source is a
     # Hermes bootstrap running the entry point in this process (#124318).
     from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
-    normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
-    if command_line_runs_inline_source(normalized):
-        tokens = inline_bootstrap_argv(normalized)
+    # Keep backslashes until after the inline-source bootstrap is extracted: its Windows path
+    # literals carry escapes that a premature slash normalization turns into ``C://...`` (#160388).
+    quoted_tokens = [t.strip("\"'") for t in tokens]
+    normalized = [t.replace("\\", "/") for t in quoted_tokens]
+    if command_line_runs_inline_source(quoted_tokens):
+        tokens = inline_bootstrap_argv(quoted_tokens)
         if tokens is None:
             return None
 

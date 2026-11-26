@@ -31,6 +31,39 @@ _SCRIPT = _launchers._launcher_script("hermes", ROOT, None)
 _JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
 
 
+def _windows_relaunch_command() -> str:
+    """The breakaway ``-c runpy`` wrapper written by the Windows gateway relaunch."""
+    root = r"C:\Users\duck\AppData\Local\hermes\hermes-agent"
+    main = root + r"\hermes_cli\main.py"
+    escaped_root = root.replace("\\", "\\\\")
+    escaped_main = main.replace("\\", "\\\\")
+    source = (
+        "import sys, runpy; "
+        f"sys.path.insert(0, '{escaped_root}'); "
+        f"sys.argv = ['{escaped_main}', 'gateway', 'run']; "
+        "sys._hermes_relaunched = True; "
+        f"runpy.run_path('{escaped_main}', run_name='__main__')"
+    )
+    return subprocess.list2cmdline([r"C:\venv\Scripts\python.exe", "-I", "-c", source])
+
+
+def test_windows_relaunch_wrapper_is_a_gateway() -> None:
+    command_line = _windows_relaunch_command()
+    assert status._gateway_command_subcommand(command_line) == "run"
+    assert looks_like_gateway_runtime_command_line(command_line)
+    assert _hermes_holder_subcommand(command_line) == "gateway"
+
+
+def test_windows_relaunch_bootstrap_argv_is_unescaped() -> None:
+    tokens = [t.strip("\"'") for t in shlex.split(_windows_relaunch_command(), posix=False)]
+    assert inline_bootstrap_argv(tokens) == [
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Users\duck\AppData\Local\hermes\hermes-agent\hermes_cli\main.py",
+        "gateway",
+        "run",
+    ]
+
+
 def _payload_launcher(argv: list[str]) -> list[str]:
     """The payload ``bin/hermes`` exec line, rendered by the real payload builder."""
     from scripts.build.launchers import posix_launcher

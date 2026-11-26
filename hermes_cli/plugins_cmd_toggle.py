@@ -153,16 +153,27 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled, initial, *, expecte
 
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console, *, expected_config=None):
     """Custom curses screen with checkboxes + category action rows."""
-    from hermes_cli.curses_ui import _addnstr, flush_stdin
+    from hermes_cli.curses_ui import (
+        NAV_CANCEL,
+        NAV_DOWN,
+        NAV_SELECT,
+        NAV_TOGGLE,
+        NAV_UP,
+        _addnstr,
+        _decode_menu_key,
+        flush_stdin,
+    )
     chosen = set(plugin_selected)
     n_plugins, n_categories = len(plugin_keys), len(categories)
     total_items = n_plugins + n_categories  # navigable rows (headers/separator are skipped)
     providers_changed = False
-    nav = {  # key -> new cursor, given (cursor, page_size)
+    action_nav = {
+        NAV_UP: lambda c, _p: (c - 1) % total_items,
+        NAV_DOWN: lambda c, _p: (c + 1) % total_items,
+    }
+    page_nav = {  # key -> new cursor, given (cursor, page_size)
         key: move
         for keys, move in (
-            ((curses.KEY_UP, ord("k")), lambda c, p: (c - 1) % total_items),
-            ((curses.KEY_DOWN, ord("j")), lambda c, p: (c + 1) % total_items),
             ((curses.KEY_NPAGE, ord("f")), lambda c, p: min(total_items - 1, c + p)),
             ((curses.KEY_PPAGE, ord("b")), lambda c, p: max(0, c - p)),
             ((curses.KEY_HOME,), lambda c, p: 0),
@@ -242,20 +253,22 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
                     _addnstr(stdscr, y, 0, text, max_x - 1, attr)
             stdscr.refresh()
             key = stdscr.getch()
+            action = _decode_menu_key(stdscr, key)
 
-            if key in nav:
+            move = action_nav.get(action) or page_nav.get(key)
+            if move is not None:
                 if total_items > 0:  # (with no rows, every motion leaves cursor at 0)
-                    cursor = nav[key](cursor, max(1, max_y - 5))
-            elif key == ord(" ") or key in {curses.KEY_ENTER, 10, 13}:
+                    cursor = move(cursor, max(1, max_y - 5))
+            elif action in {NAV_TOGGLE, NAV_SELECT}:
                 if cursor >= n_plugins:
                     # Provider category — launch sub-screen (SPACE and ENTER alike)
                     if cursor - n_plugins < n_categories:
                         stdscr = _configure_category(cursor - n_plugins)
-                elif key == ord(" "):
+                elif action == NAV_TOGGLE:
                     chosen.symmetric_difference_update({cursor})
                 else:
                     return  # ENTER on a plugin checkbox — confirm and exit
-            elif key in {27, ord("q")}:
+            elif action == NAV_CANCEL:
                 return  # plugin changes are saved on exit
 
     curses.wrapper(_draw)

@@ -1,15 +1,15 @@
 name: hermes-intercom
 title: "Hermes Intercom"
 repo: https://github.com/greqone/hermes-intercom
-sha: "aae0ddc917429eb3a3f280516ea7378465ac5620"
+sha: "f105e3c8ad7df80703d9ca4ddf6e36a5aea925c6"
 subdir: ""
-description: "Discover and message existing Hermes sessions within one profile using session_list and session_send. Delivery uses only the public ctx.inject_message API with attributed native notices, hop limits, per-sender duplicate detection, bounded retry identities and per-target rate limits. CLI and unknown sender surfaces are refused. Unverified routes and dormant targets that the public API cannot reach are refused; there is no private gateway transport or automatic mounting. A scheduled result confirms scheduling, not execution or durable delivery. Disclosure — lets the model list sessions in the active profile (titles, sources, working directories and routing metadata, read from `state.db` read-only) and inject attributed messages that start model/tool turns in other sessions, including other users' Discord/Telegram chats on a shared gateway, once `plugins.entries.hermes-intercom.allow_gateway_injection: true` is set; bounded by `max_hops` and per-target rate limits; restrict the `intercom` toolset to owner-only platforms on shared gateways; writes a metadata-only audit log (no message text) to `$HERMES_HOME/cache/hermes-intercom/audit.jsonl`."
+description: "Discover and message existing Hermes sessions within one profile using session_list and session_send. Delivery uses only the public ctx.inject_message API with attributed native notices, hop limits, per-sender duplicate detection, bounded retry identities, per-target rate limits, and fail-closed per-user isolation on multi-user profiles. CLI and unknown sender surfaces are refused. Unverified routes and dormant targets that the public API cannot reach are refused; there is no private gateway transport or automatic mounting. A scheduled result confirms scheduling, not execution or durable delivery. Disclosure — lets the model list sessions in the active profile (titles, sources, working directories and routing metadata, read from `state.db` read-only) and inject attributed messages that start model/tool turns in other sessions once `plugins.entries.hermes-intercom.allow_gateway_injection: true` is set; when `sessions.user_id` contains more than one principal, `session_list` and `session_send` fail closed to the host-identified caller (`HERMES_SESSION_ACTOR_ID` / `HERMES_SESSION_USER_ID`) and refuse cross-user or unowned targets (profiles without populated `user_id` stay single-owner, so restrict the `intercom` toolset to owner-only platforms if a shared gateway lacks per-user `user_id`); bounded by `max_hops` and per-target rate limits; writes a metadata-only audit log (no message text) to `$HERMES_HOME/cache/hermes-intercom/audit.jsonl`."
 maintainer: greqone
 tier: community
 category: automation
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/greqone/hermes-intercom#readme
-version: "0.1.1"
+version: "0.1.2"
 platforms: []
 readme: true
 screenshots: []

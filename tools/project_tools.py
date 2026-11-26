@@ -4,8 +4,8 @@
 tool call, never a side effect of ``cd``. GUI-only: the `project` toolset stays off
 ``_HERMES_CORE_TOOLS``; the desktop/TUI gateway folds it in and wires
 ``set_project_workspace_callback`` so the live session's cwd and sidebar follow. A live
-session create/switch re-anchors only that session; it must not move the profile-global
-Desktop selection shared by concurrent chats."""
+session's switch re-anchors only that session, and create never moves it; neither may move the
+profile-global Desktop selection shared by concurrent chats."""
 
 import json
 import logging
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move. It returns
 # False when it found no live session for *task_id* (or the folder is gone), and ``"pending"`` when
 # the move is committed at the end of the calling turn; ``None`` (an older callback with no verdict)
-# counts as moved, the contract before the verdict existed.
+# counts as moved.
 _workspace_callback: Optional[Callable[[str, str, str], object]] = None
 
 

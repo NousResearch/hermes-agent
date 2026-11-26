@@ -183,8 +183,7 @@ def _move_workspace(task_id, path):
         raise FileNotFoundError(f"folder does not exist: {resolved}")
     from gateway.config import Platform
     from gateway.session_local_recovery import local_adapter_map
-    # The chat's current folder, as its last committed move published it; a background child's own
-    # context still holds the turn it was spawned in.
+    # The chat's current folder, as its last committed move published it.
     policy = local_adapter_map(authority)[Platform.LOCAL].policies.get(live.source.chat_id)
     if policy is not None and policy.source not in ("gui", "tui"):
         return None  # a CLI chat on the gateway keeps its folder: only the active project changes

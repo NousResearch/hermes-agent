@@ -68,7 +68,7 @@ accept the display name; get the slug from `hermes project list`.
   `path`; unlike the CLI it also matches display names, and archived projects. `create` only
   creates the project: the calling chat stays where it is and the active-project pointer is
   unchanged. In a live desktop/TUI chat, `switch` moves *that chat's* workspace to the project's
-  primary folder and the sidebar follows — the intended way to move a chat between projects,
+  primary folder and the sidebar follows; this is the intended way to move a chat between projects,
   not `cd`. In a chat the gateway serves, the move lands when the turn ends: the result says
   `moved: "pending"` and the turn's own commands keep their folder. A chat that moves leaves the
   active-project pointer (the shared sidebar selection) alone, though the desktop sidebar

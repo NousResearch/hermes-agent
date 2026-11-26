@@ -145,3 +145,21 @@ def test_tool_tailed_history_keeps_result_paired_with_assistant_call():
     carrier, tool_result = history
     assert tool_result["role"] == "tool"
     assert tool_result["tool_call_id"] == carrier["tool_calls"][0]["id"]
+
+
+def test_null_carrier_without_tool_row_still_selects_user_turn():
+    """First-message case (built-in tools idle): the tail is an empty assistant
+    carrier with NO tool row, so turn selection must fall back to the last
+    visible user message. Shape from an independent capture (OWUI 0.13.4 ->
+    Hermes 0.23.1, reported by @FalenDemon on PR #151549)."""
+    _, conversation, err = _parse_chat_messages(
+        [
+            {"role": "system", "content": "You are a test agent."},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None},
+        ]
+    )
+    assert err is None
+    user_message, history = _select_current_turn(conversation)
+    assert user_message == "hi"
+    assert [m["role"] for m in history] == ["assistant"]

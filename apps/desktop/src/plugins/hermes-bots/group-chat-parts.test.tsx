@@ -283,6 +283,26 @@ describe('the group composer Enter key on a phone keyboard', () => {
     expect(onChange).toHaveBeenCalledWith('a\nb')
   })
 
+  it('keeps Cmd/Ctrl+Enter as a submit on a coarse pointer', async () => {
+    await setTouchPointer(true)
+    const { input, onChange, onSubmitDraft } = await mount('hi')
+
+    fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true })
+
+    expect(onSubmitDraft).toHaveBeenCalledTimes(1)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('replaces a selection with exactly one newline', async () => {
+    await setTouchPointer(true)
+    const { input, onChange } = await mount('abcd')
+
+    input.setSelectionRange(1, 3)
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onChange).toHaveBeenCalledWith('a\nd')
+  })
+
   it('still submits on a fine pointer', async () => {
     await setTouchPointer(false)
     const { input, onChange, onSubmitDraft } = await mount('hi')

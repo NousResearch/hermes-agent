@@ -384,8 +384,14 @@ export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft,
           // only line-break key — and here Enter submits. Open a line instead and
           // let the Send button be the submit. The newline goes through the
           // controlled value: a raw DOM insert is reverted on the next render.
-          // `preventDefault()` also stops the surrounding form from submitting.
-          if (touch && event.key === 'Enter') {
+          // `preventDefault()` keeps the browser's own newline out of the DOM in
+          // the meantime (a textarea's Enter never implicitly submits a form) —
+          // the break is inserted below, once, into the value React owns.
+          //
+          // A hardware keyboard paired with the tablet/Chromebook keeps its
+          // submit: Cmd/Ctrl/Alt+Enter are explicit intents, and the main
+          // composer maps its modifier+Enter the same way.
+          if (touch && event.key === 'Enter' && !event.metaKey && !event.ctrlKey && !event.altKey) {
             event.preventDefault()
 
             const el = event.currentTarget

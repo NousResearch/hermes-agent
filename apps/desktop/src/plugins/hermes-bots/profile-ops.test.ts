@@ -15,8 +15,8 @@ import { $botMeta } from './data'
 import { duplicateBot } from './profile-ops'
 import type { RosterRow } from './types'
 
-const { ensureBotMetadataMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
-  ensureBotMetadataMock: vi.fn(),
+const { ensureBotProfileMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
+  ensureBotProfileMock: vi.fn(async (bot: unknown) => bot),
   faceOnlyMock: vi.fn((_data: string) => false),
   hostMock: {
     dropLeftoverProfilePrefs: vi.fn(),
@@ -42,7 +42,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
 vi.mock('./shared', () => ({ getPluginCtx: () => ({ storage: storageMock }), ID: 'hermes-bots' }))
 vi.mock('./avatar-image', () => ({ isBackfilledFacePng: (data: string) => faceOnlyMock(data) }))
-vi.mock('./canonical-chat', () => ({ ensureBotMetadata: ensureBotMetadataMock }))
+vi.mock('./canonical-chat', () => ({ ensureBotProfile: ensureBotProfileMock }))
 
 const calls: Array<{ method: string; params: Record<string, unknown> }> = []
 

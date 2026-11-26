@@ -2,6 +2,7 @@ import { GatewayReauthRequiredError } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $notifications } from '@/store/notifications'
 import { deferred } from '@/test/deferred'
@@ -9,6 +10,7 @@ import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { GatewaySettings } from './gateway-settings'
+import { OTHER_SUBPAGES } from './other-subpages'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 const { registry, activeId, selectConnection } = vi.hoisted(() => ({
@@ -324,6 +326,34 @@ describe('GatewaySettings', () => {
     expect(agentSignIn).not.toHaveBeenCalled()
     expect(applyConnectionConfig).not.toHaveBeenCalled()
     registry.value = null
+  })
+  it('edits the primary gateway, labelled as such, while this window is on another one', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'remote',
+      remoteUrl: 'http://studio:9119'
+    })
+    registry.value = {
+      primary: 'studio',
+      connections: [
+        { id: 'studio', kind: 'remote', label: 'Studio', url: 'http://studio:9119', authMode: 'token' },
+        { id: 'homelab', kind: 'remote', label: 'Homelab', url: 'http://homelab:9119', authMode: 'token' }
+      ]
+    }
+    activeId.value = 'homelab'
+
+    try {
+      render(<GatewaySettings embedded />)
+
+      expect(await screen.findByDisplayValue('http://studio:9119')).toBeTruthy()
+      expect(screen.queryByDisplayValue('http://homelab:9119')).toBeNull()
+
+      const page = OTHER_SUBPAGES.gateway.find(entry => entry.id === 'connection')!
+      expect(en.settings.subpages[page.labelKey]).toBe('Primary gateway')
+    } finally {
+      registry.value = null
+      activeId.value = 'saved-b'
+    }
   })
   it('authenticates and saves only the chosen discovered instance with its friendly name', async () => {
     registry.value = null

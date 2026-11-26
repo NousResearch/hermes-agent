@@ -1,8 +1,8 @@
 """The browser-hosted Desktop on the gateway's own listener: config, bind address and browser credential.
 
 ``webapp.enabled`` in the gateway home's ``config.yaml`` turns it on; the gateway then binds its one HTTP
-listener to ``webapp.port`` on a loopback or wildcard ``webapp.host``, and native clients keep dialling a
-loopback address.
+listener to ``webapp.port`` on a loopback, wildcard or one specific ``webapp.host`` address, and native
+clients keep dialling a loopback address.
 """
 import asyncio
 import errno
@@ -43,7 +43,7 @@ def test_an_enabled_webapp_binds_its_configured_address(tmp_path):
     "webapp:\n  enabled: true\n  port: http\n",
     "webapp:\n  enabled: true\n  host: ''\n",
     "webapp:\n  enabled: 'true'\n",
-    "webapp:\n  enabled: true\n  host: 192.168.1.20\n",
+    "webapp:\n  enabled: true\n  host: 127.0.0.2\n",
     "webapp:\n  enabled: true\n  host: hermes.example.net\n",
 ])
 def test_a_malformed_webapp_block_keeps_the_listener_private(tmp_path, block):
@@ -101,7 +101,7 @@ def test_a_credential_the_browser_would_refuse_is_replaced(tmp_path, stored):
 def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None, while_starting=None):
     """Start the runtime's listener for *config* with the listener itself stood in; *while_starting*
     (a list) records what each Webapp verb answers while the Webapp's listener starts."""
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     home = _home(tmp_path, config)
     monkeypatch.setenv("HERMES_HOME", str(home))
     calls = []
@@ -120,7 +120,7 @@ def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None
     from gateway.control_socket import GatewayControlServer
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     return runner, calls, home
 
 

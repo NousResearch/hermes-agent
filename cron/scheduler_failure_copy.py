@@ -82,6 +82,11 @@ _PROVIDER_FAILURE_ACTION["provider_policy_blocked"] = (
     "Retrying won't help: check the account's status and data/privacy settings with the provider, "
     "or pin another model with `hermes cron edit {job_id} --model <name>`."
 )
+_PROVIDER_FAILURE_ACTION["guardrail_blocked"] = (
+    "The provider's prompt-injection guardrail blocked the request (not your key; tool output is "
+    "scanned too): set it to Redact or Flag in the provider's settings (OpenRouter: Workspaces → "
+    "Guardrails), or pin another provider with `hermes cron edit {job_id} --provider <name>`."
+)
 _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
 
 
@@ -99,10 +104,13 @@ def provider_failure_notice(
             f"`hermes cron run {job_id}` tries now."
         )
     else:
-        from agent.turn_failure_copy import relogin_command_hint
+        template = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION)
+        relogin = ""
+        if "{relogin}" in template:  # only the auth copy names a command; skip the lookup otherwise
+            from agent.turn_failure_copy import relogin_command_hint
 
-        action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(
-            job_id=job_id, relogin=relogin_command_hint(provider))
+            relogin = relogin_command_hint(provider)
+        action = template.format(job_id=job_id, relogin=relogin)
     return (
         f"⚠️ Cron '{job_name}' failed: {cause}. {action} "
         f"Run log: `hermes cron runs {job_id}`."

@@ -8,7 +8,15 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
+import {
+  $pinnedSessionIds,
+  $sidebarMessagingOpenIds,
+  $sidebarProjectFilter,
+  $sidebarShowArchived,
+  $sidebarStatusFilter,
+  setSidebarAgentsGrouped,
+  setSidebarGrouping
+} from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
@@ -222,6 +230,61 @@ describe('ChatSidebar cold-start load failure', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(retry).toHaveBeenCalledTimes(1)
+  })
+})
+
+// #146510: see SidebarPinnedEmptyState.
+describe('ChatSidebar pinned empty state under filters', () => {
+  beforeEach(() => {
+    $sessions.set(sessionRows)
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $sidebarStatusFilter.set([])
+    $sidebarProjectFilter.set([])
+    $sidebarShowArchived.set(false)
+    $pinnedSessionIds.set([])
+    $sessions.set([])
+    $sessionsLoading.set(true)
+  })
+
+  it('names the filter when it hides every pin', () => {
+    $sessions.set([{ ...sessionRows[0], pinned: true }, sessionRows[1]])
+    $pinnedSessionIds.set(['tile-one'])
+    $sidebarStatusFilter.set(['working'])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByText('Tile one')).toBeNull()
+    expect(screen.queryByText('Shift-click a chat to pin')).toBeNull()
+    // Pinned and Sessions both report the filter.
+    expect(screen.getAllByText('No sessions match these filters')).toHaveLength(2)
+  })
+
+  it('keeps the pin hint when nothing is pinned and no filter is on', () => {
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Shift-click a chat to pin')).toBeTruthy()
+    expect(screen.queryByText('No sessions match these filters')).toBeNull()
+  })
+
+  it('keeps the pin hint when the only filter is a project id the tree does not resolve', () => {
+    $sidebarProjectFilter.set(['/repos/gone'])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Shift-click a chat to pin')).toBeTruthy()
+  })
+
+  it('drops the pin hint in the Archived view when Pinned is empty', () => {
+    $sidebarShowArchived.set(true)
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByText('Shift-click a chat to pin')).toBeNull()
+    expect(screen.getAllByText('No sessions match these filters')).toHaveLength(2)
   })
 })
 

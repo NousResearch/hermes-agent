@@ -41,6 +41,7 @@ class TurnContext:
     awake_idle: AwakeIdleMeter = field(default_factory=AwakeIdleMeter)
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
+    _cleanup_adapter: Any = None
     _cleanup_msg_ids: list[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
@@ -89,7 +90,10 @@ class TurnContext:
     # hook / status bridge wiring
     _loop_for_step: Any = None
     _hooks_ref: Any = None
-    _status_adapter: Any = None
+    # Read through the ``_status_adapter`` property: the pinned adapter answers only when the
+    # resolver (the runner's delivery lookup for this turn's source) finds none registered.
+    _status_adapter_pinned: Any = None
+    _status_adapter_resolver: Optional[Callable[[], Any]] = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
     # bound TurnRunner callbacks read via ctx
@@ -106,3 +110,21 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    @property
+    def _status_adapter(self) -> Any:
+        """The adapter that answers the turn NOW. A reconnect replaces the platform's adapter while a
+        turn runs, and the retired instance has no bot, so an approval card, clarify question or status
+        sent through the adapter pinned at turn start fails "Not connected" and the gated command waits
+        out its full timeout (#138133). The pinned one answers while no adapter is registered (the
+        reconnect gap), where its own send() still waits for the replacement."""
+        live = self._status_adapter_resolver() if self._status_adapter_resolver is not None else None
+        return live if live is not None else self._status_adapter_pinned
+
+    @_status_adapter.setter
+    def _status_adapter(self, adapter: Any) -> None:
+        self._status_adapter_pinned = adapter
+
+    def bind_status_adapter(self, resolve: Callable[[], Any]) -> None:
+        """Pin the adapter that answers the turn now, and keep *resolve* to re-ask at every send."""
+        self._status_adapter_pinned, self._status_adapter_resolver = resolve(), resolve

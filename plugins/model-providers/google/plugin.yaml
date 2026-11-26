@@ -1,0 +1,5 @@
+name: google
+kind: model-provider
+version: 1.0.0
+description: Google Gemini (AI Studio API key + OAuth account)
+author: Nous Research

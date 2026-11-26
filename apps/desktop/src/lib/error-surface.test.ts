@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n'
 import { en } from '@/i18n/en'
 
 import {
@@ -204,6 +205,38 @@ describe('cron session read-only (#141348)', () => {
 
     expect(errorCardText(en.assistant.thread, surface)).toEqual(en.assistant.thread.errorCodes.cron_session_read_only)
     expect(errorCardActions(surface)).toEqual({ primary: 'start_new_session' })
+  })
+})
+
+describe('managed local model server down', () => {
+  it('names the local model server, not a custom one, and offers another model, never a key update', () => {
+    const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: false })
+    const { body, title } = errorCardText(en.assistant.thread, surface)
+
+    expect(`${title} ${body}`).toContain('local model server')
+    // The card is the same in Desktop and the Webapp, which has no Local models pane.
+    expect(body).not.toMatch(/custom|Settings|Local models/)
+    expect(errorCardActions(surface)).toEqual({ primary: 'switch_provider' })
+  })
+
+  it('offers Retry first while the server is still starting', () => {
+    const surface = parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable: true })
+
+    expect(errorCardActions(surface)).toEqual({ primary: 'retry', secondary: 'switch_provider' })
+  })
+
+  it('says Retry only while the server is starting, in every locale', () => {
+    const card = (retryable: boolean, thread = en.assistant.thread) =>
+      errorCardText(thread, parseErrorSurface({ layer: 'endpoint', code: 'local_runtime_unavailable', retryable }))
+
+    expect(card(true).body).toMatch(/retry/i)
+    expect(card(false).body).not.toMatch(/retry/i)
+    expect(card(false).body).toContain('hermes model')
+
+    for (const copy of Object.values(TRANSLATIONS)) {
+      expect(card(false, copy.assistant.thread).body).not.toBe(card(true, copy.assistant.thread).body)
+      expect(card(false, copy.assistant.thread).body).toContain('hermes model')
+    }
   })
 })
 

@@ -10,8 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from agent.message_metadata import message_uid_or_none, record_absorbed_message
-from agent.message_sanitization import coalesce_tool_call_id
+from session_rules.turns import coalesce_tool_call_id, message_uid_or_none, record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -51,9 +50,8 @@ def _ensure_compressed_keeps_last_assistant_reply(
     carried row at commit), or ``None`` when nothing was reinserted — every skip
     that is not "the reply is already there" is logged here with its reason.
     """
-    from agent.context_compressor import (
-        _DB_PERSISTED_MARKER, _fresh_compaction_message_copy, is_compaction_summary_message,
-    )
+    from agent.context_compressor import _DB_PERSISTED_MARKER, _fresh_compaction_message_copy
+    from session_rules.turns import is_compaction_summary_message
     from agent.conversation_compression import _message_text
 
     reply, reply_text = None, ""
@@ -166,7 +164,7 @@ def _absorb_into_assistant_neighbour(
     here), False when the slot is free and the caller may insert.
     """
     from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
-    from agent.turn_context import drop_stale_api_content
+    from session_rules.turns import drop_stale_api_content
 
     pos = next(
         (
@@ -222,7 +220,7 @@ def _absorb_into_assistant_neighbour(
 
 def _neighbour_kind(neighbour: dict, following: bool, older_messages: list) -> Optional[str]:
     """Name an unmergeable neighbour without changing its provider-owned replay state."""
-    from agent.agent_runtime_helpers import _is_codex_interim
+    from session_rules.turns import _is_codex_interim
     from agent.context_compressor import is_compaction_summary_message
     from agent.conversation_compression import _message_text
 

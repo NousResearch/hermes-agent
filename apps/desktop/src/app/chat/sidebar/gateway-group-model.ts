@@ -8,9 +8,10 @@ import type { SessionInfo } from '@/hermes'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $profileColors, $profiles, normalizeProfileKey } from '@/store/profile'
-import { $sessionsLoadError } from '@/store/session'
+import { $sessionProfilesFailed, $sessionsLoadError, isSessionProfileUnread } from '@/store/session'
 
 import type { SidebarSessionGroup } from './projects/workspace-groups'
 
@@ -100,11 +101,17 @@ export function scopeGatewaySessionGroups(groups: SidebarSessionGroup[], scope: 
 
 /** The owner id the profile list belongs to, in the same vocabulary rows are tagged with: a
  *  non-local request connection stamps its rows with its id; the primary pool stays untagged
- *  natively, and a Webapp tab tags every row with `local` (its one gateway). */
-export function profileListConnectionId(apiConnectionId: null | string, browserHosted: boolean): null | string {
+ *  natively, and a Webapp tab tags every row with `local` (its one gateway). `local` is that
+ *  untagged pool only while it is the aggregate base (the registry primary): as a secondary beside
+ *  a remote base its rows carry the `local` tag, and the untagged pool is the remote's. */
+export function profileListConnectionId(
+  apiConnectionId: null | string,
+  browserHosted: boolean,
+  localIsPrimary: boolean
+): null | string {
   const owner = apiConnectionId?.trim()
 
-  if (owner && owner !== LOCAL_CONNECTION_ID) {
+  if (owner && (owner !== LOCAL_CONNECTION_ID || !localIsPrimary)) {
     return owner
   }
 
@@ -133,14 +140,24 @@ export function withEmptyProfileGroups(
 }
 
 /** Owner groups for the recents list. Every listed profile keeps its section even with no chats,
- *  unless the list is a narrowed view (filters, archive) or failed to load. */
+ *  unless the list is a narrowed view (filters, archive) or failed to load, or that profile's own
+ *  scan failed (empty there means unread, not "No sessions yet"). */
 export function useGatewaySessionGroups(sessions: SessionInfo[], enabled: boolean, narrowed = true) {
   const registry = useStore($connectionsRegistry)
   const colors = useStore($profileColors)
   const profiles = useStore($profiles)
   const { connectionId: apiConnectionId } = useStore($apiRequestScope)
+  // The untagged pool is the registry primary's: Electron reads it as the aggregate's base. The
+  // window primary's own mode speaks for it only while the window primary is that source; a
+  // window booted on another registered route (the saved default route) leaves the base where it
+  // is. Never the active gateway's ($connection): a foregrounded local secondary reports `local`
+  // beside a remote primary. Unknown keeps local as the primary pool.
+  const primary = useStore($primaryGatewayRoute)
+  const windowIsBase = !registry || !primary.connectionId || primary.connectionId === registry.primary
+  const localIsPrimary = windowIsBase ? primary.mode !== 'remote' : registry.primary === LOCAL_CONNECTION_ID
   const showArchived = useStore($sidebarShowArchived)
   const loadError = useStore($sessionsLoadError)
+  const failed = useStore($sessionProfilesFailed)
   const includeEmptyProfiles = !narrowed && !showArchived && !loadError
 
   return useMemo(() => {
@@ -154,14 +171,30 @@ export function useGatewaySessionGroups(sessions: SessionInfo[], enabled: boolea
       return groups
     }
 
-    const owner = profileListConnectionId(apiConnectionId, isBrowserHostedDesktop())
+    const browserHosted = isBrowserHostedDesktop()
+    const owner = profileListConnectionId(apiConnectionId, browserHosted, localIsPrimary)
+    // Scan errors carry no connection id and only the aggregate base's reach the renderer (registry
+    // sources drop theirs), so they speak for that pool alone, never a secondary's profiles.
+    const ownsErrors = browserHosted || owner === null || (windowIsBase && owner === primary.connectionId)
 
     return withEmptyProfileGroups(
       groups,
-      profiles.map(profile => profile.name),
+      profiles.map(profile => profile.name).filter(name => !(ownsErrors && isSessionProfileUnread(failed, name))),
       owner,
       registry,
       colors
     )
-  }, [sessions, enabled, includeEmptyProfiles, registry, colors, profiles, apiConnectionId])
+  }, [
+    sessions,
+    enabled,
+    includeEmptyProfiles,
+    registry,
+    colors,
+    profiles,
+    failed,
+    apiConnectionId,
+    localIsPrimary,
+    windowIsBase,
+    primary.connectionId
+  ])
 }

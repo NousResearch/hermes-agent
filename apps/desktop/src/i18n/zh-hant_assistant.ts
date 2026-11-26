@@ -3,6 +3,12 @@ import { zhHantThemePicker } from './zh-hant_theme_picker'
 
 export const zhHantAssistant = {
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `將執行：${target}`,
+      launchRemote: target => `將連線：${target}`,
+      launchEnv: keys => `環境變數：${keys}`,
+      launchCwd: dir => `工作目錄：${dir}`
+    },
     catalogInstall: {
       preparing: '正在準備安裝…',
       install: '安裝',
@@ -226,6 +232,12 @@ export const zhHantAssistant = {
         launch_credentials_unavailable: {
           title: '此聊天的 API 金鑰已變更',
           body: '此聊天開始時使用的 API 金鑰後來已被變更或刪除，因此你的訊息未送出。開啟中的聊天不會自行切換到其他金鑰。請使用「開始新工作階段」以使用目前的金鑰。'
+        },
+        local_runtime_unavailable: {
+          title: '無法連線到本機模型伺服器',
+          body: '本機模型伺服器尚未執行：它可能仍在啟動中。請稍後重試，或切換到其他模型。',
+          bodyNoRetry:
+            '本機模型伺服器已關閉。請在 Hermes 桌面應用程式或終端機中的 `hermes model` 啟動它，或切換到其他模型。'
         }
       },
       errorLayers: {
@@ -264,6 +276,7 @@ export const zhHantAssistant = {
       readAloud: '朗讀',
       copyFullResponse: '複製完整回覆',
       readAloudFullResponseHint: '按住 Shift 點擊：朗讀完整回覆',
+      contentRefusedNotice: '此訊息被模型的安全篩選器拒絕 — 請改用其他問題重試。',
       editMessage: '編輯訊息',
       stop: '停止',
       restorePrevious: '還原至上一個檢查點',
@@ -290,7 +303,26 @@ export const zhHantAssistant = {
       alwaysTitle: '一律允許此指令？',
       alwaysDescription: pattern =>
         `這會將「${pattern}」模式加入永久允許清單（~/.hermes/config.yaml）。Hermes 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
-      alwaysAllow: '一律允許'
+      alwaysAllow: '一律允許',
+      deny: '拒絕',
+      allow: '允許',
+      allowHint: '直到關閉沙箱',
+      denyReason: '拒絕原因',
+      denyReasonPlaceholder: '告訴 Hermes 原因（選填）',
+      access: {
+        title: '資料夾存取',
+        readOnly: '唯讀',
+        readWrite: '讀寫',
+        timedOut: folder => `要求已逾時 — 未授予資料夾 ${folder} 的存取權。請讓 Hermes 重試。`,
+        alwaysTitle: '一律允許此資料夾？',
+        alwaysDescription: '此資料夾將加入此設定檔的沙箱。Hermes 在任何對話中都不會再詢問。'
+      },
+      network: {
+        title: '網站存取',
+        timedOut: site => `要求已逾時 — 未授予 ${site} 的存取權。請讓 Hermes 重試。`,
+        alwaysTitle: '一律允許此網站？',
+        alwaysDescription: '此網站將加入此設定檔的允許網站。Hermes 在任何對話中都不會再詢問。'
+      }
     },
     clarify: {
       notReady: '澄清請求尚未就緒',

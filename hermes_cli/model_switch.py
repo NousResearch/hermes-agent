@@ -21,7 +21,8 @@ from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
-from hermes_cli.model_switch_providers import list_authenticated_providers
+from hermes_cli.model_switch_providers import (
+    _extra_headers_from_config, _saved_entry_on_other_origin, list_authenticated_providers)
 
 
 logger = logging.getLogger(__name__)
@@ -563,13 +564,23 @@ def resolve_persist_behavior(
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
 MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
 MODEL_SWITCH_ERR_BAD_REASONING = "bad_reasoning"
+MODEL_SWITCH_ERR_RESET_WITH_FLAGS = "reset_with_flags"
 
 # Canonical (surface-neutral) error copy. Surfaces prepend their own decoration ("  ✗ " in the
 # CLI, "❌ " in the gateway) but MUST NOT change the core sentence — it is shared user-visible copy.
 MODEL_SWITCH_ERROR_TEXT = {
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
     MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
-    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra."}
+    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra.",
+    MODEL_SWITCH_ERR_RESET_WITH_FLAGS: (
+        "/model reset takes no flags — it clears this session's model override so the "
+        "configured default applies again.")}
+
+# ``/model reset`` clears the session's /model override instead of switching to a model named
+# "reset". Deliberately NOT aliased to "default": MoA's default preset is literally named
+# "default", so ``/model default`` keeps resolving through exact_moa_preset_name(). A model whose
+# bare id is "reset" stays reachable by its qualified slug (``vendor/reset``, ``vendor:reset``).
+MODEL_SWITCH_RESET_TOKEN = "reset"
 
 
 @dataclass(frozen=True)
@@ -600,13 +611,19 @@ class ModelSwitchRequest:
         """Canonical (undercorated) error strings for this request."""
         return [MODEL_SWITCH_ERROR_TEXT[code] for code in self.errors]
 
+    @property
+    def is_reset(self) -> bool:
+        """``/model reset`` with no flags: clear the session override, keep the conversation."""
+        return self.target.strip().lower() == MODEL_SWITCH_RESET_TOKEN and not self.errors
+
 
 def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     """The ONE parser for every /model surface: tokenization plus flag-conflict validation.
 
     ``--once`` + ``--global`` -> ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``; ``--once`` with neither
     a model nor ``--provider`` -> ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``; an unknown
-    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``. Targets pass through
+    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``; ``reset`` with any flag ->
+    ``MODEL_SWITCH_ERR_RESET_WITH_FLAGS`` (see :attr:`ModelSwitchRequest.is_reset`). Targets pass through
     untouched (bare names, ``vendor/model``, ``vendor:model``) for :func:`switch_model`."""
     raw = str(raw or "")
     parsed = parse_model_flags_detailed(raw)
@@ -620,6 +637,10 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(parsed.reasoning_effort) is None:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
+    if parsed.model_input.strip().lower() == MODEL_SWITCH_RESET_TOKEN and (
+            parsed.explicit_provider or parsed.reasoning_effort or parsed.is_global
+            or parsed.is_session or parsed.is_once):
+        errors.append(MODEL_SWITCH_ERR_RESET_WITH_FLAGS)
     # First matching flag wins: once > session > global > default.
     scope = next((name for name, on in (("once", parsed.is_once), ("session", parsed.is_session),
                                         ("global", parsed.is_global)) if on), "default")
@@ -871,6 +892,24 @@ def _resolve_alias_fallback(
     return next((r for r in results if r is not None), None)
 
 
+def effective_context_pin(
+    config_context_length: int | None, model: str, provider: str, base_url: str = "",
+    configured_model: str | None = None, configured_provider: str | None = None,
+    configured_base_url: str | None = None) -> int | None:
+    """The ``model.context_length`` pin that still applies to ``model`` on this route, or None when the
+    route changed from the configured one (the pin belongs to that model). Fail-closed: None on error."""
+    if config_context_length is None or not (configured_model or configured_provider or configured_base_url):
+        return config_context_length
+    try:
+        from hermes_cli.route_identity import should_clear_context_pin
+        clear = should_clear_context_pin(
+            configured_model, model, configured_base_url, base_url, configured_provider, provider)
+    except Exception:  # any route-identity failure drops the pin, as resolve_display_context_length always did
+        logger.debug("context pin route check failed for %s", model, exc_info=True)
+        return None
+    return None if clear else config_context_length
+
+
 def resolve_display_context_length(
     model: str, provider: str, base_url: str = "", api_key: str = "",
     model_info: Optional[ModelInfo] = None, custom_providers: list | None = None,
@@ -888,15 +927,8 @@ def resolve_display_context_length(
     ``custom_providers[].models.<id>.context_length`` are honored — this closes #15779 where ``/model``
     switch ignored user-set overrides.
     """
-    if config_context_length is not None and (configured_model or configured_provider or configured_base_url):
-        try:
-            from hermes_cli.route_identity import should_clear_context_pin
-            if should_clear_context_pin(
-                    configured_model, model, configured_base_url, base_url, configured_provider, provider):
-                config_context_length = None
-        except Exception:
-            config_context_length = None
-
+    config_context_length = effective_context_pin(
+        config_context_length, model, provider, base_url, configured_model, configured_provider, configured_base_url)
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
@@ -1347,10 +1379,15 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     st.target_provider = match_slugs[0]
     st.new_model = cfg_matches[st.target_provider]
     logger.debug("Configured-provider detection routed '%s' to %s", st.new_model, st.target_provider)
-    # providers.<slug> endpoints resolve in the credential block via resolve_user_provider(),
-    # which is gated on explicit_provider; custom:* slugs resolve at runtime directly.
+    # A built-in-named entry with its own base_url is the user's endpoint (custom:<key>, #151775);
+    # a tuning-only one (no base_url) keeps the built-in. One predicate decides both.
     if isinstance(st.user_providers, dict) and st.target_provider in st.user_providers:
-        st.explicit_provider = st.target_provider
+        from hermes_cli.runtime_provider_custom import persisted_provider_id
+        persisted = persisted_provider_id(st.target_provider, st.user_providers)
+        if persisted != st.target_provider:
+            st.target_provider = persisted
+        else:
+            st.explicit_provider = st.target_provider
     return True
 
 
@@ -1442,16 +1479,22 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         user_pdef = (resolve_user_provider(explicit_norm, st.user_providers)
                      or resolve_user_provider(st.target_provider, st.user_providers))
     if user_pdef is not None and user_pdef.base_url:
-        ucfg = st.user_providers.get(explicit_norm) or st.user_providers.get(st.target_provider) or {}
+        entry_name = explicit_norm if st.user_providers.get(explicit_norm) else st.target_provider
+        ucfg = st.user_providers.get(entry_name) or {}
         # Key reads go through the per-profile secret scope (multiplexed gateway).
         ukey = _entry_configured_key(ucfg, _scoped_key_env)
-        st.validation_headers = _extra_headers_from_config(ucfg)
         try:
             st.resolve_runtime(
                 requested=st.target_provider, explicit_api_key=ukey or None, explicit_base_url=user_pdef.base_url)
-            st.api_key, st.base_url = st.api_key or ukey, st.base_url or user_pdef.base_url
+            # A keyless entry whose saved copy is for another origin (an unsaved edit moved it): the key
+            # the resolver read from disk belongs to the previous host, so this one is probed keyless.
+            moved = not ukey and _saved_entry_on_other_origin(entry_name, user_pdef.base_url)
+            st.api_key, st.base_url = "" if moved else st.api_key or ukey, st.base_url or user_pdef.base_url
         except Exception:
             st.api_key, st.base_url, st.api_mode = ukey, user_pdef.base_url, ""
+        # The entry's own headers, not the resolver's: it reads the on-disk copy, which an unsaved
+        # edit may have moved to a new host (those headers belong to the previous one).
+        st.validation_headers = _extra_headers_from_config(ucfg)
     elif st.target_provider == "custom" and st.current_base_url:
         # A bare-custom session switching models stays on its endpoint (#45597). Arriving from
         # ANOTHER provider (the per-turn config sync adopting ``provider: custom``) the configured
@@ -1714,6 +1757,8 @@ def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Opti
 
 def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     """COMMON PATH part 3: final api_mode / base_url shaping, metadata, warnings."""
+    from hermes_cli.runtime_provider_custom import persisted_provider_id
+    st.target_provider = persisted_provider_id(st.target_provider, st.user_providers)
     derived = model_derived_api_mode(st.target_provider, st.new_model, st.api_key)
     if derived is not None:
         st.api_mode = derived
@@ -1797,23 +1842,23 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     route changed: left behind it routes the NEW provider's requests to the OLD endpoint's env
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
-    (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
+    (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
+    from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
         "base_url": result.base_url or None, "api_mode": result.api_mode or None,
     }
     if "context_length" in model_cfg:
-        from hermes_cli.route_identity import should_clear_context_pin
         if should_clear_context_pin(
                 model_cfg.get("default") or model_cfg.get("model"), result.new_model,
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
     route_changed = selection_route_changed(model_cfg, result)
-    stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
+    stale = list(ENDPOINT_CREDENTIAL_KEYS) if (not target.startswith("custom") or route_changed) else []
     if route_changed:
-        stale += ["key_env", "api_key_env"]
+        stale += ENDPOINT_KEY_POINTER_KEYS
     for key in stale:
         if key in model_cfg:
             updates[key] = None
@@ -1928,13 +1973,6 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
-
-
-def _extra_headers_from_config(entry: Any) -> dict[str, str]:
-    if not isinstance(entry, dict):
-        return {}
-    from hermes_cli.config import normalize_extra_headers
-    return normalize_extra_headers(entry.get("extra_headers"))
 
 
 def _scoped_key_env(name: str) -> str:

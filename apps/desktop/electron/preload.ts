@@ -289,6 +289,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
   testConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:test', payload),
+  // Plugin SDK host.setProfileBackend / clearProfileBackend: main confirms
+  // natively before a plugin's backend serves, or stops serving, a profile.
+  setProfileBackend: payload => ipcRenderer.invoke('hermes:profile-backend:set', payload),
+  confirmSetProfileBackend: payload => ipcRenderer.invoke('hermes:profile-backend:confirm-set', payload),
+  clearProfileBackend: payload => ipcRenderer.invoke('hermes:profile-backend:clear', payload),
+  confirmClearProfileBackend: payload => ipcRenderer.invoke('hermes:profile-backend:confirm-clear', payload),
   // Opt-in OS-keychain encryption for stored gateway secrets (default off —
   // see secret-storage-policy.ts). get never touches the OS keychain.
   getSecretStorageEncryption: () => ipcRenderer.invoke('hermes:secret-storage:get'),
@@ -346,6 +352,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
+    importConnections: (record: Record<string, string>) =>
+      ipcRenderer.invoke('hermes:profile:connections:import', record),
+    rememberConnection: (connectionId: string, profile: string) =>
+      ipcRenderer.invoke('hermes:profile:connections:remember', connectionId, profile),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   // The handler resolves an expected 404 with a sentinel instead of rejecting
@@ -353,6 +363,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // rejection the renderer expects — see electron/api-expected-404.ts.
   api: request => ipcRenderer.invoke('hermes:api', request).then(unwrapExpectedNotFound),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
+  notifySupported: () => ipcRenderer.invoke('hermes:notify:supported'),
   claimStartupLatency: () => ipcRenderer.invoke('hermes:startup-latency:claim'),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),
@@ -398,6 +409,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   watchDirectory: dir => ipcRenderer.invoke('hermes:watchDirectory', dir),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
+  scheduleStreamWorkWake: (token, delayMs) => ipcRenderer.send('hermes:stream-work-wake', { token, delayMs }),
+  onStreamWorkWake: callback => {
+    const listener = (_event, token) => callback(token)
+    ipcRenderer.on('hermes:stream-work-ready', listener)
+
+    return () => ipcRenderer.removeListener('hermes:stream-work-ready', listener)
+  },
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
@@ -430,6 +448,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   setPreviewGuestHidden: (webContentsId, hidden) =>
     ipcRenderer.send('hermes:preview-guest-hidden', { webContentsId, hidden: Boolean(hidden) }),
+  beginPreviewGuestActivity: webContentsId => ipcRenderer.invoke('hermes:preview-guest-activity:begin', webContentsId),
+  endPreviewGuestActivity: token => ipcRenderer.invoke('hermes:preview-guest-activity:end', token),
+  executePreviewGuestScript: (token, code) => ipcRenderer.invoke('hermes:preview-guest-activity:script', token, code),
+  syncPreviewSignins: request => ipcRenderer.invoke('hermes:preview-signins:sync', request),
+  migratePreviewSigninsForProfile: (request: { oldProfile: string; newProfile: string }) =>
+    ipcRenderer.invoke('hermes:preview-signins:profile-renamed', request),
+  dropPreviewSigninsForProfile: (request: { profile: string }) =>
+    ipcRenderer.invoke('hermes:preview-signins:profile-deleted', request),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   freeTierChallenge: {
     // Load the account service's challenge page in a hidden window (revealed
@@ -633,9 +659,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:backend-exit', listener)
   },
   // Soft gateway-mode apply finished tearing down the primary backend. Renderer
-  // should wipe session lists + re-dial without a window reload.
+  // should wipe session lists + re-dial without a window reload. `detail.profile`
+  // names the one profile whose route moved (a plugin's setProfileBackend).
   onConnectionApplied: callback => {
-    const listener = () => callback()
+    const listener = (_event, detail) => callback(detail && typeof detail === 'object' ? detail : {})
     ipcRenderer.on('hermes:connection:applied', listener)
 
     return () => ipcRenderer.removeListener('hermes:connection:applied', listener)
@@ -653,6 +680,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:power-battery', listener)
 
     return () => ipcRenderer.removeListener('hermes:power-battery', listener)
+  },
+  // Whether the user is at this computer, by the OS idle clock where one is trustworthy.
+  presence: {
+    get: () => ipcRenderer.invoke('hermes:presence:get'),
+    onChange: callback => {
+      const listener = (_event, snapshot) => callback(snapshot)
+      ipcRenderer.on('hermes:presence', listener)
+
+      return () => ipcRenderer.removeListener('hermes:presence', listener)
+    }
   },
   onBootProgress: callback => {
     const listener = (_event, payload) => callback(payload)

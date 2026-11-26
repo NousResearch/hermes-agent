@@ -30,9 +30,9 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # Codex context-size floor, so this is their only protection. Anchored so gpt-5.5 and the
         # gpt-4.x / gpt-5.1-chat lines keep the effort-tier defaults (#112909).
         "gpt-5.6", "gpt-6",
-        # Mythos-class named models (claude-fable-5): 1M ctx + 128K output, a heavier thinking
-        # phase than the numbered line — otherwise the stale detector trips the circuit breaker.
-        "claude-fable",
+        # Mythos-class named models (claude-fable-5, claude-mythos-5): 1M ctx + 128K output, a heavier
+        # thinking phase than the numbered line — otherwise the stale detector trips the circuit breaker.
+        "claude-fable", "claude-mythos",
         # Gemini 4 (gemini-4-argon): thinks longer than 3.x, and a long-decode turn re-prefills the
         # whole output so far at every hop before the next token arrives.
         "gemini-4",

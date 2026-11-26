@@ -585,6 +585,19 @@ function Header() {
 }
 
 export const FEATURED_ID = 'nous'
+
+// Stand-in for the Nous row when the OAuth provider list could not be read
+// (it failed or came back empty, which drops the picker onto the key form).
+// Starting sign-in only needs the id; the backend's start reply decides the flow.
+const NOUS_FALLBACK: OAuthProvider = {
+  cli_command: 'hermes auth add nous',
+  docs_url: 'https://portal.nousresearch.com',
+  flow: 'device_code',
+  id: FEATURED_ID,
+  name: 'Nous Portal',
+  status: { logged_in: false }
+}
+
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {
@@ -621,29 +634,25 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
   const apiKeyOptions = useApiKeyCatalog(ctx.scope)
+  const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
 
   // localEndpoint forces the key form regardless of `mode` (which a manual
   // provider refresh may flip back to 'oauth'); it preselects the local option
   // and hides the "back to sign in" link since the user came specifically to
-  // configure a custom endpoint.
-  if (localEndpoint || mode === 'apikey' || !hasOauth) {
+  // configure a custom endpoint. A list still loading (null) is not "no OAuth
+  // providers": it waits below instead of flashing the key form.
+  if (localEndpoint || mode === 'apikey' || (providers !== null && !hasOauth)) {
     return (
-      <div className="grid gap-3">
-        <ApiKeyForm
-          canGoBack={hasOauth && !localEndpoint}
-          initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : apiKeyInitialEnv}
-          onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name, apiKey, modelName) =>
-            saveOnboardingApiKey(envKey, value, name, ctx, apiKey, modelName)
-          }
-          options={apiKeyOptions}
-        />
-        {manual ? null : (
-          <div className="flex justify-center pt-1">
-            <ChooseLaterLink />
-          </div>
-        )}
-      </div>
+      <KeyFormStep
+        apiKeyOptions={apiKeyOptions}
+        ctx={ctx}
+        hasOauth={hasOauth}
+        initialEnvKey={apiKeyInitialEnv}
+        localEndpoint={localEndpoint}
+        manual={manual}
+        onSelect={select}
+        providers={ordered}
+      />
     )
   }
 
@@ -651,7 +660,6 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
     return <Status>{t.onboarding.lookingUpProviders}</Status>
   }
 
-  const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
   const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
   // Collapse the secondary providers behind a disclosure whenever Nous Portal
@@ -717,6 +725,51 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           {t.onboarding.haveApiKey}
         </Button>
       </div>
+    </div>
+  )
+}
+
+// The API-key step of the picker. Nous stays reachable from it, including when
+// the provider list failed to load and there is no picker to go back to; the
+// custom-endpoint form (localEndpoint) is a deliberate destination and skips it.
+function KeyFormStep({
+  apiKeyOptions,
+  ctx,
+  hasOauth,
+  initialEnvKey,
+  localEndpoint,
+  manual,
+  onSelect,
+  providers
+}: {
+  apiKeyOptions: ApiKeyOption[]
+  ctx: OnboardingContext
+  hasOauth: boolean
+  initialEnvKey?: string
+  localEndpoint: boolean
+  manual: boolean
+  onSelect: (provider: OAuthProvider) => void
+  providers: OAuthProvider[]
+}) {
+  const nous = localEndpoint ? null : (providers.find(p => p.id === FEATURED_ID) ?? NOUS_FALLBACK)
+
+  return (
+    <div className="grid gap-3">
+      {nous ? <FeaturedProviderRow onSelect={onSelect} provider={nous} /> : null}
+      <ApiKeyForm
+        canGoBack={hasOauth && !localEndpoint}
+        initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : initialEnvKey}
+        onBack={() => setOnboardingMode('oauth')}
+        onSave={(envKey, value, name, apiKey, modelName) =>
+          saveOnboardingApiKey(envKey, value, name, ctx, apiKey, modelName)
+        }
+        options={apiKeyOptions}
+      />
+      {manual ? null : (
+        <div className="flex justify-center pt-1">
+          <ChooseLaterLink />
+        </div>
+      )}
     </div>
   )
 }

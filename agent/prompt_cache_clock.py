@@ -1,0 +1,822 @@
+"""Prompt-cache clock: until when this session's cached prompt prefix stays warm, per route.
+
+One record per successful attempt that read or wrote the cache: the tier the request actually
+asked for (read from the payload sent, not from config), its send time, the tier(s) the response
+proved (Anthropic ``ephemeral_5m/1h_input_tokens``, OpenAI Responses ``ttl_30m/12h_tokens``), and
+the resulting COVERAGE: one deadline per tier the cached prefix holds. Every consumer (``/context``
+today; keep-alive, cold-cache pruning and idle compaction later) reads :func:`cache_window` (or
+:func:`stored_cache_window` with no live agent) instead of re-deriving a TTL.
+
+The cache spec follows the API spec the request was sent on, not the vendor (two specs, no
+per-vendor lifetime table):
+
+- Anthropic spec: the request carries ``cache_control`` markers (Claude on any wire or gateway,
+  MiniMax / Kimi / z.ai Anthropic endpoints, Qwen's explicit cache). The 5m or 1h it asked for is
+  declared, clamped by the route's ceiling (``prompt_caching.route_ttl_ceilings``, else the provider's
+  ``prompt_cache_max_ttl``); a read restarts the tier, so ``deadline = read + tier``.
+- OpenAI spec: every request with no marker on a cached route (OpenAI of any generation, DeepSeek,
+  Qwen's implicit cache, GLM, Gemini, xAI, any OpenAI-compatible endpoint) is one automatic prefix
+  cache treated as 30 minutes, renewed by a read: ``deadline = max(existing, read + 30m)``. A proven
+  12h write (Responses ``ttl_12h_tokens``) is fixed at ``write + 12h``: a read only extends the
+  30-minute floor. On non-OpenAI vendors the 30 minutes is an assumption; the warmer stops for the
+  session at its first missed keep-alive.
+
+Two ends per window, because a documented minimum is not an expiry:
+
+- ``guaranteed_until``: the EARLIEST coverage deadline, so the whole cached prefix is warm before
+  it (a response that wrote two tiers is only as warm as its shorter one). ``None`` = no guarantee.
+- ``estimated_until``: after it the entry is treated as gone (cold offload and expiry act on it): the
+  latest coverage deadline on both specs, except where the request or the host says the entry
+  outlives the warming deadline. A request that asks ``prompt_cache_retention: 24h`` keeps 30m as
+  its guarantee (warming still refreshes at 25 minutes) but is estimated to live ``read + 24h``; a
+  local or private-network endpoint (loopback, RFC-1918, ``*.local``: a llama.cpp / vLLM / Ollama
+  box) evicts on memory pressure, not on a clock, so it has no estimated end (``None`` with a known
+  confidence) and is never cold on the clock. A route switch or compaction still invalidates both.
+
+Consumers ask :func:`cache_certainly_warm` (before ``guaranteed_until``) or
+:func:`cache_certainly_cold` (past ``estimated_until``; never past only a minimum). Between the two
+the cache MAY still be warm. An unknown window is neither.
+
+Storage is advisory here: a failed read (SQLite, a worker's owner RPC) makes the window
+``unknown`` (``storage_unavailable``) and never raises into the turn that produced a reply.
+
+Validity: an event is bound to the session id, the full route (provider, normalized base URL with
+scheme, host, port and path, model) and the session's durable context generation (how many rows a
+compaction or prune archived: it survives restarts and only grows). Any difference makes the window
+``unknown``. A resumed agent restores and validates the saved event BEFORE folding its first
+response, so a first pure read keeps the saved proof.
+
+Confidence: ``proven`` (the response named the tier), ``declared`` (what we sent, on a route known
+to honour it), ``assumed`` (no guarantee), ``unknown`` (no published retention, or the cache moved:
+route switch, fallback, compaction, or a runtime whose requests Hermes does not build).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import sqlite3
+import time
+from dataclasses import asdict, dataclass, field, replace
+from typing import Any, Callable, Optional
+
+from agent.prompt_caching import TTL_SECONDS, route_ttl_ceiling
+
+logger = logging.getLogger(__name__)
+
+PROVEN, DECLARED, ASSUMED, UNKNOWN = "proven", "declared", "assumed", "unknown"
+STORAGE_UNAVAILABLE = -1  # a generation read that failed: never equal to a real (>= 0) generation
+_CONFIDENCE_RANK = {UNKNOWN: 0, ASSUMED: 1, DECLARED: 2, PROVEN: 3}
+_OPENAI_READ_FLOOR = "30m"
+#: ``prompt_cache_retention`` values a request can ask for, as the entry's estimated lifetime.
+_RETENTION_SECONDS = {"24h": 86_400}
+#: Route classes saved by earlier builds, read as the API spec they were sent on.
+_LEGACY_CLASSES = {"openai_ttl": "openai_spec", "openai_retention": "openai_spec", "implicit": "openai_spec",
+                   "route_ceiling": "anthropic_spec", "anthropic_native": "anthropic_spec",
+                   "openrouter_claude": "anthropic_spec", "anthropic_gateway": "anthropic_spec"}
+
+
+@dataclass(frozen=True)
+class CacheEvent:
+    """The cache state after the latest successful attempt that touched it."""
+
+    route: tuple[str, str, str]  # (provider, normalized base_url, model) the agent displayed when sent
+    destination: tuple[str, str, str]  # where the request went (the MoA aggregator slot for MoA)
+    route_class: str
+    requested_ttl: Optional[str]
+    sent_at: float
+    read_tokens: int
+    write_tokens: int
+    tier: Optional[str]  # tier of the earliest deadline (or the assumed figure when nothing is guaranteed)
+    confidence: str
+    reason: str
+    coverage: dict[str, float] = field(default_factory=dict)  # tier -> deadline, every tier still covered
+    guaranteed_until: Optional[float] = None
+    estimated_until: Optional[float] = None
+    session_id: str = ""
+    generation: Optional[int] = None  # SessionDB.prompt_cache_generation when recorded
+    upstream: Optional[str] = None  # :func:`response_upstream` of the reply, when the wire names it
+
+
+@dataclass(frozen=True)
+class CacheWindow:
+    guaranteed_until: Optional[float]  # the whole prefix is warm before this; None = no guarantee
+    estimated_until: Optional[float]  # certainly gone after this; None = unknown
+    tier: Optional[str]
+    confidence: str
+    reason: str
+    refreshed_at: Optional[float] = None
+    coverage: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _Ctx:
+    route_class: str
+    requested_ttl: Optional[str]
+    retention: Optional[str]
+    write_tiers: dict[str, int]
+    write_tokens: int
+    ceiling: Optional[str]
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    tiers: tuple[str, ...]  # tiers this response guarantees for what it wrote (or read, with no prior state)
+    confidence: str
+    reason: str
+
+
+# ── Request side ────────────────────────────────────────────────────────────
+
+
+def _block_marker_ttls(block: Any, out: set[str]) -> None:
+    if not isinstance(block, dict):
+        return
+    content = block.get("content")
+    for part in (block, *(content if isinstance(content, list) else ())):
+        marker = part.get("cache_control") if isinstance(part, dict) else None
+        if isinstance(marker, dict):
+            out.add(marker.get("ttl") or "5m")
+
+
+def _list_field(api_kwargs: dict, key: str) -> list:
+    value = api_kwargs.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _marker_ttl(api_kwargs: dict) -> Optional[str]:
+    """Shortest ``cache_control`` TTL on the wire (the planner puts breakpoints on the system
+    prompt, the tools tail and the last few messages), or None when the request has no marker."""
+    found: set[str] = set()
+    messages, tools = _list_field(api_kwargs, "messages"), _list_field(api_kwargs, "tools")
+    for block in (*_list_field(api_kwargs, "system"), *messages[:2], *messages[-4:], *tools[-1:]):
+        _block_marker_ttls(block, found)
+    return min(found, key=lambda ttl: TTL_SECONDS.get(ttl, 0)) if found else None
+
+
+def _wire_field(api_kwargs: dict, key: str) -> Any:
+    extra = api_kwargs.get("extra_body")
+    return api_kwargs.get(key) if key in api_kwargs else (extra.get(key) if isinstance(extra, dict) else None)
+
+
+def attempt_facts(api_kwargs: Any) -> Optional[dict[str, Any]]:
+    """What one request payload asks of the cache, stamped with its send time."""
+    if not isinstance(api_kwargs, dict):
+        return None
+    options = _wire_field(api_kwargs, "prompt_cache_options")
+    return {
+        "sent_at": time.time(),
+        "marker_ttl": _marker_ttl(api_kwargs),
+        "openai_ttl": options.get("ttl") if isinstance(options, dict) else None,
+        "retention": _wire_field(api_kwargs, "prompt_cache_retention"),
+    }
+
+
+def record_attempt_sent(agent: Any, api_kwargs: Any) -> None:
+    """Stamp THIS attempt's send time and the tier it asks for (retries never shorten the window)."""
+    facts = attempt_facts(api_kwargs)
+    if facts is not None:
+        agent._prompt_cache_attempt = facts
+
+
+# ── Route classes and rules ─────────────────────────────────────────────────
+
+
+def classify_route(*, provider: str, base_url: str, api_mode: str, model: str,
+                   has_markers: bool, retention: Optional[str]) -> str:
+    """Which cache spec governs the request: the API spec it was sent on, not the vendor. A request
+    with ``cache_control`` markers is Anthropic spec on any wire or gateway (Claude anywhere, MiniMax /
+    Kimi / z.ai Anthropic endpoints, Qwen's explicit cache); every other cached request is OpenAI spec."""
+    return "anthropic_spec" if has_markers else "openai_spec"
+
+
+def _written_tiers(tiers: dict[str, int]) -> tuple[str, ...]:
+    return tuple(sorted((t for t, n in tiers.items() if n > 0 and t in TTL_SECONDS), key=TTL_SECONDS.__getitem__))
+
+
+def _rule_anthropic_spec(ctx: _Ctx) -> _Verdict:
+    """Claude rules: the tier the request asked for is declared (a response that names its tiers proves
+    them), clamped by the route's ceiling when one is declared or configured: a route that keeps less
+    than it reports is believed at its ceiling."""
+    proven = _written_tiers(ctx.write_tiers)
+    tiers, confidence, reason = (proven, PROVEN, "anthropic_usage_split") if proven else (
+        (ctx.requested_ttl or "5m",), DECLARED, "anthropic_requested")
+    if ctx.ceiling is None or all(TTL_SECONDS.get(t, 0) <= TTL_SECONDS[ctx.ceiling] for t in tiers):
+        return _Verdict(tiers, confidence, reason if ctx.ceiling is None or proven else f"route_ceiling_{ctx.ceiling}")
+    clamped = tuple(sorted({min((t, ctx.ceiling), key=lambda ttl: TTL_SECONDS.get(ttl, 0)) for t in tiers},
+                           key=TTL_SECONDS.__getitem__))
+    return _Verdict(clamped, DECLARED, f"route_ceiling_{ctx.ceiling}")
+
+
+def _rule_openai_spec(ctx: _Ctx) -> _Verdict:
+    """One automatic prefix cache, 30 minutes renewed by a read (OpenAI's documented GPT-5.6 minimum,
+    https://developers.openai.com/api/docs/guides/prompt-caching , applied to every OpenAI-spec route).
+    An assumption on non-OpenAI vendors: the first keep-alive that misses stops warming for the session."""
+    if proven := _written_tiers(ctx.write_tiers):
+        return _Verdict(proven, PROVEN, "openai_write_tier")
+    return _Verdict((_OPENAI_READ_FLOOR,), DECLARED, "openai_spec_30m")
+
+
+_RULES: dict[str, Callable[[_Ctx], _Verdict]] = {
+    "anthropic_spec": _rule_anthropic_spec,
+    "openai_spec": _rule_openai_spec,
+}
+
+
+def _refresh_restart(deadline: float, tier: str, at: float) -> float:
+    return at + TTL_SECONDS[tier]
+
+
+def _refresh_openai(deadline: float, tier: str, at: float) -> float:
+    return max(deadline, at + TTL_SECONDS[_OPENAI_READ_FLOOR])
+
+
+# How a read moves a covered tier's deadline; route classes absent here never hold coverage.
+_REFRESH: dict[str, Callable[[float, str, float], float]] = {
+    "anthropic_spec": _refresh_restart, "openai_spec": _refresh_openai,
+}
+
+
+def _fold_coverage(previous: Optional[CacheEvent], verdict: _Verdict, route_class: str, at: float,
+                   read: int, write: int) -> tuple[dict[str, float], bool]:
+    """``(coverage after this response, whether any earlier coverage carried over)``. A read refreshes
+    every still-live tier by the route's rule; a write (or a read with nothing carried) adds the
+    tiers it guarantees. A tier present twice keeps the EARLIER deadline."""
+    refresh = _REFRESH.get(route_class)
+    if refresh is None:
+        return {}, False
+    coverage: dict[str, float] = {}
+    if read > 0 and previous is not None:
+        coverage = {tier: refresh(deadline, tier, at) for tier, deadline in previous.coverage.items()
+                    if tier in TTL_SECONDS and deadline > at}
+    carried = bool(coverage)
+    if write > 0 or not carried:
+        for tier in verdict.tiers:
+            deadline = at + TTL_SECONDS[tier]
+            coverage[tier] = min(coverage.get(tier, deadline), deadline)
+    return coverage, carried
+
+
+def _ends(coverage: dict[str, float]) -> tuple[Optional[float], Optional[float]]:
+    return (min(coverage.values()), max(coverage.values())) if coverage else (None, None)
+
+
+def _estimated_end(coverage: dict[str, float], *, base_url: str, retention: Any, at: float,
+                   previous: Optional[CacheEvent], carried: bool, idle_from: float) -> Optional[float]:
+    """When the entry is treated as gone: for a local endpoint, the managed server's unload counted from
+    ``idle_from`` (the response's completion: the model idles from there, not from the send) or None; else
+    the latest coverage deadline, stretched to ``at + retention`` when the request asked for a longer
+    retention (and never shortened below what a carried event already estimated)."""
+    from agent.model_metadata import is_local_endpoint
+
+    if not coverage:
+        return None
+    if is_local_endpoint(base_url):
+        return _managed_unload_end(base_url, max(at, idle_from))
+    estimated = max(coverage.values())
+    if isinstance(retention, str) and retention in _RETENTION_SECONDS:
+        estimated = max(estimated, at + _RETENTION_SECONDS[retention])
+    if carried and previous is not None and previous.estimated_until is not None:
+        estimated = max(estimated, previous.estimated_until)
+    return estimated
+
+
+def _managed_unload_end(base_url: str, idle_from: float) -> Optional[float]:
+    """When Hermes' own managed llama-server has certainly unloaded an idle model (and its prompt cache):
+    the idle-unload limit plus two sweeps after the model went idle (the last request finished). A
+    user's own local server has no time-based expiry (None)."""
+    from hermes_cli.local_runtime.growth import is_managed_endpoint
+
+    if not is_managed_endpoint(base_url):
+        return None
+    from hermes_cli.local_runtime.bootstrap import _SWEEP_EVERY_S
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    return idle_from + LlamaServerSupervisor.IDLE_UNLOAD_S + 2 * _SWEEP_EVERY_S
+
+
+def _confidence(verdict: _Verdict, previous: Optional[CacheEvent], carried: bool, write: int) -> tuple[str, str]:
+    """A pure read keeps the carried proof (the entry it hit was written at that tier); a write on
+    top of carried coverage is only as sure as the weaker of the two."""
+    if not carried or previous is None:
+        return verdict.confidence, verdict.reason
+    if write == 0:
+        return previous.confidence, previous.reason
+    return min(verdict.confidence, previous.confidence, key=_CONFIDENCE_RANK.__getitem__), verdict.reason
+
+
+# ── Identity ────────────────────────────────────────────────────────────────
+
+
+def _route_key(provider: Any, base_url: Any, model: Any) -> tuple[str, str, str]:
+    from hermes_cli.route_identity import normalize_route_base_url
+    return (str(provider or ""), normalize_route_base_url(str(base_url or "")), str(model or ""))
+
+
+#: Reply fields that name the upstream a gateway routed the request to (OpenRouter's ``provider``).
+_UPSTREAM_FIELDS = ("provider",)
+_ID_FAMILY = re.compile(r"^([A-Za-z]+)[-_]")
+
+
+def response_upstream(response: Any) -> Optional[str]:
+    """Which upstream served ``response``, as far as the wire tells: a field the gateway names it in,
+    else the family of the response id (Nous serves one Claude model from two upstreams, ``chatcmpl-*``
+    and ``gen-*`` ids, and each keeps its own cache). None when the reply carries neither."""
+    for name in _UPSTREAM_FIELDS:
+        value = getattr(response, name, None)
+        if isinstance(value, str) and value:
+            return value
+    rid = getattr(response, "id", None)
+    match = _ID_FAMILY.match(rid) if isinstance(rid, str) else None
+    return match.group(1) if match else None
+
+
+def upstream_switched(before: Optional[str], after: Optional[str]) -> bool:
+    """Both replies name their upstream and the names differ: a miss there is routing, not lifetime."""
+    return bool(before and after and before != after)
+
+
+def _display_route(agent: Any) -> tuple[str, str, str]:
+    return _route_key(getattr(agent, "provider", ""), getattr(agent, "base_url", ""), getattr(agent, "model", ""))
+
+
+def _compression_count(agent: Any) -> int:
+    """This process's witness of context rewrites: compressions, plus the in-place archives
+    (prune, micro-compaction) a worker store counts, which leave ``compression_count`` alone."""
+    rewrites = getattr(getattr(agent, "_session_db", None), "context_rewrites", 0)
+    return (int(getattr(getattr(agent, "context_compressor", None), "compression_count", 0) or 0)
+            + (rewrites if isinstance(rewrites, int) else 0))
+
+
+def _storage_errors() -> tuple[type[BaseException], ...]:
+    """What a store read can raise: SQLite and the filesystem on the owner, the storage interface's
+    errors through a handle, the owner RPC in a worker."""
+    from agent.runtime_session_store import WorkerPersistenceError
+    from persistence.core.errors import PersistenceError
+    return sqlite3.Error, OSError, PersistenceError, WorkerPersistenceError
+
+
+def _clock_store(agent: Any) -> Any:
+    """Where the agent's clock reads go: its storage interface handle's usage repository, else its own
+    store (a worker's ``RuntimeSessionStore``, which serves neither read)."""
+    from agent.agent_init_session import agent_interface
+    handle = agent_interface(agent)
+    return handle.usage if handle is not None else getattr(agent, "_session_db", None)
+
+
+def _stored_clock(store: Any) -> Optional[Callable[[str], Any]]:
+    """The store's clock read as a ``{"clock", "last_assistant_at", "generation"}`` mapping, or None."""
+    reader: Any = getattr(store, "prompt_cache_clock", None)
+    if callable(reader):
+        def read(session_id: str) -> dict[str, Any]:
+            record = reader(session_id)
+            if record is None:
+                return {}
+            return {"clock": record.clock, "last_assistant_at": record.last_assistant_at,
+                    "generation": record.generation}
+        return read
+    reader = getattr(store, "get_prompt_cache_clock", None)
+    return reader if callable(reader) else None
+
+
+def current_generation(db: Any, session_id: Any) -> Optional[int]:
+    """The session's durable context generation; None when the store has none (no session db),
+    :data:`STORAGE_UNAVAILABLE` when the read failed."""
+    reader = getattr(db, "prompt_cache_generation", None)
+    if not session_id or not callable(reader):
+        return None
+    try:
+        value = reader(str(session_id))
+    except _storage_errors() as exc:
+        logger.debug("prompt-cache clock: generation read failed for %s (%s); window unknown", session_id, exc)
+        return STORAGE_UNAVAILABLE
+    return value if isinstance(value, int) else None
+
+
+def _invalid_reason(event: CacheEvent, *, session_id: str, generation: Optional[int],
+                    route: Optional[tuple[str, str, str]]) -> Optional[str]:
+    """Why *event* no longer describes the cache the next request reaches, or None."""
+    if event.session_id and event.session_id != session_id:
+        return "session_rotated"
+    if STORAGE_UNAVAILABLE in (generation, event.generation):
+        return "storage_unavailable"
+    if generation is not None and event.generation != generation:
+        return "compacted"
+    if route is not None and event.route != route:
+        return "route_changed"
+    return None
+
+
+def _agent_generation(agent: Any) -> Optional[int]:
+    return current_generation(_clock_store(agent), getattr(agent, "session_id", None))
+
+
+def _agent_invalid_reason(agent: Any, event: CacheEvent, generation: Optional[int]) -> Optional[str]:
+    # No durable generation (a worker store): this process's compressor count is the only witness.
+    if generation is None and getattr(agent, "_prompt_cache_compression_mark", 0) != _compression_count(agent):
+        return "compacted"
+    return _invalid_reason(event, session_id=str(getattr(agent, "session_id", "") or ""), generation=generation,
+                           route=_display_route(agent))
+
+
+def context_witness(agent: Any) -> tuple[str, Optional[int], int, tuple[str, str, str]]:
+    """What identifies the prompt and route the session's next request uses: session id, durable
+    generation, this process's rewrite count and the display route. A request sent outside the loop
+    (a keep-alive) captures it when armed and folds its reply only while it still matches."""
+    return (str(getattr(agent, "session_id", "") or ""), _agent_generation(agent), _compression_count(agent),
+            _display_route(agent))
+
+
+def _set_event(agent: Any, event: Optional[CacheEvent], *, mark: Optional[int] = None) -> None:
+    agent._prompt_cache_clock = event
+    agent._prompt_cache_compression_mark = _compression_count(agent) if mark is None else mark
+
+
+# ── Response side ───────────────────────────────────────────────────────────
+
+
+def _valid_previous(agent: Any, generation: Optional[int]) -> Optional[CacheEvent]:
+    """The event this response folds onto: the saved one on a resumed agent (restored first), and
+    only while it still describes the same cache."""
+    if not getattr(agent, "_prompt_cache_clock_restored", False):
+        restore_cache_clock(agent)
+    previous = getattr(agent, "_prompt_cache_clock", None)
+    if not isinstance(previous, CacheEvent) or previous.confidence == UNKNOWN:
+        return None
+    return None if _agent_invalid_reason(agent, previous, generation) else previous
+
+
+def _moa_destination(agent: Any) -> tuple[Optional[dict], Optional[dict]]:
+    """``(route, attempt)`` of the MoA aggregator request the client really sent, or ``(None, None)``."""
+    client = getattr(agent, "client", None)
+    route = getattr(client, "last_aggregator_route", None)
+    if not isinstance(route, dict):
+        return None, None
+    attempt = getattr(client, "last_aggregator_attempt", None)
+    return route, attempt if isinstance(attempt, dict) else None
+
+
+def _learn(previous: Optional[CacheEvent], provider: str, base_url: str, model: str, attempt: dict[str, Any],
+           read: int, write: int, at: float, *, upstream: Optional[str] = None, session_id: str = "") -> None:
+    """Feed the cross-session route store (``agent.prompt_cache_routes``) with this response: its gap
+    since the same prefix was last touched, against the tier the clock held for it. A reply from another
+    upstream than the one that cached the prefix teaches nothing about how long that cache lives."""
+    from agent.prompt_cache_routes import observe
+
+    if previous is not None and upstream_switched(previous.upstream, upstream):
+        return
+    tier_s = TTL_SECONDS.get(previous.tier or "") if previous is not None else None
+    observe(provider=provider, base_url=base_url, model=model, explicit=attempt.get("marker_ttl") is not None,
+            read=read, write=write, gap_s=(at - previous.sent_at) if previous is not None else None, tier_s=tier_s,
+            replay=bool(attempt.get("replay")), session_id=session_id)
+
+
+def _learn_silent_miss(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
+                       attempt: Optional[dict[str, Any]], upstream: Optional[str] = None) -> None:
+    """An automatic cache that reports nothing at all on a miss (no read, no write) still taught us
+    something when the same prefix, big enough to cache, was cached moments ago on this route."""
+    from agent.prompt_cache_lifecycle import MIN_CACHEABLE_PREFIX_TOKENS
+
+    previous = getattr(agent, "_prompt_cache_clock", None)
+    if (not isinstance(previous, CacheEvent) or previous.confidence == UNKNOWN or _moa_destination(agent)[0]
+            or int(getattr(usage, "prompt_tokens", 0) or 0) < max(MIN_CACHEABLE_PREFIX_TOKENS, previous.read_tokens)
+            or previous.destination != _route_key(provider, base_url, model)
+            or _agent_invalid_reason(agent, previous, _agent_generation(agent))):
+        return
+    attempt = attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
+    _learn(previous, provider, base_url, model, attempt, 0, 0, float(attempt.get("sent_at") or time.time()),
+           upstream=upstream, session_id=str(getattr(agent, "session_id", "") or ""))
+
+
+def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
+                          api_mode: str, attempt: Optional[dict[str, Any]] = None,
+                          witness: Optional[tuple[str, Optional[int], int, tuple[str, str, str]]] = None,
+                          upstream: Optional[str] = None) -> Optional[CacheEvent]:
+    """Fold one response into the clock. ``model``/``provider``/``base_url``/``api_mode`` are the
+    request's destination; a MoA client's resolved aggregator route and payload win over them.
+    ``attempt`` (:func:`attempt_facts`) and ``witness`` (:func:`context_witness` when it was armed)
+    are for a request sent outside the loop (a keep-alive): the event is stamped with the context
+    that request was built from, so a rewrite committed meanwhile leaves the window unknown.
+    ``upstream`` is :func:`response_upstream` of the reply. Called as the response completes.
+    Returns the new event, or None when the response touched no cache (the previous window stands)."""
+    read, write = int(getattr(usage, "cache_read_tokens", 0) or 0), int(getattr(usage, "cache_write_tokens", 0) or 0)
+    if read + write <= 0:
+        _learn_silent_miss(agent, usage, model=model, provider=provider, base_url=base_url, attempt=attempt,
+                           upstream=upstream)
+        return None
+    moa_route, moa_attempt = _moa_destination(agent)
+    if moa_route is not None:
+        model, provider = moa_route.get("model") or model, moa_route.get("provider") or provider
+        base_url, api_mode = moa_route.get("base_url") or "", moa_route.get("api_mode") or ""
+    session_id, generation, mark, route = witness or (
+        str(getattr(agent, "session_id", "") or ""), _agent_generation(agent), None, _display_route(agent))
+    previous = _valid_previous(agent, generation)
+    attempt = moa_attempt or attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
+    ctx = _Ctx(
+        route_class=classify_route(provider=provider, base_url=base_url, api_mode=api_mode or "", model=model or "",
+                                   has_markers=attempt.get("marker_ttl") is not None,
+                                   retention=attempt.get("retention")),
+        requested_ttl=attempt.get("marker_ttl") or attempt.get("openai_ttl"), retention=attempt.get("retention"),
+        write_tiers=dict(getattr(usage, "cache_write_by_ttl", ()) or ()), write_tokens=write,
+        ceiling=route_ttl_ceiling(provider, base_url),
+    )
+    verdict = _RULES[ctx.route_class](ctx)
+    destination = _route_key(provider, base_url, model)
+    if previous is not None and (previous.destination != destination or previous.route_class != ctx.route_class):
+        previous = None
+    at = float(attempt.get("sent_at") or time.time())
+    _learn(previous, provider, base_url, model, attempt, read, write, at, upstream=upstream, session_id=session_id)
+    coverage, carried = _fold_coverage(previous, verdict, ctx.route_class, at, read, write)
+    guaranteed = _ends(coverage)[0]
+    estimated = _estimated_end(coverage, base_url=base_url, retention=ctx.retention, at=at, previous=previous,
+                               carried=carried, idle_from=time.time())
+    if guaranteed is not None and estimated is not None:
+        guaranteed = min(guaranteed, estimated)  # never warm past the moment the entry is certainly gone
+    confidence, reason = _confidence(verdict, previous, carried, write)
+    event = CacheEvent(
+        route=route, destination=destination, route_class=ctx.route_class,
+        requested_ttl=ctx.requested_ttl, sent_at=at, read_tokens=read, write_tokens=write,
+        tier=min(coverage, key=coverage.__getitem__) if coverage else None,
+        confidence=confidence if coverage else UNKNOWN, reason=reason, coverage=coverage,
+        guaranteed_until=guaranteed, estimated_until=estimated, session_id=session_id, generation=generation,
+        upstream=upstream,
+    )
+    agent._prompt_cache_clock_restored = True  # a live event supersedes a store that could not be read
+    _set_event(agent, event, mark=mark)
+    return event
+
+
+def declared_write_tier(event: CacheEvent) -> Optional[str]:
+    """The tier THIS request's writes went to when the route declares it (no usage split): the
+    request's TTL under the route rule. ``event.tier`` is the earliest deadline over the whole
+    prefix, so a 1h write on top of an older 5m prefix would read as 5m."""
+    provider, base_url = event.destination[0], event.destination[1]
+    return _declared_tier(event.route_class, event.requested_ttl, event.write_tokens, provider, base_url)
+
+
+def request_write_tier(api_kwargs: Any, usage: Any, *, provider: str, base_url: str, api_mode: str,
+                       model: str) -> Optional[str]:
+    """:func:`declared_write_tier` for a request sent outside the loop (a keep-alive or priming write),
+    read from its own payload: its reply may not be folded into the clock (the context moved on), but
+    its writes still went to the tier it asked for."""
+    attempt = attempt_facts(api_kwargs) or {}
+    route_class = classify_route(provider=provider, base_url=base_url, api_mode=api_mode, model=model,
+                                 has_markers=attempt.get("marker_ttl") is not None, retention=attempt.get("retention"))
+    requested = attempt.get("marker_ttl") or attempt.get("openai_ttl")
+    return _declared_tier(route_class, requested, int(getattr(usage, "cache_write_tokens", 0) or 0), provider, base_url)
+
+
+def _declared_tier(route_class: str, requested_ttl: Optional[str], write_tokens: int, provider: str,
+                   base_url: str) -> Optional[str]:
+    verdict = _RULES[route_class](_Ctx(route_class, requested_ttl, None, {}, write_tokens,
+                                       route_ttl_ceiling(provider, base_url)))
+    return verdict.tiers[-1] if verdict.confidence == DECLARED and verdict.tiers else None
+
+
+def record_unobserved_cache_response(agent: Any, usage: Any, *, reason: str) -> Optional[CacheEvent]:
+    """A runtime whose requests Hermes does not build (the Codex app-server sets its own cache
+    options): the cache moved but its window cannot be known, so it is recorded ``unknown`` and no
+    older window outlives it."""
+    read, write = int(getattr(usage, "cache_read_tokens", 0) or 0), int(getattr(usage, "cache_write_tokens", 0) or 0)
+    if read + write <= 0:
+        return None
+    route = _display_route(agent)
+    event = CacheEvent(
+        route=route, destination=route, route_class="unobserved", requested_ttl=None, sent_at=time.time(),
+        read_tokens=read, write_tokens=write, tier=None, confidence=UNKNOWN, reason=reason,
+        session_id=str(getattr(agent, "session_id", "") or ""), generation=_agent_generation(agent),
+    )
+    agent._prompt_cache_clock_restored = True
+    _set_event(agent, event)
+    return event
+
+
+# ── Persistence ─────────────────────────────────────────────────────────────
+
+
+def event_to_json(event: CacheEvent) -> str:
+    return json.dumps(asdict(event), separators=(",", ":"))
+
+
+def event_from_json(raw: Any) -> Optional[CacheEvent]:
+    try:
+        data: Any = json.loads(raw) if isinstance(raw, str) else None
+        if not isinstance(data, dict):
+            return None
+        # Saved by an earlier build: its per-vendor classes are the API spec they were sent on.
+        data["route_class"] = _LEGACY_CLASSES.get(data.get("route_class"), data.get("route_class"))
+        return CacheEvent(**{**data, "route": tuple(data["route"]), "destination": tuple(data["destination"])})
+    except (TypeError, ValueError, KeyError):  # a column written by a different build: no clock
+        return None
+
+
+def _fallback_event(agent: Any, last_assistant_at: float, generation: Optional[int]) -> CacheEvent:
+    """No stored clock (a session from before this column): anchor on the newest assistant row and
+    apply the current route's rule with no response evidence. Never a guarantee, at most an end."""
+    from agent.prompt_caching import effective_cache_ttl
+    provider, base_url = str(getattr(agent, "provider", "") or ""), str(getattr(agent, "base_url", "") or "")
+    model = str(getattr(agent, "model", "") or "")
+    caching = bool(getattr(agent, "_use_prompt_caching", False))
+    requested = effective_cache_ttl(getattr(agent, "_cache_ttl", None), provider=provider, model=model,
+                                    base_url=base_url, auto=getattr(agent, "_cache_ttl_auto", False)) if caching else None
+    route_class = classify_route(provider=provider, base_url=base_url, api_mode=str(getattr(agent, "api_mode", "") or ""),
+                                 model=model, has_markers=caching, retention=None)
+    verdict = _RULES[route_class](_Ctx(route_class, requested, None, {}, 0, route_ttl_ceiling(provider, base_url)))
+    seconds = max((TTL_SECONDS[t] for t in verdict.tiers), default=0)
+    route = _display_route(agent)
+    return CacheEvent(
+        route=route, destination=route, route_class=route_class, requested_ttl=requested, sent_at=last_assistant_at,
+        read_tokens=0, write_tokens=0, tier=verdict.tiers[-1] if verdict.tiers else None,
+        confidence=ASSUMED if seconds else UNKNOWN, reason=f"restored_from_transcript:{verdict.reason}",
+        estimated_until=last_assistant_at + seconds if seconds else None,
+        session_id=str(getattr(agent, "session_id", "") or ""), generation=generation,
+    )
+
+
+def restore_cache_clock(agent: Any) -> Optional[CacheEvent]:
+    """Load the session's stored clock once per agent (resume, gateway re-creation). The saved
+    generation is kept as saved: a compaction committed since then invalidates it. A failed read
+    restores nothing and is retried on the next consumer."""
+    session_id = getattr(agent, "session_id", None)
+    reader = _stored_clock(_clock_store(agent))
+    if not session_id or reader is None:
+        agent._prompt_cache_clock_restored = True
+        return None
+    try:
+        stored: Any = reader(session_id) or {}
+    except _storage_errors() as exc:
+        logger.debug("prompt-cache clock: restore failed for %s (%s); window unknown", session_id, exc)
+        return None
+    agent._prompt_cache_clock_restored = True
+    event = event_from_json(stored.get("clock"))
+    if event is not None:
+        event = replace(event, session_id=event.session_id or str(session_id))
+    elif isinstance(stored.get("last_assistant_at"), (int, float)):
+        event = _fallback_event(agent, float(stored["last_assistant_at"]), stored.get("generation"))
+    _set_event(agent, event)
+    return event
+
+
+# ── The answer every consumer reads ─────────────────────────────────────────
+
+
+def _unknown(reason: str, event: Optional[CacheEvent] = None) -> CacheWindow:
+    return CacheWindow(None, None, None, UNKNOWN, reason, event.sent_at if event else None)
+
+
+def _window(event: CacheEvent) -> CacheWindow:
+    # No estimated end with a guarantee: a local endpoint, warm until evicted, never cold on the clock.
+    if event.confidence == UNKNOWN or (event.estimated_until is None and event.guaranteed_until is None):
+        return _unknown(event.reason, event)
+    return CacheWindow(event.guaranteed_until, event.estimated_until, event.tier, event.confidence, event.reason,
+                       event.sent_at, dict(event.coverage))
+
+
+def cache_window(agent: Any) -> Optional[CacheWindow]:
+    """The live route's cache window, or None when this session never touched a cache."""
+    event = getattr(agent, "_prompt_cache_clock", None)
+    if event is None and not getattr(agent, "_prompt_cache_clock_restored", False):
+        event = restore_cache_clock(agent)
+    if not isinstance(event, CacheEvent):
+        # A restore that could not read the store: the session may have a window nobody can see.
+        return None if getattr(agent, "_prompt_cache_clock_restored", False) else _unknown("storage_unavailable")
+    reason = _agent_invalid_reason(agent, event, _agent_generation(agent))
+    return _unknown(reason, event) if reason else _window(event)
+
+
+def _saved_route_changed(event: CacheEvent, saved: tuple[Any, Any, Any]) -> bool:
+    """Whether the session's persisted route (what ``session.mutate`` / ``/model`` wrote, and what
+    a resume starts on) differs from the route the event was recorded on. Only persisted parts
+    count: a row without a provider or base_url says nothing about them. A ``custom`` agent
+    names the transport class while the row names the entry, so its endpoint is the base_url."""
+    provider, base_url, model = _route_key(*saved)
+    ev_provider, ev_url, ev_model = event.route
+    return bool((model and model != ev_model) or (base_url and base_url != ev_url)
+                or (provider and ev_provider != "custom" and provider != ev_provider))
+
+
+def stored_cache_window(raw_clock: Any, *, session_id: str, generation: Optional[int],
+                        saved_route: tuple[Any, Any, Any] = (None, None, None)) -> Optional[dict[str, Any]]:
+    """:func:`cache_window_payload` for a session with no live agent, from its saved column, checked
+    against the session's persisted ``(provider, base_url, model)``."""
+    event = event_from_json(raw_clock)
+    if event is None:
+        return None
+    reason = _invalid_reason(event, session_id=session_id, generation=generation, route=None)
+    if reason is None and _saved_route_changed(event, saved_route):
+        reason = "route_changed"
+    return asdict(_unknown(reason, event) if reason else _window(event))
+
+
+def cache_window_payload(agent: Any) -> Optional[dict[str, Any]]:
+    """``cache_window`` as the JSON shape surfaces carry (``PromptCacheWindow`` contract)."""
+    from agent.prompt_cache_lifecycle import prompt_cache_warming_disabled
+    from agent.prompt_cache_routes import display_rule, rule_for
+
+    window = cache_window(agent)
+    if window is None:
+        return None
+    learned = display_rule(rule_for(getattr(agent, "provider", ""), getattr(agent, "base_url", ""),
+                                    getattr(agent, "model", ""), bool(getattr(agent, "_use_prompt_caching", False)),
+                                    tier_s=TTL_SECONDS.get(window.tier or "")))
+    from agent.prompt_cache_lifecycle.tier import tier_pending
+
+    return {**asdict(window), "warming_off": prompt_cache_warming_disabled(agent), "learned": learned,
+            "tier_pending": tier_pending(agent)}
+
+
+def _field(window: Any, name: str) -> Any:
+    return window.get(name) if isinstance(window, dict) else getattr(window, name, None)
+
+
+def cache_certainly_warm(window: Any, *, now: Optional[float] = None) -> bool:
+    """True only before the guaranteed end (a documented minimum or a proven tier)."""
+    guaranteed = _field(window, "guaranteed_until") if window is not None else None
+    return guaranteed is not None and (time.time() if now is None else now) < float(guaranteed)
+
+
+def cache_certainly_cold(window: Any, *, now: Optional[float] = None) -> bool:
+    """True only past the estimated end (Anthropic's exact tier, OpenAI's retention ceiling), never
+    past only a minimum. An unknown window, or one with no estimated end (a local endpoint), is never
+    certainly cold."""
+    if window is None or _field(window, "confidence") == UNKNOWN:
+        return False
+    estimated = _field(window, "estimated_until")
+    return estimated is not None and (time.time() if now is None else now) >= float(estimated)
+
+
+# ── /context line (surface absorbed from #142387) ──────────────────────────
+
+_UNKNOWN_LINES = {"session_rotated": "cache_unknown_moved", "compacted": "cache_unknown_moved",
+                  "route_changed": "cache_unknown_moved", "codex_app_server": "cache_unknown_runtime",
+                  "storage_unavailable": "cache_unknown_storage"}
+
+
+def _duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+
+
+def _clock(ts: Any) -> str:
+    return time.strftime("%H:%M", time.localtime(float(ts)))
+
+
+def render_prompt_cache_line(window: Optional[dict[str, Any]], *, now: Optional[float] = None) -> Optional[str]:
+    """One ``/context`` line: warm until the guaranteed end, may still be warm until the estimated
+    end, expired (only past the estimated end) and how long ago, or unknown."""
+    from agent.i18n import t
+
+    if not isinstance(window, dict):
+        return None
+    estimated = window.get("estimated_until")
+    line = _cache_line(window, estimated, now)
+    if window.get("tier_pending"):
+        line = f"{line} {t('gateway.context.cache_tier_pending')}"
+    if window.get("learned"):
+        line = f"{line} {t('gateway.context.cache_learned', rule=window['learned'])}"
+    return f"{line} {t('gateway.context.cache_warming_off')}" if window.get("warming_off") else line
+
+
+def _cache_line(window: dict[str, Any], estimated: Any, now: Optional[float]) -> str:
+    from agent.i18n import t
+
+    if window.get("confidence") == UNKNOWN or (estimated is None and not cache_certainly_warm(window, now=now)):
+        line = _UNKNOWN_LINES.get(str(window.get("reason") or ""), "cache_unknown_route")
+        return t(f"gateway.context.{line}")
+    now = time.time() if now is None else now
+    facts = {"ttl": window.get("tier") or "", "confidence": t(f"gateway.context.cache_confidence.{window.get('confidence')}")}
+    if cache_certainly_warm(window, now=now):
+        guaranteed = float(window["guaranteed_until"])
+        return t("gateway.context.cache_warm", until=_clock(guaranteed), remaining=_duration(guaranteed - now), **facts)
+    if not cache_certainly_cold(window, now=now):  # estimated is set: a warm window returned above
+        return t("gateway.context.cache_maybe_warm", until=_clock(estimated), remaining=_duration(float(estimated) - now),
+                 **facts)
+    return t("gateway.context.cache_expired", ago=_duration(now - float(estimated)), **facts)
+
+
+def prompt_cache_is_cold(agent: Any, *, now: float | None = None) -> bool:
+    """Whether the provider prompt cache has certainly expired, so a history rewrite breaks nothing.
+
+    The prune's ONLY cold-cache reading (both call sites), from the shared cache clock: past the
+    window's estimated end only. An unknown window (no cache touched yet, an unreadable store, a
+    route switch, or a compaction or prune since the last response) or one that may still be warm
+    answers False. The clock restores a resumed session's window from the store itself.
+
+    Only a proven or declared window prunes. An assumed one includes the window the clock rebuilds for a
+    pre-clock session from TODAY's TTL and route: a session cached for 1h (or on another route) then
+    reads cold while still warm. The /context line keeps showing that estimate.
+
+    A route switch (``/model``, a fallback, any change of provider, endpoint or model since the last
+    response) is cold too: the new route has never seen this prefix, so the first request there writes
+    it whole and an offload before it breaks nothing."""
+    window = cache_window(agent)
+    if window is not None and window.reason == "route_changed":
+        return True
+    return window is not None and window.confidence in (PROVEN, DECLARED) and cache_certainly_cold(window, now=now)

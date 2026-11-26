@@ -17,13 +17,13 @@ See also:
 - [Bundled Skills Catalog](../../reference/skills-catalog.md)
 - [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
-## Install from the website
+## Desktop install links {#install-from-the-website}
 
-Each installable card on the public [Skills Hub](/skills) has an **Install in Hermes**
-button. It opens Hermes Desktop with a URL-encoded, source-qualified skill target:
-`official/...` for optional skills, `clawhub/...` for ClawHub, and an explicit
-repository path for bundled skills rather than an ambiguous bare name. The card's
-CLI command uses the same target:
+Skill cards on the [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) have an **Install in Hermes**
+button that opens one of these links. Hermes Desktop accepts install links with a URL-encoded, source-qualified skill
+target: `official/...` for optional skills, `clawhub/...` for ClawHub, and an
+explicit repository path for bundled skills rather than an ambiguous bare name.
+Use the same target with `hermes skills install <identifier>`:
 
 ```text
 hermes://skill/install?identifier=official%2Fsecurity%2F1password
@@ -38,7 +38,8 @@ confirmation is open, reopen the link for the new destination; a link cannot byp
 scanning or pick a different profile. Open conversations are told about the new skill on their next message.
 
 The `skill/install` route needs an updated Desktop build. If the app is missing or
-does not recognize the link, expand the card and copy its CLI install command.
+does not recognize the link, run `hermes skills install <identifier>` with the
+same source-qualified target.
 
 ## Starting with a blank slate
 
@@ -294,7 +295,7 @@ metadata:
 | `requires_toolsets` | Skill is **hidden** when the listed toolsets are unavailable. Shown when they're present. |
 | `requires_tools` | Same, but checks individual tools. |
 
-**Example:** The built-in `duckduckgo-search` skill uses `fallback_for_toolsets: [web]`. When you have `FIRECRAWL_API_KEY` set, the web toolset is available and the agent uses `web_search` — the DuckDuckGo skill stays hidden. If the API key is missing, the web toolset is unavailable and the DuckDuckGo skill automatically appears as a fallback.
+**Example:** a curl-based search skill declaring `fallback_for_toolsets: [web]` stays hidden while the web toolset is available and appears only when it is disabled, so the agent still has a search path.
 
 Skills without any conditional fields behave exactly as before — they're always shown.
 
@@ -681,7 +682,9 @@ skills:
 When `write_approval: true`, every `skill_manage` write (create / edit /
 patch / delete / write_file / remove_file) is **staged** instead of committed —
 a SKILL.md is too large to review inline, so staging applies regardless of
-whether the write came from a foreground turn or the background review.
+whether the write came from a foreground turn or the background review. It
+doesn't cover direct edits of skill files by the generic file tools or the
+terminal.
 Staged writes survive restarts under `~/.hermes/pending/skills/` and are
 reviewed with the same familiar approve/deny flow as dangerous commands:
 
@@ -697,6 +700,12 @@ The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
 `memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).
+
+To stop the agent from changing one *specific* skill at all, lock it:
+`hermes curator lock <skill>` (or the lock switch in Desktop). A locked skill stays
+readable and auto-loadable, but `skill_manage`, `write_file`, `patch` and `terminal`
+all refuse to change it, in every kind of session; your own edits still work. See
+[Locking a skill](./curator.md#locking-a-skill).
 
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are
@@ -801,7 +810,7 @@ Default taps (browsable without any setup):
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [huggingface/skills](https://github.com/huggingface/skills)
 - [NVIDIA/skills](https://github.com/NVIDIA/skills) — NVIDIA-verified skills (signed `skill.oms.sig` + governance `skill-card.md`)
-- [wandb/skills](https://github.com/wandb/skills), [qdrant/skills](https://github.com/qdrant/skills), [pinecone-io/skills](https://github.com/pinecone-io/skills) — each vendor's own skills for its product
+- [wandb/skills](https://github.com/wandb/skills), [qdrant/skills](https://github.com/qdrant/skills), [pinecone-io/skills](https://github.com/pinecone-io/skills), [makenotion/skills](https://github.com/makenotion/skills), [Airtable/skills](https://github.com/Airtable/skills), [Shopify/Shopify-AI-Toolkit](https://github.com/Shopify/Shopify-AI-Toolkit) — each vendor's own skills for its product
 - [garrytan/gstack](https://github.com/garrytan/gstack)
 - [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) and [synthetic-sciences/openscience](https://github.com/synthetic-sciences/openscience) — ~480 scientific research skills (bioinformatics, chemistry, physics, ML training, scholarly tooling), grouped under one `science` category. Community trust: every install is security-scanned. Many wrap third-party tools with their own licenses (some GPL; KEGG requires a commercial license for non-academic use) — check each skill's prerequisites.
 
@@ -817,7 +826,7 @@ hermes skills tap add myorg/skills-repo
 [skills.sh schema](https://skills.sh/schemas/skills.sh.schema.json). Its
 `groupings` (each with a `title` and a list of skill names) are read at index
 time and become the category labels shown in the
-[Skills Hub](https://hermes-agent.nousresearch.com/docs) page — instead of a
+[Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) — instead of a
 tag-derived guess. This is generic: any tap that ships the file gets real
 categorization, no Hermes-side changes required.
 
@@ -922,7 +931,7 @@ Important behavior:
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
 | `official` | `optional-skills/` in the repo | Built-in trust, no third-party warning |
-| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills`, `NVIDIA/skills`, `wandb/skills`, `qdrant/skills`, `pinecone-io/skills` | More permissive policy than community sources |
+| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills`, `NVIDIA/skills`, `wandb/skills`, `qdrant/skills`, `pinecone-io/skills`, `makenotion/skills`, `Airtable/skills`, `Shopify/Shopify-AI-Toolkit` | More permissive policy than community sources |
 | `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
 
 ### Update lifecycle

@@ -8,7 +8,10 @@ from agent.anthropic_message_convert import _convert_assistant_message
 from agent.bedrock_adapter import _assistant_blocks
 from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 from agent.conversation_compression_reply_anchor import _ensure_compressed_keeps_last_assistant_reply
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
+from session_rules.turns import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from tests.fixtures.storage_read import conversation
+from tests.gateway.fixtures.storage_handles import close_storage_handles
 from agent.turn_context import _reset_per_turn_agent_state, build_api_messages
 from tests.agent.test_compression_last_assistant_anchor import (
     FOLLOWER,
@@ -170,7 +173,7 @@ def test_api_sidecar_merge_reaches_next_request_and_durable_active_set(tmp_path)
     )
     try:
         older, reply = messages[-4], messages[-2]
-        db.set_message_api_content(session_id, older["_row_id"], older["content"], "stale provider text")
+        db.conversation.messages.set_message_api_content(session_id, older["_row_id"], older["content"], "stale provider text")
         older["api_content"] = "stale provider text"
         fold[1] = deepcopy(older)
         older_uid, reply_uid = older[MESSAGE_UID], reply[MESSAGE_UID]
@@ -178,7 +181,7 @@ def test_api_sidecar_merge_reaches_next_request_and_durable_active_set(tmp_path)
         out_messages = _compress(agent, messages)
 
         assert agent._last_compaction_in_place is True
-        live = db.get_messages_as_conversation(session_id)
+        live = conversation(db, session_id, ConversationRequest(include_row_ids=True))
         for view in (out_messages, live):
             _assert_no_same_role_adjacency(view)
             uids = [m[MESSAGE_UID] for m in view]
@@ -191,8 +194,8 @@ def test_api_sidecar_merge_reaches_next_request_and_durable_active_set(tmp_path)
             assert reply_uid in survivor[ABSORBED_MESSAGE_UIDS]
             assert all(MESSAGE_UID not in m and ABSORBED_MESSAGE_UIDS not in m for m in request)
         # Full history (the warm-switch read) shows each source row once and not the model-only join.
-        display = db.get_messages_as_conversation(session_id, include_ancestors=True, include_compacted=True)
+        display = conversation(db, session_id, ConversationRequest(view=TranscriptView.DISPLAY, include_lineage=True))
         assert sum(str(m.get("content", "")).count(REPLY.strip()) for m in display) == 1
         assert sum(m.get("content") == "noted" for m in display) == 1
     finally:
-        db.close()
+        close_storage_handles()

@@ -21,6 +21,11 @@ UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
 ONESHOT_SOURCE = "oneshot"
 CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
 
+# The owner's own local surfaces: the only sources that carry OpenAI Daybreak (agent.daybreak). It is the
+# approved account's own access (no third-party or downstream use); a plugin session tagged ``telegram`` is
+# someone else's chat even when a local backend builds its agent.
+DAYBREAK_SOURCES = UI_TRANSPORT_SOURCES | {"cli"}
+
 # A person reads the turn as it runs: not cron, batch, a messaging chat, or a one-shot run.
 ATTENDED_SOURCES = UI_TRANSPORT_SOURCES | {"cli", "acp"}
 
@@ -40,6 +45,17 @@ def session_source_for(platform: Optional[str]) -> str:
     if single_query and not source and (platform or "cli") == "cli":
         return ONESHOT_SOURCE
     return source or platform or "cli"
+
+
+def turn_daybreak_surface() -> Optional[bool]:
+    """The gateway's verdict on whether the agent running this turn serves the owner's own chat, for code with no
+    agent in hand (a delegation backend's ``route_task``): ``True`` or ``False`` when the gateway judged it (a turn
+    it runs, a ``/bg`` task), ``None`` when nothing did (classic CLI, the TUI backend, cron). A gateway-hosted chat's
+    platform is the ``local`` transport, and a ``/bg`` task binds no session (it reads as ``cli``), so ``False``
+    must refuse whatever the session source says."""
+    from agent.subagent_lifecycle import get_active_subagent_parent
+    verdict = getattr(get_active_subagent_parent(), "daybreak_surface", None)
+    return verdict if isinstance(verdict, bool) else None
 
 
 def is_attended(agent: Any) -> bool:

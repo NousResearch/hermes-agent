@@ -9,6 +9,7 @@ import {
   alignToBranchGroup,
   MAX_SESSION_WINDOWS,
   selectTranscriptWindow,
+  type SessionWindowMemo,
   TRANSCRIPT_WINDOW_BUDGET,
   TRANSCRIPT_WINDOW_MIN_MESSAGES,
   TRANSCRIPT_WINDOW_SLACK
@@ -214,9 +215,46 @@ describe('advanceTranscriptWindow', () => {
     expect(next.window.messages).toBe(grown)
     expect(next.window.windowed).toBe(false)
   })
+
+  // #133569: `windowed` means "store holds older messages than this window"
+  // (transcript-window.ts:41-42). Once the sticky cut's anchor IS the store's
+  // first message, the window is the whole store and olderAvailable must fall
+  // through to the tail flag instead of staying true on a stale anchor —
+  // otherwise "Show earlier" keeps offering pages the REST branch (index.tsx
+  // requires !windowed) can never fetch, and every click is a no-op.
+  it('reports windowed:false when the sticky cut sits at the store head', () => {
+    const messages = transcript(400, RENDER_WEIGHT_CHARS * 50)
+    const cut = advanceTranscriptWindow(null, messages, 1)
+
+    expect(cut.anchorId).not.toBeNull()
+    expect(cut.window.windowed).toBe(true)
+
+    // Everything older than the anchor is gone from the store: the window now
+    // starts at messages[0] and covers the entire store.
+    const anchorIndex = messages.findIndex(candidate => candidate.id === cut.anchorId)
+    const trimmed = messages.slice(anchorIndex)
+    const next = advanceTranscriptWindow(cut, trimmed, 1)
+
+    expect(next.window.messages).toBe(trimmed)
+    expect(next.window.messages[0]).toBe(trimmed[0])
+    expect(next.window.windowed).toBe(false)
+  })
 })
 
 describe('advanceSessionTranscriptWindow', () => {
+  it('keeps the store head on screen on the flush after the cut reaches it', () => {
+    const memos = new Map<string, SessionWindowMemo>()
+    const messages = transcript(400, RENDER_WEIGHT_CHARS * 50)
+    const cut = advanceSessionTranscriptWindow(memos, 'runtime', messages, 1)
+    const trimmed = messages.slice(messages.findIndex(message => message.id === cut.anchorId))
+
+    expect(advanceSessionTranscriptWindow(memos, 'runtime', trimmed, 1).window.windowed).toBe(false)
+
+    const next = advanceSessionTranscriptWindow(memos, 'runtime', [...trimmed, ...transcript(1, 10)], 1)
+
+    expect(next.window.messages[0]).toBe(trimmed[0])
+  })
+
   const heavyChars = RENDER_WEIGHT_CHARS * 40
 
   it('matches a fresh walk on first visit', () => {

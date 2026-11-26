@@ -1,0 +1,15 @@
+name: momentic
+repo: https://github.com/momentic-ai/skills
+sha: 355387bc7edbd330fa2c356429b24ffc7aa7e6ad
+description: "Write, run and repair Momentic end-to-end tests for web (Chrome) and iOS/Android (simulators and emulators), and run Mo bug bashes that file each bug with a Momentic regression test. Portable Agent Plugins v1 package (plugin.json + skills/), no plugin code. The skills drive the Momentic CLI and its local MCP servers (npx momentic mcp, npx momentic-mobile mcp), which users add to their own mcp_servers config; a Momentic API key is read by the Momentic CLI, never by the plugin. Disclosure — the skills tell the agent to run Momentic CLI commands in the shell (unpinned npx, and the documented curl https://cli.momentic.ai/qa | sh installer for Mo); test runs and Mo sessions call Momentic's hosted service with the user's Momentic account (Mo sessions are billed by effort), Mo can be given a reviewed git patch or source snapshot uploaded to Momentic's sandbox, and `qa tunnel` exposes local or private targets to that hosted service."
+maintainer: momentic-ai
+tier: community
+category: tools
+docs_url: https://momentic.ai/docs
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

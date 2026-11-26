@@ -264,18 +264,19 @@ def test_empty_tasks_array_with_goal_is_single_task_not_batch_error():
 
 
 class _StubParentWithSession:
-    def __init__(self, session_id: str, session_db=None):
+    def __init__(self, session_id: str, persistence=None):
         self.session_id = session_id
-        self._session_db = session_db
+        self.persistence = persistence
 
 
-class _StubSessionDB:
-    """resolve_resume_session_id lineage: old_id -> tip mapping."""
+class _StubPersistence:
+    """lineage.resolve_resume_target: old_id -> tip mapping."""
 
     def __init__(self, lineage=None):
         self._lineage = dict(lineage or {})
+        self.lineage = self
 
-    def resolve_resume_session_id(self, session_id):
+    def resolve_resume_target(self, session_id):
         return self._lineage.get(session_id, session_id)
 
 
@@ -341,13 +342,13 @@ def test_durable_ownership_does_not_leak_to_foreign_session():
 
 def test_durable_ownership_resolves_compression_lineage():
     """Delegation registered under a pre-compression session id must match
-    the rotated parent whose SessionDB lineage maps old -> new."""
-    db = _StubSessionDB({"sess-old-tip": "sess-new-tip"})
+    the rotated parent whose stored lineage maps old -> new."""
+    persistence = _StubPersistence({"sess-old-tip": "sess-new-tip"})
     child = _StubChild()  # no identity chain at all
     _register(
         "sid-durable-lineage-1", child, owner_agent_session_id="sess-old-tip"
     )
-    rotated_parent = _StubParentWithSession("sess-new-tip", session_db=db)
+    rotated_parent = _StubParentWithSession("sess-new-tip", persistence=persistence)
     try:
         out = json.loads(
             _handle_control_action("list", None, None, rotated_parent)

@@ -700,15 +700,22 @@ export function usePromptActions({
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = sanitizeComposerInput(rawText).trim()
 
+      const attachments = options?.attachments ?? $composerAttachments.get()
+
       // Nothing runs for a visitor who must sign up: the composer, a starter idea and a queue drain all
       // send through here, so the message is held for after sign up and never reaches the gateway.
+      // Attachments are memory-only and cannot survive that navigation (or a checkout), so an
+      // attachment send is refused instead: the draft stays intact rather than losing its files
+      // behind a "sent" that never happened.
       if ($signUpRequired.get()) {
+        if (attachments.length) {
+          return false
+        }
+
         holdPrompt(visibleText)
 
         return true
       }
-
-      const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (isSlashCommandText(visibleText)) {
         if (attachments.length) {

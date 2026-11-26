@@ -1,6 +1,7 @@
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import type { ComposerAttachment } from '@/store/composer'
 import { $heldPrompt, takeHeldPrompt } from '@/store/held-prompt'
 import { $shellChoice } from '@/store/shell-variant'
 import { $visitorAccess } from '@/store/visitor-access'
@@ -28,7 +29,7 @@ afterEach(() => {
   $visitorAccess.set({ kind: 'open' })
 })
 
-async function send(text: string) {
+async function send(text: string, attachments?: ComposerAttachment[]) {
   let handle: HarnessHandle | null = null
   const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
   const createBackendSessionForSend = vi.fn(async () => 'rt-new')
@@ -43,7 +44,7 @@ async function send(text: string) {
     />
   )
 
-  const accepted = await handle!.submitText(text)
+  const accepted = await handle!.submitText(text, attachments ? { attachments } : undefined)
 
   return { accepted, createBackendSessionForSend, requestGateway }
 }
@@ -66,6 +67,23 @@ it('a slash command from such a visitor is held too, never run', async () => {
 
   expect(requestGateway).not.toHaveBeenCalled()
 })
+
+it.each(['Look at this', ''])(
+  'a visitor with an attachment keeps the draft instead of losing its files (text %j)',
+  async text => {
+    $visitorAccess.set({ kind: 'sign_up_required', signUpUrl: 'https://portal.example/sign-up' })
+
+    const { accepted, createBackendSessionForSend, requestGateway } = await send(text, [
+      { id: 'att-1', kind: 'image', label: 'shot.png', path: '/tmp/shot.png' } as never
+    ])
+
+    // Reported as not sent, so the composer restores the text and its attachment chips.
+    expect(accepted).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect($heldPrompt.get()).toBeNull()
+  }
+)
 
 it('anyone else’s message goes to their agent as always, and nothing is held', async () => {
   const { createBackendSessionForSend, requestGateway } = await send('Clean up my inbox')

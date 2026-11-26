@@ -200,10 +200,7 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
     })
   })
 
-  it.each([
-    [true, true],
-    [false, false]
-  ])('opens on the agent a link names in the redesign only (redesign %s)', async (redesign, linked) => {
+  it.each([true, false])('opens on the agent a link names (redesign %s)', async redesign => {
     $shellChoice.set(redesign)
     getToolsets.mockClear()
     await act(async () => {
@@ -217,12 +214,12 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
     })
 
     await waitFor(() => expect(getToolsets).toHaveBeenCalled())
-    expect(getToolsets.mock.calls.some(call => JSON.stringify(call).includes('ops'))).toBe(linked)
+    expect(getToolsets.mock.calls.some(call => JSON.stringify(call).includes('ops'))).toBe(true)
   })
 
   it.each([
     [true, 'Agent settings hand-off gone'],
-    [false, 'classic as it was']
+    [false, 'classic honors the linked agent']
   ])('manages connectors on the page itself, for the agent chosen (redesign %s: %s)', async redesign => {
     $shellChoice.set(redesign)
     await act(async () => {
@@ -239,7 +236,7 @@ describe('CapabilitiesView tabs', { timeout: 60_000 }, () => {
 
     // The switches, "for me" and tool rules all hang off this one flag (connectors-tab.tsx).
     expect(tab.dataset.controls).toBe('true')
-    expect(tab.dataset.profile).toBe(redesign ? '"ops"' : '"default"')
+    expect(tab.dataset.profile).toBe('"ops"')
     expect(Boolean(tab.dataset.owner)).toBe(redesign)
     expect(screen.queryByRole('button', { name: TRANSLATIONS.en.skills.openAgentSettings })).toBeNull()
   })

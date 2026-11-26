@@ -27,6 +27,21 @@ describe('a message held until sign up', () => {
     expect(window.localStorage.getItem(HELD_PROMPT_KEY)).toBeNull()
   })
 
+  it('keeps a stale tab from taking a prompt another tab already claimed', async () => {
+    const first = await load()
+    first.holdPrompt('claimed once')
+
+    // The second tab loads the same browser storage, then claims it.
+    const second = await load()
+    expect(second.$heldPrompt.get()).toBe('claimed once')
+    expect(second.takeHeldPrompt()).toBe('claimed once')
+
+    // The first tab's in-memory atom is stale, but storage is the authority: it must not re-send.
+    expect(first.$heldPrompt.get()).toBe('claimed once')
+    expect(first.takeHeldPrompt()).toBeNull()
+    expect(window.localStorage.getItem(HELD_PROMPT_KEY)).toBeNull()
+  })
+
   it('keeps only the latest message', async () => {
     const store = await load()
     store.holdPrompt('first')

@@ -231,11 +231,12 @@ it.each(['', '&connection=beta'])(
   }
 )
 
-it('keeps Settings exactly as classic had it when the classic shell meets an agent route', async () => {
+it('sends the classic shell from an agent-only route to the Profiles page', async () => {
   $shellChoice.set(false)
   mount('/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:instructions')
-  // Classic Settings, not an agent page: its own navigation, and no agent editor or "Open agent" gate.
-  expect(await screen.findByRole('button', { name: en.settings.closeSettings })).toBeTruthy()
+  // Classic has no agent page: it must not land on Model settings with a stale agentProfile.
+  await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/^\/profiles(\?|$)/))
+  expect(screen.getByTestId('location').textContent).not.toContain('agentProfile')
   expect(screen.queryByRole('textbox', { name: 'Instructions editor' })).toBeNull()
   expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
   expect(api.mock.calls.some(([request]) => request.path.endsWith('/soul'))).toBe(false)

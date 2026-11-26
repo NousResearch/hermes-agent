@@ -63,11 +63,11 @@ export function useCapabilityScope({
   const activeProfile = useStore($activeGatewayProfile)
   const { search } = useLocation()
 
-  // The redesign's agent pages link here for one agent (its Connectors live on this page): open on
-  // that agent, as if it had been picked. Read once; the selector owns it from then on.
+  // An agent link opens this page on that agent, in either shell (the redesign's agent pages link
+  // here for its Connectors; a live flip to classic must not fall back to the active profile).
   const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(() => {
     const params = new URLSearchParams(search)
-    const profile = redesign && !fixedProfile ? params.get('agentProfile') : null
+    const profile = fixedProfile ? null : params.get('agentProfile')
     const connectionId = params.get('connection')
 
     return profile && connectionId && connectionId !== (activeGatewayConnectionId() ?? 'local')

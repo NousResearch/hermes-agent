@@ -49,6 +49,7 @@ import {
   ALL_PROFILES,
   newSessionInProfile
 } from '@/store/profile'
+import { $worktreeDialog } from '@/store/projects'
 import {
   $cronSessions,
   $gatewayState,
@@ -167,6 +168,7 @@ describe('Portal sidebar', () => {
     $lastRoster.set([])
     $treeDragging.set(null)
     $sessionListPinDragging.set(false)
+    $worktreeDialog.set(null)
     $sidebarPinsOpen.set(true)
     $sidebarRecentsOpen.set(true)
     $portalAgentsSectionOpen.set(true)
@@ -187,6 +189,7 @@ describe('Portal sidebar', () => {
     $lastRoster.set([])
     $treeDragging.set(null)
     $sessionListPinDragging.set(false)
+    $worktreeDialog.set(null)
     vi.restoreAllMocks()
     setPortalPreferred(false)
     $sessions.set([])
@@ -198,6 +201,16 @@ describe('Portal sidebar', () => {
     $pendingBotOpen.set(null)
     $fleetRoster.set(null)
   })
+  it('mounts the one Worktree dialog, so ⌘⇧B and the git row open it in the redesign', async () => {
+    mount()
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    act(() => $worktreeDialog.set({ repoPath: '/repo' }))
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'New worktree' })).toBeTruthy()
+  })
+
   it('focuses session search after reopening and remounting the redesigned sidebar', async () => {
     for (const initiallyOpen of [true, false, true]) {
       act(() => setSidebarOpen(initiallyOpen))

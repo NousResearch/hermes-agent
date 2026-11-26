@@ -1,10 +1,11 @@
 import { Suspense, useRef, useState } from 'react'
-import { useLocation } from 'react-router'
+import { Navigate, useLocation } from 'react-router'
 
 import { lazyView } from '@/lib/lazy-view'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { PageFrameFallback } from '../overlays/page-frame-fallback'
+import { PROFILES_ROUTE } from '../routes'
 import { SettingsView as ClassicSettingsView } from '../settings'
 import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from '../settings/config-draft'
 import type { SettingsPageProps } from '../settings/types'
@@ -17,14 +18,20 @@ const AgentSettingsView = lazyView(async () => (await import('./index')).AgentSe
 /** The rail warms this chunk too, so an agent page paints without a second Suspense wait. */
 export const preloadAgentSettingsView = AgentSettingsView.preload
 
-/** An explicit agent route opens the redesign's owner-pinned agent page. Classic has no agent page,
- *  so it keeps Settings exactly as it always was, whatever the route names. */
+/** An explicit agent route opens the redesign's owner-pinned agent page. Classic has no agent page:
+ *  an agent-only tab redirects to Profiles, every other Settings route stays exactly as it was. */
 export function SettingsView(props: SettingsPageProps) {
   const redesigned = usePortalShell()
   const { search } = useLocation()
   const params = new URLSearchParams(search)
   const profile = params.get('agentProfile')
   const connectionId = params.get('connection') || undefined
+
+  // `agent:*` tabs exist only on the agent page. Classic would coerce one to the default Model
+  // settings while leaving `agentProfile` in the URL, inviting edits to the wrong agent.
+  if (!redesigned && profile && (params.get('tab') ?? '').startsWith('agent:')) {
+    return <Navigate replace to={PROFILES_ROUTE} />
+  }
 
   if (!profile || !redesigned) {
     return <ClassicSettingsView {...props} />

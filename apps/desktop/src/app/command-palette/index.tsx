@@ -77,8 +77,8 @@ import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
 import { toggleBrowserTab } from '@/store/preview'
-import { $activeGatewayProfile } from '@/store/profile'
-import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
+import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
+import { $projectTree, goToProject, openFolderAsProject, projectRootCwd, requestStartWorkSession } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -91,6 +91,7 @@ import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
+import type { SidebarProjectTree } from '../chat/sidebar/projects/workspace-groups'
 import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
 import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
@@ -117,6 +118,32 @@ import { MarketplaceThemePage } from './marketplace-theme-page'
 import { useOldNameRows } from './old-name-rows'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 import { useUpdateRowLabel } from './use-update-row-label'
+
+/** Portal has no project scope to enter: its sidebar never shows `$projectScope`, so a project row
+ *  is only a chat opener. Classic keeps `goToProject`'s scope switch. */
+function startPortalProjectChat(project: SidebarProjectTree): void {
+  const cwd = projectRootCwd(project)
+
+  if (cwd) {
+    requestStartWorkSession(cwd, undefined, { openTab: true })
+  } else {
+    requestFreshSession()
+  }
+}
+
+function runProjectRow(
+  portal: boolean,
+  project: SidebarProjectTree,
+  event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }
+): void {
+  if (portal) {
+    startPortalProjectChat(project)
+
+    return
+  }
+
+  goToProject(project.id, { newSession: Boolean(event?.metaKey || event?.ctrlKey) })
+}
 
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
@@ -875,11 +902,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     const cc = t.commandCenter
 
     // Projects are the primary way the desktop scopes work, so they're jumpable
-    // from the palette. Plain select is a pure scope switch (sidebar enters the
-    // project — never spends main); ⌘-Enter / ⌘-click also starts a new session
-    // at the project root (stacked as a tab when main holds a chat), previewed
-    // by the label swap while ⌘ is held. Rows carry the project's own codicon,
-    // matching the sidebar. The pinned "Open folder…" row is the ⌘O upsert.
+    // from the palette. In classic, plain select is a pure scope switch (sidebar
+    // enters the project — never spends main); ⌘-Enter / ⌘-click also starts a
+    // new session at the project root (stacked as a tab when main holds a chat),
+    // previewed by the label swap while ⌘ is held. The redesign has no project
+    // scope in its sidebar, so there every row opens that new chat at the root.
+    // Rows carry the project's own codicon, matching the sidebar. The pinned
+    // "Open folder…" row is the ⌘O upsert.
     const projectGroup: PaletteGroup = {
       heading: cc.projects,
       items: [
@@ -899,7 +928,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           label: project.label,
           modLabel: cc.newSessionInProject(project.label),
           runWithEvent: (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) =>
-            goToProject(project.id, { newSession: Boolean(event?.metaKey || event?.ctrlKey) })
+            runProjectRow(portal, project, event)
         }))
       ]
     }

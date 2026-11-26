@@ -64,7 +64,32 @@ export function holdPrompt(text: string, now = Date.now()): void {
 
 /** The held message, removed: the caller runs it. Null when none is held or it expired. */
 export function takeHeldPrompt(now = Date.now()): null | string {
-  const text = live($held.get(), now)
+  // Read storage, not this tab's atom: another tab may have already claimed and cleared the entry,
+  // and a stale in-memory copy must not let this tab send the same prompt a second time.
+  let raw: null | string = null
+
+  try {
+    raw = window.localStorage.getItem(HELD_PROMPT_KEY)
+  } catch {
+    raw = null
+  }
+
+  // Claim it synchronously before returning, so two tabs can never both read the same entry.
+  try {
+    window.localStorage.removeItem(HELD_PROMPT_KEY)
+  } catch {
+    // Storage is best-effort; the in-memory clear below still retires this tab's copy.
+  }
+
+  let text: null | string = null
+
+  if (raw !== null) {
+    try {
+      text = live(codec.decode(raw), now)
+    } catch {
+      text = null
+    }
+  }
 
   $held.set(null)
 

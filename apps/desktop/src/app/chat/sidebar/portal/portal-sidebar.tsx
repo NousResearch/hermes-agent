@@ -19,6 +19,8 @@ import { sessionPinId } from '@/store/session'
 
 import type { ChatSidebar } from '../index'
 import { SidebarLoadMoreRow } from '../load-more-row'
+import { ProjectDialog } from '../project-dialog'
+import { WorktreeDialog } from '../projects/worktree-dialog'
 import { $sessionListPinDragging } from '../reorderable-list'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from '../section-states'
 import { SimplifiedAgentList } from '../simplified-agent-list'
@@ -285,6 +287,9 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
           showSkeletons={loading && rows.length === 0}
         />
       </SidebarContent>
+      <ProjectDialog />
+      {/* One mount for the whole app. The header of WorktreeDialog tells why. */}
+      <WorktreeDialog />
       <CreateAccountCard />
       <UsageStatsCard />
     </Sidebar>

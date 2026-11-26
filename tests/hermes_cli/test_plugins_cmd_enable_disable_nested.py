@@ -136,3 +136,116 @@ def test_fallback_compares_the_preinteraction_selection(plugin_world, monkeypatc
         assert world.enabled() == []
         assert yaml.safe_load(config_path.read_text())["plugins"]["disabled"] == ["plugin-worker-proof"]
         assert latest["outcome"] == "ok"
+
+
+@pytest.mark.platforms("linux")
+class TestCompositeMenuRawArrowKeys:
+    """The interactive plugins menu should decode raw CSI arrows via the shared
+    curses decoder instead of treating the leading ESC byte as "done"."""
+
+    class FakeStdscr:
+        def __init__(self, keys):
+            self.keys = list(keys)
+            self.timeout_ms = -1
+
+        def clear(self):
+            pass
+
+        def refresh(self):
+            pass
+
+        def addnstr(self, *_args, **_kwargs):
+            pass
+
+        def getmaxyx(self):
+            return (30, 120)
+
+        def getch(self):
+            if self.timeout_ms > 0:
+                return self.keys.pop(0) if self.keys else -1
+            if not self.keys:
+                raise StopIteration
+            return self.keys.pop(0)
+
+        def timeout(self, ms):
+            self.timeout_ms = ms
+
+    class FakeCurses:
+        A_BOLD = 1
+        A_DIM = 2
+        A_NORMAL = 0
+        COLOR_GREEN = 2
+        COLOR_YELLOW = 3
+        COLOR_CYAN = 6
+        COLOR_WHITE = 7
+        COLORS = 8
+        KEY_NPAGE = 338
+        KEY_PPAGE = 339
+        KEY_HOME = 262
+        KEY_END = 360
+        KEY_ENTER = 343
+
+        class error(Exception):
+            pass
+
+        def __init__(self, keys):
+            self.stdscr = TestCompositeMenuRawArrowKeys.FakeStdscr(keys)
+
+        def wrapper(self, fn):
+            fn(self.stdscr)
+
+        def curs_set(self, _value):
+            pass
+
+        def has_colors(self):
+            return False
+
+        def color_pair(self, _idx):
+            return 0
+
+    def _run_menu(self, keys, monkeypatch):
+        from hermes_cli import plugins_cmd
+        from hermes_cli.plugins_cmd_toggle import _run_composite_ui
+        from rich.console import Console
+
+        saved = {}
+
+        def _capture_save(new_enabled, new_disabled, **_kwargs):
+            saved["enabled"] = set(new_enabled)
+            saved["disabled"] = set(new_disabled)
+
+        monkeypatch.setattr(plugins_cmd, "_plugin_selection_version", lambda: None)
+        monkeypatch.setattr(plugins_cmd, "_get_enabled_set", set)
+        monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", list)
+        monkeypatch.setattr(plugins_cmd, "_refuse_recalled_entry", lambda _entry: None)
+        monkeypatch.setattr(plugins_cmd, "_admit_and_save_plugin_sets", _capture_save)
+        monkeypatch.setattr("hermes_cli.curses_ui.flush_stdin", lambda: None)
+
+        _run_composite_ui(
+            self.FakeCurses(keys),
+            ["alpha", "beta", "gamma"],
+            ["alpha", "beta", "gamma"],
+            set(),
+            set(),
+            [],
+            Console(),
+        )
+        return saved["enabled"], saved["disabled"]
+
+    def test_raw_csi_down_toggles_second_plugin(self, monkeypatch):
+        saved_en, saved_dis = self._run_menu(
+            [27, ord("["), ord("B"), ord(" "), ord("q")],
+            monkeypatch,
+        )
+
+        assert saved_en == {"beta"}
+        assert "beta" not in saved_dis
+
+    def test_raw_csi_up_wraps_and_toggles_last_plugin(self, monkeypatch):
+        saved_en, saved_dis = self._run_menu(
+            [27, ord("["), ord("A"), ord(" "), ord("q")],
+            monkeypatch,
+        )
+
+        assert saved_en == {"gamma"}
+        assert "gamma" not in saved_dis

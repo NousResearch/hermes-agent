@@ -165,6 +165,37 @@ def test_a_home_not_created_yet_is_not_refused(tmp_path, monkeypatch):
 
 
 @pytest.mark.platforms("posix")  # directory symlinks
+def test_a_reused_profile_name_reaches_no_host_of_the_renamed_profile(tmp_path, monkeypatch):
+    """Managers are found by the key the process remembered for a name. After a linked profile is renamed and its
+    old name is reused for another directory, a request through the old name finds the renamed profile's manager,
+    which runs under the new name with that profile's environment. A caller hands such a host plugin paths it read
+    through its own name, the other directory's, so the request gets no host; the renamed profile still does."""
+    from hermes_cli.plugin_isolation import transient_plugin_host, user_plugin_host
+    from hermes_cli.plugins_loader import PluginHomeMoved
+    from hermes_constants import hermes_home_key
+
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {})
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(home, target_is_directory=True)
+    hermes_home_key(profiles / "ops")  # the process opened the profile under this name
+    (profiles / "ops").rename(profiles / "ops2")
+    (profiles / "ops").symlink_to(other, target_is_directory=True)  # the old name, reused
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops2"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        assert user_plugin_host().home == profiles / "ops2"
+        monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+        with pytest.raises(PluginHomeMoved):
+            user_plugin_host()
+        with pytest.raises(PluginHomeMoved), transient_plugin_host():
+            pass
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # directory symlinks
 def test_a_sibling_name_the_process_served_elsewhere_is_not_taken_over_when_repointed_here(tmp_path, monkeypatch):
     """A renamed profile's manager takes the name beside its old one that leads to its directory, but not a name the
     process already serves another directory under: that name keys the other directory, so plugin code bound to it

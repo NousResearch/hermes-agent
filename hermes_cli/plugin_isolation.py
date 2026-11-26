@@ -285,8 +285,26 @@ def user_plugin_host() -> Any:
     """
     if isolation_mode() != ISOLATION_HOST:
         return None
+    return requested_plugin_host()
+
+
+def requested_plugin_host() -> Any:
+    """The active profile's shared plugin host, for a caller that hands it plugin paths read through the active
+    home's name (:func:`refuse_moved_active_home`)."""
     from hermes_cli.plugins import get_plugin_manager
+    refuse_moved_active_home()
     return get_plugin_manager()._plugin_host()
+
+
+def refuse_moved_active_home() -> None:
+    """``PluginHomeMoved`` when the active home's name leads to another directory than the one the process opened
+    it as. Its manager is found by the remembered key, so it is that directory's, possibly running under another
+    name (a renamed profile's) with that profile's environment: paths read through this name are another
+    directory's plugin code."""
+    from hermes_cli.plugins_loader import PluginHomeMoved
+    from hermes_constants import get_hermes_home
+    if (moved := home_moved_refusal(get_hermes_home().absolute())) is not None:
+        raise PluginHomeMoved(moved)
 
 
 @contextlib.contextmanager
@@ -298,6 +316,7 @@ def transient_plugin_host() -> Iterator[Any]:
     if isolation_mode() != ISOLATION_HOST:
         yield None
         return
+    refuse_moved_active_home()  # its manager keys the remembered directory too
     import uuid
 
     from hermes_cli.plugins import PluginManager

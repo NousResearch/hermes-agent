@@ -1,6 +1,7 @@
 """Commit rows bind a literal producer's receipt, not merely object names."""
 import pytest
 
+from scripts.releases.downloads_page import recorded_build
 from tests.scripts.test_render_builds_publication import rbt
 
 SHA = 'a' * 40
@@ -33,7 +34,7 @@ def test_commit_row_binding_faults(listed, objects, state, diagnostic):
         assert diagnostic in output
         assert ('https://cdn.example/' + PREFIX + PACKAGE in output) == (state == 'built')
         assert 'Store-' not in output
-    assert rbt.recorded_build(page) == SHA
+    assert recorded_build(page) == SHA
     assert 'Bundle environment' not in page
 
 

@@ -4587,6 +4587,8 @@ export const deOverrides = {
       messagingPlatforms: 'Messaging-Plattformen'
     },
     approvalMode: {
+      perProfile: 'Pro Profil',
+      perProfileDescription: 'Genehmigungsmodi werden pro Profil festgelegt. Öffne einen Bot oder ein Profil, um den Modus zu ändern.',
       title: 'Genehmigungsmodus',
       ariaLabel: mode => `Genehmigungsmodus: ${mode}`,
       manual: 'Manuell',

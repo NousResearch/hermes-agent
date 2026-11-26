@@ -338,6 +338,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(h))
     monkeypatch.setattr(engine, "VERIFY_SECONDS", 0.0)
     monkeypatch.setattr(engine, "ROLLBACK_VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 0.0)
     (h / "config.yaml").write_text("model:\n  default: fake-model\n", encoding="utf-8")
     (h / ".env").write_text("OPENAI_API_KEY=sk-fake-local\n", encoding="utf-8")
     os.chmod(h / ".env", 0o600)

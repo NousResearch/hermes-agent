@@ -10,7 +10,6 @@ brand-new files show as additions instead of being invisible.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from contextlib import suppress
 from typing import Dict, List
@@ -21,6 +20,7 @@ from hermes_cli._subprocess_compat import (
     noninteractive_repo_git_env,
     selected_git_env,
 )
+from hermes_platform.resolver.git import resolve_usable_git
 
 _GIT_TIMEOUT = 15
 # Return code of a git call that was not spawned because the repository's filter drivers could not
@@ -50,7 +50,7 @@ def _run(args: list[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     git is not spawned and the code is ``_REFUSED``.
     """
     base = selected_git_env()
-    command = shutil.which("git", path=base.get("PATH", ""))
+    command = resolve_usable_git(base)
     if command is None:
         return 127, ""
     env = noninteractive_repo_git_env(cwd, base)

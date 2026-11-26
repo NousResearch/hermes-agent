@@ -176,7 +176,10 @@
         "hermes_cli.setup:prompt",
         "hermes_cli.setup:prompt_choice",
         "hermes_cli.setup:prompt_yes_no",
-        "hermes_cli.cli_output"
+        "hermes_cli.cli_output",
+        "gateway.response_filters:is_autonomous_silence_response",
+        "gateway.response_filters:is_intentional_silence_response",
+        "gateway.response_filters:strip_trailing_silence_marker"
       ]
     },
     {
@@ -220,7 +223,16 @@
       "source": "user-guide/features/plugins.md § Plugin code inside the gateway: which client sent the turn and who is attached",
       "entries": [
         "hermes_cli.plugin_session:turn_client",
+        "hermes_cli.plugin_session:turn_origin",
         "hermes_cli.plugin_session:session_viewers"
+      ]
+    },
+    {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks",
+      "entries": [
+        "hermes_cli.plugin_session:session_source",
+        "hermes_cli.plugin_session:in_delegated_child",
+        "hermes_cli.plugin_session:fork_origin"
       ]
     },
     {
@@ -269,6 +281,33 @@
         "hermes_cli.profiles_run_elsewhere:mark_profile_run_elsewhere",
         "hermes_cli.profiles_run_elsewhere:clear_profile_run_elsewhere",
         "hermes_cli.profiles_run_elsewhere:run_elsewhere"
+      ]
+    },
+    {
+      "source": "plugins/index.md § Schedule a job once and read where cron delivers it",
+      "entries": [
+        "cron.plugin_api"
+      ]
+    },
+    {
+      "source": "model-provider-plugin.md § Public helpers for native Gemini reasoning",
+      "entries": [
+        "agent.bounded_response:read_streaming_error_body",
+        "agent.gemini_model_family",
+        "agent.gemini_urls",
+        "agent.output_budget_timeout",
+        "agent.process_bootstrap:build_keepalive_http_client",
+        "agent.reasoning_effort:bare_gemini_model_id",
+        "agent.reasoning_effort:clamp_effort",
+        "agent.reasoning_effort:gemini_thinking_config",
+        "agent.reasoning_effort:gemini_top_thinking_level",
+        "agent.ssl_verify:resolve_httpx_verify",
+        "hermes_cli.auth:default_httpx_verify",
+        "hermes_cli.auth:get_provider_auth_state",
+        "hermes_cli.auth:nous_portal_base_url",
+        "hermes_cli.auth:resolve_nous_access_token",
+        "hermes_cli.config_providers:get_custom_provider_tls_settings",
+        "tools.schema_sanitizer:normalize_type_array"
       ]
     }
   ]

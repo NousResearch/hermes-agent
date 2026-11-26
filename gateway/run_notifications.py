@@ -138,6 +138,12 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+def _process_event_turn_origin(evt: dict) -> str:
+    """The ``turn_origin()`` of the turn a process-registry event wakes: an async delegation's result,
+    or a background process's own notice (completion, watch match, liveness tick)."""
+    return "delegation_result" if str(evt.get("type") or "").startswith("async_delegation") else "process_notification"
+
+
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
@@ -955,6 +961,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 metadata=metadata,
             )
+            synth_event.set_turn_origin(_process_event_turn_origin(evt))
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
@@ -1751,21 +1758,29 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
+        from tools.process_registry import COMPLETION_OUTPUT_CHARS, transform_process_output
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
                                         task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
-        _LIMIT = 2000
+        # Mask before cutting: a window that starts inside a credential hides its prefix from the masker.
+        _raw = _redact_gateway_user_facing_secrets(_raw)
+        # Sized like the spawner asked: when the output IS the payload (a bot DM reply) the process
+        # carries a larger completion_output_chars, same budget as the registry's completion (#115334).
+        _LIMIT = getattr(session, "completion_output_chars", 0) or COMPLETION_OUTPUT_CHARS
         # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
+        # _LIMIT chars but snap to the nearest preceding newline, then prepend a truncation marker when
         # output was cut.
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            # The snap targets a *preceding* newline (#23284). When the only
+            # newline in the window merely terminates it (single-line JSON /
+            # results), nothing but that terminator follows, so slicing would
+            # empty the tail (#131786) — keep the full window instead.
+            if _nl != -1 and _tail[_nl + 1:].strip():
+                _tail = _tail[_nl + 1:]
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

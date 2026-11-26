@@ -198,7 +198,12 @@ probes (default 3), housekeeping, the cron scheduler and the embedded kanban
 dispatcher have all frozen with it, so the watchdog dumps every thread's stack
 to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
 `exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
-supervisor restarts the process. `hermes gateway status` renders that record as
+supervisor restarts the process. The dump and the stamp are best effort: if
+writing them stalls in Python (a full stderr pipe, a wedged log handler, a held
+status lock), the watchdog still exits within about 5 seconds, and the stamp
+may be missing or partial. The dump file itself is written by `faulthandler`,
+which holds the interpreter lock while it writes, so a disk that stops
+answering mid-dump can still hold the process until the write returns. `hermes gateway status` renders that record as
 `⚠ Gateway exited degraded: event loop stopped dispatching …` until a new
 gateway process overwrites it, and the dashboard's gateway badge shows
 **Degraded** with the same reason. Set `gateway.loop_watchdog: false` in
@@ -236,10 +241,13 @@ behavior. This setting is Linux/systemd-only and does not treat an ordinary
 platform network disconnect as an event-loop failure.
 
 Under `Type=notify` the gateway reports ready only after every served profile's
-adapters connect, one profile at a time. Before each secondary profile's
-connect it sends systemd `EXTEND_TIMEOUT_USEC` for that connect's budget plus
-a margin. A large multi-profile boot can therefore run past systemd's default
-90 s start timeout, while a boot that stops making progress is still killed.
+adapters have made their first connect attempt. Secondary profiles are prepared
+one at a time, then connect together in waves that never put two profiles on
+one bot token or listener. Before each preparation step and before each
+connect wave the gateway sends systemd `EXTEND_TIMEOUT_USEC` for the largest
+connect budget involved plus a margin. A large multi-profile boot can therefore
+run past systemd's default 90 s start timeout, while a boot that stops making
+progress is still killed.
 
 ## Chat Commands (Inside Messaging)
 

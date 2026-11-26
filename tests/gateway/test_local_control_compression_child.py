@@ -8,7 +8,7 @@ class as LC-12 on the resume door). Real authority, real SQLite, real compressio
 import pytest
 
 from tests.fixtures.storage_read import session_row, transcript_rows
-from tests.fixtures.storage_seed import seed_messages
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.test_local_resume_compression_child import _cold, _compressed
 
 
@@ -37,6 +37,24 @@ async def test_rename_and_archive_of_a_compression_segment(tmp_path, monkeypatch
     assert 'result' in archived, archived
     # The write lands on the listed row (the sidebar reads the tip's title back), not on the owner.
     assert authority.persistence.sessions.get('child-2').title == 'Renamed'
+
+
+@pytest.mark.asyncio
+async def test_rename_to_taken_title_returns_a_readable_refusal(tmp_path, monkeypatch):
+    compressed = await _compressed(tmp_path, monkeypatch)
+    authority = compressed.warm
+    store = authority.persistence
+    seed_session(store, 'taken', 'local', title='Already taken')
+    seed_messages(store, 'taken', {'role': 'user', 'content': 'Keep this chat'})
+    before = store.sessions.get('child-2').title
+
+    reply = await _mutate(authority, 'child-2', 'duplicate', 'rename', {'title': 'Already taken'})
+
+    assert reply['error']['code'] == 4001
+    assert 'already in use' in reply['error']['message']
+    assert reply['error']['data']['field'] == 'title'
+    assert store.sessions.get('child-2').title == before
+    assert store.sessions.get('taken').title == 'Already taken'
 
 
 @pytest.mark.asyncio

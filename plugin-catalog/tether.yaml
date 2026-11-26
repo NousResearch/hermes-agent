@@ -1,6 +1,6 @@
 name: tether
 repo: https://github.com/Zek-Takai/hermes-tether
-sha: 292c074b472f12a90bd1db5cc7764d3bda5ea30f
+sha: c1c8405a9b262316d94457c046778f9c6adb7a59
 subdir: plugin/tether
 title: Hermes Tether
 version: "0.3.1"
@@ -10,10 +10,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.3"
 platforms: []
-image: https://raw.githubusercontent.com/Zek-Takai/hermes-tether/292c074b472f12a90bd1db5cc7764d3bda5ea30f/docs/media/tether-banner.png
+image: https://raw.githubusercontent.com/Zek-Takai/hermes-tether/c1c8405a9b262316d94457c046778f9c6adb7a59/docs/media/tether-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/292c074b472f12a90bd1db5cc7764d3bda5ea30f/docs/media/tether-desktop.png
-  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/292c074b472f12a90bd1db5cc7764d3bda5ea30f/docs/media/tether-demo.gif
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/c1c8405a9b262316d94457c046778f9c6adb7a59/docs/media/tether-desktop.png
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-tether/c1c8405a9b262316d94457c046778f9c6adb7a59/docs/media/tether-demo.gif
 known_issues:
   - "Needs a Hermes with the public plugin seams from NousResearch/hermes-agent#160267, #160268 and #160269, which are not in a Hermes release yet; on a Hermes without them every remote session is refused and the log names the missing seam."
   - "Devices must be macOS or Windows; the host must be macOS or Linux (it uses a POSIX file lock and Unix socket). On a device, Hermes must run in the signed-in desktop session so the code box can appear."
@@ -25,6 +25,6 @@ known_issues:
   - "'untether' closes a connection only when it is sent as a message on its own."
 capabilities:
   provides_tools: [devices]
-  provides_hooks: [pre_llm_call, post_llm_call, post_tool_call, transform_tool_result]
+  provides_hooks: [pre_llm_call, post_llm_call, transform_tool_result]
   provides_middleware: [tool_execution]
   requires_env: []

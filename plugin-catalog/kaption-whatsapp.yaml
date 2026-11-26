@@ -1,7 +1,7 @@
 name: kaption-whatsapp
 title: Kaption for WhatsApp
 repo: https://github.com/Kaption-AI/mcp-extension
-sha: 3f0534d6e4055d929758f3f4750953ec6f691adf
+sha: 2db2bb6ad472bdebedc57f90bf59e41bea703697
 subdir: hermes
 version: "1.0.0"
 description: >-
@@ -17,12 +17,14 @@ description: >-
   Hermes asks before every write-capable tool and refuses them in unattended runs. The tool list comes from the
   server at run time and is not covered by the pinned sha. OAuth must be enabled with
   `hermes mcp add kaption --url https://mcp.kaptionai.com/mcp --auth oauth --connect-timeout 300`;
-  the bundled mcp.json alone yields 401.
+  the bundled mcp.json alone yields 401. Follow it with `hermes config set mcp_servers.kaption.trust untrusted`:
+  hermes mcp add writes the user's own server entry with no trust key (full trust), and this restores the
+  approval gate for sends, schedules and settings changes from the user's WhatsApp number.
 maintainer: Kaption AI
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/Kaption-AI/mcp-extension/blob/3f0534d6e4055d929758f3f4750953ec6f691adf/hermes/README.md
+docs_url: https://github.com/Kaption-AI/mcp-extension/blob/2db2bb6ad472bdebedc57f90bf59e41bea703697/hermes/README.md
 readme: true
 platforms: []
 capabilities:

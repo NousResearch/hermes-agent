@@ -1,15 +1,28 @@
-"""Summary-hook dispatch and cancellation rollback for context compression."""
+"""Summary context, hook dispatch, and cancellation rollback for compaction."""
 
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 
+from tools.voice_live import extract_voice_live_transcript
+
 if TYPE_CHECKING:
     from agent.context_compressor import _HandoffScan
 
+
+VOICE_TRANSCRIPT_HEADING = "## Recent Voice Transcript"
+
+
+def render_voice_transcript(turns: list[dict[str, Any]], render: Callable[[str], str]) -> str:
+    """Add the newest spoken exchange as context beside the verbatim user quotes."""
+    for turn in reversed(turns):
+        if transcript := extract_voice_live_transcript(turn):
+            return f"\n\n{VOICE_TRANSCRIPT_HEADING}\n{render(transcript)}"
+    return ""
 
 def accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
     """Return whether an inspectable callable accepts ``name`` as a keyword."""

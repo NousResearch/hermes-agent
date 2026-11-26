@@ -33,7 +33,7 @@ from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin, summary_view
 from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, stub_arguments, terminal_stub
-from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_summary import VOICE_TRANSCRIPT_HEADING, SummaryDispatchMixin, render_voice_transcript
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
 from agent.context_compressor_typed_input import TYPED_TURNS_POINTER, typed_summary_messages
@@ -57,6 +57,7 @@ from session_rules.turns import drop_stale_api_content
 from persistence.core.errors import PersistenceError
 from tools.todo_tool import TODO_INJECTION_HEADER
 from tools.tool_result_storage import strip_archive_list
+from tools.voice_live import extract_voice_live_transcript
 from session_rules.turns import _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view
 from session_rules.turns import (
     _BACKGROUND_PROCESS_NOTIFICATION_PREFIX,
@@ -3285,6 +3286,8 @@ class ContextCompressor(
             content = msg.get("content")
             if isinstance(content, list):
                 content = "\n".join(_summary_part_text(part) for part in content if isinstance(part, (dict, str)))
+            if transcript := extract_voice_live_transcript(msg):
+                content = f"{content or ''}\n\n[Recent Voice Transcript]\n{transcript}"
             content = _redact_compaction_text(content or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline <think>-style blocks: scratch work wastes summarizer context and risks being kept as fact.
@@ -3420,16 +3423,12 @@ None recoverable from deterministic fallback.
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
-        # Per-turn truncation cuts [SKILL_PRUNED] markers; re-derive from raw turns and re-inject.
-        # Ghost-skill defense (#32106): the fallback's per-turn truncation (``_FALLBACK_TURN_MAX_CHARS``)
-        # routinely cuts [SKILL_PRUNED: ...] markers out of the compacted turns. Re-derive the ghosted
-        # skills from the raw turn contents and re-inject deterministically, exactly like the LLM-summary
-        # path.
+        voice_context = render_voice_transcript(turns_to_summarize, _compact_fallback_turn)
+        summary = self._with_summary_prefix(_redact_compaction_text(body.strip() + voice_context))
+        summary = elide(summary, _FALLBACK_SUMMARY_MAX_CHARS)
+        # Recover skill markers from the raw turns after the size cap, which can cut off the tail (#32106).
         _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
-        summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
-        summary = elide(summary, _FALLBACK_SUMMARY_MAX_CHARS)
-        # Re-inject AFTER the size cap: markers live at the end, where truncation cuts.
         summary = _reinject_pruned_skill_markers(summary, _pruned_names)
         return self._augment_summary_lean(summary, turns_to_summarize)
 
@@ -3447,6 +3446,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         for heading, build in (
             (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
+            (VOICE_TRANSCRIPT_HEADING, lambda: render_voice_transcript(turns_to_summarize, _compact_fallback_turn)),
             (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
         ):
             if heading not in summary:

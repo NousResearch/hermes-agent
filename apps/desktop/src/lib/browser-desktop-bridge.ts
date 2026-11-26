@@ -77,11 +77,16 @@ export function installBrowserDesktopBridge(): boolean {
       ? createHostedRoute({
           launchAgent: windowConnectionOverride,
           onUnavailable: error => {
-            // The address names the agent and its profile; without them, Retry opens the primary.
+            // An address naming that agent names its profile too; without them, Retry opens the
+            // primary. One naming another agent (the window moved there) reopens on that one.
             const address = new URL(window.location.href)
-            address.searchParams.delete('connectionId')
-            address.searchParams.delete('profile')
-            window.history.replaceState(window.history.state, '', `${address.pathname}${address.search}${address.hash}`)
+
+            if (address.searchParams.get('connectionId') === error.agentId) {
+              address.searchParams.delete('connectionId')
+              address.searchParams.delete('profile')
+              window.history.replaceState(window.history.state, '', `${address.pathname}${address.search}${address.hash}`)
+            }
+
             failDesktopBoot(error.message)
           },
           relays,

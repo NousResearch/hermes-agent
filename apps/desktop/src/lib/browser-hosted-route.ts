@@ -31,7 +31,8 @@ export interface HostedRoute {
    * The agent the window's own socket opened on, kept for the window's life. The store dials and
    * reuses that socket for every profile named with no agent (`/profile`, a bare new chat), so the
    * descriptor and socket for such a profile name this agent too, wherever the window has moved
-   * since, as a served Webapp's name the serving gateway.
+   * since, as a served Webapp's name the serving gateway. Rejects with `HostedAgentUnavailableError`
+   * once that agent, or the one the address named at open, is not in the account's list.
    */
   home: () => Promise<string>
 }
@@ -60,34 +61,36 @@ export function createHostedRoute({
   let unavailable: HostedAgentUnavailableError | undefined
 
   // A candidate counts only while the account still lists it: an agent that left the list is
-  // refused by the relay, so the next rung answers instead.
+  // refused by the relay. The agent in view falls back to the window's own; that one never falls
+  // back to another (`refuse`).
   const listed = (connectionId?: null | string) => {
     const id = named(connectionId)
 
     return id && relays.gateway(id) ? id : undefined
   }
 
-  // The window's own socket: the agent it opened on while listed, else the one the window was
-  // opened for, else the list's primary (or first). The next dial opens on that, so it becomes the pin.
+  // The window's own socket: the agent it opened on, else the one the window was opened for, else
+  // the list's primary (or first). The next dial opens on that, so it becomes the pin.
   const knownHome = () => {
     if (unavailable) {
       return undefined
     }
 
-    const opened = named(launchAgent())
+    const opened = pinned ?? named(launchAgent())
 
-    return listed(pinned) ?? (opened ? listed(opened) : relays.knownWindowConnection())
+    return opened ? listed(opened) : relays.knownWindowConnection()
   }
 
-  // An address naming an agent the account no longer lists (a bookmark, a tab reopened after the
-  // agent left) fails the window, naming the agent, instead of opening the primary in its place.
+  // An agent the window is for that the account no longer lists fails the window, naming the
+  // agent, instead of opening another in its place: an address naming one (a bookmark, a tab
+  // reopened after it left), or the one the window's socket opened on, which the socket cannot leave.
   const refuse = (agentId: string) => {
     if (!unavailable) {
       unavailable = new HostedAgentUnavailableError(agentId)
       onUnavailable?.(unavailable)
     }
 
-    throw unavailable
+    return unavailable
   }
 
   const home = async () => {
@@ -97,16 +100,23 @@ export function createHostedRoute({
       throw unavailable
     }
 
-    const opened = named(launchAgent())
+    const opened = pinned ?? named(launchAgent())
 
-    if (!pinned && opened && !listed(opened)) {
-      refuse(opened)
+    if (opened && !listed(opened)) {
+      throw refuse(opened)
     }
 
-    pinned = listed(pinned) ?? listed(opened) ?? primary
+    pinned = opened ?? primary
 
     return pinned
   }
+
+  // Said when the list read that dropped it answers, not at the next request that names no agent.
+  relays.connections.onChanged?.(({ connectionId, reason }) => {
+    if (reason === 'removed' && connectionId === pinned) {
+      refuse(connectionId)
+    }
+  })
 
   // No connection (or `local`): the agent boot or the last switch published while listed, else the
   // window's own socket's.

@@ -205,6 +205,7 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
   $connection.set(null)
+  $desktopBoot.set({ ...$desktopBoot.get(), error: null })
   window.history.replaceState(null, '', '/')
   _resetAdoptedLaunchProfileForTests()
   vi.unstubAllGlobals()
@@ -379,17 +380,38 @@ describe('a Webapp whose host runs no agent', () => {
     expect(dialed(await desktop.getGatewayWsUrlFor!({ connectionId: 'local' })).pathname).toBe('/api/relay/alpha/api/ws')
   })
 
-  it('reopens on the next agent in the list when the one the window socket opened on leaves it', async () => {
+  // The window's socket cannot follow its agent out of the account, and moving requests to another
+  // agent while that socket stays on the removed one splits the window across two agents.
+  it('fails the window, naming the agent, when the one its socket opened on leaves the account', async () => {
     const agents = [ALPHA, BETA]
-    dashboardHost({ agents })
+    const requests = dashboardHost({ agents })
     const desktop = install()
     $connection.set(await desktop.getConnection())
 
     agents.splice(0, 1)
     await desktop.connections!.list()
+    requests.length = 0
 
-    expect(dialed(await desktop.getGatewayWsUrl()).pathname).toBe('/api/relay/beta/api/ws')
-    expect((await desktop.getConnection()).connectionId).toBe('beta')
+    expect($desktopBoot.get().error).toContain('alpha')
+    await expect(desktop.getGatewayWsUrl()).rejects.toBeInstanceOf(HostedAgentUnavailableError)
+    await expect(desktop.getConnection()).rejects.toBeInstanceOf(HostedAgentUnavailableError)
+    await expect(desktop.api({ path: '/api/config' })).rejects.toBeInstanceOf(HostedAgentUnavailableError)
+    expect(requests.filter(request => request.path.startsWith('/api/relay/beta/'))).toEqual([])
+  })
+
+  it('keeps the agent the window moved to in its address when the one its socket opened on leaves', async () => {
+    const agents = [ALPHA, BETA]
+    dashboardHost({ agents })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    $connection.set(await desktop.getConnectionFor!({ connectionId: 'beta' }))
+    await desktop.profile!.remember(null)
+
+    agents.splice(0, 1)
+    await desktop.connections!.list()
+
+    // Retry reloads the page onto the agent the window was on.
+    expect(new URL(window.location.href).searchParams.get('connectionId')).toBe('beta')
   })
 
   // The account's primary can change in another tab while this one is open: a chat popped out of

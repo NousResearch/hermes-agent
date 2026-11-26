@@ -3062,6 +3062,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             # Track the last sent message for history backfill (skips the full history scan).
             if message_ids:
                 _target_id = thread_id or chat_id
+                await self._note_thread_send(channel, not nonconversational)
                 if nonconversational:
                     await self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
@@ -3070,10 +3071,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             # marker so the reconnect sweep can replay this final response instead of stranding it until a
             # process restart (#95382 silent partial loss).
             result = SendResult(
-                success=True,
-                message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
-            )
+                success=True, message_id=message_ids[0] if message_ids else None, raw_response={"message_ids": message_ids})
             return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)

@@ -36,8 +36,8 @@ import {
   oklchToHex,
   readableInk
 } from './color'
-import type { DesktopTheme, DesktopThemeColors } from './types'
 import { isOneDark, themeAccent } from './one-dark'
+import type { DesktopTheme, DesktopThemeColors } from './types'
 
 /** Small uppercase sidebar labels paint in the accent, so it must clear AA. */
 const ACCENT_MIN_CONTRAST = 4.5

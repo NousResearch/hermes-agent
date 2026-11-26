@@ -70,7 +70,6 @@ export function SearchField({
 
   return (
     <div
-      data-slot="search-field"
       className={cn(
         // min-w-0 is load-bearing: without it the content-sized input sets the
         // container's flex min-width and the field bulldozes its siblings
@@ -85,6 +84,7 @@ export function SearchField({
             ),
         containerClassName
       )}
+      data-slot="search-field"
     >
       <Search className={cn('pointer-events-none shrink-0 text-muted-foreground/70', boxed ? 'size-4' : 'size-3.5')} />
       {leadingContent}

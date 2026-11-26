@@ -1,7 +1,7 @@
 import { setAccentOverride } from './accent-override'
 import { normalizeHex } from './color'
-import { themeAccent } from './one-dark'
 import { accentBase, accentedTheme, committedTheme } from './context'
+import { themeAccent } from './one-dark'
 import { requestTheme } from './request'
 import { installUserTheme } from './user-themes'
 

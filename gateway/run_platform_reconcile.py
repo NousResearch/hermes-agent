@@ -11,7 +11,7 @@ A platform whose plugin is not installed yet arrives the same way: when the prof
 (its ``.env``) changed, the reconcile first runs the gateway-start plugin recovery for that profile
 (``gateway.run_startup.recover_left_core_in``: the catalog plugin of a platform it now has credentials
 for), then starts what the installed plugin registers. A gateway start runs that recovery beside the
-start (:func:`recover_plugins_beside_start`), never long ahead of the platforms that are ready: a plugin
+start (:func:`recover_plugins_for_start`), never long ahead of the platforms that are ready: a plugin
 it (or another installer) lands later is started by this reconcile once it loads.
 
 The diff is generic: every build attempt (boot's and a mid-run one, through the one prepare path) records
@@ -620,17 +620,12 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
     return _handler
 
 
-def recover_plugins_beside_start() -> asyncio.Future:
-    """Gateway start: the left-core / catalog plugin recovery for the homes the runner loads first, run
-    beside the start instead of ahead of it, so an install (or a wait on another installer's lock) never
-    holds back the platforms that are ready. Await :func:`recovered_before_start` on it, then hand it to
-    :func:`start_recovered_platforms` when it was still running."""
-    import contextvars
-    import threading
+def _recover_beside_start() -> asyncio.Future:
+    """The left-core / catalog plugin recovery for the homes the runner loads first, on its own thread."""
+    from agent.memory_provider import spawn_context_thread
     from gateway.run_startup import recover_left_core_at_gateway_start
     loop = asyncio.get_running_loop()
     future = loop.create_future()
-    context = contextvars.copy_context()
 
     def _settle(outcome, error) -> None:
         if not future.done():
@@ -638,31 +633,38 @@ def recover_plugins_beside_start() -> asyncio.Future:
 
     def _run() -> None:
         try:
-            outcome, error = context.run(recover_left_core_at_gateway_start), None
+            outcome, error = recover_left_core_at_gateway_start(), None
         except Exception as exc:  # health: allow BLE001 -- handed to the awaiting start, never lost
             outcome, error = None, exc
         if not loop.is_closed():
             loop.call_soon_threadsafe(_settle, outcome, error)
 
     # A daemon thread, not the loop's executor: a clone that hangs must not hold a gateway stop.
-    threading.Thread(target=_run, name="gateway-start-plugin-recovery", daemon=True).start()
+    spawn_context_thread(_run, name="gateway-start-plugin-recovery").start()
     return future
 
 
-async def recovered_before_start(recovery: asyncio.Future) -> Optional[bool]:
-    """The recovery's verdict (a platform plugin installed) when it finishes within
-    :data:`_RECOVERY_HEAD_START_SECS`; None while it still runs (it then goes on beside the start)."""
+async def recover_plugins_for_start() -> tuple:
+    """Gateway start: run the plugin recovery beside the start instead of ahead of it, so an install (or a
+    wait on another installer's lock) never holds back the platforms that are ready. ``(installed, rest)``:
+    ``installed`` True when it finished within :data:`_RECOVERY_HEAD_START_SECS` and installed a platform
+    plugin (the runner's config must be re-read); ``rest`` the recovery still running, else None (hand it
+    to :func:`start_recovered_platforms`)."""
+    recovery = _recover_beside_start()
     done, _pending = await asyncio.wait({recovery}, timeout=_RECOVERY_HEAD_START_SECS)
-    if not done:
-        logger.info("Plugin install for this profile's platforms continues beside the start; "
-                    "the platforms it brings start when it lands")
-        return None
-    return bool(recovery.result())
+    if done:
+        return bool(recovery.result()), None
+    logger.info("Plugin install for this profile's platforms continues beside the start; "
+                "the platforms it brings start when it lands")
+    return False, recovery
 
 
-def start_recovered_platforms(runner: Any, recovery: asyncio.Future) -> None:
+def start_recovered_platforms(runner: Any, recovery: Optional[asyncio.Future]) -> None:
     """Once the runner runs: when the still-running recovery installs a platform plugin, reconcile the
-    launch profile, which starts the platform the plugin registers."""
+    launch profile, which starts the platform the plugin registers (a runner not running ignores it)."""
+    if recovery is None:
+        return
+
     def _done(future: asyncio.Future) -> None:
         if future.cancelled():
             return

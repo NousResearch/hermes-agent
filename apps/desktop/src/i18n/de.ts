@@ -5160,6 +5160,12 @@ export const deOverrides = {
       readAloud: 'Vorlesen',
       copyFullResponse: 'Vollständige Antwort kopieren',
       readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',
+      steered: "Anweisung übernommen",
+      failedTurnNotices: {
+        notProcessed: 'Deine Anfrage wurde nicht verarbeitet. Sende sie bei Bedarf erneut.',
+        partial: 'Die Anfrage wurde nicht abgeschlossen. Einige Aktionen wurden möglicherweise bereits ausgeführt. Prüfe das Ergebnis, bevor du die Anfrage erneut sendest.',
+        automationInterrupted: 'Die automatische Ausführung wurde unterbrochen und nicht erneut gestartet. Prüfe, welche Aktionen bereits ausgeführt wurden.'
+      },
       contentRefusedNotice: 'Diese Nachricht wurde vom Sicherheitsfilter des Modells abgelehnt – versuche eine andere Anfrage.',
       editMessage: 'Nachricht bearbeiten',
       expandMessage: 'Nachricht aufklappen',

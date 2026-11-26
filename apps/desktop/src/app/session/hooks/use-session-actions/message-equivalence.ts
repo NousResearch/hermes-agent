@@ -37,6 +37,7 @@ const COMPARED_FIELDS = [
   // Structured failure layer — drives the error card's title and action row,
   // so a change (e.g. resume replay attaching the descriptor) must repaint.
   'errorSurface',
+  'failedTurn',
   // Safety-refused display block — drives the greyed notice, so attaching or
   // changing it (resume replay) must repaint, like errorSurface.
   'contentRefused',
@@ -166,7 +167,7 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 // interim bubble restores the bar); `queuedTurnStarted` must reach the view's
 // copy because resume seeds session state from it; `continued` is set once, at
 // the continuation's start, so a resume waiting meanwhile must keep it.
-const FLAG_FIELDS = ['interim', 'queuedTurnStarted', 'continued'] as const
+const FLAG_FIELDS = ['failedTurn', 'interim', 'queuedTurnStarted', 'continued'] as const
 
 const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
   FLAG_FIELDS.some(field => (a[field] ?? false) !== (b[field] ?? false))

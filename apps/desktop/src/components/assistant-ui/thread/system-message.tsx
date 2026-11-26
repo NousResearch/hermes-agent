@@ -10,6 +10,8 @@ import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
+import { en } from '@/i18n/en'
+import type { Translations } from '@/i18n/types'
 import { LinkifiedText } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
@@ -86,9 +88,24 @@ const ContentRefusedNote: FC<{ notice: string; userText: string }> = ({ notice, 
   </MessagePrimitive.Root>
 )
 
+// Stored rows carry the canonical English copy from agent/turn_failure_copy.py.
+function localizeFailedTurn(text: string, labels: Translations['assistant']['thread']['failedTurnNotices']): string {
+  const stored = text.trim()
+  const english = en.assistant.thread.failedTurnNotices
+
+  for (const key of ['notProcessed', 'partial', 'automationInterrupted'] as const) {
+    if (stored === english[key]) {
+      return labels[key]
+    }
+  }
+
+  return text
+}
+
 export const SystemMessage: FC = () => {
   const { t } = useI18n()
   const text = useAuiState(s => messageContentText(s.message.content))
+  const failedTurn = useAuiState(s => s.message.metadata.custom?.failedTurn === true)
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
 
@@ -99,7 +116,10 @@ export const SystemMessage: FC = () => {
   // A safety-refused turn, kept for display only: the user's own message, greyed
   // and non-interactive, with a short notice. Not a user bubble, not a reply.
   if (contentRefused) {
-    return <ContentRefusedNote notice={contentRefused.notice ?? t.assistant.thread.contentRefusedNotice} userText={text} />
+    const saved = contentRefused.notice
+    const notice = !saved || saved.trim() === en.assistant.thread.contentRefusedNotice ? t.assistant.thread.contentRefusedNotice : saved
+
+    return <ContentRefusedNote notice={notice} userText={text} />
   }
 
   if (!text) {
@@ -160,7 +180,7 @@ export const SystemMessage: FC = () => {
         data-slot="aui_system-message-root"
       >
         <Codicon className="text-muted-foreground/55" name="compass" size="0.75rem" />
-        <span className="text-muted-foreground/55">steered</span>
+        <span className="text-muted-foreground/55">{t.assistant.thread.steered}</span>
         <span className="text-muted-foreground/35">·</span>
         <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span> <MessageTimelineTimestamp />
       </MessagePrimitive.Root>
@@ -207,7 +227,8 @@ export const SystemMessage: FC = () => {
     )
   }
 
-  const multiline = text.includes('\n')
+  const notice = failedTurn ? localizeFailedTurn(text, t.assistant.thread.failedTurnNotices) : text
+  const multiline = notice.includes('\n')
 
   return (
     <MessagePrimitive.Root
@@ -218,7 +239,7 @@ export const SystemMessage: FC = () => {
       data-role="system"
       data-slot="aui_system-message-root"
     >
-      <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={text} />{' '}
+      <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={notice} />{' '}
       <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ml-1.5')} />
     </MessagePrimitive.Root>
   )

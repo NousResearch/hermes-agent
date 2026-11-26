@@ -5168,6 +5168,12 @@ export const frOverrides = {
       readAloud: 'Lire à voix haute',
       copyFullResponse: 'Copier la réponse complète',
       readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
+      steered: "Instruction reçue",
+      failedTurnNotices: {
+        notProcessed: 'La demande n’a pas été traitée. Si elle est toujours d’actualité, renvoyez-la.',
+        partial: 'La demande n’a pas abouti. Certaines actions ont peut-être déjà été effectuées. Vérifiez le résultat avant de renvoyer la demande.',
+        automationInterrupted: 'La tâche automatique a été interrompue et n’a pas été relancée. Vérifiez quelles actions ont déjà été effectuées.'
+      },
       contentRefusedNotice: 'Ce message a été refusé par le filtre de sécurité du modèle — essayez une autre requête.',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',

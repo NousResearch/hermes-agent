@@ -9,12 +9,13 @@ import { useI18n } from '@/i18n'
 import { CheckCircle2 } from '@/lib/icons'
 import { fmtDateTime, relativeTime } from '@/lib/time'
 
-import { type CatalogEntry, catalogLabel } from './catalog-data'
+import { type CatalogEntry, type CatalogKind, catalogLabel, catalogSourceLabel } from './catalog-data'
 
 /** Trust tiers read at a glance (same tones as the installed-plugin pill); the rest stay muted. */
 const SOURCE_TONE: Record<string, 'default' | 'success'> = { official: 'default', verified: 'success' }
 
 interface CatalogMetadataProps {
+  kind?: CatalogKind
   entry: CatalogEntry
   onCategory?: (category: string) => void
   onTag?: (tag: string) => void
@@ -36,12 +37,14 @@ interface CatalogChip {
 
 /** Source and version, leading the card footer. Stars sit opposite them. */
 export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
+  const { t } = useI18n()
+
   return (
     <span className="flex min-w-0 items-center justify-start gap-1">
       {entry.source && (
         <Badge className="max-w-full" size="xs" variant={SOURCE_TONE[entry.source] ?? 'muted'}>
           {entry.source === 'verified' && <CheckCircle2 aria-hidden className="size-3 shrink-0" />}
-          <span className="truncate">{catalogLabel(entry.source)}</span>
+          <span className="truncate">{catalogSourceLabel(entry.source, t)}</span>
         </Badge>
       )}
       {entry.updateAvailable && <CatalogUpdateBadge />}
@@ -87,7 +90,7 @@ export function CatalogRating({ entry }: { entry: CatalogEntry }) {
 }
 
 /** One metadata projection for Skills and Plugins, in cards, lists and details. */
-export function CatalogMetadata({ entry, onCategory, onTag, onSearch, onOpen, limit }: CatalogMetadataProps) {
+export function CatalogMetadata({ entry, kind, onCategory, onTag, onSearch, onOpen, limit }: CatalogMetadataProps) {
   const { t } = useI18n()
   const c = t.catalog
   const [expanded, setExpanded] = useState(false)
@@ -98,7 +101,7 @@ export function CatalogMetadata({ entry, onCategory, onTag, onSearch, onOpen, li
   const primary: CatalogChip[] = [
     {
       id: 'category',
-      label: catalogLabel(entry.categoryLabel),
+      label: kind === 'plugins' ? c.pluginCategories[entry.category]?.label ?? catalogLabel(entry.categoryLabel) : catalogLabel(entry.categoryLabel),
       onClick: onCategory ? () => onCategory(entry.category) : undefined
     },
     ...entry.platforms.map(value => ({
@@ -116,6 +119,8 @@ export function CatalogMetadata({ entry, onCategory, onTag, onSearch, onOpen, li
   ]
 
   const primaryLabels = new Set(primary.map(chip => chip.label.trim().toLowerCase()))
+
+  primaryLabels.add(entry.categoryLabel.trim().toLowerCase())
 
   for (const chip of primary) {
     const matchingTag = tags.find(tag => tag.trim().toLowerCase() === chip.label.trim().toLowerCase())

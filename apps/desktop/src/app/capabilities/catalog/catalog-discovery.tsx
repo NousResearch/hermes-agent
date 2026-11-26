@@ -65,7 +65,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
   const sections: [string, string, CatalogEntry[]][] = (
     kind === 'plugins'
-      ? groupCatalogPlugins(remaining).map(([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
+      ? groupCatalogPlugins(remaining).map(([key, items]) => [key, t.catalog.pluginCategories[key]?.label ?? PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
       : catalogCategories(remaining).map(([key, meta]) => [key, meta.label, remaining.filter(entry => entry.category === key)] as [string, string, CatalogEntry[]])
   ).sort((a, b) => topStars(b[2]) - topStars(a[2]))
 
@@ -109,7 +109,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
           <header className="catalog-section-heading">
             <div>
               <h2><Button className="text-[length:inherit] font-[inherit] text-(--ui-text-primary) hover:text-(--ui-text-primary)" onClick={() => onCategory(category)} size="inline" variant="text">{catalogLabel(label)}</Button></h2>
-              <p>{kind === 'plugins' ? PLUGIN_CATEGORIES[category]?.blurb : t.catalog.skillsFor(catalogLabel(label))}</p>
+              <p>{kind === 'plugins' ? t.catalog.pluginCategories[category]?.blurb ?? PLUGIN_CATEGORIES[category]?.blurb : t.catalog.skillsFor(catalogLabel(label))}</p>
             </div>
             {items.length > packBento(items).length && <Button onClick={() => onCategory(category)} size="inline" variant="text">{t.catalog.seeAll}<Codicon name="arrow-right" /></Button>}
           </header>

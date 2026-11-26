@@ -4451,6 +4451,12 @@ export const zhOverrides = {
       readAloud: '朗读',
       copyFullResponse: '复制完整回复',
       readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',
+      steered: "已接收指示",
+      failedTurnNotices: {
+        notProcessed: '请求未得到处理。如仍需执行，请重新发送。',
+        partial: '本次请求未完成。部分操作可能已执行，请在重新发送前检查结果。',
+        automationInterrupted: '自动任务已中断，未再次运行。部分操作可能已执行，请检查结果。'
+      },
       contentRefusedNotice: '该消息被模型的安全过滤器拒绝 — 请换一个问题重试。',
       editMessage: '编辑消息',
       expandMessage: '展开消息',

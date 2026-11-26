@@ -3475,6 +3475,12 @@ export const jaOverrides = {
       readAloud: '読み上げ',
       copyFullResponse: '回答全体をコピー',
       readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',
+      steered: "指示を受け付けました",
+      failedTurnNotices: {
+        notProcessed: 'リクエストを処理できませんでした。引き続き実行を希望する場合は、もう一度送信してください。',
+        partial: '処理が完了しませんでした。一部の操作はすでに実行された可能性があります。再送信する前に結果を確認してください。',
+        automationInterrupted: '自動処理は中断され、再実行されませんでした。すでに実行された操作がないか、結果を確認してください。'
+      },
       contentRefusedNotice: 'このメッセージはモデルの安全フィルターによって拒否されました。別の内容でお試しください。',
       editMessage: 'メッセージを編集',
       stop: '停止',

@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { ruBuiltinToolsets } from './ru_builtin_toolsets'
 
 const resultWord = (count: number) => {
   const n = Math.abs(count) % 10
@@ -8,6 +9,19 @@ const resultWord = (count: number) => {
 }
 
 export const ruCatalog = {
+  sourceLabels: { local: 'Локальный', optional: 'Дополнительный' },
+  pluginCategories: {
+    desktop: { label: "Рабочий стол", blurb: "Панели, вкладки и представления Hermes Desktop." },
+    memory: { label: "Память", blurb: "Сервисы памяти и модули управления контекстом." },
+    platform: { label: "Платформы", blurb: "Подключение мессенджеров и каналов связи." },
+    web: { label: "Интернет и браузер", blurb: "Поиск, извлечение данных со страниц и управление браузером." },
+    tools: { label: "Инструменты", blurb: "Дополнительные инструменты, которыми может пользоваться агент." },
+    voice: { label: "Голос", blurb: "Распознавание речи, озвучивание текста и звук в реальном времени." },
+    automation: { label: "Автоматизация", blurb: "Обработка событий, условия запуска и автоматизация сеансов." },
+    models: { label: "Модели", blurb: "Провайдеры моделей и сервисы выполнения запросов." },
+    general: { label: "Разное", blurb: "Плагины, которые относятся к нескольким категориям." },
+  },
+  builtinToolsets: ruBuiltinToolsets,
   add: 'Добавить',
   added: 'Добавлено',
   discover: 'Открывайте новое',
@@ -38,6 +52,11 @@ export const ruCatalog = {
   install: 'Установить',
   installed: 'Установленные',
   searchSkills: 'Поиск навыков',
+  tierLabels: {
+    official: 'Официальный',
+    verified: 'Проверенный',
+    community: 'Сообщество'
+  },
   searchPlugins: 'Поиск плагинов',
   allSources: 'Все источники',
   allCategories: 'Все категории',

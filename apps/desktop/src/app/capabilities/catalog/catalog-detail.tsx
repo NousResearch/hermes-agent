@@ -12,7 +12,7 @@ import { ExternalLink } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
 import { catalogIcon, CatalogImage } from './catalog-card'
-import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
+import { type CatalogEntry, type CatalogKind, catalogSourceLabel } from './catalog-data'
 import { CatalogDates, CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
 
 interface CatalogDetailProps {
@@ -44,7 +44,7 @@ function CatalogDetailHeader({ entry, action, dialog }: { entry: CatalogEntry; a
                 {action && <span className="shrink-0">{action}</span>}
               </div>
               <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-(--ui-text-tertiary)">
-                <span className="min-w-0 truncate">{entry.author || catalogLabel(entry.source)}</span>
+                <span className="min-w-0 truncate">{entry.author || catalogSourceLabel(entry.source, t)}</span>
                 <CatalogHeaderMeta entry={entry} />
               </div>
             </div>
@@ -114,7 +114,7 @@ export function CatalogDetail({
       )}
 
       <div className="space-y-3">
-        <CatalogMetadata entry={entry} limit={Infinity} onCategory={onCategory} onSearch={onSearch} onTag={onTag} />
+        <CatalogMetadata entry={entry} kind={kind} limit={Infinity} onCategory={onCategory} onSearch={onSearch} onTag={onTag} />
         <CatalogDates entry={entry} />
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-[length:var(--conversation-caption-font-size)]">
           {metadata

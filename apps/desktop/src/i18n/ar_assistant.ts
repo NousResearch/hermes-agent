@@ -269,6 +269,12 @@ export const arAssistant = {
       readAloud: 'قراءة بصوت عال',
       copyFullResponse: 'نسخ الرد الكامل',
       readAloudFullResponseHint: 'انقر مع الضغط على Shift: قراءة الرد الكامل بصوت عال',
+      steered: "تم استلام التوجيه",
+      failedTurnNotices: {
+        notProcessed: 'لم تتم معالجة طلبك. أعد إرساله إذا كنت لا تزال ترغب في تنفيذه.',
+        partial: 'لم يكتمل الطلب. ربما نُفّذت بعض الإجراءات بالفعل. تحقق من نتائجها قبل إعادة إرسال الطلب.',
+        automationInterrupted: 'توقفت المهمة التلقائية ولم تُشغّل مرة أخرى. تحقق من الإجراءات التي ربما نُفّذت بالفعل.'
+      },
       contentRefusedNotice: 'رفض فلتر الأمان في النموذج هذه الرسالة — جرّب طلبًا مختلفًا.',
       editMessage: 'تحرير الرسالة',
       scrollToBottom: 'التمرير إلى الأسفل',

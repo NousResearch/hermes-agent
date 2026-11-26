@@ -482,6 +482,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
           ...timelineMeta,
           ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
           ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+          ...(message.failedTurn ? { failedTurn: true } : {}),
           ...contentRefusedMeta(message)
         }
       }

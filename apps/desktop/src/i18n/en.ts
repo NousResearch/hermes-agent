@@ -4745,6 +4745,12 @@ export const en: Translations = {
       dismissError: 'Dismiss error',
       responseContinuing: 'Continuing…',
       responseStopped: 'Response stopped',
+      steered: "steered",
+      failedTurnNotices: {
+        notProcessed: 'Your request was not processed. Send it again if you still want me to carry it out.',
+        partial: 'This turn did not complete. Some actions may already have run; verify their effects before resending.',
+        automationInterrupted: 'An automated delivery was interrupted and was not run again. Some actions may already have run; verify their effects.'
+      },
       contentRefusedNotice: "This message was refused by the model's safety filter — try a different query.",
       ...enErrorLayers,
       errorCodes: enErrorCodes,

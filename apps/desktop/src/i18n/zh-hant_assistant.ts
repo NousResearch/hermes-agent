@@ -276,6 +276,12 @@ export const zhHantAssistant = {
       readAloud: '朗讀',
       copyFullResponse: '複製完整回覆',
       readAloudFullResponseHint: '按住 Shift 點擊：朗讀完整回覆',
+      steered: "已接收指示",
+      failedTurnNotices: {
+        notProcessed: '要求未能處理。如仍需執行，請重新傳送。',
+        partial: '這次要求未完成。部分操作可能已執行，請在重新傳送前確認結果。',
+        automationInterrupted: '自動工作已中斷，未再次執行。部分操作可能已執行，請確認結果。'
+      },
       contentRefusedNotice: '此訊息被模型的安全篩選器拒絕 — 請改用其他問題重試。',
       editMessage: '編輯訊息',
       stop: '停止',

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { CheckboxMark } from '@/components/ui/checkbox'
 import { useI18n } from '@/i18n'
 
-import { catalogLabel } from './catalog-data'
+import { catalogLabel, catalogSourceLabel } from './catalog-data'
 import type { CatalogFacets } from './catalog-query'
 
 export interface FacetRow {
@@ -126,7 +126,7 @@ export function CatalogFilters({
         }
         label={c.source}
         onSelect={onSource}
-        rows={sources.map(value => ({ value, label: catalogLabel(value) }))}
+        rows={sources.map(value => ({ value, label: catalogSourceLabel(value, t) }))}
       />
       <Facet
         active={facets.categories}

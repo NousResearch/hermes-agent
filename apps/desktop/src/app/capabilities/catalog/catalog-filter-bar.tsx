@@ -6,7 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 
-import { type CatalogKind, catalogLabel } from './catalog-data'
+import { type CatalogKind, catalogLabel, catalogSourceLabel } from './catalog-data'
 import type { FacetRow } from './catalog-filters'
 import type { CatalogFacets } from './catalog-query'
 
@@ -40,13 +40,12 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   const [mode, setMode] = useState<'categories' | 'sources'>('categories')
   // Plugins file the source facet by trust tier; skills by registry.
   const tiers = props.kind === 'plugins'
-  const tierLabel = (value: string) => (tiers ? c.tierLabels[value as keyof typeof c.tierLabels] : undefined)
   const [expanded, setExpanded] = useState(false)
   const [more, setMore] = useState(false)
 
   const rows = mode === 'categories'
-    ? props.categories.map(([value, meta]) => ({ value, label: catalogLabel(meta.label) }))
-    : props.sources.map(value => ({ value, label: tierLabel(value) ?? catalogLabel(value) }))
+    ? props.categories.map(([value, meta]) => ({ value, label: tiers ? c.pluginCategories[value]?.label ?? catalogLabel(meta.label) : catalogLabel(meta.label) }))
+    : props.sources.map(value => ({ value, label: catalogSourceLabel(value, t) }))
 
   const selected = props.facets[mode]
   const select = mode === 'categories' ? props.onCategory : props.onSource

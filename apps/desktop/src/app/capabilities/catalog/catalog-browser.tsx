@@ -371,7 +371,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
   const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
-  const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind)
+  const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind, c.pluginCategories), sort, kind)
 
   const discover = isDiscoverView(facets, deferredQuery, kind, sort)
   const pageOrder = filtered
@@ -421,6 +421,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
       action={entryAction(entry, variant === 'hero')}
       entry={entry}
       key={entry.id}
+      kind={kind}
       onCategory={filters.chooseCategory}
       onOpen={openEntry}
       onSearch={searchFor}

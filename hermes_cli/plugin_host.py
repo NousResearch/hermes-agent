@@ -90,7 +90,9 @@ class PluginHost:
         self._handles: dict[int, Any] = {}
         self._handle_ids = itertools.count(1)
         self._base_context = self._build_base_context()
-        self._context_stale = False  # set when a start is refused after building it
+        from hermes_cli.plugin_isolation import home_moved_refusal
+        # Built through the name, so kept only if it still leads here after the build (as a start's last check).
+        self._context_stale = home_moved_refusal(self._home) is not None
         self._loading: Optional[str] = None
         self._stopping = False
         self._deaths: list = []
@@ -167,12 +169,12 @@ class PluginHost:
             home = Path(self._manager.owner_home)  # at each start: a renamed link's old name leads nowhere
             if home != self._home or self._context_stale:
                 previous, self._home = self._home, home
+                self._context_stale = True  # built through the name: kept once this start's last check passes
                 try:
                     self._base_context = self._build_base_context()
                 except BaseException:
                     self._home = previous  # so the next start builds the context for the new home again
                     raise
-                self._context_stale = False
             from hermes_cli.plugin_isolation import home_moved_refusal, is_launch_home
             own = is_launch_home(self._home)  # one answer for the launcher and the child's env
             launcher, templates = self._launcher(own)  # the launcher's .env, resolved once for the child's env too
@@ -182,8 +184,8 @@ class PluginHost:
             env = self._env(own, templates, launcher)
             # Every read above went through the name: if it was repointed meanwhile, they read another directory.
             if (moved := home_moved_refusal(self._home)) is not None:
-                self._context_stale = True  # it was built through the name too: the next start builds it again
                 raise PluginHomeMoved(moved)
+            self._context_stale = False
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     env=env, cwd=str(self._home), bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,

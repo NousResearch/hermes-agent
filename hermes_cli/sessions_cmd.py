@@ -341,11 +341,13 @@ _AUTOMATED_SOURCES = ("cron", "webhook", "push", "kanban", "tool", "oneshot")
 def _listing_scope(args) -> dict:
     """``list_sessions_rich`` scope of ``sessions list`` / ``browse``: human threads ranked by their
     last message, one row per compression lineage (the tip you resume). ``--all`` brings back
-    automated and empty rows, as does an explicit ``--source`` for its own rows."""
+    automated (``tool`` included) and empty rows; an explicit ``--source`` does for its own rows."""
     source = getattr(args, "source", None)
-    unfiltered = getattr(args, "all", False) or bool(source)
-    return dict(source=source, exclude_sources=_default_exclude(args) if unfiltered else list(_AUTOMATED_SOURCES),
-                min_message_count=0 if unfiltered else 1, order_by_last_active=True)
+    show_all = getattr(args, "all", False)
+    unfiltered = show_all or bool(source)
+    exclude = None if show_all else _default_exclude(args) if source else list(_AUTOMATED_SOURCES)
+    return dict(source=source, exclude_sources=exclude, min_message_count=0 if unfiltered else 1,
+                order_by_last_active=True)
 
 
 def _surface_reader(store):

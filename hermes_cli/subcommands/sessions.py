@@ -43,7 +43,7 @@ def _add_refresh_prompts(sessions_subparsers) -> None:
     _flag(refresh, "--json", help="Machine-readable output")
 
 
-_ALL_HELP = "Also show cron/webhook/push runs and sessions with no messages"
+_ALL_HELP = "Show every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages"
 
 
 def _add_browse(sessions_subparsers) -> None:

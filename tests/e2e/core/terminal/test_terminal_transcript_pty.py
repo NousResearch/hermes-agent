@@ -179,7 +179,10 @@ def test_terminal_transcript_integrity(surface: str, scenario: str, tmp_path: Pa
                     n_cmd = text.count(canon(turn.tool_command))
                     assert n_cmd == 1, f"[{surface}/{scenario}] tool call rendered {n_cmd}x\n{dump}"
                 if turn.reasoning:
-                    n_reason = text.count(canon(turn.reasoning))
+                    # The glyph layout intentionally repeats a short title in its
+                    # closing Thought footer. Count body copies, not that summary.
+                    reasoning_body = canon("".join(line for line in final if not line.lstrip().startswith("∴ ")))
+                    n_reason = reasoning_body.count(canon(turn.reasoning))
                     assert n_reason <= 1, f"[{surface}/{scenario}] reasoning rendered {n_reason}x\n{dump}"
             assert positions == sorted(positions), (
                 f"[{surface}/{scenario}] transcript out of conversation order\n{dump}")

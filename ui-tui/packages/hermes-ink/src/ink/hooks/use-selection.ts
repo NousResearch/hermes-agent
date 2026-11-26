@@ -18,6 +18,7 @@ export function useSelection(): {
   getState: () => SelectionState | null
   /** Subscribe to selection mutations (start/update/finish/clear). */
   subscribe: (cb: () => void) => () => void
+  subscribeCopy: (cb: (text: string) => void) => () => void
   /** Shift the anchor row by dRow, clamped to [minRow, maxRow]. */
   shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
   /** Shift anchor AND focus by dRow (keyboard scroll: whole selection
@@ -56,6 +57,7 @@ export function useSelection(): {
         hasSelection: () => false,
         getState: () => null,
         subscribe: () => () => {},
+        subscribeCopy: () => () => {},
         shiftAnchor: () => {},
         shiftSelection: () => {},
         moveFocus: () => {},
@@ -72,6 +74,7 @@ export function useSelection(): {
       hasSelection: () => ink.hasTextSelection(),
       getState: () => ink.selection,
       subscribe: (cb: () => void) => ink.subscribeToSelectionChange(cb),
+      subscribeCopy: (cb: (text: string) => void) => ink.subscribeToSelectionCopy(cb),
       shiftAnchor: (dRow: number, minRow: number, maxRow: number) => shiftAnchor(ink.selection, dRow, minRow, maxRow),
       shiftSelection: (dRow, minRow, maxRow) => ink.shiftSelectionForScroll(dRow, minRow, maxRow),
       moveFocus: (move: FocusMove) => ink.moveSelectionFocus(move),

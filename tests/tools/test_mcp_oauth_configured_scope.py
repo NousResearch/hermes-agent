@@ -1,94 +1,45 @@
-"""Configured ``oauth.scope`` outranks the SDK's discovery-based scope selection (#142477).
+"""A configured ``oauth.scope`` is authoritative over the SDK's scope selection (#142477).
 
-The MCP SDK's 401-discovery branch (mcp 2.x oauth2.py Step 3) assigns
-``context.client_metadata.scope`` from the WWW-Authenticate hint, else PRM/AS
-``scopes_supported``, with no case for a scope the client already set. When the
-authorization server advertises more scopes than its clients may present, every
-authorization fails with ``invalid_scope`` and ``oauth.scope`` is dead weight.
-Hermes re-asserts the configured scope immediately before the SDK builds the
-authorization URL.
+The MCP SDK's 401 branch reassigns ``client_metadata.scope`` from server metadata (WWW-Authenticate
+hint, else PRM / AS ``scopes_supported``, plus ``offline_access``) before dynamic client registration
+and the authorization URL read it. A server whose metadata advertises more scopes than its
+registration accepts then refuses every login, and ``oauth.scope`` reads as broken.
 """
-from unittest.mock import MagicMock
+import json
 
 import pytest
 
-pytest.importorskip(
-    "mcp.client.auth.oauth2",
-    reason="MCP SDK 1.26.0+ required for OAuth support",
-)
+pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK required for OAuth support")
 
-SELECTED = "web-origins openid profile ext groups"  # what SDK discovery would pick
-CONFIGURED = "openid profile offline_access"
+SELECTED = "mcp:read mcp:write admin offline_access"  # what SDK discovery assigns
+CONFIGURED = "mcp:read offline_access"
 
 
-@pytest.mark.asyncio
-async def test_configured_scope_survives_the_sdks_step3_overwrite():
-    """Invariant: the URL the SDK builds carries the configured scope, not the discovered one."""
-    from tools.mcp_oauth_manager import HermesMCPOAuthProvider
+def _metadata(cfg):
+    from tools.mcp_oauth import _build_client_metadata
+    return _build_client_metadata({"_resolved_port": 43123, **cfg})
 
-    provider = HermesMCPOAuthProvider(
-        server_url="https://mcp.example/mcp", server_name="s",
-        client_metadata=MagicMock(), storage=MagicMock(),
-        redirect_handler=MagicMock(), callback_handler=MagicMock())
-    seen: list[str] = []
 
-    async def fake_grant():  # stands in for the SDK grant: reads what the URL builder would send
-        seen.append(provider.context.client_metadata.scope)  # SDK URL builder reads this
-        return ("code", "verifier")
+def test_configured_scope_reaches_registration_and_authorization():
+    """Invariant: after the SDK's Step-3 reassignment, the DCR body and the scope the
+    authorization URL is built from both carry the configured value."""
+    from mcp.client.auth.utils import create_client_registration_request
+    from mcp.shared.auth import OAuthMetadata
 
-    provider._perform_authorization_code_grant = fake_grant  # bind wraps this stand-in
-    provider._hermes_bind_configured_scope({"scope": CONFIGURED})
-    # SDK Step 3 (401-discovery branch) overwrites the scope immediately before the grant runs.
-    provider.context.client_metadata.scope = SELECTED
-    await provider._perform_authorization_code_grant()
-    assert seen == [CONFIGURED]
+    metadata = _metadata({"scope": CONFIGURED})
+    metadata.scope = SELECTED  # SDK oauth2.py Step 3 / step-up union
+    assert metadata.scope == CONFIGURED
+
+    asm = OAuthMetadata.model_validate({
+        "issuer": "https://as.example", "authorization_endpoint": "https://as.example/authorize",
+        "token_endpoint": "https://as.example/token", "registration_endpoint": "https://as.example/register"})
+    request = create_client_registration_request(asm, metadata, "https://as.example")
+    assert json.loads(request.content)["scope"] == CONFIGURED
+    metadata.client_name = "renamed"  # every other field stays writable
+    assert metadata.client_name == "renamed"
 
 
 def test_unset_scope_leaves_sdk_selection_untouched():
-    from tools.mcp_oauth_manager import HermesMCPOAuthProvider
-
-    provider = HermesMCPOAuthProvider(
-        server_url="https://mcp.example/mcp", server_name="s",
-        client_metadata=MagicMock(), storage=MagicMock(),
-        redirect_handler=MagicMock(), callback_handler=MagicMock())
-    provider._hermes_bind_configured_scope({})
-    assert provider._hermes_configured_scope == ""
-    assert not getattr(provider, "_hermes_scope_pin_installed", False)
-    provider.context.client_metadata.scope = SELECTED
-    provider._pin_configured_scope()
-    assert provider.context.client_metadata.scope == SELECTED
-
-
-def test_rebind_never_stacks_wrappers():
-    from tools.mcp_oauth_manager import HermesMCPOAuthProvider
-
-    provider = HermesMCPOAuthProvider(
-        server_url="https://mcp.example/mcp", server_name="s",
-        client_metadata=MagicMock(), storage=MagicMock(),
-        redirect_handler=MagicMock(), callback_handler=MagicMock())
-    provider._hermes_bind_configured_scope({"scope": CONFIGURED})
-    first = provider._perform_authorization_code_grant
-    provider._hermes_bind_configured_scope({"scope": "other scope"})
-    assert provider._perform_authorization_code_grant is first
-    assert provider._hermes_configured_scope == "other scope"  # value refreshes, wrapper does not stack
-
-
-def test_pin_survives_a_refusing_metadata_object():
-    """A metadata model that rejects the write must degrade to SDK selection, not break auth."""
-    from tools.mcp_oauth_manager import HermesMCPOAuthProvider
-
-    provider = HermesMCPOAuthProvider(
-        server_url="https://mcp.example/mcp", server_name="s",
-        client_metadata=MagicMock(), storage=MagicMock(),
-        redirect_handler=MagicMock(), callback_handler=MagicMock())
-    provider._hermes_bind_configured_scope({"scope": CONFIGURED})
-
-    class _Frozen:
-        scope = SELECTED
-
-        def __setattr__(self, name, value):
-            raise TypeError("frozen")
-
-    provider.context.client_metadata = _Frozen()
-    provider._pin_configured_scope()  # must not raise
-    assert provider.context.client_metadata.scope == SELECTED
+    metadata = _metadata({})
+    metadata.scope = SELECTED
+    assert metadata.scope == SELECTED

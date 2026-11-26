@@ -1177,12 +1177,41 @@ def apply_oauth_provider_defaults(cfg: dict, *, server_name: str = "", server_ur
     return cfg
 
 
+_PINNED_SCOPE_CLASSES: dict[Any, Any] = {}
+
+
+def _pinned_scope_metadata_cls(base: Any) -> Any:
+    """``base`` (the SDK's ``OAuthClientMetadata``) with a ``scope`` that later writes cannot change.
+
+    A configured ``oauth.scope`` is authoritative (#142477): the SDK's 401 branch reassigns
+    ``client_metadata.scope`` from server metadata (WWW-Authenticate hint, else PRM, else the AS-wide
+    ``scopes_supported``, plus ``offline_access``) before dynamic client registration, the
+    authorization URL and step-up all read it. Refusing the write at the one object every path
+    reads covers all of them."""
+    cls = _PINNED_SCOPE_CLASSES.get(base)
+    if cls is None:
+        class _ConfiguredScopeClientMetadata(base):  # type: ignore[misc, valid-type]
+            def __setattr__(self, name: str, value: Any) -> None:
+                if name == "scope":
+                    if value != self.scope:
+                        logger.info("MCP OAuth: keeping the configured oauth.scope %r over the server-selected %r",
+                                    self.scope, value)
+                    return
+                super().__setattr__(name, value)
+
+        cls = _PINNED_SCOPE_CLASSES[base] = _ConfiguredScopeClientMetadata
+    return cls
+
+
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
-    """Build OAuthClientMetadata; requires ``_configure_callback_port`` first."""
+    """Build OAuthClientMetadata; requires ``_configure_callback_port`` first. A set ``oauth.scope``
+    is pinned (see :func:`_pinned_scope_metadata_cls`); unset leaves the SDK's selection alone."""
     port = cfg.get("_resolved_port")
     if port is None:
         raise ValueError("_configure_callback_port() must be called before _build_client_metadata()")
     metadata_cls = _sdk_class("OAuthClientMetadata")
+    if cfg.get("scope"):
+        metadata_cls = _pinned_scope_metadata_cls(metadata_cls)
     # Public client by default; confidential only with a known secret or a provider (Figma) needing confidential-style token posts.
     auth_method = cfg.get("token_endpoint_auth_method") or ("client_secret_post" if cfg.get("client_secret") else "none")
     metadata_kwargs: dict[str, Any] = {

@@ -495,14 +495,17 @@
 
 /* ── Zone tab strips ──────────────────────────────────────────────────────────────────────── */
 
-/* A window-top zone's tabs ride its band on the canvas, as Figma's header tab pills
-   (906:19481): 13px labels in r3 pills, the open tab on a 5% ink fill and the one brand rule below. */
+/* A window-top zone's tabs ride its band as distinct chrome pills matching the session pill and
+   band controls (16292:15285, 16292:15297): each tab sits on --portal-surface-chrome with a
+   hairline rim so inactive tabs read as real clickable tabs over the artwork rather than floating
+   text; the active tab steps up to --portal-surface-chrome-pressed with a stronger border and the
+   brand-ink rule tying it to the pane below. */
 :root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header] [data-zone-tabstrip] {
   --pane-tab-strip-bg: transparent;
   --pane-tab-active-bg: transparent;
   align-items: center;
   gap: 0.25rem;
-  padding-inline: 0.625rem;
+  padding-inline: 0.5rem;
   background-color: transparent;
 }
 
@@ -511,13 +514,38 @@
   gap: 0.25rem;
 }
 
+/* Feather overflowing tab edges smoothly into the scroll buttons instead of hard-clipping text. */
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tablist'][data-overflow-left='true']:not([data-overflow-right='true']) {
+  mask-image: linear-gradient(to right, transparent, var(--portal-raw-black) 1.25rem);
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tablist'][data-overflow-right='true']:not([data-overflow-left='true']) {
+  mask-image: linear-gradient(to left, transparent, var(--portal-raw-black) 1.25rem);
+}
+
+:root[data-shell='portal'] [data-zone-tabstrip] [role='tablist'][data-overflow-left='true'][data-overflow-right='true'] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--portal-raw-black) 1.25rem,
+    var(--portal-raw-black) calc(100% - 1.25rem),
+    transparent
+  );
+}
+
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'] {
-  block-size: 1.5rem;
-  border-width: 0;
-  border-radius: var(--portal-radius-control);
+  block-size: 1.625rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-chrome);
   box-shadow: none;
+  color: var(--portal-text-secondary);
   font-size: var(--portal-type-ui-size);
   font-weight: 400;
+}
+
+:root[data-shell='portal'] [data-tree-group][data-window-top] > [data-panel-header] [data-zone-tabstrip] [role='tab'] {
+  block-size: var(--portal-row-chrome);
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'] :is(span, button) {
@@ -526,26 +554,45 @@
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab']:hover {
-  background-color: var(--portal-surface-row-hover);
+  border-color: var(--portal-stroke-control);
+  background-color: var(--portal-surface-chrome-hover);
+  box-shadow: none;
+  color: var(--portal-text-primary);
 }
 
 :root[data-shell='portal'] [data-zone-tabstrip] [role='tab'][data-active='true'] {
-  background-color: var(--portal-surface-selected);
+  border-color: var(--portal-stroke-control);
+  background-color: var(--portal-surface-chrome-pressed);
+  box-shadow: inset 0 -2px 0 var(--portal-brand-ink);
+  color: var(--portal-text-primary);
+  font-weight: 500;
 }
 
-/* A 5% fill alone could not tie the open tab to the session the stage holds: with a strip of chats
-   the band's pills read alike. The primitive already draws that tie — a rule in the open tab's own
-   last pixel row, costing no layout (pane-tab.tsx, TAB_ACTIVE_UNDERLINE) — and the band's pill rules
-   above zero it; it comes back here in brand ink, on the open conversation tab alone, the panes the
-   session strips hold (workspace, session-tile:…), never on a side pane's tab. */
+/* Overflow scroll buttons wear the same chrome tile family as the tabs they flank. */
+:root[data-shell='portal'] [data-zone-tabstrip] :is([data-slot='pane-tab-scroll-left'], [data-slot='pane-tab-scroll-right']) {
+  inline-size: 1.5rem;
+  block-size: 1.625rem;
+  border: 1px solid var(--portal-stroke-hairline);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-chrome);
+  color: var(--portal-text-secondary);
+}
+
 :root[data-shell='portal']
-  [data-tree-group][data-window-top]:is([data-zone-pane='workspace'], [data-zone-pane^='session-tile'])
+  [data-tree-group][data-window-top]
   > [data-panel-header]
   [data-zone-tabstrip]
-  [role='tab'][data-active='true'] {
-  box-shadow: inset 0 -2px 0 var(--portal-brand-ink);
+  :is([data-slot='pane-tab-scroll-left'], [data-slot='pane-tab-scroll-right']) {
+  block-size: var(--portal-row-chrome);
 }
 
+:root[data-shell='portal']
+  [data-zone-tabstrip]
+  :is([data-slot='pane-tab-scroll-left'], [data-slot='pane-tab-scroll-right']):hover {
+  border-color: var(--portal-stroke-control);
+  background-color: var(--portal-surface-chrome-hover);
+  color: var(--portal-text-primary);
+}
 /* The one ring in brand ink, not the legacy accent outline the primitive carries (--ui-accent, which
    the redesign never repaints). The strip's tab list scrolls (overflow-x: auto), whose clip an outset
    ring does not survive, so the ring sits inside the pill, as a page tab's does. */

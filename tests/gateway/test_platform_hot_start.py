@@ -143,11 +143,50 @@ def test_named_profile_restart_with_the_same_token_comes_back_up_live(tmp_path):
         stop(proc, expect=None)
 
 
-def _runner(adapter):
-    """Just the state the retire path reads; the retire logic under test is the real mixin's."""
-    from gateway.run_platform_reconcile import GatewayPlatformReconcileMixin
+@pytest.mark.platforms("linux")
+@pytest.mark.spawns_gateway_lookalike
+def test_a_named_profile_rescan_leaves_its_restart_for_the_next_answer(tmp_path):
+    """``rescan-profiles`` applies a named profile's new secret (restarts its adapter); the next
+    ``reconcile-platforms`` for it reports that restart, and the one after reports nothing new."""
+    user, root = tmp_path / "user", tmp_path / "state"
+    user.mkdir()
+    root.mkdir(mode=0o700)
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+    named = root / "profiles" / "b"
+    named.mkdir(parents=True, mode=0o700)
+    (named / "config.yaml").write_text("platforms:\n  line:\n    token: same-token\n", encoding="utf-8")
+    dotenv = named / ".env"
+    dotenv.write_text("LINE_CHANNEL_ACCESS_TOKEN=same-token\nLINE_CHANNEL_SECRET=first\n", encoding="utf-8")
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
+    closed = _closed_port()
+    env.update(HOME=str(user), HERMES_HOME=str(root), PYTHONPATH=str(Path(__file__).resolve().parents[2]),
+               PYTHONUNBUFFERED="1", HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"), HTTPS_PROXY=closed,
+               HTTP_PROXY=closed, https_proxy=closed, http_proxy=closed, NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
+    mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
+    proc, _desc = start_daemon(mux)
+    try:
+        first = _reconcile(root, {"home": str(named)})
+        assert first["platforms"].get("line") == "connected", (first, tail(mux))
+        dotenv.write_text("LINE_CHANNEL_ACCESS_TOKEN=same-token\nLINE_CHANNEL_SECRET=second\n", encoding="utf-8")
+        scan = control(root, "rescan-profiles", timeout=30)
+        # A loaded host outlasts the rescan's 5 s window: it answers ``pending`` and applies on; either
+        # way the restart is the next answer's.
+        assert scan.get("pending") is True or "b" in scan["rescanned"], (scan, tail(mux))
+        answer = _reconcile(root, {"home": str(named)})
+        assert answer["restarted"] == ["line"] and answer["changed"] is True, (answer, tail(mux))
+        assert answer["platforms"]["line"] == "connected", (answer, tail(mux))
+        again = _reconcile(root, {"home": str(named)})
+        assert again["restarted"] == [] and again["changed"] is False, (again, tail(mux))
+    finally:
+        stop(proc, expect=None)
 
-    class _Runner(_RunnerState, GatewayPlatformReconcileMixin):
+
+def _runner(adapter):
+    """Just the state the retire path reads; the retire logic under test is the real mixin's (the
+    named-profile reconcile included: it is the platform reconcile's subclass)."""
+    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+
+    class _Runner(_RunnerState, GatewayProfileReconcileMixin):
         pass
 
     return _Runner(adapter)
@@ -344,17 +383,22 @@ class _FileDrivenPrimary:
     """A launch profile whose files drive the REAL reconcile (plan, signatures, the verb): ``.env`` line
     ``START_<platform>=1`` wants that platform, ``INSTALL_<name>=1`` makes the plugin recovery install
     ``name`` and write its marker to ``config.yaml`` (as the catalog recovery does). The adapter build is a
-    stand-in that records what was really started and lets a test hold an apply mid-way."""
+    stand-in that records what was really started and lets a test hold an apply mid-way.
 
-    def __init__(self, home, loop, rng=None):
+    With ``monkeypatch``, a multiplexed named profile ``b`` is served beside it, its files driving the
+    REAL named-profile paths (profile watcher tick, ``rescan-profiles``, a plugin-load trigger, the verb):
+    the same ``START_``/``INSTALL_`` lines, plus ``SECRET=<v>`` (a new value restarts what runs)."""
+
+    def __init__(self, home, loop, rng=None, monkeypatch=None):
         import threading
         from gateway import run_platform_reconcile as reconcile
         self.home, self.loop, self.rng = home, loop, rng
         self.started, self.installed = [], []
+        self.named_started, self.named_installed, self.named_restarted = [], [], []
         self.release = threading.Event()
         self.release.set()
         self.mid_apply = None  # called (off-loop) while an apply is building its adapters
-        self.states = {}
+        self.states, self.named_states = {}, {}
         runner = self.runner = _runner(types.SimpleNamespace())
         runner.adapters, runner.config = {}, types.SimpleNamespace(platforms={})
         runner._primary_platform_home = lambda: home
@@ -366,26 +410,54 @@ class _FileDrivenPrimary:
         runner._hot_start_primary_platforms = self._hot_start
         (home / "config.yaml").write_text("platforms: {}\n", encoding="utf-8")
         (home / ".env").write_text("", encoding="utf-8")
+        if monkeypatch is not None:
+            self._serve_named(monkeypatch)
         asyncio.run_coroutine_threadsafe(runner._note_boot_platform_signature(), loop).result(30)
         self.ask = reconcile.reconcile_platforms_verb(runner, loop)
 
-    def edit(self, line):  # whole-file replace, as config writers do: a racing read sees before or after
-        self._append(".env", [line])
+    def _serve_named(self, monkeypatch):
+        self.named = self.home / "profiles" / "b"
+        self.named.mkdir(parents=True)
+        (self.named / "config.yaml").write_text("platforms: {}\n", encoding="utf-8")
+        (self.named / ".env").write_text("", encoding="utf-8")
+        self.named_built = {}
+        runner, homes = self.runner, [("default", self.home), ("b", self.named)]
+        monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: list(homes))
+        runner._primary_profile_name = "default"
+        runner._multiplex_on = lambda: True
+        runner._profile_adapters, runner._profile_failed_platforms = {"b": {}}, {}
+        runner._parked_profile_names = list
+        runner._drop_stale_platform_verdicts = lambda name: None
+        runner._live_resource_claims = lambda active: {}
+        runner._record_served_profiles = lambda active, items: runner._note_served_profiles(items)
+        runner._secondary_platform_states = lambda name: dict(self.named_states)
+        runner._start_one_profile_adapters = self._start_named
+        runner._note_served_profiles(homes)
 
-    def _append(self, name, lines):
-        path, staged = self.home / name, self.home / f".{name}.new"
+    def edit(self, line, profile=None):  # whole-file replace, as config writers do: a racing read sees before or after
+        self._append(".env", [line], profile)
+
+    def _dir(self, profile):
+        return self.named if profile == "b" else self.home
+
+    def _append(self, name, lines, profile=None):
+        path, staged = self._dir(profile) / name, self._dir(profile) / f".{name}.new"
         staged.write_text(path.read_text(encoding="utf-8") + "".join(f"{ln}\n" for ln in lines), encoding="utf-8")
         os.replace(staged, path)
 
-    def _lines(self, name, prefix):
-        text = (self.home / name).read_text(encoding="utf-8")
+    def _lines(self, name, prefix, profile=None):
+        text = (self._dir(profile) / name).read_text(encoding="utf-8")
         return [ln.split("=")[0][len(prefix):] for ln in text.splitlines() if ln.startswith(prefix)]
 
-    def _recover(self, home):
-        done = set(self._lines("config.yaml", "# installed "))
-        new = [n for n in self._lines(".env", "INSTALL_") if n not in done]
+    def _new_installs(self, profile=None):
+        done = set(self._lines("config.yaml", "# installed ", profile))
+        new = [n for n in self._lines(".env", "INSTALL_", profile) if n not in done]
         if new:
-            self._append("config.yaml", [f"# installed {n}" for n in new])
+            self._append("config.yaml", [f"# installed {n}" for n in new], profile)
+        return new
+
+    def _recover(self, home):
+        new = self._new_installs()
         self.installed += new
         return new
 
@@ -398,26 +470,67 @@ class _FileDrivenPrimary:
     async def _retire(self, platform):
         self.runner.adapters.pop(platform, None)
 
-    async def _hot_start(self, items):
+    async def _interleave(self):
         await asyncio.to_thread(self.release.wait, 60)
         if self.mid_apply is not None:
             await asyncio.to_thread(self.mid_apply)
         for _ in range(self.rng.randrange(8) if self.rng is not None else 0):
             await asyncio.sleep(0)  # let the racing reconciles and asks interleave differently per seed
+
+    async def _hot_start(self, items):
+        await self._interleave()
         for platform, _config, build_print in items:
             self.runner._primary_build_prints[platform] = build_print
             self.runner.adapters[platform] = object()
             self.states[platform.value] = "retrying"
             self.started.append(platform.value)
 
+    async def _start_named(self, name, home, claimed):
+        """Stand-in for the named profile's adapter build (its recovery, retire, rebuild), keeping the
+        contract the real one keeps: the recovery's installs are noted, the plan is published."""
+        from gateway.run_platform_reconcile import BuildPrint, plan_platform_changes
+        runner, live = self.runner, self.runner._profile_adapters.setdefault(name, {})
+        installed = self._new_installs("b")
+        if installed:
+            runner._note_profile_installs(name, installed)
+            self.named_installed += installed
+        text = (self.named / ".env").read_text(encoding="utf-8")
+        secret = ([ln for ln in text.splitlines() if ln.startswith("SECRET=")] or [""])[-1]
+        wanted = {Platform(v.lower()): BuildPrint("v1", secret) for v in self._lines(".env", "START_", "b")}
+        plan = plan_platform_changes(wanted, self.named_built, set(live))
+        runner._profile_platform_plans = getattr(runner, "_profile_platform_plans", None) or {}
+        runner._profile_platform_plans[name] = plan
+        for platform in (*plan.stop, *plan.restart):
+            live.pop(platform, None)
+            self.named_built.pop(platform, None)
+            self.named_states.pop(platform.value, None)
+        await self._interleave()
+        for platform in (*plan.restart, *plan.start):
+            live[platform], self.named_built[platform] = object(), wanted[platform]
+            self.named_states[platform.value] = "connected"
+            (self.named_restarted if platform in plan.restart else self.named_started).append(platform.value)
+        return len(live)
+
     def background(self, reason):  # a plugin-load trigger, or a watcher tick
         coro = (self.runner._reconcile_primary_platforms_if_changed(reason) if reason == "watcher"
                 else self.runner.reconcile_profile_platforms(None, reason=reason))
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    def settled_ask(self):
+    def named_background(self, op):
+        """The named profile's paths: the profile watcher's tick, ``rescan-profiles``, a plugin load."""
+        coro = {"scan_b": lambda: self.runner.reconcile_served_profiles(reason="watcher"),
+                "rescan_b": lambda: self.runner.reconcile_served_profiles(reason="control-socket"),
+                "plugin_b": lambda: self.runner.reconcile_profile_platforms("b", reason="plugin-loaded")}[op]()
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def ask_named(self):
+        return self.ask({"home": str(self.named)})
+
+    def settled_ask(self, ask=None):
+        ask = ask or (lambda: self.ask({}))
+
         def _settled():
-            answer = self.ask({})
+            answer = ask()
             return None if answer.get("pending") else answer
         return wait_until(_settled, timeout=60, interval=0.05, what="the ask to settle")
 
@@ -435,10 +548,18 @@ def reconcile_loop():
 
 
 def _assert_reported_once(gw, answers):
-    """Every platform a reconcile really started, and every plugin it installed, is in exactly one answer."""
-    for key, applied in (("started", gw.started), ("installed", gw.installed)):
-        reported = [item for answer in answers for item in answer[key]]
-        assert sorted(reported) == sorted(applied), (key, answers)
+    """Every platform a reconcile really started, and every plugin it installed, is in exactly one answer
+    for its profile; every restart is reported, never more often than it happened."""
+    applied = {"default": {"started": gw.started, "installed": gw.installed},
+               "b": {"started": gw.named_started, "installed": gw.named_installed}}
+    for profile, lists in applied.items():
+        mine = [answer for answer in answers if answer["profile"] == profile]
+        for key, done in lists.items():
+            reported = [item for answer in mine for item in answer[key]]
+            assert sorted(reported) == sorted(done), (profile, key, answers)
+    restarted = [item for answer in answers if answer["profile"] == "b" for item in answer["restarted"]]
+    assert set(restarted) == set(gw.named_restarted), answers
+    assert all(restarted.count(p) <= gw.named_restarted.count(p) for p in restarted), answers
 
 
 _FRESH = [p.value.upper() for p in (Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WEBHOOK,
@@ -516,6 +637,182 @@ def test_racing_reconciles_report_each_change_to_exactly_one_ask(tmp_path, monke
     answers.append(gw.settled_ask())
     _assert_reported_once(gw, answers)
     assert gw.settled_ask()["started"] == []  # taken: asked again about the same files, nothing is new
+
+
+_NAMED_FRESH = [p.value.upper() for p in (Platform.FEISHU, Platform.DINGTALK, Platform.WECOM, Platform.BLUEBUBBLES,
+                                          Platform.QQBOT, Platform.WHATSAPP)]
+
+
+def _named_steps(gw, monkeypatch, answers, running, fresh):
+    """The named profile's ops, beside the launch profile's: edits, a plugin it installs, a new secret,
+    and every path that applies it (watcher tick, ``rescan-profiles``, a plugin load, an ask, a pending ask)."""
+    from gateway import run_platform_reconcile as reconcile
+    secrets = iter(range(1000))
+
+    def pending_b():
+        gw.release.clear()
+        monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 0.2)
+        assert gw.ask_named()["pending"] is True
+        monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 30.0)
+    return {
+        "edit_b": lambda: gw.edit(f"START_{next(fresh, 'WEIXIN')}=1", "b"),
+        "install_b": lambda: (gw.edit(f"INSTALL_b{len(gw.named_installed)}x{next(secrets)}=1", "b"),
+                              gw.edit(f"START_{next(fresh, 'WEIXIN')}=1", "b")),
+        "secret_b": lambda: gw.edit(f"SECRET={next(secrets)}", "b"),
+        "scan_b": lambda: gw.named_background("scan_b").result(60),
+        "rescan_b": lambda: gw.named_background("rescan_b").result(60),
+        "plugin_b": lambda: gw.named_background("plugin_b").result(60),
+        "plugin_b&": lambda: running.append(gw.named_background("plugin_b")),
+        "rescan_b&": lambda: running.append(gw.named_background("rescan_b")),
+        "ask_b": lambda: answers.append(gw.settled_ask(gw.ask_named)),
+        "pending_b": pending_b,
+    }
+
+
+def _settle_both(gw, answers, running):
+    for future in running:
+        future.result(60)
+    gw.background("watcher").result(60)
+    gw.named_background("scan_b").result(60)
+    answers.append(gw.settled_ask())
+    answers.append(gw.settled_ask(gw.ask_named))
+
+
+@pytest.mark.parametrize("script", [
+    # The reviewer's case: a rescan applies the new secret; the next ask reports the restart, once.
+    "edit_b ask_b secret_b rescan_b ask_b ask_b",
+    "edit_b scan_b secret_b scan_b ask_b",
+    "install_b rescan_b plugin_b ask_b",
+    "edit_b pending_b secret_b release rescan_b ask_b",
+    "edit_b plugin_b& secret_b rescan_b& release ask_b",
+    # Both profiles at once: each answer carries only its own profile's changes.
+    "edit edit_b plugin rescan_b ask ask_b",
+    "install install_b pending release rescan_b watcher ask_b ask",
+])
+def test_every_named_profile_change_is_reported_to_exactly_one_ask(tmp_path, monkeypatch, reconcile_loop, script):
+    gw, answers, running = _FileDrivenPrimary(tmp_path, reconcile_loop, monkeypatch=monkeypatch), [], []
+    fresh, named_fresh = iter(_FRESH), iter(_NAMED_FRESH)
+    steps = _named_steps(gw, monkeypatch, answers, running, named_fresh)
+    steps.update({
+        "edit": lambda: gw.edit(f"START_{next(fresh)}=1"),
+        "install": lambda: (gw.edit(f"INSTALL_{len(gw.installed)}x=1"), gw.edit(f"START_{next(fresh)}=1")),
+        "plugin": lambda: gw.background("plugin").result(60),
+        "watcher": lambda: gw.background("watcher").result(60),
+        "ask": lambda: answers.append(gw.settled_ask()),
+        "release": gw.release.set,
+    })
+    steps["pending"] = lambda: (gw.release.clear(), monkeypatch.setattr(
+        "gateway.run_platform_reconcile._VERB_WAIT_SECS", 0.2), answers.append(gw.ask({})),
+        monkeypatch.setattr("gateway.run_platform_reconcile._VERB_WAIT_SECS", 30.0))
+    for step in script.split():
+        steps[step]()
+    answers[:] = [answer for answer in answers if not answer.get("pending")]
+    _settle_both(gw, answers, running)
+    _assert_reported_once(gw, answers)
+    if script.startswith("edit_b ask_b secret_b rescan_b"):  # the restart the rescan applied, in the next answer
+        assert [answer["restarted"] for answer in answers[:3]] == [[], ["feishu"], []], answers
+    assert {p.value for p in gw.runner._profile_adapters["b"]} == {
+        n.lower() for n in gw._lines(".env", "START_", "b")} == set(gw.named_started)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_racing_named_and_launch_reconciles_report_each_change_once(tmp_path, monkeypatch, reconcile_loop, seed):
+    """Both profiles' triggers, rescans, watcher ticks and asks (some giving up as ``pending``), in any order."""
+    import random
+    from gateway import run_platform_reconcile as reconcile
+    rng = random.Random(seed)
+    gw = _FileDrivenPrimary(tmp_path, reconcile_loop, rng, monkeypatch=monkeypatch)
+    answers, running, fresh, named_fresh, secrets = [], [], iter(_FRESH), iter(_NAMED_FRESH), iter(range(100))
+    def ask(op):
+        monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 0.005 if op == "pending_b" else 30.0)
+        answer = gw.ask({}) if op == "ask" else gw.ask_named()
+        if not answer.get("pending"):
+            answers.append(answer)
+    ops = {
+        "edit": lambda step: gw.edit(f"START_{next(fresh, 'SMS')}=1"),
+        "edit_b": lambda step: gw.edit(f"START_{next(named_fresh, 'WEIXIN')}=1", "b"),
+        "install_b": lambda step: gw.edit(f"INSTALL_{seed}b{step}=1", "b"),
+        "secret_b": lambda step: gw.edit(f"SECRET={next(secrets)}", "b"),
+        "plugin": lambda step: running.append(gw.background("plugin")),
+        **{op: (lambda step, op=op: running.append(gw.named_background(op))) for op in ("scan_b", "rescan_b", "plugin_b")},
+        **{op: (lambda step, op=op: ask(op)) for op in ("ask", "ask_b", "pending_b")},
+    }
+    for step in range(16):
+        ops[rng.choice(sorted(ops))](step)
+    monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 30.0)
+    _settle_both(gw, answers, running)
+    _assert_reported_once(gw, answers)
+    again = gw.settled_ask(gw.ask_named)
+    assert again["started"] == again["restarted"] == again["installed"] == []  # taken: nothing is new
+
+
+def test_a_drained_change_comes_with_the_state_after_it(tmp_path, reconcile_loop):
+    """A reconcile finishing between an ask's own apply and its drain: the answer reports its start with
+    the state that reconcile left (``retrying``), not the older snapshot the ask's own apply read."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    gw = _FileDrivenPrimary(tmp_path, reconcile_loop)
+    ledger = gw.runner.platform_change_ledger
+    at_drain, release, drain = threading.Event(), threading.Event(), ledger.drain
+
+    def drain_once_released(profile):
+        at_drain.set()
+        assert release.wait(30)
+        return drain(profile)
+
+    ledger.drain = drain_once_released
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(gw.ask, {})
+        try:
+            assert at_drain.wait(30)
+            gw.edit("START_WEBHOOK=1")
+            applied = gw.background("plugin").result(30)
+        finally:
+            release.set()
+        answer = future.result(30)
+    assert applied["started"] == ["webhook"], applied
+    assert answer["started"] == ["webhook"] and answer["platforms"] == {"webhook": "retrying"}, answer
+
+
+def test_an_answer_returns_inside_the_callers_wait_and_a_pending_one_takes_nothing(
+        tmp_path, monkeypatch, reconcile_loop):
+    """Caller to socket: a reconcile holding the lock past the verb window answers ``pending`` over the real
+    control socket inside the caller's wait (the answer never waits on that reconcile again), and drains
+    nothing: the next ask reports the held reconcile's start and the ask's own, once."""
+    import time
+    from gateway import run_platform_reconcile as reconcile
+    from gateway.control_socket import GatewayControlServer, query_gateway_control
+    monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 0.5)
+    gw = _FileDrivenPrimary(tmp_path, reconcile_loop)
+    sock_home = tmp_path / "sock"
+    sock_home.mkdir(mode=0o700)
+    server = GatewayControlServer(sock_home, verb_handlers={"reconcile-platforms": gw.ask})
+    assert asyncio.run_coroutine_threadsafe(server.start(), reconcile_loop).result(30)
+    caller_wait = 5.0  # production: 15 s against a 10 s window; the same margin, scaled
+    try:
+        gw.release.clear()
+        gw.edit("START_WEBHOOK=1")
+        held = gw.background("plugin")  # holds the reconcile lock until released
+        gw.edit("START_SLACK=1")
+        began = time.monotonic()
+        answer = query_gateway_control(sock_home, "reconcile-platforms", timeout=caller_wait)
+        elapsed = time.monotonic() - began
+        assert answer is not None and answer.get("pending") is True, answer
+        assert elapsed < caller_wait, elapsed
+        gw.release.set()
+        held.result(30)
+
+        def settled():
+            reply = query_gateway_control(sock_home, "reconcile-platforms", timeout=caller_wait)
+            assert reply is not None, "an answer missed the caller's wait"
+            return None if reply.get("pending") else reply
+        reported = []
+        for _ in range(2):
+            reported += wait_until(settled, timeout=60, interval=0.05, what="a settled answer")["started"]
+        assert sorted(reported) == ["slack", "webhook"] == sorted(gw.started), reported
+    finally:
+        gw.release.set()
+        asyncio.run_coroutine_threadsafe(server.stop(), reconcile_loop).result(30)
 
 
 def test_an_answer_reports_the_platform_state_as_it_is_now(tmp_path, reconcile_loop):

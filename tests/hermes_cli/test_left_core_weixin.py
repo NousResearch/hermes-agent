@@ -165,3 +165,16 @@ def test_child_processes_keep_every_weixin_setting_core_stripped():
         "WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID", "WEIXIN_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS", "WEIXIN_BASE_URL",
         "WEIXIN_CDN_BASE_URL", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_GROUP_POLICY",
         "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_SPLIT_MULTILINE_MESSAGES"}
+
+
+def test_a_weixin_the_default_installer_placed_and_the_user_removed_stays_removed(tmp_path):
+    """weixin is a ``default: true`` plugin, so ``hermes update``'s default installer can place it before the
+    first start's migration runs; one the user then removed is not installed again by either installer."""
+    from hermes_cli import default_plugins
+    home = _home(tmp_path, env=_CREDS, config="_default_plugins_installed: [weixin]\n")
+    install, calls = _install(home)
+    said: list[str] = []
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert calls == [] and said == []
+    (home / "config.yaml").write_text("_left_core_installed: [weixin]\n", encoding="utf-8")
+    assert "weixin" in default_plugins._recorded(home)

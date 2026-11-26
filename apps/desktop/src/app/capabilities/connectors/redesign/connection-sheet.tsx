@@ -2,6 +2,7 @@ import './connections.css'
 
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -277,13 +278,13 @@ export function ConnectionSheet({
     />
   ) : null
 
-  return (
+  return createPortal(
     <>
-      <div className="conn-sheet-backdrop fixed inset-0 z-[var(--portal-layer-sheet-scrim)]" onClick={onClose} />
+      <div className="conn-sheet-backdrop fixed inset-0" onClick={onClose} />
       <div
         aria-label={card.name}
         aria-modal="true"
-        className="conn-sheet fixed inset-y-0 right-0 z-[var(--portal-layer-sheet)] flex w-full max-w-[40rem] flex-col outline-none"
+        className="conn-sheet fixed inset-y-0 right-0 flex w-full max-w-[40rem] flex-col outline-none"
         data-slot="connection-sheet"
         ref={sheet}
         role="dialog"
@@ -356,6 +357,7 @@ export function ConnectionSheet({
           />
         ) : null}
       </div>
-    </>
+    </>,
+    document.body
   )
 }

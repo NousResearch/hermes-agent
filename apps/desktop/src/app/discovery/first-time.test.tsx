@@ -7,7 +7,7 @@ import { $artifactRegistry, upsertArtifact } from '@/store/artifacts'
 import { $cronJobs } from '@/store/cron'
 import { bindDesktopMetrics, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
 import { $developerViewOfferOpen } from '@/store/developer-view-offer'
-import { $firstTimeSplash } from '@/store/first-time-splash'
+import { $firstTimeSplash, $firstTimeSplashPlace } from '@/store/first-time-splash'
 import { $guidanceLedger } from '@/store/guidance-ledger'
 import { holdPrompt, takeHeldPrompt } from '@/store/held-prompt'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
@@ -44,11 +44,24 @@ function renderShell() {
     <ThemeProvider>
       <MemoryRouter>
         <nav data-slot="global-nav">
+          <button data-nav-spot="chat" type="button">
+            Chats
+          </button>
+          <button data-nav-spot="profiles" type="button">
+            Agents
+          </button>
+          <button data-nav-spot="capabilities" type="button">
+            Connections
+          </button>
           <button data-nav-spot="cron" type="button">
             Routines
           </button>
           <NotificationBell />
         </nav>
+        {/* The chat sidebar's agent group: Chats must never light this (Figma 18924:28898). */}
+        <div data-zone-pane="sessions">
+          <div data-slot="agent-group">Quarterly plan</div>
+        </div>
         <main>
           <SplashCoveredRoutes chat={<Route element={<textarea aria-label="Message" />} index />} pages={null} />
         </main>
@@ -67,6 +80,16 @@ function settle(sessions: SessionInfo[]) {
 
 const splash = () => screen.queryByRole('region', { name: copy.splash.title })
 const firstTime = () => window.document.querySelector<HTMLElement>('[data-splash="first-time"]')
+const spotlight = () => window.document.querySelector<HTMLElement>('[data-slot="nav-spotlight"]')
+
+type Place = keyof typeof copy.splash.lines
+
+/** The row whose accessible name carries the place's line and example: both always show, together. */
+function placeRow(place: Place) {
+  const { example, line } = copy.splash.lines[place]
+
+  return screen.getByRole('button', { name: name => name.includes(line) && name.includes(example) })
+}
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -79,6 +102,7 @@ beforeEach(() => {
   $trayCleared.set([])
   $renameSplash.set(null)
   $firstTimeSplash.set(null)
+  $firstTimeSplashPlace.set(null)
   $newVersionReady.set(false)
   $portalAccent.set('blue')
   $artworkChoice.set(null)
@@ -94,6 +118,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   resetDesktopMetricsForTests()
 })
 
@@ -116,69 +141,173 @@ describe('the first-time splash in the shell', () => {
     expect(screen.getByRole('region', { name: discoveryCopy('en').renameSplash.title })).toBeTruthy()
   })
 
-  it('says each place in one line, and its example, its lit place and its seen check once a row is reached', () => {
+  it('shows all four places with their line and example together, at rest with nothing lit', () => {
     renderShell()
     settle([])
 
-    // Named by the rail's own label for the place, then its line; the example is its description.
-    const routines = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.routines.line}`) })
-    const agents = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.agents.line}`) })
-    const routineRow = () => routines.closest('li')!
-    expect(routineRow().dataset.active).toBeUndefined()
-    // Chats speaks from the start, so the card opens showing a row has more to say.
-    expect(firstTime()?.dataset.place).toBe('chats')
+    const list = screen.getByRole('list', { name: copy.splash.listLabel })
+    expect(within(list).getAllByRole('button')).toHaveLength(4)
+    // The card opens on 18695:17147 with no row lit and nothing in the nav.
+    expect($firstTimeSplashPlace.get()).toBeNull()
+    expect(firstTime()?.dataset.place).toBeUndefined()
+    expect(list.querySelectorAll('[data-active]')).toHaveLength(0)
+    expect(spotlight()).toBeNull()
+    expect(window.document.querySelectorAll('[data-splash-highlight]')).toHaveLength(0)
     expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(0)
+    expect(list.querySelector('.discovery-welcome-seen')).toBeNull()
 
-    // The active row is the one whose example shows (discovery.css swaps it for the line).
-    fireEvent.focus(routines)
-    expect(routineRow().dataset.active).toBe('true')
+    // Every row says its line and its example at once; nothing is swapped in under the pointer.
+    for (const place of ['chats', 'agents', 'connections', 'routines'] as const) {
+      const { example, line } = copy.splash.lines[place]
+      const row = placeRow(place)
+
+      expect(row.textContent).toContain(line)
+      expect(row.textContent).toContain(example)
+      expect(row.getAttribute('aria-label')).toContain(`${line} ${example}`)
+    }
+
+    fireEvent.focus(placeRow('routines'))
+    expect(placeRow('routines').closest('li')?.dataset.active).toBe('true')
+    expect(placeRow('agents').closest('li')?.dataset.active).toBeUndefined()
     expect(firstTime()?.dataset.place).toBe('routines')
-    expect(routines.getAttribute('aria-describedby')).toContain(' ')
-
-    fireEvent.click(agents)
-    expect(routineRow().dataset.active).toBeUndefined()
-    expect(firstTime()?.dataset.place).toBe('agents')
-    // Both rows reached keep their check for the rest of the showing.
-    expect(routines.querySelector('[data-slot="seen-check"]')).not.toBeNull()
-    expect(agents.querySelector('[data-slot="seen-check"]')).not.toBeNull()
-    expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(2)
+    // Reaching a row is reading, not a check: no seen marks remain.
+    expect(window.document.querySelectorAll('[data-slot="seen-check"]')).toHaveLength(0)
   })
 
   // A click leaves focus on the row. Only the keyboard's focus keeps the rest stepped back: a pointer
   // that has left would otherwise find "Make it yours" still greyed.
-  it('steps the rest back under the pointer, and not for focus a click left behind', () => {
+  it('lights one row under the pointer, dims the rest by a fifth, and returns to rest as the pointer leaves', async () => {
     renderShell()
     settle([])
-    const agents = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.agents.line}`) })
-    const list = agents.closest('ul')!
-    const dimmed = () => window.document.querySelector<HTMLElement>('[data-slot="nav-spotlight"]')!.dataset.dim
+    const list = screen.getByRole('list', { name: copy.splash.listLabel })
 
     fireEvent.pointerEnter(list)
-    expect(dimmed()).toBe('true')
+    expect(spotlight()).toBeNull()
 
-    fireEvent.click(agents)
-    fireEvent.focus(agents)
+    fireEvent.pointerEnter(placeRow('chats'), { pointerType: 'mouse' })
+    expect(placeRow('chats').closest('li')?.dataset.active).toBe('true')
+    expect(firstTime()?.dataset.place).toBe('chats')
+    expect(spotlight()?.dataset.dim).toBe('true')
+    expect(spotlight()?.dataset.railHighlight).toBe('true')
+    // No dashed elbow: the rail button's own glow carries the highlight.
+    await vi.waitFor(() =>
+      expect(spotlight()!.querySelector('svg path:not(.discovery-spotlight-veil)')!.getAttribute('d')).toBe('')
+    )
+
+    fireEvent.pointerEnter(placeRow('agents'), { pointerType: 'mouse' })
+    expect(placeRow('chats').closest('li')?.dataset.active).toBeUndefined()
+    expect(placeRow('agents').closest('li')?.dataset.active).toBe('true')
+    expect(firstTime()?.dataset.place).toBe('agents')
+
+    // A click leaves focus on its row; that alone must not hold the rest back after the pointer goes.
+    fireEvent.click(placeRow('agents'))
+    fireEvent.focus(placeRow('agents'))
     fireEvent.pointerLeave(list)
-    expect(dimmed()).toBeUndefined()
+    expect($firstTimeSplashPlace.get()).toBeNull()
+    expect(placeRow('agents').closest('li')?.dataset.active).toBeUndefined()
+    expect(firstTime()?.dataset.place).toBeUndefined()
+    expect(spotlight()).toBeNull()
   })
 
-  it('points at the speaking place from the start, until the splash closes', () => {
+  it('keeps a keyboard-focused row lit when the pointer leaves, and clears it when focus leaves the list', () => {
     renderShell()
     settle([])
-    const routines = screen.getByRole('button', { name: name => name.endsWith(`: ${copy.splash.lines.routines.line}`) })
-    const spotlight = () => window.document.querySelector('[data-slot="nav-spotlight"]')
+    const list = screen.getByRole('list', { name: copy.splash.listLabel })
+    const connections = placeRow('connections')
+    // jsdom never reports :focus-visible, so say this focus arrived by keyboard.
+    const native = Element.prototype.matches
+    const matches = vi
+      .spyOn(Element.prototype, 'matches')
+      .mockImplementation(function (this: Element, selector: string) {
+        return selector === ':focus-visible' ? this === connections : native.call(this, selector)
+      })
 
-    // Chats speaks as the card opens, and is pointed at before anything is hovered.
-    expect(firstTime()?.dataset.place).toBe('chats')
-    expect(spotlight()).not.toBeNull()
+    fireEvent.focus(connections)
+    expect(spotlight()?.dataset.dim).toBe('true')
+    fireEvent.pointerEnter(list)
+    fireEvent.pointerEnter(connections, { pointerType: 'mouse' })
+    expect(connections.closest('li')?.dataset.active).toBe('true')
 
-    fireEvent.focus(routines)
-    fireEvent.blur(routines, { relatedTarget: window.document.body })
-    expect(firstTime()?.dataset.place).toBe('routines')
-    expect(spotlight()).not.toBeNull()
+    fireEvent.pointerLeave(list)
+    expect(connections.closest('li')?.dataset.active).toBe('true')
+    // The keyboard still holds the row, so the rest stays stepped back around it.
+    expect(spotlight()?.dataset.dim).toBe('true')
 
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.blur(connections, { relatedTarget: window.document.body })
+    expect($firstTimeSplashPlace.get()).toBeNull()
+    expect(connections.closest('li')?.dataset.active).toBeUndefined()
     expect(spotlight()).toBeNull()
+    matches.mockRestore()
+  })
+
+  it('points Chats at its rail button alone, never the sidebar’s agent group, and Connections at Capabilities', async () => {
+    renderShell()
+    settle([])
+    const rail = (area: string) => window.document.querySelector<HTMLElement>(`[data-nav-spot="${area}"]`)!
+    const chat = rail('chat')
+    const capabilities = rail('capabilities')
+    const agentGroup = window.document.querySelector<HTMLElement>('[data-slot="agent-group"]')!
+    const box = (left: number) =>
+      ({
+        left,
+        top: 100,
+        right: left + 40,
+        bottom: 132,
+        width: 40,
+        height: 32,
+        x: left,
+        y: 100,
+        toJSON: () => ({})
+      }) as DOMRect
+    chat.getBoundingClientRect = () => box(10)
+    capabilities.getBoundingClientRect = () => box(10)
+    agentGroup.getBoundingClientRect = () => box(200)
+
+    // jsdom has no layout: show the rail and the sidebar as visible, and let the hit test pick a place.
+    const nativeComputed = window.getComputedStyle.bind(window)
+    vi.stubGlobal('getComputedStyle', (element: Element) =>
+      new Proxy(nativeComputed(element), {
+        get(target, property) {
+          if (property === 'overflowX' || property === 'overflowY') {
+            return 'visible'
+          }
+
+          const value = Reflect.get(target, property)
+
+          return typeof value === 'function' ? value.bind(target) : value
+        }
+      })
+    )
+    const nativeFromPoint = window.document.elementFromPoint
+    const restoreFromPoint = () => {
+      if (nativeFromPoint) {
+        window.document.elementFromPoint = nativeFromPoint
+      } else {
+        Reflect.deleteProperty(window.document, 'elementFromPoint')
+      }
+    }
+    window.document.elementFromPoint = (x: number) => (x >= 200 ? agentGroup : chat)
+
+    try {
+      fireEvent.pointerEnter(placeRow('chats'), { pointerType: 'mouse' })
+      await vi.waitFor(() => expect(chat.getAttribute('data-splash-highlight')).toBe('true'))
+
+      expect(agentGroup.hasAttribute('data-splash-highlight')).toBe(false)
+      expect(window.document.querySelectorAll('[data-splash-highlight="true"]')).toHaveLength(1)
+      expect(spotlight()?.dataset.railHighlight).toBe('true')
+      expect(spotlight()!.querySelector('svg path:not(.discovery-spotlight-veil)')!.getAttribute('d')).toBe('')
+
+      const connections = placeRow('connections')
+      window.document.elementFromPoint = () => capabilities
+      fireEvent.pointerEnter(connections, { pointerType: 'mouse' })
+      await vi.waitFor(() => expect(capabilities.getAttribute('data-splash-highlight')).toBe('true'))
+
+      expect(chat.hasAttribute('data-splash-highlight')).toBe(false)
+      expect(agentGroup.hasAttribute('data-splash-highlight')).toBe(false)
+      expect(window.document.querySelectorAll('[data-splash-highlight="true"]')).toHaveLength(1)
+    } finally {
+      restoreFromPoint()
+    }
   })
 
   it('moves to Make it yours and back, with focus on each step', async () => {

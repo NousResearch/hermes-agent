@@ -79,9 +79,10 @@
   outline: none;
 }
 
-/* While a row speaks, everything else steps back (18695:17294): the heading, the other rows, the
-   way on. Under the pointer, or for the keyboard's focus: a click leaves focus on its row, and that
-   alone holds nothing back. Hover paints at once (DESIGN.md, quiet motion). */
+/* While a row is lit, everything else steps back by a fifth (Figma 18924:28709, 18924:28895): the
+   heading, the way on, the other rows; only the row the pointer or the keyboard is on keeps full ink.
+   A click leaves focus on its row, and that alone holds nothing back. Hover paints at once
+   (DESIGN.md, quiet motion). */
 :root[data-shell='portal']
   .discovery-welcome:has(.discovery-welcome-places:hover, .discovery-welcome-places :focus-visible)
   > :not(.discovery-welcome-places),
@@ -212,10 +213,28 @@
   text-align: start;
 }
 
-/* One place is pointed at at a time: its fill, no check (18695:17294). Chats is from the start, so
-   the card opens showing that the rows point somewhere and the others are there to be reached. */
+/* One place is pointed at at a time: its fill on either splash. The first-time rows also take their
+   name bold in full ink and their glyph full (Figma 18924:28709); its card opens at rest
+   (18695:17147) with no row lit. */
 :root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-place {
   background-color: var(--portal-surface-selected);
+}
+
+:root[data-shell='portal']
+  [data-splash='first-time']
+  .discovery-welcome-places
+  > li[data-active]
+  .discovery-welcome-place-name {
+  color: var(--portal-text-primary);
+  font-weight: 600;
+}
+
+:root[data-shell='portal']
+  [data-splash='first-time']
+  .discovery-welcome-places
+  > li[data-active]
+  .discovery-welcome-glyph {
+  opacity: 1;
 }
 
 /* The speaking row's fill covers the divider above it, as Figma's fill does. */
@@ -248,18 +267,22 @@
   min-inline-size: 0;
 }
 
-/* A place's line and, under it, its example. Both always show: an example swapped in for the line
-   under the pointer changed the text as it was being read, and could not be reached without one. */
-:root[data-shell='portal'] .discovery-welcome-place-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+/* At rest a first-time row's glyph is muted (Figma 18924:28709): a row lit by pointer or focus
+   brings its own glyph to full (above) while the card is otherwise read at a glance. The rename
+   splash keeps its own row language. */
+:root[data-shell='portal'] [data-splash='first-time'] .discovery-welcome-places .discovery-welcome-glyph {
+  opacity: 0.65;
 }
 
-/* The place's name: Nous/Body Regular at the 14px body; its line: Nous/Metadata, mono at .6. */
+/* The place's name: Nous/Body Regular at the 14px body; its line: Nous/Metadata, mono at .6. Only a
+   first-time row the pointer or focus is on takes the SemiBold (above). */
 :root[data-shell='portal'] .discovery-welcome-place-name {
   font-size: var(--portal-type-body-size);
   line-height: 1.5;
+}
+
+:root[data-shell='portal'] [data-splash='first-time'] .discovery-welcome-places .discovery-welcome-place-name {
+  font-weight: 400;
 }
 
 :root[data-shell='portal'] .discovery-welcome-place-line {
@@ -290,27 +313,6 @@
 
 :root[data-shell='portal'] .discovery-rename-arrow:dir(rtl) {
   transform: scaleX(-1);
-}
-
-/* Seen (18695:17833): the band's 30px chrome tile with a checked box at the chrome ink. */
-:root[data-shell='portal'] .discovery-welcome-seen {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  inline-size: var(--portal-row-chrome);
-  block-size: var(--portal-row-chrome);
-  border-radius: var(--portal-radius-surface);
-  background-color: var(--portal-surface-chrome);
-  color: var(--portal-text-chrome);
-}
-
-:root[data-shell='portal'] .discovery-welcome-places > li[data-active] .discovery-welcome-seen {
-  visibility: hidden;
-}
-
-:root[data-shell='portal'] .discovery-welcome-seen .codicon {
-  font-size: var(--portal-welcome-glyph);
 }
 
 /* Under the actions: how else it closes (E5's Nous/Metadata at .6). */
@@ -377,10 +379,23 @@
 }
 
 /* While a splash is up the open destination's selection stands down in the rail (18695:17294,
-   18695:17488): the only place marked is the one a row is pointing at, by the spotlight's ring. */
+   18695:17488): the only place marked is the one a row points at, by the rename splash's ring or
+   the first-time splash's rail-button glow. */
 :root[data-shell='portal'][data-discovery-splash] [data-slot='global-nav'] .portal-chrome-button[aria-current='page'] {
   background-color: var(--portal-rail-fill);
   color: var(--portal-rail-ink);
+}
+
+/* The lit row's place, drawn on the rail button itself (Figma 18924:28709: no connector, the place
+   glows): the brand selection fill, a crisp brand rim and a soft brand glow, all from existing
+   tokens; the rim is inset so lighting the button moves nothing. */
+:root[data-shell='portal'][data-discovery-splash] [data-slot='global-nav']
+  .portal-chrome-button[data-splash-highlight='true'] {
+  background-color: var(--portal-selection-background);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--portal-text-brand) 80%, transparent),
+    0 0 0.75rem color-mix(in srgb, var(--portal-surface-brand) 48%, transparent);
+  color: var(--portal-text-primary);
 }
 
 /* ── Sign-in recovery (18732:33066, 18695:19224): the welcome card's rows, each with a status ── */
@@ -1124,6 +1139,12 @@
   border-radius: var(--portal-radius-surface);
   outline: var(--portal-focus-ring-width) solid var(--portal-text-brand);
   outline-offset: 2px;
+}
+
+/* The first-time splash lights the place's own rail button (data-rail-highlight, 18924:28709): its
+   glow is the marker, so the measured ring stands down. */
+:root[data-shell='portal'] .discovery-spotlight[data-rail-highlight] .discovery-spotlight-ring {
+  display: none;
 }
 
 /* E4 (18677:29704): a newer build's notice over the composer, in the developer offer's place: the

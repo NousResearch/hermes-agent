@@ -42,7 +42,7 @@ DESKTOP_IA_ACTIONS = {
                'first_time_closed_close', 'first_time_closed_escape', 'first_time_closed_signup'),
     "splash_row": ('rename_chats', 'rename_agents', 'rename_library', 'rename_routines', 'rename_machines',
                    'rename_notifications', 'first_time_chats', 'first_time_routines', 'first_time_agents',
-                   'first_time_library', 'first_time_theme'),
+                   'first_time_connections', 'first_time_library', 'first_time_theme'),
     "starter_chip": ('morning_briefing', 'research_options', 'summarize_document', 'clean_inbox'),
     "starter_chips": ('hidden_auto', 'hidden_user', 'shown_again'),
     "sign_up": ('splash', 'tray', 'chat', 'sidebar', 'recovery'),

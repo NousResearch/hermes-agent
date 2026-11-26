@@ -785,7 +785,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-text-tertiary` | `color-mix(in srgb, var(--ui-base) 60%, transparent)` | `color-mix(in srgb, var(--ui-base) 72%, transparent)` |  |
 | `--portal-text-quaternary` | `color-mix(in srgb, var(--ui-base) 50%, transparent)` | `color-mix(in srgb, var(--ui-base) 64%, transparent)` |  |
 | `--portal-text-quiet-opacity` | `0.5` | `0.64` | The floor as a layer opacity, for a live line that dims as a whole: full-ink regular text quieted by opacity, not a pale ink stacked under a fade (the working row, design review 2026-11-17). |
-| `--portal-backdrop-opacity` | `0.2` | ″ | What the rest of the first-time splash fades to while one of its rows speaks (Onboarding 18695:17294): a backdrop, not text to read, so it may go under the floor. |
+| `--portal-backdrop-opacity` | `0.8` | ″ | What the rest of the first-time splash fades to while one of its rows is lit (Figma 18924:28709, 18924:28895: everything but that row dims by a fifth): one value for the card's dimmed ink and, inverted, the navigation veil laid around the place the row points at. |
 | `--portal-surface-canvas` | `var(--portal-skin-window, var(--ui-bg-chrome))` | `var(--portal-skin-window, color-mix(in srgb, var(--ui-base) 5%, var(--ui-bg-chrome)))` | Window canvas (rails, titlebar band): the skin's own canvas, else its chrome. Under the launch's artwork (portal-artwork.css) it is that artwork's ground instead. |
 | `--portal-artwork-ground-vanilla` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 94%, var(--portal-raw-blue)) )` | ″ | The artworks' grounds (Prod - Desktop › Brand 16291:10506, each row's Background fill): brand blue under black .94 and white .05 (Vanilla 16292:10768), black .90 (Wing 16292:13812), black .96 (Angel 16292:17116, Ascend 16292:20301); Karborn lays black .98 on the blue and lightens it with a blue .10 filter (16292:35757). Light paints #f2f2f2 under both of its artworks (16292:26683). |
 | `--portal-artwork-ground-wing` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 90%, var(--portal-raw-blue)) )` | ″ |  |
@@ -944,7 +944,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-status-bar-open-inset` | `2.5rem` | ″ |  |
 | `--portal-status-bar-corner` | `0.4375rem` | ″ |  |
 | `--portal-status-bar-glyph` | `0.8125rem` | ″ |  |
-| `--portal-welcome-glyph` | `1rem` | ″ | The first-time splash's glyph (Onboarding 18695:17165, 18695:18477): 16 on a place's row and in its seen tile. |
+| `--portal-welcome-glyph` | `1rem` | ″ | The first-time splash's glyph (Onboarding 18695:17165): 16 on a place's row. |
 | `--portal-notice-strip-height` | `1.5rem` | ″ | The notice strip (app/shell/butterbar.tsx: the terms) is one 24px row at the window's floor, under the frame; while it shows, the status bar stands on it rather than over it. |
 | `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer: as wide as its stage allows, up to 960. The composer's card is the column's width and the turns stand inside it by the card's own inset, so a reply starts where the composer's text does and a prompt ends inside the card's far edge. Figma draws 440 (chat 16292:16175) and the column was 640; at either, a wide window left most of the stage empty beside a narrow column, and dragging the sidebar narrower gave the chat nothing. It now takes the room there is, as classic's does, with a cap so a line never runs the width of a wide monitor. |
 | `--portal-column-conversation` | `60rem` | ″ |  |
@@ -1359,18 +1359,22 @@ the second splash, for a new install (the verdict the rename splash records as `
 is not a card on the stage but the stage itself (its veil over the art, edge to edge). The navigation
 stays as it is while the splash is up, as under the rename splash: a sidebar that came and went with
 a row's hover moved the whole page. Step 1 is a 640 column: eyebrow, display
-title, one line, then Chats, Agents, Routines and Library as rows in one card (`--portal-welcome-card`).
-The row a pointer, focus or tap last reached is the place. While the pointer or focus is on the rows,
-that row says its example in place of its line, its place is ringed where it sits in the navigation
-with a dashed line from the row (`nav-spotlight.tsx`, the rename splash's; the open destination's
-selection stands down in the rail while a splash is up) and everything else fades to
-`--portal-backdrop-opacity`. The ring and line are placed in the spotlight layer's own pixels, so
-they hold at any UI scale. Every row reached carries
-the seen check (the band's chrome tile) for the rest of the showing. "Make it yours" leads to step 2: the accent's eight swatches and Light / Dark in
-one card, "Make it beautiful" (the artworks the mode draws, as cards that run the stage's width and fade
-off both sides), and the way in: Sign up and Look around where sign up is required, one button
-elsewhere. A quiet Back on the eyebrow's line returns to step 1. Every control is a native button or
-radio group; there is no ×: a nav click, Escape or the step's buttons close it.
+title, one line, then Chats, Agents, Connections and Routines as rows in one card
+(`--portal-welcome-card`); each row shows its line and its example together, never swapping one for
+the other under the pointer. The card opens at rest, no row lit. The row a pointer, focus or tap last
+reached is the place: it takes the card's selected fill, its name goes SemiBold and its glyph full,
+while the heading, the other rows and the way on dim to `--portal-backdrop-opacity` (a fifth). Its
+place glows on its own rail button (`data-splash-highlight`; `nav-spotlight.tsx`) instead of the
+rename splash's dashed connector, and Chats always points at the rail's Chats button, never the chat
+sidebar's agent group (Figma 18924:28898: a highlighted chat section must not read as opening the
+sidebar). Connections is the redesign's word for the rail's Capabilities destination. Leaving the
+list with the pointer clears the place; keyboard focus keeps it until focus leaves the list. The open
+destination's selection stands down in the rail while a splash is up; the glow sits on the button
+itself, so it holds at any UI scale. "Make it yours" leads to step 2: the accent's eight swatches
+and Light / Dark in one card, "Make it beautiful" (the artworks the mode draws, as cards that run
+the stage's width and fade off both sides), and the way in: Sign up and Look around where sign up is
+required, one button elsewhere. A quiet Back on the eyebrow's line returns to step 1. Every control
+is a native button or radio group; there is no ×: a nav click, Escape or the step's buttons close it.
 
 The colours are the redesign's **accent** (`store/portal-accent.ts`, `<html data-portal-accent>`): the
 brand gesture's fill, the ink on it, its ink and its tints (`--portal-raw-accent*`, `--portal-raw-brand-*`)

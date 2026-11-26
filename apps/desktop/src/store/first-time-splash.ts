@@ -10,8 +10,8 @@
  * - Seen: any close (a nav click, Escape, its own buttons, or sign up) marks it `seen` for good.
  *   Leaving the page while it is up is not a close: the next visit shows it again.
  * - The navigation stays as it is while the splash is up, as it does under the rename splash: the
- *   place a row last pointed at is ringed where it sits. Each place a row has pointed at is seen for
- *   the rest of the showing.
+ *   place a row last pointed at has its rail button lit where it sits. The card opens at rest
+ *   (Figma 18695:17147) with nothing lit until a pointer, focus or tap reaches a row.
  */
 
 import { atom, computed } from 'nanostores'
@@ -24,8 +24,9 @@ import { recordIaAction } from './ia-metrics'
 export type FirstTimeSplashClose = 'close' | 'escape' | 'nav' | 'signup'
 
 /** The places the splash explains, in the rail's own order, so a row and its place read top to
- *  bottom alike (Figma 18695:17147 draws Routines before Library; the rail does not). */
-export const FIRST_TIME_PLACES = ['chats', 'agents', 'library', 'routines'] as const
+ *  bottom alike (Figma 18924:28709 draws Connections between Agents and Routines; the rail keeps
+ *  Routines last, and Connections is the rail's Capabilities destination). */
+export const FIRST_TIME_PLACES = ['chats', 'agents', 'connections', 'routines'] as const
 
 export type FirstTimeSplashPlace = (typeof FIRST_TIME_PLACES)[number]
 
@@ -35,12 +36,9 @@ export type FirstTimeSplashRow = FirstTimeSplashPlace | 'theme'
 /** Why the splash is on screen: it showed itself, or the tray reopened it. Null while closed. */
 export const $firstTimeSplash = atom<null | 'reopened' | 'shown'>(null)
 
-/** The place speaking in this showing: Chats when it opens, then the row last reached (hover, focus
- *  or tap). Null while the splash is closed. */
+/** The place a row last reached (hover, focus or tap). Null at rest — the splash opens on
+ *  18695:17147 with no row lit — and while the splash is closed. */
 export const $firstTimeSplashPlace = atom<FirstTimeSplashPlace | null>(null)
-
-/** Every place a row has pointed at in this showing: their rows carry the seen check. */
-export const $firstTimeSplashSeen = atom<ReadonlySet<FirstTimeSplashPlace>>(new Set())
 
 /** Someone whose first settled look at their machine found nothing: a new install. */
 export const $newcomer = computed($guidanceLedger, ledger => ledger.renameSplash === 'not_applicable')
@@ -56,13 +54,10 @@ const rowsNoted = new Set<FirstTimeSplashRow>()
 function resetShowing(): void {
   rowsNoted.clear()
   $firstTimeSplashPlace.set(null)
-  $firstTimeSplashSeen.set(new Set())
 }
 
 function open(reason: 'reopened' | 'shown'): void {
   resetShowing()
-  // Chats speaks from the start: the card opens with one row already saying its example.
-  $firstTimeSplashPlace.set(FIRST_TIME_PLACES[0])
   $firstTimeSplash.set(reason)
   recordIaAction(reason === 'shown' ? 'ia.splash.first_time_shown' : 'ia.splash.first_time_reopened', 'state')
 }
@@ -107,14 +102,16 @@ export function noteFirstTimeSplashRow(row: FirstTimeSplashRow): void {
 
   if (row !== 'theme') {
     $firstTimeSplashPlace.set(row)
-
-    if (!$firstTimeSplashSeen.get().has(row)) {
-      $firstTimeSplashSeen.set(new Set([...$firstTimeSplashSeen.get(), row]))
-    }
   }
 
   if (!rowsNoted.has(row)) {
     rowsNoted.add(row)
     recordIaAction(`ia.splash_row.first_time_${row}`, 'state')
   }
+}
+
+/** The row's pointer, focus or tap stepped away: back to the resting card (Figma 18695:17147) with
+ *  nothing lit. */
+export function clearFirstTimeSplashPlace(): void {
+  $firstTimeSplashPlace.set(null)
 }

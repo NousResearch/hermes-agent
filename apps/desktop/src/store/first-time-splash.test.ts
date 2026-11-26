@@ -11,10 +11,13 @@ import {
 import { immediateMetricsLocks, setMetricsGate } from './desktop-metrics-test-locks'
 import {
   $firstTimeSplash,
+  $firstTimeSplashPlace,
   $firstTimeSplashReopenable,
   $newcomer,
+  clearFirstTimeSplashPlace,
   closeFirstTimeSplash,
   considerFirstTimeSplash,
+  FIRST_TIME_PLACES,
   noteFirstTimeSplashRow,
   reopenFirstTimeSplash
 } from './first-time-splash'
@@ -45,6 +48,7 @@ beforeEach(() => {
   $guidanceLedger.set({})
   $renameSplash.set(null)
   $firstTimeSplash.set(null)
+  $firstTimeSplashPlace.set(null)
 })
 
 afterEach(() => {
@@ -88,6 +92,39 @@ describe('who gets which splash', () => {
 })
 
 describe('the first-time splash', () => {
+  it('opens at rest: the four rail places, no row lit, and nothing left lit after a close', () => {
+    expect(FIRST_TIME_PLACES).toEqual(['chats', 'agents', 'connections', 'routines'])
+
+    settle('fresh')
+    expect($firstTimeSplash.get()).toBe('shown')
+    expect($firstTimeSplashPlace.get()).toBeNull()
+
+    noteFirstTimeSplashRow('chats')
+    expect($firstTimeSplashPlace.get()).toBe('chats')
+
+    closeFirstTimeSplash('close')
+    expect($firstTimeSplashPlace.get()).toBeNull()
+
+    reopenFirstTimeSplash()
+    expect($firstTimeSplash.get()).toBe('reopened')
+    expect($firstTimeSplashPlace.get()).toBeNull()
+  })
+
+  it('lights the row reached and clears back to rest when it steps away', () => {
+    settle('fresh')
+
+    noteFirstTimeSplashRow('connections')
+    expect($firstTimeSplashPlace.get()).toBe('connections')
+
+    clearFirstTimeSplashPlace()
+    expect($firstTimeSplashPlace.get()).toBeNull()
+
+    // While the splash is closed there is no row to light.
+    closeFirstTimeSplash('escape')
+    noteFirstTimeSplashRow('routines')
+    expect($firstTimeSplashPlace.get()).toBeNull()
+  })
+
   it('shows once: any close marks it seen, and the next visit does not show it', () => {
     for (const how of ['close', 'escape', 'nav', 'signup'] as const) {
       $guidanceLedger.set({})
@@ -124,12 +161,14 @@ describe('the first-time splash', () => {
     noteFirstTimeSplashRow('theme')
     noteFirstTimeSplashRow('theme')
     noteFirstTimeSplashRow('routines')
+    noteFirstTimeSplashRow('connections')
     closeFirstTimeSplash('escape')
 
     const state = recorded()
     expect(state).toContain('ia.splash.first_time_reopened|state')
     expect(state).toContain('"ia.splash_row.first_time_theme|state":1')
     expect(state).toContain('ia.splash_row.first_time_routines|state')
+    expect(state).toContain('ia.splash_row.first_time_connections|state')
     expect(state).toContain('ia.splash.first_time_closed_escape|shortcut')
     expect(state).not.toContain('"other')
   })

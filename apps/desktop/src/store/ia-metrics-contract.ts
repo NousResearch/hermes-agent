@@ -45,6 +45,7 @@ export const IA_ACTIONS = {
     'first_time_chats',
     'first_time_routines',
     'first_time_agents',
+    'first_time_connections',
     'first_time_library',
     'first_time_theme'
   ],

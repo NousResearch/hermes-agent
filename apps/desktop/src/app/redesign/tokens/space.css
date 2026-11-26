@@ -86,8 +86,7 @@
   --portal-status-bar-open-inset: 2.5rem;
   --portal-status-bar-corner: 0.4375rem;
   --portal-status-bar-glyph: 0.8125rem;
-  /* The first-time splash's glyph (Onboarding 18695:17165, 18695:18477): 16 on a place's row and in
-     its seen tile. */
+  /* The first-time splash's glyph (Onboarding 18695:17165): 16 on a place's row. */
   --portal-welcome-glyph: 1rem;
   /* The notice strip (app/shell/butterbar.tsx: the terms) is one 24px row at the window's
      floor, under the frame; while it shows, the status bar stands on it rather than over it. */

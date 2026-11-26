@@ -17,9 +17,10 @@ export interface FirstTimeCopy {
     subtitle: string
     /** The rows' list, for assistive tech. */
     listLabel: string
+    /** Connections is the redesign's word for the rail's Capabilities destination; the other three
+     *  places are named by the rail itself (renamed-names.ts). */
+    placeNames: { connections: string }
     lines: Record<FirstTimeSplashPlace, { line: string; example: string }>
-    /** A row's seen check, for assistive tech. */
-    seen: string
     /** Under the rows: the way to the second step. */
     style: { title: string; line: string; action: string }
     /** The second step. */
@@ -136,6 +137,7 @@ const en: FirstTimeCopy = {
     title: 'Welcome to Hermes',
     subtitle: 'Give it a task. It learns how you work and keeps going while you’re away.',
     listLabel: 'What Hermes does',
+    placeNames: { connections: 'Connections' },
     lines: {
       chats: {
         line: 'Don’t just ask, assign.',
@@ -149,12 +151,11 @@ const en: FirstTimeCopy = {
         line: 'Set it once. Hermes keeps checking.',
         example: 'e.g. a table for 2 opening up, a sold-out item back in stock'
       },
-      library: {
-        line: 'Everything your agents make, in one place.',
-        example: 'e.g. every brief, report and doc it made, from every chat'
+      connections: {
+        line: 'Connect your everyday apps.',
+        example: 'e.g. “check my gmail, add the meeting to my calendar, post the notes in slack and create tasks in Linear”'
       }
     },
-    seen: 'Seen',
     style: {
       title: 'Select your style',
       line: 'Theme and choose your Hermes artwork.',
@@ -296,6 +297,7 @@ const fr: FirstTimeCopy = {
     title: 'Bienvenue dans Hermes',
     subtitle: 'Confiez-lui une tâche. Il apprend votre façon de travailler et continue pendant votre absence.',
     listLabel: 'Ce que fait Hermes',
+    placeNames: { connections: 'Connexions' },
     lines: {
       chats: {
         line: 'Ne demandez pas, confiez.',
@@ -309,12 +311,11 @@ const fr: FirstTimeCopy = {
         line: 'Réglez-la une fois. Hermes continue de vérifier.',
         example: 'ex. une table pour 2 qui se libère, un article épuisé de nouveau en stock'
       },
-      library: {
-        line: 'Tout ce que font vos agents, au même endroit.',
-        example: 'ex. chaque note, rapport et document créé, de chaque discussion'
+      connections: {
+        line: 'Connectez vos applications du quotidien.',
+        example: 'ex. « consulte mes mails, ajoute la réunion à mon agenda, publie les notes sur Slack et crée les tâches dans Linear »'
       }
     },
-    seen: 'Vu',
     style: {
       title: 'Choisissez votre style',
       line: 'Thème et illustration de votre Hermes.',
@@ -456,6 +457,7 @@ const de: FirstTimeCopy = {
     title: 'Willkommen bei Hermes',
     subtitle: 'Gib ihm eine Aufgabe. Er lernt, wie du arbeitest, und macht weiter, während du weg bist.',
     listLabel: 'Was Hermes kann',
+    placeNames: { connections: 'Verbindungen' },
     lines: {
       chats: {
         line: 'Nicht nur fragen, beauftragen.',
@@ -469,12 +471,11 @@ const de: FirstTimeCopy = {
         line: 'Einmal einrichten. Hermes prüft weiter.',
         example: 'z. B. ein Tisch für 2, der frei wird, ein ausverkaufter Artikel wieder auf Lager'
       },
-      library: {
-        line: 'Alles, was deine Agenten erstellen, an einem Ort.',
-        example: 'z. B. jedes Briefing, jeder Bericht und jedes Dokument, aus jedem Chat'
+      connections: {
+        line: 'Verbinde deine Alltags-Apps.',
+        example: 'z. B. „prüf meine Gmail, trag den Termin in meinen Kalender ein, poste die Notizen in Slack und leg Aufgaben in Linear an“'
       }
     },
-    seen: 'Gesehen',
     style: {
       title: 'Wähle deinen Stil',
       line: 'Design und Hermes-Artwork auswählen.',
@@ -617,6 +618,7 @@ const es: FirstTimeCopy = {
     title: 'Te damos la bienvenida a Hermes',
     subtitle: 'Dale una tarea. Aprende cómo trabajas y sigue mientras no estás.',
     listLabel: 'Qué hace Hermes',
+    placeNames: { connections: 'Conexiones' },
     lines: {
       chats: {
         line: 'No solo preguntes, encarga.',
@@ -630,12 +632,11 @@ const es: FirstTimeCopy = {
         line: 'Configúrala una vez. Hermes sigue comprobando.',
         example: 'p. ej. una mesa para 2 que se libera, un artículo agotado que vuelve a estar disponible'
       },
-      library: {
-        line: 'Todo lo que crean tus agentes, en un solo lugar.',
-        example: 'p. ej. cada resumen, informe y documento que creó, de cada chat'
+      connections: {
+        line: 'Conecta tus aplicaciones del día a día.',
+        example: 'p. ej. «revisa mi Gmail, añade la reunión a mi calendario, publica las notas en Slack y crea tareas en Linear»'
       }
     },
-    seen: 'Visto',
     style: {
       title: 'Elige tu estilo',
       line: 'Tema e ilustración de tu Hermes.',
@@ -777,6 +778,7 @@ const ja: FirstTimeCopy = {
     title: 'Hermes へようこそ',
     subtitle: 'タスクを任せてください。あなたの働き方を学び、留守の間も進め続けます。',
     listLabel: 'Hermes にできること',
+    placeNames: { connections: '接続' },
     lines: {
       chats: {
         line: '質問するだけでなく、任せる。',
@@ -790,12 +792,11 @@ const ja: FirstTimeCopy = {
         line: '一度設定すれば、Hermes が確認し続けます。',
         example: '例：2 名の席が空いたとき、売り切れ商品が再入荷したとき'
       },
-      library: {
-        line: 'エージェントが作ったものを、すべて一か所に。',
-        example: '例：すべてのチャットで作った要約、レポート、ドキュメント'
+      connections: {
+        line: 'いつものアプリをつなぎます。',
+        example: '例：「Gmail を確認して、予定をカレンダーに入れて、メモを Slack に投稿して、Linear にタスクを作って」'
       }
     },
-    seen: '確認済み',
     style: {
       title: 'スタイルを選ぶ',
       line: 'テーマと Hermes のアートワークを選びます。',
@@ -937,6 +938,7 @@ const zh: FirstTimeCopy = {
     title: '欢迎使用 Hermes',
     subtitle: '交给它一个任务。它会了解你的工作方式，并在你离开时继续推进。',
     listLabel: 'Hermes 能做什么',
+    placeNames: { connections: '连接' },
     lines: {
       chats: {
         line: '不只是提问，而是委派。',
@@ -950,12 +952,11 @@ const zh: FirstTimeCopy = {
         line: '设置一次，Hermes 会持续检查。',
         example: '例如：有 2 人桌空出来时、售罄商品重新到货时'
       },
-      library: {
-        line: '智能体做出的一切，集中在一处。',
-        example: '例如：来自每个聊天的每份简报、报告和文档'
+      connections: {
+        line: '连接你常用的应用。',
+        example: '例如：“查看我的 Gmail，把会议加到我的日历，把笔记发到 Slack，再在 Linear 里创建任务”'
       }
     },
-    seen: '已查看',
     style: {
       title: '选择你的风格',
       line: '选择主题和你的 Hermes 插画。',
@@ -1097,6 +1098,7 @@ const zhHant: FirstTimeCopy = {
     title: '歡迎使用 Hermes',
     subtitle: '交給它一項任務。它會了解你的工作方式，並在你離開時繼續進行。',
     listLabel: 'Hermes 能做什麼',
+    placeNames: { connections: '連線' },
     lines: {
       chats: {
         line: '不只是提問，而是交辦。',
@@ -1110,12 +1112,11 @@ const zhHant: FirstTimeCopy = {
         line: '設定一次，Hermes 會持續檢查。',
         example: '例如：有 2 人桌空出來時、售完的商品重新到貨時'
       },
-      library: {
-        line: '代理做出的一切，集中在一處。',
-        example: '例如：來自每個聊天的每份簡報、報告和文件'
+      connections: {
+        line: '連接你常用的應用程式。',
+        example: '例如：「查看我的 Gmail，把會議加到我的行事曆，把筆記發到 Slack，再到 Linear 建立任務」'
       }
     },
-    seen: '已查看',
     style: {
       title: '選擇你的風格',
       line: '選擇主題和你的 Hermes 插畫。',
@@ -1257,6 +1258,7 @@ const ru: FirstTimeCopy = {
     title: 'Добро пожаловать в Hermes',
     subtitle: 'Дайте задачу. Hermes изучит, как вы работаете, и продолжит, пока вас нет.',
     listLabel: 'Что умеет Hermes',
+    placeNames: { connections: 'Подключения' },
     lines: {
       chats: {
         line: 'Не просто спрашивайте, поручайте.',
@@ -1270,12 +1272,11 @@ const ru: FirstTimeCopy = {
         line: 'Настройте один раз. Hermes продолжит проверять.',
         example: 'напр. освободился столик на двоих, распроданный товар снова в наличии'
       },
-      library: {
-        line: 'Всё, что создают ваши агенты, в одном месте.',
-        example: 'напр. каждая сводка, отчёт и документ из каждого чата'
+      connections: {
+        line: 'Подключите свои повседневные приложения.',
+        example: 'напр. «проверь мою почту Gmail, добавь встречу в календарь, опубликуй заметки в Slack и создай задачи в Linear»'
       }
     },
-    seen: 'Просмотрено',
     style: {
       title: 'Выберите стиль',
       line: 'Тема и иллюстрация вашего Hermes.',
@@ -1417,6 +1418,7 @@ const ar: FirstTimeCopy = {
     title: 'مرحبًا بك في Hermes',
     subtitle: 'أعطه مهمة. يتعلّم طريقة عملك ويواصل أثناء غيابك.',
     listLabel: 'ما يفعله Hermes',
+    placeNames: { connections: 'الاتصالات' },
     lines: {
       chats: {
         line: 'لا تكتفِ بالسؤال، بل كلّف.',
@@ -1430,12 +1432,11 @@ const ar: FirstTimeCopy = {
         line: 'اضبطه مرة واحدة. يواصل Hermes التحقق.',
         example: 'مثلًا: طاولة لشخصين أصبحت متاحة، منتج نفد عاد إلى المخزون'
       },
-      library: {
-        line: 'كل ما يصنعه وكلاؤك، في مكان واحد.',
-        example: 'مثلًا: كل ملخص وتقرير ومستند صنعه، من كل محادثة'
+      connections: {
+        line: 'اربط تطبيقاتك اليومية.',
+        example: 'مثلًا: «تحقق من بريدي في Gmail، وأضف الاجتماع إلى تقويمي، وانشر الملاحظات في Slack، وأنشئ مهامًا في Linear»'
       }
     },
-    seen: 'تمت المشاهدة',
     style: {
       title: 'اختر أسلوبك',
       line: 'السمة والعمل الفني لـ Hermes الخاص بك.',

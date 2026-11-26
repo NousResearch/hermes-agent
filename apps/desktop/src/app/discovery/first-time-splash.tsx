@@ -3,10 +3,9 @@ import { type RefObject, useCallback, useEffect, useId, useRef, useState } from 
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { FileText } from '@/lib/icons'
 import {
   $firstTimeSplashPlace,
-  $firstTimeSplashSeen,
+  clearFirstTimeSplashPlace,
   closeFirstTimeSplash,
   FIRST_TIME_PLACES,
   type FirstTimeSplashClose,
@@ -45,13 +44,10 @@ function leave(how: Exclude<FirstTimeSplashClose, 'nav'>, reopened: boolean) {
   })
 }
 
-/** Each place's glyph: the rail's own (Pixelarticons in the redesign), Library's the file Figma draws. */
+/** Each place's glyph: the rail's own (Pixelarticons in the redesign), Connections the Capabilities
+ *  blocks the rail draws (simplified-global-nav.tsx). */
 function PlaceGlyph({ place }: { place: FirstTimeSplashPlace }) {
-  if (place === 'library') {
-    return <FileText aria-hidden className="discovery-welcome-glyph" />
-  }
-
-  const name = { chats: 'comment-discussion', agents: 'robot', routines: 'clock' }[place]
+  const name = { chats: 'comment-discussion', agents: 'robot', connections: 'symbol-misc', routines: 'clock' }[place]
 
   return <Codicon aria-hidden className="discovery-welcome-glyph" name={name} />
 }
@@ -67,25 +63,24 @@ interface PlacesProps extends StepProps {
 }
 
 /**
- * Step 1 (Figma 18695:17147): what each place in the nav is for, one row each in one card. The row a
- * pointer, focus or tap last reached is the place, Chats from the start: it says its example in place
- * of its line (18695:17294) and its place is ringed in the navigation where it sits, with a line
- * from the row, so the card opens already pointing at something. Every row reached carries the seen check for the rest of the showing
- * (18695:17833). Each row's name stays its place and line for assistive tech; the example and
- * the check are its description.
+ * Step 1 (Figma 18924:28709): what each place in the nav is for, one row each in one card. Every row
+ * shows its line and its example together — always, no swapping, so nothing changes under a reader's
+ * eyes — and the place a pointer, focus or tap last reached is lit in the nav where it sits. The card
+ * opens at rest (18695:17147) with no row lit and nothing in the nav; a row reached lights its rail
+ * button (the dashed connector is off), dims the rest by a fifth, and steps the whole nav back around
+ * the place. The chat section keeps its rail button: pointing at it never opens the sidebar
+ * (18924:28898). Each row's name stays its place; the line and example are its description.
  */
 function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
   const copy = useFirstTimeCopy().splash
   const names = useRenamedNames()
   const place = useStore($firstTimeSplashPlace)
-  const seen = useStore($firstTimeSplashSeen)
-  const id = useId()
   // The rows under the pointer or holding focus: the rest steps back then, the navigation with it.
   const [pointerOver, setPointerOver] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
   const activeRowRef = useRef<HTMLButtonElement | null>(null)
 
-  // The active row's button, for the spotlight's connector.
+  // The active row's button, for the spotlight's anchor.
   const bindActiveRow = useCallback((node: HTMLButtonElement | null) => {
     activeRowRef.current = node
   }, [])
@@ -104,28 +99,45 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
       <ul
         aria-label={copy.listLabel}
         className="discovery-welcome-card discovery-welcome-places"
-        onBlur={event => setFocusWithin(event.currentTarget.contains(event.relatedTarget))}
+        onBlur={event => {
+          const within = event.currentTarget.contains(event.relatedTarget)
+
+          setFocusWithin(within)
+
+          if (!within) {
+            clearFirstTimeSplashPlace()
+          }
+        }}
         // The keyboard's focus only: a click leaves focus behind on its row, with the pointer gone.
         onFocus={event => setFocusWithin(event.target.matches(':focus-visible'))}
         onPointerEnter={() => setPointerOver(true)}
-        onPointerLeave={() => setPointerOver(false)}
+        onPointerLeave={() => {
+          setPointerOver(false)
+
+          // A pointer that leaves with the keyboard still inside keeps its row lit; otherwise the
+          // card returns to rest (18695:17147).
+          if (!focusWithin) {
+            clearFirstTimeSplashPlace()
+          }
+        }}
       >
         {FIRST_TIME_PLACES.map(row => {
           const active = row === place
-          const isSeen = seen.has(row)
-          const note = () => noteFirstTimeSplashRow(row)
+          const name = row === 'connections' ? copy.placeNames.connections : names[row]
+          const { example, line } = copy.lines[row]
 
           return (
             <li data-active={active || undefined} key={row}>
               <button
-                aria-describedby={`${id}-${row}-example${isSeen ? ` ${id}-seen` : ''}`}
-                aria-label={`${names[row]}: ${copy.lines[row].line}`}
+                aria-label={`${name}: ${line} ${example}`}
                 className="discovery-welcome-place"
-                onClick={note}
-                onFocus={note}
+                onClick={() => noteFirstTimeSplashRow(row)}
+                onFocus={() => noteFirstTimeSplashRow(row)}
                 onPointerEnter={event => {
-                  if (event.pointerType === 'mouse') {
-                    note()
+                  // A hovering pointer (mouse or pen) lights at once; touch has no hover and lights
+                  // on its tap instead.
+                  if (event.pointerType !== 'touch') {
+                    noteFirstTimeSplashRow(row)
                   }
                 }}
                 ref={active ? bindActiveRow : undefined}
@@ -133,30 +145,16 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
               >
                 <PlaceGlyph place={row} />
                 <span aria-hidden className="discovery-welcome-place-text">
-                  <span className="discovery-welcome-place-name">{names[row]}</span>
-                  <span className="discovery-welcome-place-lines">
-                    <span className="discovery-welcome-place-line">{copy.lines[row].line}</span>
-                    <span className="discovery-welcome-place-line" data-example="">
-                      {copy.lines[row].example}
-                    </span>
+                  <span className="discovery-welcome-place-name">{name}</span>
+                  <span className="discovery-welcome-place-line">
+                    {line} {example}
                   </span>
-                </span>
-                {isSeen && (
-                  <span aria-hidden className="discovery-welcome-seen" data-slot="seen-check">
-                    <Codicon name="pass" />
-                  </span>
-                )}
-                <span className="sr-only" id={`${id}-${row}-example`}>
-                  {copy.lines[row].example}
                 </span>
               </button>
             </li>
           )
         })}
       </ul>
-      <span className="sr-only" id={`${id}-seen`}>
-        {copy.seen}
-      </span>
       <div className="discovery-welcome-lead">
         <h2 className="discovery-welcome-lead-title">{copy.style.title}</h2>
         <p className="discovery-welcome-lead-line">{copy.style.line}</p>
@@ -166,7 +164,16 @@ function Places({ nextRef, onNext, subtitleId, titleId }: PlacesProps) {
           {copy.style.action}
         </Button>
       </div>
-      {place && <NavSpotlight anchor={activeRowRef} dim={pointerOver || focusWithin} key={place} spot={place} />}
+      {place && (
+        <NavSpotlight
+          anchor={activeRowRef}
+          connector={false}
+          dim={pointerOver || focusWithin}
+          key={place}
+          railOnly
+          spot={place}
+        />
+      )}
     </>
   )
 }

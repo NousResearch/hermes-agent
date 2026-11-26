@@ -94,7 +94,8 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
 
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
-    ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
+    ValueError for the caller to format; handles redaction, audit, persistence, metrics.
+    Falls back to legacy tasks/send + polling for pre-v1.0 peers (e.g. dsh)."""
     base_url = peer.get("url", "")
     headers = _auth_header(peer.get("auth", {}) or {})
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
@@ -104,8 +105,9 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         card = None
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
+    task_id = protocol.new_task_id()
     # v1.0: contextId lives inside the Message, not at the params top level.
-    rpc_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
+    rpc_body = {"jsonrpc": "2.0", "id": task_id, "method": "SendMessage",
                 "params": {"message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx)}}
     iface = _select_jsonrpc_interface(card)
     tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")
@@ -114,9 +116,25 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    # Try v1.0 SendMessage first; fall back to legacy tasks/send on method-not-found.
+    try:
+        resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 500):
+            try:
+                err_body = json.loads(e.read().decode("utf-8"))
+                if err_body.get("error", {}).get("code") == protocol.ERR_METHOD_NOT_FOUND:
+                    return _send_task_legacy(agent_label, base_url, card, headers, timeout,
+                                            safe_message, ctx, task_id)
+            except Exception:
+                pass
+        raise
     if "error" in resp:
-        raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
+        err = resp["error"]
+        if err.get("code") == protocol.ERR_METHOD_NOT_FOUND:
+            return _send_task_legacy(agent_label, base_url, card, headers, timeout,
+                                    safe_message, ctx, task_id)
+        raise ValueError(f"Peer '{agent_label}' returned an error: {err.get('message', err)}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))
     reply = _reply_text_from_result(payload)
     reply_ctx, state = ctx, ""
@@ -126,6 +144,44 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
     protocol.metrics.inbound_total += 1
     return reply, reply_ctx, state
+
+
+def _send_task_legacy(agent_label: str, base_url: str, card: Optional[dict], headers: dict,
+                      timeout: int, message: str, context_id: str, task_id: str) -> tuple[str, str, str]:
+    """Fallback for pre-v1.0 peers: tasks/send + polling tasks/get until terminal state."""
+    import time
+    rpc_url = _rpc_url(base_url, card)
+    legacy_body = {"jsonrpc": "2.0", "id": task_id, "method": "tasks/send",
+                   "params": {"id": task_id, "message": {"role": "user",
+                              "parts": [{"type": "text", "text": message}]}}}
+    _http_post_json(rpc_url, legacy_body, headers, timeout)
+    # Poll until terminal state (completed/failed/canceled/input-required)
+    deadline = time.time() + min(timeout, 240)
+    while time.time() < deadline:
+        time.sleep(3)
+        get_body = {"jsonrpc": "2.0", "id": task_id, "method": "tasks/get",
+                    "params": {"id": task_id}}
+        try:
+            get_resp = _http_post_json(rpc_url, get_body, headers, timeout)
+        except Exception:
+            continue
+        if "error" in get_resp:
+            continue
+        result = get_resp.get("result", {})
+        state = (result.get("status") or {}).get("state", "")
+        if state in ("completed", "failed", "canceled", "input-required"):
+            # Extract text from artifacts
+            parts = []
+            for art in result.get("artifacts") or []:
+                for p in art.get("parts") or []:
+                    if txt := p.get("text"):
+                        parts.append(txt)
+            reply = "\n".join(parts).strip() or json.dumps(result, ensure_ascii=False)
+            protocol.persist_message(context_id, "agent", reply, task_id)
+            protocol.metrics.inbound_total += 1
+            return reply, context_id, state
+    protocol.persist_message(context_id, "agent", "[timeout waiting for task completion]", task_id)
+    return "[timeout waiting for task completion]", context_id, "timeout"
 
 
 def _reply_text_from_result(result: Any) -> str:

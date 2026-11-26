@@ -132,6 +132,35 @@ function RegistryFooterActions({
 }
 
 /**
+ * One save at a time across drafts. The editor remounts for each draft, so a lock kept in it is
+ * reset by opening another; each save answers with the whole list, so a second one started while
+ * the first runs could answer first and then lose its list to the older answer.
+ */
+function useSaveLock(): { runSave: (work: () => Promise<void>) => Promise<void>; saving: boolean } {
+  const [saving, setSaving] = useState(false)
+  // Read in the click's own tick: state alone lets two clicks before a render both start.
+  const held = useRef(false)
+
+  const runSave = useCallback(async (work: () => Promise<void>) => {
+    if (held.current) {
+      return
+    }
+
+    held.current = true
+    setSaving(true)
+
+    try {
+      await work()
+    } finally {
+      held.current = false
+      setSaving(false)
+    }
+  }, [])
+
+  return { runSave, saving }
+}
+
+/**
  * Another window, the other host (native Desktop or a Webapp tab: they share one list) or a
  * registry repair changed the list: show it without a spinner or closing an open editor.
  */
@@ -208,6 +237,7 @@ export function ConnectionsRegistrySection() {
   // The open add/edit form; `key` remounts it, so every open starts on its own draft.
   const [draft, setDraft] = useState<(ConnectionDraft & { key: number }) | null>(null)
   const draftKey = useRef(0)
+  const { runSave, saving } = useSaveLock()
 
   const openEditor = (conn?: DesktopRegistryConnection): void => {
     draftKey.current += 1
@@ -511,6 +541,8 @@ export function ConnectionsRegistrySection() {
             setDraft(current => (current?.key === saved ? null : current))
           }}
           registry={registry}
+          runSave={runSave}
+          saving={saving}
         />
       ) : (
         <RegistryFooterActions

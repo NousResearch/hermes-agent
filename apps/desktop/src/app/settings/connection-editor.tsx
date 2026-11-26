@@ -233,6 +233,10 @@ interface ConnectionEditorProps {
   onClose: () => void
   onSaved: (registry: DesktopConnectionsRegistry) => void
   registry: DesktopConnectionsRegistry | null
+  /** A save is in flight, from this draft or one opened before it. */
+  saving: boolean
+  /** Runs one save under the list's save lock (`useSaveLock`); a call while one runs does nothing. */
+  runSave: (work: () => Promise<void>) => Promise<void>
 }
 
 /** A Cloud draft signs in before it saves: the account's browser sign-in, or its password. */
@@ -328,11 +332,19 @@ function HeaderRows({
  * The add/edit form of Settings → Gateways: the draft, its credentials and sign-in, and the save
  * with its plain-text consent. Mounted only while open, and only on a list this page may edit.
  */
-export function ConnectionEditor({ bridge, draft, kindMeta, onClose, onSaved, registry }: ConnectionEditorProps) {
+export function ConnectionEditor({
+  bridge,
+  draft,
+  kindMeta,
+  onClose,
+  onSaved,
+  registry,
+  runSave,
+  saving
+}: ConnectionEditorProps) {
   const { t } = useI18n()
   const s = t.settings.connections
   const [editor, setEditor] = useState<EditorState>(draft.editor)
-  const [saving, setSaving] = useState(false)
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
@@ -390,35 +402,34 @@ export function ConnectionEditor({ bridge, draft, kindMeta, onClose, onSaved, re
       }
 
       setDupeError(null)
-      setSaving(true)
 
-      try {
-        const payload = connectionPayload(editor, remote, allowPlainTextToken)
+      await runSave(async () => {
+        try {
+          const payload = connectionPayload(editor, remote, allowPlainTextToken)
 
-        const result = await bridge.save(payload)
-        onSaved(result.registry)
-      } catch (err) {
-        // Keyring-less machine and the user hasn't consented to plain-text
-        // storage yet: raise the same opt-in dialog the connection-mode form
-        // uses instead of dead-ending the save.
-        if (
-          !allowPlainTextToken &&
-          registry?.secureTokenStorage === false &&
-          editor.kind === 'remote' &&
-          remote.credentials.authMode === 'token' &&
-          remote.credentials.token.trim()
-        ) {
-          setPlainTextConfirm(true)
+          const result = await bridge.save(payload)
+          onSaved(result.registry)
+        } catch (err) {
+          // Keyring-less machine and the user hasn't consented to plain-text
+          // storage yet: raise the same opt-in dialog the connection-mode form
+          // uses instead of dead-ending the save.
+          if (
+            !allowPlainTextToken &&
+            registry?.secureTokenStorage === false &&
+            editor.kind === 'remote' &&
+            remote.credentials.authMode === 'token' &&
+            remote.credentials.token.trim()
+          ) {
+            setPlainTextConfirm(true)
 
-          return
+            return
+          }
+
+          notifyError(err, s.saveFailed)
         }
-
-        notifyError(err, s.saveFailed)
-      } finally {
-        setSaving(false)
-      }
+      })
     },
-    [bridge, editor, onSaved, remote, registry?.connections, registry?.secureTokenStorage, s]
+    [bridge, editor, onSaved, remote, registry?.connections, registry?.secureTokenStorage, runSave, s]
   )
 
   return (

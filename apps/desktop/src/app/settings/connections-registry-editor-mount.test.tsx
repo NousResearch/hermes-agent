@@ -134,4 +134,64 @@ describe('the connection editor', () => {
 
     expect((screen.getByPlaceholderText('Homelab') as HTMLInputElement).value).toBe('Beta')
   })
+
+  // Each save answers with the whole list: a second one started while the first runs could answer
+  // first, and the older answer would then replace the newer list.
+  it('starts no second save from another draft while one is in flight', async () => {
+    const remote = (id: string, label: string) => ({
+      authMode: 'token' as const,
+      headerNames: [],
+      id,
+      kind: 'remote' as const,
+      label,
+      tokenPreview: '...abcd',
+      tokenSet: true,
+      url: `https://${id}.example`
+    })
+
+    const editable: DesktopConnectionsRegistry = {
+      ...registry,
+      connections: [remote('alpha', 'Alpha'), remote('beta', 'Beta')]
+    }
+
+    const first = deferred<{ ok: true; registry: DesktopConnectionsRegistry }>()
+    const save = vi.fn(() => first.promise)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        connections: {
+          list: vi.fn(async () => editable),
+          remove: vi.fn(),
+          save,
+          setLaunchMode: vi.fn(),
+          setPrimary: vi.fn(),
+          test: vi.fn()
+        }
+      }
+    })
+    render(<ConnectionsRegistrySection />)
+
+    await screen.findByText('Alpha')
+    const [editAlpha, editBeta] = screen.getAllByRole('button', { name: 'Edit' })
+    fireEvent.click(editAlpha)
+    fireEvent.click(await screen.findByRole('button', { name: 'Save connection' }))
+    fireEvent.click(editBeta)
+    expect((screen.getByPlaceholderText('Homelab') as HTMLInputElement).value).toBe('Beta')
+    fireEvent.click(screen.getByRole('button', { name: /Sav/ }))
+
+    expect(save).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      first.resolve({ ok: true, registry: editable })
+      await first.promise
+    })
+
+    // Once the first answers, the open draft saves.
+    save.mockImplementation(async () => ({ ok: true, registry: editable }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save connection' }))
+    })
+    expect(save).toHaveBeenCalledTimes(2)
+  })
 })

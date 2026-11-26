@@ -46,6 +46,12 @@ class Socket {
   send(data: string) { this.sent.push(data) }
 }
 
+const hostedAgent = (id: string) =>
+  ({ authMode: 'oauth', headerNames: [], id, kind: 'cloud', label: id, url: `https://${id}.example` })
+
+/** The hosted dashboard's list: the account's cloud agents, no This device. */
+const hostedList = (...ids: string[]) => ({ connections: ids.map(hostedAgent), primary: ids[0], version: 2 })
+
 function install() {
   Reflect.deleteProperty(window, 'hermesDesktop')
   Object.assign(window, { __HERMES_AUTH_REQUIRED__: true, __HERMES_BASE_PATH__: '/one' })
@@ -70,6 +76,8 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'hermesDesktop')
   Reflect.deleteProperty(window, '__HERMES_AUTH_REQUIRED__')
   Reflect.deleteProperty(window, '__HERMES_BASE_PATH__')
+  Reflect.deleteProperty(window, '__HERMES_HOST_AGENT__')
+  Reflect.deleteProperty(window, '__HERMES_UI_SURFACE__')
   $connection.set(null)
   vi.useRealTimers()
   vi.unstubAllGlobals()
@@ -127,6 +135,27 @@ describe('persistent browser terminals', () => {
     expect(exit).not.toHaveBeenCalled()
     expect(resumed.sent.join('')).not.toContain('dangerous command')
     expect(resumed.sent.join('')).not.toContain('\u000c')
+  })
+
+  // The hosted dashboard relays the terminal and closes every relayed socket with 4401 within 15 minutes.
+  it('redials a terminal the hosted dashboard closes with 4401, with a fresh relay ticket', async () => {
+    let tickets = 0
+
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha') : { ticket: `relay-${++tickets}` }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    const api = install()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+
+    Socket.instances[0].close(4401, 'relay session renewal')
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(exit).not.toHaveBeenCalled()
+    expect(Socket.instances.map(socket => socket.url.searchParams.get('relay_ticket'))).toEqual(['relay-1', 'relay-2'])
+    expect(Socket.instances[1].url.searchParams.get('attach')).toBe('opaque-server-id')
   })
 
   // A trimmed replay can start mid-way through a full-screen program; an unchanged size sends no SIGWINCH.

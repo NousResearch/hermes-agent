@@ -251,6 +251,8 @@ export function installBrowserDesktopBridge(): boolean {
       basePath: bootstrap.basePath,
       currentProfile,
       currentConnection: activeConnectionId,
+      // The hosted dashboard closes every socket it relays with 4401 within 15 minutes; the terminal redials.
+      redialsOn4401: Boolean(hosted),
       // The host terminal of the gateway the terminal started on, relayed when it is not the serving one.
       websocketUrl: async (profile, connectionId) => {
         if (!relays || (!hosted && connectionId === LOCAL_CONNECTION_ID)) {

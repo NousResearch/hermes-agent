@@ -23,6 +23,10 @@ interface BrowserTerminalOptions {
   defaultCwd: (profile: string | null, connectionId: string) => Promise<string>
   /** The tab's sign-in ended (a 4401 close or a 401 ticket): show the sign-in view. */
   onSignedOut?: () => void
+  /** The page's host closes the sockets it relays with 4401 to have them redialed with a fresh
+   *  ticket (the hosted dashboard): such a close reconnects, and a signed-out tab learns it from the
+   *  ticket route's 401. */
+  redialsOn4401?: boolean
 }
 
 interface TerminalState {
@@ -136,6 +140,7 @@ interface DialContext {
   forget: (state: TerminalState) => void
   finish: (state: TerminalState, signal: string | null) => void
   reconnect: (state: TerminalState) => void
+  closeSignal: (code: number) => string
 }
 
 async function dialTerminal(state: TerminalState, context: DialContext): Promise<HermesTerminalSession> {
@@ -268,7 +273,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
     socket.onclose = event => {
       if (!current()) {return}
       settleOpen(state)
-      const signal = CLOSE_SIGNALS[event.code] ?? 'disconnected'
+      const signal = context.closeSignal(event.code)
       const exited = event.code === 4410 && event.reason === PROCESS_EXITED_REASON
 
       if (signal === 'expired') {forget(state)}
@@ -398,8 +403,12 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     }, reconnectBackoffDelayMs(state.retry++, RETRY_BACKOFF))
   }
 
+  const closeSignal = (code: number) =>
+    (code === 4401 && options.redialsOn4401 ? undefined : CLOSE_SIGNALS[code]) ?? 'disconnected'
+
   const dial = (state: TerminalState) => dialTerminal(state, {
-    websocketUrl: options.websocketUrl, storageKey, isPaused: () => paused, stopSocket, emitData, setStatus, forget, finish, reconnect
+    websocketUrl: options.websocketUrl, storageKey, isPaused: () => paused, stopSocket, emitData, setStatus, forget, finish, reconnect,
+    closeSignal
   })
 
   const detach = async (id: string) => {

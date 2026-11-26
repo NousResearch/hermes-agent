@@ -159,6 +159,16 @@ function useSettingsTypeToSearch() {
         return
       }
 
+      // A dialog opened over Settings (a picker, a confirm) owns the keyboard: a printable key is
+      // its business, not a shortcut into the settings palette. Settings itself is an overlay, not
+      // a dialog, so only modals above it match. Radix labels its dialog content; the composer's
+      // bare role="dialog" help drawer (mounted beneath the overlay) must not count.
+      if (
+        document.querySelector('[aria-modal="true"], [role="alertdialog"], [role="dialog"][aria-labelledby]') !== null
+      ) {
+        return
+      }
+
       const char = typeToFocusChar(event)
 
       if (char === null || char === ' ') {

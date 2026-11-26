@@ -1,6 +1,7 @@
 import './routines.css'
 
 import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -23,6 +24,7 @@ import { useRoutinesCopy } from './routines-copy'
 import { RoutineGroups, RoutinesPanel } from './routines-panel'
 import {
   $routineSelection,
+  closeRoutineSheet,
   openRoutineSheet,
   refOf,
   routineKey,
@@ -66,6 +68,9 @@ export function RoutinesPage({ onClose, onOpenSession }: RoutinesPageProps) {
   // A one-shot "open this routine" (a notification, a sidebar link), by id or name.
   useJobFocus(source.jobs, !source.loading, openJob)
 
+  // The sheet is store state, not page state: leaving Routines with one open must not leave an empty
+  // create/edit sheet waiting to pop back up on the next visit.
+  useEffect(() => () => closeRoutineSheet(), [])
 
   const create = () => openRoutineSheet({ mode: 'create', profile: null })
 

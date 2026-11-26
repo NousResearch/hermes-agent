@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { useConnectionsCopy } from '@/app/capabilities/connectors/redesign/connections-copy'
 import { toolsRoute } from '@/app/capabilities/tools-route'
 import {
   HUD_HEADING,
@@ -486,6 +487,60 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
 ]
 
+interface ConnectionsSearchTermsOptions {
+  /** The Capabilities heading the row sits under. */
+  capLabel: string
+  /** Classic's name for the page ("Connectors"). */
+  classicTitle: string
+  portal: boolean
+  /** The redesign's Connections page title ("Connections"). */
+  redesignTitle: string
+}
+
+/**
+ * The two rows that talk about connections in the root palette. The redesign's Capabilities page
+ * calls itself Connections and owns the word, so Settings ▸ Gateways (the merged Machines page) stops
+ * competing for it there; classic keeps that page findable by "connections" as it always was.
+ * "connectors" stays an alias on the Capabilities row in both shells, since that is what classic
+ * calls the page.
+ */
+export function connectionsSearchTerms({
+  capLabel,
+  classicTitle,
+  portal,
+  redesignTitle
+}: ConnectionsSearchTermsOptions): { connectors: { keywords: string[]; label: string }; gateways: string[] } {
+  return {
+    connectors: {
+      keywords: [
+        'connectors',
+        ...(portal ? ['connections'] : []),
+        'apps',
+        'mcp',
+        'servers',
+        'tools',
+        'capabilities',
+        'model context protocol'
+      ],
+      label: `${capLabel}: ${portal ? redesignTitle : classicTitle}`
+    },
+    gateways: [
+      ...(portal ? [] : ['connection', 'connections']),
+      'messaging',
+      'remote',
+      'multi',
+      'instances',
+      'ssh',
+      'cloud',
+      'add gateway',
+      'machine',
+      'machines',
+      'add machine',
+      'registry'
+    ]
+  }
+}
+
 const THEME_MODES: ReadonlyArray<{ icon: IconComponent; mode: ThemeMode }> = [
   { icon: Sun, mode: 'light' },
   { icon: Moon, mode: 'dark' },
@@ -573,9 +628,45 @@ export function CommandPalette() {
   )
 }
 
+function useConnectionsPaletteTerms(portal: boolean) {
+  const { t } = useI18n()
+  const connCopy = useConnectionsCopy()
+  const capLabel = t.commandCenter.nav.capabilities.title
+  const classicTitle = t.connectorsPage.title
+  const redesignTitle = connCopy.page.title
+
+  return useMemo(
+    () => connectionsSearchTerms({ capLabel, classicTitle, portal, redesignTitle }),
+    [capLabel, classicTitle, portal, redesignTitle]
+  )
+}
+
+/** Live ⌘/⌃-held state while the palette is open; blur clears so ⌘-Tab never strands it. */
+function useModHeld(): boolean {
+  const [modHeld, setModHeld] = useState(false)
+
+  useEffect(() => {
+    const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
+    const clear = () => setModHeld(false)
+
+    window.addEventListener('keydown', sync, { capture: true })
+    window.addEventListener('keyup', sync, { capture: true })
+    window.addEventListener('blur', clear)
+
+    return () => {
+      window.removeEventListener('keydown', sync, { capture: true })
+      window.removeEventListener('keyup', sync, { capture: true })
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
+
+  return modHeld
+}
+
 function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { t } = useI18n()
   const portal = usePortalShell()
+  const connections = useConnectionsPaletteTerms(portal)
   const pendingPage = useStore($commandPalettePage)
   const pendingSeed = useStore($commandPaletteSeed)
   const bindings = useStore($bindings)
@@ -619,26 +710,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     }
   }
 
-  // Live ⌘/⌃-held state while the palette is open: rows with a modifier
-  // variant (projects) preview it by swapping their label. Window-level
-  // listeners because focus sits in the search input; blur clears so a
-  // ⌘-Tab away doesn't strand the preview on.
-  const [modHeld, setModHeld] = useState(false)
-
-  useEffect(() => {
-    const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
-    const clear = () => setModHeld(false)
-
-    window.addEventListener('keydown', sync, { capture: true })
-    window.addEventListener('keyup', sync, { capture: true })
-    window.addEventListener('blur', clear)
-
-    return () => {
-      window.removeEventListener('keydown', sync, { capture: true })
-      window.removeEventListener('keyup', sync, { capture: true })
-      window.removeEventListener('blur', clear)
-    }
-  }, [])
+  const modHeld = useModHeld()
 
   // Server-backed sources for the type-to-search groups. This component only
   // exists while the palette is open, so the queries are inherently lazy — no
@@ -1050,7 +1122,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           ...NON_CONFIG_SETTINGS.map(entry => ({
             icon: entry.icon,
             id: `set-${entry.tab}`,
-            keywords: ['settings', ...(entry.keywords ?? [])],
+            keywords: ['settings', ...(entry.labelKey === 'gateway' ? connections.gateways : (entry.keywords ?? []))],
             label: t.settings.nav[entry.labelKey],
             run: go(settingsTab(entry.tab))
           })),
@@ -1063,6 +1135,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // that kept the palette open — eslint only sees an unused dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    connections,
     contributedItems,
     dismissedAutoProjects,
     go,
@@ -1164,8 +1237,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         {
           icon: Layers3,
           id: 'cap-connectors',
-          keywords: ['connectors', 'apps', 'mcp', 'servers', 'tools', 'capabilities', 'model context protocol'],
-          label: `${capLabel}: ${t.connectorsPage.title}`,
+          keywords: connections.connectors.keywords,
+          label: connections.connectors.label,
           run: go(`${CAPABILITIES_ROUTE}?tab=connectors`)
         },
         {
@@ -1316,11 +1389,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   }, [
     archivedSessions,
     availableThemes,
+    connections,
     go,
     goSession,
     mcpServers,
     mode,
     pinnedSessions,
+    portal,
     previewTheme,
     resolvedMode,
     resolveThemeMode,

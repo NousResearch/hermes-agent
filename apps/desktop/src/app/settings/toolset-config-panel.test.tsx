@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig, WebCapability } from '@/types/hermes'
 
+import { SettingsOwnerContext } from './profile-scope'
 // Collect the component graph before the behavioral test deadline starts.
 import { ToolsetConfigPanel } from './toolset-config-panel'
 
@@ -849,6 +850,50 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
 
       await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=keys&key=ELEVENLABS_API_KEY'))
+    })
+
+    it('keeps the pinned agent and machine when an agent page manages its key', async () => {
+      getToolsetConfig.mockResolvedValue(
+        config({
+          active_provider: 'ElevenLabs',
+          providers: [
+            {
+              name: 'ElevenLabs',
+              badge: 'paid',
+              tag: 'Most natural voices',
+              env_vars: [
+                {
+                  key: 'ELEVENLABS_API_KEY',
+                  prompt: 'ElevenLabs API key',
+                  url: 'https://x',
+                  default: null,
+                  is_set: true
+                }
+              ],
+              post_setup: null,
+              requires_nous_auth: false,
+              is_active: true,
+              status: 'ready'
+            }
+          ]
+        })
+      )
+
+      render(
+        <SettingsOwnerContext.Provider value={{ connectionId: 'beta', profile: 'ops' }}>
+          <ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />
+        </SettingsOwnerContext.Provider>
+      )
+
+      const trigger = await screen.findByRole('button', { name: /^Actions$/ })
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
+
+      await waitFor(() =>
+        expect(navigateSpy).toHaveBeenCalledWith(
+          '/settings?tab=keys&key=ELEVENLABS_API_KEY&agentProfile=ops&panel=settings&connection=beta'
+        )
+      )
     })
 
     it('hides "Manage in API Keys" while the key is unset', async () => {

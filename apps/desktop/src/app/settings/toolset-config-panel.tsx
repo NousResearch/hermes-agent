@@ -36,6 +36,7 @@ import type {
 import { EnvVarActionsMenu, EnvVarActionsTrigger, EnvVarContextMenu } from './env-var-actions-menu'
 import { prettyName } from './helpers'
 import { Pill } from './primitives'
+import { type SettingsOwner, useSettingsOwner } from './profile-scope'
 import { VoiceProviderFields } from './voice-provider-fields'
 
 interface ToolsetConfigPanelProps {
@@ -67,6 +68,23 @@ function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
   } catch {
     return null
   }
+}
+
+/** Settings → API Keys for the key's owner. A pinned agent page carries its agent and machine, so the
+ *  link lands on that agent's keys instead of the window's active agent's. */
+function apiKeysTarget(key: string, owner: SettingsOwner | undefined): string {
+  const query = new URLSearchParams({ tab: 'keys', key })
+
+  if (owner) {
+    query.set('agentProfile', owner.profile)
+    query.set('panel', 'settings')
+
+    if (owner.connectionId) {
+      query.set('connection', owner.connectionId)
+    }
+  }
+
+  return `${SETTINGS_ROUTE}?${query}`
 }
 
 function providerConfigured(provider: ToolProvider, envState: Record<string, boolean>): boolean {
@@ -126,6 +144,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarField
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const navigate = useOptionalNavigate()
+  const owner = useSettingsOwner()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -135,7 +154,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarField
   // deep-link param keys-settings consumes to scroll + flash this key's card.
   // No-op when there is no router (embedded outside Settings, e.g. a plugin
   // dialog): the "Manage keys" affordance simply doesn't navigate there.
-  const openInKeys = () => navigate?.(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
+  const openInKeys = () => navigate?.(apiKeysTarget(envVar.key, owner))
 
   async function handleSave() {
     if (!value) {

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -569,6 +569,28 @@ describe('the developer-view offer in a chat about code (C6)', () => {
     fireEvent.click(screen.getByRole('button', { name: copy.developerView.notNow }))
     expect($developerViewOfferOpen.get()).toBe(false)
     expect(screen.queryByRole('region', { name: copy.developerView.title })).toBeNull()
+  })
+
+  it('either way the offer goes, the preview it started ends with it', async () => {
+    setInterfaceMode('simple')
+    act(() => {
+      upsertArtifact('chat-1', { kind: 'code', language: 'python', title: 'fix.py' }, 'print(1)')
+    })
+
+    const { rerender, unmount } = render(<DeveloperViewOffer sessionId="chat-1" />)
+    fireEvent.pointerEnter(screen.getByRole('button', { name: new RegExp(copy.developerView.preview) }))
+    expect($interfaceMode.get()).toBe('advanced')
+
+    // The chat changes out from under the card: it stops rendering without unmounting.
+    rerender(<DeveloperViewOffer sessionId="chat-2" />)
+    await waitFor(() => expect($interfaceMode.get()).toBe('simple'))
+
+    rerender(<DeveloperViewOffer sessionId="chat-1" />)
+    fireEvent.pointerEnter(screen.getByRole('button', { name: new RegExp(copy.developerView.preview) }))
+    expect($interfaceMode.get()).toBe('advanced')
+
+    unmount()
+    await waitFor(() => expect($interfaceMode.get()).toBe('simple'))
   })
 
   it('turns the view on for good', () => {

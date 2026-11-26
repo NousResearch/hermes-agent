@@ -23,6 +23,41 @@ interface DeveloperViewOfferProps {
 }
 
 /**
+ * A card that goes away while previewing must end the preview, but switching the interface mode
+ * rebuilds the layout and remounts this card under the pointer. The reset therefore waits a tick and
+ * stands down when another instance has taken over, so the remount never ends the preview it started.
+ */
+let mountedOffers = 0
+let endPreviewTimer: ReturnType<typeof setTimeout> | null = null
+
+function useEndPreviewWhenGone(): void {
+  useEffect(() => {
+    mountedOffers += 1
+
+    if (endPreviewTimer !== null) {
+      clearTimeout(endPreviewTimer)
+      endPreviewTimer = null
+    }
+
+    return () => {
+      mountedOffers -= 1
+
+      if (mountedOffers > 0) {
+        return
+      }
+
+      endPreviewTimer = setTimeout(() => {
+        endPreviewTimer = null
+
+        if (mountedOffers === 0 && $developerViewPreviewing.get()) {
+          previewDeveloperView(false)
+        }
+      }, 0)
+    }
+  }, [])
+}
+
+/**
  * "Want the developer view?" (Onboarding C6 18677:28595), floated above the composer of a chat about
  * code, for someone in Simple (store/developer-view-offer.ts). "About code" is the app's own signal:
  * an answer in this chat held a code block long enough to become a code artifact
@@ -38,14 +73,22 @@ export function DeveloperViewOffer({ sessionId }: DeveloperViewOfferProps) {
   const aboutCode = Boolean(sessionId && registry[sessionId]?.some(record => record.kind === 'code'))
   const shown = open && aboutCode
 
+  useEndPreviewWhenGone()
+
   useEffect(() => {
     if (shown) {
       noteDeveloperViewOffered()
     }
   }, [shown])
 
-  // No unmount cleanup: switching the interface mode rebuilds the layout and remounts this card under
-  // the pointer, which must not end the preview it just started. Leaving the row ends it.
+  // The offer can stop rendering without unmounting (its session changes, an update notice takes the
+  // slot): the in-memory preview must not outlive the card that offered it. Accepting already cleared
+  // the preview, so Turn on never lands here.
+  useEffect(() => {
+    if (!shown && previewing) {
+      previewDeveloperView(false)
+    }
+  }, [previewing, shown])
 
   if (!shown) {
     return null

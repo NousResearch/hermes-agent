@@ -440,6 +440,16 @@ describe('creating a routine', () => {
 
     expect(within(created).getByRole('combobox', { name: copy.agent }).textContent).toBe('ops')
   })
+
+  it('closes the sheet when the page goes away, so coming back starts clean', async () => {
+    const { unmount } = renderPage()
+    await openNewRoutine()
+    expect($routineSheet.get()).toEqual({ mode: 'create', profile: null })
+
+    unmount()
+
+    expect($routineSheet.get()).toEqual({ mode: 'closed' })
+  })
 })
 
 describe('editing a routine', () => {

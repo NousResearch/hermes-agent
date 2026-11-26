@@ -169,8 +169,8 @@ def steer_subagent(
 ) -> bool:
     """Queue steering text into a running subagent without stopping it.
 
-    AIAgent.steer() appends the text to the child's last tool result at its next iteration boundary — the current tool
-    call is never cut. True iff the text was QUEUED while the child still accepted work; False for unknown/closed id,
+    AIAgent.steer() queues the text; the child receives it as a user message after its current tool calls, which are
+    never cut. True iff the text was QUEUED while the child still accepted work; False for unknown/closed id,
     ownership mismatch, no live agent, or empty text. ``owner_session_id=None`` keeps the in-process helper contract;
     gateway callers must pass exact authority. Acceptance and completion are linearized by the registry lock: if
     acceptance wins but no delivery boundary remains, the text lands in the entry as ``missed_steer``.

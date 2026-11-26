@@ -155,6 +155,16 @@ def is_launch_home(home: Path) -> bool:
     return hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
 
 
+def home_moved_refusal(home: Path) -> Optional[str]:
+    """Why plugin code must not start for *home* now, or None: its name leads to another directory than the one
+    this process remembered it by (``hermes_home_key``), so ``is_launch_home`` and the launcher it picks would
+    apply that directory's settings, and the remembered profile's values, to another directory's files."""
+    from hermes_constants import hermes_home_key
+    if os.path.normcase(os.path.realpath(home)) == hermes_home_key(home):
+        return None
+    return f"{home} leads to another directory than the one this process opened it as: restart Hermes"
+
+
 def launcher_for(home: Path, own: bool) -> tuple[list, Optional[dict[str, str]]]:
     """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home*: a start can come from a
     caller bound to another profile, or from a crash restart's thread, which has no binding at all. With it, the

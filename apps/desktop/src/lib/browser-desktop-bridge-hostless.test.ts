@@ -255,6 +255,23 @@ describe('a Webapp whose host runs no agent', () => {
     ])
   })
 
+  // The store reuses the window's socket for a profile only when the descriptor says it rides it
+  // (`sharedPrimary`); otherwise it dials a second socket to the same agent.
+  it("marks a profile the window socket's agent serves as riding that socket, as a served Webapp does", async () => {
+    dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] }, runsAs: { alpha: 'default' } })
+    const desktop = install()
+    await desktop.getAgentRoster!()
+
+    expect(await desktop.getConnection('research')).toMatchObject({
+      connectionId: 'alpha',
+      profile: 'research',
+      sharedPrimary: true
+    })
+    // The agent's own profile is the socket itself, not a profile riding it.
+    expect((await desktop.getConnection('default')).sharedPrimary).toBe(false)
+    expect((await desktop.getConnection()).sharedPrimary).toBe(false)
+  })
+
   it('opens on the first agent when the list names no primary it holds', async () => {
     dashboardHost({ primary: 'gone' })
 

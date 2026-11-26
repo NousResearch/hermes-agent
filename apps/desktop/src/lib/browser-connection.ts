@@ -363,7 +363,12 @@ export function createBrowserConnectionBridge({
       // fails fails the open: the socket opens on that profile, so boot must not guess `default`.
       adoptBrowserLaunchProfile(await home.relays.launchProfile(home.connectionId))
 
-      return home.relays.connection(home.connectionId, profile)
+      // As a served Webapp's: a profile the agent serves beside its own rides the window's socket, so
+      // the store reuses that socket instead of dialing a second one to the same agent.
+      return {
+        ...home.relays.connection(home.connectionId, profile),
+        sharedPrimary: ridesWithProfile(profile) && home.relays.serves(home.connectionId, profile)
+      }
     },
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async ({ connectionId, profile }: { connectionId?: null | string; profile?: null | string }) => {

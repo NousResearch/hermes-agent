@@ -13,9 +13,11 @@ name, the settings it already read, its data directory and tool names, so the mi
   run and Desktop restart otherwise paid the network round trip again and showed the same failure.
 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
-list, dependency constraints, enable), never a custom source. Every outcome — installed, refused,
-failed, absent from the catalog — reaches the user (terminal, Desktop, chat platform), never only
-``agent.log``: a provider that silently stays missing is lost memory.
+list, dependency constraints, enable), never a custom source, holding the lock every unattended plugin
+installer holds (``default_plugins.installer_lock``) and re-checking the home after taking it, so a
+provider another Hermes process placed meanwhile is neither cloned again nor reported as failed. Every
+outcome — installed, refused, failed, absent from the catalog — reaches the user (terminal, Desktop,
+chat platform), never only ``agent.log``: a provider that silently stays missing is lost memory.
 """
 
 from __future__ import annotations
@@ -172,27 +174,49 @@ def kept_off_sentence(name: str, home: Path) -> str:
 
 
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
-                     say: Callable[[str], None]) -> bool:
+                     say: Callable[[str], None], wait: float = 900.0) -> bool:
+    """Install *name* into *home* under the installer lock every unattended plugin installer holds
+    (:func:`default_plugins.installer_lock`). True when the provider is in *home* afterwards, also when
+    another Hermes process placed it while this one waited (nothing reported: that one reports its own)."""
+    from hermes_cli.default_plugins import installer_lock
+    try:
+        with installer_lock(wait):
+            if provider_present(name, home):
+                logger.info("memory provider '%s' was installed for %s by another Hermes process meanwhile", name, home)
+                return True
+            return _install_locked(home, name, install=install, say=say)
+    except TimeoutError:  # nothing was tried, so no failure is stamped
+        say(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its plugin "
+            f"was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+        return False
+
+
+def _install_locked(home: Path, name: str, *, install: Callable[[str], dict],
+                    say: Callable[[str], None]) -> bool:
     try:
         result = install(name)
-    except Exception as exc:  # network, uv, kill list — report, do not raise
+    except Exception as exc:  # health: allow BLE001 -- network, uv, kill list: reported to the user, never raised
         result = {"ok": False, "error": str(exc)}
     if result.get("kept_disabled"):
         say(f"  ⚠ Memory provider '{name}' moved out of core — installed its plugin from the catalog, but "
             f"{kept_off_sentence(name, home)}")
         return True
     if result.get("ok"):
+        _note_success(home, name)
         say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the catalog "
             f"(memory.provider and your stored memories are unchanged; check its settings with "
             f"`{_profile_command('memory status', home)}`)." + _LABS_NOTICES.get(name, ""))
         return True
+    if not result.get("raced"):  # an enable that only lost to other selection writers waits out no backoff
+        _note_failure(home, name)
     error = str(result.get("error") or "unknown error").rstrip(". ")
     say(f"  ⚠ Memory provider '{name}' moved out of core and could not be installed automatically: "
         f"{error}. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
     return False
 
 
-def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[str], None] = print) -> Optional[str]:
+def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[str], None] = print,
+                 wait: float = 900.0) -> Optional[str]:
     """Install the configured provider's catalog plugin into *home* when the provider is gone.
 
     Returns the installed plugin name, or None when nothing needed doing or the install could not
@@ -202,7 +226,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     name = _pending_provider(home, say=say)
     if name is None:
         return None
-    return name if _install_pending(home, name, install=install, say=say) else None
+    return name if _install_pending(home, name, install=install, say=say, wait=wait) else None
 
 
 def _interactive() -> bool:
@@ -342,9 +366,6 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
         report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
                f"Its automatic install failed recently: run `{_install_command(name, home)}`.")
         return False
-    installed = migrate_home(home, install=_install_into(home, consent=True), say=report) == name
-    if installed:
-        _note_success(home, name)
-    else:
-        _note_failure(home, name)
-    return installed
+    from hermes_cli.left_core_migration import startup_lock_wait
+    return migrate_home(home, install=_install_into(home, consent=True), say=report,
+                        wait=startup_lock_wait(gateway_start=False)) == name

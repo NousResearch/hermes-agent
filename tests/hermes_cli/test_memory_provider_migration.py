@@ -404,3 +404,43 @@ def test_labs_notice_reaches_startup_whether_or_not_lazy_installs_are_allowed(tm
     assert len(said) == 1
     assert "ByteRover is now a Hermes Labs plugin: built by Nous Research, not supported" in said[0]
     assert "`hermes -p work plugins install byterover`" in said[0]
+
+
+def test_install_waits_for_another_installer_and_installs_once(tmp_path, monkeypatch):
+    """Memory installs hold the lock every unattended plugin installer holds (default plugins, left-core
+    platforms). A start that finds its Labs provider missing while another Hermes process is placing it waits,
+    then neither clones over that tree nor reports the other installer's work as its own failure."""
+    import threading
+    from hermes_cli import default_plugins
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    installs: list[str] = []
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: installs.append(n) or {"ok": False,
+                                                                                                 "error": "exists"})
+    held, release = threading.Event(), threading.Event()
+
+    def other_installer():
+        with default_plugins.installer_lock(5):
+            held.set()
+            release.wait(10)
+            plugin_dir = tmp_path / "plugins" / "byterover"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "__init__.py").write_text("class P(MemoryProvider): ...\n", encoding="utf-8")
+
+    holder = threading.Thread(target=other_installer)
+    holder.start()
+    assert held.wait(10)
+    threading.Timer(0.5, release.set).start()
+    said: list[str] = []
+    try:
+        assert mig.recover_at_startup("byterover", say=said.append) is True
+    finally:
+        release.set()
+        holder.join(10)
+    assert installs == [] and said == []
+    assert not mig._failure_stamp(tmp_path, "byterover").exists()

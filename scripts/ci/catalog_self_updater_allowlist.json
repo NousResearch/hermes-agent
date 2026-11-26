@@ -61,5 +61,12 @@
     "path": "skills/statechart/scripts/run.ts",
     "sha256": "fb6ec4a1835a15e6e72df28bb932b8df5a4c04c5de6f9c270fd63ff5cd148dc7",
     "why": "statechart skill's model-check runner: asks the user's mise to install TLA+ tla2tools v1.7.4 (sha256-pinned in the spec string) and a Temurin JDK into mise's own store, writes only temporary .cfg/.tla files under a mkdtemp dir; never fetches or replaces plugin code (PR #158523)"
+  },
+  {
+    "repo": "https://github.com/samieshmil-blip/hermes-spellcheck-plus",
+    "sha": "3584e6ba2fb5faa3cdd9dc2a114c126b36aab707",
+    "path": "tools/build-dictionaries.mjs",
+    "sha256": "31c15fd40646114dc7f6d7baaee2df70cd726f7f348e55a34d3a6afee7a96cf7",
+    "why": "maintainer-only build script (run by hand with node, per README) that downloads the FrequencyWords word lists and regenerates desktop/plugin.js from tools/plugin.template.js; nothing in the plugin imports or runs it, and the catalog installs the committed desktop/plugin.js at the pinned sha (PR #160009)"
   }
 ]

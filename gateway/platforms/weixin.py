@@ -382,8 +382,11 @@ async def _api_post(
     async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout) as response:
         raw = await response.text()
         if not response.ok:
+            logger.warning("iLink POST %s HTTP %s: %s", endpoint, response.status, raw[:200])
             raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+        _parsed = json.loads(raw)
+        logger.info("iLink POST %s ret=%s errcode=%s", endpoint, _parsed.get("ret"), _parsed.get("errcode"))
+        return _parsed
 
 
 async def _api_get(
@@ -647,6 +650,97 @@ async def _download_and_decrypt_media(
 
 def _mime_from_filename(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+async def _convert_inbound_silk_to_wav(silk_path: str) -> Optional[str]:
+    """Decode Weixin's SILK or framed raw-Opus voice into an STT WAV."""
+    wav_path = str(Path(silk_path).with_suffix(".wav"))
+
+    def _decode_framed_opus() -> bool:
+        import ctypes
+        import ctypes.util
+        import wave
+
+        data = Path(silk_path).read_bytes()
+        magic = b"#!OPUS_RAW_V1"
+        if not data.startswith(magic):
+            return False
+        offset = len(magic) + 3
+        packets = []
+        while offset < len(data):
+            if offset + 2 > len(data):
+                raise ValueError("truncated OPUS_RAW_V1 frame length")
+            size = int.from_bytes(data[offset:offset + 2], "little")
+            offset += 2
+            if size == 0 or offset + size > len(data):
+                raise ValueError("invalid OPUS_RAW_V1 frame length")
+            packets.append(data[offset:offset + size])
+            offset += size
+
+        library = ctypes.util.find_library("opus")
+        if not library:
+            raise RuntimeError("libopus is unavailable")
+        opus = ctypes.CDLL(library)
+        opus.opus_decoder_create.restype = ctypes.c_void_p
+        opus.opus_decoder_create.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+        opus.opus_decode.restype = ctypes.c_int
+        opus.opus_decode.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                     ctypes.POINTER(ctypes.c_int16), ctypes.c_int, ctypes.c_int]
+        opus.opus_decoder_destroy.argtypes = [ctypes.c_void_p]
+        error = ctypes.c_int()
+        decoder = opus.opus_decoder_create(24000, 1, ctypes.byref(error))
+        if not decoder or error.value:
+            raise RuntimeError(f"libopus decoder initialization failed ({error.value})")
+        pcm = bytearray()
+        try:
+            output = (ctypes.c_int16 * 2880)()
+            for index, packet in enumerate(packets, 1):
+                encoded = ctypes.create_string_buffer(packet)
+                samples = opus.opus_decode(decoder, encoded, len(packet), output, 2880, 0)
+                if samples < 0:
+                    raise RuntimeError(f"libopus failed on frame {index} ({samples})")
+                pcm.extend(bytes(output)[:samples * 2])
+        finally:
+            opus.opus_decoder_destroy(decoder)
+        with wave.open(wav_path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(24000)
+            wav.writeframes(pcm)
+        return bool(pcm)
+
+    def _decode_with_pilk() -> None:
+        import pilk
+        pilk.silk_to_wav(silk_path, wav_path, rate=16000)
+
+    try:
+        if await asyncio.to_thread(_decode_framed_opus):
+            return wav_path
+    except Exception as exc:
+        logger.debug("Weixin OPUS_RAW_V1 decode failed: %s", exc)
+
+    try:
+        await asyncio.to_thread(_decode_with_pilk)
+        if Path(wav_path).is_file() and Path(wav_path).stat().st_size > 44:
+            return wav_path
+    except Exception as exc:
+        logger.debug("Weixin SILK decode with pilk failed: %s", exc)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", silk_path, "-ar", "16000", "-ac", "1", wav_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode == 0 and Path(wav_path).is_file() and Path(wav_path).stat().st_size > 44:
+            return wav_path
+        logger.warning("Weixin SILK decode failed: %s", stderr.decode(errors="replace")[-300:])
+    except (FileNotFoundError, OSError) as exc:
+        logger.warning("Weixin SILK decoder unavailable: %s", exc)
+
+    Path(wav_path).unlink(missing_ok=True)
+    return None
 
 
 def _split_table_row(line: str) -> List[str]:
@@ -1499,7 +1593,11 @@ class WeixinAdapter(BasePlatformAdapter):
                 full_url=media.get("full_url"),
                 timeout_seconds=60.0,
             )
-            return cache_audio_from_bytes(data, ".silk")
+            silk_path = cache_audio_from_bytes(data, ".silk")
+            wav_path = await _convert_inbound_silk_to_wav(silk_path)
+            if not wav_path:
+                raise RuntimeError("unable to decode Weixin SILK voice (install pilk or SILK-capable ffmpeg)")
+            return wav_path
         except Exception as exc:
             logger.warning("[%s] voice download failed: %s", self.name, exc)
             return None

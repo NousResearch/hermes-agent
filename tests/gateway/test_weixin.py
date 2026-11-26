@@ -4,6 +4,9 @@ import asyncio
 import base64
 import json
 import os
+import sys
+import types
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -14,6 +17,24 @@ from gateway.platforms.base import SendResult
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
+
+
+@pytest.mark.asyncio
+async def test_convert_inbound_silk_to_wav_with_pilk(tmp_path, monkeypatch):
+    """Native Weixin SILK is decoded before the gateway's extension gate."""
+    silk_path = tmp_path / "voice.silk"
+    silk_path.write_bytes(b"\x02#!SILK_V3")
+
+    def fake_decode(source, destination, rate):
+        assert source == str(silk_path)
+        assert rate == 16000
+        Path(destination).write_bytes(b"RIFF" + b"\x00" * 64)
+
+    monkeypatch.setitem(sys.modules, "pilk", types.SimpleNamespace(silk_to_wav=fake_decode))
+    wav_path = await weixin._convert_inbound_silk_to_wav(str(silk_path))
+
+    assert wav_path == str(tmp_path / "voice.wav")
+    assert Path(wav_path).read_bytes().startswith(b"RIFF")
 
 
 def _make_adapter() -> WeixinAdapter:

@@ -27,7 +27,14 @@ def _patch_info(tmp_path, config_yaml, model, runtime):
 
 class TestFormatSessionInfo:
 
-
+    @pytest.mark.parametrize(("runtime", "label"), [({}, "unknown"), ({"provider": "openrouter"}, "openrouter")])
+    def test_provider_label_reflects_resolved_route(self, runner, tmp_path, runtime, label):
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: test-model\n  context_length: 8192\n", "test-model", runtime
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert f"◆ Provider: {label}" in info.splitlines()
 
     def test_config_context_length(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  context_length: 32768\n",

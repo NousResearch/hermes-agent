@@ -240,6 +240,7 @@ def no_prompt_git_kwargs() -> dict:
     # desktop backend on Windows; hide the per-spawn console (#117781).
     return {"stdin": subprocess.DEVNULL, "env": env, "creationflags": windows_hide_flags()}
 
+
 def suppress_platform_ver_console() -> None:
     """Stub ``platform._syscmd_ver`` on Windows so it never flashes a console. No-op elsewhere.
 

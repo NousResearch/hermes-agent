@@ -699,6 +699,20 @@ gateway:
       provider_usage_plus_estimate: leverantörens användning + beräknade nya meddelanden
     source_line: 'Källa: {source}; kategoriantal är lokala beräkningar.'
     hint_all: Använd /context all för kostnad per färdighet och verktygsuppsättning.
+    cache_confidence:
+      assumed: antagen
+      declared: deklarerad
+      proven: bekräftad
+    cache_expired: 'Promptcache: utgången sedan {ago} ({ttl}, {confidence}); nästa meddelande bearbetar hela prompten på nytt.'
+    cache_learned: 'Inlärt: {rule}.'
+    cache_maybe_warm: 'Promptcache: kan fortfarande vara varm till {until} (högst {remaining} till; {ttl}, {confidence}).'
+    cache_tier_pending: 'Nivå: 5 min fram till första pausen över 5 minuter, därefter 1 timme.'
+    cache_unknown_moved: 'Promptcache: okänd (rutt, session eller kontext har ändrats sedan senaste cachade begäran).'
+    cache_unknown_route: 'Promptcache: okänd (den här leverantören anger inte hur länge cachen behålls).'
+    cache_unknown_runtime: 'Promptcache: okänd (körtiden ställer in egna cachealternativ som Hermes inte kan se).'
+    cache_unknown_storage: 'Promptcache: okänd (sessionslagringen kunde inte läsas).'
+    cache_warm: 'Promptcache: varm till {until} ({remaining} kvar; {ttl}, {confidence}).'
+    cache_warming_off: 'Hållsignaler: av (missades två gånger).'
   status:
     header: "\U0001F4CA **Hermes Gateway-status**"
     matrix_scope_header: "**Matrix-omfattning:**"
@@ -1612,6 +1626,16 @@ platform:
     approval_expired: "⌛ Godkännandet har löpt ut — kommandot kördes inte (det hade
       redan löpt ut eller lösts någon annanstans)."
     model_picker_expired: "⏳ Det här modellvalet har löpt ut — kör /model igen."
+    vault_code:
+      body: '{site} begär en engångskod via sms eller e-post. Tryck på knappen och skriv koden i formuläret som öppnas: den skickas direkt till sidan och visas aldrig här.'
+      button: Ange kod
+      ended: Kodförfrågan har avslutats; ingen kod angavs.
+      input_label: Engångskod
+      modal_title: 'Kod för {site}'
+      not_author: Endast den som startade förfrågan kan ange koden.
+      submitted: Koden har skickats och anges på sidan.
+      submitted_footer: '✓ Koden har skickats'
+      title: '🔐 Verifieringskod för {site}'
     not_authorized: "⛔ Inte behörig."
     handoff:
       default_name: session
@@ -1852,6 +1876,9 @@ platform:
       image_skipped_too_large: "⚠️ Hoppade över `{filename}` — {size_mb} MB överskrider
         Discords uppladdningsgräns på {limit_mb} MB."
   telegram:
+    vault_code:
+      body: Svara på det här meddelandet med koden. Hermes tar genast bort ditt svar och anger koden på sidan; modellen ser den aldrig.
+      delete_failed: Det gick inte att ta bort ditt svar här. Ta bort det själv.
     approval:
       action_once: "✅ Tillåt en gång"
       action_session: "✅ Session"
@@ -2469,6 +2496,10 @@ slash:
   quit:
     description: Avsluta CLI:t (använd --delete för att även ta bort sessionshistoriken).
 cli:
+  gateway_restart:
+    stopped: Väntade inte längre på att Hermes skulle starta om; ingenting startades.
+    timed_out: Hermes kom inte tillbaka efter omstarten i tid. Kontrollera `hermes gateway status` och starta sedan `hermes` igen.
+    waiting: Hermes startar om för att slutföra en uppdatering eller omstart; väntar på att den ska komma tillbaka…
   backtrack:
     title: "↺ Transkribering. Välj en prompt att redigera."
     keys_hint: Bläddra i transkriptet · ↑↓/jk rulla · ←→/hl promptar · ↵ redigera

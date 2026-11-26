@@ -35,7 +35,7 @@ from storage_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 from ._schema_ddl import (
     DEFERRED_INDEX_SQL, FTS_REBUILD_DEFERRAL_KEY,
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL,
-    SCHEMA_SQL, SCHEMA_VERSION, _FTS5_SHADOW_SUFFIXES, _FTS_TRIGGERS, _drop_orphan_fts_shadow_tables,
+    SCHEMA_SQL, SCHEMA_VERSION, _FTS5_SHADOW_SUFFIXES, _non_continuation_child_sql, _FTS_TRIGGERS, _drop_orphan_fts_shadow_tables,
     _ephemeral_child_sql, _sql_json_extract, base_index_recognised, base_source_view_is_stale,
     fts_layout_current, fts_layout_drift, fts_trigram_session_sql,
 )
@@ -1258,6 +1258,33 @@ def _run_data_migrations(holder: StoreHolder, cursor: sqlite3.Cursor, current_ve
                 "AND NOT EXISTS (SELECT 1 FROM sessions p WHERE p.id = sessions.parent_session_id "
                 "AND p.source = 'subagent' AND p.end_reason = 'compression')"
             )
+    if current_version < 34:
+        # v34: before the route guard read ``created_source``, a handoff onto a markerless subagent row
+        # moved the chat without stamping ``_chat_adopted``, and the guard now evicts that chat as a
+        # capture. ``handoff_state='completed'`` is the one durable proof the user chose the row: only
+        # the handoff watcher writes it, after a user asked for the handoff; the peer stamp and the
+        # completion re-pin never do. Only the handed-off row itself: its compression continuation
+        # carries no durable field a delegate spawn cannot also leave (same parent, created_source and
+        # no marker), so following children would adopt a markerless worker it spawned. A tip that
+        # compressed before the upgrade, and any /resume, left no record a capture could not also
+        # leave, so neither is backfilled. A row compression closed is not adopted while a continuation
+        # still exists: recovery would reopen it and clear the ``end_reason`` that links the two.
+        # A missing JSON function or column skips the step; a busy or locked store raises, so the
+        # startup retry runs it again instead of recording v34 unrepaired.
+        try:
+            cursor.execute(
+                "UPDATE sessions SET model_config = json_set("
+                "COALESCE(model_config, '{}'), '$._chat_adopted', json('true')) "
+                "WHERE handoff_state = 'completed' AND created_source = 'subagent' "
+                "AND NOT (COALESCE(end_reason, '') = 'compression' AND EXISTS (SELECT 1 FROM sessions c "
+                f"WHERE c.parent_session_id = sessions.id {_non_continuation_child_sql('c.', 'sessions.id')})) "
+                "AND json_valid(COALESCE(model_config, '{}')) "
+                f"AND COALESCE({_sql_json_extract('model_config', '$._delegate_from')}, '') = '' "
+                f"AND {_sql_json_extract('model_config', '$._chat_adopted')} IS NULL"
+            )
+        except sqlite3.OperationalError as exc:
+            if not str(exc).startswith(("no such function", "no such column")):
+                raise
     _advance_message_uid_backfill(holder, cursor)
     fts_migrations_complete = True
     if current_version < 30 and fts5_available:

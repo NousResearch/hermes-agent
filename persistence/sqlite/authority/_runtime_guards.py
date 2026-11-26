@@ -4,7 +4,7 @@ gateway's history-mount check."""
 
 from persistence.core.errors import AuthorityRefusal
 
-from ..conversation._store.sql_common import _non_continuation_child_sql
+from .._schema_ddl import _non_continuation_child_sql
 
 
 _ENDED_ROW_SQL = "SELECT ended_at, end_reason FROM sessions WHERE id = ?"

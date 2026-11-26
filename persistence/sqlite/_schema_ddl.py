@@ -29,6 +29,17 @@ def _sql_json_extract(expression: str, path: str) -> str:
     )
     return f"json_extract({safe_json}, {_sql_literal(path)})"
 
+
+def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
+    """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
+    (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
+    inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
+    ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
+    return "".join(
+        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
+        for marker in ("_branched_from", "_delegate_from", "_reset_from")
+    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
@@ -71,7 +82,8 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
 # v33: data-only — re-tag delegate subagent rows that lost ``_delegate_from`` (see _run_data_migrations).
-SCHEMA_VERSION = 33
+# v34: data-only — adopt markerless subagent rows a completed handoff moved a chat onto (same place).
+SCHEMA_VERSION = 34
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
 # state_meta key ``fts_storage_version``. The main schema version advances

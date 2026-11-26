@@ -8,11 +8,11 @@ import sqlite3
 import time
 from typing import Any, Optional
 from persistence.sqlite._state.common import _BOUNDARY_END_REASONS, _ended_by_compression, is_automatic_end_reason
-from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract
+from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract
 from persistence.sqlite.conversation._store.core import _session_row_dict
 from persistence.sqlite.conversation._store.messages import _carry_parent_timestamps, _clone_message_rows, _execute_transcript_write, _insert_message_rows, _is_explicit_fork_child_row, _tail_rows_after_watermark
 from persistence.sqlite.conversation._store.sql_common import (
-    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _non_continuation_child_sql, _sql_session_last_active,
+    _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _sql_session_last_active,
 )
 from persistence.sqlite._holder import StoreHolder
 

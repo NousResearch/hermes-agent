@@ -38,6 +38,8 @@ from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.status import flush_runtime_status, read_runtime_status
 from hermes_constants import get_hermes_home
 
+_BARRIER_TIMEOUT_SECS = 2.5
+
 
 @pytest.fixture(autouse=True)
 def _restore_multiplex_flag():
@@ -128,7 +130,7 @@ def _make_runner(tmp_path: Path, monkeypatch, *, multiplex: bool = True) -> tupl
     runner._handle_active_session_busy_message = AsyncMock()
     runner._recover_telegram_topic_thread_id = AsyncMock(return_value=None)
     runner._make_adapter_auth_check = lambda platform, profile_name=None: (lambda *a, **kw: True)
-    runner._adapter_disconnect_timeout_secs = lambda: 0.5
+    runner._adapter_disconnect_timeout_secs = lambda: 2.5
     return runner, home
 
 
@@ -164,7 +166,7 @@ async def test_secondary_profiles_connect_concurrently_with_isolated_scopes(tmp_
         if in_flight == len(profiles):
             all_entered.set()
         try:
-            await asyncio.wait_for(all_entered.wait(), timeout=0.4)
+            await asyncio.wait_for(all_entered.wait(), timeout=_BARRIER_TIMEOUT_SECS)
             # Re-check ContextVar scope AFTER awaiting the shared barrier.
             observed_scopes[adapter._hermes_profile_name] = (
                 Path(get_hermes_home()).resolve(),
@@ -211,7 +213,7 @@ async def test_single_profile_multiple_platforms_connect_concurrently(tmp_path, 
         if in_flight == 2:
             both_entered.set()
         try:
-            await asyncio.wait_for(both_entered.wait(), timeout=0.4)
+            await asyncio.wait_for(both_entered.wait(), timeout=_BARRIER_TIMEOUT_SECS)
             return True
         finally:
             in_flight -= 1
@@ -246,7 +248,7 @@ async def test_duplicate_credential_refused_before_concurrent_connect(tmp_path, 
         entered_profiles.append(adapter._hermes_profile_name)
         if len(entered_profiles) == 2:
             both_unique_entered.set()
-        await asyncio.wait_for(both_unique_entered.wait(), timeout=0.4)
+        await asyncio.wait_for(both_unique_entered.wait(), timeout=_BARRIER_TIMEOUT_SECS)
         return True
 
     def make_adapter(platform, cfg):
@@ -391,7 +393,7 @@ async def test_transient_profile_failure_omitted_while_siblings_connect_concurre
         if in_flight == 2:
             both_entered.set()
         try:
-            await asyncio.wait_for(both_entered.wait(), timeout=0.4)
+            await asyncio.wait_for(both_entered.wait(), timeout=_BARRIER_TIMEOUT_SECS)
             return True
         finally:
             in_flight -= 1
@@ -432,7 +434,7 @@ async def test_connect_failure_and_exception_do_not_block_siblings(tmp_path, mon
         if in_flight == 3:
             all_entered.set()
         try:
-            await asyncio.wait_for(all_entered.wait(), timeout=0.4)
+            await asyncio.wait_for(all_entered.wait(), timeout=_BARRIER_TIMEOUT_SECS)
             name = adapter._hermes_profile_name
             if name == "alpha":
                 return False
@@ -484,7 +486,7 @@ async def test_parked_profiles_skipped_and_single_profile_unchanged(tmp_path, mo
         if in_flight == 2:
             both_entered.set()
         try:
-            await asyncio.wait_for(both_entered.wait(), timeout=0.4)
+            await asyncio.wait_for(both_entered.wait(), timeout=_BARRIER_TIMEOUT_SECS)
             return True
         finally:
             in_flight -= 1
@@ -513,9 +515,9 @@ async def test_parked_profiles_skipped_and_single_profile_unchanged(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_systemd_boot_extension_uses_max_budget_once_for_batch(tmp_path, monkeypatch):
-    """Sequential preparation renews per platform and the concurrent connect batch extends
-    with the largest platform budget, so a shorter-budget sibling prepared last cannot leave
-    the parallel connect wave with a shorter deadline."""
+    """Each adapter in a concurrent connect wave extends with the wave's largest platform
+    budget without extra preparation notifications on fast 2-profile boots, so a shorter-budget
+    sibling (Discord) prepared last cannot shorten Telegram's parallel connect deadline."""
     runner, home = _make_runner(tmp_path, monkeypatch)
     runner.config.systemd_watchdog_seconds = 30.0
     _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
@@ -537,7 +539,47 @@ async def test_systemd_boot_extension_uses_max_budget_once_for_batch(tmp_path, m
     assert connected == 2
     tg_budget = runner._platform_connect_timeout_secs(Platform.TELEGRAM, initial=True)
     dc_budget = runner._platform_connect_timeout_secs(Platform.DISCORD, initial=True)
-    assert extensions[-1] == max(tg_budget, dc_budget) + 30.0
+    expected = max(tg_budget, dc_budget) + 30.0
+    assert extensions == [expected, expected]
+
+
+@pytest.mark.asyncio
+async def test_slow_wall_clock_preparation_renews_systemd_boot_deadline(tmp_path, monkeypatch):
+    """When preparing the first secondary profile consumes >= 30s of monotonic wall-clock time,
+    systemd's start deadline is renewed before the second profile loads."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    runner.config.systemd_watchdog_seconds = 30.0
+    _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
+    _mkprofile(home, "beta", "DISCORD_BOT_TOKEN=tok-beta\n")
+
+    clock = 100.0
+    extensions_at_load: dict[str, int] = {}
+    extensions: list[float] = []
+    real_load = runner._load_secondary_profile_config
+
+    monkeypatch.setattr("gateway.run_adapters.time.monotonic", lambda: clock)
+    monkeypatch.setattr("gateway.systemd_notify.extend_start_timeout", lambda secs: extensions.append(secs) or True)
+
+    async def slow_first_load(profile_name, profile_home):
+        nonlocal clock
+        extensions_at_load[profile_name] = len(extensions)
+        cfg = await real_load(profile_name, profile_home)
+        if profile_name == "alpha":
+            clock += 35.0
+        return cfg
+
+    runner._load_secondary_profile_config = slow_first_load
+    runner._create_adapter = lambda platform, cfg: _FakeAsyncAdapter(platform, cfg, AsyncMock(return_value=True))
+
+    try:
+        connected = await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert connected == 2
+    assert extensions_at_load["alpha"] == 0
+    assert extensions_at_load["beta"] == 1
+    assert len(extensions) == 3
 
 
 @pytest.mark.asyncio
@@ -631,9 +673,12 @@ async def test_cancellation_before_gather_workers_releases_all_claims_without_di
         return adapter
 
     runner._create_adapter = make_adapter
-    runner._extend_systemd_boot_for_batch = lambda _plats: asyncio.get_running_loop().call_soon(
-        asyncio.current_task().cancel
-    )
+
+    def cancel_before_wave(platforms):
+        asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+        return next(iter(platforms), None)
+
+    runner._max_boot_timeout_platform = cancel_before_wave
 
     try:
         with pytest.raises(asyncio.CancelledError):
@@ -681,9 +726,9 @@ async def test_cancellation_during_handshake_disconnects_untracked_and_preserves
             delta_in_flight.set()
             await asyncio.Event().wait()
         # gamma waits for alpha (connected), beta (queued), and delta (in flight), then cancels boot.
-        await asyncio.wait_for(alpha_done.wait(), timeout=0.4)
-        await asyncio.wait_for(beta_done.wait(), timeout=0.4)
-        await asyncio.wait_for(delta_in_flight.wait(), timeout=0.4)
+        await asyncio.wait_for(alpha_done.wait(), timeout=_BARRIER_TIMEOUT_SECS)
+        await asyncio.wait_for(beta_done.wait(), timeout=_BARRIER_TIMEOUT_SECS)
+        await asyncio.wait_for(delta_in_flight.wait(), timeout=_BARRIER_TIMEOUT_SECS)
         # Let beta finish its post-failure disconnect + reconnect-bridge handoff before cancelling boot.
         for _ in range(5):
             if ("beta", Platform.TELEGRAM) in getattr(runner, "_secondary_held_claims", {}) and (

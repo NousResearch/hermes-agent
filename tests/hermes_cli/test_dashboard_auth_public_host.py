@@ -39,6 +39,8 @@ def test_a_sign_in_started_on_another_host_completes_on_the_public_one(agent):
     assert (started.status_code, f"{moved.scheme}://{moved.netloc}", moved.path) == (
         302, PUBLIC, "/auth/login")
     assert parse_qs(moved.query)["next"] == ["/sessions"]
+    # The loop guard: a proxy that hides the browser's host must not send it round again.
+    assert parse_qs(moved.query)["public_host_hop"] == ["1"]
 
     to_idp = agent.get(started.headers["location"], follow_redirects=False)
     landed = agent.get(to_idp.headers["location"], follow_redirects=False)

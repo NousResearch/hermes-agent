@@ -1,6 +1,4 @@
-import { getHeapStatistics } from 'node:v8'
-
-import { type HeapDumpResult, performHeapDump } from './memory.js'
+import { getV8HeapStatistics, type HeapDumpResult, performHeapDump } from './memory.js'
 
 export type MemoryLevel = 'critical' | 'high' | 'normal'
 
@@ -37,13 +35,7 @@ const MB = 1024 ** 2
 // clamp to sane floors/ceilings so a tiny --max-old-space-size can't drive the
 // thresholds below the warn watermark. Callers may still override explicitly.
 function resolveThresholds(criticalBytes?: number, highBytes?: number) {
-  let limit = 0
-
-  try {
-    limit = getHeapStatistics().heap_size_limit || 0
-  } catch {
-    limit = 0
-  }
+  const limit = getV8HeapStatistics()?.heap_size_limit || 0
 
   // Fall back to the historical 8GB ceiling if V8 doesn't report one.
   const ceiling = limit > 0 ? limit : 8 * GB
@@ -96,6 +88,11 @@ export function startMemoryMonitor({
   onWarn,
   warnBytes = 600 * MB
 }: MemoryMonitorOptions = {}): () => void {
+  // Degrade cleanly to a no-op when V8 heap statistics are unavailable (e.g. non-V8 runtimes).
+  if (getV8HeapStatistics() === null) {
+    return () => {}
+  }
+
   const { critical, high } = resolveThresholds(criticalBytes, highBytes)
   const dumped = new Set<Exclude<MemoryLevel, 'normal'>>()
   const inFlight = new Set<Exclude<MemoryLevel, 'normal'>>()

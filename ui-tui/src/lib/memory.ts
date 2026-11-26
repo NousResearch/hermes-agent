@@ -1,9 +1,83 @@
 import { createWriteStream } from 'node:fs'
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { getHeapSnapshot, getHeapSpaceStatistics, getHeapStatistics } from 'node:v8'
+
+interface V8HeapStatisticsLike {
+  heap_size_limit: number
+  malloced_memory: number
+  number_of_detached_contexts: number
+  number_of_native_contexts: number
+  peak_malloced_memory: number
+}
+
+interface V8HeapSpaceLike {
+  space_available_size: number
+  space_name: string
+  space_size: number
+  space_used_size: number
+}
+
+interface V8ModuleLike {
+  getHeapSnapshot?: () => Readable
+  getHeapSpaceStatistics?: () => V8HeapSpaceLike[]
+  getHeapStatistics?: () => V8HeapStatisticsLike
+}
+
+let _v8Resolved = false
+let _v8Module: V8ModuleLike | null = null
+let _v8Loader: (() => V8ModuleLike | null) | null = null
+
+export function _setV8LoaderForTesting(loader: (() => V8ModuleLike | null) | null): void {
+  _v8Loader = loader
+  _v8Resolved = false
+  _v8Module = null
+}
+
+function loadV8(): V8ModuleLike | null {
+  if (_v8Resolved) {
+    return _v8Module
+  }
+
+  _v8Resolved = true
+
+  if (_v8Loader) {
+    try {
+      _v8Module = _v8Loader()
+    } catch {
+      _v8Module = null
+    }
+
+    return _v8Module
+  }
+
+  try {
+    const req = createRequire(import.meta.url)
+
+    _v8Module = req('node:v8') as V8ModuleLike
+  } catch {
+    _v8Module = null
+  }
+
+  return _v8Module
+}
+
+export function getV8HeapStatistics(): V8HeapStatisticsLike | null {
+  const fn = loadV8()?.getHeapStatistics
+
+  if (typeof fn !== 'function') {
+    return null
+  }
+
+  try {
+    return fn()
+  } catch {
+    return null
+  }
+}
 
 export type MemoryTrigger = 'auto-critical' | 'auto-high' | 'manual'
 
@@ -59,26 +133,36 @@ export interface HeapDumpResult {
 
 export async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<MemoryDiagnostics> {
   const usage = process.memoryUsage()
-  const heapStats = getHeapStatistics()
+  const heapStats = getV8HeapStatistics() ?? {
+    heap_size_limit: 0,
+    malloced_memory: 0,
+    number_of_detached_contexts: 0,
+    number_of_native_contexts: 0,
+    peak_malloced_memory: 0
+  }
   const resourceUsage = process.resourceUsage()
   const uptimeSeconds = process.uptime()
 
   // Not available on Bun / older Node.
-  let heapSpaces: ReturnType<typeof getHeapSpaceStatistics> | undefined
+  let heapSpaces: V8HeapSpaceLike[] | undefined
 
   try {
-    heapSpaces = getHeapSpaceStatistics()
+    const fn = loadV8()?.getHeapSpaceStatistics
+
+    if (typeof fn === 'function') {
+      heapSpaces = fn()
+    }
   } catch {
     /* noop */
   }
 
   const internals = process as unknown as {
-    _getActiveHandles: () => unknown[]
-    _getActiveRequests: () => unknown[]
+    _getActiveHandles?: () => unknown[]
+    _getActiveRequests?: () => unknown[]
   }
 
-  const activeHandles = internals._getActiveHandles().length
-  const activeRequests = internals._getActiveRequests().length
+  const activeHandles = typeof internals._getActiveHandles === 'function' ? internals._getActiveHandles().length : 0
+  const activeRequests = typeof internals._getActiveRequests === 'function' ? internals._getActiveRequests().length : 0
   const openFileDescriptors = await swallow(async () => (await readdir('/proc/self/fd')).length)
   const smapsRollup = await swallow(() => readFile('/proc/self/smaps_rollup', 'utf8'))
 
@@ -174,7 +258,15 @@ export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promis
       return { diagPath, suppressed: true, success: true }
     }
 
-    await pipeline(getHeapSnapshot(), createWriteStream(heapPath, { mode: 0o600 }))
+    const getSnapshot = loadV8()?.getHeapSnapshot
+
+    if (typeof getSnapshot !== 'function') {
+      await pruneHeapdumps(dir).catch(() => undefined)
+
+      return { diagPath, suppressed: true, success: true }
+    }
+
+    await pipeline(getSnapshot(), createWriteStream(heapPath, { mode: 0o600 }))
     await pruneHeapdumps(dir).catch(() => undefined)
 
     return { diagPath, heapPath, success: true }

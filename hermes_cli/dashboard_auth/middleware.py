@@ -189,7 +189,9 @@ def _session_token_header_session(request: Request):
         return None
     provider = next(
         (p for p in list_session_providers() if p.name == _SESSION_TOKEN_PROVIDER), None)
-    if provider is None or not webapp_sign_in.access_token_works_alone(request, token):
+    # Only the session-token provider verifies this header, so an exchanged token here opens nothing
+    # and is not worth a signing-key lookup.
+    if provider is None or not webapp_sign_in.access_token_works_alone(request, token, exchanged=False):
         return None
     return provider.verify_session(access_token=token)
 

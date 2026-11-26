@@ -229,6 +229,26 @@ def test_while_portals_keys_cannot_be_fetched_only_cached_keys_are_tried(gated, 
     assert len(fetches) == 1
 
 
+def test_an_exchanged_token_in_the_session_token_header_costs_no_key_lookup(gated, nous, portal_key):
+    """Only the session-token provider verifies ``X-Hermes-Session-Token``, so an exchanged-shaped
+    token there could never open anything; it must not make the listener look up Portal's keys."""
+    lookups = []
+
+    class CountingKeys:
+        def get_signing_key_from_jwt(self, token):
+            lookups.append(token)
+            raise AssertionError("no key lookup expected")
+
+    from hermes_cli.dashboard_auth import register_provider
+    from plugins.dashboard_auth.session_token import SessionTokenProvider
+
+    register_provider(SessionTokenProvider(token="the-deployment-session-token"))
+    nous._jwks_client = CountingKeys()
+    response = gated.browser().get("/api/auth/me", headers={"X-Hermes-Session-Token": _token(portal_key)})
+    assert response.status_code == 401, response.text
+    assert lookups == []
+
+
 @pytest.mark.parametrize("header", [{"alg": []}, {"alg": {"x": 1}}, {"alg": None}])
 def test_a_malformed_header_is_refused_not_an_error(gated, nous, header):
     token = f"{_b64(header)}.{_b64({'act': ACTOR})}.c2ln"

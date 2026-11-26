@@ -244,6 +244,48 @@ def test_a_provider_extraction_whose_link_is_repointed_while_it_picks_its_launch
     assert not ran.exists()
 
 
+@pytest.mark.platforms("posix")  # directory symlinks
+def test_a_host_start_refused_after_its_context_read_another_directory_reads_its_own_again_next_time(
+        tmp_path, monkeypatch):
+    """A start refused because the profile's link was repointed while it rebuilt the host's context does not keep
+    that context: once the link leads back, the next start's context holds the profile's own secrets."""
+    from agent import secret_scope as ss
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugins_loader import PluginHomeMoved
+
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {})
+    (home / ".env").write_text("MOVED_PROBE=own\n", encoding="utf-8")
+    (other / ".env").write_text("MOVED_PROBE=other\n", encoding="utf-8")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    ss.set_multiplex_active(True)
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    (profiles / "ops").rename(profiles / "ops2")  # the next start rebuilds the context for the new name
+    build = PluginHost._build_base_context
+
+    def repointed_while_building(self):
+        (profiles / "ops2").unlink()
+        (profiles / "ops2").symlink_to(other, target_is_directory=True)
+        return build(self)
+
+    monkeypatch.setattr(PluginHost, "_build_base_context", repointed_while_building)
+    try:
+        with pytest.raises(PluginHomeMoved):
+            host.ensure_started()
+        monkeypatch.setattr(PluginHost, "_build_base_context", build)
+        (profiles / "ops2").unlink()
+        (profiles / "ops2").symlink_to(home, target_is_directory=True)
+        host.ensure_started()
+        assert host._base_context.run(ss.get_secret, "MOVED_PROBE") == "own"
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_a_relative_home_looked_up_from_another_working_directory_gets_the_directory_it_names_there(
         tmp_path, monkeypatch):
     """A symbolic profile id bound as a home is a relative path. A lookup from another working directory gets the

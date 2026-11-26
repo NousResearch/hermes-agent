@@ -16,6 +16,7 @@ import asyncio
 from types import SimpleNamespace
 
 from gateway.config import Platform
+from gateway.response_filters import PROCESS_NOTIFICATION_SILENCE_HINT
 from gateway.run import GatewayRunner
 from tests.gateway.test_kanban_notifier_served_apiserver_wake import (
     RecordingApiServerAdapter, _FakeHttpSession, _own_session, served,
@@ -58,6 +59,7 @@ def test_served_profile_completion_wakes_in_process_only_for_the_session_it_owns
     assert _wake(_make_runner(adapter=adapter), _completion_event(SESSION)) is True
     assert [t["session_id"] for t in adapter.turns] == [SESSION]
     assert adapter.homes == [str(served.builder)] and adapter.profiles == ["builder"]
+    assert PROCESS_NOTIFICATION_SILENCE_HINT not in adapter.turns[0]["text"]
     assert _FakeHttpSession.calls == []  # no HTTP self-post, so no secondary API_SERVER_KEY
 
     # Event whose source names the route-only served profile: same in-process wake, not deferred.
@@ -77,6 +79,7 @@ def test_served_profile_completion_wakes_in_process_only_for_the_session_it_owns
     assert adapter.turns == []
     assert [c["headers"]["X-Hermes-Session-Id"] for c in _FakeHttpSession.calls] == ["default-owned"]
     assert _FakeHttpSession.calls[0]["url"].endswith("/v1/chat/completions")
+    assert PROCESS_NOTIFICATION_SILENCE_HINT not in _FakeHttpSession.calls[0]["json"]["messages"][0]["content"]
 
 
 def test_single_profile_gateway_keeps_the_http_self_post(served, monkeypatch):

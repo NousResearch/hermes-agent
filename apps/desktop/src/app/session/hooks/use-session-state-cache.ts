@@ -534,7 +534,8 @@ export function useSessionStateCache({
       sessionId: string,
       updater: (state: ClientSessionState) => ClientSessionState,
       storedSessionId?: string | null,
-      liveDelta = false
+      liveDelta = false,
+      silentCompletion = false
     ) => {
       const previous = ensureSessionState(sessionId, storedSessionId)
       // Give the updater the raw previous state so it can return the same
@@ -561,7 +562,7 @@ export function useSessionStateCache({
       // Publishing to $sessionStates automatically fires transition side-effects
       // (watchdog, settle grace, unread marker, compression id rotation) inside
       // publishSessionState — no manual transition call needed.
-      publishSessionState(sessionId, next)
+      publishSessionState(sessionId, next, silentCompletion)
       sessionStateCache.prune()
       syncSessionStateToView(sessionId, next, liveDelta)
 

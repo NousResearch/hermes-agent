@@ -103,6 +103,54 @@ def test_idle_cli_paints_header_and_streams_the_gateway_admitted_turn(monkeypatc
         conn.close()
 
 
+def test_cli_adopts_silent_completion_without_replaying_the_marker(capsys):
+    from gateway.run_notifications import _mark_internal_notification
+    from gateway.session_automation import admission_display
+    from gateway.session_results import prepare_result
+    from gateway.session_settlement_recovery import completion_payload
+
+    row = {'admission_id': 'adm-9', 'payload': {
+        'text': _mark_internal_notification(MODEL_TEXT, process_silence=True),
+        'local_automation_v1': {'display_kind': 'process_complete', 'display_text': DISPLAY}}}
+    reply = {'role': 'assistant', 'content': '[SILENT]', 'display_kind': 'hidden'}
+    captured = {'result': {'final_response': '[SILENT]', 'completed': True, 'local_viewer': True,
+                           'response_transformed': True, 'pre_transform_response': '[SILENT]',
+                           'current_turn_user_idx': 0,
+                           'messages': [{'role': 'user', 'content': MODEL_TEXT}, reply]}}
+    outcome, stored = prepare_result(row, None, 'completed', captured)
+    complete = completion_payload(row, {'outcome': outcome}, None, captured)
+    conn, client = _connected()
+    try:
+        client.result = stored['result']
+        cli = _idle_cli(conn)
+        _play(conn, client, [frame('message.start', admission_display(row['payload']), generation=9, admission='adm-9'),
+                             frame('message.complete', complete, generation=9, admission='adm-9')])
+        cli._drain_process_notifications('cli-idle')
+        message = cli._pending_input.get_nowait()
+        assert str(message).startswith(MODEL_TEXT) and '[SILENT]' not in str(message)
+        deltas = []
+        cli.agent = GatewayAgent(connection=conn, session_id=SID, stream_delta_callback=deltas.append)
+        cli.conversation_history = []
+        cli._chat_stage_user_message(cli.agent, message)
+        result = cli.agent.run_conversation(str(message), conversation_history=[])
+        assert result['silent'] is True and result['final_response'] == ''
+        assert deltas == []
+        assert result['messages'][-1] == reply
+        assert not result.get('pre_transform_response')
+
+        cli._ring_bell = Mock()
+        cli._sync_program_status = Mock()
+        cli.show_reasoning = cli._voice_tts = False
+        turn = SimpleNamespace(result=result, use_streaming_tts=False)
+        assert cli._chat_render_turn(turn, None, None) == ''
+        cli._ring_bell.assert_not_called()
+        cli.conversation_history = result['messages']
+        cli.show_history()
+        assert '[SILENT]' not in capsys.readouterr().out
+    finally:
+        conn.close()
+
+
 def test_adoption_is_one_shot_and_never_hijacks_a_typed_turn():
     conn, client = _connected()
     try:

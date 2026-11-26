@@ -7,6 +7,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_identity import replace_source
 from persistence.conversation.lineage import CompressionChild
 from persistence.conversation.messages import NewMessage
@@ -33,6 +34,10 @@ async def test_wake_admits_as_the_committed_turn_when_the_origin_drifted(tmp_pat
         assert wake['source'] == {k: v for k, v in human['source'].items() if k != 'message_id'}
         assert wake['provenance'] == human['provenance']
         assert rows[-1].payload['text'].count('reply with exactly [SILENT]') == 1
+        actor = SessionActor('viewer', 'default', frozenset({'session:read'}), 'fixture')
+        snapshot = await authority.attach(actor, SessionRef('default', authority.logical_owner(sid)), history=False)
+        pending = next(row for row in snapshot.pending if row.admission_id == rows[-1].admission_id)
+        assert pending.text.startswith('[done]') and '[SILENT]' not in pending.text
     finally:
         authority.runner.session_store.close_all_db_handles()
 

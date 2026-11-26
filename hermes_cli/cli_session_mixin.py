@@ -463,7 +463,7 @@ class CLISessionMixin:
             if role == "tool":
                 hidden_tool_messages += 1
                 continue
-            if role not in {"user", "assistant"}:
+            if role not in {"user", "assistant"} or msg.get("display_kind") == "hidden":
                 continue
             flush_tool_summary()
             visible_index += 1

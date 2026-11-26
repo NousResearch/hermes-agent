@@ -863,13 +863,8 @@ class GatewayTurnPrepareMixin:
             self._hmwa_apply_message_timestamp(event, message_text)
         )
         if event.internal and isinstance(persist_user_message, str):
-            # Keep the model instruction out of the stored process result and its expanded card.
-            from gateway.response_filters import PROCESS_NOTIFICATION_SILENCE_HINT
-            from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
-            footer = "\n\n" + INTERNAL_NOTIFICATION_FOOTER
-            suffix = "\n\n" + PROCESS_NOTIFICATION_SILENCE_HINT + footer
-            if persist_user_message.endswith(suffix):
-                persist_user_message = persist_user_message.removesuffix(suffix) + footer
+            from gateway.run_notifications import process_notice_for_display
+            persist_user_message = process_notice_for_display(persist_user_message)
 
         # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
         # cannot leak them into the next turn.

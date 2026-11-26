@@ -113,6 +113,14 @@ def _mark_internal_notification(text: str, *, process_silence: bool = False) -> 
     return text + "\n\n" + INTERNAL_NOTIFICATION_FOOTER
 
 
+def process_notice_for_display(text: str) -> str:
+    """Keep the silence instruction out of transcript rows and their display copies."""
+    from gateway.response_filters import PROCESS_NOTIFICATION_SILENCE_HINT
+    footer = "\n\n" + INTERNAL_NOTIFICATION_FOOTER
+    suffix = "\n\n" + PROCESS_NOTIFICATION_SILENCE_HINT + footer
+    return text.removesuffix(suffix) + footer if text.endswith(suffix) else text
+
+
 def _held_reason(source, platform: str, multiplexed: bool) -> str:
     """Why a completion has no transport, naming what is actually missing: the saved receiving bot
     is down, or the route never saved one (a row older than the column), which no reconnect fixes."""
@@ -942,6 +950,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
+            # Push/authority turns suppress markers in both delivery and receipts. Self-posted
+            # API turns above use a separate result contract and never get this instruction.
             from gateway.response_filters import PROCESS_NOTICE_TYPES
             synth_text = _mark_internal_notification(
                 synth_text, process_silence=evt.get("type", "completion") in PROCESS_NOTICE_TYPES)

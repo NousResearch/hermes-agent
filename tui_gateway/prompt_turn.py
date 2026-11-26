@@ -837,7 +837,7 @@ def _invoke_agent(
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
             if process_notice:
-                run_message += "\n\n" + PROCESS_NOTIFICATION_SILENCE_HINT
+                run_message = _prepend_note(run_message, PROCESS_NOTIFICATION_SILENCE_HINT)
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
             st.silent_reply = st.notification_turn and is_silent_notification_result(st.result)
             if st.silent_reply:

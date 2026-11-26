@@ -11,7 +11,7 @@ import {
   readInFlightTurnJournal,
   recoverInFlightTurnJournal
 } from '@/lib/inflight-turn-journal'
-import { $messages, setActiveSessionId, setMessages } from '@/store/session'
+import { $messages, $unreadFinishedSessionIds, setActiveSessionId, setMessages } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
 import { usePromptActions } from '../use-prompt-actions'
@@ -110,6 +110,23 @@ function mount(rpc = requestGateway) {
     }
   }
 }
+
+it('settles a silent background turn without an unread marker, but still marks the next ordinary completion', async () => {
+  $unreadFinishedSessionIds.set([])
+  const h = mount()
+
+  await h.send('message.start')
+  expect(h.state().busy).toBe(true)
+  await h.send('message.complete', { text: '', silent: true, status: 'complete' })
+  expect(h.state().busy).toBe(false)
+  expect($unreadFinishedSessionIds.get()).not.toContain(STORED)
+
+  await h.send('message.start')
+  await h.send('message.complete', { text: ANSWER, status: 'complete' })
+  expect($unreadFinishedSessionIds.get()).toContain(STORED)
+  $unreadFinishedSessionIds.set([])
+  h.dispose()
+})
 
 it('binds a late submit acknowledgement to its exact optimistic prompt without reviving the turn', async () => {
   const laterUser: ChatMessage = { id: 'later-user', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }

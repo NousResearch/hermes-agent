@@ -478,6 +478,10 @@ class SessionAuthority:
         text = payload.get('text')
         if text is None:
             text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
+        from session_rules.automation import automation_descriptor
+        if isinstance(text, str) and automation_descriptor(payload):
+            from gateway.run_notifications import process_notice_for_display
+            text = process_notice_for_display(text)
         from gateway.session_queued_controls import queued_controls
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
                                 controls=queued_controls(self, row), steering=row['outcome'] == STEERING)

@@ -79,7 +79,8 @@ interface MessageStreamOptions {
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null,
-    liveDelta?: boolean
+    liveDelta?: boolean,
+    silentCompletion?: boolean
   ) => ClientSessionState
 }
 
@@ -1192,7 +1193,7 @@ export function useMessageStream({
           turnStartedAt: null,
           turnLive: false
         }
-      })
+      }, undefined, false, silent)
 
       // Persistence / mid-turn disk-full failures land as a terminal frame with
       // an error string, not a rejected prompt.submit. Toast them here so a

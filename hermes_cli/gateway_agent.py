@@ -1306,6 +1306,8 @@ class GatewayAgent:
         out = {**_RESULT_DEFAULTS, **stored}
         if "final_response" not in stored:
             out["final_response"] = (complete or {}).get("text") or (complete or {}).get("content") or ""
+        if (complete or {}).get("silent") is True:
+            out["silent"] = True
         if status in {"interrupted", "cancelled"} or (complete or {}).get("outcome") == "cancelled":
             out["interrupted"] = True
             out["completed"] = False

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import tui_gateway.server as srv
+from gateway.response_filters import PROCESS_NOTIFICATION_SILENCE_HINT
 from hermes_cli.web_routers.sessions import _project_for_display
 from tests.fixtures.storage_read import conversation
 from tests.fixtures.storage_seed import seed_session
@@ -14,9 +15,12 @@ from tests.gateway.test_authority_complete_persisted_turn import _flushing_agent
 from tools.process_registry_notifications import format_process_notification
 
 
-@pytest.mark.parametrize('kind,failed', [('completion', False), ('completion', True), ('user', False),
-                                         ('heartbeat', False), ('watch_match', False), ('async_delegation', False)])
-def test_process_notification_delivery(tmp_path, monkeypatch, kind, failed):
+@pytest.mark.parametrize('kind,failed,multimodal', [
+    ('completion', False, False), ('completion', False, True), ('completion', True, False),
+    ('user', False, False), ('heartbeat', False, False), ('watch_match', False, False),
+    ('async_delegation', False, False),
+])
+def test_process_notification_delivery(tmp_path, monkeypatch, kind, failed, multimodal):
     events, prompts = [], []
     store = storage_handle(tmp_path)
     seed_session(store, 'stored', 'desktop')
@@ -43,9 +47,12 @@ def test_process_notification_delivery(tmp_path, monkeypatch, kind, failed):
     session = {'agent': agent, 'session_key': 'stored', 'history_lock': threading.RLock(),
                'running': kind in {'heartbeat', 'watch_match', 'async_delegation'}}
 
+    image_part = {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,c2VlZA=='}}
+
     def submit(_rid, sid, session, text, *, display_kind=None, display_metadata=None, **kwargs):
         st = srv._TurnRun(agent, None, None, True)
-        srv._invoke_agent(sid, session, st, text, text, None, [], display_kind, display_metadata)
+        model_input = [{'type': 'text', 'text': text}, image_part] if multimodal else text
+        srv._invoke_agent(sid, session, st, text, model_input, None, [], display_kind, display_metadata)
         payload, _, _ = srv._complete_turn_payload(session, st, None, 80)
         events.append(('message.complete', payload))
         return True
@@ -76,4 +83,10 @@ def test_process_notification_delivery(tmp_path, monkeypatch, kind, failed):
         assert not complete.get('silent')
     assert (_project_for_display(rows)[-1].get('display_kind') == 'hidden') is silent
     assert any(r['role'] == 'assistant' for r in srv._history_to_messages(rows)) is not silent
-    assert ('reply with exactly [SILENT]' in prompts[0]) == (kind in {'completion', 'heartbeat', 'watch_match'})
+    if multimodal:
+        assert prompts[0] == [
+            {'type': 'text', 'text': PROCESS_NOTIFICATION_SILENCE_HINT},
+            {'type': 'text', 'text': saved_prompt}, image_part,
+        ]
+    else:
+        assert (PROCESS_NOTIFICATION_SILENCE_HINT in prompts[0]) == (kind in {'completion', 'heartbeat', 'watch_match'})

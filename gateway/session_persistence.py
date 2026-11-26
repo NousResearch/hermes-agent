@@ -64,6 +64,24 @@ def _is_live_system_guard(exc: BaseException) -> bool:
     return isinstance(exc, RuntimeError) and "live-system guard" in str(exc)
 
 
+def _fails_only_on_platform(data: dict) -> bool:
+    """*data* names a platform ``Platform()`` cannot resolve yet and parses once that name is a known one."""
+    from gateway.config import Platform
+    from gateway.session import SessionEntry
+    origin = data.get("origin")
+    name = origin.get("platform") if isinstance(origin, dict) else None
+    try:
+        Platform(name)
+        return False  # resolvable (or missing): the row is broken some other way
+    except (ValueError, TypeError):
+        pass
+    try:
+        SessionEntry.from_dict({**data, "platform": "local", "origin": {**origin, "platform": "local"}})
+    except (ValueError, KeyError, TypeError):
+        return False
+    return True
+
+
 class SessionPersistenceMixin:
     """SessionStore storage plumbing: storage interface handle resolution and routing-index load/save."""
 
@@ -376,12 +394,13 @@ class SessionPersistenceMixin:
             return False
 
     def _keep_unparsed_route(self, key: str, entry_json: str) -> None:
-        """Hold a well-formed row this process cannot parse yet (its platform's plugin is not registered:
-        installed after boot, a secondary profile's, or not installed yet) so the next full save writes it
-        back instead of deleting it; a later start that has the plugin loads it. Lock held."""
+        """Hold a row that fails to parse ONLY because its platform's plugin is not registered (installed
+        after boot, a secondary profile's, not installed yet), so the next full save writes it back instead
+        of deleting it and a later start that has the plugin loads it. A row broken any other way is not
+        held: it stays skipped and a valid sessions.json copy can still replace it. Lock held."""
         with contextlib.suppress(ValueError):
             data = json.loads(entry_json)
-            if isinstance(data, dict) and data.get("session_id"):
+            if isinstance(data, dict) and data.get("session_id") and _fails_only_on_platform(data):
                 self._lazy("_unparsed_routes", dict)[key] = data
 
     @staticmethod

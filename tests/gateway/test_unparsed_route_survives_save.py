@@ -47,3 +47,27 @@ def test_an_older_sessions_json_copy_does_not_replace_the_held_db_route(tmp_path
         with restarted._lock:
             restarted._save()
         assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["session_id"] == "sid-new"
+
+
+def test_a_route_broken_another_way_is_not_held_and_the_mirror_copy_recovers_it(tmp_path):
+    """Only an unregistered platform makes a row held: a DB row with a corrupt ``updated_at`` stays skipped, so
+    the valid sessions.json copy loads and the next save writes the valid one."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        live = store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t1"))
+        scope, key = store._routing_scope(), "agent:main:telegram:dm:t9"
+        valid = {**live.to_dict(), "session_key": key, "session_id": "sid-ok",
+                 "origin": {"platform": "telegram", "chat_id": "t9", "chat_type": "dm"}}
+        db.routing.upsert_routing_entry(key, json.dumps({**valid, "updated_at": "not-a-date"}), routing_scope=scope)
+        mirror = store.sessions_dir / "sessions.json"
+        data = json.loads(mirror.read_text(encoding="utf-8")) if mirror.exists() else {}
+        data[key] = valid
+        mirror.write_text(json.dumps(data), encoding="utf-8")
+
+        restarted = SessionStore(store.sessions_dir, GatewayConfig())
+        with restarted._lock:
+            restarted._ensure_loaded_locked()
+            assert restarted._entries[key].session_id == "sid-ok"
+            restarted._save()
+        assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["updated_at"] != "not-a-date"

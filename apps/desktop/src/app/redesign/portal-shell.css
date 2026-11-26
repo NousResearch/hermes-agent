@@ -751,14 +751,14 @@
 :where(:root[data-shell='portal']) .hermes-toast-region {
   /* Inside the stage, never across a seam: a narrow window's stage is narrower than a toast. */
   right: calc(var(--workspace-right, 0px) + 1rem + var(--portal-safe-end));
-  bottom: calc(1rem + var(--portal-safe-bottom));
+  bottom: calc(var(--portal-workspace-inset-bottom) + 0.75rem + var(--portal-safe-bottom));
   width: min(24rem, calc(100vw - var(--workspace-left, 0px) - var(--workspace-right, 0px) - 2rem));
 }
 
 @supports (bottom: anchor(--a top, 0px)) {
   :where(:root[data-shell='portal']) .hermes-toast-region {
     /* The dock's own floor band is stage-coloured padding: rest on the card, not on that band. */
-    bottom: calc(anchor(--portal-toast-floor top, 0.25rem) + 0.75rem);
+    bottom: calc(anchor(--portal-toast-floor top, var(--portal-workspace-inset-bottom)) + 0.75rem);
   }
 }
 

@@ -186,7 +186,10 @@ function UpdateRowAction({ canCheck, target }: UpdateRowActionProps): ReactEleme
 
 /** "Version 1.2 · You're up to date · Last checked 5 min ago" — the status card folded into a row. */
 function statusDescription(lead: string, view: UpdateStatusView, lastChecked: string): string {
-  return [lead, view.line, view.tone === 'unsupported' ? null : lastChecked].filter(Boolean).join(' · ')
+  return [lead, view.line, view.tone === 'unsupported' ? null : lastChecked]
+    .filter((part): part is string => Boolean(part))
+    .map(part => part.replace(/\.$/, ''))
+    .join(' · ')
 }
 
 interface AppVersionRowProps {

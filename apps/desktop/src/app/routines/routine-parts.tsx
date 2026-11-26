@@ -95,7 +95,13 @@ export function RoutineBanner({ busy, job, onRetry }: RoutineBannerProps) {
           <span>{capitalized(bannerTitle(issue, job, copy, locale), locale)}</span>
           <StatusChip status={issue} />
         </p>
-        {(detail || next) && <p className="routines-banner-detail">{[detail, next].filter(Boolean).join(' · ')}</p>}
+        {(detail || next) && (
+          <p className="routines-banner-detail">
+            {detail && next
+              ? `${detail}${/[.!?。！？]$/.test(detail) ? ' ' : ' · '}${next}`
+              : detail || next}
+          </p>
+        )}
         {/* The plain sentence is for reading; the backend's own words stay one click away for a fix. */}
         {raw && raw !== detail && (
           <details className="routines-banner-raw">

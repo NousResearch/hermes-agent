@@ -129,7 +129,8 @@ function PortalConnectionRow({ isCurrent, kindMeta, peerHint, ...actions }: Port
     agents === null ? null : pages.gateway.agents(agents),
     peerHint
   ]
-    .filter(Boolean)
+    .filter((part): part is string => Boolean(part))
+    .map(part => part.replace(/\.$/, ''))
     .join(' · ')
 
   return (

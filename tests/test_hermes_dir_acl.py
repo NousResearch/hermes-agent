@@ -363,6 +363,7 @@ def test_icacls_tree_fallback_walks_the_tree_once(tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     outside.mkdir()
     (home / "dirty" / "jn").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(hermes_dir_acl, "_native_writer_importable", lambda: False)
     monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", _no_pywin32)
     monkeypatch.setattr(hermes_dir_acl, "_whoami_sid", lambda: "S-1-5-21-1-2-3-1001")
     calls = []

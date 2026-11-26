@@ -6,6 +6,7 @@
 //     HERMES_HOME="$D/home" HERMES_DESKTOP_USER_DATA_DIR="$D/userdata" hermes desktop
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +14,8 @@ import net from 'node:net'
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const root = path.resolve(desktop, '../..')
+const desktopRequire = createRequire(path.join(desktop, 'package.json'))
+const packageDir = name => path.dirname(desktopRequire.resolve(`${name}/package.json`))
 const sandbox = process.argv[2] ? path.resolve(process.argv[2]) : fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-connectors-'))
 const port = 5194
 const url = `http://127.0.0.1:${port}`
@@ -35,7 +38,7 @@ Object.assign(env, {
 })
 const entry = path.join(desktop, 'dist/connector-rehearsal.mjs')
 fs.writeFileSync(entry, `import { app } from 'electron'\napp.setAsDefaultProtocolClient = () => false\napp.setAppPath(${JSON.stringify(desktop)})\nawait import('./electron-main.mjs')\n`)
-const vite = spawn(path.join(root, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: desktop, env, stdio: 'inherit' })
+const vite = spawn(process.execPath, [path.join(packageDir('vite'), 'bin/vite.js'), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: desktop, env, stdio: 'inherit' })
 let electron
 let stopping = false
 const stop = () => {
@@ -55,7 +58,7 @@ try {
     if (Date.now() > deadline) throw new Error('Renderer did not become ready')
     await new Promise(resolve => setTimeout(resolve, 250))
   }
-  const binary = path.join(desktop, 'node_modules/electron/dist', process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : process.platform === 'win32' ? 'electron.exe' : 'electron')
+  const binary = path.join(packageDir('electron'), 'dist', process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : process.platform === 'win32' ? 'electron.exe' : 'electron')
   electron = spawn(binary, [entry], { cwd: desktop, env, stdio: 'inherit' })
   console.log(`Connector rehearsal: ${sandbox}\nRenderer: ${url}\nReal service; OAuth requires your approval. Reuse the sandbox path to reopen this identity.`)
   electron.on('exit', stop)

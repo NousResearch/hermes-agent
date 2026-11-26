@@ -115,9 +115,12 @@ class SessionTokenProvider(NonInteractiveMixin, DashboardAuthProvider):
 
     # ---- session verification (the one capability) --------------------------
 
+    def matches_token(self, token: str) -> bool:
+        """Whether *token* is the credential this provider read at startup (constant time)."""
+        return bool(token) and hmac.compare_digest(token.encode("utf-8"), self._token.encode("utf-8"))
+
     def verify_session(self, *, access_token: str) -> Optional[Session]:
-        if not access_token or not hmac.compare_digest(
-                access_token.encode("utf-8"), self._token.encode("utf-8")):
+        if not self.matches_token(access_token):
             return None
         return Session(
             user_id="deployment-token", email="", display_name="Deployment session token",

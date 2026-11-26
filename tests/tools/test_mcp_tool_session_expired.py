@@ -479,6 +479,7 @@ def test_session_expired_retry_only_for_read_only_tools(monkeypatch, tmp_path, r
 
     server.session.call_tool = _sequence
     mcp_tool._servers["srv"] = server
+    mcp_tool._server_trust_levels["srv"] = "full"  # registration records one for every server
     mcp_tool._server_error_counts.pop("srv", None)
     if read_only:
         mcp_tool._tool_read_only_hints.setdefault("srv", {})["tool"] = True
@@ -497,6 +498,7 @@ def test_session_expired_retry_only_for_read_only_tools(monkeypatch, tmp_path, r
             assert mcp_tool._server_error_counts.get("srv", 0) == 0
     finally:
         mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_trust_levels.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)
         mcp_tool._server_breaker_opened_at.pop("srv", None)
         mcp_tool._tool_read_only_hints.pop("srv", None)

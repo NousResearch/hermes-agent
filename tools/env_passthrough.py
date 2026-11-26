@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from typing import Iterable
-from hermes_cli.config import cfg_get, read_raw_config
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +65,14 @@ def _is_hermes_provider_credential(name: str) -> bool:
     return _is_hermes_internal_secret(name) or _is_provider_env_blocklisted(name)
 
 
-def register_env_passthrough(var_names: Iterable[str]) -> None:
+def register_env_passthrough(var_names: Iterable[str]) -> list[str]:
     """Register env var names as allowed in sandboxed environments (typically a
     skill's ``required_environment_variables``). Hermes-managed provider credentials
     are rejected (GHSA-rhgp-j443-p4rf) — such skills should use the main-process tools
-    (web_search, web_extract, …); third-party keys pass normally."""
-    for name in _accepted((n.strip() for n in var_names), (
+    (web_search, web_extract, …); third-party keys pass normally. Returns the refused
+    names so the caller can tell the user, not just the log."""
+    names = [n.strip() for n in var_names]
+    for name in _accepted(names, (
         "env passthrough: refusing to register Hermes provider "
         "credential %r (blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). "
         "Skills must not override the execute_code sandbox's "
@@ -78,6 +80,7 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
     )):
         _get_allowed().add(name)
         logger.debug("env passthrough: registered %s", name)
+    return [n for n in names if n and n not in _get_allowed()]
 
 
 def _accepted(names, refusal_msg: str):
@@ -108,7 +111,11 @@ def _load_config_passthrough() -> frozenset[str]:
         return cached
     result: set[str] = set()
     try:
-        passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")
+        # Effective user config: operator policy may come from the managed scope
+        # (/etc/hermes/config.yaml), which read_raw_config() does not see.
+        from hermes_cli.config_effective import load_user_config_effective
+
+        passthrough = cfg_get(load_user_config_effective(), "terminal", "env_passthrough")
         items = passthrough if isinstance(passthrough, list) else ()
         result.update(_accepted((i.strip() for i in items if isinstance(i, str)), (
             "env passthrough: refusing to register Hermes "

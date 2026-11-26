@@ -4,21 +4,8 @@ import { useRef, useState } from 'react'
 import { FirstRunRemoteSetup } from '@/components/remote-setup/first-run'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useI18n } from '@/i18n'
+import { localBootstrapNeeded } from '@/lib/local-backend-probe'
 import { notifyError } from '@/store/notifications'
-
-/**
- * Resolve whether This device would install, without starting the installer.
- * Missing bridge fails closed: a click must not reach runBootstrap unseen.
- */
-async function probeLocalBackend(): Promise<boolean> {
-  const probe = window.hermesDesktop?.probeLocalBackend
-
-  if (!probe) {
-    return true
-  }
-
-  return (await probe()).bootstrapNeeded === true
-}
 
 export interface LocalDeviceTarget {
   connectionId: string
@@ -56,7 +43,7 @@ export function useLocalDeviceSwitch() {
     let bootstrapNeeded: boolean
 
     try {
-      bootstrapNeeded = await probeLocalBackend()
+      bootstrapNeeded = await localBootstrapNeeded()
     } catch (error) {
       notifyError(error, t.profiles.switchConnectionFailed(target.label))
 

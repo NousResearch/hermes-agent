@@ -6,6 +6,7 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -19,6 +20,11 @@ from typing import Any, Optional
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
     "[静默]", "静默", "[沉默]", "沉默",
+    # Not a rendering of the sentinel word: a cron lane drifted to this label
+    # (``[审核]``, "reviewed/audited") as its whole response and the token reached
+    # the user's chat as content. A lone bracketed label IS the sentinel's shape,
+    # so the observed drift is carried too — same whole-response rule as above.
+    "[审核]", "审核",
 })
 
 # Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing
@@ -35,6 +41,9 @@ INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
 # display_text) persists as that row kind instead of internal_notification.
 PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+# Loop exit the agent stamps when a machinery turn ends with the model adding nothing
+# (agent/turn_empty_response.py NOTIFICATION_NO_REPLY_EXIT mirrors this; agent/ cannot import gateway/).
+NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
 # What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
 # receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
 # nameable; never a client-chosen presentation such as ``hidden``.
@@ -44,8 +53,36 @@ PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_N
 _MARKER_LENGTH_CAP = 64
 
 
+def _strip_format_characters(text: str) -> str:
+    """Drop Unicode *format* characters (category ``Cf``): zero-width space/joiners,
+    BOM, bidi marks, soft hyphen.
+
+    ``str.split()`` only breaks on whitespace, and ``Cf`` is not whitespace
+    (``"\\u200b".isspace()`` is False), so an invisible character a model pastes
+    into the sentinel survived canonicalization: ``[\\u200bSILENT]`` stopped
+    matching and the whole control token was delivered to the chat as content.
+    Only ``Cf`` is dropped — a whitespace or punctuation character still fails the
+    match, and a response left empty by this is the empty-response path, not silence.
+    """
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
+def _strip_bracket_padding(text: str) -> str:
+    """Drop whitespace hugging the *inside* of square brackets: ``[ SILENT ]`` -> ``[SILENT]``.
+
+    Collapsing runs of whitespace (below) keeps the single space a model writes between the
+    bracket and the token, so ``[ SILENT ]``, ``[SILENT ]`` and ``[ SILENT]`` canonicalized to
+    themselves, matched no marker, and the whole control token was delivered as content
+    (job 8bf097dcd9d2, 2026-10-10, hex ``5b2053494c454e54205d``). Padding is a rendering
+    artifact of the token, not prose, so it goes — but only the whitespace directly inside the
+    brackets: the space between a marker and the note after it (``[SILENT] nothing new``) and
+    any bracketed word that is not a marker are untouched, so prose stays prose.
+    """
+    return re.sub(r"\s+\]", "]", re.sub(r"\[\s+", "[", text))
+
+
 def _canonical_silence_candidate(text: str) -> str:
-    return " ".join(text.strip().upper().split())
+    return _strip_bracket_padding(" ".join(_strip_format_characters(text).strip().upper().split()))
 
 
 def _is_edge_punctuation(ch: str) -> bool:
@@ -145,30 +182,119 @@ class SilenceMarkerStreamHold:
         return out
 
 
+def _strip_code_wrap(text: str) -> str:
+    """Peel a whole-value markdown code fence, then symmetric inline backtick runs."""
+    t = text.strip()
+    if t.startswith("```") and t.endswith("```") and len(t) >= 6:
+        inner = t[3:-3]
+        # Everything up to the first newline is the fence info string (```, ```text, ...).
+        if "\n" in inner:
+            inner = inner.split("\n", 1)[1]
+        t = inner.strip()
+    while len(t) >= 2 and t[0] == "`" and t[-1] == "`":
+        t = t.strip("`").strip()
+    return t
+
+
+def _strip_leading_code_span(text: str) -> str:
+    """Content of a leading inline code span (any backtick-run length), e.g. the
+    `[SILENT]` in "`[SILENT]` note"; ``text`` unchanged when there is none. A span that crosses
+    a line is a fenced block, not an inline marker, so a code block opening with the marker is
+    content."""
+    if not text.startswith("`"):
+        return text
+    run = len(text) - len(text.lstrip("`"))
+    close = text.find("`" * run, run)
+    return text[run:close].strip() if close != -1 and "\n" not in text[run:close] else text
+
+
+# One bracketed token and nothing else: ``[`` + any non-space run + optional ``]``. Anything with
+# a second word fails this shape, so a damaged marker followed by prose is always delivered.
+_DAMAGED_MARKER_SHAPE = re.compile(r"\[\s*([^\s\[\]]*)\s*(\]?)")
+_SILENT_LETTERS = "silent"
+
+
+def _within_one_edit(a: str, b: str) -> bool:
+    """Optimal-string-alignment distance <= 1: one dropped, extra, replaced or swapped letter."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diffs = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+        return len(diffs) <= 1 or (
+            len(diffs) == 2 and diffs[1] == diffs[0] + 1
+            and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]]
+        )
+    short, long = sorted((a, b), key=len)
+    return any(long[:i] + long[i + 1:] == short for i in range(len(long)))
+
+
+def _is_damaged_silent_marker(text: str) -> bool:
+    """A whole reply that is ``[SILENT]`` damaged in transit or by the model's own typing.
+
+    Replaying 265 real cron replies (PR #158289 thread) found ``[`` (a provider cut-off),
+    ``[SLENT]``, ``[SLIENT]``, ``[ SILENT ]`` and ``[<U+200B>SILENT]`` all delivered to the
+    user's chat as the whole message. After invisible characters, NFKC, case, code wrapping and
+    edge emphasis are removed, the reply is silence iff it is one bracketed token whose letters
+    are within one edit of ``silent`` (closing bracket optional), or an unclosed truncation of
+    the marker (``[``, ``[S``, ``[SIL``). ``[URGENT]``, ``[SILVER]`` and ``[SLENT] extra words``
+    are not that shape and are delivered.
+    """
+    form = unicodedata.normalize("NFKC", _strip_format_characters(text)).casefold()
+    form = _strip_edge_silence_punctuation(_strip_code_wrap(form))
+    if len(form) > _MARKER_LENGTH_CAP or not (shape := _DAMAGED_MARKER_SHAPE.fullmatch(form)):
+        return False
+    letters, closed = shape.groups()
+    truncated = not closed and _SILENT_LETTERS.startswith(letters)
+    return truncated or _within_one_edit(letters, _SILENT_LETTERS)
+
+
 def is_autonomous_silence_response(response: Any) -> bool:
     """Loose silence matcher for autonomous lanes (cron, webhook).
 
     Models reliably bracket ``[SILENT]`` with a short note, so unlike the
     interactive EXACT rule this also suppresses when a marker sits on its own
     first/last line or the bracketed sentinel opens the response (``[SILENT] No
-    changes detected``).  A token buried mid-sentence is still delivered.
+    changes detected``).  A token buried mid-sentence is still delivered, and so
+    is anything with more than one token; a whole reply that is a damaged
+    ``[SILENT]`` (:func:`_is_damaged_silent_marker`) is silence.
     Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
     """
-    stripped = response.strip() if isinstance(response, str) else ""
+    stripped = _strip_format_characters(response).strip() if isinstance(response, str) else ""
     if not stripped:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    # Models often wrap the literal marker in code formatting (`[SILENT]`, a fenced block);
+    # only symmetric whole-value / own-line wrapping is peeled, so a mid-body mention still delivers.
+    candidates = (stripped, lines[0], lines[-1])
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.
-    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
-        is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
+    return (
+        _canonical_silence_candidate(_strip_leading_code_span(stripped)).startswith(_BRACKETED_SILENCE_MARKERS)
+        or _is_damaged_silent_marker(stripped)
+        or any(
+            is_intentional_silence_response(c) or is_intentional_silence_response(_strip_code_wrap(c))
+            for c in candidates
+        )
     )
 
 
 def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
-    """Silence markers suppress delivery only for successful agent turns."""
-    return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+    """Silence markers suppress delivery only for successful agent turns.
+
+    The loop's quiet exit on a runtime-notification turn (``notification_no_reply``:
+    the model was handed a completion/delegation notice and added nothing) counts as
+    intentional silence too, and only ever with no text to deliver;
+    ``silence_allowed`` still gates it by turn kind at the delivery seam, so a human
+    turn that somehow carried the reason gets a visible fallback instead of a drop.
+    """
+    if not (isinstance(agent_result, dict) and not agent_result.get("failed")):
+        return False
+    if is_intentional_silence_response(response):
+        return True
+    return agent_result.get("turn_exit_reason") == NOTIFICATION_NO_REPLY_EXIT and not (
+        isinstance(response, str) and response.strip()
+    )
 
 
 def display_kind_for_event(event: Any) -> str | None:

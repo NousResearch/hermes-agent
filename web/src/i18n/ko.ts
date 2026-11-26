@@ -369,6 +369,13 @@ export const ko: Translations = {
     authRequired: "인증 필요",
     authRequiredHint: "이 명령을 실행하여 인증하세요:",
     updateGit: "Git pull",
+    updateAll: "모두 업데이트",
+    updatingAll: "플러그인 업데이트 중…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `업데이트 ${updated}, 검토 필요 ${needsReview}, 실패 ${failed}`,
+    autoUpdate: "자동 업데이트",
+    autoUpdateDesc: (hours: number) =>
+      `게이트웨이가 확인할 때(${hours}시간마다) 플러그인 업데이트를 자동으로 적용합니다. 업데이트된 코드는 새 세션에서 로드됩니다.`,
     versionBadge: "버전",
     showInSidebar: "사이드바에 표시",
     hideFromSidebar: "사이드바에서 숨기기",

@@ -1,10 +1,12 @@
 import type { TranslationOverrides } from './define-locale'
 import { zhHantPluginPreviewAccess } from './zh-hant_plugin_preview_access'
+import { zhHantPluginUpdateAll } from './zh-hant_plugin_update_all'
 
 export const zhHantCapabilities = {
   skills: {
     plugins: {
       ...zhHantPluginPreviewAccess,
+      ...zhHantPluginUpdateAll,
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。',
       folderAccess: {
         title: '資料夾存取',
@@ -25,10 +27,7 @@ export const zhHantCapabilities = {
       searching: '搜尋中…',
       noResults: '技能中心沒有符合的技能。',
       installed: '已安裝',
-      installStarted: name => `正在安裝「${name}」…`,
-      pickerBrowse: '瀏覽完整技能中心',
-      pickerHide: '隱藏技能中心瀏覽器',
-      pickerHint: '按下任一技能的「+ Add to this Agent」，即可安裝並顯示在上方清單中。'
+      installStarted: name => `正在安裝「${name}」…`
     },
     tabSkills: '技能',
     tabToolsets: '工具集',

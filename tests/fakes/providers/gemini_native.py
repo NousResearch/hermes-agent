@@ -48,6 +48,9 @@ SKIP_SIGNATURES = frozenset({"skip_thought_signature_validator", "context_engine
 # Hermes-side config for a home that talks to this fake: the user-facing provider id + model and the
 # key in ``.env`` (``model.base_url`` may pin another Google API version, e.g. ``.../v1``).
 HERMES_ENV = {"GEMINI_API_KEY": API_KEY}
+# This fake speaks the ``generateContent`` dialect only, so its homes pin the provider to it (Gemini 3+
+# defaults to the Interactions API).
+HERMES_CONFIG = {"providers": {"gemini": {"gemini_api": "generate_content"}}}
 
 
 def hermes_model(base_url: str | None = None, **extra: Any) -> dict[str, Any]:

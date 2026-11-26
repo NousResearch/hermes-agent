@@ -26,8 +26,9 @@ const SYSTEM_SANS =
 const SYSTEM_MONO =
   'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
 
+/** Mona Sans is loaded by index.html; the system stack is its fallback. */
 const DEFAULT_TYPOGRAPHY: ThemeTypography = {
-  fontSans: SYSTEM_SANS,
+  fontSans: `"Mona Sans", ${SYSTEM_SANS}`,
   fontMono: SYSTEM_MONO,
   baseSize: "15px",
   lineHeight: "1.55",

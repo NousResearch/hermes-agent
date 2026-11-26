@@ -1,0 +1,18 @@
+name: year-wrapped
+repo: https://github.com/MadeByBrain/hermes-extensions
+sha: 2d171da74a13a9bbc2da4a916fd0a64d08ef605a
+subdir: plugins/year-wrapped
+description: "Your year with your agent as shareable story cards. hermes year-wrapped (terminal) and /year-wrapped (every surface) read your own history and write 13 cards, 1080x1920, each in its own colour: persona (16 types from four axes: night or day, build or ask, terminal or chat, one model or many, with the real shares printed on the card), top tools, most used skill, manners and swear jar, night shift, longest chat, tokens processed, night crew (cron jobs and subagents), main model, projects started vs. archived, word of the year and a black and gold summary. Session titles are hidden unless --show-titles; client names can be excluded or shown under a code name (exclude_words, rename_words). No cost figures. English and German. Disclosure: no network calls, no model calls, standard library only. Reads state.db and, if present, projects.db of the active profile read only (mode=ro); never writes to them. Writes the cards as self-contained HTML (no scripts, no external assets) plus an index.html under HERMES_HOME/plugin-data/year-wrapped/<period>/ or the folder given with --out. The terminal command hermes year-wrapped renders PNG files by starting a locally installed headless Chrome, Chromium, Edge, Brave or Playwright headless shell (or the one set in browser_path) as a subprocess that opens only the local card files; --no-png skips it, and /year-wrapped in a chat never starts a browser. Nothing is downloaded. No credentials, no hooks, no tools, no cron jobs, no background processes, no telemetry."
+maintainer: MadeByBrain
+tier: community
+category: general
+docs_url: https://github.com/MadeByBrain/hermes-extensions/tree/main/plugins/year-wrapped#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/MadeByBrain/hermes-extensions/2d171da74a13a9bbc2da4a916fd0a64d08ef605a/plugins/year-wrapped/docs/banner.png
+requires_hermes: ">=0.22.2"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

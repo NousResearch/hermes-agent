@@ -469,7 +469,7 @@ async def _start_nous_device_code(profile: Optional[str]) -> dict[str, Any]:
         # The desktop also connects another account over a signed-in one.
         replace_account=True,
         persist_guard=_persist_guard,
-        # Config + auth store only, so the light contextvar scope -- never the skills-module one,
+        # Config + auth store only, so the light contextvar scope -- never ``_profile_scope``,
         # whose process-global lock would be held across the whole wait.
         scope=lambda: _config_profile_scope(_oauth_profile_name(profile)),
     )

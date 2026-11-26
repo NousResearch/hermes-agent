@@ -165,6 +165,26 @@ async def test_clarify_renders_choices_plus_other_with_positional_ids():
     assert state["choices"] == ["staging — the safe one", "production"]
 
 
+@pytest.mark.asyncio
+async def test_clarify_long_choices_go_in_text_with_positional_labels():
+    """#78115: connector buttons clip long labels; the full options ride in the prompt
+    text and the buttons are numbered, while the press still resolves to the choice text."""
+    adapter, stub = _adapter()
+    long_choice = "staging — the safe one with a deliberately descriptive label " + "x" * 40
+    await adapter.send_clarify("c1", "Which environment?", [long_choice, "production"], "cl-long", "sess:1")
+    action = stub.sent[-1]
+    assert f"1. {long_choice}" in action["content"]
+    assert "2. production" in action["content"]
+    assert [o["label"] for o in action["options"]][:2] == ["1", "2"]
+    assert [o["id"] for o in action["options"]] == ["c0", "c1", "other"]
+    assert adapter._pending_prompts[action["prompt_id"]]["choices"] == [long_choice, "production"]
+
+    limit = adapter.max_message_length_for_chat("c1")
+    await adapter.send_clarify("c1", "q" * limit, [long_choice, "production"], "cl-huge", "sess:1")
+    content = stub.sent[-1]["content"]
+    assert len(content) <= limit and content.endswith(f"\n1. {long_choice}\n2. production")
+
+
 # ── the pending-prompt registry ──────────────────────────────────────────
 
 

@@ -55,5 +55,15 @@ export const zhPreviewWeb: TranslationOverride<Translations['preview']['web']> =
   commentPlaceholder: '添加批注…',
   commentTitle: n => `批注 ${n}`,
   saveComment: '保存',
-  cancelComment: '取消批注'
+  cancelComment: '取消批注',
+  vaultFill: '填充已保存的登录信息',
+  vaultTitle: site => `${site} 的已保存登录信息`,
+  vaultLoading: '正在加载已保存的登录信息…',
+  vaultEmpty: '此网站没有已保存的登录信息',
+  vaultUnlock: name => `解锁 ${name}`,
+  vaultOpenSettings: '打开凭据保险库设置',
+  vaultFilled: label => `已填充 ${label}。请检查表单，然后登录。`,
+  vaultFillFailed: '无法填充登录信息',
+  vaultLoadFailed: '无法加载已保存的登录信息',
+  vaultPageNotReady: '页面仍在加载。加载完成后请重试。'
 }

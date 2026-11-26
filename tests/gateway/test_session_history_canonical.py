@@ -6,6 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.test_session_mutation_model_busy import _owner
 
 
@@ -13,13 +16,13 @@ from tests.gateway.test_session_mutation_model_busy import _owner
 async def test_session_history_returns_the_display_transcript_with_row_ids(tmp_path, monkeypatch):
     async def handle(event):
         return 'ok'
-    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    store, _db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
         from gateway.session_local_recovery import transcript_target
         target = transcript_target(authority, ref)
-        first = db.append_message(target, 'user', 'first question')
-        answer = db.append_message(target, 'assistant', 'first answer')
-        interrupted = db.append_message(target, 'user', 'interrupted question')
+        first, answer, interrupted = seed_messages(
+            authority.persistence, target, {'role': 'user', 'content': 'first question'},
+            {'role': 'assistant', 'content': 'first answer'}, {'role': 'user', 'content': 'interrupted question'})
         reply = await owner.dispatch({'id': 1, 'method': 'session.history',
                                       'params': {'session_id': ref.session_id, 'profile': None}})
         assert 'result' in reply, reply
@@ -40,15 +43,16 @@ async def test_session_history_of_a_compressed_messaging_session_reads_its_conti
 
     async def handle(event):
         return 'ok'
-    store, db, authority, owner, _ref = _owner(tmp_path, monkeypatch, handle)
+    store, _db, authority, owner, _ref = _owner(tmp_path, monkeypatch, handle)
     try:
-        db.create_session('root', source='telegram', session_key='agent:main:telegram:dm:1')
-        before = db.append_message('root', 'user', 'before compression')
-        assert db.try_acquire_compression_lock('root', 'holder')
-        db.publish_compression_child(parent_session_id='root', child_session_id='child', source='telegram',
-                                     messages=[{'role': 'user', 'content': 'summary'}],
-                                     compression_lock_holder='holder')
-        after = db.append_message('child', 'user', 'after compression')
+        persistence = authority.persistence
+        seed_session(persistence, 'root', 'telegram', session_key='agent:main:telegram:dm:1')
+        before, = seed_messages(persistence, 'root', {'role': 'user', 'content': 'before compression'})
+        assert persistence.coordination.try_acquire_compression_lock(session_id='root', holder='holder')
+        persistence.lineage.publish_compression_child('root', CompressionChild(session_id='child', source='telegram'),
+                                                      [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                                      compression_lock_holder='holder')
+        after, = seed_messages(persistence, 'child', {'role': 'user', 'content': 'after compression'})
         authority.sessions['root'] = LiveSession(
             SimpleNamespace(platform=Platform.TELEGRAM, user_id='human'), 'agent:main:telegram:dm:1')
         reply = await owner.dispatch({'id': 1, 'method': 'session.history', 'params': {'session_id': 'root'}})

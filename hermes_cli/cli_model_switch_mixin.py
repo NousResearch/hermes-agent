@@ -52,23 +52,27 @@ def _resolve_cli_reasoning(cli) -> None:
 def stored_session_route(session_meta, *, current_model, current_provider):
     """The route a resumed session should run on, or ``None`` when the stored one is absent or
     already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the
-    canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
+    canonical row reader is ``gateway_runtime`` (``model_config.gateway_runtime``,
     else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
     hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
-    stored_model = str((session_meta or {}).get("model") or "").strip()
+    from persistence.conversation.sessions import parse_model_config
+    from persistence.gateway.routing import resume_route
+    stored_model, runtime = resume_route(parse_model_config(session_meta.get("model_config")),
+                                         model=session_meta.get("model"),
+                                         billing_provider=str(session_meta.get("billing_provider") or ""),
+                                         billing_base_url=str(session_meta.get("billing_base_url") or ""))
     if not stored_model:
         return None
-    from hermes_state import SessionDB as _SessionDB
-    runtime = _SessionDB.session_gateway_runtime(session_meta)
-    base_url = runtime.get("base_url") or None
-    api_mode = runtime.get("api_mode") or None
-    stored_provider = runtime.get("provider") or None
+    base_url = runtime.base_url or None
+    api_mode = runtime.api_mode or None
+    stored_provider = runtime.provider or None
     provider = _heal_bare_custom_provider(stored_provider, base_url=base_url, model=stored_model)
     if provider != stored_provider:
         # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
         # endpoint and wire, which must not ride on the ambient provider.
         base_url = None
-        if provider is None:
+        if provider is None or not stored_provider:
+            # An empty provider's saved wire came from turns that went to the wrong provider (#132648).
             api_mode = None
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
@@ -90,12 +94,23 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     return stored_model, provider, base_url, api_mode, provider_changed
 
 
+def _main_slot_serves(model) -> bool:
+    """An empty provider means the row ran on the profile's route; it is lost only once that route
+    targets another model (#132648)."""
+    from hermes_cli.runtime_provider import _get_model_config
+    return str(_get_model_config().get("default") or "").strip() == str(model or "").strip()
+
+
 def _heal_bare_custom_provider(provider, *, base_url, model):
-    """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
-    later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
-    ``custom:<name>`` menu key from the endpoint, else drop the provider (None)."""
-    if str(provider or "").strip().lower() != "custom":
+    """Bare ``custom`` is a billing class, not a routable identity, and an empty provider names none
+    (#132648): recover the durable ``custom:<name>`` menu key from the endpoint or model, else None."""
+    if str(provider or "").strip().lower() not in ("", "custom"):
         return provider
+    if not str(provider or "").strip():
+        if _main_slot_serves(model):
+            return None
+        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        return empty_provider_identity(base_url, model)
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a
@@ -169,9 +184,10 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        from agent.context_pin import context_pin_suffix
-        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}"
-                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
+        from agent.context_pin import context_window_suffix
+        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}" + context_window_suffix(
+            ctx, getattr(agent, '_config_context_length', None) if agent else None, model=result.new_model,
+            provider=result.target_provider, base_url=result.base_url or cli.base_url or ""))
     if mi:
         if mi.max_output:
             _cprint(f"    {t('gateway.model.max_output_label', tokens=f'{mi.max_output:,}')}")
@@ -234,7 +250,7 @@ def _one_turn_selection_context(cli):
     except Exception:
         logger.debug("one-turn selection context unavailable", exc_info=True)
         return None
-    tokens = persisted_anchor_tokens(db, sid, messages)
+    tokens = persisted_anchor_tokens(db, sid, messages, persistence=getattr(db, "persistence", None))
     if not tokens:
         return None
     return SelectionContext(context_tokens=tokens, current_model=getattr(cli, "model", None) or None)
@@ -547,7 +563,7 @@ class CLIModelSwitchMixin:
             "api_mode": result.api_mode or None}
         try:
             db.update_session_model(sid, result.new_model)
-            db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
+            db.patch_session_model_config(sid, {"gateway_runtime": {**route, "model": result.new_model or None}, **route})
         except Exception:
             logger.debug("Failed to persist model switch to session DB", exc_info=True)
 

@@ -1,0 +1,19 @@
+name: lovedone-soft
+title: LovedOne Soft
+repo: https://github.com/Terahertz-Inc/lovedone-mcp
+sha: a1d55a218bf6e817cc950d423f19535f9a2760cf
+subdir: hermes/lovedone-soft
+version: "0.2.1"
+description: "Agency operations through LovedOne Soft MCP (https://api.lovedone.app/mcp/vendor/v1): clients, visits, visit notes, invoices and scheduling for home-care office staff. Senior tech support in the workflow — not a medical device and not clinical advice. Portable Agent Plugins v1 under hermes/lovedone-soft (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector; every tools/call needs an agency MCP key in LOVEDONE_SOFT_API_KEY. The package marks the server untrusted so Hermes asks before write-capable tools. The live tool set is served by the remote server and is not covered by the pinned sha."
+maintainer: Terahertz, Inc.
+tier: community
+category: tools
+docs_url: https://soft.lovedone.app/agents
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: ["LOVEDONE_SOFT_API_KEY"]

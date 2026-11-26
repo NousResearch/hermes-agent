@@ -1,0 +1,23 @@
+name: utcp-bridge
+title: UTCP Bridge
+repo: https://github.com/nftpoetrist/hermes-utcp-bridge
+sha: 586df3a81d2a15b248cdf66c811b2ca23b75875c
+description: "Lets the agent use tools described by UTCP (Universal Tool Calling Protocol) manuals: utcp_search_tools finds tools across the manuals you configure under plugins.entries.utcp-bridge.settings.manuals, and utcp_call_tool calls one directly over its own HTTP API, including streaming (sse, streamable_http) tools from manuals that list those protocols under allowed_protocols. Native UTCP support was declined for core and suggested as a standalone ctx.register_tool plugin (#151647, #151174). Disclosure — every search or call fetches each configured manual from its URL and sends the tool request to the endpoint that manual names; only manuals you configure are contacted. A manual's $NAME variables resolve only from the Hermes secrets it lists (read with agent.secret_scope.get_secret); the UTCP library's .env and os.environ fallbacks are turned off. Only the http, sse and streamable_http call templates are accepted (the streaming ones only where a manual allows them), so a manual cannot make the plugin run programs. A streaming call holds its connection open until the stream ends, max_stream_events (default 100) or 50,000 characters is reached, or timeout_seconds passes, then closes it. Nothing is stored on disk."
+maintainer: nftpoetrist
+tier: community
+category: tools
+requires_hermes: ">=0.23.3"
+version: "0.2.0"
+docs_url: https://github.com/nftpoetrist/hermes-utcp-bridge#readme
+readme: true
+known_issues:
+  - "MCP call templates are not offered, and manuals themselves are fetched only over http."
+  - "A streaming tool's result comes back once the call stops, not event by event while it runs."
+  - "Manuals are re-fetched on every search or call (no cache), so each call costs one extra request per configured manual."
+capabilities:
+  provides_tools:
+    - utcp_search_tools
+    - utcp_call_tool
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

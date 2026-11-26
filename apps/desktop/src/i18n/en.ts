@@ -2,6 +2,8 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
+import { enApproval } from './en_approval'
+import { enBackupTransfer } from './en_backup_transfer'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalog } from './en_catalog'
@@ -25,8 +27,10 @@ import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
 import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
+import { enPluginUpdateAll } from './en_plugin_update_all'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
+import { enSandbox } from './en_sandbox'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
@@ -36,6 +40,7 @@ import type { Translations } from './types'
 export const en: Translations = {
   externalOpenFailed: enExternalOpenFailed,
   sharedMetrics: enSharedMetrics,
+  sandbox: enSandbox,
   appTour: enAppTour,
   firstRun: enFirstRun,
   // English editorial copy stays in the shipped JSONL; other locales override it.
@@ -482,6 +487,14 @@ export const en: Translations = {
       approvalTitleNamed: session => `Approval needed — ${session}`,
       approveAction: 'Approve',
       rejectAction: 'Reject',
+      accessTitle: 'Folder access needed',
+      accessTitleNamed: session => `Folder access needed — ${session}`,
+      accessReadBody: folder => `Read only: ${folder}`,
+      accessReadWriteBody: folder => `Read and write: ${folder}`,
+      networkTitle: 'Website access needed',
+      networkTitleNamed: session => `Website access needed — ${session}`,
+      allowAction: 'Allow',
+      denyAction: 'Deny',
       inputTitle: 'Input needed',
       inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
@@ -718,7 +731,7 @@ export const en: Translations = {
       advancedOutput: 'Output limits',
       advancedDelegation: 'Subagents',
       advancedDesktop: 'Desktop & startup',
-      gatewayConnection: 'This window',
+      gatewayConnection: 'Primary gateway',
       gatewayDevices: 'Saved connections',
       gatewayManagedUpdates: 'Remote updates',
       gatewayManagedUpdatesUnavailable: 'Remote updates need a desktop version with managed SSH update support.',
@@ -766,6 +779,8 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       sessions: 'Sessions',
+      backup: 'Backup & Transfer',
+      backupOnly: 'Backup',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
@@ -777,8 +792,6 @@ export const en: Translations = {
       openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
-      enable: 'Enable',
-      disable: 'Disable',
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
       installModal: {
@@ -1117,6 +1130,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    backup: enBackupTransfer,
     memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
@@ -1207,6 +1221,9 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
+      desktopReadAloudTitle: 'Read replies aloud in this app',
+      desktopReadAloudDesc:
+        'Speak each finished reply in Desktop. Same switch as the composer button; it applies to every open window, and turning it off stops a reply mid-sentence. "Read Responses Aloud" below is for messaging and the CLI.',
       showOptions: 'Show options'
     },
     hudModifier: {
@@ -2023,15 +2040,20 @@ export const en: Translations = {
       browserRealProfile: {
         label: 'Use My Real Browser Profile',
         description:
-          "Copies your default browser's logins and cookies into a managed snapshot the agent browses with. Your live profile is never opened directly. Applies to new sessions.",
+          'Copies your default browser\'s logins and cookies into a managed snapshot the agent browses with, and signs the in-app Browser tab in with them too. Your live profile is never opened directly. Applies to new sessions.',
         enabledTitle: 'Real-profile browsing on',
         enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
         disabledTitle: 'Real-profile browsing off',
-        disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
+        disabledMessage: 'The profile snapshot will be deleted and the in-app browser signed out of it; new sessions use a clean browser.',
         failedSave: 'Could not save the real-profile setting',
+        reimportSignins: 'Re-import sign-ins',
+        signinsImportedTitle: 'In-app browser sign-ins',
+        signinsImported: count => `Signed the in-app browser in with ${count} cookie${count === 1 ? '' : 's'} from your browser profile.`,
+        signinsRemote: 'This backend runs on another machine, so its browser profile is not imported into the in-app browser.',
+        signinsFailed: 'Could not import sign-ins into the in-app browser',
         prompt: {
           title: 'Stay signed in to your sites',
-          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
+          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in, both for the agent and in the in-app Browser tab.',
           bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
           bulletLiveProfile: 'Your live browser profile is never opened directly.',
           bulletLocal: 'Nothing leaves this computer.',
@@ -2156,6 +2178,7 @@ export const en: Translations = {
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
       ...enPluginUpdate,
+      ...enPluginUpdateAll,
       ...enPluginPreviewAccess,
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
@@ -2237,10 +2260,6 @@ export const en: Translations = {
       openLog: 'Open log',
       actionLog: 'Action log',
       alreadyInstalled: (name: string) => `"${name}" is already installed`,
-      pickerTitle: 'Skills Hub',
-      pickerBrowse: 'Browse the full hub',
-      pickerHide: 'Hide the hub browser',
-      pickerHint: 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above.',
       loadFailed: 'Skill hub failed to load',
       previewFailed: 'Skill preview failed',
       scanFailed: 'Security scan failed',
@@ -2472,7 +2491,10 @@ export const en: Translations = {
       backup: 'Create backup',
       backupDesc: 'Zip config, memories, skills, and sessions',
       debugShare: 'Debug share',
-      debugShareDesc: 'Upload a redacted report + logs, get shareable links (auto-deletes in 6h)',
+      debugShareDesc: 'Upload a summary (versions, config keys, error counts; no log text), get a shareable link (auto-deletes in 6h)',
+      debugShareConfirm: 'Upload debug report to a public paste?',
+      debugShareConfirmDesc:
+        'Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.',
       debugShareRunning: 'Uploading debug report...',
       debugShareLinks: 'Share links',
       debugShareFailed: 'Debug share failed',
@@ -2591,6 +2613,32 @@ export const en: Translations = {
     restartFailedManualDetail: 'Try Restart again; if it still fails, open the logs and send diagnostics.',
     restartAgain: 'Restart again',
     openLogs: 'Open logs',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'No bot token needed',
+      intro: (platform: string) => `${platform} reaches this agent through the shared Hermes bot. Link your ${platform} account to it and message the bot to talk to your agent.`,
+      link: (platform: string) => `Link ${platform}`,
+      linkAnother: (platform: string) => `Link another ${platform} account`,
+      linkedAccounts: 'Linked accounts',
+      unlink: 'Unlink',
+      unlinkFailed: 'Couldn’t unlink that account',
+      stepOpen: (platform: string) => `1. Scan the code with your phone, or open the bot in ${platform}.`,
+      stepSend: '2. Send the bot this message from the account you want to link:',
+      open: (platform: string) => `Open ${platform}`,
+      copy: 'Copy message',
+      copied: 'Copied',
+      copyFailed: (command: string) => `Copy failed. Type ${command} instead.`,
+      waiting: 'Waiting for the bot to see your message. The code works once.',
+      linked: (platform: string) => `${platform} account linked. Message the bot to talk to your agent.`,
+      expired: 'That code expired before it was used. Get a new code and try again.',
+      refused: (platform: string) => `${platform} refused the link. Get a new code and try again.`,
+      qrAlt: (platform: string) => `QR code for the shared ${platform} bot`,
+      managed: 'Managed by Team Gateway',
+      managedNote: (platform: string) => `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`,
+      managedIntro: "This agent's accounts are linked from Nous Portal.",
+      openPortal: 'Link accounts in Nous Portal',
+      noNewAccount: (platform: string) => `The code is no longer active and no new account appeared. If your ${platform} account isn't listed, get a new code and try again.`
+    },
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
       subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',
@@ -2754,6 +2802,14 @@ export const en: Translations = {
     fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
     fieldDeliver: 'Deliver to',
     fieldDeliverOnly: 'Deliver payload only',
+    fieldSignature: 'Signature',
+    fieldSignatureHint: 'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
+    signatureOptions: {
+      generic: 'Generic (timestamped)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Instructions for the agent when this webhook fires (optional)',
     nameRequired: 'Name required',
@@ -2819,6 +2875,8 @@ export const en: Translations = {
     remoteOverride: {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,
+      runHere: 'Run on this computer…',
+      sandboxed: 'Sandboxed',
       title: (profile: string) => `Connect ${profile} to a remote host`,
       description: 'Sessions in this profile will run on the remote Hermes you point it at, instead of this computer.',
       urlLabel: 'Remote address',
@@ -3285,7 +3343,10 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
-    wakingProfile: profile => `Waking up ${profile}…`,
+    switchingProfile: profile => `Switching to ${profile}…`,
+    switchingProfileSlow: 'Still connecting. Messages you send now will wait and go to this agent.',
+    switchProfileFailed: profile => `Couldn’t switch to ${profile}`,
+    willSendTo: profile => `Will send to ${profile}`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',
@@ -3420,7 +3481,7 @@ export const en: Translations = {
       '/topup': 'Show your Nous balance and manage billing on the portal',
       '/platform': 'Pause, resume, or list a failing gateway platform',
       '/version': 'Show Hermes Agent version',
-      '/debug': 'Upload debug report (system info + logs) and get shareable links',
+      '/debug': 'Debug report (versions, config keys, error counts; no log text): shows the privacy notice; /debug upload shares links',
       '/model': 'Switch the model for this session'
     },
     hotkeyDescs: {
@@ -4064,7 +4125,9 @@ export const en: Translations = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sends ${level} on this route`,
       updateFailed: 'Model option update failed',
-      fastFailed: 'Fast mode update failed'
+      fastFailed: 'Fast mode update failed',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak update failed'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4083,6 +4146,8 @@ export const en: Translations = {
       messagingPlatforms: 'Messaging platforms'
     },
     approvalMode: {
+      perProfile: 'Per profile',
+      perProfileDescription: 'Approval modes are set per profile. Open a bot or profile to change its mode.',
       title: 'Approval mode',
       ariaLabel: mode => `Approval mode: ${mode}`,
       manual: 'Manual',
@@ -4182,6 +4247,15 @@ export const en: Translations = {
           system_prompt: 'System prompt',
           tool_definitions: 'Tool definitions'
         },
+        compact: {
+          action: 'Compact conversation',
+          busyHint: 'Finish or stop the current reply first',
+          confirm: 'Compact',
+          hint: 'Summarize older context to make room. Continue in this same conversation.',
+          question: 'Compress this chat into a summary?',
+          questionNamed: title => `Compress “${title}” into a summary?`,
+          working: 'Compacting…'
+        },
         empty: 'No context data yet',
         loading: 'Loading breakdown…',
         percentFull: percent => `${percent}% Full`,
@@ -4247,6 +4321,14 @@ export const en: Translations = {
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
+    terminalNewOn: 'New terminal on…',
+    terminalGatewayRemoved: 'Removed gateway',
+    terminalGatewayRemovedBody:
+      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
+    terminalGatewayNoShellBody:
+      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
+    terminalDisconnectedBody:
+      'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,
@@ -4434,7 +4516,9 @@ export const en: Translations = {
       branchNewChat: 'Branch in new chat',
       react: 'React',
       dismissError: 'Dismiss error',
+      responseContinuing: 'Continuing…',
       responseStopped: 'Response stopped',
+      contentRefusedNotice: "This message was refused by the model's safety filter — try a different query.",
       ...enErrorLayers,
       errorCodes: enErrorCodes,
       errorAuthKinds: {
@@ -4509,27 +4593,7 @@ export const en: Translations = {
       sendEdited: 'Send edited message',
       attachingFile: 'Attaching…'
     },
-    approval: {
-      gatewayDisconnected:
-        'Hermes is offline right now. The command is still waiting for your answer (until the approval timeout). Reconnect, then send it again.',
-      sendFailed: 'Could not send your answer',
-      reconnect: 'Reconnect',
-      timedOutSystemLine:
-        'Approval timed out — the command was not run. Ask Hermes to try again, or raise the limit in Settings → Safety → Approval timeout.',
-      openSafetySettings: 'Open Safety settings',
-      run: 'Run',
-      command: 'Command',
-      commandDetails: 'Command details',
-      moreOptions: 'More approval options',
-      allowSession: 'Allow this session',
-      alwaysAllowMenu: 'Always allow…',
-      jumpToApproval: 'Approval needed',
-      reject: 'Reject',
-      alwaysTitle: 'Always allow this command?',
-      alwaysDescription: pattern =>
-        `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
-      alwaysAllow: 'Always allow'
-    },
+    approval: enApproval,
     clarify: enClarify,
     themePicker: enThemePicker,
     catalogInstall: enCatalogInstall,
@@ -4545,6 +4609,10 @@ export const en: Translations = {
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
+      launchCommand: target => `Runs: ${target}`,
+      launchRemote: target => `Connects to: ${target}`,
+      launchEnv: keys => `Env: ${keys}`,
+      launchCwd: dir => `Working dir: ${dir}`,
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',

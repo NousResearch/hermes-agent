@@ -143,6 +143,20 @@ describe('__runDeadSessionPrunePass', () => {
     expect(getQueuedPrompts('live-queue-session')).toHaveLength(1)
   })
 
+  it("never prunes a new chat's queue: its first message waits there while the profile's backend restarts", async () => {
+    // A new chat's queue is keyed by its fresh draft scope, not by a session id: probed by id, every backend
+    // that answers says "session not found". A first message held for a restart (use-composer-submit) waits
+    // under that key until the backend is back and the message has been sent.
+    $sessions.set([row('unrelated')])
+    enqueueQueuedPrompt('__new__:7759f487', { text: 'a first message', attachments: [] })
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(getQueuedPrompts('__new__:7759f487').map(entry => entry.text)).toEqual(['a first message'])
+    expect(getSessionMock).not.toHaveBeenCalledWith('__new__:7759f487', undefined)
+  })
+
   it('skips ids already covered by loaded sidebar rows', async () => {
     $sessions.set([row('covered', { _lineage_root_id: 'root-covered' })])
     $pinnedSessionIds.set(['covered', 'root-covered', 'rowless-pin'])

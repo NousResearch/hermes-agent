@@ -289,6 +289,8 @@ class AIAgent(
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
         from agent.agent_init import init_agent
+        from hermes_cli.profiles_run_elsewhere import require_home_runs_here
+        require_home_runs_here()  # no agent on this host for a profile a plugin runs elsewhere
         init_agent(self, **init_kwargs)
 
     def _get_session_db_for_recall(self):
@@ -599,7 +601,7 @@ class AIAgent(
             return implicit
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
-        from agent.gemini_long_decode import long_decode_stale_multiplier
+        from agent.output_budget_timeout import output_budget_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
         explicit = self._stale_timeout_is_explicit()
         # The context tiers raise only an implicit base: an explicit value can shorten patience (#115024).
@@ -610,7 +612,7 @@ class AIAgent(
         if self.api_mode == "codex_responses" and not explicit:
             timeout = max(timeout, _high_effort_silence_floor(self))
         if not explicit:
-            timeout *= long_decode_stale_multiplier(api_payload)
+            timeout *= output_budget_stale_multiplier(api_payload)
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         if not explicit:

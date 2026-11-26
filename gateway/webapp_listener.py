@@ -77,12 +77,13 @@ def _config_document(home: Path) -> dict:
     return load_config_readonly() if own else read_user_config_raw(home / "config.yaml")
 
 
-def webapp_settings(home) -> WebappSettings:
+def webapp_settings(home, *, document: dict | None = None) -> WebappSettings:
     """``webapp:`` from *home*'s config. A missing, unreadable or malformed block reads as off, so a
     typo never exposes the listener; a block that cannot be used carries the reason in ``reason``.
     A present block's valid ``host``, ``port`` and ``public_url`` are read whether or not it turns
     the Webapp on (an invalid one reads as the default), so Web Access shows and registers the
-    address the gateway will bind."""
+    address the gateway will bind. *document*: the config to judge instead of reading *home*'s (a
+    caller that resolved it without the side effects of ``load_config``)."""
     path = Path(home) / "config.yaml"
     from ruamel.yaml.error import YAMLError
 
@@ -91,7 +92,7 @@ def webapp_settings(home) -> WebappSettings:
         return replace(configured, reason=reason)
 
     try:
-        document = _config_document(Path(home))
+        document = _config_document(Path(home)) if document is None else document
     except (OSError, ValueError, YAMLError) as exc:  # the gateway's own config load reports it
         return off(f"{path} could not be read ({exc})")
     block = document.get("webapp") if isinstance(document, dict) else None

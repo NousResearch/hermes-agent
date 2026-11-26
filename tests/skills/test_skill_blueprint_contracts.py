@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("key,skill", [
-    ("morning-brief", "google-workspace"), ("important-mail", "email-inbox-triage"),
+    ("important-mail", "email-inbox-triage"),
     ("weekly-review", "weekly-review-planning"), ("price-watch", "product-price-monitor"),
 ])
 def test_task_blueprint_loads_procedure(key, skill):

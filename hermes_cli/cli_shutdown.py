@@ -371,6 +371,11 @@ def _finalize_single_query(cli) -> None:
     """
     import cli as cli_module
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
+    # A non-quiet -q turn reported done/error on the terminal, which outlives the process under
+    # OSC 7501: clear it like /quit does, before the linger keeps the process around.
+    clear_status = getattr(cli, "_clear_program_status", None)
+    if clear_status is not None:
+        clear_status()
     try:
         try:
             _flush_one_shot_session_store(cli)

@@ -207,7 +207,8 @@ class SessionListingMixin:
         workspace = getattr(query, "workspace_key", None)
         if workspace and not _in_workspace(row, workspace):
             return False
-        if query.min_message_count > 0 and self._counter(scope, row["session_id"]) < query.min_message_count:
+        if query.min_message_count > 0 and not any(  # the floor counts the compression lineage, not one segment
+                self._counter(scope, sid) >= query.min_message_count for sid in self._chain_members(table, row["session_id"])):
             return False
         return self._archive_admits(row, query)
 

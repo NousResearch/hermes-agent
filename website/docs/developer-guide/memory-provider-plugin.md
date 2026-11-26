@@ -210,7 +210,8 @@ The two profile hooks run on an uninitialized instance with that profile's home 
 secrets bound: its `.env` plus its configured secret sources (1Password and the like). A key it
 lacks reads as unset: the caller's environment is never used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
 create/rename request on every surface, so do network work on a background thread. Under
-`plugins.isolation: host`, a plugin host started only for the hook is stopped when it returns.
+`plugins.isolation: host` they run in a plugin host of their own, separate from the profile's shared host
+and stopped when they return, so module-level state from the shared host's import isn't visible to them.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after

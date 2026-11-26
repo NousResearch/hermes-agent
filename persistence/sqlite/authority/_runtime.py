@@ -14,7 +14,7 @@ import json
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from persistence.authority.vocabulary import ADMITTED_REQUEST_CONFLICT, STEERING, admission_fingerprint
+from persistence.authority.vocabulary import ADMITTED_REQUEST_CONFLICT, STEERING, admission_fingerprint, retry_input
 from persistence.core.canonical import canonical_json
 from persistence.core.errors import AuthorityRefusal, FenceStale, ProofRejected, StaleFenceKind, UnknownExecution
 from session_rules.results import compact_result
@@ -260,7 +260,7 @@ def retry_terminal_admission(holder, *, epoch, principal_id, session_id, request
     for value in (principal_id, session_id, request_id):
         _text(value)
     digest = admission_fingerprint(canonical_target=session_id,
-        payload={'input': json.loads(_json(payload)), 'intent': intent})
+        payload={'input': retry_input(json.loads(_json(payload))), 'intent': intent})
     with holder._read_ctx() as conn:
         _epoch(conn, epoch)
         from ..conversation._store.retirement import RETIRED_PREFIX

@@ -1107,10 +1107,61 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             "env_keys=%s cleared_keys=%s",
             platform_id, target_profile or "current", body.enabled, sorted(body.env), sorted(body.clear_env),
         )
-        # A live multiplexer serving this named profile builds the adapter from the new token now
-        # (its periodic rescan would otherwise pick it up within a cycle); no gateway restart.
-        hot_served = await asyncio.to_thread(_notify_multiplexer_hot_serve, target_profile)
-        return {"ok": True, "platform": platform_id, "hot_served": hot_served}
+        # The running gateway serving this profile starts/restarts/stops the platform's adapter now
+        # and says whether it could; only a "no" (or no answer) leaves a restart to the user.
+        live = await asyncio.to_thread(_apply_platform_live, target_profile, platform_id)
+        return {"ok": True, "platform": platform_id, "hot_served": live["applied"], "live": live}
+
+
+# Platform states after which a restart would change nothing: it runs (or is reconnecting) live, or
+# the saved config does not enable it.
+_LIVE_SETTLED_STATES = frozenset({"connected", "retrying", "disabled", "not_configured", "shared", None})
+
+
+def _apply_platform_live(profile: Optional[str], platform_id: str) -> dict:
+    """Ask the gateway serving ``profile`` (its own, or the multiplexer serving it) to reconcile that
+    profile's platforms now. ``{"applied", "state"?, "detail"?}``: ``applied`` False means only a restart
+    applies the save (no gateway answered, one predating the verb, or the adapter could not be built)."""
+    from hermes_cli.gateway import _current_profile_name
+    from hermes_cli.gateway_platform_live import reconcile_running_gateway_platforms
+    from hermes_constants import get_hermes_home
+    name = (profile or "").strip() or _current_profile_name() or "default"
+    with _profile_scope(profile):
+        home = Path(get_hermes_home())
+    answer = reconcile_running_gateway_platforms(name, home)
+    if answer is None:
+        # A multiplexer predating the verb still rebuilds a named profile from its rescan.
+        return {"applied": _notify_multiplexer_hot_serve(profile)}
+    if answer.get("pending"):
+        return {"applied": True, "state": "connecting"}
+    state = (answer.get("platforms") or {}).get(platform_id)
+    if state not in _LIVE_SETTLED_STATES and (missing := _missing_credentials(profile, platform_id)):
+        # Enabled before its credentials were saved: a restart would not start it either.
+        return {"applied": True, "state": "not_configured", "detail": f"needs {', '.join(missing)}"}
+    live = {"applied": bool(answer.get("applied")) and state in _LIVE_SETTLED_STATES, "state": state}
+    if answer.get("error"):
+        live["detail"] = str(answer["error"])
+    elif state == "unavailable":
+        live["detail"] = ((answer.get("reasons") or {}).get(platform_id)
+                          or "the running gateway could not build this platform's adapter")
+    return live
+
+
+def _missing_credentials(profile: Optional[str], platform_id: str) -> list[str]:
+    """What ``profile`` still lacks for the gateway to call the platform configured (its own
+    ``get_connected_platforms`` verdict over the env-overlaid config): the registration's unset
+    ``required_env`` names, or ``["credentials"]`` when it names none. Empty when it is configured."""
+    from gateway.config import load_gateway_config
+    from gateway.platform_registry import platform_registry
+    with _profile_scope(profile):
+        config = load_gateway_config()
+        platform = next((p for p in config.platforms if p.value == platform_id), None)
+        if platform is None or platform in config.get_connected_platforms():
+            return []
+        entry = platform_registry.get(platform_id)
+        env = load_env()
+        names = list(entry.required_env) if entry is not None else []
+        return [n for n in names if not str(env.get(n) or "").strip()] or ["credentials"]
 
 
 def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:

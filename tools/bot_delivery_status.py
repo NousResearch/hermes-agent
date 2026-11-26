@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from tools.bot_failure_reasons import RUNTIME_OFFLINE
+
 log = logging.getLogger(__name__)
 
 # How long a failed delivery stays listed after its last receipt write. Long enough to come back
@@ -133,7 +135,11 @@ def _receipts(home: Path) -> list[tuple[Path, dict, float]]:
             record = _read_receipt(path)
             if record is None:
                 continue
-            if str(record.get("status") or "") not in _PENDING_RECEIPTS | _FAILED_RECEIPTS:
+            status = str(record.get("status") or "")
+            if status == "cancelled" and not record.get("admission_id") and record.get("reason") == RUNTIME_OFFLINE:
+                # The legacy waiter cancelled an ownerless queue entry because delivery failed.
+                record = {**record, "status": "failed"}
+            elif status not in _PENDING_RECEIPTS | _FAILED_RECEIPTS:
                 record = {"status": record.get("status")}
         fresh[path.name] = (identity, record)
         out.append((path, record, st.st_mtime))
@@ -149,8 +155,8 @@ def list_sender_deliveries(
     """Every unsettled local delivery ``sender`` made, newest first.
 
     ``root`` is the install root (``bot_mode_probe._hermes_root``); ``profiles`` overrides the
-    roster (``bot_mode_probe._roster``) for callers that already hold it. Settled and cancelled
-    deliveries drop off; failed and ambiguous receipts stay for ``FAILED_VISIBLE_SECONDS``."""
+    roster (``bot_mode_probe._roster``) for callers that already hold it. Completed and withdrawn
+    deliveries drop off. Failed and ambiguous receipts stay for ``FAILED_VISIBLE_SECONDS``."""
     from tools.bot_mode_probe import _handle, _roster
 
     now = time.time() if now is None else now

@@ -21,6 +21,7 @@ from gateway.session_pending_controls import PendingControls
 from gateway.session_teammate_waits import bot_delivery_list
 from tools import bot_live_delivery
 from tools.bot_delivery_status import FAILED_VISIBLE_SECONDS, list_sender_deliveries
+from tools.bot_failure_reasons import RUNTIME_OFFLINE
 from tools.bot_mode_dm import message_agent_tool
 
 
@@ -57,7 +58,7 @@ async def test_a_sender_cancel_drops_off_the_gateway_list(tmp_path, monkeypatch,
     store = SessionStore(root / "sessions", GatewayConfig())
     runner = SimpleNamespace(session_store=store, adapters={}, _draining=False)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    cancelled, failed, ambiguous, expired = (digit * 32 for digit in "1234")
+    cancelled, failed, ambiguous, expired, offline = (digit * 32 for digit in "12345")
     loop = asyncio.get_running_loop()
 
     async def rpc(connection, method, params):
@@ -86,6 +87,11 @@ async def test_a_sender_cancel_drops_off_the_gateway_list(tmp_path, monkeypatch,
         _receipt(root, failed, sender="scribe", status="failed", reason="rate_limit", error="429")
         _receipt(root, ambiguous, sender="scribe", status="ambiguous")
         _receipt(root, expired, sender="scribe", status="failed", age=FAILED_VISIBLE_SECONDS + 60)
+        _receipt(root, offline, sender="scribe", status="queued", admission_id=None)
+        offline_error = "Live Bot Chat owner is no longer available"
+        legacy = await asyncio.to_thread(bot_live_delivery.cancel_queued_delivery, root, offline,
+                                         error=offline_error, reason=RUNTIME_OFFLINE)
+        assert legacy["status"] == "cancelled"
         if warm_cache:
             before = await rpc(sender, "bot_delivery.list", {})
             assert {row["delivery_id"]: row["state"] for row in before["deliveries"]}[cancelled] == "queued"
@@ -116,7 +122,11 @@ async def test_a_sender_cancel_drops_off_the_gateway_list(tmp_path, monkeypatch,
             assert response["sender"] == "scribe"
             rows = {row["delivery_id"]: (row["state"], row.get("reason"), row.get("error"))
                     for row in response["deliveries"]}
-            assert rows == {failed: ("failed", "rate_limit", "429"), ambiguous: ("failed", "unknown_outcome", None)}
+            assert rows == {
+                failed: ("failed", "rate_limit", "429"),
+                ambiguous: ("failed", "unknown_outcome", None),
+                offline: ("failed", RUNTIME_OFFLINE, offline_error),
+            }
     finally:
         store.close_all_db_handles()
 

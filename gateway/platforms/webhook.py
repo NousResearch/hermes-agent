@@ -70,7 +70,10 @@ _SIGNATURE_SCHEMES: dict[str, frozenset[str]] = {
     "github": frozenset({"github"}),
     "gitlab": frozenset({"gitlab", "standard"}),
     "linear": frozenset({"linear"}),
+    "pagerduty": frozenset({"pagerduty"}),
 }
+# PagerDuty sends one ``v1=<hex>`` per active signing secret (zero-downtime rotation); cap before hashing.
+_MAX_PAGERDUTY_SIGNATURES = 8
 _UNPINNED_SIGNATURE_FAMILIES = frozenset().union(*_SIGNATURE_SCHEMES.values())
 _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
@@ -79,9 +82,9 @@ _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 
 def _header_delivery_id(headers) -> str:
-    """The provider's delivery id (GitHub, Svix, Standard Webhooks, generic), else a fresh one."""
-    return headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-        "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
+    """The provider's delivery id (GitHub, Svix, Standard Webhooks, PagerDuty, generic), else a fresh one."""
+    return headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get("webhook-id", headers.get(
+        "X-Webhook-Id", headers.get("X-Request-ID", uuid.uuid4().hex)))))
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,24 @@ def _json_error(message: str, status: int) -> web.Response:
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+def _validate_pagerduty_signature(body: bytes, secret: str, signature_header: str) -> bool:
+    """PagerDuty v3: comma-separated ``v1=<hex HMAC-SHA256 of body>``; any one matching is authentic."""
+    signatures = [part.strip() for part in signature_header.split(",")]
+    if len(signatures) > _MAX_PAGERDUTY_SIGNATURES:
+        return False
+    expected = "v1=" + _hex_hmac(secret, body)
+    return any(secrets_match(signature, expected) for signature in signatures)
+
+
+def _payload_event_type(payload: Any) -> str:
+    """``event_type`` / ``type`` at the top level, or PagerDuty v3's ``event.event_type``."""
+    if not isinstance(payload, dict):
+        return ""
+    nested = payload.get("event")
+    nested_type = nested.get("event_type", "") if isinstance(nested, dict) else ""
+    return payload.get("event_type", "") or payload.get("type", "") or nested_type
 
 
 def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str, signature_header: str) -> bool:
@@ -704,7 +725,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return mcp_control
         delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
-                      or payload.get("event_type", "") or payload.get("type", "") or "unknown")
+                      or _payload_event_type(payload) or "unknown")
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
             logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,
@@ -875,7 +896,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _validate_signature(self, request: web.Request, body: bytes, secret: str,
                             scheme: Optional[str] = None) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic V2).
+        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, PagerDuty, generic V2).
 
         ``scheme`` is the route's ``signature`` pin; ``None`` accepts every supported family."""
         headers = request.headers
@@ -895,6 +916,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # captured mixed V1+V2 request with its timestamp stripped cannot downgrade to body-only V1.
         present = {"standard": any(svix), "linear": _header("linear-signature"),
                    "github": headers.get("X-Hub-Signature-256", ""), "gitlab": headers.get("X-Gitlab-Token", ""),
+                   "pagerduty": headers.get("X-PagerDuty-Signature", ""),
                    "v2": headers.get("X-Webhook-Signature-V2", ""), "v1": headers.get("X-Webhook-Signature", "")}
         family = next((name for name, value in present.items() if value), None)
         route_name = request.match_info.get("route_name", "")
@@ -925,6 +947,8 @@ class WebhookAdapter(BasePlatformAdapter):
             return secrets_match(present["github"], "sha256=" + _hex_hmac(secret, body))
         if family == "gitlab":
             return secrets_match(present["gitlab"], secret)
+        if family == "pagerduty":
+            return _validate_pagerduty_signature(body, secret, present["pagerduty"])
         # Generic V2: hex HMAC-SHA256 of "<timestamp>.<body>", X-Webhook-Timestamp required. Presence of
         # the V2 header COMMITS to V2 — no fallback to V1 on a missing/bad timestamp.
         v2_timestamp = headers.get("X-Webhook-Timestamp", "")

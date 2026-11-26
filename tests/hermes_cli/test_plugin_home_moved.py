@@ -2,6 +2,8 @@
 #159450): the directory alone reads as an unmarked profile, so a marked profile's run-elsewhere marker would go
 unseen and its own launcher would run."""
 
+from pathlib import Path
+
 import hermes_yaml as yaml
 import pytest
 
@@ -226,6 +228,30 @@ def test_a_reused_profile_name_reaches_no_host_of_the_renamed_profile(tmp_path, 
             pass
     finally:
         plugins_mod._reset_plugin_managers_for_tests()
+
+
+@pytest.mark.platforms("posix")  # directory symlinks
+def test_a_profiles_dashboard_plugins_scanned_through_a_name_since_reused_are_scanned_again(tmp_path, monkeypatch):
+    """The dashboard caches a secondary profile's plugins by the key the process remembered, with paths read
+    through the name it scanned. After ops is renamed to ops2 and the name ops is reused for another directory,
+    a request through ops2 got those paths, which now lead to the other directory's plugin code."""
+    from hermes_cli import web_server_plugin_profiles as profiles_mod
+    from tests.hermes_cli.test_plugin_api_consent_gate import _install
+
+    monkeypatch.setattr(profiles_mod, "_profile_plugins", {})
+    monkeypatch.setattr(profiles_mod, "_profile_rescans", {})
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {})
+    _install(home, "dash")
+    _install(other, "dash")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(home, target_is_directory=True)
+    dash = lambda name: next(p for p in profiles_mod.profile_dashboard_plugins(profiles / name) if p["name"] == "dash")
+    assert Path(dash("ops")["_dir"]).resolve() == (home / "plugins" / "dash" / "dashboard").resolve()
+    (profiles / "ops").rename(profiles / "ops2")
+    (profiles / "ops").symlink_to(other, target_is_directory=True)  # the old name, reused
+    assert Path(dash("ops2")["_dir"]).resolve() == (home / "plugins" / "dash" / "dashboard").resolve()
 
 
 @pytest.mark.platforms("posix")  # directory symlinks

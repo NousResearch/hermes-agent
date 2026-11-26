@@ -14,7 +14,7 @@ from typing import Optional
 # stdout/stderr; the gateway ``run_slash`` path installs a per-call StringIO
 # via this ContextVar so no process-global stream is ever mutated
 # (``contextlib.redirect_stdout`` races with other gateway sessions — #68884).
-_emit_buffer: "contextvars.ContextVar[object]" = contextvars.ContextVar(
+_emit_buffer: contextvars.ContextVar[object] = contextvars.ContextVar(
     "curator_emit_buffer", default=None
 )
 

@@ -32,7 +32,8 @@ from typing import Optional
 
 from hermes_cli.gateway_migrate_backends_plan import (
     _LEGACY_ENV_DROPIN, _SECRET_KEY, APPLY_STEPS, EXIT_BLOCKED, EXIT_OK, EXIT_UNSUPPORTED, EXIT_USAGE, BackendPlan,
-    _forceable, build_plan, format_address, format_plan, manual_steps, parse_address, provider_names,
+    _forceable, build_plan, format_address, format_plan, is_system_launchd, manual_steps, parse_address,
+    provider_names,
 )
 from hermes_cli.gateway_migrate_backends_detach import (
     clear_refusal, detach, read_refusal, record_refusal, refusal_status,
@@ -385,11 +386,16 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
                          f"the checks never saw. The old backend has not been stopped; run this command again.")
     if not force_interrupt and (late := _late_activity(host, rec)) is not None:
         raise StepFailed(f"{late} The old backend has not been stopped.")
-    m["old_backend_stopped"] = False
+    m["old_backend_stopped"] = None
     m["old_backend_disabled"] = False
     run.step("stop_old_backend")
     stopped_at = host.now()
-    host.old_stop(rec)
+    try:
+        host.old_stop(rec)
+    except Exception:
+        m["old_backend_stopped"] = False
+        run.save()
+        raise
     m["old_backend_stopped"] = True
     m["old_backend_disabled"] = "disabling"
     run.save()
@@ -1001,7 +1007,8 @@ def _launchd_stop_progress(m: dict, unit_path: str) -> tuple[Optional[bool], boo
     """``(stopped, disabled, renamed)`` for a launchd manual rollback step.
 
     ``stopped`` is ``True`` when the job was unloaded (bootout), ``False`` when explicitly recorded
-    as not stopped, and ``None`` when unknown (legacy manifest where ``stop_old_backend`` failed).
+    as not stopped, and ``None`` when unknown (in-progress/interrupted ``old_stop``, or a legacy
+    manifest where ``stop_old_backend`` failed).
     For manifests written before those fields existed, ambiguous ``stop_old_backend`` progress treats
     the job as possibly disabled so recovery includes ``launchctl enable``; ``mv`` is omitted when
     the original plist is already back on disk and ``<unit_path>.disabled`` is absent.
@@ -1010,7 +1017,8 @@ def _launchd_stop_progress(m: dict, unit_path: str) -> tuple[Optional[bool], boo
     completed = m.get("kind") == "restore" or m.get("state") == "done" or stop_state == "done"
     stop_entered = completed or stop_state not in (None, "pending") or _entered(m, "stop_old_backend")
     if "old_backend_stopped" in m:
-        stopped: Optional[bool] = bool(m["old_backend_stopped"])
+        raw_stopped = m["old_backend_stopped"]
+        stopped: Optional[bool] = None if raw_stopped is None else bool(raw_stopped)
     else:
         stopped = True if completed else None
     has_disabled_file = bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
@@ -1038,11 +1046,10 @@ def _launchd_missing_plist_step(prefix: list[str], scope: str, unit: str) -> str
 
 def _launchd_manual_rollback_step(m: dict, rec: dict) -> str:
     """Privilege- and stage-aware manual recovery command for a launchd old backend."""
-    from hermes_cli.gateway_migrate_backends_plan import _SYSTEM_LAUNCHD_DIRS, _is_user_launchd_scope
     unit_path = (rec.get("unit_path") or "").strip()
     scope = (rec.get("scope") or "").strip()
     unit = (rec.get("unit") or "").strip()
-    is_system = not _is_user_launchd_scope(scope) or unit_path.startswith(_SYSTEM_LAUNCHD_DIRS)
+    is_system = is_system_launchd(scope, unit_path)
     prefix = ["sudo"] if is_system else []
     if not scope and is_system:
         scope = "system"

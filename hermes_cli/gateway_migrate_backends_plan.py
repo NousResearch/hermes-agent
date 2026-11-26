@@ -456,17 +456,16 @@ def _profile_flag(argv: list[str]) -> bool:
 _SYSTEM_LAUNCHD_DIRS = ("/Library/LaunchDaemons/", "/System/Library/LaunchDaemons/")
 
 
-def _is_user_launchd_scope(scope: Optional[str]) -> bool:
-    """Whether *scope* is a per-user launchd domain (``gui/<uid>`` or ``user/<uid>``)."""
-    return bool(scope and scope.startswith(("gui/", "user/")))
+def is_system_launchd(scope: Optional[str], unit_path: Optional[str]) -> bool:
+    """Whether a launchd target is a system-domain LaunchDaemon rather than a per-user LaunchAgent."""
+    if (unit_path or "").strip().startswith(_SYSTEM_LAUNCHD_DIRS):
+        return True
+    return not (scope or "").strip().startswith(("gui/", "user/"))
 
 
 def _is_system_launchd(item: BackendItem) -> bool:
     """Whether a launchd backend is a system-domain LaunchDaemon rather than a per-user LaunchAgent."""
-    path = (getattr(item, "unit_path", None) or "").strip()
-    if path.startswith(_SYSTEM_LAUNCHD_DIRS):
-        return True
-    return not _is_user_launchd_scope(getattr(item, "scope", None))
+    return is_system_launchd(getattr(item, "scope", None), getattr(item, "unit_path", None))
 
 
 def _launchd_manual_stop(item: Optional[BackendItem]) -> Optional[str]:
@@ -1128,7 +1127,7 @@ def _restart_hint(plan: BackendPlan) -> str:
         user = " --user" if rec.get("scope") == "user" else ""
         return f"{'sudo ' if not user else ''}systemctl{user} restart {rec['unit']}"
     if rec.get("supervisor") == "launchd" and rec.get("unit") and rec.get("scope"):
-        prefix = [] if _is_user_launchd_scope(rec.get("scope")) else ["sudo"]
+        prefix = ["sudo"] if is_system_launchd(rec.get("scope"), rec.get("unit_path")) else []
         return shlex.join([*prefix, "launchctl", "kickstart", "-k", f"{rec['scope']}/{rec['unit']}"])
     return "stop it and start it again the way it was started"
 

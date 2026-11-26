@@ -1,6 +1,6 @@
 name: proactive-hermes
 repo: https://github.com/jjdmev2/proactive-hermes
-sha: "65602bc4e84cc0712ffb009b7d238da9cc49a5ff"
+sha: "2f7c535b186545d5071c6a5449268728b1679936"
 title: Proactive Hermes
 description: "A proactive executive-assistant desk for your Bot. Scheduled jobs and your own watches read mail, calendar, Slack, Linear, marketplaces, shops and event pages, and only what needs you reaches your Bot Chat as one short numbered message: ready email drafts, meeting prep, train and trip leave times with an Uber quote, promises you made, a recap after the team daily. It acts only within the approval levels you pick in setup (private calendar blocks, phone reminders and alarms); sending, buying, registering and booking wait for your yes to that exact action. Quiet hours at night. Set up with /proactive setup, check with hermes proactive doctor. Optional: OpenAI Decisions API to drop noise before any agent runs, and instant mail push over IMAP IDLE with an app password per mailbox. Disclosure: keeps background IMAP IDLE connections, inside the gateway, only to the mailboxes you add in its settings (app passwords read through get_secret); sends the sender, subject and first 600 characters of each new mail (and Slack messages, promise and recap items) to the OpenAI Decisions API only if you set PROACTIVE_OPENAI_API_KEY; posts into your Bot Chat through Hermes's Bot Chat delivery code (tools.bot_live_delivery, not a public plugin API) and triggers its own cron jobs through cron.jobs; reads past chats in state.db read-only and writes one display flag there to hide its own relay input; one pre_llm_call hook adds a setup hint once per profile before setup; creates, completes and checks phone reminders and alarms through the Hermes mobile plugin's bridge database and reads the phone's last sync time and shared location there; reads the cron job list and output, USER.md (your name) and config.yaml; writes scripts/proactive-hermes/, plugin-data/proactive-hermes/ and logs/proactive-hermes-mail-push.log in the Hermes home; runs himalaya, the google-workspace skill's scripts (reading Gmail and Calendar, creating and removing its own calendar blocks and alerts), hermes cron, and hermes sessions archive (archives every finished cron and push session in the profile, never deletes); uses Slack and Linear through your connectors; uses the logged-in browser for watches and for bookings you approve, and scheduled jobs never book or pay."
 maintainer: jjdmev2
@@ -9,14 +9,14 @@ category: automation
 requires_hermes: ">=0.23.4"
 docs_url: https://github.com/jjdmev2/proactive-hermes#readme
 version: "1.0.0"
-image: https://raw.githubusercontent.com/jjdmev2/proactive-hermes/65602bc4e84cc0712ffb009b7d238da9cc49a5ff/docs/assets/banner.png
+image: https://raw.githubusercontent.com/jjdmev2/proactive-hermes/2f7c535b186545d5071c6a5449268728b1679936/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/65602bc4e84cc0712ffb009b7d238da9cc49a5ff/docs/assets/screens/01-email-draft.png
-  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/65602bc4e84cc0712ffb009b7d238da9cc49a5ff/docs/assets/screens/02-shipped-update.png
-  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/65602bc4e84cc0712ffb009b7d238da9cc49a5ff/docs/assets/screens/03-train-uber-leave.png
-  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/65602bc4e84cc0712ffb009b7d238da9cc49a5ff/docs/assets/screens/04-quote-in-app.png
-  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/65602bc4e84cc0712ffb009b7d238da9cc49a5ff/docs/assets/screens/06-vinted-offer.png
-  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/65602bc4e84cc0712ffb009b7d238da9cc49a5ff/docs/assets/screens/07-stock-and-prep.png
+  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/2f7c535b186545d5071c6a5449268728b1679936/docs/assets/screens/01-email-draft.png
+  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/2f7c535b186545d5071c6a5449268728b1679936/docs/assets/screens/02-shipped-update.png
+  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/2f7c535b186545d5071c6a5449268728b1679936/docs/assets/screens/03-train-uber-leave.png
+  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/2f7c535b186545d5071c6a5449268728b1679936/docs/assets/screens/04-quote-in-app.png
+  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/2f7c535b186545d5071c6a5449268728b1679936/docs/assets/screens/06-vinted-offer.png
+  - https://raw.githubusercontent.com/jjdmev2/proactive-hermes/2f7c535b186545d5071c6a5449268728b1679936/docs/assets/screens/07-stock-and-prep.png
 platforms: [linux, macos]
 known_issues:
   - Phone reminders and alarms land when the Hermes mobile app refreshes, which can be minutes late; time critical items also get a calendar alert.

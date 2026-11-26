@@ -40,8 +40,21 @@ from _hermes_home import get_hermes_home
 from _secure_storage import write_private_json
 
 HERMES_HOME = get_hermes_home()
-TOKEN_PATH = HERMES_HOME / "google_token.json"
-CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
+
+
+def _path_from_env(var_name: str, default: Path) -> Path:
+    """Return an expanded path override, treating blank env vars as unset."""
+    override = os.getenv(var_name)
+    if override and override.strip():
+        return Path(override).expanduser()
+    return default
+
+
+TOKEN_PATH = _path_from_env("GOOGLE_TOKEN_PATH", HERMES_HOME / "google_token.json")
+CLIENT_SECRET_PATH = _path_from_env(
+    "GOOGLE_CLIENT_SECRET_PATH",
+    HERMES_HOME / "google_client_secret.json",
+)
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",

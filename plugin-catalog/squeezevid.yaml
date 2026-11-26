@@ -1,0 +1,19 @@
+name: squeezevid
+title: SqueezeVid
+repo: https://github.com/tahayusufkomur/squeezevid-mcp
+sha: 9fc01b1b41384eb6b97217b67f21eabcee8cf401
+version: "1.0.0"
+description: "Verified platform video upload limits (Discord, WhatsApp, Email, TikTok, Instagram, X, Telegram), target-size video bitrate and 1-pass/2-pass FFmpeg compression planner, shell-safe FFmpeg command builder, and privacy-first browser media tool router (video, audio, GIF, image, and PDF) through SqueezeVid's official stateless MCP server (Streamable HTTP at https://www.squeezevid.com/mcp, no sign-in, no keys in config). Bundles the squeezevid workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, stored credentials, telemetry, or self-updater; every tool call goes over HTTPS to www.squeezevid.com/mcp with only the structured query parameters (platform, duration, target size, format, or task description) and never uploads user media files. All 5 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: Taha Yusuf Komur
+tier: community
+category: tools
+docs_url: https://www.squeezevid.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/tahayusufkomur/squeezevid-mcp/9fc01b1b41384eb6b97217b67f21eabcee8cf401/assets/banner.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

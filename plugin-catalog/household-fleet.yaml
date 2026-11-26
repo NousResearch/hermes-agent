@@ -5,7 +5,7 @@
 # re-pin (new PR) whenever the code changes upstream.
 name: household-fleet
 repo: https://github.com/rishiruben/hermes-household-fleet
-sha: 3cdca4984878725372f33c1cc518684435f5c0b6
+sha: 8e12f6acf2699fdb12fa67497d426950c341c32c
 description: >-
   Signal over schedule for multi-agent setups: a deterministic message gate (silence by
   default, tiered budgets, quiet hours, per-subject dedupe, nudge ladder, ack/park/snooze)

@@ -1286,6 +1286,8 @@ def max_retries_exhausted_result(
     _billing_block = None
     _billing_unverified = False
     _free_tier_kind = ""
+    # Appended after the guidance blocks below, so the strip's end anchor can find it.
+    _append_provider_context = False
     if _is_billing:
         _billing_unverified = classified.billing_unverified
         _final_response = _billing_terminal_label(_final_summary, _billing_unverified)
@@ -1309,7 +1311,7 @@ def max_retries_exhausted_result(
         elif _outage := _welcome_outage_copy(agent, base_url, classified):
             _final_response, _free_tier_kind = _outage, "outage"
         else:
-            _final_response += "\n" + provider_context_line(provider, model, base_url)
+            _append_provider_context = True
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.
@@ -1320,6 +1322,8 @@ def max_retries_exhausted_result(
             "happens when it writes a very large file in one go. Ask me to write the file in "
             "smaller sections (or via execute_code with Python's open())."
         )
+    if _append_provider_context:
+        _final_response += "\n" + provider_context_line(provider, model, base_url)
     result = _failed_turn_result(_final_response, messages, api_call_count, _final_summary)
     result.update({
         # Classified reason so callers (kanban worker in cli.py) can tell a quota wall

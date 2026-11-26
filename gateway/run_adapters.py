@@ -1133,6 +1133,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
+        from gateway.run_platform_reconcile import load_platform_config_strict
         from hermes_cli.env_loader import hydrate_profile_secret_sources
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
@@ -1148,7 +1149,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self._register_config_hooks(
                 "shell-hook/webhook registration failed for profile '%s'", profile_name, level=logging.WARNING,
             )
-            profile_cfg = load_gateway_config()
+            # A rescan never swaps a served profile's config for the env-only fallback of an unreadable
+            # YAML: it raises, and the profile keeps the last good one (run_platform_reconcile).
+            rescan = profile_name in (getattr(self, "_profile_configs", None) or {})
+            profile_cfg = load_platform_config_strict() if rescan else load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:

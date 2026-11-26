@@ -652,6 +652,7 @@ def build_anthropic_kwargs(
     reasoning_config: Optional[dict[str, Any]], tool_choice: Optional[str] = None,
     is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
+    anthropic_cache_ttl: str | None = None,
 ) -> dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
     response; ``context_length`` is the TOTAL window (input + output). ``max_tokens=None`` uses the
@@ -676,6 +677,16 @@ def build_anthropic_kwargs(
         system = _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire)
     kwargs: dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
     if system:
+        # Anthropic-specific cache_control: when the system prompt is a plain string
+        # (no markers from the prompt-caching layer) and an Anthropic TTL is configured,
+        # wrap it with a cache_control breakpoint so OpenRouter forwards the marker to
+        # the upstream Anthropic API. A system already in block-list form (from
+        # apply_anthropic_cache_control) passes through unchanged.
+        if anthropic_cache_ttl and anthropic_cache_ttl in {"5m", "1h"} and isinstance(system, str):
+            marker: dict[str, str] = {"type": "ephemeral"}
+            if anthropic_cache_ttl == "1h":
+                marker["ttl"] = "1h"
+            system = [{"type": "text", "text": system, "cache_control": marker}]
         kwargs["system"] = system
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools

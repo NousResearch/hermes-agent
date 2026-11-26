@@ -615,6 +615,17 @@ def _init_prompt_cache_config(agent):
             "configuration imports work again.",
             type(exc).__name__,
         )
+    # Anthropic-specific cache TTL: prompt_caching.anthropic_ttl overrides the generic
+    # cache_ttl for Anthropic-family providers/models. Falls back to the generic TTL
+    # when unset. Values: '5m' (default, 1.25x write cost) or '1h' (2x write cost;
+    # pays off only when inter-request pauses exceed 5m — cron watches, mailbox scans).
+    agent._anthropic_cache_ttl = agent._cache_ttl
+    try:
+        _anthro_ttl = _pc_cfg.get("anthropic_ttl")
+        if _anthro_ttl in {"5m", "1h"}:
+            agent._anthropic_cache_ttl = _anthro_ttl
+    except Exception:
+        pass
 
 
 def _init_turn_state(agent, run_budget_seconds):

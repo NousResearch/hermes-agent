@@ -91,8 +91,17 @@ def _owner_payload() -> dict:
     return p
 
 
+def test_state_keep_going_on_credits_parses_bools_only():
+    for raw, want in (({"enabled": True}, True), ({"enabled": False}, False), (None, None),
+                      ({"enabled": "true"}, None), ({}, None), (True, None)):
+        p = _owner_payload()
+        p["keepGoingOnCredits"] = raw
+        assert billing_state_from_payload(p).keep_going_on_credits is want, raw
+
+
 def test_state_member_tier_parse():
     s = billing_state_from_payload(_member_payload())
+    assert s.keep_going_on_credits is None  # absent (older portal / not admin / other plan) → no control
     assert s.logged_in
     assert s.role == "MEMBER"
     assert s.balance_usd == Decimal("142.5")

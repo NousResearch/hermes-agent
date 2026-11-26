@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
 
 import { handleStatusEvent } from './status'
 import type { GatewayEventContext } from './types'
@@ -51,6 +52,36 @@ afterEach(() => {
 })
 
 describe('gateway `error` event → error card + toast', () => {
+  it('keeps folder and site cards open when the turn ends with an error, and drops command approvals', () => {
+    // The card's sender waits on a folder or site card, so the end of the turn does not close it.
+    setApprovalRequest({ command: 'rm -rf build', description: 'd', requestId: 'cmd', sessionId: 'sess-1' })
+    setApprovalRequest({
+      command: '',
+      description: 'Allow C:\\docs',
+      kind: 'access',
+      requestId: 'folder',
+      sessionId: 'sess-1',
+      target: { access: 'read', path: 'C:\\docs' }
+    })
+    setApprovalRequest({
+      command: '',
+      description: 'Allow the sandbox to reach pypi.org',
+      kind: 'network',
+      requestId: 'site',
+      sessionId: 'sess-1',
+      target: { host: 'pypi.org' }
+    })
+
+    expect(handleStatusEvent(errorContext('The provider returned an error.').ctx)).toBe(true)
+    expect(
+      sessionApprovalRequests('sess-1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['folder', 'site'])
+
+    clearAllPrompts()
+  })
+
   it('stamps SESSION_NOT_OWNED on a live-owner refusal so the card drops Retry', () => {
     const { ctx, failAssistantMessage } = errorContext(OWNED_REFUSAL)
 
@@ -111,5 +142,23 @@ describe('gateway `error` event → error card + toast', () => {
     const toast = $notifications.get()[0]
     expect(toast.message).toBe(serverCopy)
     expect(toast.detail).toBeUndefined()
+  })
+
+  it('raises no toast for the session on screen when its card explains the code (one event, one surface)', () => {
+    const { ctx, failAssistantMessage } = errorContext('[Errno 28] No space left on device')
+
+    handleStatusEvent({ ...ctx, isActiveEvent: true })
+
+    expect(failAssistantMessage).toHaveBeenCalledTimes(1)
+    expect($notifications.get()).toEqual([])
+  })
+
+  it("still toasts a bare error's server sentence on screen: the card copy is generic", () => {
+    const sentence = 'Another Hermes process holds the auth store lock. Wait for it to finish or close it, then retry.'
+    const { ctx } = errorContext(sentence)
+
+    handleStatusEvent({ ...ctx, isActiveEvent: true })
+
+    expect($notifications.get()).toEqual([expect.objectContaining({ message: sentence })])
   })
 })

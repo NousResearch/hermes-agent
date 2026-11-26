@@ -3,7 +3,7 @@
 A suggestion is a ready-to-run cron job spec the user accepts (creates the real job) or dismisses
 (latched by ``dedup_key`` so it is never re-offered). Every proposal flows through here regardless
 of source: ``catalog`` (curated starters), ``blueprint`` (skill ``blueprint:`` blocks, see
-``tools/blueprints.py``), ``usage`` (self-improvement review), ``integration`` (connected account).
+``cron/skill_blueprints.py``), ``usage`` (self-improvement review), ``integration`` (connected account).
 Accepting calls ``cron.jobs.create_job`` with the stored ``job_spec`` — no second job engine;
 nothing auto-creates (consent-first). Storage mirrors ``cron/jobs.py`` (atomic replace, 0600).
 """

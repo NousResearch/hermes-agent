@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
@@ -26,7 +27,7 @@ function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerC
         canSubmit={true}
         conversation={{
           active: false,
-          level: 0,
+          levelStore: atom(0),
           muted: false,
           onEnd: vi.fn(),
           onStart: vi.fn(),
@@ -141,10 +142,24 @@ describe('narrow tiles', () => {
 })
 
 describe('ComposerControls shortcut tooltips', () => {
-  it('keeps Send (not Steer) while a turn is running if there is a payload', async () => {
+  it('labels busy Send with the effective configured action', async () => {
     renderControls({ busy: true, busyAction: 'steer' })
 
-    await expectShortcutTooltip('Send', '↵')
+    await expectShortcutTooltip('Steer the current run', '↵')
+  })
+
+  // A reply paused for its continuation holds a send in the queue, even while the
+  // backend restarts and the composer is otherwise disabled.
+  it('keeps Send usable while disabled when a send would be held for a paused reply', () => {
+    renderControls({ disabled: true, sendWhileDisabled: true })
+
+    expect((screen.getByLabelText('Send') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('disables Send while disabled otherwise', () => {
+    renderControls({ disabled: true })
+
+    expect((screen.getByLabelText('Send') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('shows Stop only when the composer is empty mid-turn', async () => {
@@ -153,8 +168,22 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Stop', '↵')
   })
 
+  it('answers a waiting card with Send when the draft has text, and offers no Queue', () => {
+    renderControls({ busy: true, busyAction: 'queue', cardWaiting: true, hasComposerPayload: true })
+
+    expect(screen.getByLabelText('Send')).toBeTruthy()
+    expect(screen.queryByLabelText('Stop')).toBeNull()
+    expect(screen.queryByLabelText('Queue message')).toBeNull()
+  })
+
+  it('keeps Stop enabled while a card waits and the draft is empty', () => {
+    renderControls({ busy: true, busyAction: 'stop', canSubmit: true, cardWaiting: true, hasComposerPayload: false })
+
+    expect(screen.getByLabelText('Stop').hasAttribute('disabled')).toBe(false)
+  })
+
   it('shows Ctrl+Enter for Queue as the secondary mid-turn action', async () => {
-    renderControls({ busy: true, busyAction: 'queue' })
+    renderControls({ busy: true, busyAction: 'interrupt' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
   })
@@ -210,7 +239,7 @@ describe('wake-word ear visibility', () => {
     renderControls({
       conversation: {
         active: true,
-        level: 0,
+        levelStore: atom(0),
         muted: false,
         onEnd: vi.fn(),
         onStart: vi.fn(),

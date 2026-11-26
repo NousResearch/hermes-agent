@@ -60,6 +60,14 @@ def parse_openrouter_reasoning_capabilities(item: Any) -> Optional[dict[str, Any
     return {"supports_reasoning": True, "supported_efforts": efforts, "mandatory": reasoning.get("mandatory") is True}
 
 
+def _catalog_item_supports_vision(item: Any) -> Optional[bool]:
+    """Image input per one catalog entry's ``architecture.input_modalities``; None when the entry
+    does not say (absent or malformed), so the caller keeps looking instead of reading text-only."""
+    arch = item.get("architecture") if isinstance(item, dict) else None
+    mods = arch.get("input_modalities") if isinstance(arch, dict) else None
+    return "image" in mods if isinstance(mods, list) else None
+
+
 # ── Disk mirror ────────────────────────────────────────────────────────
 #
 # In-process caches are always cold in a short-lived process, and every consumer is on a hot path
@@ -136,7 +144,12 @@ def _seed_reasoning_caps(url: str, items: Any) -> Optional[Caps]:
     for item in items:
         mid = str(item.get("id") or "").strip() if isinstance(item, dict) else ""
         if mid:
-            caps_by_id[mid] = parse_openrouter_reasoning_capabilities(item)
+            caps = parse_openrouter_reasoning_capabilities(item)
+            vision = _catalog_item_supports_vision(item)
+            if vision is not None:
+                # Independent of the reasoning verdict: an entry may state one and not the other.
+                caps = {**(caps or {}), "supports_vision": vision}
+            caps_by_id[mid] = caps
     if not caps_by_id:
         return None
     _save_reasoning_caps_disk(url, caps_by_id)
@@ -146,9 +159,10 @@ def _seed_reasoning_caps(url: str, items: Any) -> Optional[Caps]:
 def _fetch_reasoning_caps_catalog(url: str, timeout: float) -> Optional[Caps]:
     """Fetch one OpenRouter-shaped ``/v1/models`` catalog → per-model caps; None when unreachable or
     empty so callers remember the failure. Sends a User-Agent: the Portal 403s anonymous reads."""
+    from hermes_cli.version_info import hermes_user_agent
     m = _origin()
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": m._HERMES_USER_AGENT})
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": hermes_user_agent()})
         with m._urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
@@ -166,12 +180,14 @@ class _CapsSource:
     ``failed_at``: monotonic timestamp of the last FAILED fetch; suppresses re-fetch storms from
     per-turn callers for 60s (mirrors the LM Studio/Ollama probe caching). ``disk_checked`` /
     ``warm_started``: once-per-process guards for the disk hydrate and the background warm.
+    ``vision_refreshed``: once-per-process guard for the vision lookup's own catalog read.
     """
     cache: str
     failed_at: str
     disk_checked: str
     warm_started: str
     url: Callable[[], str]
+    vision_refreshed: str = ""
     # True when the URL (hence the catalog) follows the active profile's credentials/.env: under a
     # routed profile the slots then live per home, and the once-per-process guards must not let the
     # launch profile's disk hydrate or warm count as another profile's.
@@ -227,7 +243,9 @@ def _model_caps(src: _CapsSource, model_id: Optional[str], *, timeout: float, al
     caps_by_id = _caps_cached(src)
     if caps_by_id is None and allow_fetch:
         caps_by_id = _fetch_caps(src, timeout=timeout)
-    return caps_by_id.get(model) if caps_by_id is not None else None
+    caps = caps_by_id.get(model) if caps_by_id is not None else None
+    # An entry that states only its modalities carries no reasoning verdict: still "unknown".
+    return caps if isinstance(caps, dict) and "supports_reasoning" in caps else None
 
 
 def _warm_caps_async(src: _CapsSource) -> None:
@@ -263,7 +281,7 @@ _OPENROUTER_CAPS = _CapsSource(
 _NOUS_CAPS = _CapsSource(
     "_nous_reasoning_caps_cache", "_nous_reasoning_caps_failed_at",
     "_nous_caps_disk_checked", "_nous_caps_warm_started",
-    lambda: nous_catalog_url(), per_profile=True,
+    lambda: nous_catalog_url(), vision_refreshed="_nous_caps_vision_refreshed", per_profile=True,
 )
 
 
@@ -294,6 +312,84 @@ def nous_model_reasoning_capabilities(
     """Nous Portal counterpart of :func:`openrouter_model_reasoning_capabilities`; warm the cache
     with :func:`warm_nous_reasoning_caps_async` from hot paths."""
     return _model_caps(_NOUS_CAPS, model_id, timeout=timeout, allow_fetch=allow_fetch)
+
+
+def nous_model_supports_vision(
+    model_id: Optional[str], *, timeout: float = 6.0, allow_fetch: bool = False,
+) -> Optional[bool]:
+    """Whether the Portal serves *model_id* with image input, from the same ``/v1/models`` catalog
+    (tri-state: None = the catalog is unavailable or does not list the model's modalities).
+
+    The Portal is the authority for what its own route accepts: models.dev has no Nous catalog, and
+    a vendor's catalog can lack the exact id the Portal serves. A mirror written before modalities
+    were recorded holds no verdict for any model, so with *allow_fetch* it is refetched rather than
+    answering "unknown" until its TTL, or for the life of a long-running process. One successful
+    read per process settles it: a catalog that really lists no modalities is not asked again, and
+    images that arrive together wait for that one read instead of each starting their own.
+    """
+    model = str(model_id or "").strip()
+    if not model:
+        return None
+    src = _NOUS_CAPS
+    _drop_caps_from_other_endpoint(src)
+    if allow_fetch and not src.get("vision_refreshed"):
+        caps_by_id = src.get("cache")
+        if caps_by_id is None or not _records_vision(caps_by_id):
+            with _vision_read_lock():
+                caps_by_id = _caps_cached(src)
+                if _needs_vision_read(src, caps_by_id):
+                    fresh = _fetch_caps(src, timeout=timeout, force=caps_by_id is not None)
+                    if fresh is not None:
+                        src.set("vision_refreshed", True)
+                        caps_by_id = fresh
+    else:
+        caps_by_id = _caps_cached(src)
+    entry = caps_by_id.get(model) if caps_by_id is not None else None
+    verdict = entry.get("supports_vision") if isinstance(entry, dict) else None
+    return verdict if isinstance(verdict, bool) else None
+
+
+_VISION_READ_LOCKS: dict[str, threading.Lock] = {}
+_VISION_READ_LOCKS_GUARD = threading.Lock()
+
+
+def _vision_read_lock() -> threading.Lock:
+    """One lock per profile home: the catalog slots are per profile, so a slow Portal read for one
+    profile must not hold up another profile's first image."""
+    from hermes_constants import hermes_home_key
+
+    key = hermes_home_key()
+    with _VISION_READ_LOCKS_GUARD:
+        return _VISION_READ_LOCKS.setdefault(key, threading.Lock())
+
+
+def _drop_caps_from_other_endpoint(src: _CapsSource) -> None:
+    """Forget the cached catalog once the profile's Portal URL changes (re-login to staging,
+    ``NOUS_INFERENCE_BASE_URL`` edited under a running gateway): the cache slots are per profile,
+    not per URL, and the old endpoint's modalities must not decide what the new one is sent."""
+    from hermes_constants import hermes_home_key
+
+    url, home = src.url(), hermes_home_key()
+    previous = _CATALOG_URL_BY_HOME.setdefault(home, url)
+    if previous == url:
+        return
+    for slot in ("cache", "failed_at"):
+        src.set(slot, None)
+    for slot in ("disk_checked", "vision_refreshed"):
+        src.set(slot, False)
+    _CATALOG_URL_BY_HOME[home] = url
+
+
+# Profile home -> the Portal URL its Nous catalog slots were last read for.
+_CATALOG_URL_BY_HOME: dict[str, str] = {}
+
+
+def _needs_vision_read(src: _CapsSource, caps_by_id: Optional[Caps]) -> bool:
+    return not src.get("vision_refreshed") and (caps_by_id is None or not _records_vision(caps_by_id))
+
+
+def _records_vision(caps_by_id: Caps) -> bool:
+    return any(isinstance(caps, dict) and "supports_vision" in caps for caps in caps_by_id.values())
 
 
 def warm_openrouter_reasoning_caps_async() -> None:

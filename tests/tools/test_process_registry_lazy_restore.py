@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from persistence_assembly import store_location
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -13,7 +14,7 @@ def test_model_tools_import_creates_no_state_db(tmp_path):
     env = {**os.environ, "HERMES_HOME": str(typo_home), "PYTHONPATH": str(REPO)}
     env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
     proc = subprocess.run([sys.executable, "-c", "import model_tools"], cwd=REPO, env=env,
-                          text=True, capture_output=True, timeout=120)
+                          text=True, capture_output=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert not (typo_home / "state.db").exists(), sorted(os.listdir(typo_home)) if typo_home.exists() else None
 
@@ -39,7 +40,7 @@ def test_first_drain_under_secondary_scope_replays_the_launch_ledger(monkeypatch
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     ledgers = []
     monkeypatch.setattr(async_delegation, "restore_undelivered_completions",
-                        lambda q: ledgers.append(async_delegation._db_path()) or 0)
+                        lambda q: ledgers.append(store_location(async_delegation._scope())) or 0)
     registry = pr_mod.ProcessRegistry()
     token = set_hermes_home_override(tmp_path / "launch" / "profiles" / "b")
     try:

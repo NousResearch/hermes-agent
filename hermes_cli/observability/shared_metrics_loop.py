@@ -366,25 +366,15 @@ def record_terminal_backend(plan: Any, result: Any, *, error_class: str | None =
     return record_execution_backend("terminal", getattr(plan, "env_type", None), result, error_class=error_class)
 
 
-def record_browser_call(call: Callable[[Callable[[Callable[[], Any]], Any]], Any], resolve_backend: Callable[[], str]) -> Any:
-    """Run one browser tool call and count it against the backend that served it. ``call`` receives a
-    wrapper for the legacy-backend fallback: when the extension controller serves the call instead,
-    the fallback never runs and the backend is ``extension``."""
-    served_by_legacy = []
-
-    def backend() -> str:
-        return resolve_backend() if served_by_legacy else "extension"
-
-    def legacy(fallback: Callable[[], Any]) -> Any:
-        served_by_legacy.append(True)
-        return fallback()
-
+def record_browser_call(call: Callable[[], Any], resolve_backend: Callable[[], str]) -> Any:
+    """Run one browser_exec call and count it against the backend that served it (``resolve_backend``
+    runs only while collection is on, after the call)."""
     try:
-        result = call(legacy)
+        result = call()
     except Exception:
-        _safe_record_browser(backend, None, "exception")
+        _safe_record_browser(resolve_backend, None, "exception")
         raise
-    _safe_record_browser(backend, result, None)
+    _safe_record_browser(resolve_backend, result, None)
     return result
 
 

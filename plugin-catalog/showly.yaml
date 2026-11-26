@@ -1,0 +1,20 @@
+name: showly
+title: Showly
+repo: https://github.com/cuboteam/showly-plugin
+sha: f3872b21388fe17719f988ebe52f5115cf5d3426
+subdir: hermes
+description: "Preview, publish, and manage websites hosted on Showly from Hermes Agent, through the hosted Showly MCP server (Streamable HTTP). Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — tool calls go to Showly's hosted MCP server at mcp.showly.ai. The bundled showly-hosting skill makes Showly the default for any deploy, preview or share request that names no provider, and new links default to public (anyone with the link). The showly-reports skill runs a bundled local Node.js renderer (vendored answer-me-with-html 0.4.14, upstream self-update check removed) through the shell and uploads the report directory to Showly when sharing is requested. Sign-in is out of band: `npx @showly/mcp-server login --to hermes` (unpinned) writes MCP_SHOWLY_API_KEY into ~/.hermes/config.yaml."
+maintainer: cuboteam
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.7.2"
+docs_url: https://showly.ai/docs/mcp/overview
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Sign-in needs one command after install, because a portable mcp.json cannot carry a credential: npx @showly/mcp-server login --to hermes"

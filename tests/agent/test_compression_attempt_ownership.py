@@ -444,7 +444,7 @@ class TestStaleAttemptEndToEnd:
             finally:
                 a_done.set()
 
-        gen1 = _claim_compressor_attempt(cc)
+        _claim_compressor_attempt(cc)
         with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
             t = threading.Thread(target=attempt_a, daemon=True)
             thread_a[0] = t

@@ -463,38 +463,43 @@ describe('durable projection', () => {
     expect(rooms.Legacy.roomId).toBeNull()
   })
 
-  it('never persists a tombstone that a remote merge forwarded', async () => {
+  it.each([
+    { running: false, roomId: 'disbanded-room' },
+    { running: true, roomId: 'disbanded-room' },
+    { running: false, roomId: undefined },
+    { running: true, roomId: undefined }
+  ])('a delayed sync read cannot restore a disbanded room ($running, $roomId)', async ({ running, roomId }) => {
     const room = await loadRoom()
-    // A drive still mid-turn at disband time leaves a live tombstone.
-    room.chat.$groupChats.set({
-      Live: { epoch: 4, log: [], running: false, tombstone: true, watermarks: {} }
-    } as unknown as Record<string, GroupChat>)
+    const { disbandGroupChat } = await import('./group-chat-view')
+    // Keep the secondary gateway's earlier changed-room job pending across disband.
+    vi.stubGlobal('setTimeout', () => 0)
+    let active = 'gw-b'
+    host.state = { ...host.state as object, connectionId: { get: () => active, listen: () => () => undefined } }
+    host.profileRoutes = async () => ['gw-a', 'gw-b'].map(connectionId => ({ connectionId, profile: 'default' }))
+    let release!: (value: unknown) => void
+    const read = new Promise(resolve => { release = resolve })
+    host.requestProfile = async () => read
+    room.chat.updateGroupChat('Live', current => ({ ...current, running, roomId,
+      engine: 'desktop', members: [{ name: 'a', connectionId: 'gw-a' }, { name: 'b', connectionId: 'gw-b' }],
+      log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'Keep working', id: 'old:1' }]
+    }))
+    const snapshot = room.chat.groupChatSyncSnapshot(room.chat.$groupChats.get())
+    const pull = room.chat.pullGroupChatServerState('gw-b')
+    active = 'gw-a'
+    await disbandGroupChat('Live', [])
+    expect(room.chat.$groupChats.get().Live?.log ?? []).toEqual([])
 
-    // The remote gateway has NOT yet received the delete (plausible now that
-    // sync fans out to every reachable default-profile gateway independently)
-    // — its snapshot still carries a live copy under the same display name.
-    const merged = room.chat.mergeRemoteGroupChatSnapshotIntoRooms(
-      {
-        rooms: {
-          Live: {
-            log: [{ at: 1, from: { kind: 'member', name: 'research' }, text: 'still going' }],
-            members: [{ name: 'research' }]
-          }
-        },
-        version: 3
-      },
-      room.chat.$groupChats.get()
-    )
-
-    // The merge spreads `...existing` before its explicit field overrides,
-    // none of which touch `tombstone` — so the flag survives into the merged
-    // room. Without that reachability step durableGroupChatRooms would never
-    // see a tombstoned room from this path at all.
-    expect(merged.Live.tombstone).toBe(true)
-
-    await room.chat.persistGroupChatRooms(merged)
-
-    expect('Live' in durable(room)).toBe(false)
+    release({ profiles: [{ name: 'default', ui_meta: { 'hermes-bots-groups': snapshot } }] })
+    await pull
+    expect(room.chat.$groupChats.get().Live).toBeUndefined()
+    expect(durable(room).Live).toBeUndefined()
+    expect(room.chat.groupChatSyncSnapshot(room.chat.$groupChats.get()).rooms).toEqual({})
+    room.chat.stopGroupChatServerSync()
+    // After pending jobs end, the name fence must not block a fresh identity.
+    const recreated = room.chat.groupChatSyncSnapshot({ Live: { roomId: 'fresh-room', log: [{ at: 2, from: { kind: 'user', name: 'You' }, text: 'New group chat' }], members: [], watermarks: {} } })
+    host.requestProfile = async () => ({ profiles: [{ name: 'default', ui_meta: { 'hermes-bots-groups': recreated } }] })
+    await room.chat.pullGroupChatServerState('gw-b')
+    expect(room.chat.$groupChats.get().Live?.roomId).toBe('fresh-room')
   })
 
   it('stranded markers ride the durable map so late replies survive a reload', async () => {

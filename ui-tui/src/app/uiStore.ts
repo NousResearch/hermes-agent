@@ -24,6 +24,7 @@ const buildUiState = (): UiState => ({
   info: null,
   liveSessionCount: 0,
   inlineDiffs: true,
+  inlineImages: true,
   mouseTracking: MOUSE_TRACKING,
   notice: null,
   pasteCollapseLines: 5,
@@ -48,8 +49,13 @@ export const $uiState = atom<UiState>(buildUiState())
 
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
+export const $uiInlineImages = computed($uiState, state => state.inlineImages)
 
 export const getUiState = () => $uiState.get()
+
+// The folder a user-typed path is relative to: the session's, else the one `hermes --tui` was
+// launched from. Never this process's cwd (the ui-tui install) or the shared gateway's.
+export const sessionCwd = (): string | undefined => $uiState.get().info?.cwd || process.env.HERMES_CWD || undefined
 
 export const patchUiState = (next: Partial<UiState> | ((state: UiState) => UiState)) =>
   $uiState.set(typeof next === 'function' ? next($uiState.get()) : { ...$uiState.get(), ...next })

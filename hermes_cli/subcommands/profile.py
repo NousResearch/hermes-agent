@@ -40,6 +40,17 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation")
     profile_create.add_argument(
+        "--isolated-auth", action="store_true",
+        help="Copy the logins (auth.json) once instead of sharing the default profile's, like unticking "
+             "\"Share keys & accounts\" on the Desktop bot page. Single-use OAuth logins are left out of the "
+             "copy and still read from the default profile. From a named profile its logins are always copied "
+             "this way.")
+    profile_create.add_argument(
+        "--no-credentials", action="store_true",
+        help="Copy no API keys, logins or model from the launch profile (run `<name> setup` afterwards; "
+             "not with --clone*, which copies the source's keys). "
+             "The default profile's logins stay readable for any provider the new profile has not signed in to.")
+    profile_create.add_argument(
         "--no-skills", action="store_true",
         help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
     )

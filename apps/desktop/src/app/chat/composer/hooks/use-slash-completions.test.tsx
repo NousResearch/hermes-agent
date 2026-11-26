@@ -46,7 +46,7 @@ function harness(gateway: HermesGateway, options: { profile?: string } = {}) {
 
   function Probe() {
     const { adapter } = useSlashCompletions({ gateway, ...options })
-    api.search = adapter.search
+    api.search = adapter?.search
 
     return null
   }

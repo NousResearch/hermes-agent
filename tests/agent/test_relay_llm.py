@@ -833,7 +833,7 @@ def test_logical_close_skips_pop_under_concurrent_turn_scope(relay_turn):
     observe_top = lambda: lease.host.run_in_session(
         lease.session, relay_runtime._current_top, relay
     )
-    top_before_sibling = observe_top()
+    observe_top()
 
     # A concurrent turn's live scope sits above ours.
     sibling_handle = lease.host.run_in_session(

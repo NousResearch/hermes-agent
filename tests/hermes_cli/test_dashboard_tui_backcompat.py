@@ -41,6 +41,7 @@ def _run_cli(args, timeout=60):
         capture_output=True,
         text=True,
         timeout=timeout,
+        check=False,
     )
 
 

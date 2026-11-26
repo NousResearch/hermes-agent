@@ -1,0 +1,19 @@
+name: hermes-proof
+title: HermesProof
+repo: https://github.com/CodedAccorn/hermes-proof
+sha: 216afb3c1f75be3d4351399f7c4d814f23bb8e77
+description: Deterministically verify agent task outcomes and persist auditable evidence reports.
+maintainer: CodedAccorn
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.2.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - proof_verify
+    - proof_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

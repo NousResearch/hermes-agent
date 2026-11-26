@@ -21,6 +21,8 @@ SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 # Same tensor selection as context_policy's per-block FFN -ot override.
 _FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
+# A block with an SSM conv filter keeps recurrent state (Mamba2 and gated delta-net alike).
+_SSM_CONV = re.compile(r"blk\.(\d+)\.ssm_conv1d\.weight")
 
 # Tensors llama.cpp leaves in the file and reads row by row on demand instead of loading them
 # (create_tensor's TENSOR_READ_LAZY, marked per architecture in the engine's model code). Under the
@@ -49,6 +51,9 @@ _GGML_TYPE_SIZES = {
     21: (110, 256), 22: (82, 256), 23: (136, 256), 24: (1, 1), 25: (2, 1),
     26: (4, 1), 27: (8, 1), 28: (8, 1), 29: (56, 256), 30: (2, 1),
     39: (17, 32),  # MXFP4 — 32 elements per 17-byte block (gpt-oss family)
+    40: (36, 64),  # NVFP4 — 4 E4M3 sub-block scales + 32 bytes of E2M1 (Nemotron 3.5 Bolt)
+    41: (18, 128),  # Q1_0
+    42: (18, 64),  # Q2_0
 }
 
 # GGUF metadata value types -> struct format; STRING (8) and ARRAY (9) are variable-length.
@@ -80,6 +85,9 @@ class GGUFHeader:
     # Sizes of the tensors some architecture reads lazily, by name. ``lazy_bytes`` applies this
     # model's architecture and the size threshold.
     lazy_candidate_bytes: dict[str, int] = field(default_factory=dict)
+    # Blocks that keep recurrent state. Counted from the tensor table: hybrids like Nemotron-H
+    # also have MoE-only blocks without KV heads, which hold none.
+    recurrent_blocks: frozenset[int] = frozenset()
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -96,6 +104,21 @@ class GGUFHeader:
 
     def _arch_key(self, suffix: str):
         return self.metadata.get(f"{self.architecture}.{suffix}")
+
+    @property
+    def recurrent_state_bytes(self) -> int:
+        """One copy of one sequence's recurrent state: an f32 conv window plus the SSM state, per
+        block that keeps state. llama.cpp holds one copy per slot per speculative draft position.
+        0 when the file declares no SSM shape."""
+        def ssm(key: str) -> int:
+            return int(self._arch_key(f"ssm.{key}") or 0)
+
+        inner, state = ssm("inner_size"), ssm("state_size")
+        if not (self.recurrent_blocks and inner and state):
+            return 0
+        conv_dim = inner + 2 * ssm("group_count") * state
+        per_block = 4 * (inner * state + max(0, ssm("conv_kernel") - 1) * conv_dim)
+        return len(self.recurrent_blocks) * per_block
 
     def _arch_int(suffix: str, doc: str = ""):
         return property(lambda self: int(self._arch_key(suffix) or 0), doc=doc)
@@ -259,6 +282,7 @@ def _read_part(path: Path) -> GGUFHeader:
         embd_bytes = 0
         ffn_block_bytes: dict[int, int] = {}
         lazy_candidate_bytes: dict[str, int] = {}
+        recurrent_blocks: set[int] = set()
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -281,11 +305,14 @@ def _read_part(path: Path) -> GGUFHeader:
                 ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
             elif name in _LAZY_READ_CANDIDATES:
                 lazy_candidate_bytes[name] = nbytes
+            elif m := _SSM_CONV.match(name):
+                recurrent_blocks.add(int(m.group(1)))
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
                       embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes,
-                      lazy_candidate_bytes=lazy_candidate_bytes)
+                      lazy_candidate_bytes=lazy_candidate_bytes,
+                      recurrent_blocks=frozenset(recurrent_blocks))
 
 
 def read_gguf_header(path: str | Path) -> GGUFHeader:
@@ -330,4 +357,5 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
         embd_table_bytes=sum(h.embd_table_bytes for h in readable),
         ffn_block_bytes=ffn_block_bytes,
         lazy_candidate_bytes={name: nbytes for h in readable
-                              for name, nbytes in h.lazy_candidate_bytes.items()})
+                              for name, nbytes in h.lazy_candidate_bytes.items()},
+        recurrent_blocks=frozenset().union(*(h.recurrent_blocks for h in readable)))

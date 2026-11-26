@@ -105,7 +105,7 @@ class TestPersistedStaleErrorRecovery:
 
         job = J.get_job(job_id)
         with mock.patch("cron.jobs.load_jobs", return_value=[job]):
-            n = S.tick(verbose=False, sync=True)
+            S.tick(verbose=False, sync=True)
 
         latest = E.latest_execution(job_id)
         assert latest is not None, (

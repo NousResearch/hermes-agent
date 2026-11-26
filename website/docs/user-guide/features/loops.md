@@ -31,6 +31,14 @@ What you'll see:
 2. **First wakeup fires right away** — on the next idle poll (gateway: the next 15s watcher scan), Hermes injects the wakeup and runs a normal turn against current state.
 3. **Repeat** — every 5 minutes after that, until a stop condition fires or you stop it.
 
+While a loop stands, every surface keeps it in view with a live countdown to the next wakeup:
+
+| Surface | Where |
+|---|---|
+| Classic CLI | A row in the live-work dock above the prompt: `↻ loop · every 5m · 2 runs · next in 4m · <prompt>` (minute steps, seconds in the last minute; `running now` during a wakeup; the pause reason when paused). Collapsed with Ctrl+R it shrinks to `↻ loop next in 4m`. |
+| TUI | The same row under the goal bar. |
+| Desktop | The loop card above the composer: `Loop active · 2 runs · next 00:04:12`, counting every second. |
+
 Loop a slash command just as easily:
 
 ```

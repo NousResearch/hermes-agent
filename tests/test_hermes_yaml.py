@@ -24,6 +24,21 @@ def test_safe_load_rejects_python_object_construction(load):
         load("!!python/object/apply:builtins.str ['must not construct']")
 
 
+@pytest.mark.platforms("posix")
+def test_safe_load_has_the_c_parser_where_its_wheel_ships():
+    # Every YAML read (plugin manifests, config) goes through safe_load, and the pure parser
+    # cost ~5 s of gateway startup on 1 vCPU. ruamel.yaml 0.18.16 only declares its C parser
+    # below 3.14, so on 3.14 it exists only because pyproject.toml declares ruamel.yaml.clib.
+    import platform
+    import sys
+
+    wheel_ships = sys.platform == "darwin" or (
+        sys.platform == "linux" and platform.machine() in {"x86_64", "aarch64", "i686"})
+    if platform.python_implementation() != "CPython" or not wheel_ships:
+        pytest.skip("ruamel.yaml.clib ships no wheel for this interpreter or machine")
+    import _ruamel_yaml  # the module safe_load's pure=False parser binds to
+
+
 def test_safe_dump_preserves_data_and_readable_block_layout():
     data = {"z": [{"mode": "off", "choice": "y", "label": "こんにちは 🦀"}], "a": "yes"}
     text = yaml.safe_dump(data, sort_keys=False)

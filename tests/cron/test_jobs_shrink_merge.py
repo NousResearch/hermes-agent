@@ -155,7 +155,7 @@ def test_merge_does_not_mutate_caller_list(hermes_env):
     not grow as a side effect of save_jobs()."""
     from cron.jobs import create_job, save_jobs
 
-    job = create_job(
+    create_job(
         prompt=None,
         schedule="every 2m",
         script="watch.sh",
@@ -233,8 +233,8 @@ def test_symlinked_store_saves_by_rename_not_in_place_copy(hermes_env, tmp_path,
     def no_copy(*a, **k):
         raise AssertionError("in-place copy fallback used")
 
-    monkeypatch.setattr("utils.os.replace", replace_same_dir_only)
-    monkeypatch.setattr("utils._copy_fallback", no_copy)
+    monkeypatch.setattr("utils.files.os.replace", replace_same_dir_only)
+    monkeypatch.setattr("utils.files._copy_fallback", no_copy)
 
     save_jobs([{"id": "a", "prompt": "x"}], replace=True)
 

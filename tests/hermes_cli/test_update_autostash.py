@@ -283,7 +283,8 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     )
     # It must not even register as a dirty/untracked change.
     status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True,
+        check=False,
     ).stdout
     assert ".hermes-bootstrap-complete" not in status
 

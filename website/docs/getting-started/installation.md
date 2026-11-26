@@ -4,6 +4,11 @@ title: "Installation"
 description: "Install Hermes Agent with desktop bundles, source installers, Docker, Nix, or the Termux APT package"
 ---
 
+<head>
+  <title>Install Hermes Agent: Official Guide | Nous Research</title>
+  <meta property="og:title" content="Install Hermes Agent: Official Guide | Nous Research" />
+</head>
+
 # Installation
 
 Get Hermes Agent up and running in under two minutes!
@@ -19,15 +24,20 @@ platform-gated features are supported), see **[Platform Support](./platform-supp
 Download the package for your platform from the
 [Hermes website](https://hermes-agent.nousresearch.com/).
 
-- **Windows:** open the `.appinstaller` download with Windows App Installer.
-  It installs the signed MSIX bundle and records its update source.
-  Microsoft Store packages have separate Store ownership.
-- **macOS:** open the DMG, then copy `Hermes.app` to Applications. The ZIP
-  artifact carries the signed app used by the automatic updater.
+- **Windows (Windows 11 22H2 / `10.0.22621.0` or later, x64 or ARM64):**
+  install from the Microsoft Store, or download the `.appinstaller` file and
+  open it with Windows App Installer to install the signed MSIX bundle and
+  register its update source. Microsoft Store packages have separate Store
+  ownership.
+- **macOS (macOS 13 Ventura or later, Apple Silicon `arm64`):** open the DMG,
+  then copy `Hermes Agent.app` to Applications. The ZIP artifact carries the
+  signed app used by the in-app updater.
 
 Bundled packages contain the agent, Python, supported dependencies, and prebuilt
 interfaces. First launch does not build that base runtime. Provider access and
-optional integrations can still require network access.
+optional integrations can still require network access. See
+[Bundled desktop updates](./updating.md#bundled-desktop-updates) for package
+sizes and expected download versus local install/swap times.
 
 A `Hermes-Setup` bootstrap installer is different: it downloads a source
 installation and builds the desktop app. See [Hermes Desktop](../user-guide/desktop.md).
@@ -37,8 +47,9 @@ backend on another machine, install one of the packages above and connect it
 from **Settings → Gateways**; see
 [Connecting to a remote backend](../user-guide/desktop.md#connecting-to-a-remote-backend).
 
-:::note
-The macOS installer is **Apple Silicon only**. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).
+:::note Desktop bundle OS requirements and fallbacks
+- **macOS Desktop Bundle:** requires **macOS 13 Ventura or later on Apple Silicon (`arm64`)**. Intel (x86_64) Macs and macOS 12 Monterey or earlier are not supported by the desktop bundle — use the [CLI / source installer (`install.sh`)](#linux--macos--wsl2) below.
+- **Windows Desktop Bundle (Microsoft Store & `.appinstaller` MSIX):** requires **Windows 11 22H2 or later (`10.0.22621.0`)**, x64 or ARM64. On Windows 10 or Windows 11 earlier than 22H2, use the [Windows source installer (`install.ps1`)](#windows-native) below or [WSL2](../user-guide/windows-wsl-quickstart.md).
 :::
 
 ### Without Hermes Desktop:
@@ -70,20 +81,27 @@ The desktop/server scripts are not the Termux installation path.
 ### What the source installer does
 
 The scripts clone the source, bootstrap uv, and delegate dependency preparation
-to PM. PM provides pinned Python, Node.js, npm, ripgrep, and FFmpeg. The source
+to PM. PM provides pinned Python, Node.js, npm, pnpm, ripgrep, and FFmpeg. The source
 installation selects the `all` Python extra, not every optional extra.
-PM also installs the browser and computer-use tools by default: `agent-browser`
-and its pinned Chromium, and `cua-driver` (the computer-use driver, on macOS,
-Windows and glibc Linux). If a download fails, the install still completes and
-prints the command to retry. The default browser driver (browser-harness, the
-engine of the Browser Use CLI) is a regular Python dependency, so every install,
-the Desktop app included, already has it.
+PM also installs the browser and computer-use tools by default: a pinned
+Chromium (Chrome for Testing) that Hermes launches for local browsing, and
+`cua-driver` (the computer-use driver, on macOS, Windows and glibc Linux). If a
+download fails, the install still completes and prints the command to retry.
+The browser driver behind `browser_exec` (browser-harness, the engine of the
+Browser Use CLI) is a regular Python dependency, so every install, the Desktop
+app included, already has it. Where PM has no Chromium build (Android/Termux,
+musl Linux), Hermes uses a system `chromium` on `PATH` instead.
 Other optional tools use their feature-specific installation paths.
+
+A new install lands on the latest stable release, the channel `hermes update`
+follows from then on (see [Updating](./updating.md)). To install the tip of
+`main` instead, pass `--channel main` on POSIX or `-Channel main` on Windows
+(or set `HERMES_INSTALL_CHANNEL=main` first, for the one-liners).
 
 To leave the browser tools out, pass `--skip-browser` on POSIX or `-SkipBrowser`
 on Windows; for the computer-use driver, `--skip-computer-use` /
 `-SkipComputerUse`. Hermes remembers these choices: later installs and
-`hermes update` do not add them back. Run `hermes pm install agent-browser` or
+`hermes update` do not add them back. Run `hermes pm install chromium` or
 `hermes pm install cua-driver` to install them and undo the choice.
 
 The scripts create a launcher and prepare the data directory. Interactive runs
@@ -201,7 +219,7 @@ Run the source installer as the intended service user. Its home, tool store,
 configuration, and launcher must belong to that user.
 
 1. As an administrator, install the source-build prerequisites and any Linux
-   libraries needed by the selected browser backend.
+   libraries Chromium needs (only if the service will browse locally).
 2. As the service user, run the regular installer:
 
    ```bash

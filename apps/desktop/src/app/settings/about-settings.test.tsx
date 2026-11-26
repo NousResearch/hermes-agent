@@ -54,6 +54,7 @@ vi.mock('@/store/updates', async (): Promise<Record<string, unknown>> => {
     refreshDesktopVersion: vi.fn<() => Promise<DesktopVersionInfo | null>>().mockResolvedValue(null),
     setUpdateChannel: vi.fn<() => Promise<DesktopUpdateStatus | null>>().mockResolvedValue(null),
     sourceUpdateChannel: (await vi.importActual<typeof UpdatesStore>('@/store/updates')).sourceUpdateChannel,
+    sourceUpdateTrack: (await vi.importActual<typeof UpdatesStore>('@/store/updates')).sourceUpdateTrack,
     openUpdateOverlayFor: vi.fn(),
     openUpdatesWindow: vi.fn(),
     startActiveUpdate: vi.fn()
@@ -115,6 +116,15 @@ describe('AboutSettings', (): void => {
 
     expect(refreshDesktopVersion).toHaveBeenCalledTimes(3)
     expect(checkBackendUpdates).toHaveBeenCalledTimes(2)
+  })
+
+  it('hides the Hermes Cloud backend update card and never checks it', (): void => {
+    $connection.set({ ...connection('remote'), baseUrl: 'https://lab.agents.nousresearch.com', remoteKind: 'cloud' })
+    render(<AboutSettings />)
+
+    expect(screen.getByText(en.updates.latestBody)).toBeTruthy()
+    expect(screen.queryByText(en.updates.latestBodyBackend)).toBeNull()
+    expect(checkBackendUpdates).not.toHaveBeenCalled()
   })
 
   it('shows the fixed package channel with no selector', (): void => {

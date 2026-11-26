@@ -7,7 +7,9 @@ the transport and declared on the shared base) and the ``result`` the client ans
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, model_validator
 
 from tools.tour_presets import TourPreset
 
@@ -47,51 +49,115 @@ class ClarifyRequestParams(ServerRequestParams):
 
 class ClarifyResult(Result):
     """``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response
-    without ``answers`` is cancel-all."""
+    without ``answers`` is cancel-all. ``outcome`` (optional): how the viewer's own panel ended, as
+    main's classic CLI reports it (``timed_out`` keeps the answers locked before its deadline)."""
 
     answers: dict[str, str | None] | None = None
+    outcome: Literal["submitted", "timed_out", "cancelled"] | None = None
 
 
 server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
                doc="The clarify tool: ask the user 1-5 questions.")
 
 
-class SetupChooseKind(WireEnum):
-    question = "question"
-    accent = "accent"
+
+# ── setup_beat (first-run onboarding) ─────────────────────────────────────────────────────────
+
+
+class SetupBeat(WireEnum):
+    name = "name"
     theme = "theme"
     layout = "layout"
     connectors = "connectors"
     plugins = "plugins"
     tour = "tour"
-    fork = "fork"
-    machine_use = "machine_use"
+    build = "build"
 
 
-class SetupChooseOption(Params):
+class SetupOption(Params):
     id: str
     label: str
-    detail: str | None = None
 
 
-class SetupChooseRequestParams(ServerRequestParams):
-    kind: SetupChooseKind
-    question: str
-    options: list[SetupChooseOption] | None = None
-    multi_select: bool = False
-    # Row ids the card starts with picked: the plugins the setup facts found (Blender).
-    preselected: list[str] | None = None
+class SetupNameCard(Params):
+    suggested: str | None = None  # the OS account's name: shown on the card, never sent to the model
 
 
-class SetupChooseResult(Result):
-    picked: str | list[str] | None = None
-    # The name the card showed for each picked row (one per id in ``picked``); the model says it, not the id.
-    label: str | list[str] | None = None
-    # Composer text that named no row of the card: the user's words, never a pick.
+class SetupThemeCard(Params):
+    picker: str
+
+
+class SetupOptionsCard(Params):
+    options: list[SetupOption]
+
+
+class SetupConnectorsCard(Params):
+    suggested: list[str]
+
+
+class SetupPluginsCard(Params):
+    plugins: list[str]
+
+
+class SetupBeatRequestParams(ServerRequestParams):
+    """``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and
+    plugins have their own shape; layout, tour and build carry ``options``. ``tool_call_id`` is the
+    setup_beat call the card belongs to: only that transcript row draws it."""
+
+    beat: SetupBeat
+    question: str | None = None
+    tool_call_id: str | None = None
+    card: SetupNameCard | SetupThemeCard | SetupOptionsCard | SetupConnectorsCard | SetupPluginsCard
+
+
+class SetupNameAnswer(Result):
+    name: str
+
+
+class SetupThemeAnswer(Result):
+    accent: str | None = None
+    mode: str | None = None
+
+
+class SetupLayoutAnswer(Result):
+    layout: str
+
+
+class SetupConnectorsAnswer(Result):
+    connected: list[str]
+    newly_connected: list[str] = Field(default_factory=list)
+
+
+class SetupPluginsAnswer(Result):
+    installed: list[str]
+    label: str | None = None  # what the card showed, for the transcript; never recorded
+
+
+class SetupTourAnswer(Result):
+    tour: str
+    label: str | None = None
+
+
+class SetupBuildAnswer(Result):
+    build: str
+    label: str | None = None
+
+
+class SetupBeatResult(Result):
+    """``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend
+    rejects any other answer). ``said`` is composer text typed while the name card waited: the name.
+    ``wrote_instead``: the user sent a message instead of answering; the backend ends the turn and the
+    client sends that message as the next one. A response with none of these, or none within 300 s,
+    closes the card unanswered."""
+
+    answer: (SetupNameAnswer | SetupThemeAnswer | SetupLayoutAnswer | SetupConnectorsAnswer | SetupPluginsAnswer
+             | SetupTourAnswer | SetupBuildAnswer | None) = None
     said: str | None = None
+    wrote_instead: bool = False
 
 
-server_request("setup_choose", params=SetupChooseRequestParams, result=SetupChooseResult)
+server_request("setup_beat", params=SetupBeatRequestParams, result=SetupBeatResult,
+               doc="The onboarding chat's card for one beat; blocks setup_beat until answered (300 s).")
 
 
 # ── approval ──────────────────────────────────────────────────────────────────────────────────
@@ -104,8 +170,30 @@ class ApprovalChoice(WireEnum):
     deny = "deny"
 
 
+class ApprovalKind(WireEnum):
+    command = "command"
+    access = "access"
+    network = "network"
+
+
+class ApprovalAccessLevel(WireEnum):
+    read = "read"
+    read_write = "read_write"
+
+
 class ApprovalRequestParams(ServerRequestParams):
-    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side."""
+    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side.
+
+    ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with
+    ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network``
+    (``host``, and an optional display ``label``). ``risk`` is one short line shown under the
+    folder or site. On those two kinds ``once`` allows until the sandbox is switched off and
+    ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``.
+
+    An ``access`` request without a ``path`` and a ``network`` request without a ``host`` are
+    refused: the desktop answers with an error and shows no card. A card that outlives its turn
+    stays on screen only while its sender lists it in ``approval.pending``: the desktop removes
+    a card that list does not name."""
 
     request_id: str
     command: str = ""
@@ -116,18 +204,35 @@ class ApprovalRequestParams(ServerRequestParams):
     smart_denied: bool | None = None
     tool_name: str | None = None
     session_id_hint: str | None = Field(default=None, alias="gateway_session_id")
+    kind: ApprovalKind | None = None
+    path: str | None = None
+    access: ApprovalAccessLevel | None = None
+    host: str | None = None
+    label: str | None = None
+    risk: str | None = None
     # The approval queue entry carries tool-specific context the card may render; the closed set
     # of keys is owned by tools/approval.py, so it stays open here.
     model_config = Params.model_config | {"extra": "allow"}
 
+    @model_validator(mode="after")
+    def _names_its_folder_or_site(self) -> ApprovalRequestParams:
+        if self.kind == ApprovalKind.access and not (self.path or "").strip():
+            raise ValueError("an access request needs a path")
+        if self.kind == ApprovalKind.network and not (self.host or "").strip():
+            raise ValueError("a network request needs a host")
+        return self
+
 
 class ApprovalResult(Result):
+    """``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it."""
+
     choice: ApprovalChoice
     all: bool | None = None
+    reason: str | None = None
 
 
 server_request("approval", params=ApprovalRequestParams, result=ApprovalResult,
-               doc="A dangerous command awaits the user's decision.")
+               doc="A dangerous command, or a sandbox's folder or site request, awaits the user's decision.")
 
 
 # ── one-string prompts ────────────────────────────────────────────────────────────────────────
@@ -200,6 +305,14 @@ server_request("window.read", params=EmptyRequestParams, result=ValueResult,
                doc="Enumerate the native window below the app (JSON text answer).")
 
 
+class PreviewVaultOperation(Params):
+    """Internal vault transport, never arguments exposed to the model."""
+
+    operation: Literal["open", "evaluate", "close"]
+    target: str | None = None
+    expression: str | None = None
+
+
 class PreviewActRequestParams(ServerRequestParams):
     """``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets."""
 
@@ -214,6 +327,7 @@ class PreviewActRequestParams(ServerRequestParams):
     amount: int | None = None
     max: int | None = None
     allow_shortcut: bool | None = None
+    vault: PreviewVaultOperation | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,
@@ -244,6 +358,52 @@ class TourRequestParams(ServerRequestParams):
 
 server_request("tour", params=TourRequestParams, result=ValueResult,
                doc="Drive a guided tour highlight in the desktop renderer.")
+
+
+class ThemeMode(WireEnum):
+    light = "light"
+    dark = "dark"
+    system = "system"
+
+
+class ThemePicker(WireEnum):
+    accent = "accent"
+    layout = "layout"
+
+
+class ThemeApplyRequestParams(ServerRequestParams):
+    """``tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``."""
+
+    accent: str | None = None
+    mode: ThemeMode | None = None
+    layout: str | None = None
+
+
+class ThemePickRequestParams(ServerRequestParams):
+    picker: ThemePicker
+
+
+class ThemeValues(Params):
+    """What the renderer applied. ``accent`` is a swatch id, ``custom:#rrggbb``, or null for the theme's own."""
+
+    accent: str | None = None
+    mode: ThemeMode | None = None
+    layout: str | None = None
+
+
+class ThemePickResult(Result):
+    """``picked`` once the user chose (already applied); ``cancelled`` when the card was dismissed. A response
+    with neither is a cancel."""
+
+    picked: ThemeValues | None = None
+    said: str | None = None
+    cancelled: bool | None = None
+
+
+server_request("theme.apply", params=ThemeApplyRequestParams, result=ValueResult,
+               doc="Apply set_theme values in the window showing the session (JSON text answer).")
+server_request("theme.pick", params=ThemePickRequestParams, result=ThemePickResult,
+               doc="Show an accent or layout picker card in the chat and wait for the pick.")
 
 
 # ── withdrawal ────────────────────────────────────────────────────────────────────────────────

@@ -800,7 +800,8 @@ def test_app_id_matches_the_desktop_build_identity():
     repo = Path(__file__).resolve().parents[2]
     probe = "console.log(require('./apps/desktop/product-identity.cjs').appId)"
     result = subprocess.run(
-        [node, "-e", probe], cwd=repo, capture_output=True, text=True, timeout=60
+        [node, "-e", probe], cwd=repo, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     if result.returncode != 0:
         pytest.skip(f"product-identity.cjs did not evaluate: {result.stderr.strip()[:200]}")

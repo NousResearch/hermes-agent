@@ -108,8 +108,16 @@ class TestChatCompletionsBasic:
 
 
 
-
-
+    def test_convert_messages_strips_replayed_platform_message_id(self, transport):
+        """SQLite replay exposes ``platform_message_id`` as ``message_id`` (JSONL transcript compat);
+        the gateway stamps it on every user row from the admission id. It is delivery bookkeeping:
+        the in-process CLI never sent it, so a resuming surface that let it through would send a
+        different prefix for the same durable session and break the cache.
+        """
+        msgs = [{"role": "user", "content": "hi", "message_id": "adm-123"}]
+        result = transport.convert_messages(msgs)
+        assert "message_id" not in result[0]
+        assert result[0]["content"] == "hi"
 
     def test_convert_messages_strips_timestamp(self, transport):
         """Internal per-message ``timestamp`` metadata (stamped by
@@ -362,7 +370,7 @@ class TestChatCompletionsBuildKwargs:
         }
 
     def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
-        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from agent.gemini_model_family import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
         from providers import get_provider_profile
 
         profile = get_provider_profile("gemini")

@@ -747,6 +747,50 @@ class TestRootLevelProviderOverride:
         assert result["model"]["provider"] == "openai"
         assert "model" not in result["model"]
 
+    @pytest.mark.parametrize("model_key", ["default", "model", "name"])
+    def test_nested_dict_default_extra_keys_warn_on_whole_file_save(
+        self, tmp_path, caplog, monkeypatch, model_key
+    ):
+        """#153296: disclose discarded paths, not secret values or new runtime settings."""
+        import os
+        from unittest.mock import patch
+
+        import hermes_yaml as yaml
+        from hermes_cli import config_providers
+        from hermes_cli.config import load_config, save_config
+
+        monkeypatch.setattr(config_providers, "_PROVIDER_NORMALIZE_WARNED", set())
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"model": {
+            model_key: {"model": "x/y", "provider": "openrouter", "newer_field": "keepme",
+                        "name": "discarded-name-value", "base_url": "https://nested.example/v1"},
+            "base_url": "https://outer.example/v1",
+        }}), encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+        model = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["model"]
+        assert model["default"] == "x/y" and model["provider"] == "openrouter"
+        assert "newer_field" not in model
+        assert caplog.text.count(f"unsupported model.{model_key}.newer_field") == 1
+        assert caplog.text.count(f"unsupported model.{model_key}.base_url") == 1
+        assert caplog.text.count(f"unsupported model.{model_key}.name") == 1
+        assert "discarded-name-value" not in caplog.text
+        assert "keepme" not in caplog.text
+        assert "https://nested.example/v1" not in caplog.text
+        assert "https://outer.example/v1" not in caplog.text
+        assert model["base_url"] == "https://outer.example/v1"
+
+    def test_nested_extras_do_not_change_endpoint_precedence(self):
+        from hermes_cli.config import _normalize_root_model_keys
+
+        result = _normalize_root_model_keys({"model": {
+            "api_base": "https://outer.invalid",
+            "default": {"model": "chosen", "base_url": "https://nested.invalid"},
+            "name": {"model": "ignored", "api_mode": "other-protocol"},
+        }})["model"]
+        assert result["default"] == "chosen"
+        assert result["base_url"] == "https://outer.invalid"
+        assert "api_mode" not in result
+
     def test_flat_string_default_untouched(self):
         """Plain string defaults keep existing behavior exactly."""
         from hermes_cli.config import _normalize_root_model_keys
@@ -759,51 +803,23 @@ class TestRootLevelProviderOverride:
 
 
 class TestPluginToolsetStartupValidation:
-    """A toolset that is merely *not registered yet* must not be reported as unknown.
+    """Plugin toolsets are only known where plugins load (the gateway), so the CLI's toolset init
+    neither probes plugins nor judges names (#71650, PLG-7): the gateway refuses an unknown picked
+    name at session.create and reports a stale profile one with the session
+    (tests/hermes_cli/test_cli_profile_toolsets.py)."""
 
-    Plugins register their toolsets during background discovery, while the CLI validates
-    the configured list during construction -- i.e. before that thread has landed. Judging
-    by the live registry alone therefore flags every configured plugin toolset as a typo on
-    every launch, including one-shot/quiet runs whose stdout is machine-parsed.
-    """
-
-    @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+    def test_init_probes_no_plugins_and_keeps_the_list(self, monkeypatch):
         import cli as _cli_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
-        monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
-        monkeypatch.setattr(
-            "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
-            lambda: set(plugin_keys),
-        )
-        stub._init_toolsets(list(toolsets))
-        return stub, printed
-
-    def test_plugin_toolset_not_yet_registered_is_not_flagged(self, monkeypatch):
-        stub, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stack"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
+        for name in ("get_plugin_toolset_keys_nowait", "discover_plugins", "get_plugin_manager"):
+            monkeypatch.setattr(f"hermes_cli.plugins.{name}", lambda *_a: pytest.fail("probed plugins"))
+        stub._init_toolsets(["terminal", "voice_stack", "voice_stak"])
         assert printed == []
-        # The configured list is kept verbatim; only the false warning is silenced.
-        assert stub.enabled_toolsets == ["terminal", "voice_stack"]
-
-    def test_real_typo_still_warns(self, monkeypatch):
-        _, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stak"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
-        assert len(printed) == 1
-        assert "voice_stak" in printed[0]
-        assert "voice_stack" not in printed[0]
+        assert stub.enabled_toolsets == ["terminal", "voice_stack", "voice_stak"]
 
 
 

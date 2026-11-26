@@ -16,6 +16,9 @@ const electron = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
+  app: { getPath: () => os.tmpdir() },
+  BrowserWindow: { fromWebContents: () => null },
+  dialog: { showOpenDialog: vi.fn() },
   ipcMain: {
     handle: (channel: string, handler: (...args: unknown[]) => unknown) => electron.handlers.set(channel, handler)
   },
@@ -39,6 +42,7 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-ipc-'))
 
 registerFsIpc({
   hermesHome: scratch,
+  isLaunchedProfile: () => false,
   readActiveDesktopProfile: () => 'launch-profile',
   // `~/` resolves under the scratch dir so tilde paths can be exercised.
   expandUserPath: value => (value.startsWith('~/') ? path.join(scratch, value.slice(2)) : value),

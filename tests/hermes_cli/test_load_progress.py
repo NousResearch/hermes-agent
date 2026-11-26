@@ -96,7 +96,7 @@ def test_stale_entries_expire():
 
 
 def test_load_notice_for_managed_model(tmp_path, monkeypatch):
-    from agent.chat_completion_helpers import _managed_local_load_notice
+    from agent.chat_completion_local import _managed_local_load_notice
 
     state = tmp_path / "server.json"
     state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
@@ -128,7 +128,7 @@ def test_load_notice_for_managed_model(tmp_path, monkeypatch):
 
 
 def test_prefill_notice_for_managed_model(tmp_path, monkeypatch):
-    from agent.chat_completion_helpers import _managed_local_load_notice
+    from agent.chat_completion_local import _managed_local_load_notice
 
     state = tmp_path / "server.json"
     state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
@@ -161,7 +161,7 @@ def test_load_notice_outranks_prefill(tmp_path, monkeypatch):
     """While a load entry exists the load notice wins — prefill can't start
     before the model is resident, so a simultaneous claim means the load
     snapshot is authoritative."""
-    from agent.chat_completion_helpers import _managed_local_load_notice
+    from agent.chat_completion_local import _managed_local_load_notice
 
     state = tmp_path / "server.json"
     state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",

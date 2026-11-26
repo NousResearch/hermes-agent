@@ -21,11 +21,6 @@ from agent.auxiliary_client import (
     async_call_llm,
     _build_call_kwargs,
     _resolve_codex_credential_and_base,
-    _is_payment_error,
-    _is_rate_limit_error,
-    _is_model_not_found_error,
-    _is_model_incompatible_error,
-    _is_statusless_structured_provider_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -443,10 +438,8 @@ class TestBuildCallKwargsMaxTokens:
 
 
 class TestNousTagsScoping:
-    def test_tags_injected_when_provider_is_nous(self, monkeypatch):
+    def test_tags_injected_when_provider_is_nous(self):
         import agent.auxiliary_client as aux
-
-        monkeypatch.setattr(aux, "auxiliary_is_nous", False)
 
         kwargs = aux._build_call_kwargs(
             provider="nous",
@@ -456,16 +449,18 @@ class TestNousTagsScoping:
 
         assert kwargs["extra_body"]["tags"] == aux._nous_portal_tags()
 
-    def test_tags_not_injected_for_gemini_when_main_is_nous(self, monkeypatch):
+    def test_tags_not_injected_for_non_nous_provider_when_main_is_nous(self):
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
-
-        kwargs = aux._build_call_kwargs(
-            provider="gemini",
-            model="gemini-2.5-flash",
-            messages=[{"role": "user", "content": "hi"}],
-        )
+        with aux.scoped_runtime_main({
+            "provider": "nous", "model": "Hermes-4",
+            "base_url": "https://inference-api.nousresearch.com/v1", "api_key": "nous-key",
+        }):
+            kwargs = aux._build_call_kwargs(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                messages=[{"role": "user", "content": "hi"}],
+            )
 
         assert "extra_body" not in kwargs
 
@@ -669,7 +664,7 @@ class TestAnthropicOAuthFlag:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _Entry()
 
         with (
@@ -771,7 +766,7 @@ class TestBuildCodexClient:
             def peek(self):
                 return self.entry
 
-            def select(self):
+            def select(self, model=None):
                 return self.entry
 
         pool = _Pool()
@@ -1134,7 +1129,7 @@ class TestGetTextAuxiliaryClient:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _Entry()
 
         with (
@@ -1356,118 +1351,6 @@ class TestAuxiliaryPoolAwareness:
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
 
 
-class TestIsPaymentError:
-    """_is_payment_error detects 402 and credit-related errors."""
-
-    def test_402_status_code(self):
-        exc = Exception("Payment Required")
-        exc.status_code = 402
-        assert _is_payment_error(exc) is True
-
-
-
-
-    @pytest.mark.parametrize("spelling", ["RESOURCE_EXHAUSTED", "ResourceExhausted", "resource-exhausted"])
-    @pytest.mark.parametrize("status", [None, 429])
-    def test_resource_exhausted_separator_variants_are_payment(self, spelling, status):
-        """NIM / gRPC wrappers serialize the quota signal without the space; the fallback gate
-        must read every spelling like the literal ``resource exhausted`` (#85649)."""
-        exc = Exception(f"{spelling}: Worker local total request limit reached (32/32)")
-        if status is not None:
-            exc.status_code = status
-        assert _is_payment_error(exc) is True
-
-    def test_403_subscription_required_is_payment(self):
-        exc = Exception(
-            "this model requires a subscription, upgrade for access: "
-            "https://ollama.com/upgrade"
-        )
-        exc.status_code = 403
-        assert _is_payment_error(exc) is True
-
-
-    def test_404_generic_not_found_is_not_payment(self):
-        exc = Exception("Not Found")
-        exc.status_code = 404
-        assert _is_payment_error(exc) is False
-
-
-
-
-
-    # ── Daily / monthly quota exhaustion (#26803) ────────────────────────────
-
-
-class TestIsModelNotFoundError:
-    """_is_model_not_found_error detects stale/invalid model 404s, distinct
-    from payment errors."""
-
-    def test_nous_openrouter_catalog_404(self):
-        """The exact incident error: a Portal-recommended model dropped from
-        the Nous → OpenRouter catalog."""
-        exc = Exception(
-            "Model 'gpt-5.4-mini' not found. The requested model does not "
-            "exist in our configuration or OpenRouter catalog."
-        )
-        exc.status_code = 404
-        assert _is_model_not_found_error(exc) is True
-
-
-
-
-    def test_billing_404_is_not_model_not_found(self):
-        """Free-tier / credit 404s belong to _is_payment_error, not here —
-        the two predicates must not overlap."""
-        exc = Exception(
-            "Model 'gpt-5' is not available on the free tier. Upgrade."
-        )
-        exc.status_code = 404
-        assert _is_model_not_found_error(exc) is False
-        assert _is_payment_error(exc) is True
-
-    def test_out_of_funds_404_is_not_model_not_found(self):
-        exc = Exception(
-            "Your API key is blocked or out of funds. model_not_found"
-        )
-        exc.status_code = 404
-        # billing keyword wins — payment owns it
-        assert _is_model_not_found_error(exc) is False
-
-
-class TestIsModelIncompatibleError:
-    """_is_model_incompatible_error detects 400s where the route cannot run
-    the model at all (capability mismatch), distinct from not-found and
-    payment errors."""
-
-    def test_codex_chatgpt_account_model_gating(self):
-        """The exact incident: an openai-codex/ChatGPT-account fallback asked
-        to compress a glm-5.2 conversation."""
-        exc = Exception(
-            "Error code: 400 - {'detail': \"The 'glm-5.2' model is not "
-            "supported when using Codex with a ChatGPT account.\"}"
-        )
-        exc.status_code = 400
-        assert _is_model_incompatible_error(exc) is True
-
-
-
-    def test_not_found_is_not_incompatible(self):
-        """A model-does-not-exist 400 belongs to _is_model_not_found_error —
-        the two predicates must not overlap."""
-        exc = Exception("openrouter/foo/bar is not a valid model ID")
-        exc.status_code = 400
-        assert _is_model_incompatible_error(exc) is False
-        assert _is_model_not_found_error(exc) is True
-
-    def test_payment_400_is_not_incompatible(self):
-        """A billing 400 that also contains capability-ish phrasing must be
-        rejected here — billing keywords win so the payment path owns it and
-        the two buckets don't overlap."""
-        exc = Exception("insufficient credits: model is not supported on free tier")
-        exc.status_code = 400
-        assert _is_model_incompatible_error(exc) is False
-
-
 class TestRefreshNousRecommendedModel:
     """_refresh_nous_recommended_model picks a fresh model after a stale 404."""
 
@@ -1492,30 +1375,6 @@ class TestRefreshNousRecommendedModel:
         out = _refresh_nous_recommended_model(
             vision=False, stale_model=_NOUS_MODEL)
         assert out is None
-
-
-class TestIsRateLimitError:
-    """_is_rate_limit_error detects 429 rate-limit errors warranting fallback."""
-
-    def test_429_with_rate_limit_message(self):
-        exc = Exception("Rate limit exceeded, try again in 2 seconds")
-        exc.status_code = 429
-        assert _is_rate_limit_error(exc) is True
-
-
-
-
-
-
-
-
-    def test_openai_ratelimiterror_classname(self):
-        """OpenAI SDK RateLimitError may omit .status_code — detect by class name."""
-        class RateLimitError(Exception):
-            pass
-        exc = RateLimitError("rate limit exceeded")
-        # No status_code set, but class name matches
-        assert _is_rate_limit_error(exc) is True
 
 
 class TestTryPaymentFallback:
@@ -1592,20 +1451,6 @@ class TestCallLlmPaymentFallback:
                     model="m", messages=[{"role": "user", "content": "hi"}], stream=True):
                 pass
         return caught.value
-
-    def test_statusless_structured_error_detection(self):
-        """A status-less SDK stream error with a non-empty structured body counts (#101538)."""
-        assert _is_statusless_structured_provider_error(
-            self._sdk_stream_error({"type": "server_error", "code": "overloaded", "message": "busy"}))
-        assert _is_statusless_structured_provider_error(self._sdk_stream_error("service unavailable"))
-        assert not _is_statusless_structured_provider_error(self._sdk_stream_error({"metadata": {}}))
-        assert not _is_statusless_structured_provider_error(Exception("stream_error: mid_stream_failure"))
-
-        class _StatusCoded(Exception):
-            status_code = 503
-            body = {"type": "server_error"}
-
-        assert not _is_statusless_structured_provider_error(_StatusCoded("unavailable"))
 
     def test_statusless_structured_error_after_param_strip_triggers_configured_fallback(self):
         """An in-stream error event on an explicit relay reaches the fallback chain, also when it
@@ -1707,8 +1552,8 @@ class TestStaleFallbackCandidateSkip:
     """
 
     def _timeout_err(self):
-        # Class name carries "Timeout" — matches _is_connection_error's
-        # type-name detection, like the real Codex stream-deadline error.
+        # Class name carries "Timeout": the classifier's type-name timeout
+        # detection, like the real Codex stream-deadline error.
         class _AuxStreamTimeoutError(Exception):
             pass
         return _AuxStreamTimeoutError(
@@ -2180,7 +2025,7 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _is_connection_error coverage
+# transient transport retry coverage
 # ---------------------------------------------------------------------------
 
 
@@ -2191,8 +2036,8 @@ class TestTransientTransportRetry:
     Salvaged from PR #16587 (@ARegalado1). The original fixed only the
     context-compression caller; this lives in call_llm so every auxiliary
     task (compression, memory flush, title-gen, session-search, vision)
-    gets the same same-target retry, and the gate reuses the canonical
-    _is_connection_error detector.
+    gets the same same-target retry, and the gate reads the shared
+    classifier's transport verdict.
     """
 
     def _patches(self, client):
@@ -2455,40 +2300,6 @@ class TestAuxClientNoSdkRetries:
         assert captured.get("max_retries") == 0
 
 
-class TestIsTimeoutError:
-    """_is_timeout_error distinguishes a full-budget timeout from a fast
-    connection drop."""
-
-    def test_timed_out_string(self):
-        from agent.auxiliary_client import _is_timeout_error
-        assert _is_timeout_error(Exception("Request timed out.")) is True
-
-    def test_timeout_typename(self):
-        from agent.auxiliary_client import _is_timeout_error
-
-        class ReadTimeout(Exception):
-            pass
-
-        assert _is_timeout_error(ReadTimeout("slow")) is True
-
-
-class TestIsConnectionError:
-    """Tests for _is_connection_error detection."""
-
-    def test_connection_refused(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Connection refused")
-        assert _is_connection_error(err) is True
-
-
-
-    def test_normal_api_error_not_connection(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Bad Request: invalid model")
-        err.status_code = 400
-        assert _is_connection_error(err) is False
-
-
 class TestKimiTemperatureOmitted:
     """Kimi/Moonshot models should have temperature OMITTED from API kwargs.
 
@@ -2678,9 +2489,9 @@ class TestAuxiliaryTaskExtraBody:
         seen = {}
         real = aux._project_provider_profile
 
-        def spy(provider, provider_norm, model, effective_base, reasoning_config):
+        def spy(provider, provider_norm, model, effective_base, reasoning_config, *rest):
             seen["config"] = reasoning_config
-            return real(provider, provider_norm, model, effective_base, reasoning_config)
+            return real(provider, provider_norm, model, effective_base, reasoning_config, *rest)
 
         monkeypatch.setattr(aux, "_project_provider_profile", spy)
         kwargs = aux._build_call_kwargs(
@@ -3087,7 +2898,8 @@ class TestAuxiliaryPoolRotationRetry:
             )
 
         assert resp.choices[0].message.content == "rotated-sync"
-        assert stale_client.chat.completions.create.call_count == 2
+        # A bare "usage limit reached" 429 is a spent plan window (billing): no same-key backoff retry.
+        assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429
@@ -3594,25 +3406,22 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
             {"role": "user", "content": "continue"},
         ]
 
-    def test_drops_message_id_for_github_copilot_host(self):
-        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
-        adapter.create(messages=self._replay_messages())
-        message_item = next(
-            item for item in captured["input"] if item.get("type") == "message"
-        )
+    def test_drops_message_id_for_connection_scoped_id_host(self):
+        from providers.base import ProviderProfile
+        acme = ProviderProfile(name="acme-replay", hostnames=("api.acme-replay.test",), responses_replay_item_ids=False)
+        adapter, captured = self._build_adapter(base_url="https://api.acme-replay.test")
+        with patch("providers.profile_for_host", side_effect=lambda url, **_kw: acme if "acme-replay" in str(url) else None):
+            adapter.create(messages=self._replay_messages())
+        message_item = next(item for item in captured["input"] if item.get("type") == "message")
         assert "id" not in message_item
         assert message_item["phase"] == "final_answer"
         assert message_item["status"] == "in_progress"
         assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
 
     def test_keeps_message_id_for_codex_backend_host(self):
-        adapter, captured = self._build_adapter(
-            base_url="https://chatgpt.com/backend-api/codex"
-        )
+        adapter, captured = self._build_adapter(base_url="https://chatgpt.com/backend-api/codex")
         adapter.create(messages=self._replay_messages())
-        message_item = next(
-            item for item in captured["input"] if item.get("type") == "message"
-        )
+        message_item = next(item for item in captured["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_but_connection_scoped"
 
 
@@ -4833,8 +4642,8 @@ class TestCustomEndpointApiKeyInheritance:
 
 
     def test_runtime_override_key_is_used(self, monkeypatch):
-        """When _RUNTIME_MAIN_API_KEY is set (by set_runtime_main), it takes
-        precedence over config.yaml for the custom endpoint key."""
+        """A key bound by set_runtime_main takes precedence over config.yaml
+        for the custom endpoint key."""
         import agent.auxiliary_client as ac
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -4845,8 +4654,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
-             patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
+        with ac.scoped_runtime_main({"base_url": "https://gw.example.com/v1", "api_key": "sk-runtime-key"}), \
              patch("hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             _client, _model = resolve_provider_client(
@@ -5231,6 +5039,7 @@ class TestAsynchronousFallbackCachePlans:
             effective_timeout=30.0,
             effective_extra_body={},
             reasoning_config=None,
+            classify_as="anthropic",
         )
 
         wire_tools = client.chat.completions.create.call_args.kwargs["tools"]

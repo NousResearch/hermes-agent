@@ -9,10 +9,10 @@ import pytest
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
-    _fetch_portal_account,
     fetch_account_usage,
     render_account_usage_lines,
 )
+from agent.account_usage_nous import _fetch_portal_account
 from agent.billing_usage import fetch_nous_account as _billing_fetch_nous_account
 from providers.base import ProviderProfile
 
@@ -123,6 +123,7 @@ def _register_profile(monkeypatch, profile):
 
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)  # else the fixture profile outlives the test
     providers.register_provider(profile)
 
 

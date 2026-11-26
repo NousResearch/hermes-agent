@@ -125,6 +125,110 @@ def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, mo
 
 
 
+def test_the_host_never_imports_a_package_planted_in_the_profile_home(tmp_path, monkeypatch):
+    """The host process starts in the profile home. A home a plugin's backend writes (a profile it runs
+    elsewhere) must not put a ``hermes_cli`` package of its own ahead of Hermes's."""
+    home = _home_with_plugins(tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    planted = tmp_path / "planted.ran"
+    (home / "hermes_cli").mkdir()
+    (home / "hermes_cli" / "__init__.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+def test_an_empty_pythonpath_entry_does_not_put_the_profile_home_back_on_the_hosts_path(tmp_path, monkeypatch):
+    """``-P`` keeps the home the host starts in off its import path, but an empty ``PYTHONPATH`` entry means
+    the current directory again (``export PYTHONPATH=$PYTHONPATH:/x`` with it unset writes one)."""
+    home = _home_with_plugins(tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    planted = tmp_path / "planted.ran"
+    (home / "json.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    userlib = tmp_path / "userlib"
+    userlib.mkdir()
+    monkeypatch.setenv("PYTHONPATH", os.pathsep + str(userlib))
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+def test_a_marked_profiles_own_launcher_is_not_used(tmp_path, monkeypatch):
+    """``plugins.host.launcher`` is an argv prefix the host starts under. The backend of a profile a plugin
+    runs elsewhere writes that profile's config.yaml, so only the managed overlay's launcher counts there."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_cli.plugin_isolation import host_launcher
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    (home / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"isolation": "host", "host": {"launcher": ["profile-runner"]}}}), encoding="utf-8")
+    assert host_launcher() == ["profile-runner"]
+    pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+    assert host_launcher() == []
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": ["operator-runner"]}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    assert host_launcher() == ["operator-runner"]
+
+
+def test_a_managed_launcher_expands_its_env_refs_for_a_marked_profile_too(tmp_path, monkeypatch):
+    """``${VAR}`` refs in the managed overlay expand against the process env. A profile a plugin runs
+    elsewhere takes its launcher from that overlay alone, and gets the same expanded value as any profile."""
+    from hermes_cli import profiles_run_elsewhere as pre
+    from hermes_cli.plugin_isolation import host_launcher
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"host": {"launcher": ["${PLUGIN_RUNNER}", "--quiet"]}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("PLUGIN_RUNNER", "operator-runner")
+    assert host_launcher() == ["operator-runner", "--quiet"]
+    pre.mark_profile_run_elsewhere("default", "sandbox-plugin", root=home)
+    assert host_launcher() == ["operator-runner", "--quiet"]
+
+
+@pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
+def test_a_marked_profile_linked_out_of_the_root_does_not_get_its_own_launcher(tmp_path, monkeypatch):
+    """``hermes -p ops`` names the home ``<root>/profiles/ops``, a link to a directory outside the root;
+    discovery binds the directory it leads to, where no marker folder is. The marker is asked by the name."""
+    from hermes_cli import profiles_run_elsewhere as pre
+
+    outside = _home_with_plugins(tmp_path / "outside", monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    ran = tmp_path / "launcher.ran"
+    runner = tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    (outside / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["quietprobe"], "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    root = tmp_path / ".hermes"
+    (root / "profiles").mkdir(parents=True)
+    (root / "profiles" / "ops").symlink_to(outside, target_is_directory=True)
+    pre.mark_profile_run_elsewhere("ops", "sandbox-plugin", root=root)
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    manager.discover_and_load()
+    try:
+        assert not ran.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""
@@ -279,3 +383,172 @@ def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeyp
         assert provider.whoami() not in {first_pid, os.getpid()}
     finally:
         host.shutdown()
+
+
+@pytest.mark.platforms("any")
+def test_host_plugin_can_launch_status_and_steer_subagent(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from agent.subagent_lifecycle import bind_subagent_parent, SubagentLifecycleService
+    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+    from tools.registry import registry
+
+    body = '''
+import json, os
+from agent.subagent_lifecycle import SubagentLaunchRequest
+def register(ctx):
+    def run(args, **kw):
+        service = ctx.subagent_lifecycle
+        handle = service.launch(SubagentLaunchRequest(goal="review from host"))
+        return json.dumps({"pid": os.getpid(), "state": service.status(handle).state,
+                           "accepted": service.steer(handle, "check correctness"), "handle": handle})
+    ctx.register_tool(name="host_lifecycle", toolset="hostlife",
+        schema={"name": "host_lifecycle", "description": "d",
+                "parameters": {"type": "object", "properties": {}}}, handler=run)
+'''
+    finish, steering = threading.Event(), []
+    child = SimpleNamespace(_subagent_id="sa-host-lifecycle", provider="test", model="test-model",
+                            steer=lambda text: steering.append(text) is None)
+    parent = SimpleNamespace(session_id="parent-host-lifecycle")
+
+    def build(**kwargs):
+        assert kwargs["parent_agent"] is parent
+        assert kwargs["goal"] == "review from host"
+        _register_subagent({"subagent_id": child._subagent_id, "agent": child})
+        return child
+
+    def run(*_args):
+        assert finish.wait(5)
+        return {"status": "completed", "summary": "host child done"}
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    _home_with_plugins(tmp_path, monkeypatch, {"hostlife": body})
+    manager = PluginManager()
+    manager.discover_and_load()
+    service = SubagentLifecycleService(lambda: parent)
+    result = None
+    try:
+        with bind_subagent_parent(parent):
+            result = json.loads(registry.dispatch("host_lifecycle", {}, scope=manager.scope_key))
+        assert result["pid"] != os.getpid()
+        assert result["state"] in {"PENDING", "RUNNING"}
+        assert result["accepted"] is True
+        assert steering == ["check correctness"]
+    finally:
+        finish.set()
+        from agent.subagent_lifecycle import _REGISTRY
+        record = _REGISTRY.records.get(child._subagent_id)
+        if record is not None:
+            record.future.result(timeout=5)
+        _unregister_subagent(child._subagent_id, agent=child)
+        manager.unload()
+        manager._plugin_host().shutdown()
+    assert service.result(result["handle"]).summary == "host child done"
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("isolation", ["host", "in_process"])
+def test_failed_register_runs_its_on_unload_cleanup(tmp_path, monkeypatch, isolation):
+    # A register() that queued cleanup and then raised must have that cleanup run, in either mode.
+    marker = tmp_path / "cleaned"
+    body = f'''
+from pathlib import Path
+def register(ctx):
+    ctx.on_unload(lambda: Path({str(marker)!r}).write_text("cleaned"))
+    raise RuntimeError("register failed")
+'''
+    _home_with_plugins(tmp_path, monkeypatch, {"halfload": body}, isolation=isolation)
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert "register failed" in str(manager._plugins["halfload"].error)
+        assert marker.is_file(), "the failed load's on_unload cleanup never ran"
+    finally:
+        manager.unload()
+        if isolation == "host":
+            manager._plugin_host().shutdown()
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("cleanup", ['raise SystemExit("cleanup exit")', "import os; os._exit(7)"])
+def test_failed_hosted_load_keeps_its_error_when_cleanup_fails(tmp_path, monkeypatch, cleanup):
+    # Cleanup that raises or kills the host must not replace the register() error that is recorded.
+    body = f'''
+def register(ctx):
+    def cleanup():
+        {cleanup}
+    ctx.on_unload(cleanup)
+    raise RuntimeError("register failed")
+'''
+    _home_with_plugins(tmp_path, monkeypatch, {"halfload": body})
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert "register failed" in str(manager._plugins["halfload"].error)
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("held_in", ["register", "host_start"])
+def test_late_failure_of_an_abandoned_load_leaves_the_reloaded_plugin_alone(tmp_path, monkeypatch, held_in):
+    # A hosted load abandoned at its deadline (inside register(), or still waiting for the host to start)
+    # can fail after a reload of the same plugin succeeded. Host state is keyed by plugin, not by load,
+    # so that late failure must not unload the live load.
+    from hermes_cli import plugin_host, plugins_loader
+    from tests.waiting import wait_until
+    from tools.registry import registry
+
+    state = tmp_path / "state"
+    state.mkdir()
+    # The abandoned load's register() is the first to run when it is held inside register(), the second
+    # when it is held before the host start returns (the reload reaches the host first).
+    failing_attempt = 1 if held_in == "register" else 2
+    body = f'''
+import json, time
+from pathlib import Path
+STATE = Path({str(state)!r})
+def register(ctx):
+    attempt = len(list(STATE.glob("attempt-*"))) + 1
+    (STATE / f"attempt-{{attempt}}").write_text("x")
+    if attempt == {failing_attempt}:
+        while not (STATE / "go").exists():
+            time.sleep(0.05)
+        raise RuntimeError("abandoned load failed late")
+    ctx.register_tool(name="lateprobe_ping", toolset="lateprobe", schema={{"name": "lateprobe_ping",
+        "description": "d", "parameters": {{"type": "object", "properties": {{}}}}}},
+        handler=lambda args, **kw: json.dumps({{"pong": True}}))
+'''
+    home = _home_with_plugins(tmp_path, monkeypatch, {"lateprobe": body})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["lateprobe"], "isolation": "host", "load_timeout_seconds": 2}}), encoding="utf-8")
+    manager = PluginManager()
+    manager._plugin_host().ensure_started()  # outside any load deadline: a slow host start can't time out the reload
+    if held_in == "host_start":
+        start, callers = plugin_host.PluginHost.ensure_started, []
+
+        def slow_first_start(self):
+            channel = start(self)
+            callers.append(self)
+            if len(callers) == 1:
+                wait_until(lambda: (state / "go").exists(), timeout=30, what="the test to release the host start")
+            return channel
+
+        monkeypatch.setattr(plugin_host.PluginHost, "ensure_started", slow_first_start)
+    manager.discover_and_load()
+    try:
+        assert "timed out" in str(manager._plugins["lateprobe"].error)
+        manager.discover_and_load(force=True)
+        assert manager._plugins["lateprobe"].enabled
+        (state / "go").write_text("go")
+        loader = f"{plugins_loader._LOADER_THREAD_PREFIX}lateprobe"
+        wait_until(lambda: not any(t.is_alive() and t.name == loader for t in plugins_loader._ABANDONED_LOADERS),
+                   timeout=15, what="the abandoned first load to finish")
+        assert len(list(state.glob("attempt-*"))) == 2
+        assert json.loads(registry.dispatch("lateprobe_ping", {}, scope=manager.scope_key)) == {"pong": True}
+    finally:
+        (state / "go").write_text("go")
+        manager.unload()
+        manager._plugin_host().shutdown()

@@ -20,7 +20,7 @@ class _SerializedShell:
         script = json.loads(json.dumps({'command': command}))['command']
         result = subprocess.run([self.bash, '--noprofile', '--norc', '-s'],
                                 input=script, cwd=cwd or self.cwd, env=self.env,
-                                capture_output=True, text=True, encoding='utf-8', timeout=timeout)
+                                capture_output=True, text=True, encoding='utf-8', timeout=timeout, check=False)
         return {'output': result.stdout, 'returncode': result.returncode}
 
 

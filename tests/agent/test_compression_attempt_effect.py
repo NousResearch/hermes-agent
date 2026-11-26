@@ -13,10 +13,13 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import CompressionCheckpointUnavailable, compress_context
+from agent.conversation_compression import compress_context
+from agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
 from agent.transports.codex_app_server_session import TurnResult
 from hermes_cli.observability import shared_metrics_events
 from hermes_cli.observability.shared_metrics_fields import compression_fields
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
 
@@ -97,7 +100,7 @@ def test_committed_summary_records_trigger_effect_and_method_without_content(cap
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"):
         with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-            compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
+            _compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000, trigger="pre_api")
 
     [record] = _attempt_records(caplog)
     assert record["trigger_source"] == "pre_api"
@@ -121,7 +124,7 @@ def test_deterministic_fallback_commit_records_its_method_and_dropped_items(capl
 
     with patch.object(agent.context_compressor, "_generate_summary", return_value=None):
         with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-            compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
+            _compressed, _ = compress_context(agent, _messages(), "system prompt", approx_tokens=80_000)
 
     [record] = _attempt_records(caplog)
     assert record["commit_status"] == "committed"
@@ -266,15 +269,42 @@ def test_precise_automatic_triggers_keep_the_coarse_shared_metric_bucket(trigger
 def test_blocked_record_never_carries_the_cooldown_seconds(caplog):
     from agent.conversation_compression_telemetry import _emit_blocked_attempt_telemetry
 
-    compressor = SimpleNamespace(_compression_block_reason=lambda: "structural_backoff:917")
-    agent = SimpleNamespace(context_compressor=compressor, session_id="s", _compression_attempt_id="a")
+    agent = SimpleNamespace(context_compressor=None, session_id="s", _compression_attempt_id="a")
 
     with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-        _emit_blocked_attempt_telemetry(agent, time.monotonic(), None)
+        _emit_blocked_attempt_telemetry(agent, time.monotonic(), None, None, "structural_backoff:917")
 
     [record] = _attempt_records(caplog)
     assert record["failure_class"] == "blocked:structural_backoff"
     assert "917" not in json.dumps(record)
+
+
+@pytest.mark.parametrize(
+    ("backoff", "tripped", "label", "transient"),
+    [(True, False, "blocked:structural_backoff", True), (False, True, "blocked:ineffective", False)],
+)
+def test_overflow_block_names_the_guard_that_blocked_not_the_bypassed_cooldown(
+    caplog, backoff, tripped, label, transient,
+):
+    """Overflow recovery bypasses the summary cooldown, so with a cooldown also active the record and the
+    transient-block signal must reflect the guard that actually blocked (#97488: ``ineffective`` never defers)."""
+    compressor = _compressor()
+    agent = _Agent(compressor)
+    compressor._summary_failure_cooldown_until = time.monotonic() + 600
+    compressor._structural_no_op_backoff_until = time.monotonic() + 600 if backoff else 0.0
+    compressor._ineffective_compression_count = 2 if tripped else 0
+
+    with patch.object(type(compressor), "_refresh_durable_guards"), \
+            caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        returned, _ = compress_context(
+            agent, (messages := _messages()), "system prompt", approx_tokens=80_000, trigger="overflow",
+            bypass_cooldown=True,
+        )
+
+    assert returned is messages
+    [record] = _attempt_records(caplog)
+    assert record["failure_class"] == label
+    assert bool(getattr(agent, "_compression_blocked_transient", None)) is transient
 
 
 def _abort_on_stale_snapshot(agent):
@@ -334,12 +364,12 @@ def test_aborted_record_after_a_commit_describes_its_own_attempt(caplog, abort, 
     assert [aborted.get(key) for key in ("tokens_before", "tokens_after", "tokens_reclaimed")] == [None] * 3
 
 
-def _adopt_child(agent, _db, _parent_sid):
+def _adopt_child(agent, _db, _parent_sid, _store=None):
     agent.session_id = "adopted-child"
     return [{"role": "user", "content": "child transcript"}]
 
 
-def _unreadable_ownership(_db, _sid):
+def _unreadable_ownership(_db, _sid, _store=None):
     raise OSError("database is locked")
 
 
@@ -347,18 +377,17 @@ def _unreadable_ownership(_db, _sid):
     ("ownership_patch", "expected"),
     [
         # The lease found the parent already rotated and adopted the live child.
-        ({"_session_was_rotated_by_compression": lambda _db, _sid: True, "_adopt_live_compression_child": _adopt_child},
+        ({"_session_was_rotated_by_compression": lambda _db, _sid, _store=None: True, "_adopt_live_compression_child": _adopt_child},
          ("skipped", "session_ownership_lost")),
         # The ownership lookup itself failed: ownership is unknown, not lost.
         ({"_session_was_rotated_by_compression": _unreadable_ownership}, ("aborted", "session_ownership_unreadable")),
     ],
 )
 def test_ownership_exit_records_the_session_the_attempt_ran_in(caplog, tmp_path, ownership_patch, expected):
-    from hermes_state import SessionDB
-
     agent = _Agent(_compressor())
-    agent._session_db = SessionDB(db_path=tmp_path / "state.db")
-    agent._session_db.create_session(agent.session_id, "cli", model="test/main-model")
+    agent._session_db = storage_handle(tmp_path)
+    agent.persistence = agent._session_db
+    seed_session(agent._session_db, agent.session_id, "cli", model="test/main-model")
 
     with patch.multiple("agent.conversation_compression", **ownership_patch), \
             patch.object(agent.context_compressor, "_generate_summary") as summary:
@@ -376,16 +405,15 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     """The commit's memory flush ends the engine session, and that resets the compressor's telemetry
     before the record is emitted (#118580). The record must still describe this attempt and name the
     session it started in, in both commit modes."""
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
         api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="db-session",
+        persistence=storage_handle(tmp_path), session_id="db-session",
         skip_context_files=True, skip_memory=True,
     )
-    agent._session_db.create_session(agent.session_id, "cli", model=agent.model)
+    seed_session(agent.persistence, agent.session_id, "cli", model=agent.model)
     agent.compression_in_place = in_place
     agent.context_compressor.tail_token_budget = 10
     try:
@@ -406,16 +434,15 @@ def test_committed_effect_includes_the_retained_partial_compression_tail(
     caplog, tmp_path, monkeypatch, in_place,
 ):
     from agent.model_metadata import estimate_messages_tokens_rough
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
         api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="db-session",
+        persistence=storage_handle(tmp_path), session_id="db-session",
         skip_context_files=True, skip_memory=True,
     )
-    agent._session_db.create_session(agent.session_id, "cli", model=agent.model)
+    seed_session(agent.persistence, agent.session_id, "cli", model=agent.model)
     agent.compression_in_place = in_place
     agent.context_compressor.tail_token_budget = 10
     messages = _messages()
@@ -453,4 +480,4 @@ def test_engine_that_returns_an_empty_transcript_logs_one_aborted_record(caplog,
     [record] = _attempt_records(caplog)
     assert (record["commit_status"], record["failure_class"]) == ("aborted", "empty_transcript")
     assert (record["trigger_source"], record["method"]) == ("pre_api", "none")
-    assert [(row["outcome"], row["failure_class"]) for row in shared_metric_rows] == [("failed", "other")]
+    assert [(row["outcome"], row["failure_class"]) for row in shared_metric_rows] == [("failed", "empty_transcript")]

@@ -24,7 +24,7 @@ Hermes Agent includes a rich set of capabilities that extend far beyond basic ch
 ## Automation
 
 - **[Scheduled Tasks (Cron)](cron.md)** — Schedule tasks to run automatically with natural language or cron expressions. Jobs can attach skills, deliver results to any platform, and support pause/resume/edit operations.
-- **[Subagent Delegation](delegation.md)** — The `delegate_task` tool spawns child agent instances with isolated context, restricted toolsets, and their own terminal sessions. Run 3 concurrent subagents by default (configurable) for parallel workstreams.
+- **[Subagent Delegation](delegation.md)** — The `delegate_task` tool spawns child agent instances with isolated context, restricted toolsets, and their own terminal sessions. Run up to 10 concurrent subagents by default (configurable) for parallel workstreams.
 - **[Code Execution](code-execution.md)** — The `execute_code` tool lets the agent write Python scripts that call Hermes tools programmatically, collapsing multi-step workflows into a single LLM turn via sandboxed RPC execution.
 - **[Event Hooks](hooks.md)** — Run custom code at key lifecycle points. Gateway hooks handle logging, alerts, and webhooks; plugin hooks handle tool interception, metrics, and guardrails.
 - **[Batch Processing](batch-processing.md)** — Run the Hermes agent across hundreds or thousands of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.
@@ -45,7 +45,7 @@ Hermes Agent includes a rich set of capabilities that extend far beyond basic ch
 - **[Fallback Providers](fallback-providers.md)** — Automatic failover to backup LLM providers when your primary model encounters errors, including independent fallback for auxiliary tasks like vision and compression.
 - **[Credential Pools](credential-pools.md)** — Distribute API calls across multiple keys for the same provider. Automatic rotation on rate limits or failures.
 - **[Prompt caching](../configuration#prompt-caching)** — Built-in cross-session 1-hour prefix cache for Claude on native Anthropic, OpenRouter, and Nous Portal. Always-on; no configuration required.
-- **[Memory Providers](memory-providers.md)** — Plug in external memory backends (Holographic, RetainDB, ByteRover, plus Honcho, Hindsight, Supermemory, Mem0 and OpenViking from the plugin catalog) for cross-session user modeling and personalization beyond the built-in memory system.
+- **[Memory Providers](memory-providers.md)** — Plug in external memory backends (RetainDB, ByteRover, plus Honcho, Hindsight, Supermemory, Mem0, OpenViking and Holographic from the plugin catalog) for cross-session user modeling and personalization beyond the built-in memory system.
 - **[API Server](api-server.md)** — Expose Hermes as an OpenAI-compatible HTTP endpoint. Connect any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, and more.
 - **[IDE Integration (ACP)](acp.md)** — Use Hermes inside ACP-compatible editors such as VS Code, Zed, and JetBrains. Chat, tool activity, file diffs, and terminal commands render inside your editor.
 - **[Batch Processing](batch-processing.md)** — Run the agent over many prompts or tasks in parallel from the CLI, with structured outputs and trajectory capture suitable for evals or downstream training pipelines.

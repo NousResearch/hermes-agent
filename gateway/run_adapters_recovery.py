@@ -100,6 +100,7 @@ class _SecondaryConnectBatch:
     deferred: list[_StagedProfileAdapter] = field(default_factory=list)
     staged_owners: set[int] = field(default_factory=set)
     pending_claims: set[tuple] = field(default_factory=set)
+    prep_renewed_at: Optional[float] = None
 
     def checkpoint(self) -> tuple[int, int]:
         return len(self.staged), len(self.deferred)

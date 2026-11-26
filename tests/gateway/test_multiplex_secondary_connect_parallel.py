@@ -583,6 +583,56 @@ async def test_slow_wall_clock_preparation_renews_systemd_boot_deadline(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_slow_multi_platform_single_profile_prep_renews_systemd_boot_deadline(tmp_path, monkeypatch):
+    """Three slow platforms (35s each) in ONE secondary profile must renew systemd's start
+    deadline between platforms during preparation so 105s of prep never crosses a 90s timeout."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    runner.config.systemd_watchdog_seconds = 30.0
+    _mkprofile(
+        home,
+        "solo",
+        "TELEGRAM_BOT_TOKEN=tok-tg\nDISCORD_BOT_TOKEN=tok-dc\nSLACK_BOT_TOKEN=tok-sl\nSLACK_APP_TOKEN=xapp-sl\n",
+    )
+
+    now = 0.0
+    deadline = 90.0
+    expired: list[tuple[str, float, float]] = []
+    extensions: list[float] = []
+    extensions_at_create: list[int] = []
+
+    monkeypatch.setattr("gateway.run_adapters.time.monotonic", lambda: now)
+
+    def notify(secs: float) -> bool:
+        nonlocal deadline
+        extensions.append(secs)
+        deadline = max(deadline, now + secs)
+        return True
+
+    monkeypatch.setattr("gateway.systemd_notify.extend_start_timeout", notify)
+
+    def slow_create(platform, cfg):
+        nonlocal now
+        extensions_at_create.append(len(extensions))
+        now += 35.0
+        if now >= deadline:
+            expired.append((platform.value, now, deadline))
+        return _FakeAsyncAdapter(platform, cfg, AsyncMock(return_value=True))
+
+    runner._create_adapter = slow_create
+
+    try:
+        connected = await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert connected == 3
+    assert now == 105.0
+    assert not expired, f"crossed systemd start deadline during single-profile prep: {expired}"
+    assert extensions_at_create == [0, 1, 2]
+    assert len(extensions) == 5
+
+
+@pytest.mark.asyncio
 async def test_slow_preparation_renews_systemd_boot_deadline(tmp_path, monkeypatch):
     """Slow sequential preparation renews systemd's start deadline as each profile prepares
     so 3x35s preparations never exhaust a 90s unit start timeout before notification."""

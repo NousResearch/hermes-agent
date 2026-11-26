@@ -255,11 +255,13 @@ def test_a_profiles_dashboard_plugins_scanned_through_a_name_since_reused_are_sc
 
 
 @pytest.mark.platforms("posix")  # directory symlinks
-def test_a_launch_profile_renamed_with_its_old_name_reused_forwards_no_dashboard_plugin(tmp_path, monkeypatch):
+@pytest.mark.parametrize("moved", ["before_the_lookup", "during_the_lookup"])
+def test_a_launch_home_name_that_moves_forwards_no_dashboard_plugin(moved, tmp_path, monkeypatch):
     """The dashboard's hosted routes forward the launch profile's copy of a plugin, discovered through the process's
-    own home name. After the launch link ops is renamed to ops2 and ops is reused, a request through ops2 still
-    counts as the launch profile (the same remembered key) and passes its own name's check, while discovery reads
-    the other directory through ops: that directory's plugin code would run in ops2's host."""
+    own home name, ops. A request through another name for the launch home (ops2 after a rename that reused ops, or
+    a second live link repointed while the lookup runs) still counts as the launch profile, the same remembered key,
+    and passes its own name's check, while discovery reads the other directory through ops: that directory's plugin
+    code would run in the launch profile's host."""
     from hermes_cli import web_server, web_server_dashboard
     from hermes_cli.plugins_loader import PluginHomeMoved
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -280,8 +282,18 @@ def test_a_launch_profile_renamed_with_its_old_name_reused_forwards_no_dashboard
     try:
         _, dashboard_dir, _ = web_server_dashboard._hosted_plugin_for_request("dash")
         assert Path(dashboard_dir).resolve() == (home / "plugins" / "dash" / "dashboard").resolve()
-        (profiles / "ops").rename(profiles / "ops2")
-        (profiles / "ops").symlink_to(other, target_is_directory=True)  # the old name, reused
+        def repoint_ops():
+            (profiles / "ops").unlink(missing_ok=True)
+            (profiles / "ops").symlink_to(other, target_is_directory=True)
+
+        if moved == "before_the_lookup":
+            (profiles / "ops").rename(profiles / "ops2")
+            repoint_ops()  # the old name, reused
+        else:
+            (profiles / "ops2").symlink_to(home, target_is_directory=True)
+            listed = web_server._get_dashboard_plugins
+            monkeypatch.setattr(web_server, "_get_dashboard_plugins",
+                                lambda *a, **k: (repoint_ops(), listed(*a, **k))[1])
         token = set_hermes_home_override(profiles / "ops2")
         try:
             with pytest.raises(PluginHomeMoved):

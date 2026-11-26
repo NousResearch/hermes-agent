@@ -1469,6 +1469,17 @@ def _print_empty_store(action: str, args) -> None:
         print("No sessions found.")
 
 
+def _session_store_exists(home) -> bool:
+    """Whether ``home`` has a session store under its configured provider; True when that cannot be told, so an
+    unreachable store is reported as an error rather than as an empty history."""
+    from persistence_assembly import session_store_exists
+
+    try:
+        return session_store_exists(home)
+    except Exception:
+        return True
+
+
 # VACUUM, the FTS-layout rebuild and bulk deletes rewrite the store; underneath a live gateway/Desktop/cron
 # writer that is the second-writer class behind the retired-WAL refusal (#110054). `--force` is the override.
 _HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
@@ -1508,7 +1519,8 @@ def cmd_sessions(args, sessions_parser=None):
     except Exception as e:
         handles.close()
         # A reader cannot create the store; a reader on a fresh profile reports empty rather than failing.
-        if observational and not path.exists():
+        # Asked of the configured provider (a provider's store has no state.db); a check that fails reports the error.
+        if observational and not _session_store_exists(path.parent):
             return _print_empty_store(action, args)
         print("Could not open your session history database. "
               "Run: hermes sessions repair to fix it (a backup is made first).")

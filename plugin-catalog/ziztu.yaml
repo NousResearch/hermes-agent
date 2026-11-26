@@ -1,13 +1,13 @@
 name: ziztu
-title: Ziztu AI video studio
+title: Ziztu Clip Maker & AI video studio
 repo: https://github.com/0xnirlin/ziztu
-sha: 02ae9c7d3dc11bb1e113eadd8c9965c5ba59f290
-version: "1.1.0"
-description: "Plan, price and make AI micro dramas and anime episodes with the same characters in every shot through the hosted Ziztu MCP server (30 tools, Streamable HTTP at https://getziztu.com/mcp, OAuth 2.1 with PKCE through Hermes' MCP OAuth flow), plus four skills: micro drama series writing, viral faceless reels, YouTube Shorts and TikToks, faceless YouTube videos, and cinematic depth for image and video prompts. Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure — hosted connector: every tool call sends prompts, scripts and project data to getziztu.com under the user's Ziztu account (OAuth sign-in through Hermes' MCP OAuth flow). Tools that make frames, clips, music or scripts spend that account's credits (each takes max_credits, accepts dry_run, and the server asks for confirm above 5,000 credits); the package marks the server untrusted, so Hermes asks before every call that is not read-only. The tool list is served by the remote server at run time and is not covered by the pinned commit. The skills ship four standard-library Python helper scripts the agent may run: three read local text files (episode scripts, season grids, prompts) and one (split_season.py) writes per-episode .fountain files into a folder the agent names; no network calls, install scripts, bundled credentials, background processes or telemetry."
+sha: d60bc4db05feeec103340e6c3721080d6715e8ce
+version: "1.3.0"
+description: "Clip YouTube, Twitch and Kick streams into vertical 1080x1920 Shorts and Reels with word-timed captions, hook titles, facecam framing and campaign rules through Ziztu Clip Maker MCP (Streamable HTTP at https://getziztu.com/mcp/clips, OAuth 2.1 with PKCE), plus Ziztu YouTube Studio (https://getziztu.com/mcp/youtube), Reel Studio (https://getziztu.com/mcp/reel), micro dramas (https://getziztu.com/mcp) and five MIT skills (ziztu-clip-maker, ziztu-faceless-youtube, ziztu-viral-reels, ziztu-micro-drama, ziztu-cinematic-depth). Agent Plugins v1 package (plugin.json + mcp.json + skills/). Disclosure — hosted connector: every tool call sends links, prompts, scripts and project data to getziztu.com under the user's Ziztu account (OAuth sign-in through Hermes' MCP OAuth flow). Clip Maker calls show the exact cost in minutes first and require confirm: true; Studio tools take max_credits, accept dry_run, and require confirm above 5,000 credits. All servers are marked untrusted so Hermes asks before every non-read-only call. The tool list is served by the remote server at run time and is not covered by the pinned commit. The skills ship four standard-library Python helper scripts (three read local text files, one writes per-episode .fountain files); no network calls, install scripts, bundled credentials, background processes or telemetry."
 maintainer: 0xnirlin
 tier: community
 category: tools
-docs_url: https://getziztu.com/docs/mcp
+docs_url: https://getziztu.com/docs/mcp/clips
 requires_hermes: ">=0.22.5"
 readme: true
 platforms: []

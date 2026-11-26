@@ -158,6 +158,42 @@ describe('persistent browser terminals', () => {
     expect(Socket.instances[1].url.searchParams.get('attach')).toBe('opaque-server-id')
   })
 
+  it('redials a hosted terminal on the agent it started on after the window moves to another', async () => {
+    let tickets = 0
+
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: `relay-${++tickets}` }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    const api = install()
+    await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    $connection.set({ connectionId: 'beta', profile: 'default' } as never)
+
+    Socket.instances[0].close(1006, '')
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(Socket.instances.map(socket => socket.url.pathname)).toEqual([
+      '/one/api/relay/alpha/api/host-terminal',
+      '/one/api/relay/alpha/api/host-terminal'
+    ])
+    expect(Socket.instances[1].url.searchParams.get('attach')).toBe('opaque-server-id')
+  })
+
+  // Enter on an expired tab starts a fresh shell: on the agent and profile the tab names, not the window's.
+  it('starts a fresh hosted shell on the agent and profile its tab names', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: 'relay-ticket' }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    $connection.set({ connectionId: 'beta', profile: 'research' } as never)
+    const api = install()
+
+    await api.start({ connectionId: 'alpha', cwd: '/original', profile: 'default', restoreKey: 'tab-expired' })
+
+    expect(Socket.instances.map(socket => socket.url.pathname)).toEqual(['/one/api/relay/alpha/api/host-terminal'])
+    expect(Socket.instances[0].url.searchParams.get('profile')).toBe('default')
+  })
+
   // A trimmed replay can start mid-way through a full-screen program; an unchanged size sends no SIGWINCH.
   it('forces one redraw by a real size change only when resuming from a trimmed replay', async () => {
     const api = install()

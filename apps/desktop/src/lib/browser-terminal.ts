@@ -27,6 +27,10 @@ interface BrowserTerminalOptions {
    *  ticket (the hosted dashboard): such a close reconnects, and a signed-out tab learns it from the
    *  ticket route's 401. */
   redialsOn4401?: boolean
+  /** On a host with no agent, the agent a terminal starts on: its saved attachment's, else the one
+   *  its tab names (with the tab's profile), else (`local`) the one the window is on. Kept, so every
+   *  redial and the saved attachment name that agent, not the one the window has moved to since. */
+  pinConnection?: (connectionId: string) => Promise<string>
 }
 
 interface TerminalState {
@@ -570,6 +574,12 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
 
       terminals.set(state.id, state)
       state.started = (async () => {
+        if (options.pinConnection) {
+          const named = !saved && startOptions?.connectionId ? startOptions : null
+          state.connectionId = await options.pinConnection(named?.connectionId || state.connectionId)
+          state.profile = named?.profile || state.profile
+        }
+
         if (!state.cwd && !saved) {
           state.cwd = await options.defaultCwd(state.profile, state.connectionId).catch(() => '')
         }

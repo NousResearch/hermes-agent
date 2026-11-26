@@ -332,7 +332,8 @@
     [data-zone-pane='sessions'],
     [data-zone-pane='files'],
     [data-zone-pane='review'],
-    [data-zone-pane='chat-items']
+    [data-zone-pane='chat-items'],
+    [data-zone-pane^='preview-tile']
   )
   > [data-panel-header]::before,
 :root[data-shell='portal'] [data-overlay-surface][data-page-surface] [data-glass-raised],
@@ -350,7 +351,8 @@
   [data-tree-group][data-window-top]:is(
     [data-zone-pane='files'],
     [data-zone-pane='review'],
-    [data-zone-pane='chat-items']
+    [data-zone-pane='chat-items'],
+    [data-zone-pane^='preview-tile']
   )
   > [data-panel-header]::before {
   background: var(--artwork-panel-noise), linear-gradient(var(--portal-sidebar-panel-background)), var(--artwork-paint);

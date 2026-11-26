@@ -110,6 +110,22 @@ describe('artifacts store', () => {
     expect($previewTabs.get()).toHaveLength(1)
   })
 
+  it("files the preview under the artifact's own session, not the focused chat", () => {
+    const result = upsertArtifact('session-1', HTML_DETECTION, '<html>v1</html>')!
+
+    // The artifact belongs to session-1; a sibling chat holds focus.
+    $activeSessionId.set('runtime-other')
+    $selectedStoredSessionId.set('session-2')
+
+    openArtifact(result.artifactId)
+
+    const tab = $previewTabs.get()[0]!
+
+    expect(tab.sessionId).toBe('session-1')
+    // A background chat's card must not hijack the focused chat's rail.
+    expect($rightRailActiveTabId.get()).toBeNull()
+  })
+
   it('keeps artifact tabs out of the persisted tab list', () => {
     const result = upsertArtifact('session-1', HTML_DETECTION, '<html>v1</html>')!
 
@@ -153,6 +169,18 @@ describe('artifacts store', () => {
     openArtifact(result.artifactId)
 
     expect(result.artifactId in $artifactVersionSelection.get()).toBe(false)
+  })
+
+  it('opens visibly under the active stored session when activeSessionId and selectedStoredSessionId match', () => {
+    $activeSessionId.set('stored-1')
+    $selectedStoredSessionId.set('stored-1')
+    const result = upsertArtifact('stored-1', HTML_DETECTION, '<html>resumed</html>')!
+
+    openArtifact(result.artifactId)
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.sessionId).toBe('stored-1')
+    expect($rightRailActiveTabId.get()).toBe($previewTabs.get()[0]?.id)
   })
 
   it('clearing the registry closes the tabs pointing into it', () => {

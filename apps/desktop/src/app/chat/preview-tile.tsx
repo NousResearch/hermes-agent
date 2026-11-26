@@ -369,6 +369,12 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   minWidth: '22rem',
   // The redesign's tool panel shares one width across its tools (redesign/developer-tool-panel.ts).
   width: () => ($portalShell.get() ? DEVELOPER_TOOL_PANEL_WIDTH : undefined),
+  // Below wide the redesign shows a side tool as a sheet over the full-width
+  // chat (NarrowOverlays), never as a docked column: a preview that stayed in
+  // the grid squeezed the chat to a 60px sliver at 900px. Classic keeps its
+  // panes docked (a preview is `placement: main` there), so the flag is
+  // portal-only.
+  collapsible: () => ($portalShell.get() ? true : undefined),
   also: [$portalShell],
   title: previewTitle,
   tabLead: tabId => <PreviewTabLead tabId={tabId} />,

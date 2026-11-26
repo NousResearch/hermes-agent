@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 vi.mock('./right-rail/preview', () => ({
   PreviewTilePane: () => null
@@ -10,6 +10,7 @@ vi.mock('./right-rail/preview-console-store', () => ({
 
 import { registry } from '@/contrib/registry'
 import { $previewTabs, closeRightRail, noteBrowserPage, openPreview } from '@/store/preview'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { browserTabExternalUrl, browserTabLabel, watchPreviewTiles } from './preview-tile'
 
@@ -79,7 +80,9 @@ describe('browserTabExternalUrl', () => {
   })
 })
 
-type DockData = { dock?: { pane?: string; pos?: string }; lifecycleKeepAlive?: boolean } | undefined
+type DockData =
+  | { collapsible?: boolean; dock?: { pane?: string; pos?: string }; lifecycleKeepAlive?: boolean }
+  | undefined
 
 function paneDataOf(paneId: string) {
   return registry.getArea('panes').find(entry => entry.id === paneId)?.data as DockData
@@ -104,6 +107,23 @@ describe('preview tiles keep a live page alive across Hide', () => {
 
     expect(paneDataOf(`preview-tile:${browserId}`)?.lifecycleKeepAlive).toBe(true)
     expect(paneDataOf('preview-tile:file:/tmp/a.ts')?.lifecycleKeepAlive).toBeFalsy()
+  })
+})
+
+describe('preview tiles are narrow sheets in the redesign', () => {
+  // Below wide a docked preview column crushed the chat; the redesign routes
+  // preview panes through NarrowOverlays instead, which needs `collapsible`.
+  it('registers as collapsible in the portal shell and never in classic', () => {
+    onTestFinished(() => $shellChoice.set(null))
+
+    $shellChoice.set(false)
+    openPreview(fileTarget('/tmp/classic.ts'))
+
+    expect(paneDataOf('preview-tile:file:/tmp/classic.ts')?.collapsible).toBeUndefined()
+
+    $shellChoice.set(true)
+
+    expect(paneDataOf('preview-tile:file:/tmp/classic.ts')?.collapsible).toBe(true)
   })
 })
 

@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-slack
+description: Safe Slack practice world for channel, thread and reaction workflows.
+source: https://github.com/shashank-yadav/myworld
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - slack
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - slack_list_channels
+    - slack_get_channel_history
+    - slack_get_thread_replies
+    - slack_get_users
+    - slack_get_user_profile
+    - slack_post_message
+    - slack_reply_to_thread
+    - slack_add_reaction
+
+suggest:
+  keywords:
+    - myworld
+    - slack
+    - thread
+    - practice world
+
+post_install: |
+  myworld-slack runs a local, simulated Slack MCP server over stdio:
+    uvx myworld stdio slack
+
+  No real Slack workspace is changed. Use it to practice channels, threads,
+  user IDs, reactions, private-channel misses and message routing safely.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure myworld-slack
+

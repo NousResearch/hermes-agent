@@ -1,0 +1,33 @@
+name: hearthside-just-you-and-me
+title: "Hearthside: Just You and Me"
+repo: https://github.com/LexDaemon/hearthside-just-you-and-me
+sha: "b1bd819eb8d011330f52770cb0dfdd4482aa2d89"
+subdir: lite/hearthside-just-you-and-me
+version: "1.0.0"
+description: >-
+  A shared room with Nori, a focus garden, focus timers, and study decks for Hermes Desktop.
+  Disclosure — optional weather and city search use Open-Meteo; study imports, exports,
+  and backups read or write user-selected local paths. Collections stay profile-scoped;
+  explicitly loaded owned project documents may enter the configured model's context.
+  Optional saved LaTeX images invoke an existing local TinyTeX runtime on macOS.
+  No telemetry, credential-store access, independent daemon, or self-updater.
+maintainer: LexDaemon
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+platforms: [macos, linux, windows]
+docs_url: https://github.com/LexDaemon/hearthside-just-you-and-me/tree/b1bd819eb8d011330f52770cb0dfdd4482aa2d89/lite/hearthside-just-you-and-me#readme
+image: https://raw.githubusercontent.com/LexDaemon/hearthside-just-you-and-me/b1bd819eb8d011330f52770cb0dfdd4482aa2d89/media/portada.png
+screenshots:
+  - https://raw.githubusercontent.com/LexDaemon/hearthside-just-you-and-me/b1bd819eb8d011330f52770cb0dfdd4482aa2d89/media/screenshots/hearthside-room-and-chat.png
+  - https://raw.githubusercontent.com/LexDaemon/hearthside-just-you-and-me/b1bd819eb8d011330f52770cb0dfdd4482aa2d89/media/screenshots/hearthside-focus-sessions.png
+  - https://raw.githubusercontent.com/LexDaemon/hearthside-just-you-and-me/b1bd819eb8d011330f52770cb0dfdd4482aa2d89/media/screenshots/hearthside-focus-garden.png
+  - https://raw.githubusercontent.com/LexDaemon/hearthside-just-you-and-me/b1bd819eb8d011330f52770cb0dfdd4482aa2d89/media/screenshots/hearthside-memory-decks.png
+readme: true
+onboarding: false
+default: false
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

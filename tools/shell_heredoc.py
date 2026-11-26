@@ -33,11 +33,11 @@ _INERT_HEREDOC_CONSUMER_RE = re.compile(
     _CONSUMER_PREFIX + r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)", re.IGNORECASE)
 _STRICT_INERT_HEREDOC_CONSUMER_RE = re.compile(_CONSUMER_PREFIX + r"cat(?=\s|$)", re.IGNORECASE)
 # Commands a heredoc owner's stdout may be piped into without the body reaching a shell: they
-# print or count text and never execute it. Anything else downstream (``| bash``, ``| xargs sh``,
-# ``| tee run.sh``) keeps the body visible.
+# print or count text and have no option that runs a command. Anything else downstream (``| bash``,
+# ``| xargs sh``, ``| tee run.sh``) keeps the body visible; so do ``sort --compress-program=sh``,
+# ``rg --pre CMD`` and the ``!cmd`` escapes of ``less``/``more``, which is why those are not listed.
 _PIPE_FILTER_RE = re.compile(
-    r"^\s*(?:[A-Za-z0-9_./-]+/)?(?:grep|egrep|fgrep|rg|head|tail|sort|uniq|wc|cut|tr|column|"
-    r"less|more|jq|cat)(?=\s|$)")
+    r"^\s*(?:[A-Za-z0-9_./-]+/)?(?:grep|egrep|fgrep|head|tail|uniq|wc|cut|tr|column|jq|cat)(?=\s|$)")
 # The subset whose body is pure data (written out, never interpreted): `cat` only.
 _DATA_HEREDOC_CONSUMER_RE = _STRICT_INERT_HEREDOC_CONSUMER_RE
 

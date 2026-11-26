@@ -506,6 +506,37 @@ describe('a Webapp whose host runs no agent', () => {
     expect(browserLaunchProfile()).toBe('research')
   })
 
+  // The socket opens on the profile the agent runs as. A read that failed is not an agent that names
+  // no profile: taken as one, boot would record `default` while the socket opens on `research`.
+  it.each([
+    [1, 'research'],
+    [2, undefined]
+  ])("reads the profile the window's agent runs as again, and fails the open after %i failed reads", async (fails, adopted) => {
+    dashboardHost({ runsAs: { alpha: 'research' } })
+    const host = vi.mocked(fetch).getMockImplementation()!
+    let failed = 0
+
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (new URL(String(url), window.location.origin).pathname === '/api/relay/alpha/api/profiles/active' && failed < fails) {
+        failed += 1
+
+        return json({ detail: 'timed out' }, 504)
+      }
+
+      return host(url, init)
+    })
+
+    const open = install().getConnection()
+
+    if (adopted) {
+      await expect(open).resolves.toMatchObject({ connectionId: 'alpha' })
+    } else {
+      await expect(open).rejects.toThrow()
+    }
+
+    expect(browserLaunchProfile()).toBe(adopted ?? '')
+  })
+
   // `/api/profiles/active` answers `custom` for an agent run from its own HERMES_HOME: a description
   // of that home, not a profile. The agent's own page names no profile then, and neither does this one.
   it('adopts no profile from an agent that runs from a custom home', async () => {

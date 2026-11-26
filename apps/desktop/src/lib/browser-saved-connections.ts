@@ -117,7 +117,8 @@ export interface BrowserSavedConnections {
   windowConnection: () => Promise<string>
   /** `windowConnection` as last read, without a read; undefined before the first one. */
   knownWindowConnection: () => string | undefined
-  /** The profile *connectionId*'s gateway runs as, read once through the relay; undefined unread. */
+  /** The profile *connectionId*'s gateway runs as, read once through the relay; undefined when it
+   *  names none. Rejects when the read fails twice. */
   launchProfile: (connectionId: string) => Promise<string | undefined>
   connections: Bridge
 }
@@ -415,22 +416,30 @@ export function createBrowserSavedConnections({
 
   const launchProfiles = new Map<string, Promise<string | undefined>>()
 
+  const readLaunchProfile = async (connectionId: string) =>
+    profileName(
+      (
+        await browserApi<null | { current?: string }>(bootstrapFor(connectionId), {
+          path: '/api/profiles/active',
+          timeoutMs: SERVED_SET_READ_TIMEOUT_MS
+        })
+      )?.current
+    )
+
+  // A failed read is not an agent that names no profile: read once more, then fail, so the open
+  // that asked never records `default` for a socket that opens on another profile.
   const launchProfile = (connectionId: string) => {
     let read = launchProfiles.get(connectionId)
 
     if (!read) {
-      read = browserApi<null | { current?: string }>(bootstrapFor(connectionId), {
-        path: '/api/profiles/active',
-        timeoutMs: SERVED_SET_READ_TIMEOUT_MS
-      }).then(
-        answer => profileName(answer?.current),
-        () => {
-          // Not kept: the next window that asks reads again.
+      read = readLaunchProfile(connectionId)
+        .catch(() => readLaunchProfile(connectionId))
+        .catch(error => {
+          // Not kept: the next open reads again.
           launchProfiles.delete(connectionId)
 
-          return undefined
-        }
-      )
+          throw error
+        })
       launchProfiles.set(connectionId, read)
     }
 

@@ -359,7 +359,8 @@ export function createBrowserConnectionBridge({
         return { ...connectionFor(bootstrap, profile, served.serves(profile)), connectionId: LOCAL_CONNECTION_ID }
       }
 
-      // Boot adopts the profile the page's server runs as; here that is the agent's own.
+      // Boot adopts the profile the page's server runs as; here that is the agent's own. A read that
+      // fails fails the open: the socket opens on that profile, so boot must not guess `default`.
       adoptBrowserLaunchProfile(await home.relays.launchProfile(home.connectionId))
 
       return home.relays.connection(home.connectionId, profile)

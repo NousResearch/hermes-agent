@@ -291,6 +291,22 @@ def _shape_message(m: TranscriptRow | MessageRecord, anchor_id: Optional[int] = 
     entry.update({k: getattr(m, k) for k in ("tool_name", "tool_calls", "tool_call_id") if getattr(m, k)})
     if derived and entry.get("tool_calls"):
         entry["tool_calls"] = _redact_tool_calls(entry["tool_calls"])
+    # Surface per-message attribution when present (written by the persist path in
+    # agent/turn_context.py for every user message). Without this, session_search
+    # returns the words but not who/where — attribution blindness post-compaction.
+    # Guard is `is not None` (not truthiness): empty metadata still means "was
+    # annotated, is empty", which callers may distinguish from "never annotated".
+    meta = getattr(m, "display_metadata", None)
+    if meta is not None:
+        # Normalize the stored TEXT-column form (JSON string) to a dict at emit
+        # time so downstream consumers see exactly one shape. Unparseable strings
+        # pass through unchanged rather than being dropped.
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        entry["display_metadata"] = meta
     if anchor_id is not None and m.id == anchor_id:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:

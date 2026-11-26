@@ -51,7 +51,7 @@ from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecre
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, mkdir_under_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -714,9 +714,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         blob_resp = await self._graph_get(temp_url, headers, "bytes", media_id)
         if blob_resp is None:
             return None, None
-        _INBOUND_MEDIA_CACHE.mkdir(parents=True, exist_ok=True)
         out_path = _INBOUND_MEDIA_CACHE / f"{media_id}{ext_hint or _ext_for_mime(mime) or '.bin'}"
         try:
+            mkdir_under_hermes_home(_INBOUND_MEDIA_CACHE)  # a dead profile home drops the media
             out_path.write_bytes(blob_resp.content)
         except OSError:
             logger.exception("[whatsapp_cloud] failed to write cached media (id=%s)", media_id)

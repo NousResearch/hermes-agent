@@ -184,6 +184,12 @@ async def gateway_migrate():
     return {"ok": True, "pid": proc.pid, "name": "gateway-migrate"}
 
 
+# ``hermes gateway migrate --backends`` (old dashboard/serve -> the gateway's Webapp): same gate as above.
+from hermes_cli.web_routers import backend_migration as _backend_migration
+
+router.include_router(_backend_migration.router)
+
+
 @router.post("/api/gateway/drain")
 async def gateway_drain(request: Request):
     """Begin or cancel an external (NAS-driven) gateway drain.

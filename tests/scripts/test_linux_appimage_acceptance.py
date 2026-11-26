@@ -1,11 +1,18 @@
 """Receipts for the packaged x64 acceptance lanes; no release build or namespaces needed."""
 
+import errno
 import hashlib
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 import pytest
 
@@ -37,11 +44,125 @@ def test_worker_main_verifies_image_before_extraction(tmp_path, monkeypatch):
     bad.write_bytes(b"not an elf appimage")
     monkeypatch.setattr(appimage_checks.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(appimage_checks.socket, "if_nameindex", lambda: [(1, "lo")])
+    monkeypatch.setattr(fcntl, "ioctl", _make_fake_ioctl({"lo": 0x9}, {"lo"}))
     extracted = []
     monkeypatch.setattr(appimage_checks.subprocess, "run", lambda *a, **kw: extracted.append(a))
     with pytest.raises(ValueError, match="type 2 AppImage"):
         appimage_checks.main("22.04", hashlib.sha256(bad.read_bytes()).hexdigest(), image=bad)
     assert not extracted
+
+
+def _make_fake_ioctl(flags_by_name, ipv4_names=()):
+    def fake_ioctl(_fd, request, arg):
+        name = arg[:16].split(b"\0", 1)[0].decode("ascii")
+        if request == appimage_checks._SIOCGIFFLAGS:
+            if name not in flags_by_name:
+                raise OSError(errno.ENODEV, "No such device")
+            return struct.pack("16sH22x", name.encode("ascii"), flags_by_name[name])
+        if request == appimage_checks._SIOCGIFADDR:
+            if name in ipv4_names:
+                return arg
+            raise OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+        raise AssertionError(f"unexpected ioctl: {request:#x}")
+
+    return fake_ioctl
+
+
+def _write_proc_net(directory: Path, *, route: str = "", if_inet6: str = "", ipv6_route: str = "") -> None:
+    (directory / "route").write_text(
+        "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n" + route,
+        encoding="ascii",
+    )
+    (directory / "if_inet6").write_text(
+        "00000000000000000000000000000001 01 80 10 80       lo\n" + if_inet6,
+        encoding="ascii",
+    )
+    (directory / "ipv6_route").write_text(
+        "00000000000000000000000000000001 80 00000000000000000000000000000000 00 "
+        "00000000000000000000000000000000 00000000 00000002 00000000 80200001       lo\n" + ipv6_route,
+        encoding="ascii",
+    )
+
+
+def test_worker_main_allows_down_unaddressed_kernel_tunnels(tmp_path, monkeypatch):
+    bad = tmp_path / "not-an-appimage"
+    bad.write_bytes(b"not an elf appimage")
+    monkeypatch.setattr(appimage_checks.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        appimage_checks.socket,
+        "if_nameindex",
+        lambda: [(1, "lo"), (2, "tunl0"), (3, "sit0"), (4, "ip6tnl0"), (5, "gre0")],
+    )
+    monkeypatch.setattr(
+        fcntl,
+        "ioctl",
+        _make_fake_ioctl({"lo": 0x9, "tunl0": 0x80, "sit0": 0x80, "ip6tnl0": 0x80, "gre0": 0x80}, {"lo"}),
+    )
+    net = tmp_path / "net"
+    net.mkdir()
+    _write_proc_net(net)
+    sandbox_problem = appimage_checks._sandbox_problem
+    monkeypatch.setattr(appimage_checks, "_sandbox_problem", lambda: sandbox_problem(net))
+    monkeypatch.setattr(appimage_checks, "_ipv6_available", lambda: True)
+    extracted = []
+    monkeypatch.setattr(appimage_checks.subprocess, "run", lambda *a, **kw: extracted.append(a))
+    with pytest.raises(ValueError, match="type 2 AppImage"):
+        appimage_checks.main("22.04", hashlib.sha256(bad.read_bytes()).hexdigest(), image=bad)
+    assert not extracted
+
+
+def test_sandbox_check_refuses_root_active_addressed_routed_and_unreadable_network(tmp_path, monkeypatch):
+    monkeypatch.setattr(appimage_checks.os, "geteuid", lambda: 0)
+    assert "root" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    monkeypatch.setattr(appimage_checks.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(appimage_checks.socket, "if_nameindex", lambda: [(2, "tunl0")])
+    assert "loopback" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    monkeypatch.setattr(appimage_checks.socket, "if_nameindex", lambda: [(1, "lo"), (2, "eth0")])
+    monkeypatch.setattr(fcntl, "ioctl", _make_fake_ioctl({"lo": 0x8, "eth0": 0x0}, {"lo"}))
+    assert "loopback" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    _write_proc_net(tmp_path)
+    monkeypatch.setattr(fcntl, "ioctl", _make_fake_ioctl({"lo": 0x9, "eth0": 0x1043}, {"lo"}))
+    assert "eth0" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    monkeypatch.setattr(fcntl, "ioctl", _make_fake_ioctl({"lo": 0x9, "eth0": 0x1002}, {"lo", "eth0"}))
+    assert "IPv4" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    monkeypatch.setattr(fcntl, "ioctl", _make_fake_ioctl({"lo": 0x9, "eth0": 0x1002}, {"lo"}))
+    _write_proc_net(tmp_path, route="eth0\t00000000\t0100000A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n")
+    assert "IPv4 routes" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    _write_proc_net(tmp_path, if_inet6="fd000000000000000000000000000001 02 40 00 c0 eth0\n")
+    monkeypatch.setattr(appimage_checks, "_ipv6_available", lambda: True)
+    assert "IPv6 addresses" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    _write_proc_net(
+        tmp_path,
+        ipv6_route="fd000000000000000000000000000000 40 00000000000000000000000000000000 00 "
+        "00000000000000000000000000000000 00000100 00000001 00000000 00000001 eth0\n",
+    )
+    assert "IPv6 routes" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    _write_proc_net(tmp_path)
+    assert appimage_checks._sandbox_problem(tmp_path) is None
+
+    (tmp_path / "if_inet6").unlink()
+    (tmp_path / "ipv6_route").unlink()
+    assert "cannot verify" in (appimage_checks._sandbox_problem(tmp_path) or "")
+    monkeypatch.setattr(appimage_checks, "_ipv6_available", lambda: False)
+    assert appimage_checks._sandbox_problem(tmp_path) is None
+
+    (tmp_path / "route").unlink()
+    assert "cannot verify" in (appimage_checks._sandbox_problem(tmp_path) or "")
+
+    def fail_ioctl(_fd, _request, _arg):
+        raise PermissionError("blocked")
+
+    _write_proc_net(tmp_path)
+    monkeypatch.setattr(fcntl, "ioctl", fail_ioctl)
+    assert appimage_checks._sandbox_problem(tmp_path) == "cannot verify network isolation: blocked"
 
 
 def _engine(backend):

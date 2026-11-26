@@ -306,6 +306,12 @@ HOME_CREDENTIAL_FILES = (".netrc", "_netrc", ".pgpass", ".npmrc", ".pypirc", ".g
 HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
 
 
+def hermes_credential_homes() -> list[Path]:
+    """Every resolved Hermes home the credential guards cover (the active home, the root, each profile home),
+    for a caller that anchors a Hermes-only store name to them instead of matching it anywhere."""
+    return _credential_store_dirs()
+
+
 def resolved_home_credential_stores() -> tuple[set[str], list[str]]:
     """``(files, dirs)``: the home credential stores (HOME_CREDENTIAL_FILES / _DIRS) of every guard
     home, realpath'd, so a caller can refuse a path whose resolved form lands in one even when a

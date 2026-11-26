@@ -169,7 +169,7 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 
 The matrix never runs on pull requests or pushes to main: one leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
-- A reusable workflow call from Stable Release (`route=all`, for both stable claims and daily canary runs; `install-e2e-red.yml` keeps one `install-e2e-red` issue in step with the latest `Canary release` run).
+- A reusable workflow call from Stable Release (`route=all`, for both stable claims and daily canary runs; `stable-release.yml`'s `track-canary-red` job keeps one `install-e2e-red` issue in step with the latest `Canary release` run).
 - An on-demand manual dispatch of `.github/workflows/canary-e2e.yml` for a single commit SHA without cutting a canary tag.
 - Manual dispatch. You can select the route and the tag count:
 

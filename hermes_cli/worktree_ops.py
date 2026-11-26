@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli._subprocess_compat import _git_argv0_unusable, noninteractive_git_env
 from hermes_cli.git_commit_graph import (
     claim_commit_graph_refresh,
     claim_maintenance_slot,
@@ -1156,6 +1156,8 @@ def _reclaim_orphan_install_states() -> None:
 
 
 def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
+    if _git_argv0_unusable(["git"]):
+        return  # macOS's CLT stub: each git below would open Apple's install dialog
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)

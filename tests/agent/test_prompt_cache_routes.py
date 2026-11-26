@@ -48,6 +48,8 @@ def test_a_a_route_that_never_reads_back_is_learned_no_cache_and_loses_its_marke
     # its requests now go without markers; that automatic cache is not warmed until it reads back
     assert learned_window(_agent("openai/gpt-5.6-luna"), (_T0 + 1800, 1800.0), False) == (None, "no-cache")
     assert (home / "a" / "cache" / "prompt_cache_routes.json").is_file()
+    _obs("openai/gpt-5.6-luna", explicit=False, read=6000, tier=1800)  # ...until it reads back
+    assert learned_window(_agent("openai/gpt-5.6-luna"), (_T0 + 1800, 1800.0), False) == ((_T0 + 1800, 1800.0), None)
 
 
 def test_b_a_route_that_rewrites_on_every_hit_gets_no_keep_alives(home, monkeypatch):
@@ -94,6 +96,19 @@ def test_a_single_miss_never_downgrades_a_route(home, monkeypatch):
     _obs("qwen/qwen3.7-plus", read=8585, gap=200)
     assert routes.rule_for("nous", _NOUS, "qwen/qwen3.7-plus", True, tier_s=3600) is None
     assert learned_window(_agent("qwen/qwen3.7-plus"), (_T0 + 3600, 3600.0), True) == ((_T0 + 3600, 3600.0), None)
+
+
+def test_a_two_session_rule_survives_one_session_that_keeps_missing(home, monkeypatch):
+    """A full sample list drops the oldest sample of a session that has another one: a chat that keeps
+    missing cannot push out the second session's only sample (the rule would vanish with no evidence)."""
+    monkeypatch.setattr(routes.time, "time", lambda: _T0)
+    for session in ["s1", *["s2"] * (routes._GAPS_KEPT + 4)]:
+        _obs("openai/gpt-5.6-luna", write=6013, session=session)
+    assert routes.rule_for("nous", _NOUS, "openai/gpt-5.6-luna", True) == "no-cache"
+    for i in range(routes._GAPS_KEPT + 3):  # all sessions unique: still the oldest goes
+        _obs("openai/gpt-6", write=6013, session=f"c{i}")
+    entry = routes._entry(routes.route_key("nous", _NOUS, "openai/gpt-6", True), _T0)
+    assert entry["miss_gaps_sessions"] == [f"c{i}" for i in range(3, routes._GAPS_KEPT + 3)]
 
 
 def test_learned_facts_expire_after_seven_days(home, monkeypatch):

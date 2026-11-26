@@ -3,8 +3,8 @@ name: Canary E2E
 # Manual on-demand runner for a stable claim's E2E calls (stable-release.yml's
 # ci, install-e2e and windows-live, same inputs) against any commit without
 # cutting a canary tag. Daily canaries run these suites directly inside
-# Stable Release (stable-release.yml), and install-e2e-red.yml tracks those
-# Canary release runs.
+# Stable Release (stable-release.yml), where `track-canary-red` updates the
+# `install-e2e-red` tracker issue.
 
 run-name: Canary E2E on ${{ inputs.commit || github.sha }}
 

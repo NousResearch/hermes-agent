@@ -29,6 +29,66 @@ async def test_kanban_wake_is_admitted_into_a_local_chat(tmp_path, monkeypatch):
     assert len(_admissions(authority, ref, 'card t1 done')) == 1
 
 
+async def _kanban_wakes_into_a_local_chat(tmp_path, monkeypatch, *extra_events):
+    import queue
+    from types import SimpleNamespace
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.gateway_connection import SessionState
+    from hermes_cli.gateway_tools_notify import queue_admitted_turn
+    from tests.gateway.test_kanban_wake_scope import _completed_subscription, _one_notifier_tick
+    from tests.gateway.test_session_end_delegations import _record_turns
+    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
+    live = authority.sessions[ref.session_id]
+    live.subscribers['cli'] = actor
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    runner._kanban_dispatcher_lock_handle = object()
+    runner._kanban_sub_fail_counts = {}
+    runner._running = True
+    monkeypatch.setenv('HERMES_KANBAN_DB', str(tmp_path / 'local-wake.db'))
+    kb.init_db()
+    task_id = _completed_subscription(platform='local', chat_id=live.source.chat_id, chat_type=live.source.chat_type,
+                                      user_id=live.source.user_id, delivery_mode='wake')
+    conn = kbc.connect()
+    try:
+        for kind in extra_events:
+            kb._append_event(conn, task_id, kind=kind)
+    finally:
+        conn.close()
+    with pytest.MonkeyPatch.context() as tick:
+        await _one_notifier_tick(tick, runner)
+    _record_turns(runner)
+    await authority._drain(ref)
+    queued = []
+    for start in [frame for frame in frames if frame['params']['type'] == 'message.start']:
+        state = SessionState(ref.session_id)
+        connection = SimpleNamespace(events=queue.Queue(), state=lambda _sid, state=state: state)
+        connection.events.put(start)
+        cli = SimpleNamespace(session_id=ref.session_id, _pending_input=queue.Queue())
+        queue_admitted_turn(cli, SimpleNamespace(connection=connection))
+        queued.append(cli._pending_input.get_nowait())
+    return task_id, queued
+
+
+@pytest.mark.asyncio
+async def test_kanban_wake_into_a_local_chat_opens_an_idle_classic_cli_turn(tmp_path, monkeypatch):
+    task_id, [notification] = await _kanban_wakes_into_a_local_chat(tmp_path, monkeypatch)
+    assert notification.display_text == f'[kanban] Task {task_id} completed.'
+    assert str(notification).startswith(notification.display_text + '\n')
+
+
+@pytest.mark.asyncio
+async def test_each_kanban_wake_of_a_split_batch_names_its_own_receipt(tmp_path, monkeypatch):
+    from gateway import warning_notifications
+    monkeypatch.setattr(warning_notifications, 'warning_notifications_enabled', lambda *_a, **_k: False)
+    task_id, queued = await _kanban_wakes_into_a_local_chat(tmp_path, monkeypatch, 'crashed')
+    assert [(n.notification_category, n.display_text) for n in queued] == [
+        ('diagnostic', f'[kanban] Task {task_id} crashed (worker exited); dispatcher will retry.'),
+        ('result', f'[kanban] Task {task_id} completed.')]
+    assert all(str(n).startswith(n.display_text + '\n') for n in queued)
+
+
 def _overdue_heartbeat(session_id):
     from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
     state = HeartbeatManager(session_id).set('status tick', 60)

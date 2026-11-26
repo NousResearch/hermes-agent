@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field, RootModel
 
 from .base import JsonValue, Params, Result
-from .common import CodingWorkspaceBinding, ProfileParams, TranscriptMessage
+from .common import CanonicalClientIdentity, CodingWorkspaceBinding, ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
 from .sessions import OpenRequestEntry, TodoState, SessionWorkspaceVerifyResult, SessionWorkspaceReferencesResult
 from .canonical import (AdmissionStatus, CanonicalClientLabel, CanonicalSessionRef, PromptResponseResult,
@@ -27,14 +27,6 @@ class CanonicalWorkspaceReferencesParams(CanonicalSessionParams):
     paths: list[str] = Field(max_length=256)
     text: str | None = Field(default=None, max_length=1_000_000)
     reference_cwd: str | None = None
-
-
-class CanonicalClientIdentity(Params):
-    """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
-    printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``)."""
-
-    name: str
-    version: str | None = None
 
 
 class CanonicalCreateParams(ProfileParams):

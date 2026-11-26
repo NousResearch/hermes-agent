@@ -1,0 +1,50 @@
+# 研究任务注册表
+# 基于 AI2050-OpenOne 当前状态（Phase 30，拼图填充率30.4%，brain_grounding为最弱轴）
+
+tasks:
+  - id: "T001"
+    title: "验证频谱分工振荡定理 — Band3(β) ↔ 语法解析耦合"
+    description: |
+      使用 nfb_data 中的数据，验证 README 中提出的"Band1-5频谱 ↔ θ/α/β/γ神经振荡"对应关系。
+      重点验证 Band3(β波) 是否与语法解析任务有最强的耦合关系。
+      分析频谱能量分布与语法任务的皮尔逊相关系数矩阵。
+    expected_output: "频谱-振荡耦合强度矩阵 + 统计显著性检验报告"
+    inputs: ["nfb_data/", "models/"]
+    output_dir: "research/deepseek/T001_spectrum_oscillation/"
+
+  - id: "T002"
+    title: "验证正交编码最优性定理 — 能量约束下的信息传输最大化"
+    description: |
+      在 Qwen3 中等规模模型上验证：在能量约束条件下，正交编码是否确实使信息传输率最大化。
+      需要测量不同编码方案下的 (信息传输率, 能量消耗) 散点图，拟合 Pareto 前沿。
+    expected_output: "编码效率对比表 + 能耗-信息率 Pareto前沿图"
+    inputs: ["models/", "data/"]
+    output_dir: "research/deepseek/T002_orthogonal_coding/"
+
+  - id: "T003"
+    title: "brain_grounding 弱轴分析 — 定位 field_observability 瓶颈"
+    description: |
+      当前最弱轴是 brain_grounding（脑编码落地），其中 field_observability 被定位为最薄弱组件。
+      分析现有数据中 brain_plane → falsification_plane 的失效传播路径，
+      提出增强 field_observability 的具体方案。
+    expected_output: "弱轴诊断报告 + field_observability 增强方案"
+    inputs: ["nfb_data/", "research/", "docs/"]
+    output_dir: "research/deepseek/T003_brain_grounding/"
+
+  - id: "T004"
+    title: "evidence_isolation_clause 补强 — 跨观测面失效耦合阻断"
+    description: |
+      evidence_isolation_clause 是当前最弱条款，brain_plane → falsification_plane 是主要失效传播链。
+      设计并实现证据隔离机制，阻断跨观测面的失效耦合。
+    expected_output: "隔离机制设计方案 + Python实现 + 验证测试"
+    inputs: ["research/", "results/"]
+    output_dir: "research/deepseek/T004_evidence_isolation/"
+
+  - id: "T005"
+    title: "外部数据反例包验证 — 复现 brain→falsification 弱链"
+    description: |
+      基于仓库真实词表样本，构建外部数据反例包。
+      验证外部分布型反例是否能稳定复现 brain_plane → falsification_plane 传播路径。
+    expected_output: "反例包数据集 + 复现报告 + 失效条件分析"
+    inputs: ["data/", "nfb_data/"]
+    output_dir: "research/deepseek/T005_external_counterexamples/"

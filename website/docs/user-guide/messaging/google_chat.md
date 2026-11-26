@@ -103,6 +103,8 @@ On the **topic** (not the subscription), add an IAM principal:
 Without this, Google Chat cannot publish events to your topic and your bot will
 never receive anything.
 
+In addition to the above standard principal, refer to Step 7 and the Chat App specific Service Account Email.
+
 ---
 
 ## Step 6: IAM binding on the subscription
@@ -132,6 +134,11 @@ Go to **APIs & Services → Google Chat API → Configuration**.
   to everyone while you're testing.
 
 Save.
+
+Next to **Connection settings** an app specific Service account email will be shown:
+If this is *not* identical to `chat-api-push@system.gserviceaccount.com` then add another IAM Binding for this Service account to the topic 
+- Principal: **Service account email** as generated here
+- Role: `Pub/Sub Publisher`
 
 ---
 

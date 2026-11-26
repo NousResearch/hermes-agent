@@ -99,14 +99,18 @@ describe('reading the saved connections', () => {
     await seed
 
     // Settings starts a read, a save lands, a read after the save finishes first, the older last.
+    // The newer read also sees Gamma, added in another tab: the save's own list would lack it.
     const older = connections.connections.list().then(registry => seen.push(ids(registry)))
     await connections.connections.save({ kind: 'remote', label: 'beta', url: 'https://beta.example' })
     const newer = connections.connections.list().then(registry => seen.push(ids(registry)))
-    gets[2]!.resolve(stored())
+    gets[2]!.resolve(registryOf(...ids(stored()), 'gamma'))
     await newer
     gets[1]!.resolve(registryOf('alpha'))
     await older
 
-    expect(seen.at(-1)).toEqual(['alpha', 'beta'])
+    expect(seen).toEqual([
+      ['alpha', 'beta', 'gamma'],
+      ['alpha', 'beta', 'gamma']
+    ])
   })
 })

@@ -147,8 +147,28 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
-def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
-                        python: Path, extras: Iterable[str] = ()) -> None:
+def _seed_editable_members(seed_text: str) -> set[str]:
+    """Read exact editable package sources, not comments or path substrings."""
+    import tomllib
+
+    try:
+        document = tomllib.loads(seed_text)
+    except tomllib.TOMLDecodeError:
+        # This is only a representative preference; uv diagnoses a bad seed.
+        return set()
+    members = set()
+    packages = document.get("package", [])
+    for package in packages if isinstance(packages, list) else []:
+        source = package.get("source", {}) if isinstance(package, dict) else {}
+        editable = source.get("editable") if isinstance(source, dict) else None
+        if isinstance(editable, str):
+            members.add(editable)
+    return members
+
+
+def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *,
+                        source: Path, python: Path, extras: Iterable[str] = (),
+                        seed_text: str = "") -> None:
     """Snapshot core and plugin build inputs into a fresh generation for the *python* that installs it."""
     source = source.resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
@@ -158,11 +178,35 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    candidates = {identity: source for identity, source in member_sources(plugin_dirs).items()
-                  if _is_member_candidate(source)}
-    target = _target_environment(python) if candidates else {}
-    members = [_workspace_member(source, root, identity=identity, extras=extras, target=target)
-               .relative_to(root).as_posix() for identity, source in candidates.items()]
+    selected = []  # (source tree, installed identity), in config order
+    buildable = {}  # [project].name -> indices of distinct fold groups
+    seeded = _seed_editable_members(seed_text)
+    for identity, entry in member_sources(plugin_dirs).items():
+        if not _is_member_candidate(entry):
+            continue
+        # Buildable members keep their declared name. Fold only equal source
+        # bytes AND effective external path inputs, resolved against installed
+        # identities even when a Mapping supplies separate staged sources.
+        name = _buildable_member_name(entry)
+        groups = buildable.setdefault(name, []) if name is not None else []
+        for index in groups:
+            seen_entry, seen_identity = selected[index]
+            if (_same_member_source(seen_entry, entry)
+                    and _external_member_source_paths(seen_entry, seen_identity)
+                    == _external_member_source_paths(entry, identity)):
+                # Decide before copying: a prior lock can still ask uv to load
+                # the old editable path even if config order has changed.
+                if (f"plugin-sources/{_member_key(identity)}" in seeded
+                        and f"plugin-sources/{_member_key(seen_identity)}" not in seeded):
+                    selected[index] = (entry, identity)
+                break
+        else:
+            groups.append(len(selected))
+            selected.append((entry, identity))
+
+    target = _target_environment(python) if selected else {}
+    members = [_workspace_member(entry, root, identity=identity, extras=extras, target=target)
+               .relative_to(root).as_posix() for entry, identity in selected]
 
     if members:
         import tomllib
@@ -348,6 +392,97 @@ def _member_key(identity: Path) -> str:
     digest = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
     name = re.sub(r"[^a-z0-9._-]+", "-", identity.name.lower()).strip("-.") or "plugin"
     return f"{name}-{digest}"
+
+
+def _buildable_member_name(plugin_dir: Path) -> str | None:
+    """The declared ``[project].name`` when this member is buildable, else ``None``.
+
+    Mirrors the virtual/buildable split in :func:`_workspace_member`: a member
+    with a build backend (or opted into uv package mode) keeps its declared
+    name, so only those can collide in the uv workspace.
+    """
+    import tomllib
+
+    pyproject = read_python_declaration(plugin_dir).pyproject
+    if pyproject is None:
+        return None
+    document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+    if "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True:
+        return None  # virtual: renamed to a unique key, cannot collide
+    name = document.get("project", {}).get("name")
+    return str(name) if name else None
+
+
+def _member_equality_ignored(directory, names):
+    """Ignore install provenance and tool caches only when comparing twins.
+
+    Keep the snapshot/stamp exclusions unchanged: these files still travel with
+    the chosen member, but differences in install time or tooling are not code.
+    """
+    return _member_ignored(directory, names) + [
+        name for name in names if name.startswith(".hermes-")
+        or name in {".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    ]
+
+
+def _same_member_source(a: Path, b: Path) -> bool:
+    """True when two installed plugins carry an identical build-relevant source tree.
+
+    Compares declaration files and source bytes, excluding snapshot omissions,
+    install provenance and tool caches. Byte-level, path-order-stable.
+    """
+    if a == b:
+        return True
+
+    def snapshot_entries(path: Path):
+        from pm.plugin_declarations import read_python_declaration as read
+
+        declaration = read(path)
+        for source in declaration.files:
+            yield source.name, source.read_bytes()
+        if (path / "pyproject.toml").is_file():
+            for directory, dirs, files in os.walk(path):
+                dirs[:] = sorted(set(dirs) - set(_member_equality_ignored(directory, dirs)))
+                # copytree preserves directory symlinks; their targets are build inputs too.
+                for name in dirs:
+                    entry = Path(directory) / name
+                    if entry.is_symlink():
+                        yield entry.relative_to(path).as_posix(), os.readlink(entry)
+                for name in sorted(set(files) - set(_member_equality_ignored(directory, files))):
+                    entry = Path(directory) / name
+                    yield entry.relative_to(path).as_posix(), (
+                        os.readlink(entry) if entry.is_symlink() else entry.read_bytes())
+
+    return list(snapshot_entries(a)) == list(snapshot_entries(b))
+
+
+def _external_member_path_specs(document: dict, plugin_dir: Path, identity: Path):
+    """Yield external relative sources and their installed-identity destinations.
+
+    Internal trees travel with the snapshot; external trees remain installed
+    inputs. Use the same boundary for folding and workspace path rewriting.
+    """
+    for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
+        for spec in sources if isinstance(sources, list) else [sources]:
+            if not isinstance(spec, dict) or "path" not in spec:
+                continue
+            relative = Path(spec["path"])
+            if relative.is_absolute():
+                continue
+            resolved = (plugin_dir / relative).resolve()
+            if resolved.is_relative_to(plugin_dir.resolve()):
+                continue
+            yield spec, (identity / relative).resolve().as_posix()
+
+
+def _external_member_source_paths(plugin_dir: Path, identity: Path) -> list[str]:
+    import tomllib
+
+    pyproject = read_python_declaration(plugin_dir).pyproject
+    if pyproject is None:
+        return []
+    document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+    return [path for _, path in _external_member_path_specs(document, plugin_dir, identity)]
 
 
 def _selected_member_extras(document: dict, extras: Iterable[str],
@@ -639,18 +774,9 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
             # Before the extras pass, so its self-reference closure reads the names uv will see.
             _rename_virtual_member(document, f"hermes-plugin-{key}")
         changed = _runtime_member_metadata(document, extras, target) or changed
-        for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
-            for spec in sources if isinstance(sources, list) else [sources]:
-                if not isinstance(spec, dict) or "path" not in spec:
-                    continue
-                relative = Path(spec["path"])
-                if relative.is_absolute():
-                    continue
-                resolved = (plugin_dir / relative).resolve()
-                if resolved.is_relative_to(plugin_dir.resolve()):
-                    continue  # The referenced tree was copied with this member.
-                spec["path"] = (identity / relative).resolve().as_posix()
-                changed = True
+        for spec, path in _external_member_path_specs(document, plugin_dir, identity):
+            spec["path"] = path
+            changed = True
         project = document.get("project")
         # uv rejects any [project] table whose version is neither set nor dynamic, at
         # parse time and for buildable members too, so a version-less member would abort
@@ -874,9 +1000,11 @@ def lock_and_sync(
     if root.exists() or root.is_symlink():
         raise InstallError("venv", f"workspace must be fresh: {root}")
     if replay is None:
-        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python, extras=extras)
+        seed_bytes = seed_lock.read_bytes() if seed_lock is not None else b""
+        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python,
+                            extras=extras, seed_text=seed_bytes.decode("utf-8-sig", errors="replace"))
         if seed_lock is not None:
-            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
+            (root / "uv.lock").write_bytes(seed_bytes)
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")

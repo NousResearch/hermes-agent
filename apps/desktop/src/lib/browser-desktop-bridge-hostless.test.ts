@@ -323,9 +323,9 @@ describe('a Webapp whose host runs no agent', () => {
     await expect(desktop.api({ path: '/api/config' })).rejects.toBeInstanceOf(HostedAgentUnavailableError)
     await expect(desktop.getGatewayWsUrl()).rejects.toBeInstanceOf(HostedAgentUnavailableError)
 
-    // Retry reloads the page, which opens the account's primary: the address no longer names gamma.
+    // Retry reloads the page, which opens the account's primary: the address names it, not gamma.
     const address = new URL(window.location.href)
-    expect([address.searchParams.get('connectionId'), address.searchParams.get('profile')]).toEqual([null, null])
+    expect([address.searchParams.get('connectionId'), address.searchParams.get('profile')]).toEqual(['alpha', null])
     Reflect.deleteProperty(win, 'hermesDesktop')
     expect((await install().getConnection()).connectionId).toBe('alpha')
   })
@@ -429,11 +429,12 @@ describe('a Webapp whose host runs no agent', () => {
   })
 
   // The chat in the address is the removed agent's: Retry opens the primary on a new chat, not on a
-  // resume of that chat id there.
+  // resume of that chat id there, and the address names the primary so startup's last-used
+  // preference cannot send the window elsewhere.
   it.each([
-    ['a popped-out chat', '/?win=secondary&profile=research&connectionId=beta&watch=1#/s1', 'beta'],
-    ['a window on the primary', '/?profile=default#/s1', 'alpha']
-  ])("drops the removed agent's chat from the address of %s", async (_window, href, removed) => {
+    ['a popped-out chat', '/?win=secondary&profile=research&connectionId=beta&watch=1#/s1', 'beta', 'alpha'],
+    ['a window on the primary', '/?profile=default#/s1', 'alpha', 'beta']
+  ])("drops the removed agent's chat from the address of %s", async (_window, href, removed, primary) => {
     const agents = [ALPHA, BETA]
     dashboardHost({ agents, profiles: { alpha: ['default'], beta: ['default', 'research'] } })
     window.history.replaceState(null, '', href)
@@ -449,7 +450,7 @@ describe('a Webapp whose host runs no agent', () => {
     expect(['win', 'profile', 'connectionId', 'watch'].map(name => address.searchParams.get(name))).toEqual([
       null,
       null,
-      null,
+      primary,
       null
     ])
     expect(address.hash).not.toContain('s1')

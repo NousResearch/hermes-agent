@@ -106,6 +106,14 @@ export function installBrowserDesktopBridge(): boolean {
               window.history.replaceState(window.history.state, '', `${address.pathname}${address.search}${address.hash}`)
             } else if (!named || named === error.agentId) {
               const cleared = withoutWindowTarget(window.location.href)
+              // Retry opens the primary, as the message says: named, so startup's launch preference
+              // (last used) does not send the window elsewhere.
+              const primary = relays.knownWindowConnection()
+
+              if (primary && primary !== error.agentId) {
+                cleared.searchParams.set('connectionId', primary)
+              }
+
               window.history.replaceState(window.history.state, '', `${cleared.pathname}${cleared.search}${cleared.hash}`)
             }
 

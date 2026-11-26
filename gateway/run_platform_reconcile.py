@@ -234,6 +234,7 @@ class GatewayPlatformReconcileMixin:
     _primary_dotenv: Optional[dict] = None  # the .env values the last read put into os.environ (standalone)
     _primary_installing: bool = False  # the reconcile is installing a plugin the new credentials need
     _unreadable_signatures: Optional[dict] = None  # profile -> the file signature whose config failed to load
+    _undelivered_receipts: Optional[dict] = None  # see _kept_platform_receipts
 
     @property
     def _unreadable_platform_configs(self) -> dict:
@@ -290,40 +291,80 @@ class GatewayPlatformReconcileMixin:
         """Apply one profile's platform diff now; ``None`` (or the primary's name) = the launch profile.
         Returns ``{"applied", "profile", "changed", "started", "restarted", "stopped", "platforms": {platform:
         state}, "reasons": {platform: why it is unavailable}}`` for every served profile alike."""
+        return await self._reconcile_platforms(profile_name, reason=reason, ask=False)
+
+    async def answer_platform_reconcile(self, profile_name: Optional[str]) -> dict:
+        """The control verb's ask. The caller wrote the files, then asked; whichever reconcile applied them
+        (this ask's, the watcher's, a plugin load's, or an earlier ask's that answered ``pending``) owns the
+        receipt that says what changed, so it is kept until an ask about those same files takes it (a later
+        reconcile then finds nothing left to do and would answer that nothing changed). The apply runs as
+        its own task: an ask that stops waiting leaves it running and its receipt for the next ask."""
+        run = asyncio.ensure_future(self._reconcile_platforms(profile_name, reason="control-socket", ask=True))
+        self._retain_background_task(run)
+        receipt = await asyncio.shield(run)
+        kept = self._kept_platform_receipts
+        key = self._receipt_profile(profile_name)
+        if key in kept and kept[key][1] is receipt:
+            del kept[key]  # delivered: a repeated ask about unchanged files reconciles (and says so) afresh
+        return receipt
+
+    @property
+    def _kept_platform_receipts(self) -> dict:
+        """profile -> ``(file signature applied, receipt)`` of its last reconcile no ask has taken yet."""
+        if self._undelivered_receipts is None:
+            self._undelivered_receipts = {}
+        return self._undelivered_receipts
+
+    def _receipt_profile(self, profile_name: Optional[str]) -> str:
+        return profile_name or getattr(self, "_primary_profile_name", None) or "default"
+
+    async def _reconcile_platforms(self, profile_name: Optional[str], *, reason: str, ask: bool) -> dict:
+        from gateway.run_profile_reconcile import profile_serve_signature
         primary = getattr(self, "_primary_profile_name", None) or "default"
         if not getattr(self, "_running", False):
             return {"applied": False, "pending": True, "error": "gateway is not running yet"}
-        if profile_name in (None, primary):
-            from gateway.run_profile_reconcile import profile_serve_signature
-            async with self._reconcile_lock():
-                # Taken before the read: an edit landing during this apply is seen by the next tick.
-                signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
-                try:
-                    plan, installed = await self._apply_primary_platform_plan(reason)
-                except PlatformConfigUnreadable as exc:
-                    # Not acknowledged: the edit that makes it readable again is applied as usual.
-                    self._note_unreadable_platform_config(primary, signature, exc)
-                    return _unreadable_receipt(primary, exc, self._primary_platform_states())
-                finally:
-                    self._primary_platform_plan = None
-                self._primary_platform_signature = signature
-                self._unreadable_platform_configs.pop(primary, None)
-            return _receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
-                            dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed)
-        home = (self._served_profile_homes or {}).get(profile_name)
+        is_primary = profile_name in (None, primary)
+        home = self._primary_platform_home() if is_primary else (self._served_profile_homes or {}).get(profile_name)
         if home is None:
             return {"applied": False, "error": f"profile '{profile_name}' is not served by this gateway"}
+        key = self._receipt_profile(profile_name)
         async with self._reconcile_lock():
-            before = self._secondary_running_platforms(profile_name)
-            (getattr(self, "_profile_platform_plans", None) or {}).pop(profile_name, None)
-            applied = await self._apply_profile_changes(
-                dict(self._served_profile_homes or {}), [], [], [profile_name], reason=reason)
-            unreadable = (applied.get("unreadable") or {}).get(profile_name)
-            if unreadable is not None:
-                return _unreadable_receipt(profile_name, unreadable, self._secondary_platform_states(profile_name))
-            plan = (getattr(self, "_profile_platform_plans", None) or {}).pop(
-                profile_name, PlatformPlan((), (), ()))
-            after = self._secondary_running_platforms(profile_name)
+            # Taken before the read: an edit landing during this apply is seen by the next tick.
+            signature = await asyncio.to_thread(profile_serve_signature, home)
+            kept = self._kept_platform_receipts.get(key)
+            if ask and kept is not None and kept[0] == signature:
+                return kept[1]
+            if is_primary:
+                receipt = await self._reconcile_primary_locked(primary, signature, reason)
+            else:
+                receipt = await self._reconcile_secondary_locked(profile_name, reason)
+            self._kept_platform_receipts[key] = (signature, receipt)
+        return receipt
+
+    async def _reconcile_primary_locked(self, primary: str, signature, reason: str) -> dict:
+        try:
+            plan, installed = await self._apply_primary_platform_plan(reason)
+        except PlatformConfigUnreadable as exc:
+            # Not acknowledged: the edit that makes it readable again is applied as usual.
+            self._note_unreadable_platform_config(primary, signature, exc)
+            return _unreadable_receipt(primary, exc, self._primary_platform_states())
+        finally:
+            self._primary_platform_plan = None
+        self._primary_platform_signature = signature
+        self._unreadable_platform_configs.pop(primary, None)
+        return _receipt(primary, plan.start, plan.restart, plan.stop, self._primary_platform_states(),
+                        dict(getattr(self, "_primary_blocked_platforms", None) or {}), installed)
+
+    async def _reconcile_secondary_locked(self, profile_name: str, reason: str) -> dict:
+        before = self._secondary_running_platforms(profile_name)
+        (getattr(self, "_profile_platform_plans", None) or {}).pop(profile_name, None)
+        applied = await self._apply_profile_changes(
+            dict(self._served_profile_homes or {}), [], [], [profile_name], reason=reason)
+        unreadable = (applied.get("unreadable") or {}).get(profile_name)
+        if unreadable is not None:
+            return _unreadable_receipt(profile_name, unreadable, self._secondary_platform_states(profile_name))
+        plan = (getattr(self, "_profile_platform_plans", None) or {}).pop(profile_name, PlatformPlan((), (), ()))
+        after = self._secondary_running_platforms(profile_name)
         started = tuple(p for p in after if p not in before and p not in plan.restart)
         return _receipt(profile_name, started, plan.restart, plan.stop,
                         self._secondary_platform_states(profile_name), {})
@@ -694,11 +735,11 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
             name = next((str(n) for n, h in served if hermes_home_key(h) == key), None)
             if name is None:
                 return {"applied": False, "error": "home is not served by this gateway", "home": str(requested)}
-        future = asyncio.run_coroutine_threadsafe(
-            runner.reconcile_profile_platforms(name, reason="control-socket"), loop)
+        future = asyncio.run_coroutine_threadsafe(runner.answer_platform_reconcile(name), loop)
         try:
             return future.result(timeout=_VERB_WAIT_SECS)
         except concurrent.futures.TimeoutError:
+            future.cancel()  # this ask stops waiting; the reconcile runs on and the next ask gets its receipt
             # Still connecting (or draining a turn): name what it is doing, so callers can say so.
             plan = runner.platform_plan_in_flight(name) or PlatformPlan((), (), ())
             return {"applied": True, "pending": True, "starting": [p.value for p in plan.start],

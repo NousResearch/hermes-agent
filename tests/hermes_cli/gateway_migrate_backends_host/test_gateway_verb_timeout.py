@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import itertools
+import os
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from hermes_cli import gateway as gw
 from hermes_cli import gateway_migrate_backends_apply as engine
 from hermes_cli import gateway_migrate_backends_host as host_module
+from hermes_cli import gateway_migrate_backends_timeouts as timeouts
 from hermes_cli.gateway_migrate_backends_host import SystemHost
 
 
@@ -81,10 +86,13 @@ def test_gateway_verb_non_lifecycle_verbs_keep_90s_timeout(tmp_path, monkeypatch
     assert calls == [("user", [verb, "hermes-gateway"], 90)]
 
 
-def test_gateway_verb_timeout_derives_from_engine_budget_constants_with_90s_floor(tmp_path, monkeypatch):
+def test_gateway_verb_timeout_derives_from_shared_budget_constants_with_90s_floor(tmp_path, monkeypatch):
     host, calls, _ = _systemd_host(tmp_path, monkeypatch)
-    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 120.0, raising=False)
-    monkeypatch.setattr(engine, "VERIFY_SECONDS", 180.0)
+    assert engine.RESTART_HANDOFF_SECONDS == timeouts.RESTART_HANDOFF_SECONDS
+    assert engine.VERIFY_SECONDS == timeouts.VERIFY_SECONDS
+
+    monkeypatch.setattr(timeouts, "RESTART_HANDOFF_SECONDS", 120.0)
+    monkeypatch.setattr(timeouts, "VERIFY_SECONDS", 180.0)
 
     host.gateway_verb("restart")
     host.gateway_verb("start")
@@ -93,11 +101,73 @@ def test_gateway_verb_timeout_derives_from_engine_budget_constants_with_90s_floo
     assert [timeout for _, _, timeout in calls] == [300, 180, 120]
 
     calls.clear()
-    monkeypatch.setattr(engine, "RESTART_HANDOFF_SECONDS", 0.0, raising=False)
-    monkeypatch.setattr(engine, "VERIFY_SECONDS", 0.0)
+    monkeypatch.setattr(timeouts, "RESTART_HANDOFF_SECONDS", 0.0)
+    monkeypatch.setattr(timeouts, "VERIFY_SECONDS", 0.0)
 
     host.gateway_verb("restart")
     host.gateway_verb("start")
     host.gateway_verb("stop")
 
     assert [timeout for _, _, timeout in calls] == [90, 90, 90]
+
+
+def _subprocess_env() -> dict[str, str]:
+    repo_root = str(Path(__file__).resolve().parents[3])
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{existing}" if existing else repo_root
+    return env
+
+
+def test_plan_and_host_do_not_import_apply_engine(tmp_path):
+    """Importing plan/host and reading their timeout budgets never pulls in the apply engine."""
+    script = (
+        "import sys\n"
+        "from hermes_cli.gateway_migrate_backends_plan import BackendPlan\n"
+        "from hermes_cli.gateway_migrate_backends_host import _gateway_verb_timeout\n"
+        f"plan = BackendPlan(home={str(tmp_path)!r}, new_host='0.0.0.0', new_port=9119)\n"
+        "steps = plan.step_titles()\n"
+        "assert any('within 300 s' in s['title'] for s in steps)\n"
+        "assert _gateway_verb_timeout('restart') == 540\n"
+        "assert _gateway_verb_timeout('start') == 300\n"
+        "assert _gateway_verb_timeout('stop') == 240\n"
+        "assert 'hermes_cli.gateway_migrate_backends_apply' not in sys.modules\n"
+    )
+    res = subprocess.run(
+        [sys.executable, "-c", script],
+        env=_subprocess_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr or res.stdout
+
+
+def test_plan_host_apply_import_cleanly_in_any_order():
+    """Importing plan, host, and apply in every permutation succeeds without an import cycle."""
+    modules = (
+        "hermes_cli.gateway_migrate_backends_plan",
+        "hermes_cli.gateway_migrate_backends_host",
+        "hermes_cli.gateway_migrate_backends_apply",
+    )
+    env = _subprocess_env()
+    for order in itertools.permutations(modules):
+        script = (
+            "import importlib\n"
+            f"for name in {order!r}:\n"
+            "    importlib.import_module(name)\n"
+        )
+        res = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        assert res.returncode == 0, f"order={order}: {res.stderr or res.stdout}"

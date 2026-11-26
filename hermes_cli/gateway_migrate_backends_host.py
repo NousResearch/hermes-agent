@@ -28,6 +28,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli import gateway_migrate_backends_timeouts as _timeouts
+
 _ENV_FILE_ENTRY = re.compile(r"(\S+) \(ignore_errors=(yes|no)\)")
 logger = logging.getLogger(__name__)
 
@@ -57,13 +59,12 @@ def _gateway_verb_timeout(verb: str) -> int:
     ``restart`` can block across both the old gateway's in-band drain (``RESTART_HANDOFF_SECONDS``) and a
     ``Type=notify`` startup (``VERIFY_SECONDS``); ``start`` can block on startup; ``stop`` can block on drain.
     """
-    from hermes_cli.gateway_migrate_backends_apply import RESTART_HANDOFF_SECONDS, VERIFY_SECONDS
     if verb == "restart":
-        return max(90, int(RESTART_HANDOFF_SECONDS + VERIFY_SECONDS))
+        return max(90, int(_timeouts.RESTART_HANDOFF_SECONDS + _timeouts.VERIFY_SECONDS))
     if verb == "start":
-        return max(90, int(VERIFY_SECONDS))
+        return max(90, int(_timeouts.VERIFY_SECONDS))
     if verb == "stop":
-        return max(90, int(RESTART_HANDOFF_SECONDS))
+        return max(90, int(_timeouts.RESTART_HANDOFF_SECONDS))
     return 90
 
 

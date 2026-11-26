@@ -98,6 +98,16 @@ html:root[data-hermes-palette='one-dark'] {
   accent-color: #c678dd;
 }
 
+/* Titlebar toggles (sidebar show/hide among them) read too faint over the
+   One Dark chrome: the ghost tool button inherits muted-foreground
+   (#7f848e, ~3.1:1 on #282c34 at the class's 85% alpha). Lift the token
+   inside the tool clusters to the One Dark UI gray (#9da5b4, ~4.5:1
+   blended) — colors only; the hover step-up to --color-foreground and
+   every geometry/hit area stay upstream. */
+:root[data-hermes-palette='one-dark'] [data-titlebar-cluster] {
+  --dt-muted-foreground: #9da5b4;
+}
+
 /* HyperX Sun on the live "Thinking" label: white → yellow → red, one letter
    per loop. The component sets --d/--delay per letter; this file only owns
    the wave itself. */

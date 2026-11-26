@@ -506,7 +506,9 @@ export function ConnectionsRegistrySection() {
           onClose={() => setDraft(null)}
           onSaved={next => {
             publishRegistry(next)
-            setDraft(null)
+            // Only the draft that started the save: another row's Edit may have opened one since.
+            const saved = draft.key
+            setDraft(current => (current?.key === saved ? null : current))
           }}
           registry={registry}
         />

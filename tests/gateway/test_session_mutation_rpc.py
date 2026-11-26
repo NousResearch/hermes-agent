@@ -153,3 +153,26 @@ async def test_ws_rename_of_the_canonical_bot_chat_is_a_readable_refusal(tmp_pat
             assert session_row(db, 'bot')['title'] == CANONICAL_BOT_CHAT_TITLE
         finally:
             await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_rename_to_a_too_long_title_is_a_readable_refusal(tmp_path):
+    """#160463 review: the store's other title refusal (past MAX_TITLE_LENGTH) took the same crash path."""
+    from persistence.conversation.sessions import MAX_TITLE_LENGTH
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 's', 'desktop')
+        epoch = db.runtime.begin_epoch(instance_id='current')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
+                                     instance_id='current', epoch=epoch, persistence=storage_handle(tmp_path))
+        authority.sessions['s'] = LiveSession(None, 'route')
+        owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        revision = session_row(db, 's')['runtime_revision']
+        try:
+            refused = await _rename(db, owner, 's', 'x' * (MAX_TITLE_LENGTH + 1))
+            error = refused['error']
+            assert error['message'] == f'Title too long ({MAX_TITLE_LENGTH + 1} chars, max {MAX_TITLE_LENGTH})', refused
+            assert error['data']['reason'] == 'invalid_title' and error['data']['field'] == 'title', refused
+            row = session_row(db, 's')
+            assert row['title'] is None and row['runtime_revision'] == revision
+        finally:
+            await owner.close()

@@ -944,6 +944,8 @@ class AuthorityConnection:
             # the API server's code for the same check, not a dispatch crash (#160463).
             raise _title_refusal(exc) from exc
         except AuthorityRefusal as exc:
+            if exc.reason == 'invalid_title' and exc.detail:
+                exc.wire_message = exc.detail  # the store's sentence (a title too long), as _title_refusal
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.
                 row = await asyncio.to_thread(authority_persistence(self.authority).sessions.get, ref.session_id)

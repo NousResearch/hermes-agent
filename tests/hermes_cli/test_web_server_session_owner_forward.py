@@ -273,7 +273,8 @@ async def test_a_multiplexed_profile_keeps_the_multiplexers_socket(tmp_path, mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reason, status', [('storage_unavailable', 503), ('runtime_draining', 503),
-                                            ('not_found', 404), ('stale_revision', 409)])
+                                            ('not_found', 404), ('stale_revision', 409),
+                                            ('invalid_title', 400)])
 async def test_a_forwarded_refusal_keeps_the_direct_paths_status(tmp_path, monkeypatch, reason, status):
     """The owner sends ``storage_unavailable`` for a sqlite failure; forwarded, it must stay the
     503 the direct path answers, not read as a 409 session conflict."""

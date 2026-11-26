@@ -134,6 +134,10 @@ def apply_action(holder, conn, session_id, operation, payload, *, prepared=None,
             # that tip, so a committed rename advances the whole lineage's revision, as the
             # lineage-wide flags below do: a client holding any segment's older copy refuses.
             tip = _compression_tip_on(holder, conn, session_id)
+            try:
+                sanitize_title(value)
+            except ValueError as exc:  # too long: the user's input, refused before any write
+                raise AuthorityRefusal('invalid_title', field='title', detail=str(exc)) from exc
             # The store refuses a held title or the canonical Bot Chat's name with a plain ValueError;
             # the typed TitleConflict / CanonicalTitleLocked let the gateway answer it as a refusal
             # instead of a dispatch crash (#160463), as the conversation store's own renames do.

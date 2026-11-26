@@ -22,11 +22,17 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
             {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
         ) if chain_by_root else {}
     )
+    # An untitled tip inherits the nearest titled segment's name, not only the root's: a lineage
+    # titled after its first rotation keeps that title on a MIDDLE segment, so the tip read '—'.
+    untitled = {i for c in chain_by_root.values() if not (tip_rows.get(c[-1]) or {}).get("title") for i in c[:-1]}
+    titles = dict(db._read_all(
+        f"SELECT id, title FROM sessions WHERE title IS NOT NULL AND id IN ({','.join('?' * len(untitled))})",
+        list(untitled))) if untitled else {}
     projected = []
     for s in sessions:
         chain = chain_by_root.get(s["id"])
         tip_row = tip_rows.get(chain[-1]) if chain else None
-        if not tip_row:
+        if not chain or not tip_row:
             projected.append(s)
             continue
         merged = dict(s)
@@ -40,7 +46,7 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
             # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
             # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
             # canonical "Bot Chat") must still see the lineage under its name (#106165).
-            merged["title"] = s.get("title")
+            merged["title"] = next((titles[i] for i in reversed(chain[:-1]) if titles.get(i)), s.get("title"))
         merged["_lineage_root_id"] = s["id"]
         merged["_lineage_ids"] = chain
         # #121148: the projected row IS an automatic continuation, not a fresh conversation and

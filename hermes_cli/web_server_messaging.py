@@ -2,6 +2,7 @@
 and Telegram onboarding state.
 """
 
+import functools
 import logging
 import os
 import subprocess
@@ -10,7 +11,9 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Optional
-from hermes_cli.config import OPTIONAL_ENV_VARS, write_platform_config_field
+from hermes_cli.config_provider_env import core_declared_env_names
+from hermes_cli.config import (
+    OPTIONAL_ENV_VARS, _manifest_env_info, _platform_plugin_manifests, write_platform_config_field)
 from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
 from hermes_cli.version_info import hermes_user_agent
 
@@ -61,6 +64,21 @@ _PLATFORM_ORDER: tuple[str, ...] = (
 )
 
 
+@functools.cache
+def _core_env_keys() -> frozenset[str]:
+    """Env vars core or a bundled platform plugin declares: fixed for the life of the process."""
+    return core_declared_env_names() | _manifest_env_info(_platform_plugin_manifests(source="bundled")).keys()
+
+
+def _card_env_table() -> dict[str, dict[str, Any]]:
+    """Env-var metadata for the bound home's cards: its own user platform plugin manifests read now,
+    under the core and bundled declarations (a user manifest cannot unmask a core secret).
+    ``OPTIONAL_ENV_VARS``'s other entries came from the LAUNCH home's user plugins at import, so they
+    are left out: another profile may carry a different version of that plugin."""
+    core = {k: v for k, v in OPTIONAL_ENV_VARS.items() if k in _core_env_keys()}
+    return {**_manifest_env_info(_platform_plugin_manifests(source="user")), **core}
+
+
 def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """Build the messaging catalog from the gateway's Platform enum + plugin registry.
 
@@ -76,16 +94,20 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     # first would claim them with no plugin metadata (nameless "Irc"/"Ntfy" cards).
     plugin_map: dict[str, Any] = {}
     try:
-        # Plugin discovery normally runs as a side effect of importing model_tools, which this
-        # server process doesn't do — trigger it explicitly (idempotent).
-        from hermes_cli.plugins import discover_plugins
-        discover_plugins()
+        # This server process does not import model_tools (whose import discovers plugins), and it
+        # outlives installs made elsewhere (the gateway's background default install, another
+        # terminal): refresh against the plugin tree on every read, not once per process.
+        from hermes_cli.catalog_platform_listing import refresh_platform_plugins
+        refresh_platform_plugins()
         from gateway.platform_registry import platform_registry
         for plugin_entry in platform_registry.plugin_entries():
             plugin_map[plugin_entry.name] = plugin_entry
     except Exception:
         _log.debug("plugin platform registry unavailable", exc_info=True)
 
+    # A plugin installed after this process imported config (Desktop/dashboard install, the
+    # background default install, another profile's) is described from its manifest, read now.
+    env_table = _card_env_table()
     seen: set[str] = set()
     entries: list[dict[str, Any]] = []
     builtin = [m.value for m in Platform.__members__.values() if m.value != "local"]
@@ -93,7 +115,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         if pid in seen:
             continue
         seen.add(pid)
-        entries.append(_build_catalog_entry(pid, plugin_map.get(pid)))
+        entries.append(_build_catalog_entry(pid, plugin_map.get(pid), env_table))
 
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(key=lambda e: (order.get(e["id"], len(_PLATFORM_ORDER)), e["name"].lower()))
@@ -124,21 +146,22 @@ def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
     return platform_env_prefixes(platform_id)
 
 
-def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
+def _discover_platform_env_vars(platform_id: str, env_table: dict[str, dict[str, Any]]) -> tuple[str, ...]:
     """All messaging-category env vars for a platform (override + plugin + prefix)."""
     prefixes = _platform_env_prefixes(platform_id)
     return tuple(sorted({
-        name for name, info in OPTIONAL_ENV_VARS.items()
+        name for name, info in env_table.items()
         if info.get("category") == "messaging"
         and name not in _MESSAGING_KEYS_PAGE_KEYS
         and not _is_setup_hidden_env(name)
         and any(name.startswith(prefix) for prefix in prefixes)}))
 
 
-def _merge_platform_env_vars(platform_id: str, override: dict[str, Any], plugin_entry: Any | None) -> tuple[str, ...]:
+def _merge_platform_env_vars(platform_id: str, override: dict[str, Any], plugin_entry: Any | None,
+                             env_table: dict[str, dict[str, Any]]) -> tuple[str, ...]:
     """Canonical env-var list for a platform card. Required credentials always survive: hiding a
     required field would make the platform unconfigurable."""
-    discovered = _discover_platform_env_vars(platform_id)
+    discovered = _discover_platform_env_vars(platform_id, env_table)
     if "env_vars" in override:
         explicit = tuple(key for key in override["env_vars"] if not _is_setup_hidden_env(key))
         return tuple(dict.fromkeys((*explicit, *discovered)))
@@ -161,7 +184,9 @@ def _plugin_card_fields(plugin_entry: Any) -> dict[str, Any]:
     return fields
 
 
-def _build_catalog_entry(platform_id: str, plugin_entry: Any | None = None) -> dict[str, Any]:
+def _build_catalog_entry(platform_id: str, plugin_entry: Any | None = None,
+                         env_table: dict[str, dict[str, Any]] = OPTIONAL_ENV_VARS) -> dict[str, Any]:
+    """One card. ``env_info`` carries each field's declaration from ``env_table`` (labels, secrecy)."""
     override = _PLATFORM_OVERRIDES.get(platform_id) or (
         _plugin_card_fields(plugin_entry) if plugin_entry is not None else {})
     if "required_env" in override:
@@ -170,12 +195,14 @@ def _build_catalog_entry(platform_id: str, plugin_entry: Any | None = None) -> d
         required_env = tuple(plugin_entry.required_env or ()) if plugin_entry is not None else ()
     plugin_label = plugin_entry.label if plugin_entry is not None else None
     plugin_hint = (plugin_entry.install_hint or "") if plugin_entry is not None else None
+    env_vars = _merge_platform_env_vars(platform_id, override, plugin_entry, env_table)
     return {
         "id": platform_id,
         "name": override.get("name") or plugin_label or platform_id.replace("_", " ").title(),
         "description": override.get("description") or plugin_hint or "",
         "docs_url": override.get("docs_url", ""),
-        "env_vars": _merge_platform_env_vars(platform_id, override, plugin_entry),
+        "env_vars": env_vars,
+        "env_info": {key: env_table[key] for key in env_vars if key in env_table},
         "required_env": required_env,
     }
 

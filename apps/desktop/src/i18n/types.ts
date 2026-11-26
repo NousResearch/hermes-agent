@@ -2296,6 +2296,20 @@ export interface Translations extends NoticeTranslations {
   }
 
   messaging: {
+    catalog: {
+      sectionTitle: string
+      badges: { official: string; verified: string }
+      notInstalled: string
+      intro: (name: string) => string
+      disclosure: string
+      install: string
+      installing: string
+      installed: (name: string) => string
+      installedDetail: string
+      installFailed: (name: string) => string
+      lazyOff: string
+      runCommand: string
+    }
     search: string
     statusFilter: Record<'all' | 'bad' | 'good' | 'muted' | 'warn', string>
     loading: string
@@ -3606,6 +3620,8 @@ export interface Translations extends NoticeTranslations {
       messagingPlatforms: string
     }
     approvalMode: {
+      perProfile: string
+      perProfileDescription: string
       title: string
       ariaLabel: (mode: string) => string
       manual: string

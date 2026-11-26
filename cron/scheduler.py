@@ -3995,16 +3995,16 @@ def _worktree_maintenance_repos() -> list[str]:
 
     with contextlib.suppress(Exception):
         from cron.jobs import load_jobs
+        from hermes_platform.resolver.git import resolve_usable_git
 
-        for job in load_jobs():
+        for job in load_jobs() if (git := resolve_usable_git()) else ():
             workdir = str(job.get("workdir") or "").strip()
             if not workdir or not Path(workdir).is_dir():
                 continue
             try:
                 probe = subprocess.run(
-                    ["git", "rev-parse", "--show-toplevel"],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=5, cwd=workdir, check=False)
+                    [git, "-C", workdir, "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
                 if probe.returncode == 0 and probe.stdout.strip():
                     repos.add(probe.stdout.strip())
             except Exception:

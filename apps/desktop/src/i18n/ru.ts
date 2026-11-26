@@ -1820,6 +1820,20 @@ export const ruOverrides = {
     }
   },
   messaging: {
+    catalog: {
+      sectionTitle: 'Доступно для установки',
+      badges: { official: 'Официальный', verified: 'Проверенный' },
+      notInstalled: 'Не установлен',
+      intro: (name: string) => `${name} — плагин из каталога Hermes. Установка включит его, затем здесь можно ввести учётные данные.`,
+      disclosure: 'Раскрытие:',
+      install: 'Установить',
+      installing: 'Установка…',
+      installed: (name: string) => `${name} установлен`,
+      installedDetail: 'Введите учётные данные, чтобы подключить его.',
+      installFailed: (name: string) => `Не удалось установить ${name}`,
+      lazyOff: 'Автоматическая установка плагинов отключена (security.allow_lazy_installs), поэтому Hermes не устанавливает его отсюда.',
+      runCommand: 'Установите из терминала:',
+    },
     search: 'Поиск в сообщениях...',
     statusFilter: {
       all: 'Все',
@@ -3254,6 +3268,8 @@ export const ruOverrides = {
       messagingPlatforms: 'Платформы сообщений'
     },
     approvalMode: {
+      perProfile: 'Для каждого профиля',
+      perProfileDescription: 'Режим подтверждения задаётся отдельно для каждого профиля. Откройте бота или профиль, чтобы изменить его режим.',
       title: 'Режим подтверждения',
       ariaLabel: mode => `Режим подтверждения: ${mode}`,
       manual: 'Ручной',

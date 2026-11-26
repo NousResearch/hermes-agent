@@ -496,17 +496,27 @@ def arm_shutdown_watchdog(
 
 
 @contextlib.contextmanager
-def disarm_after_teardown(done_event: threading.Event) -> Iterator[None]:
+def disarm_after_teardown(done_event: threading.Event, shutdown_event: Optional[asyncio.Event] = None,
+                          owner: Any = None) -> Iterator[None]:
     """Disarm the shutdown watchdog only once the teardown it guards has run to completion.
 
-    A teardown that raises, or is cancelled, leaves the stop as unfinished as one that hangs: the
-    runner's shutdown event is never set, so the process would stay up holding its lock until
-    SIGKILL (#158360). The watchdog stays armed and forces the exit on its leash. Either ending is
-    logged here, because the watchdog's later stack dump cannot show an exception that has unwound."""
+    A teardown that raises, or is cancelled, before ``shutdown_event`` is set leaves the stop as
+    unfinished as one that hangs: nothing releases ``wait_for_shutdown()``, so the process would stay
+    up holding its lock until SIGKILL (#158360). The watchdog stays armed and forces the exit on its
+    leash. Once ``shutdown_event`` is set the caller runs the shutdown tail and exits on its own, as
+    after a completed teardown, so a later raise disarms too. Either ending is logged here, because
+    the watchdog's later stack dump cannot show an exception that has unwound. ``owner`` (the runner)
+    gets ``_stop_guard_entered``, so a caller can tell a failure this guard logged from one before it."""
+    if owner is not None:
+        owner._stop_guard_entered = True
     try:
         yield
     except Exception:
-        logger.exception("Gateway stop failed; the shutdown watchdog stays armed to force the exit")
+        if shutdown_event is not None and shutdown_event.is_set():
+            logger.exception("Gateway stop failed after the shutdown began; the shutdown tail still runs")
+            done_event.set()
+        else:
+            logger.exception("Gateway stop failed; the shutdown watchdog stays armed to force the exit")
         raise
     except BaseException as exc:
         logger.warning("Gateway stop interrupted (%s); the shutdown watchdog stays armed to force the exit",

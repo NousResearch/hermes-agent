@@ -2911,6 +2911,20 @@ export const esOverrides = {
     }
   },
   messaging: {
+    catalog: {
+      sectionTitle: 'Disponibles para instalar',
+      badges: { official: 'Oficial', verified: 'Verificado' },
+      notInstalled: 'No instalado',
+      intro: (name: string) => `${name} es un plugin del catálogo de Hermes. Al instalarlo se activa y luego puedes introducir sus credenciales aquí.`,
+      disclosure: 'Aviso:',
+      install: 'Instalar',
+      installing: 'Instalando…',
+      installed: (name: string) => `${name} instalado`,
+      installedDetail: 'Introduce sus credenciales para conectarlo.',
+      installFailed: (name: string) => `No se pudo instalar ${name}`,
+      lazyOff: 'Las instalaciones automáticas de plugins están desactivadas (security.allow_lazy_installs), así que Hermes no lo instala desde aquí.',
+      runCommand: 'Instálalo desde una terminal:',
+    },
     search: 'Buscar mensajería...',
     statusFilter: {
       all: 'Todos',
@@ -4572,6 +4586,8 @@ export const esOverrides = {
       messagingPlatforms: 'Plataformas de mensajería'
     },
     approvalMode: {
+      perProfile: 'Por perfil',
+      perProfileDescription: 'El modo de aprobación se configura por perfil. Abre un bot o perfil para cambiar su modo.',
       title: 'Modo de aprobación',
       ariaLabel: mode => `Modo de aprobación: ${mode}`,
       manual: 'Manual',

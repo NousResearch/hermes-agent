@@ -3422,11 +3422,11 @@ def _cmd_config_get(args):
 
 
 def _cmd_config_set(args):
-    key = getattr(args, 'key', None)
-    value = getattr(args, 'value', None)
+    key, value = getattr(args, 'key', None), getattr(args, 'value', None)
     if not key or value is None:
         _usage_exit(*_USAGE_SET)
-    _run_write_command(set_config_value, key, value, bool(getattr(args, 'force', False)))
+    from hermes_cli.gateway_platform_live import set_config_value_live  # a running gateway applies it now
+    _run_write_command(set_config_value_live, key, value, bool(getattr(args, 'force', False)))
 
 
 def _cmd_config_unset(args):
@@ -3726,12 +3726,9 @@ def platform_manifest_secret_scan(home: Optional[Path] = None) -> tuple[frozense
 
 
 def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
-    """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed) so
-    Teams / IRC / Google Chat and third-party platforms are configurable in the ``hermes config`` /
-    Desktop Gateway form without the core knowing they exist. Failures are swallowed so a
-    malformed plugin.yaml can't break CLI import. Returns the bundled manifests' secret names, or
-    None when a bundled manifest could not be read (the policy then re-reads strictly).
-    """
+    """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed at import)
+    so plugin platforms are configurable without the core knowing them; a malformed plugin.yaml never
+    breaks CLI import. Returns the bundled secret names, or None when a bundled manifest was unreadable."""
     bundled: list | None = []
     try:
         bundled = list(_platform_plugin_manifests(source="bundled", strict=True))
@@ -3743,18 +3740,20 @@ def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
             manifests += list(_platform_plugin_manifests(source=source))
         except Exception:
             pass
+    OPTIONAL_ENV_VARS.update({k: v for k, v in _manifest_env_info(manifests).items() if k not in OPTIONAL_ENV_VARS})
+    return _manifest_secret_envs(bundled, _STATIC_CORE_ENV_NAMES) if bundled is not None else None
+
+
+def _manifest_env_info(manifests) -> dict[str, dict[str, Any]]:
+    """``OPTIONAL_ENV_VARS``-shaped entries for the env vars *manifests* declare (first one wins)."""
+    info: dict[str, dict[str, Any]] = {}
     for dir_name, manifest in manifests:
         label = manifest.get("label") or manifest.get("name") or dir_name
         for name, is_secret, meta in _platform_manifest_env_entries(manifest):
-            if name in OPTIONAL_ENV_VARS:
-                continue  # hardcoded entry wins (back-compat)
-            OPTIONAL_ENV_VARS[name] = {
-                "description": meta.get("description") or f"{label} configuration",
-                "prompt": meta.get("prompt") or name,
-                "url": meta.get("url") or None,
-                "password": is_secret,
-                "category": meta.get("category") or "messaging"}
-    return _manifest_secret_envs(bundled, _STATIC_CORE_ENV_NAMES) if bundled is not None else None
+            info.setdefault(name, {"description": meta.get("description") or f"{label} configuration",
+                                   "prompt": meta.get("prompt") or name, "url": meta.get("url") or None,
+                                   "password": is_secret, "category": meta.get("category") or "messaging"})
+    return info
 
 
 # Names declared in core, before any platform manifest is read. A manifest never reclassifies

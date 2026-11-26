@@ -798,4 +798,17 @@ export const zhHant: Translations = {
     logTruncated: "（顯示最後 100 KB — 完整日誌位於 ",
     logAt: "）",
   },
+  channelsCatalog: {
+    title: "可安裝",
+    hint: "來自 Hermes 外掛目錄的訊息平台。安裝後會新增並啟用其外掛，然後開啟設定。",
+    badgeOfficial: "官方",
+    badgeVerified: "已驗證",
+    disclosure: "揭露：",
+    lazyInstallsOff: "自動安裝外掛已關閉（security.allow_lazy_installs）。",
+    run: "執行：",
+    install: "安裝",
+    installing: "正在安裝…",
+    installed: (title: string) => `${title} 已安裝。輸入其憑證以完成連線。`,
+    installFailed: (title: string) => `無法安裝 ${title}`,
+  },
 };

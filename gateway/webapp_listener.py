@@ -35,6 +35,7 @@ DEFAULT_PORT = 9120
 TOKEN_PATH = Path("webapp") / "session-token"
 # secrets.token_urlsafe(32); the launch page refuses any other shape.
 _TOKEN_FORMAT = re.compile(r"[A-Za-z0-9_-]{43}")
+_DECIMAL_PORT = re.compile(r"0*[1-9][0-9]{0,4}", re.ASCII)
 HOST_CHOICES = "127.0.0.1, ::1, localhost, 0.0.0.0, :: or one IP address of this machine"
 
 
@@ -119,8 +120,8 @@ def webapp_settings(home, *, document: dict | None = None) -> WebappSettings:
 
 def configured_port(value: object) -> int | None:
     """Read a config port, including decimal text produced by environment expansion."""
-    if isinstance(value, str) and re.fullmatch(r"0*[0-9]{1,5}", value):
-        value = int(value.lstrip("0") or "0")
+    if isinstance(value, str) and _DECIMAL_PORT.fullmatch(value):
+        value = int(value.lstrip("0"))
     return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535 else None
 
 

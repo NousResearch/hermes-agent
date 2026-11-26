@@ -4,6 +4,8 @@ runs the admission before ``admit_message`` resumes to register its delivery wai
 the drain's ``deliver_settled`` (no live waiter) or the waiting adapter lifecycle.
 Concurrent exact retries and cancellation during handoff are regressions for #160304."""
 import asyncio
+from contextvars import copy_context
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -17,6 +19,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_contract import Submission
+from hermes_cli.observability.shared_metrics_busy import stamp_busy_arrival
 from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_shared_busy_receive_loop import Adapter
 
@@ -73,60 +76,86 @@ async def native_delivery(tmp_path, monkeypatch):
         assert not authority.waiters and not authority.native_waiters and not authority.marker_adopters
         assert not authority.pending_deliveries
 
-    return authority, started, finish, event, receive, reply, check_delivery
+    return SimpleNamespace(authority=authority, adapter=adapter, started=started, finish=finish,
+                           event=event, receive=receive, reply=reply, check_delivery=check_delivery)
+
+
+def _receive_with_busy_ack(delivery, event):
+    loop = asyncio.get_running_loop()
+    accepted, committed = loop.create_future(), loop.create_future()
+    context = copy_context()
+    context.run(session_ingress.busy_acceptance.set, accepted)
+    context.run(session_ingress.busy_commit.set, committed)
+    return asyncio.create_task(delivery.receive(event), context=context), accepted, committed
 
 
 @pytest.mark.asyncio
-async def test_concurrent_native_retries_only_deliver_from_the_first_waiter(native_delivery, caplog, monkeypatch):
-    authority, started, finish, event, receive, reply, check_delivery = native_delivery
-    caplog.set_level('INFO', logger='gateway.session_ingress')
-    first_event, duplicate_event = event(), event()
-    first = asyncio.create_task(receive(first_event))
-    await asyncio.wait_for(started.wait(), 10)
-    (admission_id,) = authority.waiters
-    assert authority.marker_adopters[admission_id] is first_event
+@pytest.mark.parametrize('status', ['started', 'queued'])
+async def test_concurrent_native_retries_only_deliver_from_the_first_waiter(native_delivery, monkeypatch, status):
+    delivery = native_delivery
+    authority = delivery.authority
+    first_event = delivery.event()
+    unblock = asyncio.Event()
+    if status == 'queued':
+        blocker_started = asyncio.Event()
+        runner = authority.runner
+        inference = runner._handle_message
 
-    # The busy reader must be released even when its duplicate does not own a reply.
-    accepted, committed = (asyncio.get_running_loop().create_future() for _ in range(2))
-    noted = asyncio.Event()
-    note_busy_admitted = session_ingress.note_busy_admitted
+        async def answer(event):
+            if event.message_id == 'blocker':
+                blocker_started.set()
+                await unblock.wait()
+                return None
+            return await inference(event)
 
-    def note(event, *args):
-        note_busy_admitted(event, *args)
-        if event is duplicate_event:
-            noted.set()
+        monkeypatch.setattr(runner, '_handle_message', answer)
+        blocker = MessageEvent(text='earlier turn', source=first_event.source, message_id='blocker')
+        await authority.admit_native(blocker)
+        await asyncio.wait_for(blocker_started.wait(), 10)
+        stamp_busy_arrival(delivery.adapter, first_event)
 
-    monkeypatch.setattr(session_ingress, 'note_busy_admitted', note)
-    acceptance_token = session_ingress.busy_acceptance.set(accepted)
-    commit_token = session_ingress.busy_commit.set(committed)
+    first, first_accepted, _ = _receive_with_busy_ack(delivery, first_event)
     try:
-        duplicate = asyncio.create_task(receive(duplicate_event))
-    finally:
-        session_ingress.busy_acceptance.reset(acceptance_token)
-        session_ingress.busy_commit.reset(commit_token)
-    await asyncio.wait_for(noted.wait(), 10)
-    adopter = authority.marker_adopters[admission_id]
-    assert accepted.done() and committed.done()
-    drain = next(iter(authority.sessions.values())).task
-    finish.set()
-    results = await asyncio.wait_for(asyncio.gather(first, duplicate), 10)
-    await asyncio.wait_for(drain, 10)
+        if status == 'queued':
+            await asyncio.wait_for(first_accepted, 10)
+        else:
+            await asyncio.wait_for(delivery.started.wait(), 10)
+        session_id = next(iter(authority.sessions))
+        rows = authority.persistence.admissions.list(session_id=session_id)
+        states = {row.request_id: row.status for row in rows}
+        assert states == ({'blocker': 'started', 'm1': 'queued'} if status == 'queued' else {'m1': 'started'})
+        duplicate_event = delivery.event()
+        if status == 'queued':
+            stamp_busy_arrival(delivery.adapter, duplicate_event)
+            duplicate_event._producer_delivery = duplicate_event._busy_observed = True
 
-    check_delivery()
-    assert results == [reply, None]
-    assert adopter is first_event
-    assert f'admission_id={admission_id}' in caplog.text
-    assert 'message_id=m1' in caplog.text and 'event_id=101' in caplog.text
-    assert await asyncio.wait_for(receive(event()), 10) is None
-    check_delivery()
+        # The retry releases the busy reader and returns before the original turn can settle.
+        duplicate, accepted, committed = _receive_with_busy_ack(delivery, duplicate_event)
+        assert await asyncio.wait_for(duplicate, 10) is None
+        assert accepted.done() and committed.done()
+        if status == 'queued':
+            # A queued retry must not bind its arrival tag or observer to the existing admission.
+            assert first_event._busy_arrival.admission_id is not None
+            assert duplicate_event._busy_arrival.admission_id is None
+            assert not hasattr(duplicate_event, '_observed_turn')
+    finally:
+        unblock.set()
+        delivery.finish.set()
+        reply = await asyncio.wait_for(first, 10)
+        await asyncio.wait_for(next(iter(authority.sessions.values())).task, 10)
+
+    assert reply == delivery.reply
+    assert await asyncio.wait_for(delivery.receive(delivery.event()), 10) is None
+    delivery.check_delivery()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('after_settlement', [False, True], ids=['during-inference', 'before-taking-reply'])
 async def test_cancelled_native_owner_leaves_reply_for_the_drain(native_delivery, monkeypatch, after_settlement):
-    authority, started, finish, event, receive, _, check_delivery = native_delivery
-    first = asyncio.create_task(receive(event()))
-    await asyncio.wait_for(started.wait(), 10)
+    delivery = native_delivery
+    authority, finish = delivery.authority, delivery.finish
+    first = asyncio.create_task(delivery.receive(delivery.event()))
+    await asyncio.wait_for(delivery.started.wait(), 10)
     (admission_id,) = authority.waiters
     drain = next(iter(authority.sessions.values())).task
 
@@ -150,7 +179,47 @@ async def test_cancelled_native_owner_leaves_reply_for_the_drain(native_delivery
     assert admission_id not in authority.marker_adopters
     finish.set()
     await asyncio.wait_for(drain, 10)
-    check_delivery()
+    delivery.check_delivery()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_owner', [False, True], ids=['native-owner', 'cancelled-owner'])
+async def test_failed_native_reply_is_delivered_once(native_delivery, monkeypatch, cancel_owner):
+    delivery = native_delivery
+    authority = delivery.authority
+    started, fail = asyncio.Event(), asyncio.Event()
+    runner = authority.runner
+
+    async def crash(event):
+        route = runner.session_store._generate_session_key(event.source)
+        assert await runner._mark_durable_active_turn(event, route)
+        started.set()
+        await fail.wait()
+        raise RuntimeError('handler failed before capturing a reply')
+
+    handler = AsyncMock(side_effect=crash)
+    monkeypatch.setattr(runner, '_handle_message', handler)
+    owner = asyncio.create_task(delivery.receive(delivery.event()))
+    await asyncio.wait_for(started.wait(), 10)
+    drain = next(iter(authority.sessions.values())).task
+    if cancel_owner:
+        resolve = authority._resolve_settled_waiter
+
+        async def cancel_before_take(admission_id, response):
+            asyncio.get_running_loop().call_soon(owner.cancel)
+            await resolve(admission_id, response)
+
+        monkeypatch.setattr(authority, '_resolve_settled_waiter', cancel_before_take)
+    fail.set()
+    if cancel_owner:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(owner, 10)
+    else:
+        assert await asyncio.wait_for(owner, 10) == 'The admitted turn failed.'
+    await asyncio.wait_for(drain, 10)
+    assert await asyncio.wait_for(delivery.receive(delivery.event()), 10) is None
+    handler.assert_awaited_once()
+    assert delivery.adapter.sent == ['The admitted turn failed.']
 
 
 @pytest.mark.asyncio
@@ -164,10 +233,11 @@ async def test_late_native_waiter_never_duplicates_delivery(tmp_path, monkeypatc
     from gateway.session_contract import SessionActor, SessionRef
     from tests.gateway.test_prompt_attachments import _authority as _store_authority
 
-    turn_started = asyncio.Event()
+    turn_started, finish_turn = asyncio.Event(), asyncio.Event()
 
     async def answer(event):
         turn_started.set()
+        await finish_turn.wait()
         return 'model reply'
     authority = await _store_authority(tmp_path, monkeypatch, answer)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='c')
@@ -185,12 +255,20 @@ async def test_late_native_waiter_never_duplicates_delivery(tmp_path, monkeypatc
         # The admitting caller resumes only after the drain already claimed and started the turn.
         await turn_started.wait()
         if already_settled:
+            finish_turn.set()
             await authority.sessions['s'].task
+        else:
+            # admit_message installs the waiter without yielding after this receipt returns.
+            asyncio.get_running_loop().call_soon(finish_turn.set)
         return receipt
     monkeypatch.setattr(authority, 'admit_native', admit_native)
-    adapter_sent = await asyncio.wait_for(
+    adapter_reply = await asyncio.wait_for(
         session_ingress.admit_message(authority, MessageEvent(text='hi', source=source)), 10)
     await asyncio.wait_for(authority.sessions['s'].task, 10)
-    deliveries = drain_sent + ([adapter_sent] if adapter_sent else [])
-    assert deliveries == ['model reply'], f'the reply was sent {len(deliveries)} times: {deliveries}'
+    if already_settled:
+        assert adapter_reply is None
+        assert drain_sent == ['model reply']
+    else:
+        assert adapter_reply == 'model reply'
+        assert drain_sent == []
     assert not authority.native_waiters and not authority.pending_deliveries

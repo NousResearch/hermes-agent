@@ -39,7 +39,7 @@ native_write_started = ContextVar('native_write_started', default=False)
 # Such an input is fenced by a later /stop or /new of its route (``fence_route``), and the future is
 # released once the input queues behind an earlier one of its chat, so a serial reader moves on
 # while acceptance itself still waits for the commit.
-messaging_admission = ContextVar('messaging_admission', default=None)
+messaging_admission: ContextVar[asyncio.Future[None] | bool | None] = ContextVar('messaging_admission', default=None)
 
 
 def admission_row(record):
@@ -1388,8 +1388,9 @@ class SessionAuthority:
             raise
         except Exception:
             import logging
+            from gateway.session_ingress import ADMITTED_TURN_FAILED_REPLY
             logging.getLogger(__name__).exception('Admitted turn %s failed', row['admission_id'])
-            return 'The admitted turn failed.', 'failed'
+            return ADMITTED_TURN_FAILED_REPLY, 'failed'
 
     async def _drain(self, ref):
         from gateway.session_managed_worker import ManagedExecutionUnknown

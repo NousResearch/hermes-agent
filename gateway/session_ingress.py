@@ -17,16 +17,18 @@ from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
+ADMITTED_TURN_FAILED_REPLY = 'The admitted turn failed.'
+
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
 # The live session while the executing turn is one its viewer submitted (``is_viewer_input``), else None.
 viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
-busy_acceptance = ContextVar('busy_acceptance', default=None)
+busy_acceptance: ContextVar[asyncio.Future[None] | None] = ContextVar('busy_acceptance', default=None)
 # Set beside it by a caller that must also know when the row is durably committed (a busy burst's
 # commit task, which command barriers and /restart wait on): ``busy_acceptance`` may already resolve
 # once the input's FIFO position is fixed behind an earlier input of its chat still capturing.
-busy_commit = ContextVar('busy_commit', default=None)
+busy_commit: ContextVar[asyncio.Future[None] | None] = ContextVar('busy_commit', default=None)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
 _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
@@ -259,12 +261,22 @@ async def deliver_resolved(authority, admission_id, *, owed):
     await deliver_settled(authority, admission_id)
 
 
-def _take_post_delivery(authority, admission_id, source, route):
-    """Keep the turn's callback with the drain until it sends or the native waiter takes it."""
+def _take_post_delivery(authority, admission_id, event, route):
+    """Keep only this turn's callback until the drain sends or the native waiter takes it."""
+    from gateway.platforms.base import _split_post_delivery_entry
+    from gateway.platforms.base_post_delivery import turn_run_generation
+
+    generation = turn_run_generation(event)
+    if generation is None:
+        return
     resolve = getattr(authority.runner, '_adapter_for_source', None)
-    slots = getattr(resolve(source), '_post_delivery_callbacks', None) if resolve and source else None
-    entry = slots.pop(route, None) if slots is not None else None
-    if entry is not None:
+    slots = getattr(resolve(event.source), '_post_delivery_callbacks', None) if resolve and event.source else None
+    if slots is None:
+        return
+    entry = slots.get(route)
+    # An earlier turn may have released its marker at ledger write but still be sending.
+    if entry is not None and _split_post_delivery_entry(entry)[0] == generation:
+        del slots[route]
         _registry(authority, 'post_delivery')[admission_id] = (slots, route, entry)
 
 
@@ -336,8 +348,15 @@ def row_turn_author(policy, row):
     return forward_author(policy)
 
 
+def _retain_reply(authority, admission_id, event, route, response, home):
+    """The drain owns this reply until terminal settlement and a confirmed native handoff."""
+    if response and (adapter := authority.runner._adapter_for_source(event.source)) is not None:
+        authority.pending_deliveries[admission_id] = (adapter, event, route, response, home)
+
+
 async def execute_admission(authority, ref, row):
-    busy_turn_started(row['admission_id'])
+    admission_id = row['admission_id']
+    busy_turn_started(admission_id)
     from gateway.session_completion_notes import note_if_unviewed
     noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
     if noted is not None:
@@ -348,15 +367,16 @@ async def execute_admission(authority, ref, row):
         from gateway.session_cron import execute
         return await execute(authority, ref, row, policy)
     local_policy = policy
-    from gateway.session_managed_worker import managed_policy, admit_managed
+    from gateway.session_managed_worker import ManagedExecutionUnknown, managed_policy, admit_managed
     policy = managed_policy(authority, ref)
     if policy is not None:
         return await admit_managed(authority, ref, row, policy)
     live = authority.sessions[ref.session_id]
     # The key the turn registers its post-delivery slot under; a rebind mid-turn must not move the take.
     route = live.route
-    native = row['admission_id'] in authority.native_waiters
-    if 'native_text_v1' in row['payload']:
+    native = admission_id in authority.native_waiters
+    envelope = row['payload'].get('native_text_v1')
+    if envelope is not None:
         event = restore_native(row['payload'], authority.runner)
     else:
         from gateway.session_ingress_media import restore_attachments
@@ -377,7 +397,7 @@ async def execute_admission(authority, ref, row):
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
         event.metadata['gateway_proven_session_id'] = (
             authority.physical_target(ref) if 'native_text_v1' in row['payload'] else event.metadata['gateway_session_id'])
-    provenance = row['payload'].get('native_text_v1', {}).get('provenance')
+    provenance = envelope.get('provenance') if envelope is not None else None
     home = None
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
@@ -426,23 +446,28 @@ async def execute_admission(authority, ref, row):
                 result = {'final_response': response or '', 'messages': []}
                 if is_api or (row['payload'].get('finite') is True and not event.get_command()):
                     result = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
-                              'error': response or 'The admitted turn failed.'}
+                              'error': response or ADMITTED_TURN_FAILED_REPLY}
             # The drain commits this under the stream lock so no viewer reads `terminal`
             # before the completion event exists in the replay ring.
-            authority.pending_results[row['admission_id']] = {
+            authority.pending_results[admission_id] = {
                 'result': result, 'usage': captured.get('usage', {}),
                 **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
-            if not is_api and response:
-                adapter = authority.runner._adapter_for_source(event.source)
-                if adapter is not None:
-                    # Even with a live waiter, the drain owns the reply until terminal settlement
-                    # and the waiter takes it. Cancellation before then cannot lose the reply.
-                    authority.pending_deliveries[row['admission_id']] = (adapter, event, live.route, response, home)
+            if not is_api:
+                _retain_reply(authority, admission_id, event, live.route, response, home)
             handed = True
-            await _hold_turn_marker(authority, row['admission_id'], event)
+            await _hold_turn_marker(authority, admission_id, event)
             return response
+    except ManagedExecutionUnknown:
+        raise  # no terminal reply is owed for an unknown execution
+    except Exception:
+        if not handed and envelope is not None and not (is_api or event.internal):
+            # The authority still settles this as failed. Keep its reply in case no waiter takes it.
+            _retain_reply(authority, admission_id, event, live.route, ADMITTED_TURN_FAILED_REPLY, home)
+            handed = True
+            await _hold_turn_marker(authority, admission_id, event)
+        raise
     finally:
-        _take_post_delivery(authority, row['admission_id'], event.source, route)
+        _take_post_delivery(authority, admission_id, event, route)
         if not handed:
             await _release_turn_marker(authority, event)
         executing_admission.reset(token)

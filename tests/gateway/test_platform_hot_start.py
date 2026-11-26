@@ -413,13 +413,16 @@ def test_an_unreadable_config_keeps_the_running_platforms_until_it_is_fixed(tmp_
             assert answer["stopped"] == [] and answer["platforms"].get("webhook") == "connected", answer
             assert "config.yaml cannot be read" in answer["error"]
         assert _accepts(first), tail(mux)
-        assert tail(mux).count("config.yaml cannot be read; keeping its current platforms") == 1, tail(mux)
 
         config.write_text(_webhook_yaml(second), encoding="utf-8")
         answer = _reconcile(root)
         assert answer["applied"] is True and answer["restarted"] == ["webhook"], (answer, tail(mux))
         wait_until(lambda: _accepts(second) and not _accepts(first), timeout=10, interval=0.1,
                    what="webhook moved to the port the fixed config names")
+        # The log file lags the answers: once the later restart's line is in it, so is every warning before.
+        wait_until(lambda: "restart=['webhook']" in tail(mux, n=10**7), timeout=30, interval=0.1,
+                   what="the restart's log line")
+        assert tail(mux, n=10**7).count("config.yaml cannot be read; keeping its current platforms") == 1, tail(mux)
         assert proc.poll() is None, tail(mux)
     finally:
         stop(proc, expect=None)

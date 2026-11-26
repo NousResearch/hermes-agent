@@ -33,7 +33,7 @@ class _Recorder(MemoryProvider):
     def queue_prefetch(self, query, *, session_id=""): self.seen.append(query)
     def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None, **kw): self.seen.append((user_content, assistant_content, messages))
     def handle_tool_call(self, tool_name, args, **kw): self.seen.append(args); return "{}"
-    def on_turn_start(self, turn_number, message, **kw): self.seen.append(message)
+    def on_turn_start(self, turn_number, message, **kw): self.seen.append((message, kw))
     def on_session_end(self, messages): self.seen.append(messages)
     def on_pre_compress(self, messages, **kw): self.seen.append(messages); return ""
     def on_delegation(self, task, result, **kw): self.seen.append((task, result))
@@ -53,7 +53,7 @@ FANOUTS = {
     "prefetch_all": lambda m, t: m.prefetch_all(f"recall {_LEAK}"),
     "queue_prefetch_all": lambda m, t: m.queue_prefetch_all(f"recall {_LEAK}"),
     "handle_tool_call": lambda m, t: m.handle_tool_call("rec_tool", {"q": _LEAK, "nested": [_LEAK]}),
-    "on_turn_start": lambda m, t: m.on_turn_start(1, _LEAK),
+    "on_turn_start": lambda m, t: m.on_turn_start(2, _LEAK, previous_message=_LEAK, author_name="Ada"),
     "on_session_end": lambda m, t: m.on_session_end(t),
     "on_pre_compress": lambda m, t: m.on_pre_compress(t, evidence_messages=t),
     "on_delegation": lambda m, t: m.on_delegation(f"task {_LEAK}", f"result {_LEAK}"),
@@ -94,7 +94,7 @@ def test_scrub_holds_with_redact_secrets_off(monkeypatch):
 def test_key_detected_in_a_json_tool_result_is_also_masked_where_the_model_repeats_it_bare():
     # The #115104 incident shape: an opaque (no vendor prefix) key in an ov.conf dump inside a JSON tool result,
     # then echoed by the assistant in prose where no pattern alone could recognise it.
-    key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    key = "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
     tool = json.dumps({"output": json.dumps({"embedding": {"api_key": key}, "model": "gemini"})})
     mgr, provider = _manager()
     mgr.sync_all("show my ov.conf", f"Your key is {key}.", messages=[{"role": "tool", "content": tool}])
@@ -102,3 +102,37 @@ def test_key_detected_in_a_json_tool_result_is_also_masked_where_the_model_repea
     user, _assistant, messages = provider.seen[0]
     assert key not in repr(provider.seen)
     assert user == "show my ov.conf" and json.loads(json.loads(messages[0]["content"])["output"])["model"] == "gemini"
+
+
+def test_on_turn_start_scrubs_user_text_but_hands_identity_through_raw():
+    # A phone-number author id (SMS, Signal) matches the phone pattern; masking it would merge two senders.
+    phone = "+1" + "555" + "0123456"
+    mgr, provider = _manager()
+    mgr.on_turn_start(2, "next ask", previous_message=_LEAK, author_id=phone, author_name=phone, model="test/model")
+    message, kwargs = provider.seen[0]
+    assert message == "next ask" and _SECRET not in kwargs["previous_message"]
+    assert kwargs["author_id"] == phone and kwargs["author_name"] == phone and kwargs["model"] == "test/model"
+
+
+def test_prefix_less_url_query_credential_is_masked_for_providers_but_not_for_chat_delivery():
+    # #119852: an opaque api_key in a URL query has no vendor prefix; only the param name identifies it.
+    from agent.redact import redact_for_egress
+    key = "Zo4" + "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    url = f"https://x.example/y?api_key={key}&page=2"
+    mgr, provider = _manager()
+    mgr.sync_all("hi", f"fetched {url}")
+    mgr.flush_pending(timeout=5.0)
+    assert key not in repr(provider.seen) and "page=2" in repr(provider.seen)
+    assert redact_for_egress(url) == url  # chat delivery keeps magic links / OAuth URLs usable
+
+
+def test_provider_tool_url_argument_reaches_the_provider_unmasked():
+    # #119852 review: a provider tool may fetch its URL argument (openviking's viking_add_resource), so the
+    # archival URL-query mask must not break a pre-signed / share / SAS link on the way in.
+    sig = "Zo4" + "f1c9d2e7a8b3c6d5e4f7a2b9c8d1e6f3a"
+    urls = [f"https://bucket.s3.amazonaws.com/doc.pdf?X-Amz-Signature={sig}&X-Amz-Expires=300",
+            f"https://share.example/f?key={sig}", f"https://acct.blob.core.windows.net/c/b?sv=2024&sig={sig}"]
+    mgr, provider = _manager()
+    for url in urls:
+        mgr.handle_tool_call("rec_tool", {"url": url})
+    assert provider.seen == [{"url": url} for url in urls]

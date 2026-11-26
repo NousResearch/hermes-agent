@@ -1,0 +1,20 @@
+name: board-insights
+title: Board Insights
+repo: https://github.com/kwpings/board-insights
+sha: af7fc666800a7506a7d6296e485a4ea9f49254b3
+description: "Read-only analytics page for the Hermes Kanban boards, in Desktop. Two views over every board: List shows what is in flight, what is waiting on a person and every unfinished card in one filterable list; Dashboard shows summary counters, completed over time with a moving average, workload by status, net flow, tasks by department, cycle and run medians, stale runs and a per-assignee table, driven by one date range (today, 7, 30 or a custom window up to 90 days). Spaces are named board sets saved locally so the page can read one project or all of them. Disclosure — opens every kanban.db under the Kanban home with SQLite mode=ro and has no write path; writes only its own stored Spaces and date range in the plugin's storage; no tools, no hooks, no model calls, no network calls, no credentials, no background processes."
+maintainer: kwpings
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/kwpings/board-insights#readme
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/kwpings/board-insights/af7fc666800a7506a7d6296e485a4ea9f49254b3/docs/list.png
+  - https://raw.githubusercontent.com/kwpings/board-insights/af7fc666800a7506a7d6296e485a4ea9f49254b3/docs/dashboard.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -87,7 +87,7 @@ export const backendSlowStartStatus = (): string => t('userMessages.backend.slow
 // Only real failures: a traceback, a CRITICAL log line, an `XxxError:` / `XxxException:`
 // head, the gateway's own turn/exit markers, or the canonical bootstrap's verdict lines
 // (`gateway incompatible: runtime_protocol`, `gateway inaccessible: …` and their remedy, see
-// ui-tui/scripts/gateway_bootstrap.py failure_message). Dependency `DeprecationWarning` /
+// hermes_cli/gateway_runtime_attach.py failure_message). Dependency `DeprecationWarning` /
 // `UserWarning` lines are noise and stay in /logs only.
 const STDERR_PROBLEM_RE =
   /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]|^gateway (?:absent|conflict|draining|inaccessible|incompatible|starting|unavailable): /

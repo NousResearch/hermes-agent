@@ -68,7 +68,8 @@ class TestCLIStatusBar:
         cli_obj = _make_cli()
         cli_obj.session_id = "session-1"
         cli_obj._session_db = SimpleNamespace(  # type: ignore[assignment]
-            get_session_title=lambda sid: "user-profiles" if sid == "session-1" else None
+            get_session_title=lambda sid: "user-profiles" if sid == "session-1" else None,
+            get_compression_tip=lambda sid: sid,
         )
 
         snapshot = cli_obj._get_status_bar_snapshot()
@@ -201,7 +202,7 @@ class TestCLIUsageNoAgentAccountLimits:
         from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
         cli_obj = _make_cli()
         cli_obj.provider, cli_obj.base_url, cli_obj.api_key = "openai-codex", None, None
-        cli_obj._print_nous_credits_block = lambda: False
+        monkeypatch.setattr("agent.account_usage_nous.nous_usage_view", lambda **kw: ([], None))
         seen = {}
 
         def _fetch(provider, **kwargs):

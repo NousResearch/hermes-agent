@@ -1,0 +1,15 @@
+name: agentrouter
+repo: https://github.com/PageOneLab/agentrouter-hermes
+sha: "07fa5348043b7727794da6420aa9a2b06d39b2af"
+description: "Compare Google rankings and recent Reddit discussions for up to three competitors, with source links and cost receipts. Disclosure — the skill uses a separately configured AgentRouter MCP connection. Approved calls send queries to AgentRouter and its providers and can spend the user's AgentRouter balance."
+maintainer: charly-jingan
+tier: community
+category: tools
+docs_url: https://docs.agentrouter.to/integrations/mcp
+version: "0.1.1"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

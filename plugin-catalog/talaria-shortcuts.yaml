@@ -1,0 +1,30 @@
+# Talaria — Hermes plugin catalog entry (catalog key: talaria-shortcuts).
+# Shape copied field-for-field from plugin-catalog/README.md "Entry schema".
+# `sha` is the release pin: the commit carrying version 0.3.0.
+name: talaria-shortcuts
+title: Talaria
+repo: https://github.com/mjneuroart/talaria
+sha: "f5eddb64b2c976dfb520a8d83878db8589561bdc"
+version: "0.3.0"
+description: "Write, compile, sign and audit iOS Shortcuts from Hermes with no Mac: six tools turn plain-language intent into reviewable Cherri source, compile it to an unsigned .shortcut inside a bwrap sandbox, sign it through RoutineHub HubSign on explicit consent, and audit any .shortcut (signed AEA1 container or plain plist) for what it reads, writes and sends before it is installed. Bundles the shortcuts-authoring skill (file shape, verified action signatures, house patterns, and the traps that make a shortcut compile cleanly and still be broken). Disclosure — the Cherri compiler runs as a subprocess under bwrap with no network namespace, a read-only root, a throwaway HOME and only the job directory writable, and a build is refused rather than run on the host when bwrap is missing; talaria_setup, after Hermes approval, downloads the third-party Cherri v2.4.0 compiler (electrikmilk/cherri) from GitHub and installs it only if both recorded sha256 checksums match. Network call sites: talaria_status opens one TCP connection to the signing host only when called with probe_signer=true; talaria_inspect on an iCloud link fetches that shortcut from Apple's iCloud hosts only; talaria_sign uploads the compiled shortcut as an XML plist plus its name to https://hubsign.routinehub.services/sign (RoutineHub, a third party) only after Hermes approval per artifact, so unattended runs fail closed. Artifacts are written only under $HERMES_HOME/talaria (or $TALARIA_HOME). No telemetry, no credentials."
+maintainer: mjneuroart
+tier: community
+category: automation
+docs_url: https://github.com/mjneuroart/talaria#readme
+requires_hermes: ">=0.23.1"
+readme: true
+platforms:
+  - linux
+capabilities:
+  provides_tools:
+    - talaria_status
+    - talaria_setup
+    - talaria_actions
+    - talaria_build
+    - talaria_sign
+    - talaria_inspect
+    - talaria_library
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

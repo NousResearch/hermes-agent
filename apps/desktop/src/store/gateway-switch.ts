@@ -53,8 +53,10 @@ export const $gatewaySwitching = atom(false)
  * is activated or published: fresh-draft the open transcript, drop the overlay
  * return route, reset the project tree, close terminals — everything bound to
  * the OUTGOING backend that lives outside the session store. Registered by
- * useGatewayBoot (whose host owns those React callbacks) so store-driven
- * switches run the exact same reset as a Settings → Gateway apply.
+ * useGatewayBoot, whose host owns those React callbacks. Only a connection
+ * apply (Settings → Gateway, or a backend recycle) runs it. A gateway pick does
+ * not: selectConnection's beforeActivate does its own narrower draft/project
+ * reset.
  */
 export interface GatewaySwitchLifecycle {
   beforeConnectionSwitch: () => void
@@ -68,6 +70,11 @@ let switchLifecycle: GatewaySwitchLifecycle | null = null
 export type GatewaySwitchToken = number
 
 let latestSwitchToken = 0
+
+/** Capture the switch generation so async work cannot release a newer wipe's barrier. */
+export function currentGatewaySwitchToken(): GatewaySwitchToken {
+  return latestSwitchToken
+}
 
 /** True only while token owns the latest connection-switch lifecycle. */
 export function isCurrentGatewaySwitch(token: GatewaySwitchToken): boolean {

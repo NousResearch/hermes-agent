@@ -1,0 +1,24 @@
+name: meetstream
+title: Hermes in Meetings
+repo: https://github.com/meetstream-ai/hermes-meetstream
+sha: 4d43b0f8f93021da59c790edab15ba2a3e3d4dbd
+description: "Hermes in Meetings, from MeetStream: Hermes joins Zoom, Google Meet and Microsoft Teams calls as a visible bot that records and transcribes them, answers questions people type in the meeting chat (while the gateway runs), and does the follow-up work from the transcript. Disclosure — talks only to the MeetStream API at https://api.meetstream.ai with the user's own MEETSTREAM_API_KEY: the tools call it when used; while the gateway runs, the meetstream platform lists the account's bots of the last day every 120 seconds (at most 4 pages) and, for each Hermes bot in a call, reads its chat every 5 seconds and its status every 30 seconds. It sends meeting links, the bot name, the join message and the agent's chat replies, and receives bot status, meeting chat and transcripts. Meeting-chat senders are identified by display name, which participants choose: the gateway admits nobody until MEETSTREAM_ALLOWED_USERS lists them, and every turn from meeting chat is limited to web_search/web_extract (the adapter pins the platform's toolsets to [web, no_mcp], and its pre_llm_call/pre_tool_call hooks block every other tool, including other plugins' tools, in those sessions; always on). The hooks only read session_id, task_id, platform and tool_name. MeetStream bills bot time and transcription to the user's account. No files written, no shell commands, no telemetry, no self-update."
+maintainer: MeetStream
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+docs_url: https://github.com/meetstream-ai/hermes-meetstream#readme
+capabilities:
+  provides_tools:
+    - meetstream_join
+    - meetstream_status
+    - meetstream_chat
+    - meetstream_transcript
+    - meetstream_leave
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - MEETSTREAM_API_KEY

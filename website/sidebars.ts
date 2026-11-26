@@ -3,11 +3,9 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   docs: [
     'user-stories',
-    // The Skills/Plugins hubs live in the navbar. On mobile Docusaurus opens the drawer on the doc
-    // sidebar, with the navbar a "Back to main menu" tap away, so without these links the hubs are
-    // undiscoverable on a phone.
-    {type: 'link', label: 'Browse Skills', href: '/skills'},
-    {type: 'link', label: 'Browse Plugins', href: '/plugins'},
+    // The Marketplace lives in the navbar. On mobile Docusaurus opens the drawer on the doc sidebar,
+    // with the navbar a "Back to main menu" tap away, so without this link it is undiscoverable on a phone.
+    {type: 'link', label: 'Browse the Marketplace', href: 'https://hermes-agent.nousresearch.com/marketplace'},
     {
       type: 'category',
       label: 'Getting Started',
@@ -20,6 +18,7 @@ const sidebars: SidebarsConfig = {
         'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
+        'getting-started/official-domains',
       ],
     },
     {
@@ -322,7 +321,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok',
-                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands',
                   ],
@@ -523,7 +521,6 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-payments',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/optional/payments/payments-mpp-agent',
                     'user-guide/skills/optional/payments/payments-stripe-link-cli',
                     'user-guide/skills/optional/payments/payments-stripe-projects',
                   ],
@@ -534,17 +531,14 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-productivity',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/optional/productivity/productivity-airtable',
                     'user-guide/skills/optional/productivity/productivity-box',
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-live-dashboard',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
-                    'user-guide/skills/optional/productivity/productivity-notion',
                     'user-guide/skills/optional/productivity/productivity-property-listings',
                     'user-guide/skills/optional/productivity/productivity-shop',
-                    'user-guide/skills/optional/productivity/productivity-shopify',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
                     'user-guide/skills/optional/productivity/productivity-telephony',
                   ],
@@ -560,7 +554,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-darwinian-evolver',
                     'user-guide/skills/optional/research/research-domain-intel',
                     'user-guide/skills/optional/research/research-drug-discovery',
-                    'user-guide/skills/optional/research/research-duckduckgo-search',
                     'user-guide/skills/optional/research/research-gitnexus-explorer',
                     'user-guide/skills/optional/research/research-llm-wiki',
                     'user-guide/skills/optional/research/research-osint-investigation',
@@ -569,7 +562,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-research-paper-writing',
                     'user-guide/skills/optional/research/research-rss-feeds',
                     'user-guide/skills/optional/research/research-scrapling',
-                    'user-guide/skills/optional/research/research-searxng-search',
                   ],
                 },
                 {
@@ -633,15 +625,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/web-development/web-development-page-agent',
                     'user-guide/skills/optional/web-development/web-development-publish-site',
                     'user-guide/skills/optional/web-development/web-development-scrollcraft',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'yuanbao',
-                  key: 'skills-optional-yuanbao',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/optional/yuanbao/yuanbao-yuanbao',
                   ],
                 },
               ],
@@ -724,6 +707,7 @@ const sidebars: SidebarsConfig = {
         'integrations/nous-portal',
         'integrations/providers',
         'integrations/buzz',
+        'integrations/nemo-relay',
         'user-guide/features/mcp',
         'user-guide/features/acp',
         'user-guide/features/provider-routing',
@@ -797,6 +781,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/provider-runtime',
             'developer-guide/config-backend',
             'developer-guide/programmatic-integration',
+            'developer-guide/gateway-ssh-clients',
           ],
         },
         {
@@ -829,6 +814,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/delegation-provider-plugin',
                 'developer-guide/plugins/application-declarations',
                 'developer-guide/plugins/catalog-submission',
+                'developer-guide/plugins/public-api',
               ],
             },
             'developer-guide/creating-skills',
@@ -902,6 +888,11 @@ const sidebars: SidebarsConfig = {
         'reference/cli-symbols',
         'reference/faq',
       ],
+    },
+    {
+      type: 'link',
+      label: 'Compare Hermes Agent',
+      href: 'https://hermes-agent.nousresearch.com/compare',
     },
   ],
 };

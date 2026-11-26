@@ -1,0 +1,23 @@
+name: waifu-sprites
+repo: https://github.com/waifuai/waifu-sprites
+sha: 143e960984f5d108fcb537cfb523f3b1946e5011
+description: "Video waifu companion that reacts to agent activity in real time — 12 states, 12 emotions, draggable dashboard overlay. Disclosure — by default the dashboard overlay downloads its video clips from jsDelivr (cdn.jsdelivr.net, a pinned commit of waifuai/waifuai.github.io), so jsDelivr sees your IP when the dashboard is open; set Clip source to local to serve your own clips. No agent text leaves the host."
+maintainer: thewaifuai
+tier: community
+category: desktop
+requires_hermes: ">=0.13"
+version: "3.2.0"
+screenshots:
+  - https://raw.githubusercontent.com/waifuai/waifu-sprites/143e960984f5d108fcb537cfb523f3b1946e5011/docs/screenshots/dashboard-overlay.png
+  - https://raw.githubusercontent.com/waifuai/waifu-sprites/143e960984f5d108fcb537cfb523f3b1946e5011/docs/screenshots/docked-tab.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

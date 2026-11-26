@@ -19,7 +19,7 @@ from contextvars import copy_context
 from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.delivery import looks_like_telegram_private_chat_id
+from gateway.delivery import looks_like_telegram_private_chat_id, prime_revived_egress
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -29,36 +29,49 @@ from gateway.restart import (
 from gateway.run_shutdown import _log_suppressed, _send_error
 from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
-    DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
-    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
+    DEFAULT_HEARTBEAT_INTERVAL_S, loop_heartbeat_forever,
 )
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+if TYPE_CHECKING:
+    from gateway.status_report.reporter import StatusReporter
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# What adapters' ``get_chat_info`` reports for a chat every member reads (a handoff home that is no DM).
+_HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "supergroup", "thread"})
 
 
-def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
-    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
-    *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
-    Blocking: call it off the event loop."""
+def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
+    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, and every
+    catalog platform plugin whose credentials *home* has (:mod:`hermes_cli.catalog_platforms`), in *home*'s
+    runtime scope (its config, secrets and allow_lazy_installs); once per process per home and settings
+    fingerprint. Returns the installed plugin names. Blocking: call it off the event loop."""
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.left_core_migration import recover_at_startup
+    from hermes_cli.catalog_platforms import recover_in
+    from hermes_cli.left_core_migration import defer_startup_notice, recover_at_startup
     with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
-        recover_at_startup(gateway_start=True)
+        return recover_at_startup(gateway_start=True) + recover_in(Path(home), report=defer_startup_notice)
 
 
-def recover_left_core_at_gateway_start() -> None:
+def recover_left_core_at_gateway_start() -> bool:
     """Left-core migration for the homes whose platform config the runner loads first: the launch
     home and the default root (the multiplex primary; a named launcher is then served as a
     secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
-    so a platform plugin it gets starts its adapter in the same gateway start."""
-    from hermes_cli.left_core_migration import recover_at_startup
+    so a platform plugin it gets starts its adapter in the same gateway start. True when a plugin
+    that ships a gateway platform was installed: platform config loaded before it lacks the platform."""
+    from hermes_cli.left_core_migration import LEFT_CORE, gateway_start_lock_budget
     from hermes_constants import get_default_hermes_root, get_hermes_home
-    recover_at_startup(gateway_start=True)
-    root = Path(get_default_hermes_root())
-    if root.resolve() != Path(get_hermes_home()).resolve():
-        recover_left_core_in(root)
+    # The launch home too runs in its own scope: a multiplexing config load already armed fail-closed
+    # secret reads, so an unscoped install read of its own .env raised. Its sources were hydrated at boot.
+    launch = Path(get_hermes_home())
+    with gateway_start_lock_budget():  # another installer holds the start back at most this long, in all
+        installed = recover_left_core_in(launch, hydrate_secrets=False)
+        root = Path(get_default_hermes_root())
+        if root.resolve() != launch.resolve():
+            installed += recover_left_core_in(root)
+    moved = {feature.plugin for feature in LEFT_CORE if not feature.platform}
+    return any(name not in moved for name in installed)  # every catalog platform install ships one
 
 
 
@@ -124,6 +137,7 @@ class GatewayStartupMixin:
         until it finishes, else a user message can race it)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         try:
+            prime_revived_egress(adapter, event)
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
@@ -158,7 +172,7 @@ class GatewayStartupMixin:
                 source = getattr(event, "source", None)
                 adapter = self._intake_adapter_for(source)
                 if adapter is None:
-                    logger.debug(
+                    logger.warning(
                         "Dropping startup-restore queued message: adapter unavailable for %s",
                         getattr(getattr(source, "platform", None), "value", None),
                     )
@@ -551,57 +565,45 @@ class GatewayStartupMixin:
         """Replay one adapter identity's transient failures after reconnect: the startup sweep cannot
         claim live-owner rows, so ``send_path_degraded`` responses would otherwise stay failed until
         the next restart. Best-effort; reuses the startup redelivery contract."""
+        claim, owned = None, []
         try:
-            from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
-            if not await asyncio.to_thread(ledger_enabled):
+            try:
+                from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
+                if not await asyncio.to_thread(ledger_enabled):
+                    return 0
+                # Cancelling this task cannot stop the worker thread committing the claim: shield it so
+                # a stop landing mid-claim still learns which rows it now owns.
+                claim = asyncio.ensure_future(asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile))
+                claimed = await asyncio.shield(claim)
+            except Exception:
+                logger.debug("runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True)
                 return 0
-            claimed = await asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile)
-        except Exception:
-            logger.debug(
-                "runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True,
-            )
-            return 0
-        if not claimed:
-            return 0
-        # Clear before any send so the reconnect path cannot both redeliver AND resume the same turn.
-        sendable = await self._clear_resume_pending_for_claimed_obligations(claimed, require_success=True)
-        sendable_ids = {row["obligation_id"] for row in sendable}
-        for row in claimed:
-            if row["obligation_id"] not in sendable_ids:
-                await self._release_runtime_claim_quiet(
-                    row["obligation_id"], "failed to release runtime delivery claim %s",
-                    error=row.get("last_error") or "send_path_degraded",
-                )
-        return await self._redeliver_claimed_obligations(sendable)
+            if not claimed:
+                return 0
+            # Clear before any send so the reconnect path cannot both redeliver AND resume the same turn.
+            sendable = await self._clear_resume_pending_for_claimed_obligations(claimed, require_success=True)
+            sendable_ids = {row["obligation_id"] for row in sendable}
+            for row in claimed:
+                if row["obligation_id"] not in sendable_ids:
+                    await self._release_runtime_claim_quiet(
+                        row["obligation_id"], "failed to release runtime delivery claim %s",
+                        error=row.get("last_error") or "send_path_degraded",
+                    )
+            return await self._redeliver_claimed_obligations(sendable)
+        except asyncio.CancelledError:
+            # Cancelled while owning claims (profile stop, adapter replacement): later sweeps only claim
+            # 'failed', so release every claim still 'attempting' (the guard skips sent and released
+            # rows) in one thread hop that a second cancel cannot cut short.
+            from gateway.delivery_ledger import release_runtime_claim
+            with suppress(Exception):
+                owned = await claim if claim is not None else []
+            await asyncio.to_thread(lambda: [release_runtime_claim(
+                row["obligation_id"], row.get("last_error") or "send_path_degraded") for row in owned])
+            raise
 
     def _resume_pending_candidates(self, platform=None) -> Optional[list]:
-        """Snapshot resume-pending entries (optionally scoped to ``platform``); None when
-        enumeration failed or the restart-loop breaker tripped for this boot."""
-        try:
-            with self.session_store._lock:
-                self.session_store._ensure_loaded_locked()
-                candidates = [
-                    entry for entry in self.session_store._entries.values()
-                    if entry.resume_pending
-                    and not entry.suspended
-                    and entry.origin is not None
-                    and entry.resume_reason in self._AUTO_RESUME_REASONS
-                    and (platform is None or entry.origin.platform == platform)
-                ]
-        except Exception as exc:
-            logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
-            return None
-        # Restart-loop breaker: only boots WITH restart-interrupted sessions count; when tripped, skip
-        # auto-resume for THIS boot only (inbound still served; sessions stay resume_pending).
-        if candidates:
-            try:
-                from gateway import restart_loop_guard as _rlg
-                _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
-                if _rlg.check_and_record(_max_restarts, _window, max_gap_seconds=_max_gap):
-                    return None
-            except Exception as exc:
-                logger.debug("Restart-loop guard check skipped: %s", exc)
-        return candidates
+        from gateway.run_restored_delivery import resume_pending_candidates
+        return resume_pending_candidates(self, platform)
 
     def _resume_owner_authorized(self, session_key: str, source) -> bool:
         """Validate the session owner against the CURRENT allowlist: a session created before the
@@ -678,7 +680,8 @@ class GatewayStartupMixin:
         return scheduled
 
     def _startup_should_abort(self) -> bool:
-        return self._restart_requested or self._draining or self._shutdown_event.is_set()
+        from gateway.run_common import startup_should_abort
+        return startup_should_abort(self)
 
     async def _startup_teardown_adapter(self, adapter, platform) -> None:
         """Cancel an adapter's background tasks (best-effort) then disconnect it."""
@@ -698,48 +701,12 @@ class GatewayStartupMixin:
             return False
         if adapter is not None and platform is not None:
             await self._startup_teardown_adapter(adapter, platform)
-        stop_task = self._stop_task
-        current_task = asyncio.current_task()
-        if stop_task is not None and stop_task is not current_task:
-            await stop_task
-        elif not self._shutdown_event.is_set():
-            await self.stop(
-                restart=self._restart_requested, detached_restart=self._restart_detached,
-                service_restart=self._restart_via_service,
-            )
-        return True
+        from gateway.run_common import abort_startup_if_shutdown_requested
+        return await abort_startup_if_shutdown_requested(self, check=False)
 
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Arm the selector floor and out-of-loop watchdog before adapters. Disabled entirely with
-        ``gateway.loop_watchdog: false`` in config.yaml (config-only knob).
-
-        See #69089.
-        """
-        from gateway.shutdown_watchdog import _arm_loop_floor_timer, start_loop_liveness_watchdog
-        config = getattr(self, "config", None)
-        if config is not None and not getattr(config, "loop_watchdog", True):
-            return
-        if getattr(self, "_loop_floor_timer_handle", None) is None:
-            with _log_suppressed(logging.DEBUG, "Failed to arm gateway loop floor timer", exc_info=True):
-                self._loop_floor_timer_handle = _arm_loop_floor_timer(loop)
-        watchdog = getattr(self, "_loop_liveness_watchdog", None)
-        if watchdog is None or not watchdog.is_alive():
-            try:
-                # getattr defaults cover config=None test paths; loaded values are already clamped.
-                self._loop_liveness_watchdog = start_loop_liveness_watchdog(
-                    loop,
-                    probe_interval=float(getattr(
-                        config, "loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S
-                    )),
-                    probe_timeout=float(getattr(
-                        config, "loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
-                    )),
-                    max_strikes=int(getattr(
-                        config, "loop_watchdog_max_strikes", DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
-                    )),
-                )
-            except Exception:
-                logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+        from gateway.run_startup_liveness import start_loop_liveness_guards
+        start_loop_liveness_guards(self, loop)
 
     def _stop_loop_liveness_guards(self) -> None:
         """Disarm lifetime liveness guards before shutdown can load the loop — including the
@@ -1047,7 +1014,7 @@ class GatewayStartupMixin:
     _ALLOWLIST_ENV_PLATFORMS = (
         "TELEGRAM", "DISCORD", "WHATSAPP", "WHATSAPP_CLOUD", "SLACK", "SIGNAL", "EMAIL", "SMS",
         "MATTERMOST", "MATRIX", "DINGTALK", "FEISHU", "WECOM", "WECOM_CALLBACK", "WEIXIN",
-        "BLUEBUBBLES", "QQ", "YUANBAO",
+        "BLUEBUBBLES", "QQ",
     )
     _BUILTIN_ALLOWED_USERS_VARS = tuple(f"{p}_ALLOWED_USERS" for p in _ALLOWLIST_ENV_PLATFORMS) + (
         "SIGNAL_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -1127,6 +1094,26 @@ class GatewayStartupMixin:
             logger.warning("relay adapter registration failed at gateway startup", exc_info=True)
         GatewayStartupMixin._register_launch_profile_config_hooks()
 
+    def _start_relay_provision_retry(self) -> None:
+        """Keep provisioning in the background when the boot attempt left the relay without
+        credentials; cancelled with ``_background_tasks`` at shutdown. Never raises."""
+        try:
+            from gateway.relay import relay_provision_pending, retry_self_provision
+            if relay_provision_pending():
+                self._retain_background_task(asyncio.create_task(
+                    retry_self_provision(self._on_relay_provisioned), name="relay-provision-retry"))
+        except Exception:
+            logger.warning("relay self-provision retry could not start", exc_info=True)
+
+    def _on_relay_provisioned(self) -> None:
+        """Credentials arrived after boot: the reconnect watcher builds every relay adapter from
+        the live env, so pull its queued retry forward instead of waiting out the backoff.
+        ``retry_now`` keeps it forward if a pass that began without them is still dialing."""
+        info = getattr(self, "_failed_platforms", {}).get(Platform.RELAY)
+        if info is not None:
+            info["next_retry"] = 0.0
+            info["retry_now"] = True
+
     @staticmethod
     def _register_launch_profile_config_hooks() -> None:
         """The launch profile's ``hooks:`` block, registered under ITS runtime scope when multiplexing.
@@ -1189,6 +1176,7 @@ class GatewayStartupMixin:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
         from gateway.run import _hermes_home
         self._start_register_plugins_relay_hooks()
+        self._start_relay_provision_retry()
         # Plugins that load later (force re-discovery, install/enable nudge) re-wire live adapters (#87770).
         with _log_suppressed(logging.WARNING, "plugin re-wire subscription failed", exc_info=True):
             from hermes_cli.plugins import get_plugin_manager
@@ -1240,10 +1228,7 @@ class GatewayStartupMixin:
     async def _start_prefilter_platforms(self) -> tuple[bool, int, list, list]:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
-        from gateway.run import _platform_has_bot_credential
-        from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
-        _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
         _pending_connects = []  # (platform, platform_config, adapter); connected concurrently later
         for platform, platform_config in self.config.platforms.items():
@@ -1252,12 +1237,10 @@ class GatewayStartupMixin:
             if not platform_config.enabled:
                 continue
             # Multiplex: a platform enabled in the shared config.yaml may hold its token only in a
-            # secondary profile's .env; an empty primary would queue a reconnect loop that never heals.
-            # Starting that primary adapter with an empty token fails immediately and queues an infinite
-            # reconnect loop that can never heal (#64674). Secondary profiles still start their own adapters
-            # under _profile_runtime_scope with the real token -- skip the empty primary instead of failing
-            # loudly.
-            if _multiplex_on and not _platform_has_bot_credential(platform, platform_config):
+            # secondary profile's .env; an empty primary would queue a reconnect loop that never heals
+            # (#64674). Secondary profiles still start their own adapters under _profile_runtime_scope
+            # with the real token -- skip the empty primary instead of failing loudly.
+            if not self._primary_platform_wanted(platform, platform_config):
                 logger.info(
                     "Skipping %s on default profile: no bot credential in this "
                     "profile's secrets. Secondary multiplexed profiles that "
@@ -1266,32 +1249,10 @@ class GatewayStartupMixin:
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            adapter = self._create_adapter(platform, platform_config)
-            if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                if platform.value in {m.value for m in Platform.__members__.values()}:
-                    logger.warning("No adapter available for %s", platform.value)
-                else:
-                    logger.warning(
-                        "No adapter for '%s' -- is the plugin installed? "
-                        "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
-                    )
-                # Only a platform that can heal on its own is queued for the reconnect watcher; either way
-                # flag it so the unserved enabled platform is visible.
-                heals = self._adapter_may_heal(platform, platform_config)
-                self._update_platform_runtime_status(
-                    platform.value, platform_state="retrying" if heals else "fatal",
-                    error_code="adapter_unavailable",
-                    error_message=_adapter_unavailable_message(platform, retrying=heals),
-                    needs_attention=True,
-                )
-                if heals:
-                    self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
-                continue
-            # Under multiplexing the default profile needs the same whole-handler runtime scope as a
-            # secondary (authorization and prompt rendering run before the agent-turn scope).
-            self._wire_adapter_handlers(adapter)
-            _pending_connects.append((platform, platform_config, adapter))
+            build_print = await asyncio.to_thread(self._primary_build_print, platform, platform_config)
+            adapter = await self._prepare_primary_adapter(platform, platform_config, build_print)
+            if adapter:
+                _pending_connects.append((platform, platform_config, adapter))
         return False, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
 
     async def _start_connect_pending(self, _pending_connects: list) -> Optional[list]:
@@ -1634,7 +1595,9 @@ class GatewayStartupMixin:
     )
     _POST_RECONNECT_WATCHERS = (
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
-    )
+        "_delegation_auto_resume_watcher")
+
+    _status_reporter: Optional[StatusReporter] = None
 
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""
@@ -1665,9 +1628,30 @@ class GatewayStartupMixin:
                 self._log_scale_to_zero_not_armed_reason()
         except Exception:
             logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
+        self._start_status_report_watcher()
         # Drain-control watcher: reconciles new-turn acceptance with the dashboard's ``.drain_request.json``
         # marker (prior-instantiation markers are ignored via epoch).
         self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
+
+    def _start_status_report_watcher(self) -> None:
+        """Only when the launch environment carries the stamp; ``reporter`` is imported only then."""
+        from gateway.status_report.target import STATUS_REPORT_URL_ENV
+        if not os.environ.get(STATUS_REPORT_URL_ENV, "").strip():
+            return
+        from gateway.status_report.reporter import INTERVAL_S, status_reporter_from_launch_env
+        reporter = self._status_reporter = status_reporter_from_launch_env()
+        if reporter is not None:
+            logger.info("status report: on, reporting gateway status about every %.0fs", INTERVAL_S)
+            self._spawn_supervised(lambda: reporter.run(lambda: self._running), "status_report_watcher")
+
+    async def _suspend_after_status_goodbye(self, lever, *args) -> bool:
+        reporter = self._status_reporter
+        if reporter is not None:
+            try:
+                reporter.goodbye()
+            except Exception:
+                logger.debug("status report: goodbye not started", exc_info=True)
+        return await asyncio.to_thread(lever, *args)
 
     @staticmethod
     async def _start_flush_runtime_status() -> None:
@@ -1690,6 +1674,7 @@ class GatewayStartupMixin:
 
     async def _start_impl(self) -> bool:
         logger.info("Starting Hermes Gateway...")
+        await self._note_boot_platform_signature()  # before boot builds adapters from the config it read
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():
@@ -1835,10 +1820,10 @@ class GatewayStartupMixin:
             chat_type = "dm" if home_chat_id.startswith("D") else "group"
             scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
             scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
-        if platform == Platform.MATRIX:
-            # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
-            # get_chat_info reports "dm"/"group" for the home room.
-            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
+        if platform == Platform.MATRIX or (not is_thread and platform not in (Platform.TELEGRAM, Platform.SLACK)):
+            # Matrix keys replies on the room's type (#112918); a turn in no fresh thread keeps the home's
+            # real type on every platform: a group home is not a DM (its DM-only statuses, #101003).
+            chat_type = await self._handoff_home_chat_type(transport.adapter, home_chat_id, platform)
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1851,6 +1836,9 @@ class GatewayStartupMixin:
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
             scope_id=scope_id,
         )
+        # The handoff turn answers through the queuing profile's own bot; naming it keeps the
+        # turn's authorization home and the saved receiving bot on that profile, not a primary guess.
+        self._canonicalize(dest_source, transport_profile=profile_name)
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, home=home,
             home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
@@ -1858,15 +1846,19 @@ class GatewayStartupMixin:
         )
 
     @staticmethod
-    async def _handoff_home_is_dm(adapter, home_chat_id: str) -> bool:
-        """Whether the home chat is a DM by the adapter's own ``get_chat_info`` (``type: "dm"``);
-        unknown/failed → not a DM, the common handoff target."""
+    async def _handoff_home_chat_type(adapter, home_chat_id: str, platform: Platform) -> str:
+        """The home chat's type by the adapter's own ``get_chat_info``. Matrix and Discord key a room or
+        guild channel ``group`` (unknown/failed → ``group``, the common handoff target); elsewhere the
+        reported shared label is kept, and an unclassifiable home keeps ``dm``."""
         try:
             info = await adapter.get_chat_info(home_chat_id)
         except Exception:
             logger.debug("Handoff: get_chat_info failed for %s", home_chat_id, exc_info=True)
-            return False
-        return isinstance(info, dict) and info.get("type") == "dm"
+            info = None
+        kind = str(info.get("type") or "").strip().lower() if isinstance(info, dict) else ""
+        if platform in (Platform.MATRIX, Platform.DISCORD):
+            return "dm" if kind == "dm" else "group"
+        return kind if kind in _HANDOFF_SHARED_CHAT_TYPES else "dm"
 
     def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
         """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next
@@ -1889,36 +1881,40 @@ class GatewayStartupMixin:
                         handoff_profile = resolved
             except Exception:
                 logger.debug("Handoff: could not resolve profile namespace", exc_info=True)
+        from gateway.session_dm_threads import dm_thread_key_source, session_db_for_source
+        store = getattr(self.async_session_store, "_store", self.async_session_store)
         return build_session_key(
-            dest.source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            dm_thread_key_source(dest.source, extra, lambda: session_db_for_source(store, dest.source)),
+            group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
         )
 
-    async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str) -> None:
+    async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str):
         """Point the destination route at the handed-off conversation; ``switch_session`` ends the
         route's prior session and reopens this one. A handoff carries the conversation the user is
         looking at: a local chat's latest ``/new`` segment, then that segment's compression tip
         (``handoff_head``), so its whole chain moves onto the lane together with the local receipt
         that guards it, and a viewer still holding it open (the Desktop that ran /handoff) follows
         it (#143286)."""
-        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        from gateway.session_route_recovery import conversation_head, follow_hand_off, settled_handoff_db
         authority, local_owner, target = await conversation_head(self, cli_session_id)
-        # Ensure a session_store entry exists for this key; switch_session then re-points it.
+        await settled_handoff_db(self, authority, cli_session_id)  # unresolved work keeps the route
         await self.async_session_store.get_or_create_session(dest.source)
         switched = await self.async_session_store.switch_session(session_key, target, preserve_prompt_pin=False)
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {target}")
         if authority is not None:
             follow_hand_off(authority, dest.source, session_key, authority.logical_owner(target), local_owner)
+        return switched
 
     async def _process_handoff(self, row: dict[str, Any], profile_name: Optional[str] = None) -> None:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =
         root) is the profile whose store queued it — load-bearing under multiplex: secondaries live in
         ``_profile_adapters`` and the key must be namespaced ``agent:<profile>:...`` or nobody reads it."""
-        cli_session_id = row["id"]
+        cli_session_id = await self._handoff_source_session_id(row, profile_name)  # before any topic opens
         dest = await self._handoff_resolve_destination(row, profile_name)
         session_key = self._handoff_session_key(dest, profile_name)
-        await self._handoff_repoint(dest, session_key, cli_session_id)
+        await self._handoff_repoint_with_topic_binding(dest, session_key, cli_session_id)
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

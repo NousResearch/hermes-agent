@@ -159,6 +159,7 @@ export {
   SLASH_COMMAND_RE
 } from './slash'
 
+export { macOptionComposedText, type OptionKeyEventLike } from './terminal-option-text'
 export {
   THEME_PRESET_PALETTES,
   type ThemePresetColors,

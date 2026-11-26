@@ -19,6 +19,7 @@ import {
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
 import { errorMessage } from "@/lib/api-error";
+import { typeMacOptionPunctuation } from "@/lib/pty-keyboard-shortcuts";
 
 type ConsoleFrame =
   | {
@@ -376,6 +377,9 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
     term.loadAddon(new WebLinksAddon());
     term.open(host);
     term.focus();
+
+    const isMac = /Mac/i.test(navigator.platform);
+    term.attachCustomKeyEventHandler((ev) => !typeMacOptionPunctuation(term, ev, isMac));
 
     const fitTerminal = () => {
       if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {

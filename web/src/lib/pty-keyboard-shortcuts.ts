@@ -1,3 +1,6 @@
+import { macOptionComposedText } from "@hermes/shared";
+import type { Terminal } from "@xterm/xterm";
+
 import { shouldBlockPtyInput, type PtyConnectionState } from "./pty-reconnect";
 
 const WS_OPEN = 1;
@@ -59,5 +62,22 @@ export function sendPtyShortcutSequence(
 
   ws.send(sequence);
 
+  return true;
+}
+
+/**
+ * Our terminals run with `macOptionIsMeta`, which sends ESC + key for every
+ * Option chord. Types the ASCII punctuation a macOS layout composes with
+ * Option instead (German Option+L = `@`); returns true when it did.
+ */
+export function typeMacOptionPunctuation(
+  term: Pick<Terminal, "input">,
+  ev: KeyboardEvent,
+  isMac: boolean,
+): boolean {
+  const composed = macOptionComposedText(ev, isMac);
+  if (!composed) return false;
+  ev.preventDefault();
+  term.input(composed, true);
   return true;
 }

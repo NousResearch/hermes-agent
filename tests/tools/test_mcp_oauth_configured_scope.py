@@ -3,43 +3,85 @@
 The MCP SDK's 401 branch reassigns ``client_metadata.scope`` from server metadata (WWW-Authenticate
 hint, else PRM / AS ``scopes_supported``, plus ``offline_access``) before dynamic client registration
 and the authorization URL read it. A server whose metadata advertises more scopes than its
-registration accepts then refuses every login, and ``oauth.scope`` reads as broken.
+registration accepts then refuses every login, and ``oauth.scope`` reads as broken. The flow below
+runs the real provider through its 401 branch against an in-process stand-in server.
 """
+from __future__ import annotations
+
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK required for OAuth support")
 
-SELECTED = "mcp:read mcp:write admin offline_access"  # what SDK discovery assigns
-CONFIGURED = "mcp:read offline_access"
+RESOURCE = "https://res.example/mcp"
+AS = "https://as.example"
+SELECTED = "mcp:read mcp:write admin offline_access"  # what SDK discovery assigns here
 
 
-def _metadata(cfg):
-    from tools.mcp_oauth import _build_client_metadata
-    return _build_client_metadata({"_resolved_port": 43123, **cfg})
+def _stand_in(httpx, seen):
+    def handle(request):
+        url = str(request.url)
+        j = lambda status, body, **h: httpx.Response(status, json=body, headers=h, request=request)
+        if url == RESOURCE:
+            if request.headers.get("Authorization") == "Bearer AT-1":
+                return j(200, {"ok": True})
+            return j(401, {}, **{"WWW-Authenticate": 'Bearer resource_metadata="https://res.example/.well-known/oauth-protected-resource"'})
+        if url == "https://res.example/.well-known/oauth-protected-resource":
+            return j(200, {"resource": RESOURCE, "authorization_servers": [AS],
+                           "scopes_supported": ["mcp:read", "mcp:write", "admin"]})
+        if url == f"{AS}/.well-known/oauth-authorization-server":
+            return j(200, {"issuer": AS, "authorization_endpoint": f"{AS}/authorize", "token_endpoint": f"{AS}/token",
+                           "registration_endpoint": f"{AS}/register", "response_types_supported": ["code"],
+                           "code_challenge_methods_supported": ["S256"],
+                           "scopes_supported": ["mcp:read", "mcp:write", "admin", "offline_access"]})
+        if url == f"{AS}/register":
+            body = json.loads(request.content)
+            seen["register"] = body.get("scope")
+            return j(201, {**body, "client_id": "dcr-1"})
+        if url == f"{AS}/token":
+            return j(200, {"access_token": "AT-1", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "RT-1"})
+        return j(404, {})
+    return handle
 
 
-def test_configured_scope_reaches_registration_and_authorization():
-    """Invariant: after the SDK's Step-3 reassignment, the DCR body and the scope the
-    authorization URL is built from both carry the configured value."""
-    from mcp.client.auth.utils import create_client_registration_request
-    from mcp.shared.auth import OAuthMetadata
+async def _sign_in(tmp_path, monkeypatch, oauth_cfg):
+    from tools.mcp_oauth import HermesTokenStorage, _authorization_code_result, _build_client_metadata
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_tool import sdk_httpx
 
-    metadata = _metadata({"scope": CONFIGURED})
-    metadata.scope = SELECTED  # SDK oauth2.py Step 3 / step-up union
-    assert metadata.scope == CONFIGURED
+    httpx = sdk_httpx()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+    seen: dict = {}
 
-    asm = OAuthMetadata.model_validate({
-        "issuer": "https://as.example", "authorization_endpoint": "https://as.example/authorize",
-        "token_endpoint": "https://as.example/token", "registration_endpoint": "https://as.example/register"})
-    request = create_client_registration_request(asm, metadata, "https://as.example")
-    assert json.loads(request.content)["scope"] == CONFIGURED
-    metadata.client_name = "renamed"  # every other field stays writable
-    assert metadata.client_name == "renamed"
+    async def redirect(url):
+        seen["authorize"] = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+
+    async def callback():
+        return _authorization_code_result("code-1", seen["authorize"]["state"], iss=AS)
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv", server_url=RESOURCE, storage=HermesTokenStorage("srv"),
+        client_metadata=_build_client_metadata({"_resolved_port": 43123, **oauth_cfg}),
+        redirect_handler=redirect, callback_handler=callback)
+    async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(_stand_in(httpx, seen))) as client:
+        response = await client.get(RESOURCE)
+    assert response.status_code == 200
+    return seen
 
 
-def test_unset_scope_leaves_sdk_selection_untouched():
-    metadata = _metadata({})
-    metadata.scope = SELECTED
-    assert metadata.scope == SELECTED
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("oauth_cfg", "sent", "prompt"), [
+    pytest.param({"scope": "mcp:read offline_access"}, "mcp:read offline_access", "consent", id="configured+offline"),
+    pytest.param({"scope": "mcp:read"}, "mcp:read", None, id="configured-no-forced-consent"),
+    pytest.param({}, SELECTED, "consent", id="unset-sdk-selection"),
+])
+async def test_sign_in_sends_the_configured_scope_at_every_step(tmp_path, monkeypatch, oauth_cfg, sent, prompt):
+    """Invariant: registration and the authorization URL carry the configured scope (and no forced
+    consent without ``offline_access``); an unset scope keeps the SDK's selection."""
+    seen = await _sign_in(tmp_path, monkeypatch, oauth_cfg)
+    assert seen["register"] == sent
+    assert seen["authorize"]["scope"] == sent
+    assert seen["authorize"].get("prompt") == prompt

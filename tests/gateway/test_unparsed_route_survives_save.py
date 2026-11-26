@@ -25,3 +25,25 @@ def test_a_route_for_an_unregistered_platform_is_written_back_on_save(tmp_path):
         rows = db.routing.load_routing_entries(routing_scope=scope)
         assert "agent:main:qqbot:c2c:U1" in rows
         assert json.loads(rows["agent:main:qqbot:c2c:U1"])["session_id"] == "sid-qq"
+
+
+def test_an_older_sessions_json_copy_does_not_replace_the_held_db_route(tmp_path):
+    """state.db is primary: the legacy sessions.json mirror never overwrites a held unparsed row."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        live = store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t1"))
+        scope, key = store._routing_scope(), "agent:main:qqbot:c2c:U1"
+        newer = {**live.to_dict(), "session_key": key, "platform": "qqbot", "session_id": "sid-new",
+                 "origin": {"platform": "qqbot", "chat_id": "U1", "chat_type": "c2c"}}
+        db.routing.upsert_routing_entry(key, json.dumps(newer), routing_scope=scope)
+        mirror = store.sessions_dir / "sessions.json"
+        data = json.loads(mirror.read_text(encoding="utf-8")) if mirror.exists() else {}
+        data[key] = {**newer, "session_id": "sid-old"}
+        mirror.write_text(json.dumps(data), encoding="utf-8")
+
+        restarted = SessionStore(store.sessions_dir, GatewayConfig())
+        restarted.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t2"))
+        with restarted._lock:
+            restarted._save()
+        assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["session_id"] == "sid-new"

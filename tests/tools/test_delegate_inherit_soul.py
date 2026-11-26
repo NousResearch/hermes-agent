@@ -16,7 +16,7 @@ class TestDelegationInheritSoul(unittest.TestCase):
         parent.disabled_toolsets = []
         with (
             patch("run_agent.AIAgent") as MockAgent,
-            patch("tools.delegate_tool._load_config", return_value=delegation_cfg),
+            patch("tools.delegate_tool_config._load_config", return_value=delegation_cfg),
         ):
             MockAgent.return_value = MagicMock()
             _build_child_agent(task_index=0, goal="g", context=None, toolsets=None, model=None,

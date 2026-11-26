@@ -196,7 +196,7 @@ async def test_unserved_profile_config_is_pruned_from_the_fan_out(tmp_path, monk
     runner._primary_resource_claims = Mock(return_value={})
     runner._record_served_profiles = Mock()
     runner._restore_secondary_completion_ledgers = Mock()
-    runner._start_one_profile_adapters = AsyncMock(side_effect=RuntimeError("adapters failed"))
+    runner._prepare_one_profile_adapters = AsyncMock(side_effect=RuntimeError("adapters failed"))
     monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda cfg: [("ghost", tmp_path / "ghost")])
     monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
     monkeypatch.setattr(

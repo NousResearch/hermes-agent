@@ -192,43 +192,49 @@ class PluginEviction:
 
     def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = (), *,
                  tried: dict[Path, str] | None = None, configs=None):
-        from hermes_yaml import roundtrip_yaml
         from pm.publication import selection_snapshot
 
         # The snapshot the update decided from: a user edit since then refuses publication.
         self.configs = selection_snapshot() if configs is None else configs
-        tried = tried or {}
+        self.tried = tried = tried or {}
         by_home: dict[Path, list[tuple[str, Path, str | None]]] = {}
         for plugins_dir, name, plugin_dir in entries:
             if plugin_dir.resolve() in reasons:
                 by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, reasons[plugin_dir.resolve()]))
         for plugins_dir, name, plugin_dir in rejoined:
             by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, None))
-        self.edits: list[tuple[Path, bytes | None, bytes]] = []
-        for home, changes in by_home.items():
-            path = home / "config.yaml"
-            previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
-            yaml = roundtrip_yaml()
-            config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
-            # read_home_selection already proved plugins is a mapping and the lists are lists.
-            plugins = config.get("plugins")
-            if plugins is None:
-                plugins = config["plugins"] = {}
-            for name, plugin_dir, reason in changes:
-                if reason is None:
-                    _rejoin(plugins, name, plugin_dir)
-                else:
-                    _disable(plugins, name, plugin_dir, reason, tried.get(plugin_dir.resolve()))
-            _prune_record(plugins)
-            output = io.StringIO()
-            yaml.dump(config, output)
-            self.edits.append((path, previous, output.getvalue().encode("utf-8")))
+        self.changes = by_home
+        self.edits: list[tuple[Path, bytes | None, bytes]] = [self._render(home) for home in by_home]
+
+    def _render(self, home: Path) -> tuple[Path, bytes | None, bytes]:
+        """*home*'s config.yaml as it is now, with this update's edits to its ``plugins`` section."""
+        from hermes_yaml import roundtrip_yaml
+
+        path = home / "config.yaml"
+        previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+        yaml = roundtrip_yaml()
+        config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
+        # read_home_selection already proved plugins is a mapping and the lists are lists.
+        plugins = config.get("plugins")
+        if plugins is None:
+            plugins = config["plugins"] = {}
+        for name, plugin_dir, reason in self.changes[home]:
+            if reason is None:
+                _rejoin(plugins, name, plugin_dir)
+            else:
+                _disable(plugins, name, plugin_dir, reason, self.tried.get(plugin_dir.resolve()))
+        _prune_record(plugins)
+        output = io.StringIO()
+        yaml.dump(config, output)
+        return path, previous, output.getvalue().encode("utf-8")
 
     def publish(self, project: Path) -> None:
-        from pm.publication import selection_snapshot
+        from pm.publication import SelectionChanged, selection_snapshot
 
         if selection_snapshot() != self.configs:
-            raise ValueError("plugin configuration changed while preparing publication; retry")
+            raise SelectionChanged("plugin configuration changed while preparing publication; retry")
+        # Keys outside the plugin selection may have moved since: re-applied to the bytes as they are.
+        self.edits = [self._render(home) for home in self.changes]
         row = {"configs": [{"config": str(path),
                             "previous": base64.b64encode(previous).decode() if previous is not None else None,
                             "config_after": hashlib.sha256(proposed).hexdigest()}

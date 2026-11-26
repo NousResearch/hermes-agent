@@ -496,7 +496,13 @@ service not installed yet is judged as `hermes gateway install` would write it: 
 environment plus the unit's `Environment=` lines, or the LaunchAgent's variables), or when
 the old unit's `env` launcher sets VAR: put the literal value in `.env`, or set VAR where the gateway
 runs), the public URL it would copy into
-`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
+`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed — and
+when an external secret source is enabled under `secrets:`, the planner never reads vault values to
+guess whether it sets `HERMES_DASHBOARD_PUBLIC_URL`, so it blocks until `webapp.public_url` is set;
+"public" here just means the browser-facing `http://` or `https://` address used for sign-in
+callbacks and Host/Origin checks, so a LAN hostname/IP or a loopback URL such as
+`http://127.0.0.1:9119` works for local or Desktop-only setups without exposing anything to the
+internet), the
 state of the gateway service and the
 Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
 out it probes the old backend on its address as above and reads `systemctl show` / `launchctl`
@@ -561,7 +567,7 @@ that exist only in the old unit's environment into `.env` (names are printed, va
 gateway as a user service (`hermes gateway install`, which also tries to enable lingering; a launchd agent
 on macOS), stops and disables the old unit (its file is kept; a drop-in `UNIT.d/hermes-migrated.conf` with
 `RestartPreventExitStatus=78` makes a later manual start exit once and stay down), starts the gateway and
-checks every address it now listens on within 90 seconds: `/api/status` answers from the gateway and the
+checks every address it now listens on within 300 seconds: `/api/status` answers from the gateway and the
 Webapp page itself is served. A backend you started by hand is stopped by its recorded process ID (only
 while that ID is still the same process); there is nothing to disable. Any failure puts back what the run
 had changed, and only that: the files, the gateway service exactly as it was, and the old unit with the
@@ -763,7 +769,18 @@ The response also carries two advisory resource blocks (they never affect the
   lifecycle ledger. Fields: `pressure` (`ok` / `elevated` / `critical` /
   `unknown`), `gateway_rss_mb`, `system_total_mb`, `system_available_mb`,
   `swap_used_mb`, `sampled_at`, `boot_id`, `last_boot_unclean`,
-  `last_boot_suspected_oom`. Pressure is `elevated` below 128 MiB (or 15%) of
+  `last_boot_suspected_oom`, `last_boot_oom_kill` (`null`, `cgroup` or
+  `host`: the gateway died uncleanly and, between its last heartbeat and this
+  boot, the kernel OOM-killed a process in the gateway's cgroup (`cgroup`) /
+  somewhere on the host (`host`); the counter does not say which process, and
+  `host` also counts any other process on the machine. A systemd unit or
+  container restart recreates the cgroup, so after one this is usually
+  `host`; `cgroup` applies only when the gateway restarts inside a surviving
+  cgroup. Compared only when the last heartbeat is at most 15 minutes old;
+  Linux only), `last_boot_watchdog_exit` (the previous gateway
+  life was ended by a watchdog: either the event-loop liveness watchdog or the
+  shutdown watchdog), `last_boot_memory_starved` (that watchdog kill happened
+  while host memory pressure was `critical`). Pressure is `elevated` below 128 MiB (or 15%) of
   available system memory and `critical` below 64 MiB (or 5%) — the same
   levels at which a subsequent unclean exit would be flagged as a suspected
   OOM kill. Heartbeats older than 150 seconds (or future-dated) keep their

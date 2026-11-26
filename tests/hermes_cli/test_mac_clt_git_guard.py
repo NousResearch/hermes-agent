@@ -416,6 +416,28 @@ def test_relative_path_entry_is_resolved_against_child_cwd(tmp_path, clt_stub_en
 
 
 @pytest.mark.platforms("posix")
+def test_bare_git_readers_with_a_child_cwd_resolve_relative_path_entries_there(tmp_path, clt_stub_env, monkeypatch):
+    """Callers that gate on a usable git and then launch bare ``git`` with ``cwd=`` must look it up from that cwd."""
+    from agent import trace_upload
+    from hermes_cli import dump
+    from tui_gateway import host_supervisor
+
+    trap_bin, _trap_git, spawn_log = clt_stub_env
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    child.mkdir()
+    _make_exe(parent / "bin" / "git", "#!/usr/bin/env bash\necho parent-ok\n")
+    monkeypatch.chdir(parent)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{trap_bin}")
+    monkeypatch.setattr(host_supervisor, "_repo_root", lambda: child)
+
+    assert dump._git_output(child, "rev-parse", "HEAD") == ""
+    assert trace_upload._git_branch(str(child)) == ""
+    assert host_supervisor._build_sha() == "unknown"
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

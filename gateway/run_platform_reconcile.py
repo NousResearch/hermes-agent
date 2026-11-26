@@ -238,10 +238,11 @@ class PlatformChangeLedger:
     - Change lists ACCUMULATE: every reconcile (watcher tick, plugin-load trigger, an ask's own apply,
       the apply of an ask that answered ``pending``) merges its lists in; nothing ever replaces them, so
       a later reconcile that found nothing left to do cannot erase an earlier one's start.
-    - An answer drains them on the thread that returns it, after the reconcile it waited for finished,
-      so an ask that stops waiting leaves everything for the next ask.
+    - An answer drains them on the thread that returns it, as the last step before it returns (nothing
+      waits after the drain, so the whole answer stays inside the caller's wait), after the reconcile
+      it waited for finished; an ask that stops waiting leaves everything for the next ask.
     - Nothing else is kept: an ask always reconciles the files as they stand (no saved answer is ever
-      replayed), and its platform states and reasons are read live when it answers.
+      replayed), and answers the platform states and reasons its own reconcile read as it finished.
 
     Recorded on the loop thread, drained on the control socket's: hence the lock."""
 
@@ -338,13 +339,6 @@ class GatewayPlatformReconcileMixin:
         """The control verb's apply (loop thread): reconcile the files the caller wrote. The verb then
         drains the ledger (:meth:`deliver_platform_changes`); an ask that stops waiting drains nothing."""
         return await self.reconcile_profile_platforms(profile_name, reason="control-socket")
-
-    def platform_answer_states(self, profile_name: Optional[str]) -> dict:
-        """Loop thread: the profile's live ``platforms`` / ``reasons``, as an answer reports them."""
-        if profile_name in (None, getattr(self, "_primary_profile_name", None) or "default"):
-            return {"platforms": self._primary_platform_states(),
-                    "reasons": dict(getattr(self, "_primary_blocked_platforms", None) or {})}
-        return {"platforms": self._secondary_platform_states(profile_name), "reasons": {}}
 
     @property
     def platform_change_ledger(self) -> PlatformChangeLedger:
@@ -756,21 +750,13 @@ def reconcile_platforms_verb(runner: Any, loop: asyncio.AbstractEventLoop):
     import concurrent.futures
 
     def _deliver(receipt: dict) -> dict:
-        """This thread returns the answer, so it drains the ledger (PlatformChangeLedger), then reads the
-        live states; a loop too busy to answer within the window leaves the reconcile's own states."""
+        """This thread returns the answer, so it drains the ledger (PlatformChangeLedger), and waits on
+        nothing after: the reconcile's own states, read as it finished, are the live ones."""
         profile = receipt.get("profile")
         if profile is None:
             return receipt
         lists = runner.platform_change_ledger.drain(profile)
-        live = asyncio.run_coroutine_threadsafe(_states(profile), loop)
-        try:
-            receipt = {**receipt, **live.result(timeout=_VERB_WAIT_SECS)}
-        except concurrent.futures.TimeoutError:
-            live.cancel()
         return {**receipt, **lists, "changed": bool(lists["started"] or lists["restarted"] or lists["stopped"])}
-
-    async def _states(profile: str) -> dict:
-        return runner.platform_answer_states(profile)
 
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_process_hermes_home, hermes_home_key

@@ -21,8 +21,8 @@ from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pi
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
-# Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
-from hermes_state_keys import profile_from_session_key_namespace
+# Inverse of _session_key_namespace, defined in the neutral session_keys module (storage must not import gateway).
+from session_keys import profile_from_session_key_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -827,7 +827,7 @@ class SessionStore(
     SessionPersistenceMixin, SessionRecoveryMixin, SessionLifecycleMixin, SessionTranscriptMixin,
     SessionPromptPinMixin,
 ):
-    """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
+    """Session routing index + transcripts: SQLite through the storage interface, legacy JSONL fallback."""
 
     def __init__(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
@@ -865,7 +865,7 @@ class SessionStore(
         self._has_active_processes_fn = has_active_processes_fn
         self._write_sessions_json = bool(getattr(config, "write_sessions_json", True))
 
-        # SQLite handles are cached per path and resolved through ``_db`` per call, never bound
+        # Storage handles are cached per profile and resolved for the active scope per call, never bound
         # once: a multiplexed gateway serves every profile from ONE process and a handle frozen to
         # the root home would land every profile's rows in the root state.db.
         # Initialize SQLite session database. A multiplexed gateway serves every profile from a SINGLE
@@ -894,14 +894,14 @@ class SessionStore(
             handles=self._db_handles, lock=self._db_handles_lock
         )
         # The routing index needs exactly one home for its lifetime: the gateway's own, captured
-        # before any profile scope exists (see ``_routing_db``).
+        # before any profile scope exists (see ``_routing_persistence``).
         try:
             from hermes_constants import get_hermes_home
 
             self._routing_home: Optional[Path] = Path(get_hermes_home())
         except Exception:
             self._routing_home = None
-        self._open_session_db_for_active_scope()
+        self._open_persistence_for_active_scope()
 
     def _lazy(self, name: str, factory):
         """``self.<name>``, created via *factory* when missing/None (suites build bare stores via
@@ -930,9 +930,10 @@ class SessionStore(
     def has_any_sessions(self) -> bool:
         """Whether any session has ever been created. SQLite is the source of truth (ended sessions
         count); the current session is already in the DB when this runs, hence ``> 1``."""
-        if self._db:
+        store = self._scoped_persistence()
+        if store is not None:
             try:
-                return self._db.session_count_ge(2)
+                return store.sessions.count_at_least(2)
             except Exception:
                 pass  # fall through to heuristic
         with self._lock:
@@ -1073,7 +1074,7 @@ class SessionStore(
                 # Honour an explicit suspension/reset decision instead of silently reopening via recovery.
                 if reset_reason:
                     decision.schedule_reset(reset_reason, entry, entry.last_prompt_tokens > 0)
-                self._entries.pop(session_key, None)
+                self._drop_routes_locked([session_key])
                 decision.needs_recover = True
             else:
                 # Internal/system events preserve the user-activity clock.
@@ -1255,10 +1256,12 @@ class SessionStore(
             return 0
         old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
         with self._lock:
+            held = getattr(self, "_unparsed_routes", None) or {}
             moving = [key for key in self._entries if key.startswith(old_ns)]
+            moving_held = [key for key in held if key.startswith(old_ns)]
             collisions = [
-                new_ns + key[len(old_ns):] for key in moving
-                if new_ns + key[len(old_ns):] in self._entries]
+                new_ns + key[len(old_ns):] for key in (*moving, *moving_held)
+                if new_ns + key[len(old_ns):] in self._entries or new_ns + key[len(old_ns):] in held]
             if collisions:
                 raise ValueError(
                     f"profile routing collision while renaming {old!r} to {new!r}: "
@@ -1270,9 +1273,15 @@ class SessionStore(
                 if origin is not None and getattr(origin, "profile", None) == old:
                     origin = _dc_replace(origin, profile=new)
                 self._entries[new_key] = _dc_replace(entry, session_key=new_key, origin=origin)
-            if moving:
+            for key in moving_held:  # a held row (platform not registered yet) moves with its profile too
+                new_key = new_ns + key[len(old_ns):]
+                data = held.pop(key)
+                origin = data["origin"]
+                held[new_key] = {**data, "session_key": new_key,
+                                 "origin": {**origin, "profile": new} if origin.get("profile") == old else origin}
+            if moving or moving_held:
                 self._save()
-        return len(moving)
+        return len(moving) + len(moving_held)
 
     def purge_profile_routing(self, profile: str) -> int:
         """Drop a deleted profile's live routing entries and persist the drop (#111926, delete side).
@@ -1287,9 +1296,10 @@ class SessionStore(
             return 0
         ns = f"agent:{name}:"
         with self._lock:
+            held = getattr(self, "_unparsed_routes", None) or {}
             dropped = [key for key in self._entries if key.startswith(ns)]
-            for key in dropped:
-                self._entries.pop(key, None)
+            dropped += [key for key in held if key.startswith(ns) and key not in self._entries]
+            self._drop_routes_locked(dropped)
             if dropped:
                 self._save()
         return len(dropped)
@@ -1300,16 +1310,16 @@ class SessionStore(
         The routing index is written back by THIS process, so removing only the state.db rows
         elsewhere in a delete flow is undone by the next whole-index save: the surviving entry
         hands the same id to the next inbound message and run_agent's INSERT OR IGNORE
-        re-creates the row — the deleted conversation comes back (#42422). Idempotent; returns
-        the number of entries dropped.
+        re-creates the row — the deleted conversation comes back (#42422). A held route (its
+        platform's plugin not registered yet) goes too, or that save writes it back. Idempotent;
+        returns the number of routes dropped.
         """
         if not session_id:
             return 0
         with self._lock:
             self._ensure_loaded_locked()
-            dropped = [key for key, entry in self._entries.items() if entry.session_id == session_id]
-            for key in dropped:
-                self._entries.pop(key, None)
+            dropped = self._route_keys_for_sessions_locked({session_id})
+            self._drop_routes_locked(dropped)
             if dropped:
                 hints = getattr(self, "_session_owner_hints", None)
                 if hints is not None:
@@ -1328,7 +1338,7 @@ class SessionStore(
             entry = self._entry_locked(session_key)
             if entry is None or entry.session_id != session_id:
                 return False
-            self._entries.pop(session_key, None)
+            self._drop_routes_locked([session_key])
             self._save()
         return True
 
@@ -1342,7 +1352,7 @@ class SessionStore(
                 return False
             self._entries[entry.session_key] = entry
             self._save()
-        if self._db_for_key(entry.session_key):
+        if self._persistence_for_key(entry.session_key):
             self._reopen_session_row(entry.session_key, entry.session_id)
         self._announce_route(entry.session_key, entry)
         return True
@@ -1375,7 +1385,7 @@ class SessionStore(
             # Adopt a delegate target under the route lock, after the CAS and BEFORE the route moves: a
             # failed marker write leaves the old route intact, and a refused switch never adopts, so it
             # has nothing to undo that an overlapping successful switch onto the same row relies on.
-            if not refused and self._db_for_key(session_key):
+            if not refused and self._persistence_for_key(session_key):
                 self._adopt_delegate_row(session_key, target_session_id)
             if not refused and old_entry.session_id != target_session_id:
                 new_entry = self._replace_route_locked(
@@ -1399,12 +1409,12 @@ class SessionStore(
             return old_entry
 
         try:
-            if self._db_for_key(session_key) and old_entry.session_id:
+            if self._persistence_for_key(session_key) and old_entry.session_id:
                 self._promote_session_reset(
                     session_key, old_entry.session_id, "session_switch",
                     log=lambda e: logger.debug("Session DB end_session failed: %s", e),
                 )
-            if self._db_for_key(session_key):
+            if self._persistence_for_key(session_key):
                 # An explicit /resume/handoff/branch repoint is real user activity: the row is
                 # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
                 # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.

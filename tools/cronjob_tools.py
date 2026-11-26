@@ -42,6 +42,7 @@ from cron.jobs import (
     resume_job,
     trigger_job,
     update_job)
+from cron.constants import NOT_RUNNABLE_ERROR
 from cron.prompt_scan import _scan_cron_prompt
 from cron.job_args import (
     _apply_continuity,
@@ -128,6 +129,8 @@ def _forward_relay_fronted_run(job: dict[str, Any], extra_prompt: Optional[str] 
     JSON result string when forwarding engages, else None (normal in-process run)."""
     if not _relay_fronted_delivery_platforms(job):
         return None
+    if not is_job_runnable(job):  # the gateway's trigger_job would resume it; a local run can't deliver
+        return _dumps({"success": False, "error": NOT_RUNNABLE_ERROR})
     from agent.secret_scope import get_secret
     key = get_secret("API_SERVER_KEY", "") or ""
     try:
@@ -247,7 +250,7 @@ def _claim_for_manual_run(job_id: str, log_label: str):
         if refreshed is None:
             reason = "Job no longer exists; nothing to run."
         elif not is_job_runnable(refreshed):
-            reason = "Job is paused/disabled; resume it before running."
+            reason = NOT_RUNNABLE_ERROR
         else:
             reason = "Job is already being fired by the scheduler; not run again."
         return None, {"claimed": False, "success": False, "error": reason}
@@ -505,28 +508,24 @@ def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, An
     compression chain), or ``{}`` when no run session exists (no_agent job, refused fire)."""
     if not execution_id:
         return {}
-    import sqlite3
-
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import SessionWindow
+    from persistence.core.errors import PersistenceError
+    from persistence_assembly import open_persistence_reader
     # A missing or locked state.db costs the notice its usage line, never the completion.
     try:
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-    except (sqlite3.Error, OSError):
-        return {}
-    try:
-        run = next((r for r in db.list_cron_job_runs(job_id, limit=50)
-                    if r.get("cron_execution_id") == execution_id), None)
-        if run is None:
-            return {}
-        rows = [db.get_session(sid) or {} for sid in db.get_compression_chain(run["id"])]
-    except sqlite3.Error as exc:
+        with open_persistence_reader(get_hermes_home()) as reader:
+            run = next((r for r in reader.sessions.list_cron_job_runs(job_id, SessionWindow(limit=50))
+                        if r.cron_execution_id == execution_id), None)
+            if run is None:
+                return {}
+            rows = [row for sid in reader.lineage.chain(run.entry.session.session_id)
+                    if (row := reader.sessions.get(sid)) is not None]
+    except (PersistenceError, OSError) as exc:
         logger.debug("cronjob run: run-session usage lookup failed for %s: %s", job_id, exc)
         return {}
-    finally:
-        db.close()
-    model = next((r["model"] for r in reversed(rows) if r.get("model")), None)
-    return {"api_calls": sum(int(r.get("api_call_count") or 0) for r in rows), **({"model": model} if model else {})}
+    model = next((r.model for r in reversed(rows) if r.model), None)
+    return {"api_calls": sum(int(r.api_call_count or 0) for r in rows), **({"model": model} if model else {})}
 
 
 def _manual_run_completion(

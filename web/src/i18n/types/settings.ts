@@ -1,4 +1,57 @@
 export interface SettingsTranslations {
+  backendMigration: {
+    title: string
+    confirmTitle: string
+    confirmMove: string
+    confirmBody: string
+    confirmInterrupt: string
+    thisAddress: string
+    foundPort: string
+    foundLocal: string
+    keepWebappAddress: string
+    keepWebapp: string
+    takeSameAddress: string
+    takeAddress: string
+    takeOldAddress: string
+    signInSameCredentials: string
+    everyoneSignsIn: string
+    newWebapp: string
+    buildWebapp: string
+    autoStart: string
+    downtime: string
+    rollbackOnError: string
+    unsupported: string
+    clearBlockers: string
+    move: string
+    showSteps: string
+    checkAgain: string
+    starting: string
+    checking: string
+    running: string
+    switching: string
+    longWait: string
+    statusCommand: string
+    signInAgainDetail: string
+    signInAgain: string
+    startUnknown: string
+    endUnknown: string
+    stalled: string
+    restoreCommand: string
+    doneAt: string
+    doneSame: string
+    signInAtSameAddress: string
+    undoCommand: string
+    rolledBack: string
+    tryAgain: string
+    incomplete: string
+    restored: string
+    notStarted: string
+    saveConfig: string
+    followSteps: string
+    runLocally: string
+    steps: Record<string, string>
+  }
+
   // ── Plugins page ──
   pluginsPage: {
     updateScanBody: (name: string, count: number) => string

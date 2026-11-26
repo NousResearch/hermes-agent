@@ -11,7 +11,8 @@ it refused ``cancelled``), so no later wake, re-delivery or owner restart admits
 import asyncio
 
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, get_session_admission
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 _FIELDS = frozenset({'id', 'profile', 'author_id'})
 
@@ -29,23 +30,23 @@ async def _cancel(connection, params):
     from gateway.session_bot_mailbox import mailbox_lock, read_receipt, remember_receipt, write_receipt
     authority, actor = connection.authority, connection.actor
     if set(params) - _FIELDS:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     home = _home(authority, actor, params.get('profile'))
     try:
         key = _delivery_id(params.get('id'))
     except ValueError as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise AuthorityRefusal('invalid_params') from exc
     async with mailbox_lock(authority):
         _, record = await read_receipt(home, key)
         if record is None or not record.get('admission_id'):
-            raise RuntimeStoreError('not_found')
+            raise AuthorityRefusal('not_found')
         # Only the delivery's own sender: the principal it was admitted on and the bot it named.
         if record['principal_id'] != actor.subject or (record.get('author') or {}).get('id') != params.get('author_id'):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         retry_id = _retry_admission(authority, record)
         current = retry_id or record['admission_id']
-        row = get_session_admission(authority.db, admission_id=current)
-        live = row is not None and row['status'] != 'terminal'
+        row = authority_persistence(authority).admissions.get(admission_id=current)
+        live = row is not None and row.status != 'terminal'
         withdrawn = retry_id is None and (live or _retry_eligible(authority, record))
         if withdrawn:
             record['retry'] = {**(record.get('retry') or {}), 'identity': _retry_identity(key), 'refused': 'cancelled'}

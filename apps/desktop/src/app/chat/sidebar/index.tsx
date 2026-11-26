@@ -288,7 +288,7 @@ const HEADER_NAV_BTN =
 // by id; the snippet stands in for the preview).
 
 // The backend's FTS layer wraps matched terms in literal '>>>' / '<<<'
-// highlight markers (sqlite snippet() delimiters — see hermes_state_search.py).
+// highlight markers (sqlite snippet() delimiters — see persistence/sqlite/conversation/_store/search.py).
 // The sidebar renders the snippet as plain text, so the markers must be
 // stripped or a search for "foo" paints rows titled ">>>foo<<<".
 // Exported for tests.
@@ -306,7 +306,7 @@ export function searchResultToSession(result: SessionSearchResult): SessionInfo 
   const ts = result.session_started ?? Date.now() / 1000
 
   return {
-    archived: false,
+    archived: result.archived ?? false,
     cwd: null,
     ended_at: null,
     id: result.session_id,
@@ -383,7 +383,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string, session?: SessionInfo) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge

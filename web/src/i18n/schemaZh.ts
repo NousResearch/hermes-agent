@@ -37,6 +37,9 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   'sessions.orphan_end_grace_s': '会话 → 无查看者会话结束宽限期(秒)',
   'vault.key_storage': '凭据保险库 → 密钥存储方式',
   'display.cli_layout': '显示 → 经典命令行布局',
+  'display.program_status': '显示 → 向终端报告运行状态',
+  'agent.codex_request_compression': 'Agent → 压缩 Codex 请求',
+  'skills.index_desc_limit': '技能 → 索引描述字符上限',
   'telegram.extra.dm_topic_auto_transfer': 'Telegram → 扩展 → 私聊自动转入新话题',
   'terminal.process_wait_auto_notify': '终端 → 等待时自动通知',
   'terminal.client_env_passthrough': '终端 → 客户端环境变量透传',
@@ -173,7 +176,7 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
   'delegation.max_iterations': '委托 → 最大迭代',
   'delegation.max_spawn_depth': '委托 → 最大嵌套深度',
   'delegation.model': '委托 → 默认模型',
-  'delegation.orchestrator_enabled': '委托 → 启用协调器',
+  'delegation.orchestrator_enabled': '委托 → 允许子 Agent 继续委派',
   'delegation.provider': '委托 → 服务商',
   'delegation.reasoning_effort': '委托 → 推理力度',
   'delegation.subagent_auto_approve': '委托 → 子 Agent 自动批准',
@@ -368,6 +371,11 @@ export const SCHEMA_ZH_LABEL: Record<string, string> = {
 // path belong here. Generated English path descriptions are intentionally not
 // repeated under a Chinese label.
 export const SCHEMA_ZH_DESCRIPTION: Record<string, string> = {
+  'display.program_status': '向支持 OSC 7501 的终端发送空闲、运行中、等待输入、完成或失败状态。',
+  'agent.codex_request_compression': '向官方 Codex 服务发送压缩请求。服务拒绝压缩请求时，Hermes 会改用 JSON 重试。',
+  'skills.index_desc_limit': '技能索引中每条描述的字符上限。上限越高，便于判断技能是否适用，也会占用更多 token。',
+  'prompt_caching.cache_ttl': '为 Anthropic 提示词缓存指定有效期。可使用自动选择、5 分钟或 1 小时，也可关闭。',
+  'delegation.orchestrator_enabled': '关闭后，子 Agent 可以执行分配的任务，但不能进一步委派。',
   'terminal.process_wait_auto_notify': '连续两次等待或轮询均无变化后，改为进程完成时通知，停止重复轮询。',
   'terminal.client_env_passthrough': '允许 CLI 或 TUI 客户端向其工具传递的额外非敏感工具链环境变量名称。',
   'worktrees.archive_dirty': '清理闲置工作树前归档未提交或未推送的工作；关闭后保留这些工作树。',

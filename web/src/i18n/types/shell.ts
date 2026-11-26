@@ -146,6 +146,21 @@ export interface ShellTranslations {
     sharedMetricsOff: string
     sharedMetricsDetails: string
     sharedMetricsSaveFailed: string
+    dashboardMovingMeta: string
+    dashboardMovingNotice: string
+    dashboardMovingTitle: string
+    dashboardMovingBody: string
+    dashboardMovingMachineTitle: string
+    dashboardMovingMachineDetail: string
+    dashboardMovingMachineReady: string
+    dashboardMovingMachineStarting: string
+    dashboardMovingMachineDown: string
+    dashboardMovingMachineNotAvailable: string
+    dashboardMovingMachineNotAvailableDetail: string
+    dashboardMovingSettingsTitle: string
+    dashboardMovingSettingsDetail: string
+    dashboardMovingOpen: string
+    dashboardMovingLater: string
   }
 
   // ── Chat sidebar ──

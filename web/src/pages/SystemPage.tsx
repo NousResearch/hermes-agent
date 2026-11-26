@@ -43,6 +43,8 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
+import { BackendMigrationCard } from "@/components/BackendMigrationCard";
+import { MultiplexMigrateOffer } from "@/components/MultiplexMigrateOffer";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { cn, formatDateTime, themedBody } from "@/lib/utils";
@@ -1271,31 +1273,9 @@ export default function SystemPage() {
               {servedNotice ?? format(t.sharedGateway.servedWith, { profiles: sharedGateway!.join(", ") })}
             </CardContent>
           )}
-          {migratePlan &&
-            !migratePlan.already_multiplexed &&
-            migratePlan.profiles.length > 1 &&
-            (migratePlan.eligible || migratePlan.blockers.length > 0) && (
-              <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-muted-foreground">{t.sharedGateway.migrationDescription}</span>
-                  <Button
-                    size="sm"
-                    className="uppercase"
-                    onClick={migrateToMultiplex}
-                    disabled={!migratePlan.eligible}
-                    title={migratePlan.eligible ? undefined : t.sharedGateway.fixBlockers}
-                  >
-                    {t.sharedGateway.migrate}
-                  </Button>
-                </div>
-                {migratePlan.blockers.map((b) => (
-                  <div key={b} className="text-warning">
-                    • {b}
-                  </div>
-                ))}
-              </CardContent>
-            )}
+          {migratePlan && <MultiplexMigrateOffer plan={migratePlan} onMigrate={migrateToMultiplex} />}
         </Card>
+        <BackendMigrationCard />
       </section>
 
       {/* ── Memory ────────────────────────────────────────────────── */}

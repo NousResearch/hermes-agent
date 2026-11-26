@@ -673,7 +673,7 @@ def _fixed_temperature_for_model(
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
-    from agent.gemini_native_adapter import gemini_sampling_deprecated
+    from agent.gemini_model_family import gemini_sampling_deprecated
     if _is_openai_default_temperature_only(model) or gemini_sampling_deprecated(_bare_model(model)):
         logger.debug("Omitting temperature for %r (default-only, or Gemini 3.6+ ignores sampling)", model)
         return OMIT_TEMPERATURE
@@ -1368,7 +1368,7 @@ class _CodexCompletionsAdapter:
             _responses_tools,
             _role_message_item,
             _wire_model_identity,
-            classify_responses_route,
+            apply_developer_instructions_if_needed, classify_responses_route,
         )
         from agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
@@ -1501,8 +1501,8 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
-        # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
         from agent.transports.codex import _sanitize_astra_request_kwargs
+        apply_developer_instructions_if_needed(resp_kwargs, wire_model, is_xai_responses=is_xai)
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
         return resp_kwargs, model, timeout
 
@@ -1921,7 +1921,7 @@ def _read_nous_auth() -> Optional[dict]:
         return {
             "access_token": getattr(entry, "access_token", ""),
             "refresh_token": getattr(entry, "refresh_token", None),
-            "agent_key": getattr(entry, "agent_key", None),
+            "agent_key": getattr(entry, "agent_key", None), "obtained_at": getattr(entry, "obtained_at", None), "agent_key_obtained_at": getattr(entry, "agent_key_obtained_at", None),
             "inference_base_url": _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL),
             "portal_base_url": getattr(entry, "portal_base_url", None),
             "client_id": getattr(entry, "client_id", None),
@@ -1949,11 +1949,11 @@ def _read_nous_auth() -> Optional[dict]:
 def _nous_api_key(provider: dict) -> str:
     """Extract a usable Nous inference JWT from stored auth state."""
     from hermes_cli.auth import _nous_invoke_jwt_is_usable
-    for token_key, expiry_key in (("agent_key", "agent_key_expires_at"), ("access_token", "expires_at")):
+    for token_key, expiry_key, arrival_key in (("agent_key", "agent_key_expires_at", "agent_key_obtained_at"), ("access_token", "expires_at", "obtained_at")):
         token = provider.get(token_key)
         if not isinstance(token, str) or not token.strip():
             continue
-        if _nous_invoke_jwt_is_usable(token, scope=provider.get("scope"), expires_at=provider.get(expiry_key)):
+        if _nous_invoke_jwt_is_usable(token, scope=provider.get("scope"), expires_at=provider.get(expiry_key), obtained_at=provider.get(arrival_key)):
             return token
     return ""
 
@@ -1978,7 +1978,7 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
 
     def _entry_state(e: Any) -> dict[str, Any]:
         return {k: getattr(e, k, None) for k in (
-            "agent_key", "agent_key_expires_at", "access_token", "expires_at", "scope")}
+            "agent_key", "agent_key_expires_at", "agent_key_obtained_at", "access_token", "expires_at", "scope")}
 
     if force_refresh or not _agent_key_is_usable(_entry_state(entry), _nous_min_key_ttl_seconds()):
         try:
@@ -2162,12 +2162,13 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 api_key = runtime["api_key"]
             via = " (session endpoint)"
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
-        # Native Gemini, else OpenAI-wire + Anthropic rewrap.
+        # Provider-owned native transport (e.g. Gemini), else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
-        if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-            if is_native_gemini_base_url(base_url):
-                return _tag_backend(GeminiNativeClient(api_key=api_key, base_url=base_url), provider_id), model
+        aux_profile_client = _api_key_profile_supplied_client(
+            provider_id, api_key=api_key, base_url=base_url, auxiliary_chain=True,
+        )
+        if aux_profile_client is not None:
+            return _tag_backend(aux_profile_client, provider_id), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
@@ -4521,10 +4522,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
-    with contextlib.suppress(ImportError):
-        from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
-        if isinstance(sync_client, GeminiNativeClient):
-            return AsyncGeminiNativeClient(sync_client), model
+    async_cls = getattr(type(sync_client), "HERMES_ASYNC_CLIENT", None)
+    if callable(async_cls):
+        return async_cls(sync_client), model
     # ACP shims (subprocess, not an HTTP pool) are already async-safe and opt out of the wrapper.
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
@@ -5045,14 +5045,15 @@ def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
                           "runtime resolution failed (run: hermes doctor for diagnostics)")
 
 
-def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any | None:
+def _api_key_profile_supplied_client(provider: str, *, auxiliary_chain: bool = False, **client_kwargs: Any) -> Any | None:
     """Registered profile's own client for an ``api_key`` aux route, or ``None``.
 
     Same registration seam as ``agent_runtime_helpers._provider_supplied_client`` (main agent)
     and the ``external_process`` branch below: a profile whose wire protocol is not
     OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
-    A profile that raises is logged and skipped — a third-party plugin can only fail to
-    provide a client, never take the auxiliary resolution down."""
+    A ``strict_client`` profile owns the transport (its errors propagate rather than falling
+    back to an OpenAI client on a native URL, and ``auxiliary_chain=True`` queries only strict
+    profiles). A non-strict third-party plugin that raises is logged and skipped."""
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(provider)
@@ -5060,9 +5061,16 @@ def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any
         return None
     if profile is None:
         return None
+    strict = bool(getattr(profile, "strict_client", False))
+    if auxiliary_chain and not strict:
+        return None
+    if auxiliary_chain:
+        client_kwargs = {**client_kwargs, "auxiliary_chain": True}
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
+        if strict:
+            raise
         logger.warning("resolve_provider_client: provider profile %r failed to create an "
                        "auxiliary client; falling back to the standard client path",
                        provider, exc_info=True)
@@ -5105,17 +5113,11 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
-    # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
+    # Consulted before the built-in OpenAI ladder so a registered native transport wins (#112384).
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
         return _route_client(req, profile_client, final_model)
-    if provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-        if is_native_gemini_base_url(base_url):
-            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     from agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses
@@ -6347,20 +6349,12 @@ def _nous_on_messages_wire(provider_norm: str, model: str) -> bool:
 
 
 _NVIDIA_PROVIDER_NAMES = {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
-_GEMINI_NATIVE_PROVIDER_NAMES = {"gemini", "google", "google-gemini", "google-ai-studio"}
-
-
 def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
-    """Gemini native by provider name, else (best-effort) by base URL shape."""
-    if provider_norm in _GEMINI_NATIVE_PROVIDER_NAMES:
-        return True
+    """Gemini native route by base URL shape (provider-name forwarding uses ``forwards_max_tokens``)."""
     if not effective_base:
         return False
-    try:
-        from agent.gemini_native_adapter import is_native_gemini_base_url
-        return is_native_gemini_base_url(effective_base)
-    except Exception:
-        return False
+    from agent.gemini_urls import is_native_gemini_base_url
+    return is_native_gemini_base_url(effective_base)
 
 
 def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:
@@ -6589,7 +6583,7 @@ def _build_call_kwargs(
 
 
 def _validate_llm_response(
-    response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
+    response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None, client: Any = None,
 ) -> Any:
     """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
 
@@ -6600,15 +6594,15 @@ def _validate_llm_response(
     See #7264.
     Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
     hints — fallback-path calls omit them and the row keeps the model (read from the response itself) with
-    an empty route. See #23270.
+    an empty route. See #23270. *client* produced *response*; only its credential's cost lookup reads it.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
     response = _unwrap_data_envelope(response, task)
-    from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    from agent.aux_accounting import ServingCredential, record_aux_usage
+    record_aux_usage(response, task, provider=provider, base_url=base_url, serving=ServingCredential.of(client))
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
         choices = response.choices
@@ -7081,7 +7075,7 @@ class _ChatStreamAccumulator:
         if delta is None:
             return False
         made_progress = False
-        from agent.message_content import flatten_message_text
+        from session_rules.turns import flatten_message_text
 
         piece = flatten_message_text(getattr(delta, "content", None), sep="")
         if piece:
@@ -8027,7 +8021,7 @@ def _call_llm_impl(
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
-    def _primary(**validate_kw: Any) -> Any:
+    def _primary() -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
         # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
@@ -8048,9 +8042,8 @@ def _call_llm_impl(
                         request_provider, req.base_info or req.resolved_base_url),
                 ),
             ),
-            task, **validate_kw,
-        )
-    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info)
+            task, provider=request_provider, base_url=req.base_info, client=client)
+    resp, exc = _outcome(_primary)
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)
@@ -8199,12 +8192,13 @@ async def _async_call_llm_impl(
         return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async,
                                             provider=request_provider)
 
-    async def _primary(**validate_kw: Any) -> Any:
+    async def _primary() -> Any:
         import asyncio
         return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(
-            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate), task, **validate_kw)
+            client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate),
+            task, provider=request_provider, base_url=req.base_info, client=client)
     # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()). (PR #16587)
-    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info))
+    resp, exc = await _aoutcome(_primary())
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)

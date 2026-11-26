@@ -277,7 +277,7 @@ export const workspaceEn: Pick<
     configure: 'Configure',
     configureTitle: 'Configure {name}',
     configuredSummary:
-      '{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.',
+      '{configured} of {total} channels configured. Credentials are written to {path}; a running gateway connects each enabled channel as soon as it is saved.',
     sharedCallbackUrl: 'Callback URL (shared listener):',
     enablePlatform: 'Enable {name}',
     errorToast: 'Error: {error}',
@@ -300,6 +300,7 @@ export const workspaceEn: Pick<
     restartNow: 'Restart now',
     saveAndEnable: 'Save & enable',
     savedConnecting: '{name} saved; the running gateway is connecting',
+    savedNeedsSetup: '{name} saved; it still needs setup',
     saved: '{name} saved',
     setupGuide: 'Setup guide',
     telegramManualTitle: 'Use your own Telegram bot',

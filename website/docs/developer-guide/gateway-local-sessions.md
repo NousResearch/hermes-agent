@@ -20,7 +20,7 @@ The result preserves `session_id`, `stored_session_id`, `messages`, `message_cou
 the same stable persisted **logical** ID. Compression and reset may rotate the private
 physical transcript target without changing either client ID. Creation is lazy with respect
 to the agent, but reserves the real
-SessionDB/SessionStore identity before returning. One canonical SQLite transaction commits
+stored-session/SessionStore identity before returning. One canonical SQLite transaction commits
 the session row, route, and private `gateway.local_policy.v1:<stored-id>` creation receipt.
 Repeating the request ID for the same principal and profile reuses that identity and frozen
 policy, including after daemon death. Omit the ID for a new session; clients that need
@@ -29,11 +29,15 @@ lost-ACK retry protection must retain it. A failed transaction publishes no live
 ### Naming the client
 
 A client may say who it is with an optional `client` object on `session.create`, for example
-`"client": {"name": "my-client", "version": "1.2.0"}`. `name` is 1-64 characters of `a-z`, `0-9`,
-`.`, `_` and `-`, starting with a letter or digit; `version` is optional, 1-64 printable ASCII
-characters without spaces. Anything else is refused with `invalid_params` (field `client`). Send it
-only to an owner whose `runtime.describe` lists `client` in `session_create.parameters` (capability
-`session-client-v1`); an older owner refuses the unknown key.
+`"client": {"name": "my-client", "version": "1.2.0", "kind": "desktop"}`. `name` is 1-64 characters
+of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit; `version` is optional, 1-64
+printable ASCII characters without spaces; `kind` is optional, a string of 1-32 characters. The
+known kinds are `desktop`, `webapp`, `tui` and `mobile`; an unknown kind is not an error, the label
+is kept and read without it. Anything else is refused with `invalid_params` (field `client`). Send
+`name` and `version` only to an owner whose `runtime.describe` lists `client` in
+`session_create.parameters` (capability `session-client-v1`); an older owner refuses the unknown key.
+Add `kind` only when the owner also lists `client-identity-v1` in its capabilities: an owner with
+`session-client-v1` alone refuses a label that carries one.
 
 The name is stored with the frozen creation request, so it is part of the exact-retry identity
 and survives a restart. `session.info` returns it as `client` (absent when none was sent), and
@@ -42,6 +46,40 @@ plugins read it through `hermes_cli.plugin_session.session_client()` and the `cl
 picks the session policy (send `source: "tui"` for terminal-client behaviour), and no toolset,
 approval, permission, prompt text or telemetry reads `client`. Hermes does not verify the name,
 so any client can claim any name: never grant anything based on it.
+
+The same label also names the connection, not just one session: after its
+`client.capabilities {server_requests: true}` call, a client sends
+`client.capabilities {"client": {...}}` as a call of its own, once per connection and again after
+every reconnect, and ignores an error reply (an older owner refuses the unknown param for that
+call only). An owner listing `client-identity-v1` in `runtime.describe` capabilities keeps it for
+the connection's life; a malformed label leaves the earlier one in place and answers `4001` (an
+unknown key in it `4000`, like any unknown param). The Desktop app sends `hermes-desktop` /
+`desktop` and the Webapp `hermes-webapp` / `webapp`.
+
+An owner listing `client-activity-v1` answers `client.capabilities` with `client_activity: true`
+on a connection that keeps presence (a WebSocket; stdio answers `false`), and only then does a
+client send `client.activity {sessions, idle_seconds, basis, can_alert?,
+away?}`: the sessions it has in view (at most 16 ids, each at most 256 characters), how long
+ago the user's last input was,
+whether that comes from the OS idle clock (`basis: "system"`) or from input inside the Hermes
+window (`"page"`), whether it can get the user's attention for those sessions itself, and
+`away: true` when the screen locks. The owner keeps, per connection and session, the newest of
+that report and the input it sees itself (prompts, answers to its requests, interrupts, steers), in
+memory only, and counts a connection only while it is attached to the session. Each report is the
+connection's whole statement: the owner drops that connection's records of every session the report
+does not list, input it saw itself included, so a client that moved to another session (or to a page
+with none) withdraws by reporting what it shows now, and `sessions: []` withdraws everything. Input
+the owner sees after a report counts again. A report names sessions by id only; on a socket that
+serves several profiles it counts for the one profile whose session of that id the connection is
+attached to, and for none while it is attached to same-id sessions in more than one. Notification plugins read it to
+stay quiet while the user is at a computer. Like the name, it is attribution only and grants
+nothing.
+
+Each turn a connection submits is stamped with its label (`surface_v1.client` on the admission,
+never a `prompt.submit` field; a retry from another or no label is the same request). Plugins read
+the turn's label with `hermes_cli.plugin_session.turn_client()`, the Hermes producer of a turn no
+connection submitted (a process notification or a delegation result) with `turn_origin()`, and the
+attached connections with their idle data with `session_viewers()`.
 
 Attach another authenticated viewer with `session.resume({session_id})`, and submit
 through `prompt.submit({session_id, submission_id, text})`. The accepted receipt is durable
@@ -94,9 +132,13 @@ restriction rather than treating every accepted dashboard credential as an opera
 Cross-subject local submissions carry a private, server-written profile/session/principal
 binding for queued execution and recovery. It is not exposed in model requests or public
 session snapshots. This change does not implement OpenAI API-to-local session affinity. The gateway
-listener stays on loopback unless `webapp.host` binds a wildcard address. The Webapp's listener engages
-the dashboard sign-in gate on a wildcard bind or when `webapp.public_url` is set, on any bind, and
-one-use launch links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
+listener stays on loopback unless `webapp.host` binds a wildcard address or one IP address of this
+machine. A specific address also gets a loopback socket on the same port, serving the same app under
+the same boundary state (`loopback_companion` in `gateway/webapp_listener.py`), because native
+clients accept only a loopback origin; its Host check accepts the address, loopback names and the
+Webapp's public host, nothing else. The Webapp's listener engages the dashboard sign-in gate on a
+wildcard or specific-address bind or when `webapp.public_url` is set, on any bind, and one-use launch
+links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
 gateway's private listener for native clients reads it as main does, so hosted sign-in on that
 listener keeps working.
 
@@ -143,7 +185,7 @@ listener keeps working.
   excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
   by listing it. Explicit resume performs adoption; the default live feed is unchanged.
   Both scopes take `workspace`: only conversations whose first row is in that folder, by
-  `hermes -c`'s rule (`hermes_state_sessions.workspace_key`): the row's git repo root equals it, or
+  `hermes -c`'s rule (`persistence.conversation.sessions.workspace_key`): the row's git repo root equals it, or
   (no root recorded) its cwd is the folder or under it. Pass the caller's repo root (else its cwd).
   With `picker: true` each row also carries what a picker shows (`gateway/session_picker_fields.py`):
   `cwd` and `workspace` from the same first row the filter reads, and from the conversation's current

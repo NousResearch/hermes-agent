@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { PROFILE_ID_ARG_RE } from "@hermes/shared/profile-id";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,
@@ -38,9 +39,6 @@ import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 import { ProfileCreationReceipt, type CreationReceipt } from "./ProfileCreationReceipt";
 
-// Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
-// invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /** Braille unicode spinner (`unicode-animations`); static first frame when reduced motion is preferred. */
 function ProfilesLoadingSpinner() {
@@ -343,7 +341,7 @@ export default function ProfilesPage() {
       showToast(t.profiles.nameRequired, "error");
       return;
     }
-    if (!PROFILE_NAME_RE.test(name)) {
+    if (!PROFILE_ID_ARG_RE.test(name)) {
       showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, "error");
       return;
     }
@@ -392,7 +390,7 @@ export default function ProfilesPage() {
       setRenameTo("");
       return;
     }
-    if (!PROFILE_NAME_RE.test(target)) {
+    if (!PROFILE_ID_ARG_RE.test(target)) {
       showToast(`${t.profiles.invalidName}: ${t.profiles.nameRule}`, "error");
       return;
     }
@@ -733,7 +731,10 @@ export default function ProfilesPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleCreate();
                   }}
-                  aria-invalid={newName.trim() !== "" && !PROFILE_NAME_RE.test(newName.trim())}
+                  aria-invalid={
+                    newName.trim() !== "" &&
+                    !PROFILE_ID_ARG_RE.test(newName.trim())
+                  }
                 />
 
                 <p className="text-xs text-muted-foreground">{t.profiles.nameRule}</p>
@@ -903,13 +904,18 @@ export default function ProfilesPage() {
                           if (e.key === "Escape") setRenamingFrom(null);
                         }}
                         aria-invalid={
-                          renameTo.trim() !== "" && renameTo.trim() !== p.name && !PROFILE_NAME_RE.test(renameTo.trim())
+                          renameTo.trim() !== "" &&
+                          renameTo.trim() !== p.name &&
+                          !PROFILE_ID_ARG_RE.test(renameTo.trim())
                         }
                       />
 
                       {(() => {
                         const trimmed = renameTo.trim();
-                        const invalid = trimmed !== "" && trimmed !== p.name && !PROFILE_NAME_RE.test(trimmed);
+                        const invalid =
+                          trimmed !== "" &&
+                          trimmed !== p.name &&
+                          !PROFILE_ID_ARG_RE.test(trimmed);
                         return (
                           <p className={cn("text-xs", invalid ? "text-destructive" : "text-muted-foreground")}>
                             {invalid ? `${t.profiles.invalidName}: ${t.profiles.nameRule}` : t.profiles.nameRule}

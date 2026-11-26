@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
 from tests.gateway.test_session_busy_controls import owner, settled
 from tests.gateway.fixtures.local_recovery_probe import rpc, websocket
 
@@ -155,10 +156,10 @@ def test_session_export_json_restores_with_its_title_through_import_sessions(tmp
                 assert 'result' in renamed, renamed
                 data = json.loads((await rpc(ws, 'session.export', session_id=sid, format='json'))['result']['content'])
                 assert data['title'] == 'Saved Title' and all('active' in m for m in data['messages']), data
-                with SessionDB(db_path=tmp_path / 'restored.db') as restored:
-                    assert restored.import_sessions([data])['ok']
-                    assert restored.get_session(data['id'])['title'] == 'Saved Title'
-                    assert 'SAVE_ME' in [m['content'] for m in restored.get_messages(data['id'])]
+                with open_persistence(profile_scope(home=tmp_path / 'restored')) as restored:
+                    assert restored.maintenance.import_sessions([data]).ok
+                    assert restored.sessions.get(data['id']).title == 'Saved Title'
+                    assert 'SAVE_ME' in [m['content'] for m in transcript_rows(restored, data['id'])]
         asyncio.run(probe())
 
 def _checkpoint(home, cwd, reason):

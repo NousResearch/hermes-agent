@@ -154,7 +154,22 @@ export const shellZh: TranslationOverride<
     sharedMetricsShare: '与 Nous 共享',
     sharedMetricsOff: '不用了',
     sharedMetricsDetails: '了解详情',
-    sharedMetricsSaveFailed: '无法保存你的选择'
+    sharedMetricsSaveFailed: '无法保存你的选择',
+    dashboardMovingMeta: '旧版控制台即将停用',
+    dashboardMovingNotice: '此控制台将于 {date} 迁移至 Hermes 网页应用。',
+    dashboardMovingTitle: '控制台即将迁移',
+    dashboardMovingBody: '你的智能体、对话、技能和例行任务会一并迁移。请使用原账户登录。',
+    dashboardMovingMachineTitle: '你的云端主机',
+    dashboardMovingMachineDetail: '在新应用中继续工作',
+    dashboardMovingMachineReady: '就绪',
+    dashboardMovingMachineStarting: '正在启动',
+    dashboardMovingMachineDown: '离线',
+    dashboardMovingMachineNotAvailable: '暂不可用',
+    dashboardMovingMachineNotAvailableDetail: '此主机尚未提供网页应用',
+    dashboardMovingSettingsTitle: '高级设置',
+    dashboardMovingSettingsDetail: '可在智能体设置中找到',
+    dashboardMovingOpen: '打开网页应用',
+    dashboardMovingLater: '稍后'
   },
   chatSidebar: {
     chatTerminal: "聊天终端",

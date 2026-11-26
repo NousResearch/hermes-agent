@@ -206,11 +206,18 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
-    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"); None = whatever is asked.
-    # Hermes clamps the requested tier to it and the prompt-cache clock never believes more.
+    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"). Hermes clamps the requested
+    # tier to it, and the prompt-cache clock declares the sent tier up to it; None leaves a 1h ask on
+    # an Anthropic-wire gateway unproven (no keep-alive, compaction or cold-return pruning).
     # Config ``prompt_caching.route_ttl_ceilings`` overrides it per provider. Keyword-only so
     # plugin subclasses' positional fields keep their slots.
     prompt_cache_max_ttl: str | None = field(default=None, kw_only=True)
+
+    # The route's ``/models`` catalog says which models take explicit ``cache_control`` markers: a
+    # model priced with a cache-write rate (``input_cache_write``) gets markers (Anthropic spec, the
+    # tier asked for, up to ``prompt_cache_max_ttl``); one without caches automatically (OpenAI spec).
+    # Read from the catalog Hermes already fetches; when it is unreachable the built-in policy applies.
+    prompt_cache_markers_from_catalog: bool = field(default=False, kw_only=True)
 
     # Private replay carriers use a namespaced '<provider>.native_assistant' type
     # in reasoning_details. Only this profile may receive its matching carrier;
@@ -758,3 +765,16 @@ class ProviderProfile:
     # Registry id this provider's row sits right after, keeping its place in priority-ordered scans
     # (aux api-key chain, env auto-detect); "" or an unknown id = appended.
     registry_after: str = ""
+    # True when ``create_client`` owns this provider's native transport: a client-creation error
+    # propagates instead of falling back to the standard OpenAI client, and the auxiliary api-key
+    # auto-discovery chain consults ``create_client(..., auxiliary_chain=True)``.
+    strict_client: bool = False
+
+    def implicit_max_output_tokens(self, *, model: str | None = None, base_url: str = "") -> int | None:
+        """Default output-token budget reserved by context compaction when ``max_tokens`` is unset;
+        None = no implicit reservation."""
+        return None
+
+    def validate_setup_api_key(self, api_key: str, *, base_url: str = "") -> bool:
+        """Optional setup-time API key check (e.g. paid-tier probe); False aborts saving the provider."""
+        return True

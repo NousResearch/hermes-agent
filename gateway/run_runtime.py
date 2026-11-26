@@ -43,34 +43,44 @@ async def _build_profile_authority(runner, name, home, *, register):
     instance_id = runner.session_runtime_descriptor['instance_id']
     # Each home's store resolves through the runner's scope-following handle cache, exactly
     # the handle every later scoped read of that profile uses (one writer per state.db).
-    db = await asyncio.to_thread(open_profile_store, runner, home)
+    persistence = await asyncio.to_thread(open_profile_store, runner, home)
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        if db is None:
+        if persistence is None:
             raise RuntimeError(_store_open_failure(runner, home))
-        if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
+        from persistence_assembly import open_persistence, store_location
+        location = store_location(persistence.scope)
+        owner = (persistence.scope.profile_dir if location is None
+                 else (await asyncio.to_thread(Path(location).resolve)).parent)
+        if owner != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
+        # The authority reads and writes through its own reference on its store, held until it retires: the stop
+        # closes the runner's handles while startup recovery may still read through the authority, and the store
+        # must answer it then.
+        reference = open_persistence(persistence.scope)
         try:
             authority = await initialize_session_authority(
-                runner, profile_id=str(home), instance_id=instance_id, db=db, register=register)
+                runner, profile_id=str(home), instance_id=instance_id, persistence=reference,
+                register=register)
         except BaseException:
+            reference.close()
             registry.remove(home)
             raise
+        authority.store_reference = reference
     registry.replace(home, authority)
     return authority
 
 
 def open_profile_store(runner, home):
-    """*home*'s SessionDB through the runner's scoped handle cache, opened in the CALLING thread
-    under that profile's scope (bound here: a worker thread inherits no scope it was not given).
+    """*home*'s storage interface handle through the runner's scoped handle cache, opened in the CALLING
+    thread under that profile's scope (bound here: a worker thread inherits no scope it was not given).
 
     Callers run it in a worker: a first open runs the schema / FTS setup, about a second per store
     on a loaded host, and run on the loop it froze every connected client for the whole
     multi-profile boot. Later opens of the same path are cache hits."""
     from gateway.run import _profile_runtime_scope
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        db = runner._session_db
-        return getattr(db, '_db', db)
+        return getattr(runner, 'persistence', None)
 
 
 async def _prewarm_profile_stores(runner, homes):
@@ -82,22 +92,21 @@ async def _prewarm_profile_stores(runner, homes):
 
 
 def pin_launch_store():
-    """Open the launch profile's state.db in the calling (worker) thread and hold one registry
-    reference, so the synchronous ``SessionStore`` open inside ``GatewayRunner()`` on the loop is a
-    registry hit instead of the schema setup. None when the open fails: the store's own open then
-    reports and backs off exactly as before."""
-    from hermes_state_registry import acquire
+    """Open the launch profile's state.db in the calling (worker) thread and hold one storage handle
+    on it, so the synchronous ``SessionStore`` open inside ``GatewayRunner()`` on the loop shares the
+    open store instead of running the schema setup. None when the open fails: the store's own open
+    then reports and backs off exactly as before."""
+    from persistence_assembly import open_persistence, profile_scope
     try:
-        return acquire()
+        return open_persistence(profile_scope(), eager=True)
     except Exception:
         logger.debug('launch state.db prewarm failed; the store open reports it', exc_info=True)
         return None
 
 
-def unpin_launch_store(db):
-    if db is not None:
-        from hermes_state_registry import release
-        release(db)
+def unpin_launch_store(handle):
+    if handle is not None:
+        handle.close()
 
 
 def _store_open_failure(runner, home):
@@ -109,7 +118,7 @@ def _store_open_failure(runner, home):
     path = home / 'state.db'
     caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
               getattr(runner, '_session_db_handle_cache', None))
-    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    error = next((e for e in (c.last_error(home) for c in caches if c is not None) if e), '')
     if error:
         return f'{path} did not open: {error}'
     return f'{path} is unavailable (its last open failed; retry pending)'
@@ -214,13 +223,16 @@ def release_unknown_turn_markers(runner):
     its marker is cleared rather than ledgered as a delivery the FIFO never committed. A terminal
     admission keeps its marker: its persisted reply is ledgered and sent once, never re-run."""
     from gateway.session_authorities import admission_owner, owner_scope
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import StoreUnavailable
     store = getattr(runner, 'session_store', None)
     if store is None:
         return
     for authority in _authorities(runner):
         with owner_scope(authority):
-            unknown = {row['target_session_id'] for row in authority.db._read_all(
-                "SELECT DISTINCT target_session_id FROM session_admissions WHERE status='unknown'")}
+            if (persistence := authority_persistence(authority)) is None:
+                raise StoreUnavailable(f'no storage handle for {authority.profile_id}')
+            unknown = persistence.admissions.pending_targets(statuses=frozenset({'unknown'}))
             if not unknown:
                 continue
             for entry in store.list_sessions():
@@ -324,7 +336,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     ``reason`` (a gateway restart/shutdown) is recorded on each worker it signals, so the turn settles
     with that cause; a worker already stopped (the user's Stop came first) keeps none. A worker
     still being spawned gets the same Stop and cause through latches (``_stop_spawning_managed``)."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     signalled = 0
     workers = getattr(authority, '_managed_workers', {})
     for worker in list(workers.values()):
@@ -333,7 +345,7 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
         worker.stop_cause = reason
         try:
             worker.control({'type': 'stop'})
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             # A full control queue: control() latched worker.stop first, and the owner's read
             # loop escalates on that latch alone (terminate after STOP_ACK_SECONDS).
             logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
@@ -434,12 +446,15 @@ async def _retire_profile_authority(authority, timeout=None):
     authority.retired = True
     # No drain is left to answer an observer (a session_busy pause keeps API/webhook/Bot ones
     # waiting): release them all. Their rows stay queued for the next owner, so nothing is resent.
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     authority.native_waiters.clear()
     for waiter in authority.waiters.values():
         if not waiter.done():
-            waiter.set_exception(RuntimeStoreError('runtime_draining'))
+            waiter.set_exception(AuthorityRefusal('runtime_draining'))
     authority.waiters.clear()
+    reference, authority.store_reference = getattr(authority, 'store_reference', None), None
+    if reference is not None:
+        reference.close()
     return True
 
 
@@ -454,7 +469,7 @@ async def serve_profile_runtime(runner, name, home):
     queued native rows are recovered once its adapters connect (``recover_served_native_rows``)."""
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
-    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_local_startup import recover_local_sessions_async
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
@@ -473,7 +488,7 @@ async def serve_profile_runtime(runner, name, home):
         with owner_scope(authority):
             _drop_retired_local_adapter(authority)
             await recover_bot_mailbox(authority)
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions_async(authority, schedule=True)
             await recover_webhook_finalizations(authority)
             _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
@@ -561,60 +576,11 @@ async def recover_bot_mailbox(authority):
     try:
         await recover_bot_deliveries(authority)
     except MailboxUnusable as exc:
-        logger.warning('Bot Chat recovery skipped for %s: %s', authority.db.db_path, exc)
-
-
-async def start_gateway_runtime_api(runner):
-    from gateway import run_api
-    from gateway.webapp_listener import (
-        STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
-    )
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home()
-    # The bootstrap registered these before its control socket answered; a runner started without it
-    # (an embedded gateway) gets them here, before the listener's slow start.
-    register_control_verbs(runner, home)
-    host, port, webapp, unusable = listener_plan(home)
-    # A webapp: block that asks for the Webapp but cannot be used is reported with its reason.
-    runner.webapp_status = ({"state": "unavailable", "url": None, "reason": unusable} if unusable
-                            else {"state": "off", "url": None, "reason": None} if webapp is None
-                            else dict(STARTING))
-    try:
-        # Without the Webapp the listener is main's: the same call, a private ephemeral port.
-        runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
-                                    if webapp is not None else run_api.start_gateway_api(runner))
-    except (Exception, SystemExit) as exc:
-        if webapp is None:
-            raise
-        # The Webapp's listener could not start (port taken, address unavailable, its browser credential
-        # not storable in the home, or the dashboard's auth gate exiting on a wildcard bind with no
-        # sign-in provider): native clients still need this gateway, so it keeps main's private
-        # listener and reports why the Webapp is not served.
-        if isinstance(exc, SystemExit):
-            reason = str(exc.code).strip()  # the gate's own message names the fix
-        elif isinstance(exc, BrowserCredentialError):
-            reason = str(exc)  # names the file and why it cannot be stored
-        elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
-            reason = f"could not use {exc.filename} ({exc.strerror or exc})"
-        else:
-            cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
-            reason = f"could not listen on {host}:{port} ({cause})"
-        logger.error("Webapp unavailable: %s", reason)
-        runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
-        # Open tabs keep sending their credential to whatever answers on the Webapp's port, and that
-        # is not this gateway now. Replace it, so one captured there never opens this gateway; the
-        # tabs sign in again once the Webapp is back.
-        try:
-            browser_session_token(home, rotate=True)
-        except OSError as write_error:
-            logger.warning("Could not replace the Webapp's browser credential: %s", write_error)
-        runner.session_api = await run_api.start_gateway_api(runner)
-    else:
-        if webapp is not None:
-            runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
-    runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
-    for authority in _authorities(runner):
-        await _recover_profile_bot_mailbox(runner, authority)
+        from gateway.session_persistence import authority_persistence
+        from persistence_assembly import store_location
+        store = authority_persistence(authority)
+        logger.warning('Bot Chat recovery skipped for %s: %s',
+                       store_location(store.scope) if store is not None else authority.profile_id, exc)
 
 
 async def _recover_profile_bot_mailbox(runner, authority):
@@ -660,21 +626,47 @@ async def recover_gateway_native_sessions(runner):
         return {}
     from gateway.session_hosted_service import ensure_hosted_service
     await ensure_hosted_service(runner)
-    from gateway.session_local_recovery import recover_local_sessions
+    from gateway.session_local_startup import recover_local_sessions_async
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
     results = {}
     for authority in authorities:
         with owner_scope(authority):
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions_async(authority, schedule=True)
             await recover_webhook_finalizations(authority)
         results.update(await recover_profile_native_sessions(runner, authority))
     return results
 
 
+def _native_recovery_bindings(runner, authority):
+    """An authority's queued rows and the live routes that can carry them.
+
+    A store read per profile: the admission scan, the route list, one lineage walk per route
+    (``logical_owner``) and the newest native admission that names the route's verified receiving
+    bot (``recovered_native_source``). It runs in a worker thread -- a large or slow profile store
+    must not park the loop past the startup watchdog, whose exit 75 restarts into the same pass
+    (#148023). Only reads happen here; the sources it restores are fresh copies, and the adapter
+    egress caches are primed on the loop (``_prime_recovered_egress``).
+    """
+    from gateway.session_authorities import owner_scope
+    from gateway.session_native_recovery_routes import recovered_native_source
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import StoreUnavailable
+    with owner_scope(authority):
+        if (store := authority_persistence(authority)) is None:
+            raise StoreUnavailable(f'no storage handle for {authority.profile_id}')
+        pending = store.admissions.pending_targets(statuses=frozenset({'queued', 'unknown'}))
+        bindings = [(owner, origin, runner._adapter_for_source(origin))
+                    for entry in runner.session_store.list_sessions() if entry.origin is not None
+                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending
+                    for origin in [recovered_native_source(runner, authority, entry, owner)]]
+    return pending, bindings
+
+
 def _prime_recovered_egress(bindings):
     """Warm a Relay's per-chat egress routing for every session recovery may run. Those caches fill
     only on live inbound, so after a restart a recovered turn's reply would leave without the
-    scope/user discriminators the connector requires (or on the primary's platform) and be declined."""
+    scope/user discriminators the connector requires (or on the primary's platform) and be declined.
+    Adapter state: called on the owner loop, never from the binding worker."""
     from gateway.platforms.event import MessageEvent
     for _sid, origin, adapter in bindings:
         prime = getattr(adapter, 'prime_routing_cache', None)
@@ -686,17 +678,13 @@ def _prime_recovered_egress(bindings):
 async def recover_profile_native_sessions(runner, authority):
     """Bind one authority's queued native rows to the adapters connected now."""
     from gateway.session_authorities import owner_scope
-    from gateway.session_native_recovery_routes import recovered_native_source
+    pending, bindings = await asyncio.to_thread(_native_recovery_bindings, runner, authority)
+    from gateway.session_detached import recover_detached_sessions
+    # Recovery still performs per-session validation reads; egress priming, live-session
+    # publication and task creation stay on the owner loop, under the same scope as the scan.
     with owner_scope(authority):
-        pending = {row['target_session_id'] for row in authority.db._read_all(
-            "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-        bindings = [(owner, origin, runner._adapter_for_source(origin))
-                    for entry in runner.session_store.list_sessions() if entry.origin is not None
-                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending
-                    for origin in [recovered_native_source(runner, authority, entry, owner)]]
         _prime_recovered_egress(bindings)
         outcome = await authority.recover_native_sessions(bindings)
-        from gateway.session_detached import recover_detached_sessions
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
     for sid, verdict in outcome.items():
         logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)
@@ -786,7 +774,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     TURN_SETTLE_SECONDS (clamped to ``budget``, what the stop's watchdog leash has left, minus
     STOP_TAIL_RESERVE_SECONDS) is logged and left running for recovery. The stop sequence continues:
     the executor quiesce skips the DB close while a writer is live, and process exit releases
-    the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
+    the ownership lock, so raising here would only skip teardown until the watchdog forces the exit."""
     authorities = _authorities(runner)
     stop_managed_turns(runner, reason)
     from gateway.session_llm_oneshot import stop as stop_oneshots
@@ -813,12 +801,13 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
                            getattr(authority, 'profile_id', '?'))
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
-    from gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
         try:
+            from gateway.session_acp_lifecycle import end_idle_acp_sessions
             end_idle_acp_sessions(authority)
         except Exception:
-            # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
+            # Best-effort bookkeeping: a store that cannot answer, or a module that no longer imports
+            # (its tree replaced under this process), must not abort the stop sequence.
             import logging
             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
                                                 getattr(authority, 'profile_id', '?'), exc_info=True)

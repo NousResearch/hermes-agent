@@ -31,6 +31,9 @@ export interface GatewayHealthPillInput {
   messagingState?: null | string
   platforms?: null | Record<string, GatewayHealthPlatform>
   restarting?: boolean
+  /** A planned backend transition of the active profile (its sandbox
+   *  starting, restarting or stopping): shown instead of offline/connecting. */
+  transition?: null | string
 }
 
 export interface GatewayHealthPill {
@@ -88,7 +91,8 @@ export function statusBarGatewayHealth({
   messagingRunning,
   messagingState,
   platforms,
-  restarting = false
+  restarting = false,
+  transition = null
 }: GatewayHealthPillInput): GatewayHealthPill {
   const connectionOpen = connectionState === 'open'
   const connectionConnecting = connectionState === 'connecting'
@@ -103,11 +107,13 @@ export function statusBarGatewayHealth({
       ? copy.connecting
       : copy.offline
 
-  const detail = restarting
-    ? copy.restarting
-    : messagingDown && connectionOpen
-      ? messagingDetail(copy, downNames)
-      : connectionDetail
+  const detail = transition
+    ? transition
+    : restarting
+      ? copy.restarting
+      : messagingDown && connectionOpen
+        ? messagingDetail(copy, downNames)
+        : connectionDetail
 
   return {
     degraded: Boolean(messagingDown && connectionOpen),

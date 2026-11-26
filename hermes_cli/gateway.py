@@ -2117,12 +2117,12 @@ _SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
 
 def _profile_name_from_home(home: Path, default: Path) -> str | None:
     """Profile name when ``home`` is ``<default>/profiles/<name>`` with a service-safe name, else None."""
-    import re
+    from hermes_constants import PROFILE_ID_RE
     try:
         parts = home.relative_to((default / "profiles").resolve()).parts
     except ValueError:
         return None
-    if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
+    if len(parts) == 1 and PROFILE_ID_RE.match(parts[0]):
         return parts[0]
     return None
 
@@ -2490,12 +2490,8 @@ def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
 
 def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
     """``[(unit_name, unit_path, is_system)]`` for legacy gateway units (e.g. ``hermes.service``), which
-    fight the current unit for the bot token (SIGTERM flap loop). Explicit name allowlist + ExecStart
-    marker check so profile/third-party units never match; no mutation.
-
-    Detects unit files installed by older Hermes versions that used a different service name (e.g. When both
-    a legacy unit and the current ``hermes-gateway.service`` are active, they fight over the same bot token
-    — the PR #5646 signal-recovery change turns this into a 30-second SIGTERM flap loop.
+    fight the current unit for the bot token (PR #5646 SIGTERM flap loop). Explicit name allowlist +
+    ExecStart marker check so profile/third-party units never match; no mutation.
     """
     results: list[tuple[str, Path, bool]] = []
     for is_system, base in _legacy_unit_search_paths():
@@ -2538,17 +2534,13 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
     if not legacy:
         print("No legacy Hermes gateway units found.")
         return 0, []
-
-    print()
-    print("Legacy Hermes gateway unit(s) found:")
+    print("\nLegacy Hermes gateway unit(s) found:")
     for name, path, is_system in legacy:
         print(f"  {path}  ({_service_scope_label(is_system)} scope)")
     print()
-
     if dry_run:
         print("(dry-run — nothing removed)")
         return 0, [p for _, p, _ in legacy]
-
     if interactive and not prompt_yes_no("Remove these legacy units?", True):
         print("Skipped. Run again with: hermes gateway migrate-legacy")
         return 0, [p for _, p, _ in legacy]
@@ -2559,24 +2551,28 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
     def _remove_units(units: list[tuple[str, Path]], *, system: bool) -> None:
         nonlocal removed
         for name, path in units:
+            stopped = False
             try:
-                _run_systemctl(["stop", name], system=system, check=False, timeout=90)
-                _run_systemctl(["disable", name], system=system, check=False, timeout=30)
+                for action, timeout in (("stop", 90), ("disable", 30)):
+                    result = _run_systemctl([action, name], system=system, check=False, timeout=timeout)
+                    if result.returncode:
+                        raise RuntimeError(f"systemctl {action} {name} exited with status {result.returncode}")
+                    stopped = True
                 path.unlink(missing_ok=True)
                 print(f"  ✓ Removed {path}")
                 removed += 1
-            except (OSError, RuntimeError) as e:
+            except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                 print(f"  ⚠ Could not remove {path}: {e}")
                 remaining.append(path)
-        with contextlib.suppress(RuntimeError):
+                if stopped:  # the failure came after the stop: say how to bring the gateway back
+                    print(f"    It was stopped; if no other gateway runs, start it again with: systemctl {'' if system else '--user '}start {name}")
+        with contextlib.suppress(RuntimeError, subprocess.SubprocessError):
             _run_systemctl(["daemon-reload"], system=system, check=False, timeout=30)
 
     user_units = [(n, p) for n, p, is_sys in legacy if not is_sys]
     system_units = [(n, p) for n, p, is_sys in legacy if is_sys]
     if user_units:
         _remove_units(user_units, system=False)
-
-    # System-scope removal (needs root)
     if system_units:
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd removal path, guarded by `if system == "Linux"` / systemd-only branch
             print()
@@ -2585,13 +2581,11 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
             remaining.extend(path for _, path in system_units)
         else:
             _remove_units(system_units, system=True)
-
     print()
     if remaining:
         print_warning(f"{len(remaining)} legacy unit(s) still present — see messages above.")
     else:
         print_success(f"Removed {removed} legacy unit(s).")
-
     return removed, remaining
 
 
@@ -2790,14 +2784,14 @@ def launchd_gateway_labels_for_install() -> list[str]:
     """Launchd labels for every profile of THIS install (root first, then profiles by name). Derived from
     the profile layout, NOT by globbing ``~/Library/LaunchAgents``, so a sandboxed HERMES_HOME never
     restarts another install's fleet. Names that can't map to a suffix are skipped."""
-    import re as _re
     from hermes_cli.profiles import list_profiles
+    from hermes_constants import PROFILE_ID_RE
     root_label: list[str] = []
     profile_labels: list[str] = []
     for profile in list_profiles():
         if profile.is_default:
             root_label.append("ai.hermes.gateway")
-        elif _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile.name):
+        elif PROFILE_ID_RE.match(profile.name):
             profile_labels.append(f"ai.hermes.gateway-{profile.name}")
     return root_label + sorted(profile_labels)
 
@@ -3471,8 +3465,14 @@ def systemd_install(
         print_legacy_unit_warning()
         print()
         if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
-            remove_legacy_hermes_units(interactive=False)
+            _, remaining = remove_legacy_hermes_units(interactive=False)
             print()
+            if remaining:
+                is_root = os.geteuid() == 0  # windows-footgun: ok — Linux systemd-only function
+                unremovable_sys = set() if is_root else {p for _, p, s in _find_legacy_hermes_units() if s}
+                if any(p not in unremovable_sys for p in remaining):
+                    print_error("Could not remove legacy unit(s); aborting install to avoid running two gateways.")
+                    sys.exit(1)
 
     scope_label = _service_scope_label(system)
     sudo, scope_flag, user_flag = _systemd_cli_bits(system)
@@ -5099,8 +5099,8 @@ def _cmd_install(args):
     if is_managed():
         managed_error("install gateway service")
         return
-    if getattr(args, "if_missing", False) and _is_service_installed():
-        print("✓ Gateway service already installed")
+    from hermes_cli.gateway_setup_service import install_after_setup
+    if getattr(args, "if_missing", False) and not install_after_setup(args):
         return
     force = getattr(args, "force", False)
     # `--force` doubles as the reinstall flag here; a served profile's unit would only ever exit 78.

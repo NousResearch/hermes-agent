@@ -22,10 +22,72 @@ export const settingsZh: TranslationOverride<
     | 'profileBuilder'
     | 'toolsetConfig'
     | 'systemPage'
+    | 'backendMigration'
     | 'systemMemory'
     | 'theme'
   >
 > = {
+  backendMigration: {
+    title: "迁移到单个 Hermes 实例",
+    confirmTitle: "迁移到单个 Hermes 实例？",
+    confirmMove: "立即迁移",
+    confirmBody: "Hermes 接管 {address} 时，此页面将暂时不可用。之后请在同一地址重新登录。{forced}{stops} 如果迁移出错，系统会恢复原状。",
+    confirmInterrupt: " 正在处理的对话将中断，消息和网关服务将暂停几秒。",
+    thisAddress: "此地址",
+    foundPort: "旧版 Hermes 服务运行在 {port} 端口。通过该端口连接的手机或浏览器正在使用另一个 Hermes 实例。",
+    foundLocal: "这台计算机上有一个旧版 Hermes 服务。通过它连接的手机或浏览器正在使用另一个 Hermes 实例。",
+    keepWebappAddress: "旧版服务将关闭，网页应用继续使用 {address}。",
+    keepWebapp: "旧版服务将关闭，网页应用保留原地址。",
+    takeSameAddress: "Hermes 将接管原地址（{address}），可访问范围保持不变。",
+    takeAddress: "Hermes 将接管 {address}。",
+    takeOldAddress: "Hermes 将接管旧版服务的地址。",
+    signInSameCredentials: "原用户名和密码继续有效。迁移后所有用户都需重新登录一次。",
+    everyoneSignsIn: "迁移后所有用户都需重新登录一次。",
+    newWebapp: "通过浏览器访问时，将打开新的 Hermes 网页应用。",
+    buildWebapp: "系统将先构建网页应用，可能需要几分钟。",
+    autoStart: "系统将配置 Hermes 随计算机自动启动。",
+    downtime: "切换时，此地址将暂停访问几秒。",
+    rollbackOnError: "如果迁移出错，系统会恢复原状。",
+    unsupported: "无法从此处迁移该服务。{instructions}",
+    clearBlockers: "请先解决上方列出的问题",
+    move: "迁移",
+    showSteps: "仍然查看步骤",
+    checkAgain: "重新检查",
+    starting: "正在启动迁移…",
+    checking: "正在确认迁移是否已启动…",
+    running: "{step}…",
+    switching: "正在切换。此地址将在 Hermes 恢复响应后重新可用…",
+    longWait: "等待正在执行的任务完成或恢复原状可能需要几分钟。",
+    statusCommand: "在本机运行 {command} 查看进度。",
+    signInAgainDetail: "此地址的服务已重启，登录已失效。请在同一地址重新登录查看结果。迁移成功后将显示新的 Hermes 网页应用。",
+    signInAgain: "重新登录",
+    startUnknown: "目前无法确认迁移是否已启动。",
+    endUnknown: "此地址已一段时间没有响应，暂时无法确认迁移结果。",
+    stalled: "迁移中途停止（{step}）。",
+    restoreCommand: "在本机运行 {command} 恢复原状。",
+    doneAt: "迁移完成。现在可通过 {address} 访问 Hermes。",
+    doneSame: "迁移完成。Hermes 继续使用原地址。",
+    signInAtSameAddress: "请在同一地址重新登录。",
+    undoCommand: "要撤销迁移，请在本机运行 {command}。",
+    rolledBack: "迁移未成功，系统已恢复原状。原因：{reason}",
+    tryAgain: "重试",
+    incomplete: "迁移失败，且未能完全恢复原状（{reason}）。",
+    restored: "之前的迁移已撤销，旧版服务已恢复。",
+    notStarted: "迁移未启动。最后一条报告：",
+    saveConfig: "执行前请备份当前的 config.yaml 和 .env，这些步骤可能替换或移除它们。若要保留其中的改动，请在执行恢复步骤前将改动合入对应备份，或在全部步骤完成后重新应用。",
+    followSteps: "请按以下步骤操作：",
+    runLocally: "请在本机运行：",
+    steps: {
+      preflight: "正在检查",
+      manifest: "正在保存当前状态",
+      webapp_bundle: "正在构建网页应用",
+      write_config: "正在写入设置",
+      gateway_service: "正在配置 Hermes 自动启动",
+      stop_old_backend: "正在关闭旧版服务",
+      start_gateway: "正在原地址启动 Hermes",
+      verify: "正在检查地址是否响应",
+    }
+  },
   pluginsPage: {
     updateScanBody: (name: string, count: number) =>
       `安全扫描在 ${name} 的新代码中发现了 ${count} 项风险。请仅在信任来源时继续更新：`,

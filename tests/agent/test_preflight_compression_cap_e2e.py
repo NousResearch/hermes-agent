@@ -23,8 +23,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _config(max_attempts) -> dict:
@@ -65,7 +65,7 @@ def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts) -> AIAgent:
         config_mod, "load_config_readonly", lambda: _config(max_attempts)
 
     )
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     with (
         contextlib.redirect_stdout(io.StringIO()),
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -81,7 +81,7 @@ def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts) -> AIAgent:
             quiet_mode=True,
             skip_memory=True,
             skip_context_files=True,
-            session_db=db,
+            persistence=db,
             session_id="preflight-cap-e2e",
         )
     agent.client = MagicMock()

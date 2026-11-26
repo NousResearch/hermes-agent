@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "提示词缓存：未知（此提供商未公布其缓存保留时间）。"
     cache_unknown_runtime: "提示词缓存：未知（此运行时自行设置缓存选项，Hermes 无法观察）。"
     cache_unknown_storage: "提示词缓存：未知（无法读取会话存储）。"
+    cache_warming_off: "保活：已关闭（两次未命中）。"
+    cache_tier_pending: "层级：首次停顿超过 5 分钟前为 5m，之后为 1h。"
+    cache_learned: "已学习：{rule}。"
     cache_confidence:
       proven: "已证实"
       declared: "已声明"

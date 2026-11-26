@@ -138,6 +138,12 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+def _process_event_turn_origin(evt: dict) -> str:
+    """The ``turn_origin()`` of the turn a process-registry event wakes: an async delegation's result,
+    or a background process's own notice (completion, watch match, liveness tick)."""
+    return "delegation_result" if str(evt.get("type") or "").startswith("async_delegation") else "process_notification"
+
+
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
@@ -590,13 +596,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
                 return
         from hermes_constants import get_default_hermes_root, profile_cli_selector
-        from hermes_state import _default_db_path, classify_persistence_error
+        from storage_errors import classify_persistence_error
         cause = classify_persistence_error(error)
         # Copy-pasteable, so name the real store and pin the profile: a bare `hermes` follows
         # active_profile, which may be a different database (#105887).
         profile_arg = profile_cli_selector()
         if cause == "corrupt":
-            db_path = _default_db_path()
+            from persistence_assembly import profile_scope, store_location
+            db_path = store_location(profile_scope())
             backups_dir = get_default_hermes_root() / "backups"
             message = t("gateway.startup.db_corrupt", profile_arg=profile_arg, db_path=db_path, backups_dir=backups_dir)
         elif cause == "fts_index":
@@ -604,7 +611,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # restore advice above would be destructive on a healthy file (#97794).
             message = t("gateway.startup.db_fts_corrupt", profile_arg=profile_arg)
         else:
-            from hermes_state_user_copy import describe_storage_failure
+            from storage_user_copy import describe_storage_failure
             failure = describe_storage_failure(error)
             # The cause table owns the remedy: for a held retired-WAL generation a bare `doctor --fix`
             # is the second-writer trap this notice used to send users into (#110054). Its copy is
@@ -871,7 +878,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.session_authorities import active_authority
         from gateway.session_automation import committed_route_envelope
         from gateway.session_envelope import restore_native
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         authority = active_authority(self)
         if authority is None:
             return None
@@ -883,7 +890,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         try:
             restored = restore_native({'text': '', 'native_text_v1': {
                 key: value for key, value in envelope.items() if key != 'media'}}, self)
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             return None
         return self._adapter_for_source(restored.source)
 
@@ -954,6 +961,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 metadata=metadata,
             )
+            synth_event.set_turn_origin(_process_event_turn_origin(evt))
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
@@ -967,10 +975,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             authority = active_authority(self)
             if authority is not None:
                 from gateway.session_automation import admit_process_notice
-                from hermes_state_runtime import RuntimeStoreError
+                from persistence.core.errors import AuthorityRefusal
                 try:
                     await admit_process_notice(self, authority, adapter, synth_event, evt)
-                except RuntimeStoreError as exc:
+                except AuthorityRefusal as exc:
                     raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
             else:
                 await admit_internal_event(adapter, synth_event)
@@ -1059,8 +1067,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         (a delegate child's pin resolved through ``model_config._delegate_from``) and the session delivery
         reaches (the owner, or its compression tip)."""
         from gateway.run import _USER_BOUNDARY_END_REASONS
-        session_db = getattr(self, "_session_db", None)
-        if session_db is None:
+        store = getattr(self, "persistence", None)
+        if store is None:
             return "retry", "", ""
         entry = None
         if session_key:
@@ -1076,18 +1084,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         )
         target_session_id = parent_session_id
         # A local conversation a viewer closed keeps its own work as a note on its closed tip (#134889 LC-7).
-        closed_tip = await self._closed_local_target(session_db, entry, parent_session_id, parent)
+        closed_tip = await self._closed_local_target(store.aio, entry, parent_session_id, parent)
         if closed_tip:
             verdict, target_session_id = "deliver", closed_tip
-        elif verdict == "deliver" and parent is not None and parent.get("ended_at"):
-            end_reason = str(parent.get("end_reason") or "")
+        elif verdict == "deliver" and parent is not None and parent.ended_at:
+            end_reason = str(parent.end_reason or "")
             if end_reason != "compression":
                 # Only a USER-closed session (/new, user_exit, session_switch) is unreachable; idle/timeout
                 # ends stay routable and the resolver retargets. Boundary set shared with the resolver.
                 verdict = "terminal" if end_reason in _USER_BOUNDARY_END_REASONS else "deliver"
             else:
                 verdict, target_session_id = await self._resolve_compression_lineage_target(
-                    session_db, entry, parent_session_id,
+                    store.aio, entry, parent_session_id,
                 )
         if verdict != "deliver":
             return verdict, "", ""
@@ -1135,7 +1143,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         warned.discard(key)
         evt.pop("_no_transport", None)
         if not adapter_supports_push(adapter):
-            ensure = getattr(adapter, "_ensure_session_db", None)
+            ensure = getattr(adapter, "_ensure_store", None)
             try:
                 if not callable(ensure) or await asyncio.to_thread(ensure) is None:
                     return False
@@ -1750,21 +1758,29 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
+        from tools.process_registry import COMPLETION_OUTPUT_CHARS, transform_process_output
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
                                         task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
-        _LIMIT = 2000
+        # Mask before cutting: a window that starts inside a credential hides its prefix from the masker.
+        _raw = _redact_gateway_user_facing_secrets(_raw)
+        # Sized like the spawner asked: when the output IS the payload (a bot DM reply) the process
+        # carries a larger completion_output_chars, same budget as the registry's completion (#115334).
+        _LIMIT = getattr(session, "completion_output_chars", 0) or COMPLETION_OUTPUT_CHARS
         # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
+        # _LIMIT chars but snap to the nearest preceding newline, then prepend a truncation marker when
         # output was cut.
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            # The snap targets a *preceding* newline (#23284). When the only
+            # newline in the window merely terminates it (single-line JSON /
+            # results), nothing but that terminator follows, so slicing would
+            # empty the tail (#131786) — keep the full window instead.
+            if _nl != -1 and _tail[_nl + 1:].strip():
+                _tail = _tail[_nl + 1:]
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

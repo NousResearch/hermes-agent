@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "プロンプトキャッシュ: 不明 (このプロバイダーはキャッシュ保持期間を公開していません)。"
     cache_unknown_runtime: "プロンプトキャッシュ: 不明 (このランタイムは独自のキャッシュ設定を使い、Hermes からは観測できません)。"
     cache_unknown_storage: "プロンプトキャッシュ: 不明 (セッションストアを読み取れませんでした)。"
+    cache_warming_off: "キープアライブ: 停止 (2回失敗)。"
+    cache_tier_pending: "階層: 5分を超える最初の休止まで5m、その後1h。"
+    cache_learned: "学習済み: {rule}。"
     cache_confidence:
       proven: "実証済み"
       declared: "申告"

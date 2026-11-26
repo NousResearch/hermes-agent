@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "Caché del prompt: desconocida (este proveedor no publica su retención de caché)."
     cache_unknown_runtime: "Caché del prompt: desconocida (este entorno fija sus propias opciones de caché, que Hermes no puede observar)."
     cache_unknown_storage: "Caché del prompt: desconocida (no se pudo leer el almacén de la sesión)."
+    cache_warming_off: "Keep-alives: desactivados (fallaron dos veces)."
+    cache_tier_pending: "Nivel: 5m hasta la primera pausa de más de 5 minutos, luego 1h."
+    cache_learned: "Aprendido: {rule}."
     cache_confidence:
       proven: "comprobado"
       declared: "declarado"

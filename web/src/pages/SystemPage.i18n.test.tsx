@@ -23,7 +23,11 @@ const apiMocks = vi.hoisted(() => ({
   checkHermesUpdate: vi.fn()
 }))
 
-vi.mock('@/lib/api', () => ({ api: apiMocks }))
+vi.mock('@/lib/api', () => ({
+  api: apiMocks,
+  authedFetch: async () => new Response(null, { status: 404 }),
+  getManagementProfile: () => null
+}))
 vi.mock('@/components/HermesConsoleModal', () => ({ HermesConsoleModal: () => null }))
 
 let root: Root

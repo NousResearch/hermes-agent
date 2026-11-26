@@ -14,18 +14,12 @@ can install by name with a single command:
 hermes plugins install <name>
 ```
 
-Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
-category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
-Models), with search, tier filters (Official / Verified / Community), capability chips, and
-copyable install commands for every entry.
-
-Every entry also has its own page at `/docs/plugins/<name>` (click a card):
-the full description and any disclosure, the pinned commit, tools, hooks and
-environment variables, the Desktop install button and CLI command, optional
-screenshots and the README from the reviewed commit, plus a **More by this
-author** shelf. Authors have a page at `/docs/plugins/by/<maintainer>` listing
-everything they maintain in the catalog. Both are generated at build time from
-the same catalog files, so a merged PR is the only way a page changes.
+Browse it on the **[Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace)**, with search, categories,
+tier labels (Official / Verified / Community) and an install button or CLI command
+for every entry. Each entry has its own page at `/marketplace/<name>` with the
+description, the pinned commit, optional screenshots, the README from the
+reviewed commit and more plugins by the same maintainer. The Marketplace reads
+the same catalog files, so a merged PR is the only way a listing changes.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -175,6 +169,16 @@ hermes plugins install snyk
 hermes plugins enable snyk
 ```
 
+### Platform plugins whose credentials are already set
+
+When the gateway starts (or rescans a served profile after its `.env` changes), it looks for
+`category: platform` entries whose `capabilities.requires_env` variables are all set for that profile
+while the plugin is not installed. A `default: true` entry (official or verified) is installed then, so
+its adapter starts in the same gateway start. Any other entry is never installed unattended: the gateway
+logs, and the profile's next chat shows, one line naming `hermes plugins install <name>`. A plugin that
+was installed automatically once and then removed, or that `plugins.disabled` names, is left alone, and
+nothing is fetched where `security.allow_lazy_installs` is off.
+
 ### Updating a catalog install
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —
@@ -270,5 +274,5 @@ code or Desktop UI at runtime.
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
 - [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
-- [Plugin Catalog page](/plugins) — the browsable catalog
+- [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) — browse the catalog
 - [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

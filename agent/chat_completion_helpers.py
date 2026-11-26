@@ -37,11 +37,11 @@ from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLif
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
-from agent.gemini_native_adapter import is_native_gemini_base_url
+from agent.gemini_urls import is_native_gemini_base_url
 # Never fingerprint a remote endpoint: Ollama-compat routes misidentify and 401 without a key (#89863).
 from agent.model_metadata import is_local_endpoint
 from agent.process_transport import waits_like_local
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
@@ -54,6 +54,7 @@ from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
@@ -365,9 +366,6 @@ def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
     if text.strip():
         return _error({}, None)
     return None
-
-
-_IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
 def _image_part_chars(part: dict[str, Any], image_cost: int) -> int:
@@ -1591,8 +1589,8 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     tc_dict = {"id": call_id, "call_id": call_id, "response_item_id": response_item_id,
         "type": tool_call.type,
         "function": {"name": tool_call.function.name, "arguments": tool_call.function.arguments}}
-    # Preserve extra_content (Gemini thought_signature) or Gemini 3 thinking
-    # models 400 on the next request.
+    if type(output_index := getattr(tool_call, "_codex_output_index", None)) is int:
+        tc_dict["_codex_output_index"] = output_index
     # Tool-call arguments are intentionally NOT redacted here. This dict enters the in-memory conversation
     # history that is replayed to the model on every subsequent turn AND persisted to state.db, which is
     # itself replayed verbatim on session resume (get_messages_as_conversation). Masking a credential to

@@ -473,8 +473,11 @@ def _ship_env_file_and_launch(env, remote_dir: str, env_name: str, launch: str, 
     snapshot after each command. A plain ``set -a; . file`` in the outer shell
     would export HERMES_RPC_TOKEN/PYTHONPATH/TZ into that snapshot and re-export
     them into every later command on the backend (the #71296 snapshot-leak
-    class). The token also stays off the remote shell's argv, which co-tenant
-    users can read via ps for the command's lifetime."""
+    class). The ``cd`` stays in it too: in the outer shell the wrapper's cwd
+    marker would make *remote_dir* the session cwd, and the per-call path then
+    deletes that dir, so every later file tool fails at ``cd``. The token also
+    stays off the remote shell's argv, which co-tenant users can read via ps
+    for the command's lifetime."""
     env_map = {"HERMES_RPC_DIR": rpc_dir, "HERMES_RPC_TOKEN": rpc_token,
                "PYTHONDONTWRITEBYTECODE": "1", **extra_env}
     tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
@@ -482,8 +485,8 @@ def _ship_env_file_and_launch(env, remote_dir: str, env_name: str, launch: str, 
         env_map["TZ"] = tz
     lines = "".join(f"{k}={shlex.quote(v)}\n" for k, v in env_map.items())
     _remote_write(env, f"{remote_dir}/{env_name}", lines, check=True)
-    return (f"cd {shlex.quote(remote_dir)} && "
-            f"( set -a && . ./{env_name} && set +a && {launch} )")
+    return (f"( cd {shlex.quote(remote_dir)} && "
+            f"set -a && . ./{env_name} && set +a && {launch} )")
 
 
 def _env_temp_dir(env: Any) -> str:

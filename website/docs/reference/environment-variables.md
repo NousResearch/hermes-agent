@@ -814,7 +814,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Optional explicit path to a standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Relay uses its normal user configuration followed by the higher-precedence machine-wide system configuration. When set, this file replaces the user configuration while the system configuration still applies above it. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored; `hermes update` / `hermes migrate relay` converts them into `<hermes home>/relay-plugins.toml` and sets this variable — see the [migration note and full example](../user-guide/features/built-in-plugins.md#nemo-relay-native-integration-migration-note). See [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about). |
+| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Optional explicit path to a standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Relay uses its normal user configuration followed by the higher-precedence machine-wide system configuration. When set, this file replaces the user configuration while the system configuration still applies above it. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored; `hermes update` / `hermes migrate relay` converts them into `<hermes home>/relay-plugins.toml` and sets this variable. See the [NeMo Relay guide](../integrations/nemo-relay.md) for setup and the [migration note](../user-guide/features/built-in-plugins.md#nemo-relay-native-integration-migration-note) for older settings. |
 
 ## Agent Behavior
 
@@ -859,6 +859,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_REDACT_SECRETS` | `true`/`false` — control secret redaction in tool output, logs, and chat responses (default: `true`). |
 | `HERMES_WRITE_SAFE_ROOT` | Optional directory prefix that **hard-blocks** `write_file`/`patch` writes outside the listed roots (no approval prompt). Supports multiple directories separated by `os.pathsep` (`:` on Unix, `;` on Windows). See [HERMES_WRITE_SAFE_ROOT](#hermes_write_safe_root) below. |
 | `HERMES_DISABLE_LAZY_INSTALLS` | Internal PM policy used by tests and install probes. Truthy values refuse on-demand installation. It overrides the user-facing `security.allow_lazy_installs` setting. Do not put it in `.env`. |
+| `HERMES_INSTALL_STATE_DIR` | Set by a launcher that starts Hermes on an interpreter it prepared, for that process and its children: the absolute path of a folder that stands in for `installs/<key>` in the Hermes data folder. Later locks and markers go there. Hermes reads nothing from it at start: the process is not restarted, repairs nothing and selects no recorded dependency environment (a sealed install still uses the environment it ships). `hermes pm install --extra`, `hermes pm repair` and every other command that would build a dependency environment are refused in such a process. The launcher keeps the interpreter's environment in place while the process runs: a Hermes process that runs on one of the install's environments holds its lease, and a launcher that is not one uses an interpreter it controls. Launch-only: a value in `.env` or from a secret source is ignored. A sandbox launcher uses it where the install's own state can be seen but neither read nor locked. |
 | `HERMES_DISABLE_FILE_STATE_GUARD` | Set to `1` to turn off the "file changed since you read it" guard on `patch`/`write_file`. |
 | `HERMES_BUNDLED_SKILLS` | Comma-separated override for the list of bundled skills loaded at startup. |
 | `HERMES_OPTIONAL_SKILLS` | Comma-separated list of optional-skill names to auto-install on first run. |
@@ -868,7 +869,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_OAUTH_TRACE` | Set to `1` to log OAuth token exchange and refresh attempts. Includes redacted timing info. |
 | `HERMES_AGENT_HELP_GUIDANCE` | Append additional guidance text to the system prompt for custom deployments. |
 | `HERMES_AGENT_LOGO` | Override the ASCII banner logo at CLI startup. |
-| `DELEGATION_MAX_CONCURRENT_CHILDREN` | Max parallel subagents per `delegate_task` batch (default: `3`, floor of 1, no ceiling). Also configurable via `delegation.max_concurrent_children` in `config.yaml` — the config value takes priority. |
+| `DELEGATION_MAX_CONCURRENT_CHILDREN` | Max parallel subagents per `delegate_task` batch (default: `10`, floor of 1, no ceiling). Read only when no `delegation.max_concurrent_children` value is loaded: under `--ignore-user-config` or `--safe-mode`, or with the key set to `null` in `config.yaml`. Any config value, including the shipped default, takes priority. |
 
 ### HERMES_WRITE_SAFE_ROOT {#hermes_write_safe_root}
 

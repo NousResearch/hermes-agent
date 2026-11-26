@@ -272,6 +272,7 @@ export interface WorkspaceTranslations {
     restartNow: string
     saveAndEnable: string
     savedConnecting: string
+    savedNeedsSetup: string
     saved: string
     setupGuide: string
     telegramManualTitle: string

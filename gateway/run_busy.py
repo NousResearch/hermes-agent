@@ -258,6 +258,16 @@ class GatewayBusySessionMixin:
                 )
         return pending_event, pending
 
+    def _follow_up_turn_scope(
+        self, session_key: Optional[str], source: SessionSource, pending_event: Optional[MessageEvent], pending: str,
+    ) -> Any:
+        """The binding a drained follow-up turn runs under (``_run_agent_queued_followup``): its own
+        event, or, with none (a late /steer, interrupt text), a carry-over event for its text
+        (``_carry_over_event``): the turn's actor, and no producer, since it is the person's input."""
+        from gateway.session_context import scoped_turn_actor
+        event = pending_event if pending_event is not None else self._carry_over_event(session_key, source, pending)
+        return scoped_turn_actor(event, self._session_state(session_key).turn)
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())
@@ -468,12 +478,11 @@ class GatewayBusySessionMixin:
             return False
         except Exception:
             return _assume_active("session", session_key)
-        session_db = getattr(self, "_session_db", None)
-        if not session_id or session_db is None:
+        store = getattr(self, "persistence", None)
+        if not session_id or store is None:
             return False
-        raw_db = getattr(session_db, "_db", session_db)
         try:
-            holder = await asyncio.to_thread(raw_db.get_compression_lock_holder, str(session_id))
+            holder = await asyncio.to_thread(store.coordination.get_compression_lock_holder, session_id=str(session_id))
             # Production returns Optional[str]. Reject non-strings so a MagicMock auto-attr (or any
             # unexpected truthy) cannot look like a held lock and skip hygiene.
             # See #96953.
@@ -823,6 +832,8 @@ class GatewayBusySessionMixin:
         if turn.agent is not running_agent:
             return None
         running = turn.running_event()  # a drained queued follow-up's event, else the opener's
+        if running is not None:
+            running.clear_turn_origin()  # a person's input joined it: no longer only a Hermes wake's
         if running is not None and running is not event:
             running.absorb_turn_input(event)
         if turn.event is not None and turn.event is not event:

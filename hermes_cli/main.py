@@ -259,6 +259,7 @@ from pathlib import Path
 from typing import Optional
 
 
+from hermes_cli.main_resume_args import apply_in_dir as _apply_in_dir
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
@@ -933,14 +934,12 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
-    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    creates it at boot (a first connector use can too); ``cmd_chat`` runs the bootstrap before asking.
+    """Check if at least one inference provider is usable. Never creates one: a claimed Nous welcome
+    trial counts (``anon_auth.free_inference_active``) even when nothing selects ``nous`` yet.
 
-    ``strict_profile_scope``: the caller has bound a NAMED profile's home and
-    secret scope and wants an answer for that profile only — launch-process
-    env and host-wide fallbacks (gh auth, Claude Code credentials) must not
-    make it appear ready. Unscoped callers keep the legacy behavior.
+    ``strict_profile_scope``: the caller has bound a NAMED profile's home and secret scope and wants
+    an answer for that profile only — launch-process env and host-wide fallbacks (gh auth, Claude
+    Code credentials) must not make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
@@ -984,7 +983,9 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # Cheap on-disk checks (auth.json, config.yaml) first: the PROVIDER_REGISTRY
     # sweep below spawns subprocesses (gh) and can take 15-20s — long enough
     # that desktop setup.status calls time out.
-    if _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
+    from hermes_cli.anon_auth import own_trial_active
+    if own_trial_active(strict_profile_scope) or _auth_store_logged_in(
+            get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
         return True
 
     # model as a dict with provider/base_url/api_key means setup ran (fresh
@@ -1117,16 +1118,11 @@ def _resolve_workspace_key() -> Optional[str]:
     subdirs/worktrees group together), else the CWD itself. Returns None when
     neither can be determined — callers fall back to the global MRU then.
     """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return os.path.abspath(result.stdout.strip())
-    except Exception:
-        pass
+    from hermes_cli._subprocess_compat import bounded_git_probe
+    # The user's own environment: a GIT_DIR/GIT_WORK_TREE pair names the workspace they resume in.
+    top = bounded_git_probe(["git", "rev-parse", "--show-toplevel"], timeout=5, env=os.environ)
+    if top:
+        return os.path.abspath(top)
     try:
         return os.getcwd()
     except Exception:
@@ -1135,30 +1131,27 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield a read-only ``SessionDB`` (lazy import, so test patches on ``hermes_state``
-    intercept). Every caller is a lookup (last session, title → id, recorded cwd), so it
-    never opens a writer beside the one the CLI acquires from the registry a moment later.
-    Open failures yield None and any error raised by the ``with`` body is swallowed —
-    callers fall through to their ``return None``."""
-    db = None
+    """Yield main's read-only session reads over a storage interface reader on the current profile's store, or None
+    when it cannot open (lazy imports, so test patches on ``persistence_assembly`` intercept). Every caller is a lookup
+    (last session, title → id, recorded cwd), so it never opens a writer beside the one the CLI opens a moment later.
+    Open failures yield None and any error raised by the ``with`` body is swallowed: callers fall through to their
+    ``return None``."""
+    reader, handles = None, contextlib.ExitStack()
     try:
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+        from persistence_assembly import open_persistence_reader
+        store = handles.enter_context(open_persistence_reader(get_hermes_home()))
+        store.ready()
+        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
+        from hermes_cli.gateway_session_store import SurfaceLabelReader
+        reader = SurfaceLabelReader(store)
     except Exception:
         pass
     try:
-        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
-        from hermes_cli.gateway_session_store import SurfaceLabelReader
-        yield SurfaceLabelReader(db) if db is not None else None  # body errors (incl. AttributeError on a None db) are swallowed
+        yield reader  # body errors (incl. AttributeError on a None reader) are swallowed
     except Exception:
         pass
     finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
+        handles.close()
 
 
 def _latest_session_id(use_tui: bool) -> Optional[str]:
@@ -1200,17 +1193,18 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     old root ID (exit summary, notes) resumes at the live tip.
     """
     with _session_db() as db:
+        store = db.persistence
         # Exact session ID first, then title (with auto-latest for lineage).
-        session = db.get_session(name_or_id)
-        resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
+        session = store.sessions.get(name_or_id)
+        resolved_id = session.session_id if session else store.sessions.resolve_by_title(name_or_id)
         if not resolved_id and name_or_id.startswith("local-"):
             # The TUI epilogue prints a canonical session's unique 22-char prefix.
-            resolved_id = db.resolve_session_id(name_or_id)
+            resolved_id = store.sessions.resolve_id(name_or_id)
         if resolved_id:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.
             try:
-                resolved_id = db.get_compression_tip(resolved_id) or resolved_id
+                resolved_id = store.lineage.tip(resolved_id) or resolved_id
             except Exception:
                 pass
         return resolved_id
@@ -1317,36 +1311,6 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                     sys.exit(1)
 
 
-def _apply_in_dir(args) -> None:
-    """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there."""
-    in_dir = getattr(args, "in_dir", None)
-    if not in_dir:
-        return
-    # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
-    # translate drive-root spellings to native Windows form. No-op elsewhere.
-    from tools.environments.local import _msys_to_windows_path
-
-    _target_dir = os.path.abspath(os.path.expanduser(_msys_to_windows_path(in_dir)))
-    if not os.path.isdir(_target_dir):
-        print(f"Error: --in directory not found: {in_dir}")
-        sys.exit(1)
-    try:
-        os.chdir(_target_dir)
-    except OSError as e:
-        print(f"Error: cannot enter --in directory {in_dir}: {e}")
-        sys.exit(1)
-    # Every cwd consumer (resolve_agent_cwd -> Codex app-server thread cwd, the
-    # terminal tool, context-file discovery) prefers TERMINAL_CWD over the process
-    # cwd, so a value inherited from a parent surface, the shell or .env outlives
-    # this chdir and re-homes the session in the old directory (#106220). Refresh
-    # it. An unset variable stays unset: the backends then derive from the new
-    # process cwd (local exports it at cli import, docker mounts it, ssh and
-    # container backends keep their own remote/sandbox default).
-    if os.environ.get("TERMINAL_CWD", "").strip():
-        os.environ["TERMINAL_CWD"] = _target_dir
-    args.no_restore_cwd = True
-
-
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
     """Normalize --in / --resume / --continue on ``args`` before agent init.
 
@@ -1392,7 +1356,8 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
         and not getattr(args, "worktree", False)
     ):
         with _session_db() as db:  # never let cwd-restore break a resume
-            _saved_cwd = ((db.get_session(args.resume) or {}).get("cwd") or "").strip()
+            session = db.persistence.sessions.get(args.resume)
+            _saved_cwd = ((session.cwd if session else None) or "").strip()
             if _saved_cwd and not os.path.isdir(_saved_cwd):
                 print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
             elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
@@ -2310,7 +2275,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
     if token_file and (getattr(args, "status", False) or getattr(args, "stop", False)):
         raise SystemExit("--ssh-session-token-file cannot be used with --status or --stop")
     if getattr(args, "status", False):
-        _report_dashboard_status()
+        _report_dashboard_status(args.host, args.port)
         sys.exit(0)  # status is informational, always 0
     if getattr(args, "stop", False):
         # Scoped to the invoking home (`-p` applied by _apply_profile_override): another
@@ -2697,6 +2662,15 @@ def _prepare_agent_startup(args) -> None:
 
     if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
         return
+    # Before any banner, TUI, discovery or gateway contact. `gateway run` gets the gateway's own refusal here (exit 78,
+    # EX_CONFIG, and the verdict in the profile's logs): in gateway.run_bootstrap it only comes after the discovery
+    # below and run_gateway's host-gateway guards.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere, run_elsewhere_for_home
+    if args.command == "gateway" and (_elsewhere := run_elsewhere_for_home(get_hermes_home())) is not None:
+        logger.error("Refusing to start the gateway: %s", _elsewhere.message())
+        print(_elsewhere.message(), file=sys.stderr)
+        raise SystemExit(78)
+    exit_if_profile_runs_elsewhere(args.command)  # returns for `gateway`, handled above
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     if not (_is_tui_chat_launch(args) or _chat_runs_at_gateway(args)):
@@ -2709,10 +2683,7 @@ def _prepare_agent_startup(args) -> None:
             # which joins this thread first (incl. model_tools at import time).
             start_background_plugin_discovery()
         except Exception:
-            logger.warning(
-                "plugin discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.warning("plugin discovery failed at CLI startup", exc_info=True)
     # -t/--toolsets narrows which configured MCP servers get spawned, on
     # every discovery path (background thread, TUI/desktop
     # deferred start). Built-in toolset names never match a server key, so
@@ -2738,10 +2709,7 @@ def _prepare_agent_startup(args) -> None:
                 thread_name="cli-mcp-discovery",
             )
         except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.debug("Background MCP tool discovery failed at CLI startup", exc_info=True)
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
@@ -2754,10 +2722,7 @@ def _prepare_agent_startup(args) -> None:
             accept_for_process()
         register_outbound_webhooks(_hooks_cfg)
     except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
-        )
+        logger.debug("shell-hook registration failed at CLI startup", exc_info=True)
 
 
 def _apply_safe_mode(args) -> None:
@@ -2868,9 +2833,9 @@ def _try_fast_serve_launch() -> bool:
 
     # Container routing is top-level policy and must run before host dispatch.
     try:
-        from hermes_cli.config import get_container_exec_info
+        from hermes_cli.main_container import container_exec_info
 
-        if get_container_exec_info():
+        if container_exec_info():
             return False
     except Exception:
         return False
@@ -2907,8 +2872,8 @@ def _try_fast_chat_launch() -> bool:
         return False
     # Container routing must win: NixOS container mode forwards EVERY invocation.
     try:
-        from hermes_cli.config import get_container_exec_info
-        if get_container_exec_info():
+        from hermes_cli.main_container import container_exec_info
+        if container_exec_info():
             return False
     except Exception:
         return False
@@ -3323,9 +3288,9 @@ def main():
     # NixOS container mode routes ALL invocations into the managed container.
     # MUST run before parse_args() so --help, unrecognised flags and every
     # subcommand are forwarded instead of intercepted by argparse on the host.
-    from hermes_cli.config import get_container_exec_info
+    from hermes_cli.main_container import container_exec_info
 
-    container_info = get_container_exec_info()
+    container_info = container_exec_info()  # None for a profile a plugin runs elsewhere
     if container_info:
         from hermes_cli.main_container import exec_in_container
 

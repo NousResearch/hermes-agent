@@ -87,6 +87,8 @@ import {
 } from "@/lib/terminal-font-refit";
 import { generateChannelId } from "@/lib/chat-channel-id";
 import { sendCopyLastCommand } from "@/lib/chat-copy-last";
+import { isUserInitiatedTerminalInput } from "@/lib/learn-handoff";
+import { useLearnHandoff } from "@/lib/use-learn-handoff";
 import { CopyLastButton } from "@/lib/chat-copy-last-button";
 import {
   probeWebglSupport,
@@ -318,6 +320,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => buildTerminalTheme(terminalBg, terminalFg),
     [terminalBg, terminalFg],
   );
+  const terminalThemeRef = useRef(terminalTheme);
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
   // param changes do NOT remount the component. Resume-in-chat from the
@@ -352,6 +355,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
   );
+  const learnHandoff = useLearnHandoff(isActive, channel);
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle = sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
   const handleSessionTitleChange = useCallback(
@@ -534,7 +538,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
       screenReaderMode: true, // AT textarea; composer a11y (#36784)
-      theme: terminalTheme,
+      theme: terminalThemeRef.current,
     });
     termRef.current = term;
 
@@ -1181,7 +1185,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         url = await api.buildWsUrl("/api/pty", params);
       } catch (err) {
         if (unmounting || ticketSuperseded) return;
-        console.warn(`[chat] PTY ticket request failed: ${errorMessage(err, t.common)}`);
+        console.warn(`[chat] PTY ticket request failed: ${errorMessage(err)}`);
         failTicketAttempt();
         return;
       }
@@ -1241,25 +1245,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // the bottom so the latest output is in view; released once the user
         // scrolls up (#59591).
         if (resumeParam) stickToBottomRef.current = true;
-        // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
-        // skill" panel) is typed into the composer as a /learn command once the
-        // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
-        // so this reuses the existing composer path — no special PTY protocol.
-        const learnSeed = searchParams.get("learn");
-        if (learnSeed) {
-          const next = new URLSearchParams(searchParams);
-          next.delete("learn");
-          setSearchParams(next, { replace: true });
-          const cmd = `/learn ${learnSeed}`.trim();
-          // Delay so Ink's composer has mounted and grabbed focus before input.
-          setTimeout(() => {
-            try {
-              wsRef.current?.send(cmd + "\r");
-            } catch {
-              /* PTY not ready / closed — user can retype */
-            }
-          }, 800);
-        }
+        learnHandoff.onSocketOpen(ws);
       };
 
       // Session resume: Ink's two-pass virtual scroll floods the PTY with
@@ -1352,6 +1338,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       }
       wsRef.current = null;
+      learnHandoff.onSocketClose(ws);
       connectInFlightRef.current = false;
       clearConnectingTimer();
       if (unmounting) {
@@ -1457,6 +1444,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
         );
         ptyInputLineRef.current = normalized.nextLine;
+        if (isUserInitiatedTerminalInput(normalized.data)) learnHandoff.onUserInput();
         if (normalized.normalized) {
           mobileReplacementInputUntilRef.current = 0;
         }
@@ -1534,6 +1522,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
+      learnHandoff.onTransportTeardown();
       host.removeEventListener("keydown", _imeCompositionGuard, true);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's
@@ -1551,7 +1540,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
-  }, [hasActivated, channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce, terminalTheme, t.common, searchParams, setSearchParams]);
+  }, [
+    hasActivated, channel, clearReconnectTimer, learnHandoff,
+    resumeParam, scopedProfile, reconnectNonce,
+  ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
   // ONLY while the chat tab is actually visible. ChatPage stays mounted
@@ -1688,6 +1680,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // Keep the live xterm theme in sync when the active theme's terminal
   // colors change (e.g. user switches to a custom YAML theme mid-session).
   useEffect(() => {
+    terminalThemeRef.current = terminalTheme;
     const term = termRef.current;
     if (!term) return;
     term.options.theme = terminalTheme;

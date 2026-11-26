@@ -12,11 +12,14 @@ keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 import functools
 import logging
+from pathlib import Path
 import time
-from typing import Optional
+from typing import Callable, Iterable, Optional
 
+from agent.async_utils import consume_detached_task_result
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
@@ -24,6 +27,10 @@ from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 
 logger = logging.getLogger("gateway.run")
+# One adapter of each of these platforms per connect wave, in profile order, as the serial sweep connected
+# them. A WhatsApp secondary allocates its bridge port by probing which ports are bound, so a sibling's
+# configured port it has not bound yet would read as free and be recorded for this profile too.
+_ONE_PER_WAVE_PLATFORMS = frozenset({Platform.WHATSAPP})
 _MAX_PLUGIN_LOAD_REARMS = 3  # per queued platform: transient load failures heal, a broken plugin stops re-importing
 
 
@@ -72,6 +79,88 @@ def discount_suspended_wait(entries, waited_from: float, planned: float) -> None
 def is_token_contention(error_code: Optional[str]) -> bool:
     """True for a fatal whose cause is another poller holding the token (matched by code, never text)."""
     return (error_code or "").strip().lower().endswith("_polling_conflict")
+
+
+@dataclass
+class _StagedProfileAdapter:
+    """One prepared secondary-profile adapter awaiting concurrent connection."""
+
+    profile_name: str
+    profile_home: Path
+    platform: Platform
+    adapter: BasePlatformAdapter
+    claims: tuple[Optional[tuple], Optional[tuple]] = (None, None)
+
+    @property
+    def non_none_claims(self) -> tuple[tuple, ...]:
+        return tuple(c for c in self.claims if c is not None)
+
+    @property
+    def wave_keys(self) -> tuple[tuple, ...]:
+        """Claims plus a wave-only key: a pending match defers the adapter to a later wave, never refuses it."""
+        one_per_wave = (("wave", self.platform),) if self.platform in _ONE_PER_WAVE_PLATFORMS else ()
+        return self.non_none_claims + one_per_wave
+
+
+@dataclass
+class _SecondaryConnectBatch:
+    """Mutable staging, deferral, claim-tracking, and rollback state for secondary connects."""
+
+    staged: list[_StagedProfileAdapter] = field(default_factory=list)
+    deferred: list[_StagedProfileAdapter] = field(default_factory=list)
+    staged_owners: set[int] = field(default_factory=set)
+    pending_claims: set[tuple] = field(default_factory=set)
+
+    def checkpoint(self) -> tuple[int, int]:
+        return len(self.staged), len(self.deferred)
+
+    def has_work(self) -> bool:
+        return bool(self.staged or self.deferred)
+
+    def has_pending_conflict(self, claims: Iterable[Optional[tuple]]) -> bool:
+        return any(c in self.pending_claims for c in claims if c is not None)
+
+    def stage(self, item: _StagedProfileAdapter) -> None:
+        self.staged.append(item)
+        self.staged_owners.add(id(item.adapter))
+        self.pending_claims.update(item.wave_keys)
+
+    def defer(self, item: _StagedProfileAdapter) -> None:
+        self.deferred.append(item)
+        self.pending_claims.update(item.wave_keys)
+
+    def staged_platforms(self) -> list[Platform]:
+        return [item.platform for item in self.staged]
+
+    def take_wave(self) -> list[_StagedProfileAdapter]:
+        wave = self.staged
+        self.staged = []
+        self.staged_owners.clear()
+        return wave
+
+    def take_deferred(self) -> list[_StagedProfileAdapter]:
+        pending = self.deferred
+        self.deferred = []
+        self.staged_owners.clear()
+        self.pending_claims.clear()
+        return pending
+
+    def rollback(
+        self,
+        release_claim: Callable[[str, Platform, BasePlatformAdapter], None],
+        checkpoint: tuple[int, int] = (0, 0),
+    ) -> None:
+        staged_start, deferred_start = checkpoint
+        for item in self.staged[staged_start:]:
+            release_claim(item.profile_name, item.platform, item.adapter)
+            self.staged_owners.discard(id(item.adapter))
+        del self.staged[staged_start:]
+        del self.deferred[deferred_start:]
+        self.pending_claims.clear()
+        for item in self.staged:
+            self.pending_claims.update(item.wave_keys)
+        for item in self.deferred:
+            self.pending_claims.update(item.wave_keys)
 
 
 class GatewaySecondaryReconnectMixin:
@@ -180,7 +269,9 @@ class GatewaySecondaryReconnectMixin:
         to reconnect, or mid-heal), so no other profile takes the same bot meanwhile. A task owner's hold is
         released when that task finishes, however it finishes (cancelled before it ever ran included); an
         adapter owner (being connected or torn down) releases its own, so it never drops a newer hold on the
-        same platform. Unserve drops all of the profile's holds once its adapters are torn down."""
+        same platform. Once unserve has popped the profile's adapters, it drops the profile's holds however it
+        exits, except the hold of an adapter it did not pop (a fatal teardown still running, say): that hold moves
+        to ``_teardown_held_claims`` until its owner releases it."""
         held = getattr(self, "_secondary_held_claims", None)
         if held is None:
             held = self._secondary_held_claims = {}
@@ -191,19 +282,24 @@ class GatewaySecondaryReconnectMixin:
             owner.add_done_callback(lambda done: self._release_secondary_claims(profile_name, platform, done))
 
     def _release_secondary_claims(self, profile_name: str, platform: Platform, owner) -> None:
-        """Drop the hold on (profile, platform) if ``owner`` still owns it (a newer owner keeps its hold)."""
+        """Drop the hold on (profile, platform) if ``owner`` still owns it (a newer owner keeps its hold), and
+        ``owner``'s teardown hold that outlived its profile's unserve."""
         held = getattr(self, "_secondary_held_claims", None) or {}
         entry = held.get((profile_name, platform))
         if entry is not None and entry[0] is owner:
             del held[(profile_name, platform)]
+        teardown = getattr(self, "_teardown_held_claims", None) or {}
+        if (entry := teardown.get(id(owner))) is not None and entry[0] is owner:
+            del teardown[id(owner)]
 
     def _held_claim_owners(self, exclude: Optional[tuple] = None) -> dict[tuple, str]:
-        """Claim -> profile for every held secondary claim but the ``exclude`` (profile, platform) hold."""
+        """Claim -> profile for every held secondary claim, teardowns that outlived an unserve included, but
+        the ``exclude`` (profile, platform) ones."""
         held = getattr(self, "_secondary_held_claims", None) or {}
-        return {
-            claim: key[0] for key, (_owner, claims) in held.items() if key != exclude
-            for claim in claims if claim is not None
-        }
+        teardown = getattr(self, "_teardown_held_claims", None) or {}
+        holds = [*((key, claims) for key, (_owner, claims) in held.items()),
+                 *((key, claims) for _owner, key, claims in teardown.values())]
+        return {claim: key[0] for key, claims in holds if key != exclude for claim in claims if claim is not None}
 
     def _current_claim_owners(self, exclude: Optional[tuple] = None) -> dict[tuple, str]:
         """Who owns each bot/listener right now: held claims (but ``exclude``'s) plus everything live. Read at
@@ -211,6 +307,161 @@ class GatewaySecondaryReconnectMixin:
         go meanwhile)."""
         active = getattr(self, "_primary_profile_name", None) or "default"
         return {**self._held_claim_owners(exclude), **self._live_resource_claims(active)}
+
+    def _external_claim_owners(self, profile_name: str, platform: Platform, staged_owners: set) -> dict[tuple, str]:
+        """Claim owners excluding provisional holds owned by ``staged_owners``."""
+        mine = (profile_name, platform) if any(key == (profile_name, platform) for _o, key, _c in (
+            getattr(self, "_teardown_held_claims", None) or {}).values()) else None
+        owners = self._current_claim_owners(mine) if getattr(self, "_running", False) else self._held_claim_owners(mine)
+        if not staged_owners:
+            return owners
+        held = getattr(self, "_secondary_held_claims", None) or {}
+        provisional = {
+            c for key, (owner, cl) in held.items()
+            if id(owner) in staged_owners and key != mine for c in cl if c is not None
+        }
+        return {c: who for c, who in owners.items() if c not in provisional} if provisional else owners
+
+    def _stage_or_defer_adapter(
+        self, candidate: _StagedProfileAdapter, claimed: dict[tuple, str], batch: _SecondaryConnectBatch,
+    ) -> bool:
+        """Stage candidate for current wave, defer on provisional conflict, or refuse external duplicate."""
+        raw_claims = self._adapter_claims(candidate.platform, candidate.adapter)
+        candidate.claims = raw_claims
+        non_none = candidate.non_none_claims
+        external = {
+            **claimed,
+            **self._external_claim_owners(candidate.profile_name, candidate.platform, batch.staged_owners),
+        }
+        if any(c in external for c in non_none):
+            self._claim_secondary_platform(
+                candidate.profile_name, candidate.profile_home, candidate.platform, candidate.adapter, external,
+            )
+            return False
+        if batch.has_pending_conflict(candidate.wave_keys):
+            batch.defer(candidate)
+            return True
+        claims = self._claim_secondary_platform(
+            candidate.profile_name, candidate.profile_home, candidate.platform, candidate.adapter, external,
+        )
+        if claims is None:
+            return False
+        candidate.claims = claims
+        self._configure_profile_adapter(candidate.adapter, candidate.profile_name, candidate.platform)
+        self._hold_secondary_claims(candidate.profile_name, candidate.platform, candidate.adapter, claims)
+        batch.stage(candidate)
+        return True
+
+    async def _cancel_and_drain_wave_tasks(self, tasks: list[asyncio.Task]) -> None:
+        """Cancel unfinished wave tasks and wait (bounded) for them to unwind."""
+        if not tasks:
+            return
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        timeout = self._adapter_disconnect_timeout_secs()
+        if timeout <= 0:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        for task in pending:
+            task.add_done_callback(consume_detached_task_result)
+
+    async def _cleanup_abandoned_staged(
+        self, wave: list[_StagedProfileAdapter], started: set[int], disconnected: set[int],
+    ) -> None:
+        """Release abandoned provisional holds and disconnect any started-but-untracked adapters."""
+        from gateway.run import _profile_runtime_scope
+        for item in wave:
+            self._release_secondary_claims(item.profile_name, item.platform, item.adapter)
+            if id(item.adapter) not in started or id(item.adapter) in disconnected:
+                continue
+            if (getattr(self, "_profile_adapters", None) or {}).get(item.profile_name, {}).get(item.platform) is item.adapter:
+                continue
+            disconnected.add(id(item.adapter))
+            with _log_suppressed(
+                logging.DEBUG, "Cancelled %s disconnect failed (profile: %s)",
+                item.platform.value, item.profile_name, exc_info=True,
+            ):
+                with _profile_runtime_scope(item.profile_home, hydrate_secrets=False):
+                    await self._safe_adapter_disconnect(item.adapter, item.platform)
+
+    async def _connect_profile_adapter_wave(
+        self, wave: list[_StagedProfileAdapter], claimed: dict[tuple, str],
+        transient_failed: Optional[set[str]] = None,
+    ) -> int:
+        """Connect one conflict-free wave of staged secondary adapters concurrently."""
+        if not wave:
+            return 0
+        started: set[int] = set()
+        disconnected: set[int] = set()
+        tasks: list[asyncio.Task] = []
+        boot_platform: Optional[Platform] = None
+
+        async def _run_one(item: _StagedProfileAdapter) -> int:
+            try:
+                return await self._connect_prepared_profile_adapter(
+                    item, claimed, started=started, disconnected=disconnected, boot_platform=boot_platform,
+                )
+            except Exception as exc:
+                if transient_failed is None:
+                    raise
+                logger.error("Failed to start adapters for profile '%s': %s", item.profile_name, exc, exc_info=True)
+                transient_failed.add(item.profile_name)
+                return 0
+
+        try:
+            boot_platform = self._max_boot_timeout_platform(item.platform for item in wave)
+            if len(wave) == 1:
+                return await _run_one(wave[0])
+            tasks = [asyncio.create_task(_run_one(item)) for item in wave]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except BaseException:
+            await self._cancel_and_drain_wave_tasks(tasks)
+            await self._cleanup_abandoned_staged(wave, started, disconnected)
+            raise
+        connected = 0
+        first_exc: Optional[BaseException] = None
+        for outcome in results:
+            if isinstance(outcome, BaseException):
+                if first_exc is None:
+                    first_exc = outcome
+                continue
+            connected += outcome
+        if first_exc is not None:
+            await self._cleanup_abandoned_staged(wave, started, disconnected)
+            raise first_exc
+        return connected
+
+    async def _connect_staged_profile_adapters(
+        self, batch: _SecondaryConnectBatch, claimed: dict[tuple, str],
+        transient_failed: Optional[set[str]] = None,
+    ) -> int:
+        """Connect staged adapters in conflict-free waves, re-evaluating deferred siblings."""
+        connected = 0
+        while batch.has_work():
+            wave = batch.take_wave()
+            if wave:
+                connected += await self._connect_profile_adapter_wave(wave, claimed, transient_failed)
+            pending_deferred = batch.take_deferred()
+            if not pending_deferred:
+                break
+            try:
+                for candidate in pending_deferred:
+                    p_map = self._profile_adapters.setdefault(candidate.profile_name, {})
+                    if candidate.platform in p_map or candidate.platform in (
+                            (getattr(self, "_profile_failed_platforms", None) or {}).get(candidate.profile_name) or {}) or (
+                            (candidate.profile_name, candidate.platform) in (
+                                getattr(self, "_secondary_held_claims", None) or {})):
+                        continue
+                    self._stage_or_defer_adapter(candidate, claimed, batch)
+            except BaseException:
+                batch.rollback(self._release_secondary_claims)
+                raise
+        return connected
 
     def _note_unbuilt_secondary_platform(self, profile_name: str, platform: Platform, heals: bool) -> None:
         """A secondary platform whose ``_create_adapter`` returned None at startup: say why, stamp its
@@ -280,21 +531,16 @@ class GatewaySecondaryReconnectMixin:
                 self._mark_adapter_unavailable(
                     f"{profile_name}:{platform.value}", platform, retrying=False, needs_attention=True)
                 return None, None
-            if predecessor is None:
-                # Queued without an adapter, so it never passed the startup ownership check: run it before
-                # connect() against live and held owners (but this platform's own hold from an earlier tick),
-                # and hold the claim (no await between the check and the hold) so a second healing profile
-                # with the same bot is refused meanwhile.
-                claims = self._claim_secondary_platform(
-                    profile_name, profile_home, platform, adapter,
-                    self._current_claim_owners(exclude=(profile_name, platform)))
-                if claims is None:
-                    return None, None
-                self._hold_secondary_claims(profile_name, platform, asyncio.current_task(), claims)
-            else:  # re-hold what the rebuilt adapter claims now (its token may have changed; as on main, a
-                # reconnect with a predecessor is not re-checked against other owners)
-                self._hold_secondary_claims(
-                    profile_name, platform, asyncio.current_task(), self._adapter_claims(platform, adapter))
+            # Run the ownership check before connect() against live and held owners (but this platform's own
+            # hold: the predecessor's, or an earlier tick's): a never-built platform never passed the startup
+            # check, and a rebuilt one may claim a bot another profile took meanwhile. Hold the claim (no await
+            # between the check and the hold) so a second healing profile with the same bot is refused meanwhile.
+            claims = self._claim_secondary_platform(
+                profile_name, profile_home, platform, adapter,
+                self._current_claim_owners(exclude=(profile_name, platform)))
+            if claims is None:
+                return None, None
+            self._hold_secondary_claims(profile_name, platform, asyncio.current_task(), claims)
             carry_inbound_dedup(predecessor, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)
@@ -345,7 +591,11 @@ class GatewaySecondaryReconnectMixin:
                         rearm = True  # no adapter yet but it can heal: re-arm the failed load, then retry
                     elif success and self._running:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
-                        if platform not in profile_map:
+                        # Never publish once superseded: a reconcile that retired this reconnect cancels
+                        # it (an attempt that swallowed the cancel still sees it) or gives the slot away.
+                        slot = ((self._profile_failed_platforms or {}).get(profile_name) or {}).get(platform)
+                        superseded = bool(current_task and current_task.cancelling()) or slot not in (None, current_task)
+                        if platform not in profile_map and not superseded:
                             profile_map[platform] = adapter
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)

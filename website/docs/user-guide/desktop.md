@@ -8,7 +8,7 @@ description: "The native Hermes desktop app — a polished experience for chatti
 
 The Hermes desktop app is a native app built around the **same** agent you get from the CLI and the gateway — same config, same API keys, same sessions, same skills, same memory. It is not a separate product or a lightweight clone; it uses the same Hermes Agent core and settings, and drives it through a modern & thoughtfully designed UI. If you have used `hermes` in a terminal, everything you set up there is already here, and anything you do here shows up there.
 
-It runs on **macOS (Apple Silicon), Windows, and Linux** — see [Platform Support](../getting-started/platform-support.md) for the full matrix.
+It runs on **macOS (Apple Silicon), Windows, and Linux**. Packaged bundles cover macOS and Windows; [Platform Support](../getting-started/platform-support.md) lists the OS versions each bundle requires and the installers to use on other systems.
 
 :::tip Which interface is which?
 Hermes has several front ends that all talk to the same agent:
@@ -22,9 +22,9 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
+Download the desktop package from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md), which give each package's OS requirements and the installer to use on older systems.
 
-If you already have Hermes installed, simply run
+On Linux, follow the [source install instructions](../getting-started/installation.md#linux--macos--wsl2) first. Once you have a source install of Hermes, run
 
 ```bash
 hermes desktop
@@ -73,7 +73,8 @@ also works there on its own, as a bearer token, in the `X-Hermes-Session-Token` 
 For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
 serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
 
-**From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
+**From another machine.** Set `webapp.host` to `0.0.0.0`, or to one IP address of this machine (a LAN or
+Tailscale address) to serve the Webapp at that address only; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
 for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
 you run on the same machine, keep the loopback host and set `webapp.public_url` to the address it
@@ -81,8 +82,9 @@ serves instead; that requires the same sign-in. A proxy in another container or 
 cannot reach that loopback address: see [Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy).
 `hermes webapp` then opens the Webapp's address, where you sign in with
 your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
-registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
-loopback address (a password provider, or sign-in you set up by hand for that address). One-use
+registered Nous sign-in for, while it is still this machine's address and the Webapp's port; on an
+IP address you set, that address (if Web Access registered Nous sign-in for another address, the
+command says that sign-in cannot finish there); else the loopback address (a password provider, or sign-in you set up by hand for that address). One-use
 links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely.
 
 **What plain HTTP loses.** Browsers turn off features that need a secure context on a plain-HTTP
@@ -452,6 +454,7 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Terminal font picker** — choose an installed font in **Settings → Appearance**. Nerd Fonts such as `MesloLGS NF` render Powerlevel10k separators and icons in both interactive and agent terminals; the setting is saved per profile.
 - **Reasoning Blocks** — **Settings → Chat → Reasoning Blocks** (`display.show_reasoning` in `config.yaml`) shows or hides the model's thinking in the transcript (off shows answers only). Open chats update as soon as the setting saves. Typing `/reasoning hide` or `/reasoning show` in the composer flips the same setting and the open transcript follows immediately.
 - **Reopen Last Chat on Launch** — by default the app picks up where you left off on cold start. Turn it off in **Settings → Appearance** (or set `display.resume_last_session: false` in `config.yaml`) to always begin with a fresh chat. Deep links and explicit destinations are never overridden either way.
+- **Open-only link** — `hermes://launch` opens Hermes Desktop (or brings a running window to the front) and does nothing else: anything after `launch` is ignored, so it never pre-fills, navigates, or opens a dialog. Use it for an "Open Hermes" button on a page or a shortcut.
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
@@ -480,7 +483,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The public Skills Hub's **Install in Hermes** buttons open `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace)'s **Install in Hermes** buttons open source-qualified `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
@@ -561,7 +564,9 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
-The background check asks the GitHub API for the branch tip. Anonymous GitHub requests are limited to 60 per hour **per network address**, so on a shared connection (office NAT, VPN, proxy) the check can report `GitHub API rate limit reached` even though this machine made almost none of them. To spend a 5,000/hour budget instead, the check uses the first credential it finds, in this order:
+For **bundled desktop installs** (signed macOS `Hermes Agent.app`, Windows `.appinstaller` MSIX, and Microsoft Store), updates replace the packaged app and its bundled runtime together. [Bundled desktop updates](../getting-started/updating.md#bundled-desktop-updates) gives the download sizes and how long the local install takes.
+
+For **source-built desktop installs**, the background check asks the GitHub API for the branch tip. Anonymous GitHub requests are limited to 60 per hour **per network address**, so on a shared connection (office NAT, VPN, proxy) the check can report `GitHub API rate limit reached` even though this machine made almost none of them. To spend a 5,000/hour budget instead, the check uses the first credential it finds, in this order:
 
 1. `GITHUB_TOKEN`, then `GH_TOKEN`, from the environment the app was launched from — read on each request, never stored.
 2. The [GitHub CLI](https://cli.github.com/)'s own login (`gh auth token`). This is the rung that helps an app started from the Dock, Finder, or a desktop launcher, which inherits a minimal environment without your shell's variables. `gh` is looked up on `PATH` and in the usual install locations (Homebrew, `/usr/local/bin`, `~/.local/bin`, the Windows GitHub CLI installer); the answer is cached until the app restarts, so `gh` runs at most once per session.
@@ -1034,7 +1039,7 @@ with Hermes' stable signing identities it survives every update:
 
 1. System Settings → **Privacy & Security → Full Disk Access** (or run
    `open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"`)
-2. Enable your terminal app — and **Hermes.app** if you use Desktop.
+2. Enable your terminal app — and, if you use Desktop, the app for your channel: **Hermes Agent.app** (stable), **Hermes Agent Canary.app** (canary), or **Hermes.app** (source-built). Each app needs its own grant.
 3. Fully quit and relaunch them once.
 
 `hermes doctor` reports whether the current terminal context already has the

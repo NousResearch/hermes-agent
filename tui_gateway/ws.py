@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
+from gateway.session_presence import ClientPresence
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
 from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
@@ -152,6 +153,11 @@ class WSTransport:
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self.desktop_local = False
+        #: The client label this peer announced (``client.capabilities`` ``client``, unknown kind removed);
+        #: None until it does. Self-declared, attribution only.
+        self.client_identity: dict | None = None
+        #: Which sessions this peer's user touched lately (gateway/session_presence.py); memory only.
+        self.client_presence = ClientPresence()
         #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
         self.skin_home: str | None = None
         self._closed = False
@@ -417,6 +423,7 @@ def _start_backend_liveness() -> None:
     for start, what in (
         (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
         (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
+        (server._start_cache_expiry_compactor, "cache-expiry compactor start"),
     ):
         try:
             start()

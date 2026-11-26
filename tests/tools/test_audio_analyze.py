@@ -2,6 +2,7 @@
 
 import base64
 import json
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -10,6 +11,18 @@ import pytest
 from tools.audio_tools import check_audio_requirements
 from tools.registry import registry
 from tests.tools.test_audio_prepare import stereo_wav
+
+
+def test_native_adapter_follows_the_plugin_move_and_degrades_without_it(monkeypatch):
+    """The native client comes from the google plugin; an unloaded plugin is not a crash."""
+    from tools import audio_tools
+
+    adapter = audio_tools._native_adapter()
+    assert adapter is not None
+    assert adapter.AsyncGeminiNativeClient is not None
+    # ``None`` in sys.modules halts the import, the way an absent plugin does.
+    monkeypatch.setitem(sys.modules, "plugins.model_providers.google.native_adapter", None)
+    assert audio_tools._native_adapter() is None
 
 
 @pytest.fixture

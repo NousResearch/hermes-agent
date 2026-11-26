@@ -2,7 +2,10 @@
 
 import asyncio
 import base64
+import importlib
 import json
+import sys
+from types import ModuleType
 
 from tools.registry import registry
 
@@ -36,6 +39,28 @@ def _audio_client():
     return client, model, cfg, provider, base_url
 
 
+_NATIVE_ADAPTER_MODULE = "plugins.model_providers.google.native_adapter"
+
+
+def _native_adapter() -> ModuleType | None:
+    """The Google plugin's native Gemini adapter module, or ``None`` when it never loaded.
+
+    Bundled providers live in ``plugins/model-providers`` — a directory name no module path can
+    spell — so the provider loader republishes that package as ``plugins.model_providers.google``
+    once it has run. Resolved per call, not at import time: importing this tool never depends on
+    a plugin having loaded, and a profile without one has no native route rather than a crash.
+    """
+    module = sys.modules.get(_NATIVE_ADAPTER_MODULE)
+    if module is not None:
+        return module
+    try:
+        from providers import get_provider_profile
+        get_provider_profile("gemini")  # nothing has loaded the bundled plugin yet
+        return importlib.import_module(_NATIVE_ADAPTER_MODULE)
+    except ImportError:  # plugin absent or blocked: no native route, never a crash
+        return None
+
+
 def check_audio_requirements() -> bool:
     """Explicit audio configuration opts this profile in; dispatch resolves credentials."""
     try:
@@ -57,12 +82,17 @@ async def _handle_audio_analyze(args: dict, **kwargs) -> str:
     try:
         from openai import APIError, AsyncOpenAI
         from httpx import HTTPError
-        from agent.gemini_native_adapter import AsyncGeminiNativeClient, GeminiAPIError
-        if not isinstance(client, (AsyncOpenAI, AsyncGeminiNativeClient)):
+        adapter = _native_adapter()
+        native_client = getattr(adapter, "AsyncGeminiNativeClient", None)
+        gemini_error = getattr(adapter, "GeminiAPIError", None)
+        # Only the native Gemini client carries raw input_audio; a plugin that never loaded
+        # leaves that promise unreachable, so the transport is refused instead of crashed.
+        native_route = native_client is not None and isinstance(client, native_client)
+        if not native_route and not isinstance(client, AsyncOpenAI):
             raise ValueError("This provider transport cannot carry native input_audio")
         resolved = await resolve_image_source(source, ResolveContext(kwargs.get("task_id")), permitted=("audio",))
         from agent.native_audio import GEMINI_AUDIO_MIMES
-        formats = tuple(GEMINI_AUDIO_MIMES) if isinstance(client, AsyncGeminiNativeClient) else ("wav", "mp3")
+        formats = tuple(GEMINI_AUDIO_MIMES) if native_route else ("wav", "mp3")
         data, audio_format = await asyncio.to_thread(prepare_audio, resolved.data, formats)
         messages = [{"role": "user", "content": [
             {"type": "text", "text": (
@@ -72,13 +102,15 @@ async def _handle_audio_analyze(args: dict, **kwargs) -> str:
             {"type": "input_audio", "input_audio": {
                 "data": base64.b64encode(data).decode("ascii"), "format": audio_format}},
         ]}]
+        # The provider's own error types, so a native Gemini failure stays a JSON verdict.
+        provider_errors = (APIError, HTTPError) + ((gemini_error,) if gemini_error is not None else ())
         # Generic auxiliary recovery can switch to the main text model on quota/transport
         # errors. Raw audio must stay on the route the user explicitly selected.
         try:
             response = await client.chat.completions.create(
                 model=model, messages=messages, modalities=["text"], max_tokens=2048,
                 timeout=float(cfg.get("timeout") or 180))
-        except (APIError, HTTPError, GeminiAPIError) as exc:
+        except provider_errors as exc:
             # Provider errors can echo the entire inline payload. Keep raw audio out of history.
             return json.dumps({"error": f"Audio model request failed ({type(exc).__name__}). "
                                "Check auxiliary.audio credentials, model and native audio support."})

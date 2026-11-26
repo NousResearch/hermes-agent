@@ -205,9 +205,9 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
    - Gateway: `gateway/run_config_loaders.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
    - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
 
-### What does NOT support fallback
+### Fallback behavior in other contexts
 
-- **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
+- **Subagent delegation** (`tools/delegate_tool.py` / `tools/delegate_tool_config.py`): uses `delegation.fallback_providers` (or a route's own `fallback_providers`) when declared. Otherwise, unpinned children inherit the parent's fallback chain (or `fallback_model=None` when the parent chain is empty), while children pinned via `delegation.provider`, `delegation.model`, or `delegation.base_url` do not borrow the parent's chain. Setting `fallback_providers: []` disables fallback either way.
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
 
 Unpinned cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. A job with its own `provider` / `model` / `base_url` gets no chain, the same rule as a pinned delegation child. See [Cron Internals](./cron-internals.md).

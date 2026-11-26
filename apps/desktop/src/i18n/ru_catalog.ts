@@ -39,6 +39,11 @@ export const ruCatalog = {
   install: 'Установить',
   installed: 'Установленные',
   searchSkills: 'Поиск навыков',
+  tierLabels: {
+    official: 'Официальный',
+    verified: 'Проверенный',
+    community: 'Сообщество'
+  },
   searchPlugins: 'Поиск плагинов',
   allSources: 'Все источники',
   allCategories: 'Все категории',
@@ -75,11 +80,6 @@ export const ruCatalog = {
   previousSlide: 'Предыдущая рекомендация',
   nextSlide: 'Следующая рекомендация',
   slideOf: (index, count) => `${index} из ${count}`,
-  tierLabels: {
-    official: 'Официальный',
-    verified: 'Проверенный',
-    community: 'Сообщество'
-  },
   tiers: {
     official: {
       title: 'Официальные плагины',

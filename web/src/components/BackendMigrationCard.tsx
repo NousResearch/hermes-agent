@@ -8,6 +8,7 @@ import {
   applyOutcome,
   backendMigrationApi,
   blockerAdvice,
+  consentClears,
   cardVisible,
   findingSentence,
   foundBackend,
@@ -211,22 +212,23 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
         onCancel={() => setConfirm(null)}
         onConfirm={() => void move(confirm?.force ?? false)}
         title="Move to a single Hermes?"
-        description={confirmText(p?.old_address, confirm?.force ?? false, p?.running_turns === null)}
+        description={confirmText(p, confirm?.force ?? false)}
         confirmLabel="Move now"
       />
     </Card>
   );
 }
 
-function confirmText(oldAddress: string | null | undefined, force: boolean, turnsUnknown: boolean): string {
-  // Forced past unknown activity: the engine's own warning, never read as idle.
-  const forced = turnsUnknown
-    ? " The old backend's turn activity could not be read: the move goes ahead and any turn running on it is interrupted."
-    : " Replies being written right now are cut off.";
+function confirmText(p: BackendMigrationPlan | null | undefined, force: boolean): string {
+  const stops = (p?.takes_over ?? []).map((t) => ` ${t}`).join("");
+  // Forced: the chats and gateways the plan named are stopped; messaging is down until the gateway service runs.
+  const forced = force
+    ? " Running chats are stopped, and messaging and the gateway are unavailable for a few seconds."
+    : "";
   return (
-    `This page stops working while Hermes takes over ${oldAddress ?? "this address"}; ` +
-    "afterwards you sign in again at this same address. If anything goes wrong, everything is put back." +
-    (force ? forced : "")
+    `This page stops working while Hermes takes over ${p?.old_address ?? "this address"}; ` +
+    "afterwards you sign in again at this same address." + forced + stops +
+    " If anything goes wrong, everything is put back."
   );
 }
 
@@ -238,9 +240,12 @@ function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
   onMove: (force: boolean) => void;
   onShowSteps: () => void;
 }) {
-  const blockers = p.blockers ?? [];
+  const all = p.blockers ?? [];
   const byHand = p.unsupported.length > 0;
-  const canForce = blockers.length > 0 && blockers.every((b) => blockerAdvice(b).canForce);
+  // What consent clears is not a blocker on the card: the Move confirmation says it is stopped instead.
+  const needsConsent = all.some((b) => consentClears(b, p));
+  const blockers = byHand ? all : all.filter((b) => !consentClears(b, p));
+  const canForce = byHand && all.length > 0 && all.every((b) => consentClears(b, p));
   return (
     <>
       <ul className="list-disc pl-6 text-muted-foreground">
@@ -258,6 +263,13 @@ function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
           )}
         </div>
       ))}
+      {!byHand && !!p.takes_over?.length && (
+        <ul className="list-disc pl-6 text-muted-foreground" data-slot="backend-migration-takes-over">
+          {p.takes_over.map((t) => (
+            <li key={t}>{t}</li>
+          ))}
+        </ul>
+      )}
       {blockers.map((b) => (
         <div key={b} className="text-warning" data-slot="backend-migration-blocker">
           • {blockerAdvice(b, byHand).text}
@@ -270,16 +282,11 @@ function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
             className="uppercase"
             disabled={blockers.length > 0 || p.unsupported.length > 0}
             title={blockers.length ? "Sort out the points above first" : undefined}
-            onClick={() => onMove(false)}
+            onClick={() => onMove(needsConsent)}
           >
             Move
           </Button>
-          {canForce && !byHand && (
-            <Button size="sm" ghost className="uppercase text-warning" onClick={() => onMove(true)}>
-              Move anyway
-            </Button>
-          )}
-          {canForce && byHand && (
+          {canForce && (
             <Button size="sm" ghost className="uppercase text-warning" onClick={onShowSteps}>
               Show the steps anyway
             </Button>
@@ -328,7 +335,15 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
     case "running":
       return <Line spin>{stepWords(view.step)}…</Line>;
     case "switching":
-      return <Line spin>Switching over: this address is unavailable for a few seconds…</Line>;
+      return (
+        <div className="flex flex-col gap-2">
+          <Line spin>Switching over: this address is unavailable until Hermes answers on it again…</Line>
+          <span className="text-muted-foreground">
+            A move that waits for running work, or puts everything back, can take several minutes. On this computer,
+            see where it stands with <Cmd>{status}</Cmd>
+          </span>
+        </div>
+      );
     case "signInAgain":
       return (
         <div className="flex flex-col gap-2" data-slot="backend-migration-signin">

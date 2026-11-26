@@ -326,6 +326,8 @@ export const zhHantChrome = {
       messagingPlatforms: '訊息平台'
     },
     approvalMode: {
+      perProfile: '依設定檔',
+      perProfileDescription: '核准模式依設定檔分別設定。開啟對應的機器人或設定檔以變更其模式。',
       title: '核准模式',
       ariaLabel: mode => `核准模式：${mode}`,
       manual: '手動',

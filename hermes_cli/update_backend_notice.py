@@ -27,8 +27,8 @@ _SCAN_TIMEOUT_SECONDS = 5.0
 
 def _serves_this_home(item, home: Path, host) -> bool:
     if not item.running and item.unit and item.scope and item.supervisor in ("systemd", "nix-systemd"):
-        # A system unit must also name this home in its own `Environment=`: the planner does not read an
-        # `env HERMES_HOME=...` launcher in ExecStart, and naming another home's backend is worse than missing one.
+        # A system unit must also name this home in its own `Environment=`: naming another home's backend is
+        # worse than missing one (the planner refuses an `env` launcher that may set the home).
         if item.scope != "user" and not item.this_home:
             return False
         from hermes_cli.gateway_migrate_backends_plan import _for_this_home
@@ -72,12 +72,16 @@ def plan_command(home: Path) -> str:
 
 
 def old_backend_notice(home: Path | None = None) -> str | None:
-    """The paragraph, or None when no old backend serves *home* (the active home by default)."""
+    """The paragraph, or None when no old backend serves *home* (the active home by default) or a plugin
+    runs its profile elsewhere."""
     from hermes_cli.backend_migration_marker import backend_retired_by_migration
     from hermes_cli.gateway_migrate_backends import collect_backends
     from hermes_cli.gateway_migrate_backends_host import SystemHost
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
     from hermes_constants import get_hermes_home
     home = Path(home) if home is not None else get_hermes_home()
+    if run_elsewhere_for_home(home) is not None:
+        return None  # a plugin runs this profile elsewhere: a backend of its home is not one to move
     host = SystemHost(home)
     # A unit a migration stopped but could not make `disabled` (a `static` one) is not a backend left over.
     retired = backend_retired_by_migration(home)

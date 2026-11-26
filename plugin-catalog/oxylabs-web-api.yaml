@@ -1,12 +1,12 @@
 name: oxylabs-web-api
 repo: https://github.com/oxylabs/hermes-oxylabs-web-api
-sha: 8ba1ce16eceffe4c67e72e10a0278c1f943b5ddb
+sha: 8c3d44a0e045900d7c7c47c8bc90ec30faca709b
 description: "Oxylabs Web API search and page extraction for Hermes Agent: Google results with page outlines, any page as Markdown, including JavaScript-heavy and bot-protected pages. Disclosure — sends search queries and the URLs to extract to the Oxylabs Web API at webapi.oxylabs.io with the user's OXYLABS_WEB_API_KEY, and Oxylabs fetches those pages from its own servers; each call uses paid Oxylabs credits. Requests carry an x-oxylabs-sdk header with the plugin and Python versions. No telemetry, no stored credentials, no self-update."
 maintainer: oxylabs
 tier: community
 category: web
 title: Oxylabs Web API
-version: "0.1.0"
+version: "0.1.1"
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/oxylabs/hermes-oxylabs-web-api#readme
 capabilities:

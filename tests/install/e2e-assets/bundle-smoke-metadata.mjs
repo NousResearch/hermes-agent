@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { OUT_OF_STORE_PUBLISHER, channelBuildRequest, releaseVersion } from '../../../scripts/msix-shared.mjs'
+import { COMMIT_TAG_RE, OUT_OF_STORE_PUBLISHER, channelBuildRequest, releaseVersion } from '../../../scripts/msix-shared.mjs'
 import { codesignTeam, channelStampAssertions } from './mac-bundled-manifest.cjs'
 
 const identityModule = fileURLToPath(new URL('../../../apps/desktop/product-identity.cjs', import.meta.url))
@@ -30,7 +30,7 @@ export function bundleIdentity(commit, tag = '', channelRequest = null) {
   const identity = JSON.parse(execFileSync(process.execPath, ['-e',
     'console.log(JSON.stringify(require(process.argv[1])))', identityModule], {
     encoding: 'utf8', env: { ...process.env, HERMES_DESKTOP_VARIANT: 'bundled',
-      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: tag ? '' : commit, _HERMES_CHANNEL_REQUEST_JSON: '' },
+      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: !tag || COMMIT_TAG_RE.test(tag) ? commit : '', _HERMES_CHANNEL_REQUEST_JSON: '' },
   }))
   return { appId: identity.appId, msixIdentity: identity.msixAppIdWithOrg,
     applicationId: identity.appNamePascal, publisher: OUT_OF_STORE_PUBLISHER }
@@ -41,10 +41,12 @@ export function bundleIdentity(commit, tag = '', channelRequest = null) {
  * channelRequest?: import('../../../apps/desktop/electron/install-stamp.js').ChannelBuildRequest | null}} options */
 export function verifyBundleStamp(stamp, { commit, tag = '', platform, channelRequest = null }) {
   if (!['darwin', 'win32'].includes(platform)) throw new Error('Unsupported native platform')
+  if (tag && !releaseVersion(tag)) throw new Error('Invalid release tag')
   const request = channelRequest === null ? null : admitChannelRequest(channelRequest, commit, tag)
+  const commitBuild = !request && (!tag || COMMIT_TAG_RE.test(tag))
   const expected = { commit, tag: request?.receiverCandidate ? request.releaseTag : tag || null, payload: 'bundled', distribution: 'desktop-app', dirty: false,
-    updateMechanism: tag || request ? { darwin: 'electron-updater', win32: 'app-installer' }[platform] : 'external' }
-  if (!tag && !request) Object.assign(expected, { source: 'commit-build', branch: null })
+    updateMechanism: commitBuild ? 'external' : { darwin: 'electron-updater', win32: 'app-installer' }[platform] }
+  if (commitBuild) Object.assign(expected, { source: 'commit-build', branch: null })
   for (const [key, value] of Object.entries(expected)) {
     if (stamp?.[key] !== value) throw new Error(`stamp.${key}: ${JSON.stringify(stamp?.[key])} != ${JSON.stringify(value)}`)
   }
@@ -77,6 +79,27 @@ export function verifyMacMetadata(plist, stamp, { commit, tag, channelRequest })
   if (channelRequest && plist.CFBundleVersion !== channelRequest.version) throw new Error('CFBundleVersion disagrees with channel request')
   if (!plist.CFBundleExecutable || /[/\\]/.test(plist.CFBundleExecutable)) throw new Error('Invalid CFBundleExecutable')
   return version
+}
+
+export function shouldVerifyMacDmg({ tag = '', channelRequest = null, stamp = null } = {}) {
+  const isCommitBuild = channelRequest === null && (!tag || COMMIT_TAG_RE.test(tag))
+  return isCommitBuild ? stamp?.signedDmg === true : true
+}
+
+export function verifyMacDmg(dmg, { exec = execFileSync, spawn = spawnSync } = {}) {
+  if (!dmg || !dmg.endsWith('.dmg') || !fs.existsSync(dmg)) {
+    throw new Error(`Expected an existing .dmg artifact: ${dmg || '(none)'}`)
+  }
+  exec('/usr/bin/codesign', ['--verify', '--verbose=2', dmg], { stdio: 'inherit' })
+  const display = spawn('/usr/bin/codesign', ['-dv', '--verbose=4', dmg], { encoding: 'utf8' })
+  if (display.error || display.status !== 0) {
+    throw new Error(`codesign display failed: ${display.error || display.stderr}`)
+  }
+  const signedTeam = codesignTeam(display.stderr)
+  if (!/^[A-Z0-9]{10}$/.test(signedTeam || '')) throw new Error('DMG has no valid signing team')
+  exec('/usr/bin/xcrun', ['stapler', 'validate', dmg], { stdio: 'inherit' })
+  exec('/usr/sbin/spctl', ['-a', '-vv', '-t', 'open', '--context', 'context:primary-signature', dmg], { stdio: 'inherit' })
+  return { dmg, teamIdentifier: signedTeam }
 }
 
 function verifyMac(app, commit, tag, arch, channelRequest) {
@@ -132,7 +155,7 @@ function prepareDirectories(work, out) {
 function main() {
   const [command, ...args] = process.argv.slice(2)
   const { values } = parseArgs({ args, options: Object.fromEntries(
-    ['commit', 'tag', 'platform', 'stamp', 'app', 'arch', 'out', 'work', 'channel-request'].map(key => [key, { type: 'string' }])) })
+    ['commit', 'tag', 'platform', 'stamp', 'app', 'dmg', 'identity', 'arch', 'out', 'work', 'channel-request'].map(key => [key, { type: 'string' }])) })
   if (values['channel-request'] !== undefined) {
     // Preserve the raw JSON for the protocol decoder's duplicate-key checks.
     const raw = fs.readFileSync(values['channel-request'], 'utf8')
@@ -144,6 +167,11 @@ function main() {
     identity: () => bundleIdentity(values.commit, values.tag, values.channelRequest),
     stamp: () => verifyBundleStamp(JSON.parse(fs.readFileSync(values.stamp, 'utf8')), values),
     'verify-mac': () => verifyMac(values.app, values.commit, values.tag, values.arch, values.channelRequest),
+    'verify-mac-dmg': () => verifyMacDmg(values.dmg),
+    'should-verify-mac-dmg': () => {
+      const installed = values.identity ? JSON.parse(fs.readFileSync(values.identity, 'utf8')) : null
+      return { verifyMacDmg: shouldVerifyMacDmg({ tag: values.tag, channelRequest: values.channelRequest ?? null, stamp: installed?.stamp ?? null }) }
+    },
     prepare: () => prepareDirectories(values.work, values.out),
   }
   if (!commands[command]) throw new Error(`Unknown command: ${command}`)

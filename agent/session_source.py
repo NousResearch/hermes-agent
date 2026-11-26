@@ -26,6 +26,10 @@ CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
 # someone else's chat even when a local backend builds its agent.
 DAYBREAK_SOURCES = UI_TRANSPORT_SOURCES | {"cli"}
 
+# Sessions session_search never returns (subagent runs, kanban workers and tool sessions are not the user's
+# history): a compaction there keeps an archive file for every result it replaces, since search cannot reach them.
+SEARCH_HIDDEN_SOURCES = ("kanban", "subagent", "tool")
+
 # A person reads the turn as it runs: not cron, batch, a messaging chat, or a one-shot run.
 ATTENDED_SOURCES = UI_TRANSPORT_SOURCES | {"cli", "acp"}
 

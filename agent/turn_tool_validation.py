@@ -53,15 +53,29 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
+def deferred_callable(agent, name: str) -> bool:
+    """True when *name* is deferred behind ``tool_call`` and this session's scope lets the bridge call it."""
+    from agent.tool_executor import _tool_search_scoped_names
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    return TOOL_CALL_NAME in (agent.valid_tool_names or ()) and name in _tool_search_scoped_names(agent)
+
+
+def model_can_call(agent, name: str) -> bool:
+    """True when the model can call *name*: loaded directly, or deferred behind ``tool_call`` (a by-name call to a
+    deferred tool is routed through the bridge by ``_route_deferred_call``)."""
+    return name in (agent.valid_tool_names or ()) or deferred_callable(agent, name)
+
+
 def _route_deferred_call(agent, tc) -> bool:
     """Rewrite a call to a deferred tool by its real name into the ``tool_call`` bridge call, so
     the executor's scope check, schema probe and hooks run on it as on a model-written one."""
-    from agent.tool_executor import _canonical_tool_name, _tool_search_scoped_names
+    from agent.tool_executor import _canonical_tool_name
     from tools.tool_search_catalog import TOOL_CALL_NAME
 
     # A legacy alias (``process``) names a deferred tool too, and hints still spell it that way.
     name = _canonical_tool_name(tc.function.name)
-    if TOOL_CALL_NAME not in agent.valid_tool_names or name not in _tool_search_scoped_names(agent):
+    if not deferred_callable(agent, name):
         return False
     args = tc.function.arguments or "{}"
     if isinstance(args, str):

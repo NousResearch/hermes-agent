@@ -5,10 +5,11 @@ summary into that window."""
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from agent.context_compressor_tail import tail_cut_progress_floor
 from agent.prepared_compaction import PreparedCompaction, PreparedSummary
+from agent.turn_tool_validation import model_can_call
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,21 @@ def summary_view(
     return [*plan[:start], *window, *plan[end:]]
 
 
+def _stored(message: dict[str, Any]) -> bool:
+    """A row the session store already holds (born-durable marker or a row id): a compaction archives it there."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    return bool(message.get(_DB_PERSISTED_MARKER)) or isinstance(message.get("_row_id"), int)
+
+
 class CompactionWindowMixin:
     """Window planning shared by compress() and the background pass."""
 
     # Set by agent_init when compression.prepare_ahead is on; None leaves compress() inline as before.
     prepared_compaction: Optional[PreparedCompaction] = None
+    # The agent whose tools decide whether session_search is reachable (ContextCompressor's search_owner); None,
+    # or a gone agent, keeps every archive.
+    _search_owner: Optional[Callable[[], Any]] = None
     # Set on delegated children (tools/delegate_tool.py): their first user turn is the whole brief.
     pin_task_turn: bool = False
 
@@ -116,22 +127,45 @@ class CompactionWindowMixin:
         compress_start, compress_end = self._compress_window(plan)
         return plan, pruned_count, compress_start, compress_end
 
+    def _session_searchable(self) -> bool:
+        """True when the owning agent can call session_search (``model_can_call``, read now) and search
+        returns this session, read from its own row (the source it was stored under, not the process's). Only then
+        is a stored row's copy a way back; unknown means keep archives."""
+        from agent.session_source import SEARCH_HIDDEN_SOURCES
+
+        session_id, persistence = getattr(self, "_session_id", "") or "", getattr(self, "_persistence", None)
+        owner = self._search_owner() if self._search_owner is not None else None
+        if not session_id or persistence is None or owner is None or not model_can_call(owner, "session_search"):
+            return False
+        try:
+            record = persistence.sessions.get(session_id)
+        except Exception:
+            logger.debug("session source lookup failed for %s", session_id, exc_info=True)
+            return False
+        return record is not None and (record.source or "") not in SEARCH_HIDDEN_SOURCES
+
     def _commit_window(
         self, originals: list[dict[str, Any]], plan: list[dict[str, Any]], pruned_count: int, start: int, end: int,
+        searchable: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         """After the summary: save, byte-exact, every result *plan* shortens and every whole result the summary
         replaces, each stub naming its file, and (lean mode) demote the stale tail results the same way. Returns
         ``(rows to assemble from, pruned_count)``. *originals* is the unpruned transcript without blank echoes
         (index-aligned with *plan*). The boundaries stay as summarized even when a failed write keeps an
-        original whole."""
+        original whole. When *searchable* (``_session_searchable``), a replaced row the session store already
+        holds gets no file: the store keeps its original where session_search finds it, and a file named only by
+        a row the summary drops would just be listed in the summary."""
         from tools.tool_result_storage import archive_compaction_drops
 
         session_id = getattr(self, "_session_id", "") or ""
+        if len(originals) == len(plan):
+            plan = [originals[i] if searchable and start <= i < end and _stored(originals[i]) else row
+                    for i, row in enumerate(plan)]
         if pruned_count:
             plan, _written, kept = archive_compaction_drops(originals, plan, session_id)
             pruned_count -= kept
         if start < end:
-            plan, offloaded, _written, failed = self._offload_window_results(plan, start, end)
+            plan, offloaded, _written, failed = self._offload_window_results(plan, start, end, searchable)
             if failed:
                 # The summary (which read the original) still replaces the window; refusing would re-pay the
                 # summary on every later turn while the disk stays full. Say so: no byte-exact copy exists.
@@ -148,16 +182,16 @@ class CompactionWindowMixin:
         """``_assemble_compressed`` with every archive a replaced row named, that neither the kept head and tail
         nor the generated summary still name, listed in the summary row: the summarizer never saw the pointers
         (it read the originals), and the list keeps the model's path back and the reference the retention
-        sweep keeps the file for. An earlier handoff row that is already stored counts only for its unwrapped
-        prior-tail content: its own archive list stays on that stored row, which the sweep still reads, so
-        lists never re-stack. An unstored handoff (no session store) is the list's only copy, so it carries over."""
-        from agent.context_compressor import _DB_PERSISTED_MARKER
+        sweep keeps the file for. A replaced row stored where search reaches it got no file (``_commit_window``),
+        so it names none; a stored stub naming an earlier archive is listed, since that file can be the only
+        copy. An earlier handoff row that is already stored counts only for its unwrapped prior-tail content:
+        its own archive list stays on that stored row, which the sweep still reads, so lists never re-stack.
+        An unstored handoff (no session store) is the list's only copy, so it carries over."""
         from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
 
         named = pruned_archive_refs(
             row for idx, msg in enumerate(messages)
-            if (row := msg if idx not in scan.summary_indices
-                or not (msg.get(_DB_PERSISTED_MARKER) or isinstance(msg.get("_row_id"), int))
+            if (row := msg if idx not in scan.summary_indices or not _stored(msg)
                 else self._strip_context_summary_handoff_message(msg)) is not None
         )
         # What the committed transcript really keeps: assembly drops standalone handoffs from the head and tail.
@@ -166,11 +200,11 @@ class CompactionWindowMixin:
         return self._assemble_compressed(messages, start, end, scan, summary + archive_list_for_summary(named, kept))
 
     def _offload_window_results(
-        self, plan: list[dict[str, Any]], start: int, end: int,
+        self, plan: list[dict[str, Any]], start: int, end: int, searchable: bool = False,
     ) -> tuple[list[dict[str, Any]], int, list[str], int]:
-        """The tool results the summary replaced, saved after it was generated: each one the prune left whole
-        inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the model can still
-        open the exact output. Only where ``read_file`` opens archives (local, or a backend that publishes
+        """The tool results the summary replaced, saved after it was generated: each one the prune left whole inside
+        ``plan[start:end]`` (bar a stored row when *searchable*) becomes its one-line stub naming the byte-exact file, so the model can
+        still open the exact output. Only where ``read_file`` opens archives (local, or a backend that publishes
         ``cache/pruned``). Returns ``(rows, stubbed, written paths, failed writes)``."""
         from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
         from tools.tool_result_storage import _archive_backend, archive_pruned_originals, has_archive_pointer
@@ -180,6 +214,8 @@ class CompactionWindowMixin:
         demoted, calls = list(plan), _tool_calls_by_id(plan)
         changed = 0
         for i in range(start, end):
+            if searchable and _stored(plan[i]):
+                continue
             if self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS):
                 changed += 1
             elif (plan[i].get("role") == "tool" and plan[i].get("content")

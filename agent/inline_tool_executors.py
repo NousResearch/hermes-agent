@@ -186,13 +186,9 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
     """An omitted ``browser_vault`` target means the in-app browser when this session can drive it (its
     ``drive_preview``, eager or deferred behind ``tool_call``) and has no managed browser page of its own:
     a Desktop agent that opened a page with browser_exec keeps filling that page."""
-    names = getattr(agent, "valid_tool_names", ()) or ()
-    preview = "drive_preview" in names
-    if not preview and "tool_call" in names:
-        from agent.tool_executor import _tool_search_scoped_names
+    from agent.turn_tool_validation import model_can_call
 
-        preview = "drive_preview" in _tool_search_scoped_names(agent)
-    if not preview:
+    if not model_can_call(agent, "drive_preview"):
         return False
     from agent.browser_page_registry import backend_for_task
     from tools.browser_session import session_for_task

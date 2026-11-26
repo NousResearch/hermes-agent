@@ -89,6 +89,25 @@ def _resolved_roots(skill_path: Path):
     return resolved, roots
 
 
+def _write_containment_guard(skill_dir: Path) -> Optional[str]:
+    """Refusal message unless the RESOLVED ``skill_dir`` sits under an active-profile skills root
+    (``get_all_skills_dirs()``) or the canonical ``<default hermes root>/skills``.
+
+    ``_iter_skill_dirs`` follows directory symlinks (it must: the loader serves them), so a link
+    to a directory outside every skills root is discoverable and would otherwise be writable.
+    Canonical is a separate allowance because a named profile's row is a symlink into
+    ``~/.hermes/skills``, which is outside that profile's own roots."""
+    from hermes_constants import get_default_hermes_root
+    resolved, roots = _resolved_roots(skill_dir)
+    allowed = [r for _root, r in roots]
+    with suppress(OSError):
+        allowed.append((get_default_hermes_root() / "skills").resolve())
+    if any(resolved.is_relative_to(r) for r in allowed):
+        return None
+    return (f"Refusing to write '{skill_dir}': resolved path is outside the active profile "
+            f"skills roots and the canonical skills directory.")
+
+
 def _containing_skills_root(skill_path: Path) -> Path:
     """Skills root (local or external_dirs) containing ``skill_path``; local dir if none match."""
     from tools import skill_manager_tool as _smt

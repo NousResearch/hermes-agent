@@ -875,8 +875,8 @@ gateway:
     action_shutting_down: "關閉中"
     action_restarting: "重新啟動中"
     cron_interrupted: "⚠️ 排程任務 '{job}' 因 Hermes 正在{action}而中斷；本次沒有結果。它會依排程再次執行，或在 Hermes 恢復後用 `hermes cron run {job}` 立即執行。"
-    notice_shutdown: "⚠️ Hermes 正在關閉 — 你目前的任務將被中斷。恢復上線後，傳送任何訊息，我會試著從中斷處繼續。"
-    notice_restart: "⚠️ Hermes 正在重新啟動 — 你目前的任務將被中斷。重新啟動後傳送任何訊息，我會試著從中斷處繼續。"
+    notice_shutdown: "⚠️ Hermes 正在關閉 — 你目前的任務將被中斷。Hermes 恢復上線後，如果任務沒有自動繼續，請傳送訊息以繼續。"
+    notice_restart: "⚠️ Hermes 正在重新啟動 — 你目前的任務將被中斷。Hermes 恢復上線後，如果任務沒有自動繼續，請傳送訊息以繼續。"
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ 閘道已成功重新啟動。你的工作階段將繼續。"

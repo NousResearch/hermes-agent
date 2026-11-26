@@ -875,8 +875,8 @@ gateway:
     action_shutting_down: "kapanıyor"
     action_restarting: "yeniden başlatılıyor"
     cron_interrupted: "⚠️ Zamanlanmış '{job}' işi Hermes {action} olduğu için yarıda kesildi; bu çalıştırmada sonuç yok. Zamanı geldiğinde yeniden çalışacak; Hermes geri geldiğinde `hermes cron run {job}` ile hemen de çalıştırabilirsiniz."
-    notice_shutdown: "⚠️ Hermes kapanıyor — geçerli göreviniz yarıda kesilecek. Yeniden çevrimiçi olduğunda herhangi bir mesaj gönderin; kaldığımız yerden devam etmeyi deneyeceğim."
-    notice_restart: "⚠️ Hermes yeniden başlatılıyor — geçerli göreviniz yarıda kesilecek. Yeniden başlatmadan sonra herhangi bir mesaj gönderin; kaldığınız yerden sürdürmeyi deneyeceğim."
+    notice_shutdown: "⚠️ Hermes kapanıyor — geçerli göreviniz yarıda kesilecek. Hermes yeniden çevrimiçi olduğunda göreviniz kendiliğinden devam etmezse bir mesaj gönderin."
+    notice_restart: "⚠️ Hermes yeniden başlatılıyor — geçerli göreviniz yarıda kesilecek. Hermes yeniden çevrimiçi olduğunda göreviniz kendiliğinden devam etmezse bir mesaj gönderin."
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway başarıyla yeniden başlatıldı. Oturumunuz devam ediyor."

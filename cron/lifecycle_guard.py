@@ -306,6 +306,9 @@ _PIPE_TO_INTERPRETER = re.compile(
 # Bytes sniffed before reading a referenced file in full (see _BINARY_MAGICS).
 _BINARY_SNIFF_BYTES = 4096
 
+# The worker's only nonzero status deemed safe; Python uses 1 for uncaught exceptions.
+_WORKER_SKIP_EXIT_CODE = 3
+
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 # Wrappers that hand execution to their argument tail: the real command sits further right, so a
@@ -1327,7 +1330,7 @@ def _read_referenced_script_isolated(
         return None, True
     if result.returncode == 0:
         return result.stdout.decode("utf-8", errors="replace"), False
-    return None, result.returncode != 1
+    return None, result.returncode != _WORKER_SKIP_EXIT_CODE
 
 
 def _read_script_in_worker(path: Path, byte_limit: int) -> tuple[Optional[bytes], bool]:
@@ -1669,5 +1672,5 @@ if __name__ == "__main__":
     # Private isolated reader protocol: stdout contains script bytes only on success.
     text, unsafe = _read_script_in_worker(Path(sys.argv[1]), int(sys.argv[2]))
     if text is None:
-        sys.exit(2 if unsafe else 1)
+        sys.exit(2 if unsafe else _WORKER_SKIP_EXIT_CODE)
     sys.stdout.buffer.write(text)

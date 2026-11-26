@@ -106,6 +106,17 @@ with sqlite3.connect(sys.argv[1], timeout=0) as conn:
                 conn.close()
 
 
+def test_referenced_script_worker_crash_blocks_scan(tmp_path, monkeypatch):
+    script = tmp_path / "script.sh"
+    script.write_text("echo ok\n", encoding="utf-8")
+    worker = tmp_path / "crashing_worker.py"
+    worker.write_text('raise RuntimeError("reader crashed")\n', encoding="utf-8")
+    monkeypatch.setattr(lifecycle_guard, "__file__", str(worker))
+
+    with pytest.raises(lifecycle_guard.GatewayLifecycleBlocked, match=script.name):
+        lifecycle_guard.check_gateway_lifecycle(f'bash "{script}"')
+
+
 def test_referenced_script_read_preserves_normal_script_behavior(tmp_path):
     script = tmp_path / "script.sh"
     script.write_text("echo ok\n", encoding="utf-8")

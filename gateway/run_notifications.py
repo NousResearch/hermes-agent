@@ -1172,7 +1172,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 try:
                     from tools.async_delegation import claim_completion_delivery
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
-                    if not claim_completion_delivery(claim.delegation_id, claim.claim_id):
+                    if not await asyncio.to_thread(claim_completion_delivery, claim.delegation_id, claim.claim_id):
                         claim.proceed = False
                         return claim
                 except Exception as exc:
@@ -1200,7 +1200,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     claim.delegation_id or "<legacy>", parent_session_id,
                 )
                 if claim.claim_id:
-                    self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
+                    await asyncio.to_thread(self._settle_durable_claim, "drop", claim.delegation_id, claim.claim_id)
             else:
                 logger.warning(
                     "Background process %s completion targets "
@@ -1324,11 +1324,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
             operation = "complete" if accepted else "defer" if refused or claim.defer else "release"
-            if claim.claim_id:
-                self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
-            for sibling, claim_id in sibling_claims:
-                if claim_id:
-                    self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
+            if claim.claim_id or any(claim_id for _, claim_id in sibling_claims):
+                # Keep the whole batch together even if the awaiting delivery task is cancelled.
+                def settle_claims():
+                    if claim.claim_id:
+                        self._settle_durable_claim(operation, claim.delegation_id, claim.claim_id)
+                    for sibling, claim_id in sibling_claims:
+                        if claim_id:
+                            self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
+
+                await asyncio.to_thread(settle_claims)
             if accepted and sibling_claims:
                 self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 
@@ -1568,7 +1573,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         blocks = [primary_text]
         siblings: list[tuple[dict, str]] = []
         for evt, synth_text in deliverable[1:]:
-            claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
+            claim_id = await asyncio.to_thread(claim_event_delivery, evt, f"gateway-batch:{id(self)}")
             if claim_id is None:
                 # Another consumer owns this row: keep it out of our text so it is never double-injected.
                 continue
@@ -1640,8 +1645,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 logger.info("%s %d undelivered async completion(s) for profile %r", verb, count, profile_name)
 
     async def _run_orphan_sweep(self) -> None:
-        with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
-            await asyncio.to_thread(self._sweep_orphaned_completion_ledgers)
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        # Best-effort recovery must not keep asyncio.run() joining a stuck default-executor worker
+        # at shutdown. The durable ledger can be swept again on the next start.
+        executor = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="orphan-sweep")
+        try:
+            with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
+                await asyncio.get_running_loop().run_in_executor(executor, self._sweep_orphaned_completion_ledgers)
+        finally:
+            executor.shutdown(wait=False)
+            # Give queued deliveries a turn before starting another sweep, even if this one
+            # ran longer than the sweep interval.
+            self._orphan_sweep_finished_at = time.monotonic()
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.
@@ -1650,18 +1666,20 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         consumer; both must progress without a later foreground turn.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
-        from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
+        from tools import async_delegation
         from tools.process_registry import process_registry as _pr
-        last_orphan_sweep = None
-        sweep = None
         while self._running:
-            # A timed-out thread can still be running. Keep one sweep in flight and let the
-            # queue drain on every tick, even if that sweep never returns.
+            # The runner owns the sweep so a supervisor respawn can't start another worker while
+            # the previous one is still running. asyncio.wait doesn't cancel it on timeout.
+            sweep = getattr(self, "_orphan_sweep_task", None)
+            now = time.monotonic()
             if (sweep is None or sweep.done()) and (
-                last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S
+                now - getattr(self, "_orphan_sweep_finished_at", float("-inf")) >= async_delegation.ORPHAN_SWEEP_INTERVAL_S
             ):
-                last_orphan_sweep = time.monotonic()
-                sweep = self._retain_background_task(asyncio.create_task(self._run_orphan_sweep()))
+                sweep = asyncio.create_task(self._run_orphan_sweep())
+                # Keep normal shutdown cancellation, but don't count maintenance as idle-blocking work.
+                sweep._hermes_supervised_watcher = True  # type: ignore[attr-defined]
+                self._orphan_sweep_task = self._retain_background_task(sweep)
                 done, _ = await asyncio.wait({sweep}, timeout=1.0)
                 if not done:
                     logger.warning("Orphaned async completion sweep timed out; continuing queue drain")
@@ -1698,8 +1716,17 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _deliver_async_delegation_groups(self, groups: dict, _pr) -> None:
         """Deliver each route group as one turn; a refused or failed group goes back on the queue."""
+        from tools.async_delegation import is_interim_delegation_event
+
+        sweep = getattr(self, "_orphan_sweep_task", None)
         for group in groups.values():
-            if any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
+            # Awaiting off-loop ledger work would still stall this watcher (though not the loop).
+            # Leave durable groups queued while the sweep may own the ledger lock; notices that
+            # don't use the ledger can still be delivered. This does not spend a retry attempt.
+            wait_for_sweep = sweep is not None and not sweep.done() and any(
+                evt.get("delegation_id") and not is_interim_delegation_event(evt) for evt in group
+            )
+            if wait_for_sweep or any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
                 for evt in group:
                     _pr.completion_queue.put(evt)
                 continue

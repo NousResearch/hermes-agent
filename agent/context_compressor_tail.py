@@ -1,10 +1,301 @@
-"""Lean-mode stale-tail demotion for ContextCompressor (old tail tool results become one-line recovery stubs), and
+"""Lean-mode stale-tail demotion, deterministic anchor/file-evidence augmentation for ContextCompressor, and
 the Skill Safety Rule the compaction handoff carries whenever its transcript holds a skill prune marker."""
 
 from __future__ import annotations
 
 import re
 from typing import Any
+
+from agent.compression_marker import ELISION_MARKER_MAX_LEN, elide
+from session_rules.turns import _content_text_for_contains
+
+# 2.5% of the context window, clamped; floor keeps small models workable.
+LEAN_TAIL_FLOOR_TOKENS = 10_000
+LEAN_TAIL_CAP_TOKENS = 25_000
+# Hard share of the window the verbatim tail may occupy, applied after either formula.
+TAIL_MAX_CONTEXT_FRACTION = 0.20
+
+_LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
+_LEAN_USER_MESSAGE_MAX_CHARS = 4_000
+_LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
+_LEAN_RECOVERY_HEADING = "## Context Recovery"
+_SYNTHETIC_USER_ROW_PREFIXES = (
+    "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
+    "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
+)
+
+_LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
+_LEAN_ANCHOR_BUDGET_CHARS = 7_000
+_FILE_EXT_PATTERN = (
+    r"(?:py|ts|tsx|js|jsx|rs|go|java|c|cpp|h|sql|md|txt|rst|yaml|yml|json|jsonl|"
+    r"toml|ini|cfg|sh|ps1|csv|tsv|xlsx|xls|pdf|docx|doc|pptx|eml|msg|ics|vcf|html|htm|xml|log)"
+)
+_ANCHOR_PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
+    ("PRs/issues", re.compile(r"#\d{3,6}\b"), 120),
+    ("commits", re.compile(r"\b[0-9a-f]{9,40}\b"), 40),
+    ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
+    ("files", re.compile(rf"\b(?:[\w./-]+/)?[\w.-]+\.{_FILE_EXT_PATTERN}(?:\.\w{{2,4}})?\b"), 90),
+    ("record_ids", re.compile(r"\b[A-Z]{2,10}-\d{2,10}(?:-[A-Z0-9]{1,10})?\b"), 80),
+    ("amounts_dates", re.compile(r"(?:\$|€|£)\d[\d,]*(?:\.\d{2})?\b|\b20\d{2}-[01]\d-[0-3]\d(?:[T\s][0-2]\d:[0-5]\d)?\b"), 60),
+    ("errors", re.compile(r"\b(?:[A-Z][a-zA-Z]*Error|Exception|ENOSPC|EACCES|SIGKILL|Traceback)\b[^\n]{0,90}"), 40),
+    ("handles", re.compile(r"@[A-Za-z0-9-]{3,30}\b"), 40),
+    ("urls", re.compile(r"https?://[^\s)\"']{10,110}"), 30),
+]
+_ANCHOR_NOISE = frozenset({"@teknium", "@teknium1"})
+
+_LEAN_FILE_EVIDENCE_HEADING = "## File Evidence Extracts (verbatim, redacted)"
+_LEAN_FILE_EVIDENCE_BUDGET_CHARS = 6_000
+_LEAN_FILE_PER_DOC_MAX_CHARS = 520
+_EMAIL_TRANSPORT_HDR_RE = re.compile(
+    r"^(?:Return-Path|Received|Message-ID|MIME-Version|Content-Type|Content-Transfer-Encoding|X-[A-Za-z0-9-]+)\s*:",
+    re.IGNORECASE,
+)
+_VCAL_NOISE_RE = re.compile(r"^(?:BEGIN:VCALENDAR|END:VCALENDAR|BEGIN:VEVENT|END:VEVENT|VERSION:|PRODID:)\s*$", re.IGNORECASE)
+
+
+def _synthetic_user_row(content: str) -> bool:
+    """True for scaffolding user rows that carry no real user words."""
+    if not isinstance(content, str) or not content.strip():
+        return True
+    return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
+
+
+def _typed_user_text(content: str) -> str:
+    """A ``/skill``, bundle or auto-load turn as the user typed it (``/skill do X``); other text unchanged."""
+    from agent.skill_commands import skills_loaded_by_scaffold
+    from session_rules.turns import describe_skill_invocation
+    return (describe_skill_invocation(content, separator=" ") or "") if skills_loaded_by_scaffold(content) else content
+
+
+def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
+    """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
+    collected: list[str] = []
+    used = 0
+    for msg in reversed(turns):
+        if msg.get("role") != "user":
+            continue
+        content = _typed_user_text(_content_text_for_contains(msg.get("content")))
+        if _synthetic_user_row(content):
+            continue
+        remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
+        if remaining <= 0:
+            break
+        text = content.strip()
+        if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
+            break
+        text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
+        collected.append("> " + text.replace("\n", "\n> "))
+        used += len(text)
+    if not collected:
+        return ""
+    return (
+        "\n\n" + _LEAN_USER_MESSAGES_HEADING + "\n"
+        + "\n\n".join(collected)
+        + "\n(Every real user message from the compacted region, quoted "
+        "verbatim. These are the user's actual words and override any "
+        "paraphrase of them above.)"
+    )
+
+
+def _build_recovery_footer(session_id: str, region_len: int) -> str:
+    """Deterministic pointer to the compacted region in session history."""
+    if not session_id:
+        return ""
+    return (
+        "\n\n" + _LEAN_RECOVERY_HEADING + "\n"
+        f"The {region_len} compacted message(s) remain fully preserved in "
+        "session history. If you need any detail this summary does not carry "
+        "(exact command output, file contents, error text, earlier "
+        "reasoning), recover it with: "
+        f"session_search(query='<keywords>', session_id='{session_id}') — "
+        "do not guess at lost specifics when you can look them up."
+    )
+
+
+def _iter_turn_anchor_texts(turns: list[dict[str, Any]]):
+    """Yield message text AND serialized tool_call arguments so file paths/IDs in tool calls are indexed."""
+    from agent.context_compressor import _extract_tool_call_name_and_args
+
+    for m in turns:
+        role = m.get("role")
+        content = m.get("content")
+        if isinstance(content, str) and content:
+            yield _typed_user_text(content) if role == "user" else content
+        if role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                _name, raw_args = _extract_tool_call_name_and_args(tc)
+                if raw_args:
+                    yield raw_args
+
+
+def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
+    """Regex-harvest exact identifiers from the compacted region (LLM-free); per-category caps, most-frequent first."""
+    text = "\n".join(_iter_turn_anchor_texts(turns))
+    if not text:
+        return ""
+    sections: list[str] = []
+    used = 0
+    for label, pattern, cap in _ANCHOR_PATTERNS:
+        counts: dict[str, int] = {}
+        last_seen: dict[str, int] = {}
+        for n, m in enumerate(pattern.finditer(text)):
+            val = m.group(0).strip().rstrip(".,;:")
+            if val.lower() in _ANCHOR_NOISE:
+                continue
+            counts[val] = counts.get(val, 0) + 1
+            last_seen[val] = n
+        if not counts:
+            continue
+        ranked = sorted(counts, key=lambda v: (-counts[v], -last_seen[v]))[:cap]
+        line = f"{label}: " + ", ".join(f"{v}(x{counts[v]})" if counts[v] > 1 else v for v in ranked)
+        if used + len(line) > _LEAN_ANCHOR_BUDGET_CHARS:
+            break
+        sections.append(line)
+        used += len(line)
+    if not sections:
+        return ""
+    return (
+        "\n\n" + _LEAN_ANCHOR_HEADING + "\n"
+        + "\n".join(sections)
+        + "\n(Exact identifiers from the compacted region — use these verbatim, "
+        "and as session_search query anchors to recover their full context.)"
+    )
+
+
+def _strip_repeated_boilerplate_chunks(text: str) -> str:
+    """Collapse bracketed blocks or sentences repeated >=3 times inside a single read file."""
+    for pat in (r"\[[^\]\n]{20,240}\]", r"[^.\n\[]{35,200}\."):
+        found = re.findall(pat, text)
+        counts: dict[str, int] = {}
+        for ch in found:
+            key = " ".join(ch.split()).lower()
+            counts[key] = counts.get(key, 0) + 1
+        for ch in set(found):
+            if counts.get(" ".join(ch.split()).lower(), 0) >= 3:
+                text = text.replace(ch, " ")
+    return text
+
+
+def _distill_file_body(raw_content: str, max_chars: int = _LEAN_FILE_PER_DOC_MAX_CHARS) -> str:
+    """LLM-free structural distillation of a read file body: strips transport headers, HTML tags,
+    and repetitive boilerplate blocks/sentences while keeping unique factual lines verbatim."""
+    from agent.context_compressor import _redact_compaction_text
+
+    text = _redact_compaction_text(raw_content or "")
+    if "<html" in text.lower() or "<body" in text.lower() or "<div" in text.lower():
+        text = re.sub(r"<[^>]+>", " ", text)
+    text = _strip_repeated_boilerplate_chunks(text)
+    raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    line_counts: dict[str, int] = {}
+    for ln in raw_lines:
+        norm = re.sub(r"\s+", " ", ln).lower()
+        line_counts[norm] = line_counts.get(norm, 0) + 1
+
+    kept: list[str] = []
+    seen_once: set[str] = set()
+    used = 0
+    for ln in raw_lines:
+        if ln == "--" or _EMAIL_TRANSPORT_HDR_RE.match(ln) or _VCAL_NOISE_RE.match(ln):
+            continue
+        compact = re.sub(r"\s+", " ", ln).strip()
+        norm = compact.lower()
+        if not compact or line_counts.get(norm, 0) >= 3 or norm in seen_once:
+            continue
+        seen_once.add(norm)
+        if used + len(compact) + 3 > max_chars:
+            remain = max_chars - used - 4
+            if remain > 30:
+                kept.append(compact[:remain].rstrip() + "...")
+            break
+        kept.append(compact)
+        used += len(compact) + 3
+    return " | ".join(kept)
+
+
+def _build_file_evidence_ledger(turns: list[dict[str, Any]]) -> str:
+    """Mechanically preserve file provenance and non-boilerplate verbatim extracts for `read_file`,
+    `write_file`, and `patch` calls in the compacted window (0 LLM calls, strictly bounded)."""
+    from agent.context_compressor import (
+        _is_summary_stub,
+        _json_dict,
+        _result_failure_suffix,
+        _str_arg,
+        _summarize_refused_tool_result,
+        _tool_calls_by_id,
+    )
+
+    call_map = _tool_calls_by_id(turns)
+    file_entries: dict[str, str] = {}
+    for msg in turns:
+        content = msg.get("content")
+        if msg.get("role") != "tool" or not isinstance(content, str) or not content.strip() or _is_summary_stub(content):
+            continue
+        if _result_failure_suffix(content) or _summarize_refused_tool_result("tool", {}, content):
+            continue
+        tool_name, raw_args = call_map.get(str(msg.get("tool_call_id") or ""), (str(msg.get("tool_name") or ""), ""))
+        if tool_name not in ("read_file", "write_file", "patch"):
+            continue
+        args = _json_dict(raw_args)
+        path = _str_arg(args, "path") or _str_arg(args, "file_path")
+        if not path:
+            continue
+        if tool_name == "read_file":
+            if digest := _distill_file_body(content):
+                file_entries[path] = f"- `{path}`: {digest}"
+        else:
+            file_entries[path] = f"- `{path}` [{tool_name}]"
+    if not file_entries:
+        return ""
+
+    selected_rev: list[str] = []
+    used = 0
+    for entry in reversed(list(file_entries.values())):
+        if used + len(entry) + 1 > _LEAN_FILE_EVIDENCE_BUDGET_CHARS:
+            break
+        selected_rev.append(entry)
+        used += len(entry) + 1
+    if not selected_rev:
+        return ""
+    selected_rev.reverse()
+    return "\n\n" + _LEAN_FILE_EVIDENCE_HEADING + "\n" + "\n".join(selected_rev)
+
+
+def collect_head_pruned_exchanges(
+    plan: list[dict[str, Any]], canonical_messages: list[dict[str, Any]], compress_start: int,
+) -> list[dict[str, Any]]:
+    """Return ONLY the Phase-1-pruned head ``tool`` rows (``0..compress_start``) and synthetic
+    ``assistant`` stubs carrying their matching ``tool_calls`` (``content=""``).
+
+    Protected ``system`` / ``user`` rows and unpruned sibling head tool calls stay intact in the
+    head and are excluded so their identifiers never leak into the summary's Anchor Index or
+    File Evidence Extracts.
+    """
+    from agent.context_compressor import _tc_get
+
+    bound = min(max(compress_start, 0), len(plan), len(canonical_messages))
+    pruned_indices = {
+        i for i in range(bound)
+        if plan[i].get("role") == "tool" and plan[i].get("content") != canonical_messages[i].get("content")
+    }
+    if not pruned_indices:
+        return []
+    pruned_call_ids = {
+        str(canonical_messages[i].get("tool_call_id") or "") for i in pruned_indices
+    } - {""}
+    rescued: list[dict[str, Any]] = []
+    for i in range(bound):
+        msg = canonical_messages[i]
+        if i in pruned_indices:
+            rescued.append(msg)
+        elif msg.get("role") == "assistant" and pruned_call_ids:
+            matched_tcs = [
+                tc for tc in (msg.get("tool_calls") or [])
+                if str(_tc_get(tc, "id") or "") in pruned_call_ids
+            ]
+            if matched_tcs:
+                rescued.append({"role": "assistant", "content": "", "tool_calls": matched_tcs})
+    return rescued
+
 
 # Demote tool results older than the newest N rounds so the tail budget binds
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
@@ -28,7 +319,7 @@ def lean_tail_budget(context_length: int, threshold_tokens: int) -> int:
     :data:`TAIL_MAX_THRESHOLD_FRACTION` of the trigger. At or below ``_MIN_SUMMARY_TOKENS`` the summary alone fills
     the trigger, so no tail leaves room under it and only the floor is held: trimming the recency window there
     would lose context without ending the loop."""
-    from agent.context_compressor import _MIN_SUMMARY_TOKENS, LEAN_TAIL_CAP_TOKENS, LEAN_TAIL_FLOOR_TOKENS
+    from agent.context_compressor import _MIN_SUMMARY_TOKENS
     floor, window_term = LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(context_length * 0.025))
     if threshold_tokens > 0:
         share = int(threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION)

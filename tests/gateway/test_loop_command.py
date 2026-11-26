@@ -245,6 +245,35 @@ async def test_failed_turn_with_text_never_drives_goal_or_until_judge(loop_env, 
 
 
 @pytest.mark.asyncio
+async def test_interrupted_turn_never_drives_goal_judge(loop_env):
+    """Stop must actually stop a /goal: an interrupted turn's partial text is not an answer, so the
+    goal judge must not run on it. Before this gate the judge re-admitted the continuation the user
+    had just cancelled — stop, "[Continuing toward your standing goal]", model starts, repeat."""
+    from gateway.session_results import execution_result
+
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI --until CI is green"))
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+
+    runner._post_turn_goal_continuation = AsyncMock()
+    partial = "Operation interrupted: waiting for model response (79.5s elapsed)."
+    token = execution_result.set({"result": {"final_response": partial, "interrupted": True, "completed": False}})
+    try:
+        await GatewayRunner._run_post_turn_hooks(
+            runner, agent_result=partial, source=_make_event("wakeup").source, is_internal=True,
+        )
+    finally:
+        execution_result.reset(token)
+
+    runner._post_turn_goal_continuation.assert_not_awaited()
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False, "the in-flight tick is released"
+    assert reloaded.status == "active", "the loop keeps running; only the goal judge is skipped"
+
+
+@pytest.mark.asyncio
 async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog):
     runner = _make_runner()
     await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))

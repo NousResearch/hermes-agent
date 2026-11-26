@@ -224,6 +224,11 @@ let tentativeRehome: DraftRehome | null = null
 
 // The tentative re-home the draft shows when a pick starts, if any: the pick
 // ahead of it whose pick has not finished (landed or not).
+// The new-chat intent a pick counts from: the click's, when it waited for its landing profile.
+function pickDraftIntent(options: { draftIntent?: number }): number {
+  return options.draftIntent ?? currentNewChatIntent()
+}
+
 function rehomeAhead(draftIntent: number): DraftRehome | null {
   return tentativeRehome?.intent === draftIntent ? tentativeRehome : null
 }
@@ -599,6 +604,9 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * user never flips through it; one that times out loses its right to publish.
  */
 export interface SelectConnectionOptions {
+  /** The new-chat intent when the user picked (set internally when the pick first reads its
+   *  landing profile): a draft started after that is newer than the pick. */
+  draftIntent?: number
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
@@ -692,8 +700,17 @@ function withLandingProfile(
     return run({ ...options, profile: known })
   }
 
+  // A user's pick owns the switch from the click, as one that reads nothing does: an older pick
+  // still connecting steps aside now, not when this read answers, and the draft intent is the one at
+  // the click, so a draft started while the read is out stays the user's.
+  if (!options.restore) {
+    abandonPick()
+  }
+
+  const clicked = { ...options, draftIntent: pickDraftIntent(options) }
+
   return readLandingProfile(connectionId).then(profile =>
-    intent === pickIntent ? run({ ...options, profile }) : undefined
+    intent === pickIntent ? run({ ...clicked, profile }) : undefined
   )
 }
 
@@ -817,7 +834,7 @@ async function switchConnection(connectionId: string, options: SelectConnectionO
   const revision = ++switchRevision
   // A draft the user starts while this pick is in flight (a gateway group's
   // "+", a profile pick) is newer than it; the late re-home must not take it over.
-  const draftIntent = currentNewChatIntent()
+  const draftIntent = pickDraftIntent(options)
   const ahead = rehomeAhead(draftIntent)
   const openedSession = openSessionKey()
   const activation = new AbortController()

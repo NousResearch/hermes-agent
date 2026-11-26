@@ -244,6 +244,41 @@ describe('a pick that names no profile', () => {
     expect($activeConnectionId.get()).toBe('homelab')
   })
 
+  // The newer pick owns the switch from the click: an older one still connecting must not land
+  // while the newer one reads its profile, nor stay once that read fails.
+  it('stops an older pick still connecting as soon as a newer one starts reading', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    const opening = deferred<void>()
+    openGatewayAgent.mockImplementationOnce(() => opening.promise)
+    launchProfile.mockRejectedValueOnce(new Error('relay down'))
+
+    const older = selectConnection('work-vps', { profile: 'ops' })
+    await expect(selectConnection('homelab')).rejects.toThrow('relay down')
+    opening.resolve()
+    await older
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect($activeConnectionId.get()).toBe('local')
+    expect($pendingConnectionId.get()).toBeNull()
+  })
+
+  it('leaves a draft the user started while the profile was read to the user', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    const read = deferred<string | undefined>()
+    launchProfile.mockImplementationOnce(() => read.promise)
+
+    const pick = selectConnection('homelab')
+    captureNewChatSource('local')
+    read.resolve('research')
+    await pick
+
+    expect($activeConnectionId.get()).toBe('homelab')
+    expect($newChatConnectionId.get()).toBe('local')
+    expect($newChatProfile.get()).toBeNull()
+  })
+
   it('a newer pick made while the profile is read wins', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })

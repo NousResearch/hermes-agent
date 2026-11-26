@@ -521,6 +521,10 @@ class SessionEntry:
     prev_session_id: Optional[str] = None  # feeds the continuity note
     # Explicit /new or /reset triggers topic/channel skill re-injection on the first turn.
     is_fresh_reset: bool = False
+    # Stamped by _route_create: a session that has not had its first turn yet.
+    # The turn-prepare lookup bumps updated_at before _hmwa_open_session runs,
+    # so created_at == updated_at cannot carry newness on its own (#160217).
+    is_new_session: bool = False
     # Historical finalization fence; timers no longer write it.
     expiry_finalized: bool = False
     # Next get_or_create_session() auto-resets; set by /stop to break stuck-resume loops.
@@ -565,7 +569,7 @@ class SessionEntry:
         "expiry_finalized", "suspended", "resume_pending", "resume_reason",
     )
     _RESET_FIELDS = (
-        "is_fresh_reset", "was_auto_reset", "auto_reset_reason", "reset_had_activity",
+        "is_fresh_reset", "is_new_session", "was_auto_reset", "auto_reset_reason", "reset_had_activity",
         "prev_session_id",
     )
 
@@ -1120,6 +1124,7 @@ class SessionStore(
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
+            is_new_session=True,
         )
         create_kwargs = self._session_create_kwargs(
             session_id=session_id, session_key=session_key, origin=source,

@@ -108,6 +108,29 @@ def gemini_top_thinking_level(model: Optional[str], reasoning_config: object, th
     return thinking_config
 
 
+def bare_gemini_model_id(model: Optional[str]) -> str:
+    """Strip Gemini's own provider prefix from an aggregator-style model id. The native Gemini client puts
+    this id in the request URL, so thinking rules keyed on the model must see the same one. Import-light
+    (no HTTP stack), for provider plugins that load before the app's HTTP client."""
+    name = (model or "").strip()
+    for prefix in ("google/", "gemini/"):
+        if name.lower().startswith(prefix):
+            return name[len(prefix):].strip() or name
+    return name
+
+
+def gemini_thinking_config(model: Optional[str], reasoning_config: object) -> Optional[dict]:
+    """Native Gemini ``thinkingConfig`` (camelCase) for a Hermes reasoning config, or ``None`` when the model
+    takes no such field or no reasoning config is set. Published for provider plugins on the native Gemini
+    wire: the shared effort mapping plus the ``xhigh`` lift, keyed on :func:`bare_gemini_model_id` (the id
+    the native client sends); the caller picks the request format."""
+    from agent.gemini_model_family import build_gemini_thinking_config
+
+    bare = bare_gemini_model_id(model)
+    raw = build_gemini_thinking_config(bare, reasoning_config if isinstance(reasoning_config, dict) else None)
+    return gemini_top_thinking_level(bare, reasoning_config, raw) if raw else None
+
+
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
     The single home for the slug set: picker gating, effort vocabulary and the request sanitizer all

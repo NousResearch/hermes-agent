@@ -9,11 +9,15 @@ commands package the current desktop build; they do not stage a fresh runtime.
 |---|---|---|
 | Windows x64 / ARM64, sideload | Signed per-architecture MSIX packages, combined into a universal `.msixbundle`; `.appinstaller` descriptor | Windows App Installer |
 | Windows x64 / ARM64, Store | Store-identity MSIX packages and a separate Store bundle | Microsoft Store |
-| macOS ARM64 / x64 | Signed, notarized `Hermes.app` in DMG and ZIP artifacts | `electron-updater` with Squirrel.Mac |
+| macOS ARM64 (Apple Silicon) | Signed, notarized `Hermes Agent.app` in DMG and ZIP artifacts | `electron-updater` with Squirrel.Mac |
 | Linux x64 / ARM64 | AppImage, built on canary tags as an unpublished diagnostic artifact and by the local builder | External replacement; no Linux feed yet |
 
-The current MSIX manifest requires Windows 11 22H2 (`10.0.22621.0`).
-The source-script Windows support range is separate from this package floor.
+The current MSIX manifest requires Windows 11 22H2 (`10.0.22621.0`) for both
+sideload and Store builds (x64 and ARM64). The macOS bundle requires macOS 13
+Ventura (`13.0`) or later on Apple Silicon (`arm64`; Electron 44 dropped macOS
+11/12, and Intel macOS release bundles were dropped in `#148622`).
+The source-script support ranges (`install.ps1` / `install.sh`) are separate
+from these package floors.
 Windows desktop packaging uses MSIX, not NSIS or MSI.
 
 `bundled` carries the local runtime. `store` carries the same runtime under

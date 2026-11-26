@@ -1,0 +1,17 @@
+name: senpi
+repo: https://github.com/Senpi-ai/senpi-plugin
+sha: cd828b62d630959d29a875e1f8584743b507ee8e
+description: "Senpi, an AI quant researcher for perpetual futures markets: the day's market pulse, signals and anomalies, smart-money positioning, Hyperliquid trader research, Quant Desk wallet scoring, Senpi's strategy catalog, and your own portfolio and trade history. Portable Agent Plugins v1 package: Senpi's hosted MCP server (mcp.senpi.ai, Streamable HTTP, OAuth sign-in) plus skills; no API key, no env vars. Disclosure — calls mcp.senpi.ai over HTTPS with your Senpi sign-in; nothing runs locally (no scripts, hooks or background processes), no files written, no telemetry. Every tool is read-only, and the server is declared trust: untrusted, so Hermes asks before any write-capable call. MCP tool behaviour is served remotely and not covered by the pinned sha."
+maintainer: Senpi-ai
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Senpi-ai/senpi-plugin#readme
+version: "0.5.1"
+title: "Senpi — AI Quant"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

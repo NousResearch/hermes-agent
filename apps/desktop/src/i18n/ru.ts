@@ -3,6 +3,8 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introRu } from './intro-ru'
+import { ruApproval } from './ru_approval'
+import { ruBackupTransfer } from './ru_backup_transfer'
 import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
@@ -31,6 +33,11 @@ import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
 
 export const ruOverrides = {
+  sandbox: {
+    starting: 'Запуск песочницы…',
+    stopping: 'Остановка песочницы…',
+    restarting: 'Перезапуск песочницы…'
+  },
   externalOpenFailed: {
     title: 'Не удалось открыть ссылку',
     message: 'Для этого адреса не назначен браузер. Скопируйте ссылку и откройте её вручную.',
@@ -515,6 +522,14 @@ export const ruOverrides = {
       approvalTitleNamed: session => `Требуется подтверждение — ${session}`,
       approveAction: 'Одобрить',
       rejectAction: 'Отклонить',
+      accessTitle: 'Нужен доступ к папке',
+      accessTitleNamed: session => `Нужен доступ к папке — ${session}`,
+      accessReadBody: folder => `Только чтение: ${folder}`,
+      accessReadWriteBody: folder => `Чтение и запись: ${folder}`,
+      networkTitle: 'Нужен доступ к сайту',
+      networkTitleNamed: session => `Нужен доступ к сайту — ${session}`,
+      allowAction: 'Разрешить',
+      denyAction: 'Запретить',
       inputTitle: 'Требуется ввод',
       inputTitleNamed: session => `Требуется ввод — ${session}`,
       inputBody: 'Hermes ожидает ваш ответ.',
@@ -712,6 +727,7 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    backup: ruBackupTransfer,
     memoryLayers: ruMemoryLayers,
     customEndpoints: {
       active: 'Активна',
@@ -3129,6 +3145,8 @@ export const ruOverrides = {
       working: count => `${count} ${RU_NOUN(count, 'сеанс', 'сеанса', 'сеансов')} в работе`
     },
     remoteOverride: {
+      runHere: 'Запускать на этом компьютере…',
+      sandboxed: 'В песочнице',
       menuItem: 'Подключить к удалённому хосту…',
       badge: host => `Работает на ${host}`,
       title: profile => `Подключить ${profile} к удалённому хосту`,
@@ -4316,6 +4334,8 @@ export const ruOverrides = {
       messagingPlatforms: 'Платформы сообщений'
     },
     approvalMode: {
+      perProfile: 'Для каждого профиля',
+      perProfileDescription: 'Режим подтверждения задаётся отдельно для каждого профиля. Откройте бота или профиль, чтобы изменить его режим.',
       title: 'Режим подтверждения',
       ariaLabel: mode => `Режим подтверждения: ${mode}`,
       manual: 'Ручной',
@@ -4741,6 +4761,7 @@ export const ruOverrides = {
       readAloud: 'Зачитать вслух',
       copyFullResponse: 'Копировать весь ответ',
       readAloudFullResponseHint: 'Shift+клик: прочитать весь ответ',
+      responseContinuing: 'Продолжение ответа…',
       contentRefusedNotice: 'Это сообщение отклонено фильтром безопасности модели — попробуйте другой запрос.',
       ...ruErrorLayers,
       editMessage: 'Изменить сообщение',
@@ -4758,25 +4779,7 @@ export const ruOverrides = {
       sendEdited: 'Отправить изменённое сообщение',
       attachingFile: 'Прикрепление…'
     },
-    approval: {
-      gatewayDisconnected: 'Hermes сейчас не в сети. Команда ждёт вашего ответа до истечения времени ожидания. Переподключитесь и отправьте ответ снова.',
-      sendFailed: 'Не удалось отправить ответ на подтверждение',
-      reconnect: 'Переподключиться',
-      timedOutSystemLine: 'Время ожидания подтверждения истекло — команда не выполнялась. Попросите Hermes повторить попытку или увеличьте лимит в разделе «Настройки → Безопасность → Время ожидания подтверждения».',
-      openSafetySettings: 'Открыть настройки безопасности',
-      run: 'Выполнить',
-      command: 'Команда',
-      commandDetails: 'Подробности команды',
-      moreOptions: 'Больше опций подтверждения',
-      allowSession: 'Разрешить в этом сеансе',
-      alwaysAllowMenu: 'Всегда разрешать…',
-      jumpToApproval: 'Нужно подтверждение',
-      reject: 'Отклонить',
-      alwaysTitle: 'Всегда разрешать эту команду?',
-      alwaysDescription: pattern =>
-        `Это добавит паттерн «${pattern}» в ваш постоянный список разрешений (~/.hermes/config.yaml). Hermes больше не будет спрашивать о подобных командах — ни в этом сеансе, ни в будущем.`,
-      alwaysAllow: 'Всегда разрешать'
-    },
+    approval: ruApproval,
     clarify: ruClarify,
     themePicker: ruThemePicker,
     catalogInstall: {

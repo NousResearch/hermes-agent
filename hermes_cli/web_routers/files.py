@@ -34,6 +34,7 @@ from agent.file_safety import (
 )
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.resolver.git import resolve_usable_git
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.staged_uploads import (
@@ -411,6 +412,8 @@ def _fs_default_cwd(profile: Optional[str] = None) -> str:
 
 
 def _fs_git_branch(cwd: str) -> str:
+    if resolve_usable_git() is None:
+        return ""
     try:
         # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
         # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
@@ -437,6 +440,7 @@ def _fs_backend(profile: Optional[str] = None):
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError, get_ssh_workspace_fs
     from tools.terminal_tool_config import coerce_ssh_remote_cwd
 
+    _fs_profile_home(profile)  # 409 for a profile a plugin runs elsewhere, before its config names a machine to dial
     with _profile_scope(profile):
         terminal = dict(load_config().get("terminal") or {})
         profile_env = load_env()

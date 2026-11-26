@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
+from gateway import run_runtime, run_runtime_listener
 from gateway.config import Platform
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.fixtures.storage_holder import raw_holder
@@ -25,7 +25,8 @@ def _runtime(tmp_path, monkeypatch, failing):
     registry = SessionAuthorities(launch, multiplexed=True)
     runner = SimpleNamespace(
         session_authorities=registry, session_control_server=None, _running_agents={},
-        config=SimpleNamespace(multiplex_profiles=True, _runtime_profile_homes=tuple(homes.items())),
+        config=SimpleNamespace(multiplex_profiles=True, _runtime_profile_homes=tuple(homes.items()),
+                               systemd_watchdog_seconds=0),
         session_runtime_descriptor={"served_profiles": []},
         session_ticket_store=SimpleNamespace(profile_ids=frozenset()),
         session_store=SimpleNamespace(list_sessions=list))
@@ -64,7 +65,7 @@ def test_a_secondary_whose_recovery_fails_is_parked_and_the_rest_start(tmp_path,
     runner, launch, homes, recovered, parked = _runtime(tmp_path, monkeypatch, failing=tmp_path / "profiles" / "beta")
     process_ownership.reserve([homes["beta"]])
     try:
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
         assert runner.session_runtime_descriptor["api_origin"] == "http://127.0.0.1:1"
         assert recovered == [str(launch), str(homes["beta"]), str(homes["gamma"])]
         assert "beta" in parked and "leftover receipt" in parked["beta"]
@@ -95,7 +96,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
     monkeypatch.setattr("gateway.session_runtime_workers.join_authority_work", writer_outlives_stop)
     process_ownership.reserve([homes["beta"]])
     try:
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
         assert "ownership retained" in parked["beta"] and "rescan" in parked["beta"]
         assert process_ownership.owns(homes["beta"]), "the live writer's home lost its lock"
         assert runner.session_authorities.for_home(homes["beta"]) is beta and beta.retiring
@@ -109,11 +110,10 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         host.pairing_store, host.pairing_stores, host._served_profile_signatures = None, {}, {}
         host._primary_profile_name = "default"
 
-        async def start_one(name, home, claimed):
+        async def start_one(name, home, claimed, batch):
             started.append(name)
-            return 0
 
-        host._start_one_profile_adapters = start_one
+        host._prepare_one_profile_adapters = start_one
         host._restore_secondary_completion_ledgers = lambda profile_homes: None
         monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: [])
         monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: published.update(kw))
@@ -200,5 +200,5 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
 def test_the_launch_profile_recovery_failure_still_stops_the_start(tmp_path, monkeypatch):
     runner, _launch, _homes, _recovered, parked = _runtime(tmp_path, monkeypatch, failing=tmp_path / "root")
     with pytest.raises(RuntimeError, match="leftover receipt"):
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     assert parked == {}

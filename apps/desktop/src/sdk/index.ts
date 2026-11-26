@@ -19,7 +19,6 @@
  */
 
 import { computed, type ReadableAtom } from 'nanostores'
-import type { ReactNode } from 'react'
 
 import { capabilityScoped, getApiRequestConnection } from '@/api/client'
 import { mutateSessionFenced } from '@/api/sessions'
@@ -45,7 +44,7 @@ import {
 } from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
-import type { WorkspaceMode } from '@/contrib/types'
+import type { PluginWorkspaceOptions, WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
@@ -112,6 +111,7 @@ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { profileBackendHost } from './profile-backend'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
@@ -749,6 +749,9 @@ export const host = {
     }
   },
 
+  // Route a profile to a backend this plugin runs on this computer (e.g. a sandbox), and back. See profile-backend.ts.
+  ...profileBackendHost,
+
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 
   /** Registry connection id serving the gateway `host.request` currently hits
@@ -1174,18 +1177,7 @@ export const host = {
    *  fires `onClose`. Feature-detect on older desktops
    *  (`typeof host.openWorkspace === 'function'`) and keep an in-panel
    *  fallback. */
-  openWorkspace: (
-    id: string,
-    options: {
-      dock?: { before?: null | string; pane: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
-      headerVeto?: boolean
-      minWidth?: string
-      onClose?: () => void
-      render: () => ReactNode
-      title?: string
-      uncloseable?: boolean
-    }
-  ): (() => void) => {
+  openWorkspace: (id: string, options: PluginWorkspaceOptions): (() => void) => {
     const key = (id ?? '').trim()
 
     if (!key || typeof options?.render !== 'function') {
@@ -1197,6 +1189,7 @@ export const host = {
     const dispose = registry.register({
       area: 'panes',
       data: {
+        approvalScope: options.approvalScope,
         // The session-tile shape: a full workspace surface docked beside main,
         // closeable so it keeps its tab when it lands in a zone of its own.
         dock: options.dock ?? { pane: 'workspace', pos: 'center' },

@@ -42,7 +42,8 @@ async def _runner_with_beta_parked(tmp_path, monkeypatch, homes, **config_fields
     """Multiplexed runner whose secondary ``beta`` fails startup Bot recovery once and is parked."""
     from gateway import run
     from gateway import session_bot
-    from gateway.run_runtime import initialize_gateway_runtime, parked_profile_map, start_gateway_runtime_api
+    from gateway.run_runtime import initialize_gateway_runtime, parked_profile_map
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {'platform_toolsets': {'cli': []}})
     config = GatewayConfig(sessions_dir=tmp_path / 'sessions')
     config.multiplex_profiles = True

@@ -30,7 +30,8 @@ vi.mock('dbus-native', () => ({
 
 import { registerNativeNotifications } from './notification-ipc'
 
-function setup(alreadyRunning = false) {
+// `activatable` is whether the bus could start the service on demand.
+function setup(alreadyRunning = false, activatable = !alreadyRunning) {
   host.handle.mockClear()
 
   const connection = Object.assign(new EventEmitter(), {
@@ -116,6 +117,8 @@ function setup(alreadyRunning = false) {
         Hello: ':1.10',
         StartServiceByName: 1,
         GetNameOwner: owner,
+        NameHasOwner: activated,
+        ListActivatableNames: activatable ? ['org.freedesktop.DBus', 'org.freedesktop.Notifications'] : ['org.freedesktop.DBus'],
         GetCapabilities: ['actions', 'body'],
         Notify: message.member === 'Notify' ? ++id : id
       }
@@ -172,6 +175,11 @@ function setup(alreadyRunning = false) {
       host.handle.mock.calls[0][1]({ sender: source.webContents } as unknown as IpcMainInvokeEvent, payload)
     )
 
+  const supported = () =>
+    Promise.resolve(
+      (host.handle.mock.calls.find(([channel]) => channel === 'hermes:notify:supported')?.[1] as () => unknown)()
+    )
+
   const signal = (member: string, body: unknown[], sender = owner) =>
     connection.emit('message', {
       type: 4,
@@ -190,6 +198,7 @@ function setup(alreadyRunning = false) {
     source,
     focusWindow,
     notify,
+    supported,
     signal,
     stall: (method: string) => {
       stalled = method
@@ -360,4 +369,39 @@ it('preserves activation, dedupe and source ownership while fencing daemon ID re
   expect(reused.connection.stream.destroy).toHaveBeenCalled()
   reused.signal('ActionInvoked', [retainedId, 'default'])
   expect(reused.source.webContents.send).toHaveBeenCalledTimes(1)
+})
+
+it('says it can notify only when a notification service is running or activatable on the session bus', async () => {
+  // Electron's own answer (true in this file's mock) is not what Linux uses.
+  const running = setup(true)
+  expect(await running.supported()).toBe(true)
+  running.connection.emit('close')
+
+  const activatable = setup()
+  expect(await activatable.supported()).toBe(true)
+  // Asking must not start the service; only a real notification does that.
+  expect(activatable.calls.some(call => call.member === 'StartServiceByName')).toBe(false)
+  activatable.connection.emit('close')
+
+  const neither = setup(false, false)
+  expect(await neither.supported()).toBe(false)
+  neither.connection.emit('close')
+})
+
+it('says it cannot notify when the session bus errors, is missing or does not answer in time', async () => {
+  for (const member of ['Hello', 'NameHasOwner', 'ListActivatableNames']) {
+    const failing = setup(false)
+    failing.fail(member, 'org.freedesktop.DBus.Error.Failed')
+    expect(await failing.supported()).toBe(false)
+    failing.connection.emit('close')
+  }
+
+  for (const member of ['Hello', 'NameHasOwner', 'ListActivatableNames']) {
+    const silent = setup(false)
+    silent.stall(member)
+    const answer = silent.supported()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(await answer).toBe(false)
+    silent.connection.emit('close')
+  }
 })

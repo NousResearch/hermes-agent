@@ -358,3 +358,26 @@ async def test_a_messaging_chat_viewed_in_desktop_is_told_it_did_not_move(tmp_pa
             assert pdb.get_active_id(conn) == pid
     finally:
         await _closed(chat)
+
+
+@pytest.mark.asyncio
+async def test_a_busy_boundary_keeps_the_move_for_the_next_one(tmp_path, monkeypatch):
+    from gateway import session_mutations
+    from persistence.core.errors import AuthorityRefusal
+    chat = await _chat(tmp_path, monkeypatch)
+    try:
+        assert _move(chat, chat.worktree)['moved'] == 'pending'
+        write = session_mutations.write_mutation
+
+        async def busy(*args, **kwargs):
+            monkeypatch.setattr(session_mutations, 'write_mutation', write)
+            raise AuthorityRefusal('session_busy')
+        monkeypatch.setattr(session_mutations, 'write_mutation', busy)
+        await _boundary(chat)  # another worker still holds the chat: the move waits
+        assert chat.authority.sessions[chat.sid].pending_workspace == str(chat.worktree)
+        assert _policy(chat.authority, chat.sid).cwd == str(chat.start)
+        await _boundary(chat)
+        assert _policy(chat.authority, chat.sid).cwd == str(chat.worktree)
+        assert chat.authority.sessions[chat.sid].pending_workspace is None
+    finally:
+        await _closed(chat)

@@ -16,7 +16,7 @@ import sys
 from typing import Callable
 import uuid
 
-from pm.filesystem import native
+from pm.filesystem import long_root, native
 from pm.package import InstallError
 
 
@@ -176,7 +176,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
             _write(environment / "pm-runtime.json", {"inputs": identity})
             _write(selected, {"inputs": identity, "generation": generation.as_posix()})
         except BaseException:
-            shutil.rmtree(environment, ignore_errors=True)
+            shutil.rmtree(long_root(environment), ignore_errors=True)
             raise
         _hold_for_children(environment)
         return executable
@@ -217,7 +217,7 @@ def collect_runtime_generations(root: Path) -> list[Path]:
             published = (generation / "pm-runtime.json").is_file()
             if published and (not (generation / ".lease-managed").is_file() or leases_held(generation)):
                 continue
-            shutil.rmtree(generation)
+            shutil.rmtree(long_root(generation))
             removed.append(generation)
         collect_lease_dirs(root.parent / "leases" / "pm-runtime", generations)
     return removed

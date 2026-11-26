@@ -313,4 +313,4 @@ def remove_tree(path: Path) -> None:
         func(failed)
 
     handler = {"onexc": _retry_writable} if sys.version_info >= (3, 12) else {"onerror": _retry_writable}
-    shutil.rmtree(path, **handler)
+    shutil.rmtree(long_root(path), **handler)

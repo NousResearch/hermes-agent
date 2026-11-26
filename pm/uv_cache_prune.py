@@ -14,6 +14,8 @@ import re
 import shutil
 from pathlib import Path
 
+from pm.filesystem import long_root
+
 
 def _normalized(name: str) -> str:
     """PEP 503 name: a ``ruamel.yaml-*.dist-info`` bucket is the lock's ``ruamel-yaml``."""
@@ -73,13 +75,13 @@ def prune_uv_cache_to_lock(cache: Path, source_repo: Path) -> int:
                 continue
             name = dist_name(bucket)
             if name is not None and name not in keep:
-                shutil.rmtree(bucket, ignore_errors=True)
+                shutil.rmtree(long_root(bucket), ignore_errors=True)
                 pruned += 1
     for family_dir in (*cache.glob("wheels-v*/pypi"), *cache.glob("sdists-v*/pypi")):
         if not family_dir.is_dir():
             continue
         for entry in family_dir.iterdir():
             if entry.is_dir() and _normalized(entry.name) not in keep:
-                shutil.rmtree(entry, ignore_errors=True)
+                shutil.rmtree(long_root(entry), ignore_errors=True)
                 pruned += 1
     return pruned + _drop_dangling_links(cache)

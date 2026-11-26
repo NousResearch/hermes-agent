@@ -585,7 +585,7 @@ class Venv(StatePackage):
                 validate_environment(venv_command(project, candidate, ("-I",)),
                                      env=dict(environment.env), cwd=resolved_lock.parent)
         except BaseException:
-            shutil.rmtree(generation, ignore_errors=True)
+            shutil.rmtree(long_root(generation), ignore_errors=True)
             raise
         (generation / ".lease-managed").touch()
         return {"environment": candidate, "resolved_lock": resolved_lock}

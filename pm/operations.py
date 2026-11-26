@@ -15,6 +15,7 @@ import shutil
 import sys
 import uuid
 
+from pm.filesystem import long_root
 from pm.package import InstallError
 
 
@@ -111,7 +112,7 @@ def stage_manager_runtime(
         _write(destination / "pm-runtime.json", {})
         return executable
     except BaseException:
-        shutil.rmtree(destination, ignore_errors=True)
+        shutil.rmtree(long_root(destination), ignore_errors=True)
         raise
 
 
@@ -315,7 +316,7 @@ def _ensure_generation(
             _write(root / "active.json", {"generation": generation.name,
                                            "inputs": identity(base_python), **record})
         except BaseException:
-            shutil.rmtree(generation, ignore_errors=True)
+            shutil.rmtree(long_root(generation), ignore_errors=True)
             raise
     return python
 

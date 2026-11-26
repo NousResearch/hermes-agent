@@ -26,7 +26,7 @@ class SidebarCacheTests(unittest.TestCase):
             wal_path = Path(f"{db_path}-wal")
             db_path.write_bytes(b"db-v1")
             wal_path.write_bytes(b"wal-v1")
-            first_fingerprint = profiles._sidebar_db_fingerprint(db_path)
+            first_fingerprint = profiles.store_fingerprint(Path(root))
             first_key = (str(db_path), first_fingerprint, False, 0, (), 50, 100, ())
             payload = {"recents": None, "cron": [{"id": "one"}], "messaging": []}
 
@@ -39,7 +39,7 @@ class SidebarCacheTests(unittest.TestCase):
             )
 
             wal_path.write_bytes(b"wal-v2-is-different")
-            second_fingerprint = profiles._sidebar_db_fingerprint(db_path)
+            second_fingerprint = profiles.store_fingerprint(Path(root))
             second_key = (str(db_path), second_fingerprint, False, 0, (), 50, 100, ())
             self.assertNotEqual(first_fingerprint, second_fingerprint)
             self.assertIsNone(profiles._sidebar_profile_cache_get(second_key))

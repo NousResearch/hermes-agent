@@ -1360,11 +1360,12 @@ def _reclaim_fds_best_effort() -> None:
 def drain_delivery_queue(adapters, loop) -> int:
     """Send queued worker results through this gateway's live adapters."""
     from cron.delivery_queue import _path, drain
+    from persistence_assembly import file_store_exists
 
-    # Only restart-safe workers create the queue file.  Every gateway (macOS,
-    # Windows, launchd, Docker) runs this housekeeping tick, so skip the sqlite
+    # Only restart-safe workers create the queue store.  Every gateway (macOS,
+    # Windows, launchd, Docker) runs this housekeeping tick, so skip the store
     # open/create entirely until a worker has actually queued something.
-    if not _path().exists():
+    if not file_store_exists(_path()):
         return 0
     def send(queued_job, queued_content, queued_for_failure):
         error = _deliver_result(

@@ -60,14 +60,14 @@ class ResponseStore:
                 from hermes_cli.config import get_hermes_home
                 db_path = str(get_hermes_home() / "response_store.db")
         self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
+        # Served by the profile's persistence provider when it keeps file stores; otherwise the file,
+        # with the shared WAL-fallback so response_store.db degrades gracefully on NFS/SMB/FUSE homes.
+        from hermes_cli.sqlite_util import connect_store
         try:
-            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._conn = connect_store(db_path, db_label="response_store.db", check_same_thread=False)
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
-        # Shared WAL-fallback so response_store.db degrades gracefully on NFS/SMB/FUSE homes.
-        from sqlite_support import apply_wal_with_fallback
-        apply_wal_with_fallback(self._conn, db_label="response_store.db")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS responses ("
             "response_id TEXT PRIMARY KEY, data TEXT NOT NULL, accessed_at REAL NOT NULL)")
@@ -112,7 +112,8 @@ class ResponseStore:
 
     def _tighten_file_permissions(self) -> None:
         """Force owner-only permissions on the DB and SQLite sidecars."""
-        if not self._db_path:
+        from hermes_cli.sqlite_util import is_sqlite_file
+        if not self._db_path or not is_sqlite_file(self._conn):
             return
         for candidate in (Path(self._db_path), Path(f"{self._db_path}-wal"), Path(f"{self._db_path}-shm")):
             try:

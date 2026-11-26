@@ -85,8 +85,9 @@ def _count_status_active_sessions() -> int:
 
     # The heal helper bootstraps a missing store; this garnish must not — on a fresh install
     # /api/status polls would otherwise create state.db before the user's first session.
-    db_path = _session_db_path_for_profile(None)
-    if not db_path.exists():
+    from persistence_assembly import session_store_exists
+
+    if not session_store_exists(_session_db_path_for_profile(None).parent):
         return 0
     store = _open_session_db_for_profile(None, read_only=True)
     try:

@@ -94,16 +94,19 @@ def _refuse_cron_writers(home: Path) -> None:
     import sqlite3
     from gateway.status import get_process_start_time, _pid_exists
 
+    from persistence_assembly import file_store_exists, open_compat_store
+
     path = home / "cron" / "executions.db"
-    try:
-        path.stat()
-    except FileNotFoundError:
+    if not file_store_exists(path):
         return
     # Importing cron initializes scheduler/config defaults. A deletion probe
     # must only read the existing ledger, not recreate the data being removed.
     try:
-        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.25)) as conn:
+        conn = open_compat_store(path, row_factory=sqlite3.Row)
+        if conn is None:
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.25)
             conn.row_factory = sqlite3.Row
+        with closing(conn):
             rows = conn.execute("SELECT * FROM executions WHERE status IN ('claimed','running')").fetchall()
     except sqlite3.Error as exc:
         raise RuntimeError(f"cannot inspect cron owners in {path}: {exc}") from exc

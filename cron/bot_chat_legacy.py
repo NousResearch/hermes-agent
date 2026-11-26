@@ -73,7 +73,9 @@ def _dispose(path: Path, record: dict) -> bool:
         return True
     home = Path(record["home"]).resolve()
     for_failure = bool(record.get("for_failure"))
-    if not (home / "state.db").is_file():
+    from persistence_assembly import session_store_exists
+
+    if not session_store_exists(home):
         record.update(status="ambiguous", error=f"bot-chat delivery target no longer exists: {home}")
     elif for_failure and not warning_notifications_enabled(
             BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml")):

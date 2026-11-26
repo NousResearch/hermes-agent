@@ -201,8 +201,9 @@ class _WriteQueue:
     def _get_conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = self._local.conn = sqlite3.connect(str(self._db_path), timeout=30, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
+            from hermes_cli.sqlite_util import connect_store
+            conn = self._local.conn = connect_store(self._db_path, db_label="retaindb_queue.db", wal=False,
+                                                    row_factory=sqlite3.Row, timeout=30, check_same_thread=False)
             with self._connections_lock:
                 self._connections.add(conn)
         return conn

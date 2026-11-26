@@ -93,13 +93,13 @@ def _first_session_started_at(home: Path | None = None) -> float | None:
     Raises one of the store failures (``persistence.core.errors.STORE_FAILURES``) when state.db exists but cannot
     be read.
     """
-    from persistence_assembly import open_persistence_reader
+    from persistence_assembly import open_persistence_reader, session_store_exists
 
     home = home or get_hermes_home()
     if str(home) in _first_session_at:
         return _first_session_at[str(home)]
     database = home / "state.db"
-    if not database.exists():
+    if not session_store_exists(home):
         return time.time()
     with open_persistence_reader(database, patience_s=1) as store:
         first = store.sessions.first_session_started_at()

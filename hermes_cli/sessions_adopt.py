@@ -115,8 +115,10 @@ def cmd_adopt(args) -> int:
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_constants import display_hermes_home, get_hermes_home
 
-    path = get_hermes_home() / 'state.db'
-    if not path.exists():
+    from persistence_assembly import session_store_exists
+
+    path = get_hermes_home() / 'state.db'  # names the profile; the configured provider serves its store
+    if not session_store_exists(get_hermes_home()):
         print(f'No session database at {display_hermes_home()}/state.db (nothing to adopt).')
         return 0
     try:

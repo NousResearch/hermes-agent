@@ -78,7 +78,8 @@ _hermes_keys="$(printf '%s\n' "$_hermes_script" | sed -n 's/^export \([A-Za-z_][
 # installed-state path this environment was built from), so it is snapshotted
 # and exported with every other key — no separate assignment here.
 __HERMES_SAVED_PATH="$PATH"
-for _hermes_k in $_hermes_keys; do
+# zsh does not word-split a plain $var, but it does split a command substitution.
+for _hermes_k in $(printf '%s' "$_hermes_keys"); do
     eval "__HERMES_SAVED_$_hermes_k=\"\${$_hermes_k+set}\""
     eval "__HERMES_PRIOR_$_hermes_k=\${$_hermes_k-__HERMES_UNSET__}"
 done
@@ -145,7 +146,7 @@ _hermes_prompt
 
 deactivate() {
     export PATH="$__HERMES_SAVED_PATH"
-    for _hermes_k in $__HERMES_KEY_LIST; do
+    for _hermes_k in $(printf '%s' "$__HERMES_KEY_LIST"); do
         eval "_hermes_was=\"\$__HERMES_SAVED_$_hermes_k\""
         eval "_hermes_old=\"\$__HERMES_PRIOR_$_hermes_k\""
         if [ "$_hermes_was" != "set" ]; then

@@ -69,7 +69,13 @@ def group_chat_snapshot_fields() -> dict[str, str]:
 
         from .shared_metrics_contract import size_bucket
 
+        from persistence_assembly import profile_scope, store_location
+
         home = get_hermes_home()
+        if store_location(profile_scope(home=home)) is None:
+            # A session store without a file (a provider plugin) is not read here: the fields are left out
+            # rather than counted from a stale state.db or reported as a false zero.
+            return {}
         since = time.time() - _WINDOW_SECONDS
         rooms, _ = _read(home / "state.db", since)
         standalone = default_db_path()

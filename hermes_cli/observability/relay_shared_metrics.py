@@ -1410,8 +1410,10 @@ def _reconcile_send_consent_once() -> None:
         resolved = _resolved_send_config()
         # Probe WITHOUT constructing a store: the constructor creates the directory and
         # schema as a side effect, which would make the skip below dead code.
+        from persistence_assembly import file_store_exists
+
         default_path = get_hermes_home() / "telemetry" / "shared_metrics" / "metrics.sqlite3"
-        if not resolved.send and not default_path.exists():
+        if not resolved.send and not file_store_exists(default_path):
             return
         _reconcile_store_consent(SharedMetricsStore(), resolved.send)
     except Exception:

@@ -679,7 +679,8 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
     is the job of :func:`kanban_db.create_board` (which writes the metadata
     first); read paths get an actionable error instead of a resurrected board.
     """
-    if path.exists():
+    from persistence_assembly import file_store_exists
+    if file_store_exists(path):
         return  # existing DB: a plain open, never a resurrection
     if board is None:
         # Default-DB and env-pinned paths never sit under a board dir, so a
@@ -712,6 +713,41 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
         raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
 
 
+def _open_provider_board(path: Path) -> Optional[sqlite3.Connection]:
+    """The board served by the profile's persistence provider (``persistence.file_stores``), or None for a SQLite
+    file. There is no file to probe, quarantine or checkpoint: the schema pass runs on the first connect per
+    process, and again whenever the store has lost it."""
+    from persistence_assembly import open_compat_store
+
+    conn = open_compat_store(path, row_factory=sqlite3.Row)
+    if conn is None:
+        return None
+    try:
+        conn.isolation_level = None  # explicit transactions only, as _sqlite_connect opens them
+        resolved = str(path.resolve())
+        with _INIT_LOCK:
+            if resolved not in _INITIALIZED_PATHS or not _schema_is_present(conn):
+                conn.executescript(_kb.SCHEMA_SQL)
+                _migrate_add_optional_columns(conn)
+                _fingerprint_columns_as_text(conn)
+                _INITIALIZED_PATHS.add(resolved)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def _fingerprint_columns_as_text(conn: sqlite3.Connection) -> None:
+    """``worker_started_at`` is declared INTEGER but holds ``_process_fingerprint`` text (``"<epoch>|<start>"``),
+    which SQLite keeps in any column and Postgres refuses in a bigint one: the provider's board stores it as text."""
+    for table in ("tasks", "task_runs"):
+        declared = {row[1]: row[2] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if declared.get("worker_started_at") == "INTEGER":
+            conn.execute(f"ALTER TABLE {table} ALTER COLUMN worker_started_at TYPE text USING worker_started_at::text")
+    if conn.in_transaction:
+        conn.commit()
+
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
@@ -724,7 +760,12 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     if kanban_path_is_fenced(path):
         # Reads must not enter schema/backfill write transactions. Never create a
         # missing board or migrate on a descendant's behalf; the owner initializes it.
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        from persistence_assembly import open_compat_store
+        conn = open_compat_store(path, row_factory=sqlite3.Row)
+        if conn is not None:
+            conn.read_only = True
+        else:
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         conn.text_factory = _kb._lossy_text
         if not _schema_is_present(conn):
@@ -732,6 +773,9 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
         return conn
     _refuse_dead_board_resurrection(path, board)
+    compat = _open_provider_board(path)
+    if compat is not None:
+        return compat
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, skip the

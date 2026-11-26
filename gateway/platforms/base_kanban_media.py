@@ -28,8 +28,13 @@ def _kanban_attachment_roots() -> list[Path]:
     roots = [_kanban_root() / "kanban" / "attachments"]
     roots.extend(path / "attachments" for path in _kanban_board_dirs()
                  if not path.is_symlink() and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
-                 and (path / "kanban.db").is_file())
+                 and _board_store_exists(path / "kanban.db"))
     return roots
+
+
+def _board_store_exists(path: Path) -> bool:
+    from persistence_assembly import file_store_exists
+    return file_store_exists(path)
 
 
 def _kanban_board_db_paths() -> list[Path]:

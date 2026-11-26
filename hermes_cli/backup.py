@@ -510,6 +510,66 @@ def run_backup(args) -> bool:
         raise SystemExit(2) from exc
 
 
+# Where a backup keeps the session stores a persistence provider holds outside the profile folders: one
+# ``.persistence/<profile folder relative to the root>/store.sql`` per profile.
+PROVIDER_STORES_DIR = ".persistence"
+
+
+def _profile_homes(hermes_root: Path) -> list[Path]:
+    """The root and every profile folder under it."""
+    profiles = hermes_root / "profiles"
+    return [hermes_root, *(sorted(p for p in profiles.iterdir() if p.is_dir()) if profiles.is_dir() else [])]
+
+
+def _write_provider_stores(zf: zipfile.ZipFile, hermes_root: Path, errors: list[str]) -> tuple[int, int]:
+    """Export every session store a provider keeps outside its profile folder into the archive; ``(count, bytes)``.
+    A failed export is recorded in *errors*, so the backup reports itself incomplete."""
+    import tempfile
+
+    from persistence_assembly import export_session_store
+
+    count = size = 0
+    for home in _profile_homes(hermes_root):
+        rel = home.relative_to(hermes_root).as_posix()
+        arcname = f"{PROVIDER_STORES_DIR}/{rel}/store.sql" if rel != "." else f"{PROVIDER_STORES_DIR}/store.sql"
+        with tempfile.TemporaryDirectory() as scratch:
+            dump = Path(scratch) / "store.sql"
+            try:
+                if not export_session_store(home, dump):
+                    continue
+                zf.write(dump, arcname)
+            except Exception as exc:  # health: allow BLE001 -- one profile's failed export must not lose the rest
+                errors.append(f"{arcname}: session store export failed: {exc}")
+                continue
+            print(f"  + session store of {rel if rel != '.' else 'the root profile'} (from its persistence provider)")
+            count += 1
+            size += dump.stat().st_size
+    return count, size
+
+
+def _import_provider_stores(hermes_root: Path, errors: list[str]) -> int:
+    """Load every provider store export the import extracted into its profile, then remove the extracted file."""
+    from persistence_assembly import import_session_store
+
+    root = hermes_root / PROVIDER_STORES_DIR
+    if not root.is_dir():
+        return 0
+    loaded = 0
+    for dump in sorted(root.rglob("store.sql")):
+        rel = dump.parent.relative_to(root)
+        home = hermes_root / rel
+        try:
+            import_session_store(home, dump)
+        except Exception as exc:  # health: allow BLE001 -- reported, and the extracted export is kept for a retry
+            errors.append(f"{PROVIDER_STORES_DIR}/{rel.as_posix()}/store.sql: session store import failed: {exc}")
+            continue
+        dump.unlink()
+        loaded += 1
+    if loaded and not any(root.rglob("store.sql")):
+        shutil.rmtree(root, ignore_errors=True)
+    return loaded
+
+
 def _run_backup_locked(args, hermes_root: Path) -> bool:
     """Write a full backup while the cross-process backup slot is held."""
     out_path = _resolve_backup_output_path(args.output)
@@ -550,6 +610,9 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
                 total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
+        exported, exported_bytes = _write_provider_stores(zf, hermes_root, errors)
+        file_count += exported
+        total_bytes += exported_bytes
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
     logger.info("backup phase=archive status=complete duration_ms=%.1f files=%d errors=%d bytes=%d",
@@ -704,11 +767,14 @@ def run_import(args) -> Optional[int]:
         except (OwnershipConflict, KeepHostRefused) as exc:
             print(f"\nImport refused; no files restored: {exc}")
             sys.exit(1)
+        stores_loaded = _import_provider_stores(hermes_root, errors)
         elapsed = time.monotonic() - t0
 
         # Summary
         print()
         print(f"Import {'incomplete' if errors else 'complete'}: {restored} files restored in {elapsed:.1f}s")
+        if stores_loaded:
+            print(f"  Session stores loaded into their persistence provider: {stores_loaded}")
         print(f"  Target: {display_hermes_home()}")
 
         if restored_external:

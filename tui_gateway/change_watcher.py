@@ -197,17 +197,23 @@ _sessions_db_sig_cache: dict[str, tuple[object, tuple | None, bool]] = {}
 _MTIME_FALLBACK = "mtime-fallback"
 
 
-def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: None):
-    """``read(db_path, mtime)``, cached behind the DB/WAL mtime so a watch pass stays stat-only until another
-    process commits. ``read`` returns ``(signature, is_fallback)``. A failed read after a good answer keeps it and
-    leaves the cached mtime stale so the next pass re-reads (answer -> fallback -> answer would broadcast twice);
-    otherwise the answer is ``fallback(mtime)``."""
-    mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal")))
+_FILE_VERSION = object()
+
+
+def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: None, version=_FILE_VERSION):
+    """``read(db_path, mtime)``, cached behind the store's version so a watch pass stays cheap until another
+    process commits. The version is the DB/WAL mtime of a file-backed store, or the ``version`` passed for a store
+    without a file (``persistence_assembly.store_fingerprint``: None while there is no store). ``read`` returns
+    ``(signature, is_fallback)``. A failed read after a good answer keeps it and leaves the cached version stale so
+    the next pass re-reads (answer -> fallback -> answer would broadcast twice); otherwise the answer is
+    ``fallback(mtime)``."""
+    file_backed = version is _FILE_VERSION
+    mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal"))) if file_backed else version
     cache_key = str(db_path)
     cached = cache.get(cache_key)
     if cached is not None and cached[0] == mtime:
         return cached[1]
-    if not db_path.exists():
+    if not (db_path.exists() if file_backed else version is not None):
         cache[cache_key] = (mtime, None, True)
         return None
     try:
@@ -216,7 +222,7 @@ def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: 
         if cached is not None and not cached[2]:
             return cached[1]
         signature, is_fallback = fallback(mtime), True
-    cache[cache_key] = (_settled_mtime(mtime), signature, is_fallback)
+    cache[cache_key] = (_settled_mtime(mtime) if file_backed else mtime, signature, is_fallback)
     return signature
 
 
@@ -232,7 +238,7 @@ def _session_rows_sig(db_path: Path, mtime):
     return projection, False
 
 
-def _session_db_content_sig(db_path: Path):
+def _session_db_content_sig(db_path: Path, *, version=_FILE_VERSION):
     """Digest list/transcript-relevant session rows, excluding unrelated tables.
 
     ``gateway_heartbeats`` shares state.db and writes every minute. Using the
@@ -243,7 +249,8 @@ def _session_db_content_sig(db_path: Path):
     digest -> mtime -> digest would broadcast twice.
     """
     return _db_content_sig(
-        db_path, _sessions_db_sig_cache, _session_rows_sig, fallback=lambda mtime: (_MTIME_FALLBACK, mtime))
+        db_path, _sessions_db_sig_cache, _session_rows_sig, fallback=lambda mtime: (_MTIME_FALLBACK, mtime),
+        version=version)
 
 
 # Filesystem timestamps come from a coarse clock (~4 ms ticks; whole seconds on some filesystems) and
@@ -274,9 +281,17 @@ def _sessions_sig():
     change signal. Hashing only those rows avoids false Desktop refreshes from
     unrelated state.db writes such as gateway heartbeats.
     """
-    from persistence_assembly import profile_scope, store_location
-    locations = (store_location(profile_scope(home=root)) for root in _watched_homes())
-    return tuple(None if location is None else _session_db_content_sig(location) for location in locations)
+    return tuple(_session_db_content_sig(*_watched_store(root)) for root in _watched_homes())
+
+
+def _watched_store(root: Path) -> tuple:
+    """``(path, version)`` the watcher keys a home's session store by: its file with file versioning, or, for a
+    provider without a file, the path naming the profile and the provider's change token."""
+    from persistence_assembly import profile_scope, store_fingerprint, store_location
+    location = store_location(profile_scope(home=root))
+    if location is not None:
+        return (location,)
+    return (Path(root) / "state.db", store_fingerprint(Path(root)))
 
 
 def _projects_sig():
@@ -376,21 +391,30 @@ def _groups_sig() -> dict:
     from functools import partial
 
     from gateway.hosted_rooms import default_db_path
-    from persistence_assembly import profile_scope, store_location
+    from persistence_assembly import profile_scope, store_fingerprint, store_location
     from tui_gateway.hosted_room_service import live_room_services
     services = live_room_services()
     # Each file with how it is read: a served home's own store, the install's shared room store through the
     # active home, and each room service's store through its own handle; a store with no file is skipped.
+    file_less = [Path(root) for root in _watched_homes() if store_location(profile_scope(home=root)) is None]
     stores = {Path(path).resolve(): reader for path, reader in (
         *((location, (location, "profile"))
           for location in (store_location(profile_scope(home=root)) for root in _watched_homes())),
         (default_db_path(), (store_location(profile_scope()), "shared")),
-        *((service.db_path, (service.store, service.placement)) for service in services)) if reader[0] is not None}
+        *((service.db_path, (service.store, service.placement)) for service in services
+          if service.db_path is not None)) if reader[0] is not None}
     rooms: dict[str, list] = {}
     for store, (target, placement) in stores.items():
         read = partial(_room_rows_sig, target, placement)
         for room_id, part in (_db_content_sig(store, _room_store_sig_cache, read) or {}).items():
             rooms.setdefault(room_id, []).append((str(store), part))
+    for root in file_less:
+        version = store_fingerprint(root)
+        for placement in ("profile", "shared"):
+            key = Path(root) / f"state.db#{placement}"
+            read = partial(_room_rows_sig, Path(root) / "state.db", placement)
+            for room_id, part in (_db_content_sig(key, _room_store_sig_cache, read, version=version) or {}).items():
+                rooms.setdefault(room_id, []).append((str(key), part))
     for service in services:
         with contextlib.suppress(Exception):  # health: allow BLE001 -- one broken service must not blind the rest
             for room_id, part in service.live_status_sig().items():

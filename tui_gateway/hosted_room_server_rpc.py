@@ -32,12 +32,13 @@ class HostedRoomServerRPC:
                  placement: str | None = None) -> None:
         self.server = server
         self._ids = itertools.count(1)
-        # Event-bound files resolve from the room store, as on the gateway route; without the
-        # store there is nothing to resolve them from, so the driver refuses the turn by name.
+        # Event-bound files resolve from the room store, as on the gateway route, opened by its profile folder and
+        # placement (a store need not be a file); without a folder there is nothing to resolve them from, so the
+        # driver refuses the turn by name.
         self.db_path = Path(db_path) if db_path is not None else None
-        self.accepts_attachments = self.db_path is not None
         # The room store the attachment reads open: its profile folder and which of its two placements it is.
         self.root = root if root is not None else (self.db_path.parent if self.db_path is not None else None)
+        self.accepts_attachments = self.root is not None
         self.placement = placement or ("profile" if self.db_path is not None and self.db_path.name == "state.db"
                                        else "shared")
 
@@ -80,7 +81,7 @@ class HostedRoomServerRPC:
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
         attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
-        if attachments and self.db_path is None:  # the driver refuses files before submit here
+        if attachments and self.root is None:  # the driver refuses files before submit here
             raise ValueError("attachments_unsupported_on_route: in-process route cannot carry files")
         if not attachments:
             return self._submit(profile, session_id, prompt, source, task, execution_generation,

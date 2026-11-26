@@ -62,6 +62,14 @@ def _placeholders(items) -> str:
 def _snapshot_db(source: Path, target: Path) -> None:
     """Consistent copy of ``source`` via the online-backup API (a file copy
     would miss pages still in the ``-wal`` sidecar and could tear)."""
+    from persistence_assembly import open_compat_store
+    served = open_compat_store(source)
+    if served is not None:  # a board the persistence provider keeps: copied out table by table
+        from hermes_cli.sqlite_util import copy_store_contents
+        with contextlib.closing(served) as src, contextlib.closing(sqlite3.connect(str(target))) as dst:
+            copy_store_contents(src, dst)
+            dst.commit()
+        return
     with contextlib.closing(sqlite3.connect(str(source))) as src, \
             contextlib.closing(sqlite3.connect(str(target))) as dst:
         src.backup(dst)
@@ -126,7 +134,8 @@ def export_board(
         raise ValueError(f"board {slug!r} does not exist")
 
     db_path = kb.kanban_db_path(slug)
-    if not db_path.exists():
+    from persistence_assembly import file_store_exists
+    if not file_store_exists(db_path):
         raise FileNotFoundError(f"board {slug!r} has no database at {db_path}")
 
     base = str(Path(output_path).expanduser()).removesuffix(".tar.gz").removesuffix(".tgz")
@@ -323,7 +332,15 @@ def import_board(
 
         board_root = kb.board_dir(target)
         board_root.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(staged_db), str(board_root / "kanban.db"))
+        from persistence_assembly import open_compat_store
+        served = open_compat_store(board_root / "kanban.db")
+        if served is not None:  # the board lives in the persistence provider: its rows go there
+            from hermes_cli.sqlite_util import copy_store_contents
+            with contextlib.closing(served) as dst, contextlib.closing(sqlite3.connect(str(staged_db))) as src:
+                copy_store_contents(src, dst)
+                dst.commit()
+        else:
+            shutil.move(str(staged_db), str(board_root / "kanban.db"))
         for tree in ("attachments", "logs"):
             src = extracted / tree
             if src.is_dir():

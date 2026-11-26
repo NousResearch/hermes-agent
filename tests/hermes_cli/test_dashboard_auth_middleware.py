@@ -161,6 +161,29 @@ def test_plugin_assets_pass_gate_while_api_stays_gated(gated_app):
     )
 
 
+def test_gated_miniapp_page_shell_is_public(gated_app):
+    """The Telegram Mini App's page shell (/miniapp) must never redirect to
+    /login under the OAuth gate -- unlike every other SPA route (/, /sessions,
+    etc.), which correctly DOES redirect.
+    A real Telegram user's very first visit has no dashboard cookie and never
+    will; the Mini App proves identity via a bearer initData token on its own
+    API calls, not via this page load. Gating the shell itself would make the
+    feature permanently unreachable for the exact audience it exists for.
+
+    Accept either outcome that proves the request passed the auth gate:
+    200 (WEB_DIST built in this test environment) or the "frontend not built"
+    404 JSON mount_spa() falls back to when it isn't -- but never a 401, and
+    never a redirect to /login, which is what this test actually guards
+    against.
+    """
+    r = gated_app.get("/miniapp", follow_redirects=False)
+    assert r.status_code != 401
+    assert r.status_code != 302, (
+        f"/miniapp redirected (location={r.headers.get('location')!r}) -- "
+        "the Mini App's page shell must load without a cookie"
+    )
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------

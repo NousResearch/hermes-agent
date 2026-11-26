@@ -99,6 +99,16 @@ def _workspace_key_clause(key: str) -> tuple[str, list[str]]:
     )
 
 
+def _own_dm_clause(user_id: str) -> tuple[str, list[str]]:
+    """WHERE for ``is_own_dm_session(row, user_id)``. A blank id raises: it must never read as unfiltered."""
+    if not user_id:
+        raise ValueError("own_dm_of needs a non-empty user id")
+    return (
+        "s.source = 'telegram' AND s.chat_type = 'dm' AND s.chat_id IS NOT NULL AND s.chat_id != '' AND s.chat_id = ?",
+        [str(user_id)],
+    )
+
+
 def _where_sql(clauses: list[str], lead: str = "") -> str:
     """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -109,7 +119,7 @@ def _session_filter_where(
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    workspace_key: str | None = None,
+    workspace_key: str | None = None, own_dm_of: str | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -137,6 +147,7 @@ def _session_filter_where(
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         (_workspace_key_clause(workspace_key) if workspace_key else ("", [])),
+        (_own_dm_clause(own_dm_of) if own_dm_of is not None else ("", [])),
         ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
     ):
         if values:
@@ -1271,20 +1282,21 @@ def list_sessions_rich(
     id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
     include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    workspace_key: str | None = None,
+    workspace_key: str | None = None, own_dm_of: str | None = None,
 ) -> list[dict[str, Any]]:
     """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
     by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
     ``include_pinned`` back-fills pins the page missed, still obeying the other
     filters except archived: a pin is an explicit keep, so a pinned row stamped
     archived must still return. ``local_created_sources`` restricts ``source='local'``
-    rows to those surfaces before LIMIT/OFFSET. ``workspace_key``: the ``hermes -c`` folder rule."""
+    rows to those surfaces before LIMIT/OFFSET. ``workspace_key``: the ``hermes -c`` folder rule.
+    ``own_dm_of``: only that Telegram user's own DM sessions, pins included."""
     holder.flush_for_read()  # rows carry token/cost totals
     where_clauses, params = _session_filter_where(
         exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
         exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
         archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
-        local_created_sources=local_created_sources, workspace_key=workspace_key,
+        local_created_sources=local_created_sources, workspace_key=workspace_key, own_dm_of=own_dm_of,
     )
     # The archived-only view is the recovery surface for rows that dropped out of every
     # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1393,7 +1405,7 @@ def list_sessions_rich(
             session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
             min_message_count=min_message_count, archived_only=False, include_archived=True,
             include_subagents=include_subagents, local_created_sources=local_created_sources,
-            workspace_key=workspace_key,
+            workspace_key=workspace_key, own_dm_of=own_dm_of,
         )
         if not include_hidden and not archived_only:
             pinned_clauses.append("s.hidden = 0")
@@ -1540,14 +1552,14 @@ def session_count(
     holder: StoreHolder, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
     exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
-    local_created_sources: Sequence[str] | None = None,
+    local_created_sources: Sequence[str] | None = None, own_dm_of: str | None = None,
 ) -> int:
     """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
     where_clauses, params = _session_filter_where(
         exclude_children=exclude_children, source=source, sources=sources,
         exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
         archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
-        local_created_sources=local_created_sources,
+        local_created_sources=local_created_sources, own_dm_of=own_dm_of,
     )
     if exclude_children:
         from persistence.sqlite.conversation._store.local import exclude_superseded_segments

@@ -10,11 +10,11 @@ import threading
 import time
 from contextlib import nullcontext, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
-from gateway.session import SessionSource, build_session_context_prompt
+from gateway.session import SessionEntry, SessionSource, build_session_context_prompt
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -303,6 +303,34 @@ class GatewayAgentCacheMixin:
         from gateway.run import _write_runtime_status_quiet
         _write_runtime_status_quiet(active_agents=self._active_work_count())
         observe_running_chats(key for key, _ in self._running_agent_items())
+
+    async def _apply_session_switch(self, session_key: str, target_id: str) -> Optional[SessionEntry]:
+        """Point ``session_key`` at ``target_id`` without a ``MessageEvent`` (a Mini App-requested resume,
+        ``gateway.resume_control.watch_resume_requests``): release the running agent, switch, then the
+        boundary ``/resume`` also applies. The caller makes its own ownership checks. None when the store
+        has no entry for ``session_key``."""
+        self._release_running_agent_state(session_key)
+        new_entry = await self.async_session_store.switch_session(
+            session_key, target_id, preserve_prompt_pin=False,
+        )
+        if not new_entry:
+            return None
+        await self._complete_session_switch(session_key)
+        return new_entry
+
+    async def _complete_session_switch(self, session_key: str) -> None:
+        """The conversation boundary after a resume switched ``session_key``'s route (shared by ``/resume``
+        and :meth:`_apply_session_switch`)."""
+        # Clear all conversation-scoped state (model/reasoning overrides #10702, one-turn restores, model
+        # notes, last-resolved cache #58403, /queue overflow) + security state in one funnel call.
+        self._clear_conversation_scope(session_key, reason="resume")
+        # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary, #119864); a
+        # resume IS one, and the funnel above clears only in-memory state — without this the next turn's
+        # _rehydrate_session_model_override resurrects the pin it just cleared.
+        await self.async_session_store.set_model_override(session_key, None)
+        # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory provider
+        # cached _session_id at initialize() and would keep writing to the wrong session (#6672).
+        self._evict_cached_agent(session_key)
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None

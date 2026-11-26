@@ -20,6 +20,10 @@ import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from tests.fixtures.storage_read import conversation, session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 @patch("hermes_cli.plugins.invoke_hook")
 def test_cleanup_forwards_session_messages(mock_invoke_hook):
@@ -84,7 +88,7 @@ def _real_agent(db, session_id, session_messages):
     from run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
-    agent._session_db = db
+    agent._session_db = agent.persistence = db
     agent._session_db_created = True
     agent.session_id = session_id
     agent.platform = "cli"
@@ -114,21 +118,15 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     import cli as cli_mod
-    from hermes_state import SessionDB
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "cli-close-preflush-resume"
-    db.create_session(session_id=session_id, source="cli")
+    seed_session(db, session_id, "cli")
     loaded = [
         {"role": "user", "content": "old prompt"},
         {"role": "assistant", "content": "old answer"},
     ]
-    for message in loaded:
-        db.append_message(
-            session_id=session_id,
-            role=message["role"],
-            content=message["content"],
-        )
+    seed_messages(db, session_id, *loaded)
 
     live_messages = list(loaded) + [{"role": "user", "content": "new prompt"}]
     agent = _real_agent(db, session_id, [])
@@ -190,7 +188,7 @@ def test_cli_close_preflush_resumed_prefix_is_not_duplicated(tmp_path, monkeypat
     assert not worker.is_alive()
     assert not close_worker.is_alive()
 
-    stored = db.get_messages_as_conversation(session_id)
+    stored = conversation(db, session_id)
     assert [m["content"] for m in stored] == [
         "old prompt",
         "old answer",
@@ -205,11 +203,10 @@ def test_cli_close_hands_staged_user_marker_to_turn_start(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     import cli as cli_mod
-    from hermes_state import SessionDB
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "cli-close-staged-user"
-    db.create_session(session_id=session_id, source="cli")
+    seed_session(db, session_id, "cli")
     prefix = [
         {"role": "user", "content": "old prompt"},
         {"role": "assistant", "content": "old answer"},
@@ -235,7 +232,7 @@ def test_cli_close_hands_staged_user_marker_to_turn_start(tmp_path, monkeypatch)
     worker_messages = list(prefix) + [staged]
     agent._persist_session(worker_messages, prefix)
 
-    stored = db.get_messages_as_conversation(session_id)
+    stored = conversation(db, session_id)
     assert [m["content"] for m in stored] == [
         "old prompt",
         "old answer",
@@ -252,21 +249,15 @@ def test_cli_close_uses_clean_override_for_shortened_pending_snapshot(tmp_path, 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
     import cli as cli_mod
-    from hermes_state import SessionDB
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "cli-close-shortened-noted-pending"
-    db.create_session(session_id=session_id, source="cli")
+    seed_session(db, session_id, "cli")
     prefix = [
         {"role": "user", "content": "old prompt"},
         {"role": "assistant", "content": "old answer"},
     ]
-    for message in prefix:
-        db.append_message(
-            session_id=session_id,
-            role=message["role"],
-            content=message["content"],
-        )
+    seed_messages(db, session_id, *prefix)
 
     agent = _real_agent(db, session_id, [])
     staged = {"role": "user", "content": "[MODEL NOTE]\n\nnew prompt"}
@@ -284,7 +275,7 @@ def test_cli_close_uses_clean_override_for_shortened_pending_snapshot(tmp_path, 
 
     cli._persist_active_session_before_close()
 
-    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+    assert [m["content"] for m in conversation(db, session_id)] == [
         "old prompt",
         "old answer",
         "new prompt",
@@ -300,9 +291,8 @@ def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, mon
 
     import agent.conversation_loop as loop_mod
     import cli as cli_mod
-    from hermes_state import SessionDB
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "cli-close-first-turn"
     agent = _real_agent(db, session_id, [])
     agent._session_db_created = False
@@ -322,9 +312,9 @@ def test_cli_close_builds_prompt_before_creating_first_session_row(tmp_path, mon
 
     cli._persist_active_session_before_close()
 
-    session = db.get_session(session_id)
+    session = session_row(db, session_id)
     assert session is not None
     assert session["system_prompt"] == "close-built-system-prompt"
-    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+    assert [m["content"] for m in conversation(db, session_id)] == [
         "first prompt"
     ]

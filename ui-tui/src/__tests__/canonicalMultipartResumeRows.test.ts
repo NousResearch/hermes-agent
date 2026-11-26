@@ -1,6 +1,6 @@
+import { canonicalResult } from '@hermes/shared/gateway-canonical'
 import { expect, it } from 'vitest'
 
-import { canonicalResult } from '../canonicalGateway.js'
 import { toTranscriptMessages } from '../domain/messages.js'
 
 // N94: a resumed canonical snapshot whose user row is multipart (text + image parts) still renders

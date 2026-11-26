@@ -1,21 +1,26 @@
 name: go-whatsapp
 repo: https://github.com/anpicasso/hermes-go-whatsapp
-sha: a48546353fe79456bc193402905b17b3e1cd1be6
-version: "0.4.1"
-requires_hermes: ">=0.21.5"
+sha: 8441931cf7a16f60d10b1b61e1ed669a589a09a1
+version: "0.6.0"
+requires_hermes: ">=0.23.1"
 title: Go WhatsApp
 description: >-
   Outbound WhatsApp tools through GOWA: registers GOWA's native MCP server and
   adds device listing, pairing, and removal. Setup can connect an existing
-  server or explicitly install pinned GOWA v9.5.0 as a loopback-only
+  server or explicitly install pinned GOWA v9.9.0 as a loopback-only
   authenticated native user service on Linux x86_64, macOS x86_64/arm64, or
-  Windows x86_64. Disclosure — agents can send messages and mutate WhatsApp
-  state through the linked account; session databases grant account access.
-  The plugin does not ingest incoming messages or configure webhooks.
+  Windows x86_64; credentials are read from the active Hermes profile. Disclosure
+  — agents can send messages and mutate WhatsApp state through the linked
+  account; session databases grant account access. An opt-in, direct-text watch
+  injects one selected account/chat into its existing Hermes session, with
+  WAIT/REPLY/REPORT guidance and a best-effort five-minute inactivity follow-up.
+  Requires a signed route, separate injection permission, and in-process
+  execution. Listening does not authorize replies. No webhook configuration.
 maintainer: anpicasso
 tier: community
 category: tools
-docs_url: https://github.com/anpicasso/hermes-go-whatsapp/blob/a48546353fe79456bc193402905b17b3e1cd1be6/README.md
+docs_url: https://github.com/anpicasso/hermes-go-whatsapp/blob/8441931cf7a16f60d10b1b61e1ed669a589a09a1/README.md
+image: https://raw.githubusercontent.com/anpicasso/hermes-go-whatsapp/8441931cf7a16f60d10b1b61e1ed669a589a09a1/docs/banner.png
 platforms:
   - linux
   - macos
@@ -25,6 +30,8 @@ capabilities:
     - gowa_devices
     - gowa_device_login
     - gowa_device_remove
-  provides_hooks: []
+    - gowa_watch
+  provides_hooks:
+    - pre_gateway_dispatch
   provides_middleware: []
   requires_env: []

@@ -328,6 +328,15 @@ def sidebar_doc_id(meta: dict[str, Any]) -> str:
     return f"user-guide/skills/{meta['source_kind']}/{meta['category']}/{page_id(meta)}"
 
 
+# Marketing comparison pages that exist for a skill's product, keyed by the
+# skill's source slug. These render as a cross-link on the generated doc page.
+COMPARE_LINKS = {
+    "opencode": "OpenCode",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+}
+
+
 def render_skill_page(
     meta: dict[str, Any],
     fm: dict[str, Any],
@@ -412,6 +421,17 @@ def render_skill_page(
         "| | |\n|---|---|\n" + info_block
     )
 
+    # Cross-link to the marketing comparison page when one exists for this
+    # skill's product. Keyed by skill slug (the source directory name).
+    compare_target = COMPARE_LINKS.get(meta["slug"])
+    compare_line = ""
+    if compare_target:
+        compare_line = (
+            f"Want the full side-by-side? Read "
+            f"[Hermes Agent vs {compare_target}]"
+            f"(https://hermes-agent.nousresearch.com/compare/{meta['slug']}).\n\n"
+        )
+
     # Frontmatter for Docusaurus
     fm_title = sanitize_yaml_string(display_name + " — " + (short_desc or name))
     if len(fm_title) > 120:
@@ -438,6 +458,7 @@ def render_skill_page(
         "\n"
         f"{mdx_escape_body(description)}\n"
         "\n"
+        f"{compare_line}"
         "## Skill metadata\n"
         "\n"
         f"{info_table}\n"

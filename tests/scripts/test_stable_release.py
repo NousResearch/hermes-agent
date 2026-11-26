@@ -83,7 +83,7 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
 
 @pytest.mark.parametrize("lanes", [
     lane_set.select(without=lane_set.BUNDLES),
-    lane_set.select(without=lane_set.NAMES[5:]),
+    lane_set.select(without=lane_set.NAMES[6:]),
     lane_set.select(only=["windows", "docker"]),
     lane_set.select(only=[]),
 ])
@@ -257,7 +257,7 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
     old = candidates("v1.2.3", "a" * 40, "1" * 64)
     new = candidates("v1.2.4", "b" * 40, "2" * 64, archive="rc.1-v1.2.4")
     require_stable_identity(new["tag"], new["commit"])
-    for tag in ("v1.2.4+canary.20260907T143420Z", "v1.2.4-rc", "rc.1-v1.2.4"):
+    for tag in ("canary.20260907T143420Z-v1.2.4", "v1.2.4-rc", "rc.1-v1.2.4"):
         with pytest.raises(ValueError):
             require_stable_identity(tag, new["commit"])
     transitions = plan_transitions(old, new, BASE)
@@ -322,6 +322,13 @@ def https_origin(tmp_path, monkeypatch):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            requests.append(self.path)
+            item = self.server.store.get(self.path.lstrip('/'))
+            self.send_response(200 if item else 404)
+            self.send_header("Content-Length", str(len(item[0])) if item else "0")
+            self.end_headers()
+
         def do_GET(self):
             requests.append(self.path)
             if self.path in ("/same", "/cross"):
@@ -449,8 +456,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
         # A claim cut before lanes existed reads as the lane set that gated the same jobs.
-        "autopublish": False, "lanes": lane_set.DEFAULT,
-        "claim_epoch": 1_790_000_000,
+        "autopublish": False, "lanes": lane_set.DEFAULT, "require_green": True,
+        "claim_epoch": 1_790_000_000, "policy": "stable",
     }
     # The metadata binds the attempt its ref names.
     for wrong in ({**message, "attempt": 2}, {k: v for k, v in message.items() if k != "attempt"}):
@@ -519,7 +526,7 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
     assert parsed == {**old, "lanes": lane_set.DEFAULT}
     assert old == json.loads(raw)  # the caller's record is not mutated
     both = {**old, "includeMacosIntel": False, "includeTermux": True}
-    assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
+    assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == lane_set.DEFAULT | {"termux"}
     # macOS Intel is no longer built: a claim that opted into it cannot be honoured.
     with pytest.raises(ValueError, match="metadata is invalid: it opts into macOS Intel"):
         validate_claim({**old, "includeMacosIntel": True}, version="0.21.7", attempt=11, commit=commit)
@@ -538,7 +545,7 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
     assert validate_claim({**new, "lanes": ["docker", "windows"], "lanesRevision": lane_set.LANES_REVISION},
                           version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset({"docker", "windows"})
     for wrong in ({**old, "includeTermux": "yes"}, {**old, "includeLinux": True},
-                  {**new, "lanes": ["windows", "docker"]}, {**new, "lanes": ["linux"]},
+                  {**new, "lanes": ["windows", "docker"]}, {**new, "lanes": ["freebsd"]},
                   {**new, "lanes": "windows"}, {**old, "lanes": ["docker"]}):
         with pytest.raises(ValueError, match="metadata is invalid"):
             validate_claim(wrong, version="0.21.7", attempt=11, commit=commit)
@@ -548,11 +555,15 @@ def test_a_default_claim_builds_no_termux_and_lanes_restore_it(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    off = {"candidates-termux", "termux-checks"}
+    # A stable release never runs the canary or commit publication jobs.
+    off = {"candidates-termux", "termux-checks", "candidates-linux-x64", "candidates-linux-arm64",
+           "publish-canary", "publish-commit"}
     required = ["admit", *lane_set.JOB_LANES]
     default = stable.gate_expectations(required, lane_set.DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off
-    assert set(stable.gate_expectations(required, lane_set.NAMES).values()) == {"success"}
+    everything = stable.gate_expectations(required, lane_set.NAMES)
+    assert {name for name, result in everything.items() if result == "skipped"} == {
+        "publish-canary", "publish-commit"}
     # A lane that is off removes its jobs even when its test lane is on.
     assert stable.gate_expectations(["candidates-termux", "termux-checks"],
                                     lane_set.select(without=["termux"])) == \

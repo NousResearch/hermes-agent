@@ -623,6 +623,7 @@ class PluginLoaderMixin:
         try:
             if run_with_load_deadline(plugin_key, ctx, _import_and_register):
                 self._attribute_registrations(loaded, plugin_key, registration_start)
+                self._publish_staged_registrations(ctx)
                 loaded.enabled = True
                 from hermes_cli.plugins_ledger import _hook_source_of
 
@@ -686,6 +687,11 @@ class PluginLoaderMixin:
                 if host is None:
                     host = self._plugin_host_instance = PluginHost(self)
         return host
+
+    def _running_plugin_host(self) -> Any:
+        """This manager's plugin host when its process is running, else None (never creates one)."""
+        host = getattr(self, "_plugin_host_instance", None)
+        return host if host is not None and host.alive else None
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""

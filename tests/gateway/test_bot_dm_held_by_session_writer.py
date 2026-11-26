@@ -10,7 +10,8 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_seed import seed_session
 
 CHAT = 'old-bot-chat'
 
@@ -25,17 +26,14 @@ async def held(tmp_path, monkeypatch):
     from hermes_cli import gateway_runtime
     from hermes_cli.active_sessions import release_active_session, try_acquire_active_session
     from hermes_cli.gateway_client import rpc_error
-    from hermes_state import SessionDB
     from tools import bot_live_delivery, bot_mode_dm
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    store._db = SessionDB(db_path=tmp_path / 'state.db')
-    db = store._db
+    db = store.persistence
     # A Desktop Bot Chat from before the one-gateway runtime: adopted on its first delivery.
-    db.create_session(CHAT, source='desktop', model='old', cwd=str(tmp_path))
-    db.set_session_title(CHAT, 'Bot Chat')
+    seed_session(db, CHAT, 'desktop', model='old', cwd=str(tmp_path), title='Bot Chat')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -95,7 +93,7 @@ async def held(tmp_path, monkeypatch):
                               executed=executed, release=release, gate=gate)
     finally:
         release()
-        db.close()
+        store.close_all_db_handles()
 
 
 async def _send(held, text):
@@ -107,7 +105,7 @@ async def _send(held, text):
 
 
 def _admissions(held):
-    return [row['request_id'] for row in list_session_admissions(held.db, session_id=CHAT, pending_only=False)]
+    return [row.request_id for row in held.db.admissions.list(session_id=CHAT, pending_only=False)]
 
 
 @pytest.mark.asyncio
@@ -141,7 +139,7 @@ async def test_a_refusal_after_the_owner_may_have_admitted_stays_ambiguous(held,
 
     async def committed_then_refused(self, *args):
         await real(self, *args)
-        raise RuntimeStoreError('runtime_coordination_required')
+        raise AuthorityRefusal('runtime_coordination_required')
 
     monkeypatch.setattr(type(held.authority), 'admit_automation', committed_then_refused)
     held.authority._schedule = lambda ref: None

@@ -122,6 +122,23 @@ export const en: Translations = {
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
     sharedMetricsSaveFailed: "Couldn't save your choice",
+    dashboardMovingMeta: "Legacy dashboard / Retirement",
+    dashboardMovingNotice: "This dashboard moves to the Hermes web app on {date}.",
+    dashboardMovingTitle: "Your dashboard is moving",
+    dashboardMovingBody:
+      "Your agents, chats, skills and routines come with you. Use the same sign-in.",
+    dashboardMovingMachineTitle: "Your cloud machine",
+    dashboardMovingMachineDetail: "Keep working in the new app",
+    dashboardMovingMachineReady: "Ready",
+    dashboardMovingMachineStarting: "Starting",
+    dashboardMovingMachineDown: "Offline",
+    dashboardMovingMachineNotAvailable: "Not available yet",
+    dashboardMovingMachineNotAvailableDetail:
+      "The web app is not on this machine yet",
+    dashboardMovingSettingsTitle: "Advanced settings",
+    dashboardMovingSettingsDetail: "Available in Agent settings",
+    dashboardMovingOpen: "Open in web app",
+    dashboardMovingLater: "Later",
   },
 
   // ── System page: Memory section ──
@@ -456,6 +473,13 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    updateAll: "Update all",
+    updatingAll: "Updating plugins…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Updated ${updated}, needs review ${needsReview}, failed ${failed}`,
+    autoUpdate: "Auto-update",
+    autoUpdateDesc: (hours: number) =>
+      `Apply plugin updates automatically when the gateway checks (every ${hours} h). Updated code loads in new sessions.`,
     updateConsentBody: (name: string, sha: string) =>
       `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
     updateScanBody: (name: string, count: number) =>

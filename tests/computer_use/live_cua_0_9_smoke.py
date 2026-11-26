@@ -26,6 +26,9 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from tools.computer_use.cua_backend_parse import _mcp_field
+from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+
 
 def structured(result: Any) -> dict[str, Any]:
     value = getattr(result, "structuredContent", None)
@@ -83,6 +86,15 @@ end run
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
 
 
+async def read_window_state(client: Any, capabilities: _CuaDriverSession,
+                            pid: int, window_id: int, session_id: str) -> dict[str, Any]:
+    """This probe reads elements/values, which Cua 0.35 omits by default."""
+    args = {"pid": pid, "window_id": window_id, "session": session_id}
+    if capabilities.supports_input_value("get_window_state", "tree_format", "elements"):
+        args["tree_format"] = "elements"
+    return structured(await client.call_tool("get_window_state", args))
+
+
 async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
     session_id = f"hermes-cua-live-{uuid.uuid4().hex[:8]}"
     params = StdioServerParameters(
@@ -107,6 +119,8 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as client:
                 await client.initialize()
+                capabilities = _CuaDriverSession(_AsyncBridge())
+                await capabilities._populate_capabilities(client)
                 await client.call_tool("start_session", {"session": session_id})
                 try:
                     before_windows = structured(
@@ -160,20 +174,12 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             "stage": "throwaway_target",
                         }
                     else:
-                        focus = await client.call_tool(
+                        focus_ok = not _mcp_field(await client.call_tool(
                             "bring_to_front",
                             {"pid": launched_pid, "window_id": window_id},
-                        )
-                        before = structured(
-                            await client.call_tool(
-                                "get_window_state",
-                                {
-                                    "pid": launched_pid,
-                                    "window_id": window_id,
-                                    "session": session_id,
-                                },
-                            )
-                        )
+                        ), "is_error", "isError", True)
+                        before = await read_window_state(
+                            client, capabilities, launched_pid, window_id, session_id)
                         editor = next(
                             (
                                 element
@@ -193,11 +199,13 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             type_args = {
                                 "pid": launched_pid,
                                 "window_id": window_id,
-                                "element_index": editor.get("index"),
                                 "text": marker,
                                 "delivery_mode": "foreground",
                                 "session": session_id,
                             }
+                            # Cua 0.3x+ type_text is token-only and refuses an unknown element_index.
+                            if capabilities.supports_input_property("type_text", "element_index"):
+                                type_args["element_index"] = editor.get("element_index", editor.get("index"))
                             token = editor.get("element_token")
                             if isinstance(token, str) and token:
                                 type_args["element_token"] = token
@@ -219,16 +227,8 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             await client.call_tool(
                                 "wait", {"seconds": 0.5, "session": session_id}
                             )
-                            after = structured(
-                                await client.call_tool(
-                                    "get_window_state",
-                                    {
-                                        "pid": launched_pid,
-                                        "window_id": window_id,
-                                        "session": session_id,
-                                    },
-                                )
-                            )
+                            after = await read_window_state(
+                                client, capabilities, launched_pid, window_id, session_id)
                             fresh_contains_marker = marker in json.dumps(
                                 after.get("elements") or []
                             )
@@ -241,7 +241,7 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             report["foreground"] = {
                                 "classification": (
                                     "pass"
-                                    if not focus.isError
+                                    if focus_ok
                                     and not refusal_code(typed)
                                     and not refusal_code(saved)
                                     and (
@@ -252,7 +252,7 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                                     )
                                     else "unproven"
                                 ),
-                                "focus_transport_ok": not focus.isError,
+                                "focus_transport_ok": focus_ok,
                                 "effect": typed.get("effect"),
                                 "verified": typed.get("verified"),
                                 "fresh_state": bool(after.get("elements")),

@@ -64,6 +64,17 @@ def save_clipboard_image(dest: Path) -> bool:
     return (_windows_save if sys.platform == "win32" else _linux_save)(dest)
 
 
+def clipboard_image_tools() -> tuple[str, ...]:
+    """Executables ``save_clipboard_image()`` can use on this host, in its fallback order,
+    installed or not: a caller tells "no image" from "no tool" by looking these up."""
+    if sys.platform == "darwin":
+        return ("pngpaste", "osascript")
+    if sys.platform == "win32":
+        return ("powershell", "pwsh")
+    return tuple(exe for (enabled, _, _), exe in zip(
+        _linux_backends(), ("powershell.exe", "wl-paste", "xclip")) if enabled)
+
+
 def has_clipboard_image() -> bool:
     """Quick check: does the clipboard currently contain an image?"""
     if sys.platform == "darwin":

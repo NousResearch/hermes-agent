@@ -23,6 +23,7 @@ from gateway.platforms.base import MessageEvent
 from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionEntry, SessionSource
 from gateway.turn_context import TurnContext
+from persistence_assembly import close_stores_under
 
 KEY = "agent:main:discord:group:1513247605675790346:117431298246705156"
 _ORIGIN = dict(
@@ -63,9 +64,7 @@ def _make_runner(
     r = gr.GatewayRunner(config or GatewayConfig())
     r.adapters = {}
     r._running_agents = {}
-    r._running_agents_ts = {}
     r._pending_messages = {}
-    r._pending_approvals = {}
     r._is_user_authorized = lambda s: True
     r._set_session_env = lambda c: None
     r._handle_active_session_busy_message = AsyncMock(return_value=False)
@@ -500,7 +499,7 @@ async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp
                 lambda: len(calls) >= want and not adapter._background_tasks and not adapter._session_tasks,
                 timeout=60, what=f"turn {want}")
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
     assert [kw["channel_prompt"] for kw in calls] == ["Channel hint."] * 3
     pin = runner._peek_session_state(runner._session_key_for_source(source)).conversation.channel_pin

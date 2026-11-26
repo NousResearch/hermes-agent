@@ -1,0 +1,18 @@
+# The referenced repository must contain plugin.yaml and desktop/plugin.js
+# at its root, or set subdir to the directory containing plugin.yaml.
+
+name: chat-view
+repo: "https://github.com/samanth1111-1111/hermes-plugin-chat-view"
+sha: "4a28c421113e1f6bafe5e04764c6595cd3aec7d5"
+description: "Struggling to find the right session in Hermes? Struggle no longer with Chat View, a simple, reliable way to stop squinting at titles or guessing which chat you’re looking for. See your sessions in a spacious main view, with big, bold titles and message summaries that show what each chat is about at a glance. Disclosure — reads chat titles, recent messages and pull-request links of the active profile's chats through the raw window.hermesDesktop.api bridge (the plugin SDK has no stored-transcript read); delete and folder-delete permanently remove chats after a confirmation, which the user can switch off for single-chat delete and archive."
+maintainer: "samanth1111-1111"
+tier: community
+category: desktop
+version: "1.0.0"
+title: Chat View
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.7"

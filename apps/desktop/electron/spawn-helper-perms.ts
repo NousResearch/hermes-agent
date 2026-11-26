@@ -3,7 +3,7 @@
 // so a non-executable helper fails every terminal spawn with
 // `Error: posix_spawnp failed.`. Packaged builds are covered because
 // stage-native-deps.mjs chmods the staged copy, but the dev flow
-// (`npm run dev` → `electron .`) resolves node-pty straight from
+// (`pnpm run dev` → `electron .`) resolves node-pty straight from
 // `node_modules/`, which nobody chmods. This restores the exec bits at runtime,
 // best-effort, so both dev and any environment that stripped the bit keep
 // working. Idempotent: files that are already executable are left untouched.

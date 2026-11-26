@@ -13,8 +13,9 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
+from gateway.session_authority import admission_row
 from gateway.session_contract import SessionActor
-from hermes_state_runtime import list_session_admissions
+from tests.fixtures.storage_seed import seed_messages
 
 KEY = 'c' * 32
 
@@ -27,13 +28,11 @@ async def bot(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_local import create_local_session
     from gateway.session_local_title import title_new_session
-    from hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    store._db = SessionDB(db_path=tmp_path / 'state.db')
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
@@ -56,11 +55,11 @@ async def bot(tmp_path, monkeypatch):
         yield SimpleNamespace(authority=authority, chat=chat.session_id, errors=errors, home=tmp_path,
                               connection=SimpleNamespace(authority=authority, actor=owner))
     finally:
-        store._db.close()
+        store.close_all_db_handles()
 
 
 def _admissions(bot):
-    return list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False)
+    return [admission_row(r) for r in bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False)]
 
 
 def _quiet(bot):
@@ -152,7 +151,7 @@ async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_op
 
     other = 'e' * 32
     bot.errors[:] = ["This model's maximum context length is 200000 tokens"]
-    bot.authority.db.append_message(bot.chat, 'user', content='overflowed dm')
+    seed_messages(bot.authority.persistence, bot.chat, {'role': 'user', 'content': 'overflowed dm'})
     await deliver(bot.connection, dict(id=other, profile='default', message='overflowed dm'))
     for _ in range(100):
         await asyncio.sleep(0.02)

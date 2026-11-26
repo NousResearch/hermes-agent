@@ -7,40 +7,30 @@
 # services. /etc/cont-init.d/* scripts run in lexicographic order,
 # so the `02-` prefix guarantees ordering.
 #
-# Service directories under /run/service/ live on tmpfs and are
-# wiped on every container restart. Profile directories under
-# $HERMES_HOME/profiles/ live on the persistent VOLUME. This script
-# walks the persistent profiles, recreates the s6 service slots,
-# and auto-starts only those whose last recorded state was
-# `running` — see hermes_cli/container_boot.py.
+# Service directories live on tmpfs and are wiped on every container
+# restart. Profile directories under $HERMES_HOME/profiles/ live on
+# the persistent VOLUME. This script walks the persistent profiles,
+# recreates the s6 service slots, and auto-starts only those whose
+# last recorded state was `running` — see hermes_cli/container_boot.py.
 #
-# Phase 4 also needs hermes-user writes to /run/service/ (so the
-# profile create/delete hooks can register/unregister at runtime),
-# so we chown the scandir before invoking the reconciler. We
-# additionally chown the s6-svscan control FIFO so the hermes user
-# can send rescan signals via ``s6-svscanctl -a``; without this the
-# entire runtime-registration path is inert under UID 10000 (the
-# Python wrapper catches the resulting EACCES, prints a warning,
-# and swallows the failure).
+# Per-profile gateway slots are registered at runtime by the hermes
+# user (profile create/delete hooks, `hermes gateway start`), so they
+# live in their own scandir, $GATEWAY_SCANDIR, watched by an s6-svscan
+# that itself runs as hermes (the `profile-gateways` s6-rc service).
+# The root scandir /run/service and its .s6-svscan control files stay
+# root-owned: every slot in it is supervised by a root s6-supervise,
+# which executes the slot's run/finish/log scripts as root.
 set -e
 
-# Make the dynamic scandir hermes-writable. The directory itself
-# starts root-owned by s6-overlay.
-chown hermes:hermes /run/service 2>/dev/null || true
+GATEWAY_SCANDIR=/run/hermes-service
 
-# Make the svscan control FIFO hermes-writable so s6-svscanctl -a
-# / -an work for the hermes user. The FIFO is created by s6-svscan
-# at PID-1 startup, so by the time this cont-init.d script runs it
-# already exists. Both ``control`` and ``lock`` need to be writable
-# for the various svscanctl operations; the directory itself stays
-# root-owned (we only need to touch the two FIFOs/locks inside).
-if [ -d /run/service/.s6-svscan ]; then
-    for entry in control lock; do
-        if [ -e "/run/service/.s6-svscan/$entry" ]; then
-            chown hermes:hermes "/run/service/.s6-svscan/$entry" 2>/dev/null || true
-        fi
-    done
+if [ -L "$GATEWAY_SCANDIR" ]; then
+    echo "[reconcile] refusing symlinked $GATEWAY_SCANDIR" >&2
+    exit 1
 fi
+mkdir -p "$GATEWAY_SCANDIR"
+chown hermes:hermes "$GATEWAY_SCANDIR"
+chmod 0755 "$GATEWAY_SCANDIR"
 
 # Skip the drop when already non-root.
 [ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python -m hermes_cli.container_boot

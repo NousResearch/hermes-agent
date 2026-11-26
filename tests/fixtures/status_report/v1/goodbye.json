@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "kind": "goodbye",
+  "seq": 8,
+  "boot_id": "0123456789abcdef0123456789abcdef",
+  "status": {
+    "gateway_running": true,
+    "gateway_state": "draining",
+    "gateway_exit_reason": null,
+    "gateway_platforms": {
+      "relay": {
+        "state": "connected"
+      }
+    },
+    "nous_session_valid": "valid"
+  }
+}

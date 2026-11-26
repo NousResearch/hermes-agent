@@ -1,0 +1,18 @@
+name: devtune
+title: DevTune
+repo: https://github.com/devtunehq/skills
+sha: bb38e20a34a7577d359fd9a508caa1cf1ef8b1a7
+version: "1.0.0"
+description: "DevTune through its official hosted MCP server (Streamable HTTP at https://devtune.ai/api/mcp): what AI answer engines say about a product and who they cite instead, AI crawler and referral traffic, the ranked queue of fixes with briefs and drafts, before/after results for shipped fixes, and Agent Picks (which tools coding agents pick when asked to add a capability). Bundles two skills, devtune and agent-picks, that pick the right tool for each question and report rates in the units DevTune measures them. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code, hooks or background processes; every tool call goes to devtune.ai with the user's own project API key (DEVTUNE_API_KEY, sent as a bearer header), and the tool set is served by that server at runtime and is not covered by the pinned sha. Some tools change project data or spend DevTune credits (briefs, drafts, agent runs, Agent Picks tests); the package marks the server untrusted, so Hermes asks before every MCP tool not annotated read-only and refuses those tools in unattended runs, and paid Agent Picks tests also need a quote the user approves. When the MCP tools are unavailable, the bundled skills tell the agent to call DevTune's REST API (devtune.ai/api/v2) from the shell with DEVTUNE_API_KEY, where writes and credit spends are gated only by the skill's ask-first instructions, not by Hermes approval; with no DevTune account, they tell the agent to follow devtune.ai/auth.md to register one with the user's email and use the claimed access token."
+maintainer: DevTune
+tier: community
+category: tools
+docs_url: https://docs.devtune.ai/api-reference/mcp-server
+requires_hermes: ">=0.22.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

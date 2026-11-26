@@ -888,6 +888,69 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return None
         return self._adapter_for_source(restored.source)
 
+    def _midturn_notice_agent(self, source):
+        """The live agent of the turn currently running for ``source``'s session, or None.
+
+        Covers both ownership models: the session-authority claim (its adopted agent while that
+        generation still executes) and the classic running-agent slot. None when the session is
+        idle, still setting up, or its agent has no mid-turn notification seam.
+        """
+        from gateway.session_authorities import active_authority
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            return None
+        authority = active_authority(self)
+        if authority is not None:
+            try:
+                entry = self.session_store.lookup_by_session_key(session_key)
+            except Exception:
+                entry = None
+            if entry is None:
+                return None
+            generation = authority.executing.get(entry.session_id)
+            if generation is None:
+                return None
+            from gateway.session_queued_controls import _receiving_agent
+            try:
+                return _receiving_agent(authority, entry.session_id, generation)
+            except Exception:
+                return None
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        state = self._peek_session_state(session_key)
+        agent = state.turn.agent if state is not None else None
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            return None
+        return agent
+
+    def _deliver_notice_mid_turn(self, evt: dict, synth_text: str, source) -> bool:
+        """Hand a process notice to the running turn's next tool boundary; True when accepted.
+
+        Deliberately scoped to process-registry notices. An ``async_delegation`` result carries a
+        durable delivery claim and a full task wall, so it keeps its admit-as-a-turn path; and a
+        notice queued into a turn that then ends without another tool batch is handed back by the
+        agent's finalizer (``pending_notifications``) and runs as its own turn, as before.
+        """
+        if evt.get("type") not in {"completion", "watch_match"}:
+            return False
+        agent = self._midturn_notice_agent(source)
+        if agent is None:
+            return False
+        queue_notice = getattr(agent, "notify_between_tool_calls", None)
+        if not callable(queue_notice):
+            return False
+        try:
+            accepted = bool(queue_notice(synth_text))
+        except Exception:
+            logger.debug("Mid-turn notification queue failed for %s", evt.get("session_id", "?"), exc_info=True)
+            return False
+        if accepted:
+            logger.info(
+                "Background %s delivered mid-turn for chat=%s process=%s (next tool boundary)",
+                evt.get("type", "completion"), source.chat_id, evt.get("session_id", "unknown"),
+            )
+        return accepted
+
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,
     ) -> Optional[bool]:
@@ -935,6 +998,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
+            # A process notice that lands while this session's turn is still running reaches the
+            # model at the running turn's next tool-call boundary instead of queueing a turn that
+            # waits for the whole turn to finish (and, for a long agentic turn, until the user's
+            # next message). Idle sessions keep the admit-as-its-own-turn path below. The RAW text
+            # rides mid-turn: the agent's notification row wraps its own provenance marker
+            # (``notification_user_row``), so the gateway footer would stack inside it. The
+            # admit-as-a-turn path still gets the footer.
+            if self._deliver_notice_mid_turn(evt, synth_text, source):
+                return True
             synth_text = _mark_internal_notification(synth_text)
             metadata = _watch_notification_metadata(evt, source)
             # The queued event's ``message_id`` is the message that STARTED the process, and the

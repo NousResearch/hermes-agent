@@ -882,6 +882,11 @@ def finalize_turn(
     _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
+    # A background notice that arrived after the last tool batch has no boundary left to land on:
+    # hand it back so the surface runs it as its own turn (today's behavior) instead of dropping it.
+    _leftover_notices = agent._drain_pending_notifications() if hasattr(agent, "_drain_pending_notifications") else []
+    if _leftover_notices:
+        result["pending_notifications"] = _leftover_notices
     agent._response_was_previewed = False
     agent._reused_response_text = None
     if interrupted and agent._interrupt_message:

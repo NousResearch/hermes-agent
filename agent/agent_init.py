@@ -436,6 +436,11 @@ _CONTROL_STATE: dict[str, Any] = {
     # batch — no interrupt, no new user turn (role alternation preserved).
     "_pending_steer": None,
     "_pending_steer_lock": threading.Lock,
+    # Mid-turn background notifications (process completions, watch matches, liveness ticks):
+    # drained at the same role-safe boundary into their OWN marker row, never the user steer
+    # marker — a process notice is machine output and carries no user authority.
+    "_pending_notifications": list,
+    "_pending_notifications_lock": threading.Lock,
     # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
     # rebuild the tail with the correction. Drained at a role-safe boundary.
     "_pending_redirect": None,

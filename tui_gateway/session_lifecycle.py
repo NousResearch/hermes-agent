@@ -937,11 +937,45 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
 _pending_ws_reaps: dict[str, threading.Timer] = {}
 
 
+def _reset_ws_orphan_queued_budget(session: dict) -> None:
+    """Forget the queue-sparing grace spent so far, because the wait it belonged to is over.
+
+    The counter is a property of ONE detachment sparing ONE queued prompt, never of the session: a reattach, a fresh
+    detachment, or the queue being claimed all end that wait, and a later wait that inherited the old count would be
+    reaped on its first poll with a prompt still queued. Callers hold ``_sessions_lock`` or ``history_lock``.
+    """
+    session.pop("_ws_orphan_queued_polls", None)
+    session.pop("_ws_orphan_queued_polls_for", None)
+
+
+def _ws_orphan_queued_polls_spent(current: dict) -> int:
+    """Grace polls already spent sparing the prompt now at the head of ``current``'s queue.
+
+    The count is bound to that prompt's identity, so a queue that drained and refilled between two polls — a short
+    turn, with no reaper poll in between — starts a fresh budget instead of inheriting the previous prompt's spent
+    one. A drained queue clears the budget outright.
+    """
+    if current.get("_ws_orphan_queued_polls_for") is not current.get("queued_prompt"):
+        _reset_ws_orphan_queued_budget(current)
+        return 0
+    return int(current.get("_ws_orphan_queued_polls") or 0)
+
+
+def _note_ws_orphan_queued_poll(current: dict, spent: int) -> None:
+    """Charge one more grace poll to the prompt currently queued on ``current``."""
+    current["_ws_orphan_queued_polls_for"] = current.get("queued_prompt")
+    current["_ws_orphan_queued_polls"] = spent + 1
+
+
 def _cancel_ws_orphan_reap(sid: str) -> None:
     """Cancel a pending WS-orphan reap for ``sid`` (client came back). Called from every path that re-binds a live
     transport; closes the fired-but-not-run Timer race and stops dead Timers accumulating on flappy clients."""
     with _sessions_lock:
         timer = _pending_ws_reaps.pop(sid, None)
+        # The client is back: this detachment's queue-sparing budget ends with it, so a later detachment gets the
+        # whole budget for whatever is queued then.
+        if (current := _sessions.get(sid)) is not None:
+            _reset_ws_orphan_queued_budget(current)
     if timer is not None:
         with contextlib.suppress(Exception):
             timer.cancel()
@@ -1068,7 +1102,7 @@ def _schedule_ws_orphan_reap(
                 return
             if current.get("running") or not current.get("queued_prompt"):
                 # A turn is running or the queue drained: a later wait gets a fresh queued budget.
-                current.pop("_ws_orphan_queued_polls", None)
+                _reset_ws_orphan_queued_budget(current)
             if _session_has_active_delegations(sid, current) or (
                     not current.get("running")
                     and not current.get("_client_gone_interrupt_requested")
@@ -1080,12 +1114,12 @@ def _schedule_ws_orphan_reap(
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif (not current.get("running") and current.get("queued_prompt")
                     and not current.get("_client_gone_interrupt_requested")
-                    and int(current.get("_ws_orphan_queued_polls") or 0) < _WS_ORPHAN_QUEUED_MAX_POLLS):
+                    and (spent := _ws_orphan_queued_polls_spent(current)) < _WS_ORPHAN_QUEUED_MAX_POLLS):
                 # A queued prompt is live work: the turn that ended drains it at its idle boundary, after
                 # post-turn housekeeping. Reaping in that window drops a prompt a detached sender (e.g. a
                 # ``queued: true`` submit that disconnected on its ack) was promised. Bounded, so a queue
                 # that never drains cannot pin the session forever.
-                current["_ws_orphan_queued_polls"] = int(current.get("_ws_orphan_queued_polls") or 0) + 1
+                _note_ws_orphan_queued_poll(current, spent)
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 if current.get("queued_prompt") and not current.get("_client_gone_interrupt_requested"):
@@ -1136,6 +1170,10 @@ def _schedule_ws_orphan_reap(
     with _sessions_lock:
         if _expected_timer is not None and _pending_ws_reaps.get(sid) is not _expected_timer:
             return
+        if _expected_timer is None and (fresh := _sessions.get(sid)) is not None:
+            # A fresh detachment begins its own wait: grace an earlier detachment already spent on a queue that has
+            # since been drained or replaced must not shorten this one.
+            _reset_ws_orphan_queued_budget(fresh)
         timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s), _reap)
         timer.daemon = True
         prior = _pending_ws_reaps.pop(sid, None)

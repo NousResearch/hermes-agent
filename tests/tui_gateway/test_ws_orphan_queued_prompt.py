@@ -126,6 +126,46 @@ def test_running_turn_resets_the_budget(server, detached):
     assert "_ws_orphan_queued_polls" not in session
 
 
+def test_a_reattach_gives_the_next_detachment_the_whole_budget(server, detached, monkeypatch):
+    """Reattaching ends the wait: the polls it spent must not shorten the budget of a later detachment."""
+    sid, session, popped = detached
+    monkeypatch.setattr(server, "_WS_ORPHAN_QUEUED_MAX_POLLS", 2)
+    session["queued_prompt"] = {"text": "mail from Home", "transport": None}
+    _fire(server, sid)
+    _fire(server, sid)
+    assert session["_ws_orphan_queued_polls"] == 2  # spent: the next poll would reap
+
+    server._cancel_ws_orphan_reap(sid)  # the client comes back
+
+    assert "_ws_orphan_queued_polls" not in session
+    _fire(server, sid)  # detaches again with the same prompt still queued
+
+    assert server._sessions.get(sid) is session and not popped
+    assert session["_ws_orphan_queued_polls"] == 1
+
+
+def test_a_short_turn_between_polls_does_not_inherit_a_spent_budget(server, detached, monkeypatch):
+    """A drain, turn and re-queue that all happen between two polls must not reap the NEW prompt on the old budget."""
+    sid, session, popped = detached
+    monkeypatch.setattr(server, "_WS_ORPHAN_QUEUED_MAX_POLLS", 2)
+    session["queued_prompt"] = {"text": "first", "transport": None}
+    _fire(server, sid)
+    _fire(server, sid)
+    assert session["_ws_orphan_queued_polls"] == 2
+
+    # The whole cycle the reaper never observes: the queue drains into a turn, the turn runs and settles, and a
+    # follow-up is queued — no poll in between, which is what production timing actually allows.
+    session.pop("queued_prompt")
+    session["running"] = True
+    session["running"] = False
+    session["queued_prompt"] = {"text": "second", "transport": None}
+
+    _fire(server, sid)
+
+    assert server._sessions.get(sid) is session and not popped
+    assert session["_ws_orphan_queued_polls"] == 1
+
+
 def test_real_turn_queues_a_leftover_steer_before_releasing_running_and_drains_it_once(tmp_path, monkeypatch):
     """Drives the real ``_run_prompt_submit``: in the post-turn housekeeping window (after ``running`` is
     released, before the follow-ups) the steer the turn never consumed must already be queued."""

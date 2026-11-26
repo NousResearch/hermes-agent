@@ -340,46 +340,193 @@ def test_a_verb_answer_past_its_window_names_what_is_still_starting(monkeypatch)
                       "installing": False}
 
 
-def test_an_ask_answers_the_reconcile_that_applied_its_files(tmp_path, monkeypatch):
-    """``hermes config set`` / a dashboard save writes the files, then asks. A reconcile that already applied
-    them (the watcher's tick, or this caller's earlier ask that answered ``pending``) left nothing for a fresh
-    one to do, so the ask answered "nothing changed" for a platform that had just started."""
-    import threading
-    from gateway import run_platform_reconcile as reconcile
-    runner = _runner(types.SimpleNamespace())
-    runner._primary_platform_home = lambda: tmp_path
-    runner._primary_platform_states = lambda: {"webhook": "connected"}
-    gate, plans = threading.Event(), []
+class _FileDrivenPrimary:
+    """A launch profile whose files drive the REAL reconcile (plan, signatures, the verb): ``.env`` line
+    ``START_<platform>=1`` wants that platform, ``INSTALL_<name>=1`` makes the plugin recovery install
+    ``name`` and write its marker to ``config.yaml`` (as the catalog recovery does). The adapter build is a
+    stand-in that records what was really started and lets a test hold an apply mid-way."""
 
-    async def apply(reason):  # each change is applied once; whatever reconciles next finds nothing to do
-        await asyncio.to_thread(gate.wait, 30)
-        return (plans.pop() if plans else reconcile.PlatformPlan((), (), ())), []
-    runner._apply_primary_platform_plan = apply
+    def __init__(self, home, loop, rng=None):
+        import threading
+        from gateway import run_platform_reconcile as reconcile
+        self.home, self.loop, self.rng = home, loop, rng
+        self.started, self.installed = [], []
+        self.release = threading.Event()
+        self.release.set()
+        self.mid_apply = None  # called (off-loop) while an apply is building its adapters
+        self.states = {}
+        runner = self.runner = _runner(types.SimpleNamespace())
+        runner.adapters, runner.config = {}, types.SimpleNamespace(platforms={})
+        runner._primary_platform_home = lambda: home
+        runner._primary_platform_states = lambda: dict(self.states)
+        runner._run_housekeeping_in_executor = lambda fn, *a: asyncio.to_thread(fn, *a)
+        runner._recover_primary_plugins = self._recover
+        runner._read_primary_platforms = self._read
+        runner._retire_primary_platform = self._retire
+        runner._hot_start_primary_platforms = self._hot_start
+        (home / "config.yaml").write_text("platforms: {}\n", encoding="utf-8")
+        (home / ".env").write_text("", encoding="utf-8")
+        asyncio.run_coroutine_threadsafe(runner._note_boot_platform_signature(), loop).result(30)
+        self.ask = reconcile.reconcile_platforms_verb(runner, loop)
+
+    def edit(self, line):  # whole-file replace, as config writers do: a racing read sees before or after
+        self._append(".env", [line])
+
+    def _append(self, name, lines):
+        path, staged = self.home / name, self.home / f".{name}.new"
+        staged.write_text(path.read_text(encoding="utf-8") + "".join(f"{ln}\n" for ln in lines), encoding="utf-8")
+        os.replace(staged, path)
+
+    def _lines(self, name, prefix):
+        text = (self.home / name).read_text(encoding="utf-8")
+        return [ln.split("=")[0][len(prefix):] for ln in text.splitlines() if ln.startswith(prefix)]
+
+    def _recover(self, home):
+        done = set(self._lines("config.yaml", "# installed "))
+        new = [n for n in self._lines(".env", "INSTALL_") if n not in done]
+        if new:
+            self._append("config.yaml", [f"# installed {n}" for n in new])
+        self.installed += new
+        return new
+
+    def _read(self, home, installed):
+        from gateway.run_platform_reconcile import BuildPrint
+        wanted = {Platform(v.lower()): (PlatformConfig(enabled=True), BuildPrint("v1"))
+                  for v in self._lines(".env", "START_")}
+        return types.SimpleNamespace(platforms={p: c for p, (c, _bp) in wanted.items()}), wanted, {}, installed
+
+    async def _retire(self, platform):
+        self.runner.adapters.pop(platform, None)
+
+    async def _hot_start(self, items):
+        await asyncio.to_thread(self.release.wait, 60)
+        if self.mid_apply is not None:
+            await asyncio.to_thread(self.mid_apply)
+        for _ in range(self.rng.randrange(8) if self.rng is not None else 0):
+            await asyncio.sleep(0)  # let the racing reconciles and asks interleave differently per seed
+        for platform, _config, build_print in items:
+            self.runner._primary_build_prints[platform] = build_print
+            self.runner.adapters[platform] = object()
+            self.states[platform.value] = "retrying"
+            self.started.append(platform.value)
+
+    def background(self, reason):  # a plugin-load trigger, or a watcher tick
+        coro = (self.runner._reconcile_primary_platforms_if_changed(reason) if reason == "watcher"
+                else self.runner.reconcile_profile_platforms(None, reason=reason))
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def settled_ask(self):
+        def _settled():
+            answer = self.ask({})
+            return None if answer.get("pending") else answer
+        return wait_until(_settled, timeout=60, interval=0.05, what="the ask to settle")
+
+
+@pytest.fixture
+def reconcile_loop():
+    import threading
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
-    ask = reconcile.reconcile_platforms_verb(runner, loop)
-    try:
-        (tmp_path / ".env").write_text("WEBHOOK_ENABLED=true\n", encoding="utf-8")
-        plans.append(reconcile.PlatformPlan((Platform.WEBHOOK,), (), ()))
-        gate.set()
-        asyncio.run_coroutine_threadsafe(runner.reconcile_profile_platforms(None, reason="watcher"), loop).result(30)
-        assert ask({})["started"] == ["webhook"]
-        assert ask({})["changed"] is False  # taken: asked again about the same files, it reconciles afresh
+    yield loop
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5)
+    loop.close()
 
-        (tmp_path / ".env").write_text("WEBHOOK_ENABLED=true\nWEBHOOK_PORT=1\n", encoding="utf-8")
-        plans.append(reconcile.PlatformPlan((), (Platform.WEBHOOK,), ()))
-        gate.clear()
+
+def _assert_reported_once(gw, answers):
+    """Every platform a reconcile really started, and every plugin it installed, is in exactly one answer."""
+    for key, applied in (("started", gw.started), ("installed", gw.installed)):
+        reported = [item for answer in answers for item in answer[key]]
+        assert sorted(reported) == sorted(applied), (key, answers)
+
+
+_FRESH = [p.value.upper() for p in (Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WEBHOOK,
+                                    Platform.MATRIX, Platform.MATTERMOST, Platform.SIGNAL, Platform.EMAIL)]
+
+
+@pytest.mark.parametrize("script", [
+    # A plugin-triggered reconcile applies the edit; a second trigger (another plugin) finds nothing to do.
+    "edit plugin plugin ask",
+    "edit plugin watcher ask",
+    # The plugin recovery writes its install marker to config.yaml during the apply: not a new edit.
+    "install plugin watcher ask",
+    # An ask past its window answers pending; asking again answers what that apply did.
+    "install pending release ask",
+    "edit pending plugin& release ask ask",
+    # A separate edit landing while an apply builds its adapters is reconciled once more.
+    "install midedit plugin watcher ask",
+])
+def test_every_applied_change_is_reported_to_exactly_one_ask(tmp_path, monkeypatch, reconcile_loop, script):
+    from gateway import run_platform_reconcile as reconcile
+    gw, answers, fresh, running = _FileDrivenPrimary(tmp_path, reconcile_loop), [], iter(_FRESH), []
+    steps = {
+        "plugin&": lambda: running.append(gw.background("plugin")),
+        "edit": lambda: gw.edit(f"START_{next(fresh)}=1"),
+        "install": lambda: (gw.edit(f"INSTALL_{len(gw.installed)}x=1"), gw.edit(f"START_{next(fresh)}=1")),
+        "plugin": lambda: gw.background("plugin").result(60),
+        "watcher": lambda: gw.background("watcher").result(60),
+        "ask": lambda: answers.append(gw.settled_ask()),
+        "release": gw.release.set,
+        "midedit": lambda: setattr(gw, "mid_apply", lambda: (gw.edit(f"START_{next(fresh)}=1"),
+                                                             setattr(gw, "mid_apply", None))),
+    }
+
+    def pending():
+        gw.release.clear()
         monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 0.2)
-        assert ask({})["pending"] is True
+        assert gw.ask({})["pending"] is True
         monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 30.0)
-        gate.set()
-        assert ask({})["restarted"] == ["webhook"]
-    finally:
-        gate.set()
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=5)
-        loop.close()
+    steps["pending"] = pending
+    for step in script.split():
+        steps[step]()
+    for future in running:
+        future.result(60)
+    gw.background("watcher").result(60)
+    answers.append(gw.settled_ask())
+    _assert_reported_once(gw, answers)
+    edited = {name.lower() for name in gw._lines(".env", "START_")}
+    assert {p.value for p in gw.runner.adapters} == edited == set(gw.started)  # every edit applied, once
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_racing_reconciles_report_each_change_to_exactly_one_ask(tmp_path, monkeypatch, reconcile_loop, seed):
+    """Plugin triggers, watcher ticks and asks (some giving up as ``pending``) racing edits, in any order."""
+    import random
+    from gateway import run_platform_reconcile as reconcile
+    rng = random.Random(seed)
+    gw, answers, fresh, running = _FileDrivenPrimary(tmp_path, reconcile_loop, rng), [], iter(_FRESH), []
+    for step in range(14):
+        op = rng.choice(["edit", "install", "plugin", "watcher", "ask", "pending"])
+        if op == "edit" or (op == "install" and rng.random() < 0.5):
+            gw.edit(f"START_{next(fresh, 'SMS')}=1")
+        elif op == "install":
+            gw.edit(f"INSTALL_{seed}n{step}=1")
+        elif op in ("plugin", "watcher"):
+            running.append(gw.background(op))
+        else:
+            monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 30.0 if op == "ask" else 0.005)
+            answer = gw.ask({})
+            if not answer.get("pending"):
+                answers.append(answer)
+    monkeypatch.setattr(reconcile, "_VERB_WAIT_SECS", 30.0)
+    for future in running:
+        future.result(60)
+    gw.background("watcher").result(60)
+    answers.append(gw.settled_ask())
+    _assert_reported_once(gw, answers)
+    assert gw.settled_ask()["started"] == []  # taken: asked again about the same files, nothing is new
+
+
+def test_an_answer_reports_the_platform_state_as_it_is_now(tmp_path, reconcile_loop):
+    """A reconcile whose start is still retrying leaves it for the next ask; by then the platform failed for
+    good. The answer names the start once and the state the platform is in now, not the one it had then."""
+    gw = _FileDrivenPrimary(tmp_path, reconcile_loop)
+    gw.edit("START_WEBHOOK=1")
+    gw.background("plugin").result(60)
+    gw.states["webhook"] = "unavailable"
+    answer = gw.settled_ask()
+    assert answer["started"] == ["webhook"] and answer["platforms"]["webhook"] == "unavailable", answer
 
 
 def _webhook_yaml(port, home_chat="old"):

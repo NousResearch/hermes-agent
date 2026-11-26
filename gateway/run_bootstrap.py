@@ -754,7 +754,7 @@ async def _start_gateway_listener_and_runner(
         _resolve_gateway_exit_verdict, _shutdown_gateway_health_export,
     )
     from gateway.run_common import abort_startup_if_shutdown_requested, startup_should_abort
-    from gateway.run_runtime import start_gateway_runtime_api
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     await start_gateway_runtime_api(runner)
     if startup_should_abort(runner):
         try:

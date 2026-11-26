@@ -7,7 +7,6 @@ are used as default-argument sentinels, which must resolve at ``def`` time.
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Any
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
@@ -36,22 +35,6 @@ def startup_should_abort(runner: Any) -> bool:
     )
 
 
-def _stop_kwargs_for_abort(runner: Any, stop: Any) -> dict[str, bool]:
-    """Forward restart flags to ``runner.stop`` when its signature accepts them."""
-    try:
-        params = inspect.signature(stop).parameters
-    except (TypeError, ValueError):
-        return {}
-    raw = {
-        "restart": bool(getattr(runner, "_restart_requested", False)),
-        "detached_restart": bool(getattr(runner, "_restart_detached", False)),
-        "service_restart": bool(getattr(runner, "_restart_via_service", False)),
-    }
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return raw
-    return {k: v for k, v in raw.items() if k in params}
-
-
 async def abort_startup_if_shutdown_requested(runner: Any, *, check: bool = True) -> bool:
     """Await any active stop task or invoke ``runner.stop`` when startup must abort."""
     if check and not startup_should_abort(runner):
@@ -65,5 +48,9 @@ async def abort_startup_if_shutdown_requested(runner: Any, *, check: bool = True
         return True
     stop = getattr(runner, "stop", None)
     if callable(stop):
-        await stop(**_stop_kwargs_for_abort(runner, stop))
+        await stop(
+            restart=bool(getattr(runner, "_restart_requested", False)),
+            detached_restart=bool(getattr(runner, "_restart_detached", False)),
+            service_restart=bool(getattr(runner, "_restart_via_service", False)),
+        )
     return True

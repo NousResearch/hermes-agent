@@ -18,14 +18,6 @@ from pathlib import Path
 import threading
 import uuid
 
-from gateway.run_runtime_listener import (
-    WEBAPP_ADDRESS_WAIT_SECONDS,
-    _WEBAPP_ADDRESS_POLL_SECONDS,
-    _start_gateway_api_waiting_for_address,
-    _webapp_address_wait_seconds,
-    start_gateway_runtime_api,
-)
-
 logger = logging.getLogger(__name__)
 
 

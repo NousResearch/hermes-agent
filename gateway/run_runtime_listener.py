@@ -20,16 +20,7 @@ logger = logging.getLogger("gateway.run_runtime")
 # address to appear, then bind again. ``HERMES_WEBAPP_ADDRESS_WAIT`` overrides the wait in seconds (0
 # disables it); only EADDRNOTAVAIL is waited out, so a busy port or a refused bind still reports at once.
 WEBAPP_ADDRESS_WAIT_SECONDS = 20.0
-_DEFAULT_WEBAPP_ADDRESS_POLL_SECONDS = 0.5
-_WEBAPP_ADDRESS_POLL_SECONDS = _DEFAULT_WEBAPP_ADDRESS_POLL_SECONDS
-
-
-def _webapp_address_poll_seconds() -> float:
-    """Poll interval during address wait, honouring test overrides on either module."""
-    if _WEBAPP_ADDRESS_POLL_SECONDS != _DEFAULT_WEBAPP_ADDRESS_POLL_SECONDS:
-        return _WEBAPP_ADDRESS_POLL_SECONDS
-    from gateway import run_runtime
-    return getattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", _WEBAPP_ADDRESS_POLL_SECONDS)
+_WEBAPP_ADDRESS_POLL_SECONDS = 0.5
 
 
 def _webapp_address_wait_seconds() -> float:
@@ -111,7 +102,7 @@ async def _start_gateway_api_waiting_for_address(run_api, runner, *, host, port,
                 logger.warning("Webapp: %s is not assigned to any interface yet; retrying for up to %.0fs",
                                host, remaining)
                 warned = True
-            await _wait_for_address_retry(runner, min(_webapp_address_poll_seconds(), remaining))
+            await _wait_for_address_retry(runner, min(_WEBAPP_ADDRESS_POLL_SECONDS, remaining))
         else:
             if await _close_listener_if_stopping(run_api, runner, handle):
                 return None

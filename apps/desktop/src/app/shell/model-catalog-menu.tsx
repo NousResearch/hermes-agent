@@ -1071,7 +1071,9 @@ function ModelFamilyRow({
       : null
 
   const isCurrent = activeId !== null
-  const { name, tag } = modelDisplayParts(family.id)
+  // User-defined gateways (magpie-style proxies) carry the upstream vendor in
+  // the id head; keep it or same-named sibling models collapse into one row.
+  const { name, tag } = modelDisplayParts(family.id, provider.is_user_defined === true)
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
   const limit = familyLimit(provider, family, isCurrent)

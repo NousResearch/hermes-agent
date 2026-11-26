@@ -174,6 +174,31 @@ describe('model-status-label', () => {
     expect(formatModelPillLabel('Qwen3.6-27B-Q8_0')).toBe('Qwen3.6 27B')
   })
 
+  it('keeps the vendor head for user-defined gateway ids so sibling upstreams never collapse', () => {
+    // A user-defined provider's group heading is a config key ("magpie"), not
+    // a vendor — the id head is the only upstream signal, so it stays on the
+    // row: `auto/glm-5.4` and `doubao-work/glm-5.4` must read as two models.
+    expect(displayModelName('doubao-work/glm-5.4', true)).toBe('Doubao Work · GLM 5.4')
+    expect(displayModelName('auto/glm-5.4', true)).toBe('Auto · GLM 5.4')
+    expect(displayModelName('teleagent/chat-flagship', true)).toBe('Teleagent · Chat Flagship')
+    expect(displayModelName('orcaterm/TokenHub/glm-5.3-flash', true)).toBe('Orcaterm TokenHub · GLM 5.3 Flash')
+    // A head that repeats the base names the same model, not a sibling
+    // upstream — keep dropping it, dup word or not.
+    expect(displayModelName('gemini/gemini-3.6-flash', true)).toBe('Gemini 3.6 Flash')
+    expect(displayModelName('doubao/doubao-auto', true)).toBe('Doubao Auto')
+    // Curated providers (no flag passed) keep the legacy strip-everything.
+    expect(displayModelName('doubao-work/glm-5.4')).toBe('GLM 5.4')
+    expect(displayModelName('anthropic/claude-sonnet-5')).toBe('Sonnet 5')
+  })
+
+  it('rides the same vendor-head rule on the catalog row parts as the display name', () => {
+    expect(modelDisplayParts('doubao-work/glm-5.4', true)).toEqual({ name: 'Doubao Work · GLM 5.4', tag: '' })
+    expect(modelDisplayParts('orcaterm/TokenHub/deepseek-v4.1-flash', true)).toEqual({
+      name: 'Orcaterm TokenHub · DeepSeek V4.1',
+      tag: 'Flash'
+    })
+  })
+
   describe('currentPickerSelection', () => {
     const store = { model: 'opus', provider: 'anthropic' }
     const options = { model: 'hermes-4', provider: 'nous' }

@@ -75,7 +75,9 @@ def test_unusable_peer_tokens_preserve_shared_bearer_and_warn(monkeypatch, caplo
                 _post_json, base + "/", _send_body("shared bearer"),
                 {"Authorization": "Bearer shared-secret-123"},
             )
-            assert response["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            # legacy slash method (message/send) -> v0.3-shaped reply
+            assert response["result"]["kind"] == "task"
+            assert response["result"]["status"]["state"] == "completed"
         finally:
             await adapter.disconnect()
 

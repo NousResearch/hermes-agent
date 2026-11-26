@@ -249,6 +249,39 @@ def test_an_exchanged_token_in_the_session_token_header_costs_no_key_lookup(gate
     assert lookups == []
 
 
+@pytest.mark.parametrize("first", ["exchanged token", "browser login"])
+def test_a_key_outage_leaves_tokens_whose_key_already_verified_working(gated, nous, portal_key, monkeypatch, first):
+    """The key client keeps every key it handed out (``cache_keys``) after its key set expires, so a
+    token signed with one verifies without a fetch, whichever kind of token first verified with it.
+    One unknown-key token during a key outage turns the backoff on; it must not refuse those tokens,
+    or the outage locks every exchanged token out."""
+    from jwt import PyJWKClient
+
+    public = json.loads(RSAAlgorithm.to_jwk(portal_key.public_key()))
+    client = PyJWKClient("http://127.0.0.1:9/jwks.json", cache_keys=True, timeout=1)
+    client.jwk_set_cache.lifespan = 0  # every key set read finds it expired, as 300 s after a fetch
+    fetches, down = [], []
+
+    def fetch():
+        fetches.append(1)
+        if down:
+            raise OSError("connection refused")
+        return {"keys": [{**public, "kid": "portal-1", "use": "sig"}]}
+
+    monkeypatch.setattr(client, "fetch_data", fetch)
+    nous._jwks_client = client
+    good = _token(portal_key, kid="portal-1")
+    if first == "browser login":
+        assert nous.verify_session(access_token=_token(portal_key, act=None, kid="portal-1")) is not None
+    else:
+        assert gated.browser().get("/api/auth/me", headers=_bearer(good)).status_code == 200
+    down.append(1)
+    outage = gated.browser().get("/api/auth/me", headers=_bearer(_token(_key(), kid="unknown-kid")))
+    assert outage.status_code == 503, outage.text
+    assert gated.browser().get("/api/auth/me", headers=_bearer(good)).status_code == 200
+    assert len(fetches) == 2
+
+
 @pytest.mark.parametrize("header", [{"alg": []}, {"alg": {"x": 1}}, {"alg": None}])
 def test_a_malformed_header_is_refused_not_an_error(gated, nous, header):
     token = f"{_b64(header)}.{_b64({'act': ACTOR})}.c2ln"

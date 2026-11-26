@@ -70,6 +70,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         self._token_url = f"{self._portal_url}/api/oauth/token"
         self._jwks_client: Any = None  # lazily built (crypto import cost)
         self._exchange_keys_down_until = 0.0  # monotonic; see _EXCHANGE_KEY_BACKOFF_SECONDS
+        self._verified_kids: set[str] = set()  # key ids a token verified with here (see _key_cached)
 
     def start_login(self, *, redirect_uri: str) -> LoginStart:
         validate_redirect_uri(redirect_uri)
@@ -136,17 +137,14 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
 
     def _key_cached(self, token: str) -> bool:
-        """Whether the key *token* names is in the key client's unexpired cache, so verifying it
-        fetches nothing."""
-        import jwt  # lazy, as verify_jwt
-
-        try:
-            kid = jwt.get_unverified_header(token).get("kid")
-        except jwt.PyJWTError:
-            return False
+        """Whether verifying *token* fetches nothing: its key verified a token here before, of any
+        kind (the key client keeps every key it handed out past its key set's expiry, and caches no
+        miss), or it is in the key client's unexpired key set."""
+        kid = _kid(token)
         cache = getattr(self._get_jwks_client(), "jwk_set_cache", None)
         keys = cache.get() if cache is not None else None
-        return bool(kid) and keys is not None and any(key.key_id == kid for key in keys.keys)
+        in_set = keys is not None and any(key.key_id == kid for key in keys.keys)
+        return bool(kid) and (kid in self._verified_kids or in_set)
 
     def _addressed_here(self, claims: dict[str, Any]) -> bool:
         """Whether unverified *claims* name this agent: Portal's issuer, this client as audience,
@@ -173,6 +171,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
             issuer=self._portal_url, label="access token", leeway=self._token_leeway)
+        self._verified_kids.add(_kid(access_token))
         # Contract C9: agent_instance_id is "should" not "must" — tolerated when absent
         # (the aud check already binds the token to this instance). A token for another
         # instance is not ours, like a foreign aud: a rejection, never a 503.
@@ -197,6 +196,17 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         # Contract C4: no email / display_name in tokens.
         return session_from_claims(
             self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))
+
+
+def _kid(token: str) -> str:
+    """The ``kid`` in *token*'s header, unverified; ``""`` when it names none."""
+    import jwt  # lazy, as verify_jwt
+
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except jwt.PyJWTError:
+        return ""
+    return kid if isinstance(kid, str) else ""
 
 
 def _unverified_claims(token: str) -> dict[str, Any]:

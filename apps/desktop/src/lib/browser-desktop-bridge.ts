@@ -19,6 +19,7 @@ import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
+import { signsInToCloudAgents } from '@/lib/hermes-cloud-host'
 import { browserHostRunsNoAgent } from '@/lib/platform'
 import { failDesktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
@@ -190,7 +191,8 @@ export function installBrowserDesktopBridge(): boolean {
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
     // On a host with no agent the host's list is the account's agents, each signed in already.
-    cloud: createBrowserCloudBridge({ api: agentApi, relays: hosted ? null : relays }),
+    // Settings reads the same check to offer Transfer (`transferAvailable`).
+    cloud: createBrowserCloudBridge({ api: agentApi, relays: signsInToCloudAgents() ? relays : null }),
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
     ...createBrowserConnectionBridge({ api, bootstrap, hosted, relays }),
     ...(relays ? { connections: relays.connections } : {}),

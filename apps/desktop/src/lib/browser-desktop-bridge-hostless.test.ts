@@ -7,6 +7,7 @@ import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { ManagedConnectionsError, NoHostedAgentError } from './browser-saved-connections'
+import { signsInToCloudAgents, transferAvailable } from './hermes-cloud-host'
 import { _resetAdoptedLaunchProfileForTests, browserLaunchProfile } from './platform'
 
 /**
@@ -412,6 +413,27 @@ describe('a Webapp whose host runs no agent', () => {
 
     await expect(connections.test('beta')).resolves.toMatchObject({ ok: false })
     await expect(connections.test('alpha')).resolves.toMatchObject({ ok: true, version: 'alpha-1.0' })
+  })
+
+  it('signs in to no cloud agent, and Settings offers no Transfer that needs one', async () => {
+    const requests = dashboardHost()
+    const desktop = install()
+
+    expect(await desktop.cloud.agentSignIn('https://gamma.agents.example')).toEqual({
+      baseUrl: 'https://gamma.agents.example',
+      connected: false
+    })
+    expect(requests).toEqual([])
+    expect(signsInToCloudAgents()).toBe(false)
+    expect(transferAvailable()).toBe(false)
+  })
+
+  it('offers Transfer on a Webapp whose host runs its own agent', () => {
+    dashboardHost()
+    install({ hostAgent: undefined })
+
+    expect(signsInToCloudAgents()).toBe(true)
+    expect(transferAvailable()).toBe(true)
   })
 
   it('refuses to add or remove an agent before sending anything, and says the account manages the list', async () => {

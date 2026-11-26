@@ -29,7 +29,6 @@ vi.mock('@/lib/hermes-cloud-agents', () => ({
   connectCloudAgent: async () => 'cloud-conn',
   discoverCloudAgents: async () => ({ agents: [AGENT], needsOrgSelection: false, org: null, orgs: [] }),
   PORTAL_AGENTS_URL: 'https://portal.example/agents',
-  transferAvailable: () => true,
   transferRequest: vi.fn()
 }))
 
@@ -45,6 +44,7 @@ afterEach(() => {
   mocks.undoTransfer.mockClear()
   mocks.signedIn = true
   window.document.documentElement.removeAttribute('data-hermes-desktop-host')
+  delete (window as Window & { __HERMES_HOST_AGENT__?: boolean }).__HERMES_HOST_AGENT__
 })
 
 const renderPage = () =>
@@ -114,5 +114,16 @@ describe('Transfer to Hermes Cloud', () => {
 
     expect(await screen.findByText(/Settings ▸ Providers/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Open Providers' })).toBeTruthy()
+  })
+
+  it('keeps Backup but offers no Transfer on a host that runs no agent, whose bridge signs in to none', async () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    ;(window as Window & { __HERMES_HOST_AGENT__?: boolean }).__HERMES_HOST_AGENT__ = false
+
+    renderPage()
+
+    expect(await screen.findByText('Back up this agent')).toBeTruthy()
+    expect(screen.queryByText('Transfer to Hermes Cloud')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Agent One/ })).toBeNull()
   })
 })

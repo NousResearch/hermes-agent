@@ -24,9 +24,9 @@ import {
   connectCloudAgent,
   discoverCloudAgents,
   PORTAL_AGENTS_URL,
-  transferRequest as request,
-  transferAvailable
+  transferRequest as request
 } from '@/lib/hermes-cloud-agents'
+import { transferAvailable } from '@/lib/hermes-cloud-host'
 import { hostHas } from '@/lib/host-capabilities'
 import { Archive, CloudUpload } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'

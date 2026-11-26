@@ -1,5 +1,5 @@
 import type { Translations } from '@/i18n'
-import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
+import { transferAvailable } from '@/lib/hermes-cloud-host'
 import { Archive, CloudUpload, type IconComponent } from '@/lib/icons'
 
 export const BACKUP_SETTINGS_HREF = '/settings?tab=backup'
@@ -22,8 +22,8 @@ export interface BackupPaletteEntry {
   label: string
 }
 
-/** The ⌘K rows that open Settings ▸ Backup & Transfer: one per task. A Webapp Hermes Cloud serves
- *  is a cloud agent itself, so it gets the backup row only. */
+/** The ⌘K rows that open Settings ▸ Backup & Transfer: one per task. Where Transfer cannot run
+ *  (`transferAvailable`) only the backup row shows. */
 export function backupPaletteEntries(t: Translations): BackupPaletteEntry[] {
   const copy = t.settings.backup
 
@@ -34,15 +34,15 @@ export function backupPaletteEntries(t: Translations): BackupPaletteEntry[] {
       keywords: ['backup', 'export', 'archive', 'save', 'download', 'settings'],
       label: copy.backupCommand
     },
-    ...(servedByHermesCloud()
-      ? []
-      : [
+    ...(transferAvailable()
+      ? [
           {
             icon: CloudUpload,
             id: 'transfer-to-cloud',
             keywords: ['move', 'migrate', 'cloud', 'hermes cloud', 'upload', 'transfer', 'replace', 'settings'],
             label: copy.transferCommand
           }
-        ])
+        ]
+      : [])
   ]
 }

@@ -2,6 +2,7 @@
 
 import importlib
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -93,6 +94,59 @@ def test_drift_activates_intact_chains_and_reports_the_live_verdict(checked_stor
     # Intact first stays ahead of the user's copies; damaged second and third, which
     # depends on it, stay off PATH so no toolchain is served half from the store.
     assert os.environ["PATH"].split(os.pathsep) == [str(binaries[0].parent), user_dir]
+
+
+def test_managed_startup_can_run_before_yaml_is_available(tmp_path, monkeypatch):
+    from hermes_cli.venv_sync import check_runtime
+    from pm.environments import install_state_dir, runtime_facts_path
+    from pm.install import venv_is_current
+    from pm.lock import Facts
+    from pm.packages import Venv
+
+    source = paths.repo_root()
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / "install-stamp.json").write_text('{"updateMechanism":"self"}', encoding="utf-8")
+    (root / "uv.lock").write_text("", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("plugins: {}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.delenv("HERMES_INSTALL_STATE_DIR", raising=False)
+    monkeypatch.setattr(paths, "repo_root", lambda: root)
+    monkeypatch.setattr(paths, "lockfile_path", lambda: root / "lock.json")
+    venv = install_state_dir(root) / "environments" / "current" / "venv"
+    venv.mkdir(parents=True)
+    (venv / "pyvenv.cfg").touch()
+    facts = Facts(runtime_facts_path(root))
+    facts.record_state("venv", Venv(root).expected_stamp([]), [], environment=venv)
+    assert venv_is_current()
+    assert check_runtime(root) is None
+
+    probe = """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.venv_sync import check_runtime
+from pm import paths
+
+root = Path(sys.argv[2])
+paths.repo_root = lambda: root
+paths.lockfile_path = lambda: root / "lock.json"
+assert check_runtime(root) is None
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", probe, str(source), str(root)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    facts.record_state("venv", "stale", [], environment=venv)
+    problem = check_runtime(root)
+    assert problem is not None and "venv: out of sync with uv.lock" in problem
 
 
 @pytest.mark.parametrize("surface", ["gateway", "cli"])

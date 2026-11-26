@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.prompt_cache_clock import (
-    cache_certainly_cold, cache_certainly_warm, cache_window, context_witness, record_attempt_sent, record_cache_response,
-    render_prompt_cache_line,
+    cache_certainly_cold, cache_certainly_warm, cache_window, context_witness, prompt_cache_is_cold,
+    record_attempt_sent, record_cache_response, render_prompt_cache_line,
 )
 from agent.usage_pricing import normalize_usage
 
@@ -138,6 +138,34 @@ def test_the_cache_moves_with_the_full_route_and_dies_at_compaction(monkeypatch)
     _turn(agent, _marked_request("5m"), {"prompt_tokens": 10, "completion_tokens": 1}, sent_at=1_200.0,
           monkeypatch=monkeypatch)
     assert _ends(agent)[2] == 1_300.0
+
+
+def test_coming_back_to_a_route_inside_its_window_is_not_a_route_change(monkeypatch):
+    """A one-turn fallback moves the clock to the fallback's route. Back on the first route, its own last
+    response still describes the cache the request reaches: that route has seen this prefix."""
+    agent = _agent("anthropic", "https://api.anthropic.com", "claude-sonnet-4-6", api_mode="anthropic_messages")
+    write = {"input_tokens": 5, "output_tokens": 1, "cache_creation_input_tokens": 4096,
+             "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 4096}}
+    _turn(agent, _marked_request("1h"), write, sent_at=1_000.0, monkeypatch=monkeypatch)
+    assert _ends(agent) == ("1h", "proven", 4_600.0, 4_600.0)
+
+    agent.model = "claude-haiku-4-5"  # the fallback answers one turn
+    _turn(agent, _marked_request("1h"), write, sent_at=1_100.0, monkeypatch=monkeypatch)
+    assert cache_window(agent).confidence == "proven"
+
+    agent.model = "claude-sonnet-4-6"  # back on the primary, two minutes after its last response
+    window = cache_window(agent)
+    assert (window.confidence, window.guaranteed_until) == ("proven", 4_600.0)
+    assert cache_certainly_warm(window, now=1_200.0)
+    assert prompt_cache_is_cold(agent, now=1_200.0) is False
+    assert prompt_cache_is_cold(agent, now=4_600.0) is True  # its own window over: cold by expiry
+
+    agent.context_compressor.compression_count = 1  # a rewrite since then broke every route's prefix
+    assert cache_window(agent).reason == "compacted"
+    agent.context_compressor.compression_count = 0
+    agent.model = "claude-opus-5"  # a route this session never used
+    assert cache_window(agent).reason == "route_changed"
+    assert prompt_cache_is_cold(agent, now=1_300.0) is True
 
 
 def test_nous_ceiling_is_data_on_the_wire_and_in_the_clock(tmp_path, monkeypatch):

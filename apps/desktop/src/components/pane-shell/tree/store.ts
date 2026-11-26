@@ -15,7 +15,7 @@ import { Codecs } from '@/lib/persisted'
 import { writeKey } from '@/lib/storage'
 import { type InterfaceMode, modeLayout } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
-import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { $paneStates, clearAllPaneSizeOverrides } from '@/store/panes'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
@@ -37,6 +37,7 @@ import {
   movePanes as movePanesOp,
   normalize,
   removePane,
+  renamePane as renamePaneOp,
   reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
   setGroupMinimized,
@@ -45,7 +46,7 @@ import {
   type SplitNode,
   type TabStripMode
 } from './model'
-import { isTreePaneParked } from './parked-panes'
+import { isTreePaneParked, setTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
 
@@ -933,6 +934,70 @@ export function removeTreePane(paneId: string) {
     rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
   }
+}
+
+/** `record` with `fromId`'s entry moved to `toId` (unchanged when absent). */
+function renamedKey<T>(record: Record<string, T>, fromId: string, toId: string): Record<string, T> {
+  if (!(fromId in record)) {
+    return record
+  }
+
+  const { [fromId]: value, ...rest } = record
+
+  return { ...rest, [toId]: value }
+}
+
+/**
+ * Re-key a pane WHERE IT STANDS — for an owner whose surface keeps its identity
+ * under a new pane id (a session tile whose conversation rotated to a new stored
+ * id on auto-compression, #98622). Removing the old id and adopting the new one
+ * would split the anchor zone [1, 1] and normalize away the user's grid; this
+ * keeps the zone, the tab slot and every split weight, and carries the per-pane
+ * size records along. Run it BEFORE the owner swaps its contribution: adoption
+ * then finds the new id already placed and the old id's removal is a no-op.
+ * Returns false (and changes nothing) when `fromId` isn't in the tree or
+ * `toId` already is.
+ *
+ * A still-registered `fromId` is left PARKED (see parked-panes.ts) so adoption
+ * can't re-dock it; the contribution's owner must unpark it when it disposes
+ * that contribution. pane-mirror's dispose does; a caller that unregisters the
+ * old contribution straight through the registry must call
+ * `setTreePaneParked(fromId, false)` itself.
+ */
+export function renameTreePane(fromId: string, toId: string): boolean {
+  const tree = $layoutTree.get()
+  const next = tree ? renamePaneOp(tree, fromId, toId) : tree
+
+  if (!next || next === tree) {
+    return false
+  }
+
+  // The old contribution stays registered until its owner disposes it, and
+  // the owner registers the new one first (pane-mirror): parked, adoption
+  // can't dock the old id back in between. The owner's dispose unparks it.
+  if (registry.getArea('panes').some(c => c.id === fromId)) {
+    setTreePaneParked(fromId, true)
+  }
+
+  commit(next)
+
+  $paneShares.set(renamedKey($paneShares.get(), fromId, toId))
+
+  const partners = renamedKey($paneSharePartners.get(), fromId, toId)
+
+  $paneSharePartners.set(
+    Object.fromEntries(
+      Object.entries(partners).map(([paneId, partner]) => [paneId, partner === fromId ? toId : partner])
+    )
+  )
+
+  $paneStates.set(renamedKey($paneStates.get(), fromId, toId))
+
+  if ($userPlacedPanes.get().has(fromId)) {
+    $userPlacedPanes.set(new Set([...$userPlacedPanes.get()].map(id => (id === fromId ? toId : id))))
+  }
+
+  return true
 }
 
 /** The layout's root ROW — the split that contains main + the side columns.

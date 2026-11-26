@@ -1852,6 +1852,57 @@ describe('rekeySessionTile (#98622 — pane identity across compression tip rota
     expect(findGroupOfPane($layoutTree.get()!, paneId)).toMatchObject({ active: paneId, id: 'tile-group' })
   })
 
+  it('re-keys the tile pane in place, keeping a resized grid and re-pointing docks at it', () => {
+    const resized = (paneId: string) =>
+      split(
+        'row',
+        [
+          group(['workspace'], { active: 'workspace', id: 'main' }),
+          split(
+            'column',
+            [
+              group([paneId], { active: paneId, id: 'tile-group' }),
+              group([tilePane('below')], { active: tilePane('below'), id: 'below-group' })
+            ],
+            [3, 1],
+            'col'
+          )
+        ],
+        [2, 5],
+        'row'
+      )
+
+    $layoutTree.set(resized(tilePane('tip-old')))
+    $sessionTiles.set([
+      { anchor: 'workspace', dir: 'right', storedSessionId: 'tip-old' },
+      { anchor: tilePane('tip-old'), before: tilePane('tip-old'), dir: 'bottom', storedSessionId: 'below' }
+    ])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    expect($layoutTree.get()).toEqual(resized(tilePane('tip-new')))
+    expect($sessionTiles.get()).toEqual([
+      { anchor: 'workspace', dir: 'right', storedSessionId: 'tip-new' },
+      { anchor: tilePane('tip-new'), before: tilePane('tip-new'), dir: 'bottom', storedSessionId: 'below' }
+    ])
+  })
+
+  it('leaves the stale pane for removal when main takes the conversation over', () => {
+    const tree = split('row', [
+      group(['workspace'], { active: 'workspace', id: 'main' }),
+      group([tilePane('tip-old')], { active: tilePane('tip-old'), id: 'tile-group' })
+    ])
+
+    $selectedStoredSessionId.set('tip-new')
+    $layoutTree.set(tree)
+    $sessionTiles.set([{ storedSessionId: 'tip-old' }])
+
+    rekeySessionTile('tip-old', 'tip-new')
+
+    expect($layoutTree.get()).toBe(tree)
+    expect($sessionTiles.get()).toHaveLength(0)
+  })
+
   it('drops the stale tile when the new tip already has a tile (one pane per conversation)', () => {
     $sessionTiles.set([{ storedSessionId: 'tip-old' }, { storedSessionId: 'tip-new' }])
 
@@ -1886,5 +1937,79 @@ describe('rekeySessionTile (#98622 — pane identity across compression tip rota
     rekeySessionTile('tip-old', 'tip-old')
 
     expect($sessionTiles.get()).toEqual([{ storedSessionId: 'tip-old' }])
+  })
+})
+
+// Real path: the pane mirror registers the re-keyed tile's pane before it
+// disposes the old one, and adoption runs on every registry change. A tip
+// rotation inside a resized grid must leave the grid exactly as the user set it.
+describe('rekeySessionTile through the pane mirror keeps a resized grid', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  it('keeps zones and split weights across the rotation', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+    const states = await import('@/store/session-states')
+    const { paneMirror } = await import('@/app/chat/pane-mirror')
+
+    registry.register({
+      area: 'panes',
+      data: { placement: 'main', uncloseable: true },
+      id: 'workspace',
+      render: () => null,
+      title: 'chat'
+    })
+
+    const resized = (paneId: string) =>
+      model.split(
+        'row',
+        [
+          model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+          model.split(
+            'column',
+            [
+              model.group([paneId], { active: paneId, id: 'tile-group' }),
+              model.group([tilePane('below')], { active: tilePane('below'), id: 'below-group' })
+            ],
+            [3, 1],
+            'col'
+          )
+        ],
+        [2, 5],
+        'row'
+      )
+
+    states.$sessionTiles.set([
+      { anchor: 'workspace', dir: 'right', storedSessionId: 'tip-old' },
+      { anchor: tilePane('tip-old'), dir: 'bottom', storedSessionId: 'below' }
+    ])
+    tree.declareDefaultTree(resized(tilePane('tip-old')))
+    paneMirror({
+      source: states.$sessionTiles,
+      key: tile => tile.storedSessionId,
+      prefix: 'session-tile',
+      dir: tile => tile.dir,
+      anchor: tile => tile.anchor,
+      before: tile => tile.before,
+      minWidth: '10rem',
+      title: id => id,
+      render: () => null,
+      close: states.closeSessionTile
+    })()
+    tree.watchContributedPanes()
+    expect(tree.$layoutTree.get()).toEqual(resized(tilePane('tip-old')))
+
+    states.rekeySessionTile('tip-old', 'tip-new')
+
+    expect(tree.$layoutTree.get()).toEqual(resized(tilePane('tip-new')))
+    expect(registry.getArea('panes').map(c => c.id)).not.toContain(tilePane('tip-old'))
   })
 })

@@ -240,6 +240,27 @@ export function removePane(node: LayoutNode, paneId: string): LayoutNode | null 
   return normalize(walk(node))
 }
 
+/** Re-key a pane IN PLACE: same zone, same tab slot, same active tab. Nothing
+ *  structural changes, so every split keeps its weights. Returns `node` itself
+ *  when `fromId` isn't in the tree or `toId` already is. */
+export function renamePane(node: LayoutNode, fromId: string, toId: string): LayoutNode {
+  if (fromId === toId || !findGroupOfPane(node, fromId) || findGroupOfPane(node, toId)) {
+    return node
+  }
+
+  const walk = (n: LayoutNode): LayoutNode => {
+    if (n.type === 'group') {
+      return n.panes.includes(fromId)
+        ? { ...n, panes: n.panes.map(p => (p === fromId ? toId : p)), active: n.active === fromId ? toId : n.active }
+        : n
+    }
+
+    return { ...n, children: n.children.map(walk) }
+  }
+
+  return walk(node)
+}
+
 /**
  * Order panes for one adoption pass so a pane docked against another pane in
  * the SAME pass comes after it. Adopted first, its anchor isn't in the tree yet

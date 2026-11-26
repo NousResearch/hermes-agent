@@ -29,6 +29,7 @@ import {
   isPaneVisible,
   moveTreePane,
   noteActiveTreeGroup,
+  renameTreePane,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
@@ -1582,6 +1583,28 @@ function rekeyTileList(
   return tiles.map(t => (t === stale ? { ...t, storedSessionId: nextStoredSessionId } : t))
 }
 
+/** Tiles docked against the rotated tile's pane follow it to the new id, so a
+ *  reload re-docks them beside it instead of falling back to main. The rotated
+ *  tile itself is skipped: it must never anchor on its own pane (#108679). */
+function retargetTileDocks(
+  tiles: SessionTile[],
+  previousStoredSessionId: string,
+  nextStoredSessionId: string
+): SessionTile[] {
+  const from = `${TILE_PANE_PREFIX}${previousStoredSessionId}`
+  const to = `${TILE_PANE_PREFIX}${nextStoredSessionId}`
+
+  if (!tiles.some(t => t.storedSessionId === nextStoredSessionId)) {
+    return tiles
+  }
+
+  return tiles.map(t =>
+    t.storedSessionId !== nextStoredSessionId && (t.anchor === from || t.before === from)
+      ? { ...t, anchor: t.anchor === from ? to : t.anchor, before: t.before === from ? to : t.before }
+      : t
+  )
+}
+
 /**
  * Re-home an open tile after auto-compression rotates the conversation's stored
  * id (#98622). Without this, the tile stays keyed on the pre-rotation id while
@@ -1589,9 +1612,12 @@ function rekeyTileList(
  * same conversation then renders as two tabs (identical or differently-titled,
  * since each tip is titled independently).
  *
- * Placement fields (`dir`/`anchor`/`before`) are preserved so the pane mirror
- * re-docks the re-keyed tile in the same slot; pane-mirror's wanted-set diff
- * disposes the old pane and adopts the new one from this single change.
+ * The tile's tree pane is re-keyed IN PLACE before the tile list changes, so
+ * pane-mirror's wanted-set diff finds the new pane already placed (adoption is
+ * a no-op) and disposing the old one removes nothing: the zone and every split
+ * weight the user set survive. Remove-then-adopt instead split the anchor
+ * [1, 1] and normalize flattened a resized grid. Tiles docked against the old
+ * pane follow it to the new id.
  *
  * Main-vs-tile reconciliation is scoped to the same Sessions workspace/owner.
  * Bot tiles and tiles on distinct backend routes remain independent surfaces.
@@ -1613,7 +1639,13 @@ export function rekeySessionTile(
     const nextTiles = rekeyTileList(visibleTiles, profileKey(), previousStoredSessionId, nextStoredSessionId)
 
     if (nextTiles) {
-      saveTiles(nextTiles)
+      // Only while a tile still carries the conversation: when main took it
+      // over, the stale pane leaves the tree as before.
+      if (nextTiles.some(t => t.storedSessionId === nextStoredSessionId)) {
+        renameTreePane(`${TILE_PANE_PREFIX}${previousStoredSessionId}`, `${TILE_PANE_PREFIX}${nextStoredSessionId}`)
+      }
+
+      saveTiles(retargetTileDocks(nextTiles, previousStoredSessionId, nextStoredSessionId))
     }
 
     return
@@ -1647,7 +1679,7 @@ export function rekeySessionTile(
   const nextTiles = rekeyTileList(storedTiles, bucket, previousStoredSessionId, nextStoredSessionId)
 
   if (nextTiles) {
-    saveTileBucket(bucket, nextTiles)
+    saveTileBucket(bucket, retargetTileDocks(nextTiles, previousStoredSessionId, nextStoredSessionId))
   }
 }
 

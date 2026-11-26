@@ -1,7 +1,7 @@
 name: pure-language
 title: Pure Language
 repo: https://github.com/joowon-jang/pure-language
-sha: b423d8546aef4c1cddfefdf2658cf91a72cee31d
+sha: 6279b7bbedcaf86a9ce8a0d612221a15ebd96a11
 description: >-
   Keeps every answer in one language. Picks the target from the user's command or the language they
   wrote in (54 languages, 22 scripts), injects a short guard, and cleans the final answer of words and
@@ -14,8 +14,8 @@ maintainer: joowon-jang
 tier: community
 category: general
 requires_hermes: ">=0.23.4"
-version: "0.2.2"
-docs_url: https://github.com/joowon-jang/pure-language/blob/b423d8546aef4c1cddfefdf2658cf91a72cee31d/README.md
+version: "0.2.3"
+docs_url: https://github.com/joowon-jang/pure-language/blob/6279b7bbedcaf86a9ce8a0d612221a15ebd96a11/README.md
 platforms: []
 capabilities:
   provides_tools: []
@@ -25,5 +25,6 @@ capabilities:
     - transform_tool_result
     - on_interim_message
     - transform_llm_output
-  provides_middleware: []
+  provides_middleware:
+    - llm_request
   requires_env: []

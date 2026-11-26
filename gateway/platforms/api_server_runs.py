@@ -805,7 +805,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     previous_response_id = body.get("previous_response_id")
     session_id = body.get("session_id") or stored_session_id
     route = self._resolve_route(body.get("model"))
-    agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
+    agent_overrides = _api_server._request_agent_overrides(body, virtual_models=self._virtual_model_names())
     selection_error = self._request_route_conflict_error(
         session_id=session_id, gateway_session_key=gateway_session_key,
         requested_model=agent_overrides.get("requested_model"),

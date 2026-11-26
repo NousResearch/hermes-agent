@@ -283,11 +283,11 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
 
 
 def _request_agent_overrides(
-    body: Any, *, virtual_model: Optional[str] = None, allow_bare_model: bool = True
+    body: Any, *, virtual_models: frozenset[str] = frozenset(), allow_bare_model: bool = True
 ) -> dict[str, Any]:
     """Extract per-request model/provider/options for _run_agent.
 
-    The virtual model (``hermes-agent``) means "gateway default". A bare ``model`` without
+    A virtual model (``hermes-agent``, a routed profile's name) means "gateway default". A bare ``model`` without
     ``provider`` is honored only when ``allow_bare_model`` (generic clients hardcode "gpt-4o";
     OpenAI-compatible handlers pass the ``direct_model_requests`` opt-in, Hermes-native
     endpoints always allow it). An explicit ``provider`` is always honored.
@@ -299,7 +299,7 @@ def _request_agent_overrides(
     if provider:
         overrides["requested_provider"] = provider
     model = _clean_request_string(body.get("model"))
-    if model and model != virtual_model and (provider or allow_bare_model):
+    if model and model not in virtual_models and (provider or allow_bare_model):
         overrides["requested_model"] = model
     model_options = body.get("model_options")
     if isinstance(model_options, dict):
@@ -1821,7 +1821,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """The model persisted on a session row, minus the virtual alias (replaying
         "hermes-agent" upstream as a provider model id 400s)."""
         stored = session.get("model") if isinstance(session, dict) else None
-        if not stored or stored == self._model_name:
+        if not stored or stored in self._virtual_model_names():
             return None
         return stored
 
@@ -1871,7 +1871,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route = dict(alias_route) if isinstance(alias_route, dict) else None
         # The virtual alias is not a provider model id: null it upstream of route-building and
         # every "requested" dict so it is never persisted or misread as a raw override.
-        if model == self._model_name:
+        if model in self._virtual_model_names():
             model = None
         route_source = "model_routes" if route else "global"
         if not route and model:
@@ -2844,7 +2844,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None
-            agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
+            agent_overrides = _request_agent_overrides(body, virtual_models=self._virtual_model_names())
             selection_error = self._request_route_conflict_error(
                 session_id=session_id, gateway_session_key=gateway_session_key,
                 requested_model=agent_overrides.get("requested_model"),

@@ -26,6 +26,9 @@ export interface MacGitCheckOptions {
 
 export interface PosixGitResolveOptions extends MacGitCheckOptions {
   candidates: string[]
+  // Tried after `candidates`. A Finder/Dock launch whose login-shell PATH merge failed sees only
+  // /usr/bin:/bin:/usr/sbin:/sbin, while gh's env and the backend's PATH still reach Homebrew git.
+  fallbackDirs?: readonly string[]
   fileExists: (filePath: string) => boolean
   binaryRuns: (filePath: string) => boolean
 }
@@ -178,7 +181,8 @@ export function isUsableMacGitCandidate(candidate: string, opts: MacGitCheckOpti
 }
 
 export function resolvePosixGitBinary(opts: PosixGitResolveOptions): string | null {
-  const existing = opts.candidates.filter(opts.fileExists)
+  const fallbacks = (opts.fallbackDirs ?? []).map(dir => path.join(dir, 'git'))
+  const existing = [...new Set([...opts.candidates, ...fallbacks])].filter(opts.fileExists)
   let firstNonStub: string | null = null
   let blockedCltStub = false
 

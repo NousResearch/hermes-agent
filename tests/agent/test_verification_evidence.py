@@ -629,3 +629,87 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd services/api && pytest -q",
+        "cd services/api; pytest -q",
+        "uv --directory services/api run pytest -q",
+        "pytest --rootdir services/api -q",
+    ],
+)
+def test_subdir_cd_or_workdir_flag_records_evidence_under_subproject_root(
+    tmp_path, monkeypatch, command
+):
+    """Agents starting in a parent workspace folder without manifests run ``cd sub && pytest``
+    or ``uv --directory sub run pytest``; evidence must land on ``sub`` rather than dropping."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    workspace = tmp_path / "workspace"
+    sub = workspace / "services" / "api"
+    sub.mkdir(parents=True)
+    (sub / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+
+    record_terminal_result(
+        command=command, cwd=workspace, session_id="s1", exit_code=0, output="3 passed",
+    )
+
+    status = verification_status(session_id="s1", cwd=sub)
+    assert status["status"] == "passed"
+    assert status["evidence"]["canonical_command"] == "pytest"
+
+
+@pytest.mark.parametrize(
+    "command, lockfile, expected_canonical",
+    [
+        ("pnpm -C packages/web test", "pnpm-lock.yaml", "pnpm run test"),
+        ("pnpm --dir=packages/web run lint", "pnpm-lock.yaml", "pnpm run lint"),
+        ("npm --prefix packages/web test", "package-lock.json", "npm run test"),
+        ("yarn --cwd packages/web test", "yarn.lock", "yarn run test"),
+    ],
+)
+def test_js_package_manager_directory_flags_attribute_to_target_package(
+    tmp_path, monkeypatch, command, lockfile, expected_canonical
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    workspace = tmp_path / "monorepo"
+    pkg = workspace / "packages" / "web"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text(
+        json.dumps({"scripts": {"test": "vitest", "lint": "eslint ."}}), encoding="utf-8",
+    )
+    (pkg / lockfile).write_text("", encoding="utf-8")
+
+    evidence = classify_verification_command(
+        command, cwd=workspace, session_id="s1", exit_code=0, output="ok",
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == expected_canonical
+    assert evidence.root == str(pkg.resolve())
+    assert evidence.status == "passed"
+
+
+@pytest.mark.parametrize("pipeline_status, expected", [([0, 0], "passed"), ([1, 0], "failed")])
+def test_piped_ad_hoc_script_uses_pipeline_status(tmp_path, monkeypatch, pipeline_status, expected):
+    """Ad-hoc temp verification scripts piped through ``tail`` must use PIPESTATUS[0], like canonical suites."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = Path(tempfile.gettempdir()) / f"hermes-verify-pipe-{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        evidence = classify_verification_command(
+            f"python {script} 2>&1 | tail -5",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            pipeline_status=pipeline_status,
+        )
+    finally:
+        script.unlink(missing_ok=True)
+
+    assert evidence is not None
+    assert evidence.kind == "ad_hoc"
+    assert evidence.status == expected
+

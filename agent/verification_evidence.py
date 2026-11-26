@@ -380,28 +380,96 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
-def _find_canonical_match(
-    command: str, canonical_commands: list[str], exit_code: int,
-    pipeline_status: Optional[list[int]] = None, *, attributed: bool = True,
-) -> Optional[tuple[str, list[str], Optional[int]]]:
-    """Return ``(canonical, trailing_args, status)`` for the first detected command.
+_WORKDIR_FLAGS: dict[str, frozenset[str]] = {
+    "pnpm": frozenset({"-C", "--dir"}),
+    "npm": frozenset({"--prefix"}),
+    "yarn": frozenset({"--cwd"}),
+    "make": frozenset({"-C", "--directory"}),
+    "uv": frozenset({"--directory"}),
+    "pytest": frozenset({"--rootdir"}),
+}
 
-    ``attributed=False`` also matches a run whose own status the shell hid (status ``None``).
-    """
-    segments = _split_shell_segments(command)
+
+def _resolve_existing_dir(raw: str, base_cwd: Path) -> Optional[Path]:
+    """Resolve *raw* against *base_cwd* when it names an existing directory on disk."""
+    try:
+        candidate = Path(raw).expanduser()
+        resolved = (candidate if candidate.is_absolute() else (base_cwd / candidate)).resolve()
+        return resolved if resolved.is_dir() else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _cd_target(tokens: list[str], cur_cwd: Path) -> Optional[Path]:
+    """Target directory when *tokens* is a ``cd`` command to an existing path, else ``None``."""
+    stripped = _strip_command_prefix(tokens)
+    if not stripped or stripped[0] != "cd":
+        return None
+    args = [t for t in stripped[1:] if t not in {"-P", "-L", "--"}]
+    if not args:
+        return _resolve_existing_dir("~", cur_cwd)
+    if len(args) == 1 and args[0] != "-" and not args[0].startswith("-"):
+        return _resolve_existing_dir(args[0], cur_cwd)
+    return None
+
+
+def _unwrap_workdir_flag(tokens: list[str], cur_cwd: Path) -> tuple[list[str], Path]:
+    """Strip tool-level directory flags (``pnpm -C``, ``npm --prefix``, ``make -C``, ``uv --directory``)
+    when their target directory exists, returning ``(remaining_tokens, resolved_cwd)``."""
+    if not tokens:
+        return tokens, cur_cwd
+    tool = _WINDOWS_EXE_SUFFIX_RE.sub("", tokens[0].replace("\\", "/").rsplit("/", 1)[-1]).lower()
+    flags = _WORKDIR_FLAGS.get(tool)
+    if not flags:
+        return tokens, cur_cwd
+    kept = [tokens[0]]
+    resolved_cwd = cur_cwd
+    i = 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "--":
+            kept.extend(tokens[i:])
+            break
+        if tok in flags and i + 1 < len(tokens) and (target := _resolve_existing_dir(tokens[i + 1], resolved_cwd)):
+            resolved_cwd = target
+            i += 2
+            continue
+        eq_flag, sep, eq_val = tok.partition("=")
+        if sep and eq_flag in flags and eq_val and (target := _resolve_existing_dir(eq_val, resolved_cwd)):
+            resolved_cwd = target
+            i += 1
+            continue
+        kept.append(tok)
+        i += 1
+    return kept, resolved_cwd
+
+
+def _match_canonical_tokens(candidate_tokens: list[str], canonical_commands: list[str]) -> Optional[tuple[str, list[str]]]:
+    """Match normalized *candidate_tokens* against *canonical_commands*."""
     for canonical in canonical_commands:
         needle = _canonical_tokens(canonical)
         if not needle:
             continue
-        for index, segment in enumerate(segments):
-            candidate_tokens = _normalize_tokens(_strip_command_prefix(segment.tokens))
-            status = _segment_status(segments, index, exit_code, pipeline_status)
-            if status is None and attributed:
-                continue
-            for candidate in _equivalent_needles(needle):
-                candidate = _normalize_tokens(candidate)
-                if candidate_tokens[:len(candidate)] == candidate:
-                    return canonical, candidate_tokens[len(candidate):], status
+        for candidate in _equivalent_needles(needle):
+            norm = _normalize_tokens(candidate)
+            if candidate_tokens[:len(norm)] == norm:
+                return canonical, candidate_tokens[len(norm):]
+    return None
+
+
+def _find_canonical_match(
+    command: str, canonical_commands: list[str], exit_code: int,
+    pipeline_status: Optional[list[int]] = None, *, attributed: bool = True,
+) -> Optional[tuple[str, list[str], Optional[int]]]:
+    """Return ``(canonical, trailing_args, status)`` for the first detected command."""
+    segments = _split_shell_segments(command)
+    for index, segment in enumerate(segments):
+        status = _segment_status(segments, index, exit_code, pipeline_status)
+        if status is None and attributed:
+            continue
+        candidate_tokens = _normalize_tokens(_strip_command_prefix(segment.tokens))
+        if matched := _match_canonical_tokens(candidate_tokens, canonical_commands):
+            return matched[0], matched[1], status
     return None
 
 
@@ -472,15 +540,31 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     return None
 
 
-def _find_ad_hoc_match(command: str, root: str | Path | None, exit_code: int = 0) -> Optional[list[str]]:
+def _find_ad_hoc_match_status(
+    command: str, root: str | Path | None, exit_code: int = 0,
+    pipeline_status: Optional[list[int]] = None, *, attributed: bool = True,
+) -> Optional[tuple[list[str], Optional[int]]]:
     # posix=False is retried so Windows backslash script paths survive splitting.
     for posix in (True, False):
         segments = _split_shell_segments(command, posix=posix)
         for index, segment in enumerate(segments):
             trailing_args = _ad_hoc_script_args(segment.tokens, root)
-            if trailing_args is not None and _segment_status(segments, index, exit_code) is not None:
-                return trailing_args
+            if trailing_args is None:
+                continue
+            status = _segment_status(segments, index, exit_code, pipeline_status)
+            if status is not None or not attributed:
+                return trailing_args, status
     return None
+
+
+def _find_ad_hoc_match(
+    command: str, root: str | Path | None, exit_code: int = 0,
+    pipeline_status: Optional[list[int]] = None, *, attributed: bool = True,
+) -> Optional[list[str]]:
+    res = _find_ad_hoc_match_status(
+        command, root, exit_code=exit_code, pipeline_status=pipeline_status, attributed=attributed,
+    )
+    return res[0] if res is not None else None
 
 
 def _summarize_output(output: str) -> str:
@@ -550,6 +634,59 @@ def _load_changed_paths(raw: Any) -> list[Any]:
         return []
 
 
+def _match_segment_in_facts(
+    unwrapped: list[str], facts: dict[str, Any],
+) -> Optional[tuple[str, str, str]]:
+    """Match *unwrapped* segment tokens against canonical commands or (if none exist) ad-hoc script."""
+    verify_commands = list(facts.get("verifyCommands") or [])
+    if matched := _match_canonical_tokens(_normalize_tokens(unwrapped), verify_commands):
+        canonical, trailing_args = matched
+        scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
+        return canonical, _kind_for_command(canonical), scope
+    if not verify_commands and _ad_hoc_script_args(unwrapped, facts.get("root")) is not None:
+        return "ad-hoc verification script", "ad_hoc", "targeted"
+    return None
+
+
+def _match_command_in_cwd(
+    command: str, cwd: str | Path | None, exit_code: int,
+    pipeline_status: Optional[list[int]], *, attributed: bool,
+) -> Optional[tuple[Path, dict[str, Any], str, str, str, Optional[int]]]:
+    """Resolve ``cd`` segments and tool directory flags across *command*, returning the first matching
+    ``(effective_cwd, facts, canonical_command, kind, scope, status)``."""
+    base_cwd = Path(cwd or ".").resolve()
+    facts_cache: dict[Path, Optional[dict[str, Any]]] = {}
+
+    def _facts(target: Path) -> Optional[dict[str, Any]]:
+        if target not in facts_cache:
+            facts_cache[target] = _project_facts(target)
+        return facts_cache[target]
+
+    segments = _split_shell_segments(command, posix=True)
+    cur_cwd = base_cwd
+    for index, segment in enumerate(segments):
+        if cd_dir := _cd_target(segment.tokens, cur_cwd):
+            cur_cwd = cd_dir
+            continue
+        unwrapped, seg_cwd = _unwrap_workdir_flag(_strip_command_prefix(segment.tokens), cur_cwd)
+        facts = _facts(seg_cwd)
+        if not facts:
+            continue
+        status = _segment_status(segments, index, int(exit_code), pipeline_status)
+        if status is None and attributed:
+            continue
+        if matched := _match_segment_in_facts(unwrapped, facts):
+            return seg_cwd, facts, matched[0], matched[1], matched[2], status
+
+    if "\\" in command and (base_facts := _facts(base_cwd)) and not base_facts.get("verifyCommands"):
+        adhoc = _find_ad_hoc_match_status(
+            command, base_facts.get("root"), int(exit_code), pipeline_status, attributed=attributed,
+        )
+        if adhoc is not None:
+            return base_cwd, base_facts, "ad-hoc verification script", "ad_hoc", "targeted", adhoc[1]
+    return None
+
+
 def classify_verification_command(
     command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0,
     output: str = "", pipeline_status: Optional[list[int]] = None,
@@ -565,34 +702,14 @@ def classify_verification_command(
     """
     if not command or not isinstance(command, str):
         return None
-    facts = _project_facts(cwd)
-    if not facts:
+    matched = _match_command_in_cwd(command, cwd, int(exit_code), pipeline_status, attributed=True)
+    if matched is None or matched[5] is None:
         return None
-    return _classify_in_workspace(
-        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
-        pipeline_status=pipeline_status,
-    )
-
-
-def _classify_in_workspace(
-    command: str, facts: dict[str, Any], *, cwd: str | Path | None, session_id: str | None,
-    exit_code: int, output: str, pipeline_status: Optional[list[int]],
-) -> Optional[VerificationEvidence]:
-    verify_commands = list(facts.get("verifyCommands") or [])
-    match = _find_canonical_match(command, verify_commands, int(exit_code), pipeline_status)
-    if match is not None and match[2] is not None:
-        canonical, trailing_args, status = match
-        kind = _kind_for_command(canonical)
-        scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
-    else:
-        if verify_commands or _find_ad_hoc_match(command, facts.get("root"), int(exit_code)) is None:
-            return None
-        canonical, kind, scope = "ad-hoc verification script", "ad_hoc", "targeted"
-        status = int(exit_code)
+    seg_cwd, facts, canonical, kind, scope, status = matched
     return VerificationEvidence(
         command=command, canonical_command=canonical, kind=kind, scope=scope,
         status="passed" if int(status) == 0 else "failed", exit_code=int(exit_code),
-        cwd=str(Path(cwd or ".").resolve()), root=_root_for(facts, cwd),
+        cwd=str(seg_cwd), root=_root_for(facts, seg_cwd),
         session_id=str(session_id or "default"), output_summary=_summarize_output(output),
     )
 
@@ -609,18 +726,16 @@ def record_terminal_result(
     """
     if not _ledger_enabled() or not command or not isinstance(command, str):
         return None
-    facts = _project_facts(cwd)
-    if not facts:
-        return None
-    key = (str(session_id or "default"), _root_for(facts, cwd))
-    evidence = _classify_in_workspace(
-        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+    evidence = classify_verification_command(
+        command, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
         pipeline_status=pipeline_status,
     )
     if evidence is not None:
         return _insert_evidence(evidence)
-    verify_commands = list(facts.get("verifyCommands") or [])
-    if _find_canonical_match(command, verify_commands, int(exit_code), attributed=False):
+    unattributed = _match_command_in_cwd(command, cwd, int(exit_code), pipeline_status, attributed=False)
+    if unattributed is not None:
+        seg_cwd, facts, *_rest = unattributed
+        key = (str(session_id or "default"), _root_for(facts, seg_cwd))
         _UNATTRIBUTED_RUNS.pop(key, None)
         _UNATTRIBUTED_RUNS[key] = (command, _utc_now())
         while len(_UNATTRIBUTED_RUNS) > _MAX_UNATTRIBUTED_RUNS:

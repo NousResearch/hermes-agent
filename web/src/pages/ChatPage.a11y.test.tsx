@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveTranslations, formatTranslation } from "@/i18n/runtime";
 
 /**
  * Behaviour tests for the chat composer's screen-reader accessibility
@@ -133,15 +134,11 @@ vi.mock("@/contexts/useProfileScope", () => ({
 vi.mock("@/themes", () => ({
   useTheme: () => ({ theme: { terminalBackground: "#000000" } }),
 }));
+const language = vi.hoisted(() => ({ locale: "en" as "en" | "zh" }));
 vi.mock("@/i18n", () => ({
   useI18n: () => ({
-    t: {
-      app: {
-        closeModelTools: "Close model tools",
-        modelToolsSheetSubtitle: "Tools",
-        modelToolsSheetTitle: "Model",
-      },
-    },
+    t: resolveTranslations(language.locale),
+    format: formatTranslation,
   }),
 }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({
@@ -205,6 +202,7 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  language.locale = "en";
   FakeTerminal.instances = [];
   FakeTerminal.keyHandlers = [];
   FakeWebSocket.instances = [];
@@ -283,7 +281,8 @@ describe("ChatPage composer screen-reader accessibility (#36784)", () => {
     expect(FakeTerminal.instances[0].options.screenReaderMode).toBe(true);
   });
 
-  it("exposes the terminal host as a labelled region in the accessibility tree", async () => {
+  it.each(["en", "zh"] as const)("exposes a localized terminal region in %s", async locale => {
+    language.locale = locale;
     const { default: ChatPage } = await import("./ChatPage");
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -295,7 +294,7 @@ describe("ChatPage composer screen-reader accessibility (#36784)", () => {
     const host = container.querySelector(".hermes-chat-xterm-host");
     expect(host).not.toBeNull();
     expect(host!.getAttribute("role")).toBe("region");
-    expect(host!.getAttribute("aria-label")).toBeTruthy();
+    expect(host!.getAttribute("aria-label")).toBe(resolveTranslations(locale).chatSidebar.chatTerminal);
   });
 
   it("lets Tab escape the terminal from the single registered key handler", async () => {

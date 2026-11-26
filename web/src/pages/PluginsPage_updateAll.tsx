@@ -6,6 +6,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import type { Translations } from "@/i18n/types";
 import { api, type AgentPluginsUpdateAllResponse, type PluginAutoUpdateState } from "@/lib/api";
+import { errorMessage } from "@/lib/api-error";
 
 type ShowToast = (msg: string, variant: "success" | "error") => void;
 
@@ -32,7 +33,7 @@ function PluginUpdateAllButton({ disabled, loadHub, showToast, t }: PluginUpdate
       showToast(t.pluginsPage.updateAllDone(updated, needsReview, failed), failed > 0 ? "error" : "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Update failed", "error");
+      showToast(errorMessage(e, t.common), "error");
     } finally {
       setBusy(false);
     }
@@ -65,7 +66,7 @@ function PluginAutoUpdateSwitch({ showToast, t }: PluginAutoUpdateSwitchProps) {
     try {
       setState(await api.setPluginAutoUpdate(enabled));
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(errorMessage(e, t.common), "error");
     } finally {
       setBusy(false);
     }

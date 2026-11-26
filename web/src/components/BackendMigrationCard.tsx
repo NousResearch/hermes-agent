@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowRightLeft } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
@@ -22,7 +22,6 @@ import {
   qualifyCommands,
   readPoll,
   replacesConfigFile,
-  SAVE_BOTH_WARNING,
   stepWords,
   viewOf,
   type BackendMigrationPlan,
@@ -33,6 +32,8 @@ import {
   type Refusal,
 } from "@/lib/backend-migration";
 import { HERMES_BASE_PATH, getManagementProfile } from "@/lib/api";
+import { useI18n, type Translations } from "@/i18n";
+import { formatTranslation } from "@/i18n/runtime";
 
 const POLL_MS = 1500;
 
@@ -50,6 +51,8 @@ function initialView(r: BackendMigrationPlanResponse | null | undefined): PollVi
  * Hidden otherwise. One plan read per page load (the server answers repeated loads from one scan).
  */
 export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPlanResponse | null }) {
+  const { t } = useI18n();
+  const copy = t.backendMigration;
   const [plan, setPlan] = useState<BackendMigrationPlanResponse | null>(initial ?? null);
   const [confirm, setConfirm] = useState<null | { force: boolean }>(null);
   const [view, setView] = useState<PollView | null>(() => initialView(initial));
@@ -191,8 +194,8 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
         <div className="flex items-start gap-2">
           <ArrowRightLeft className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="flex flex-col gap-1">
-            <span className="font-medium">Move to a single Hermes</span>
-            {p && foundBackend(p) && <span>{findingSentence(p)}</span>}
+            <span className="font-medium">{copy.title}</span>
+            {p && foundBackend(p) && <span>{findingSentence(p, copy)}</span>}
           </div>
         </div>
 
@@ -211,25 +214,23 @@ export function BackendMigrationCard({ initial }: { initial?: BackendMigrationPl
         open={confirm !== null}
         onCancel={() => setConfirm(null)}
         onConfirm={() => void move(confirm?.force ?? false)}
-        title="Move to a single Hermes?"
-        description={confirmText(p, confirm?.force ?? false)}
-        confirmLabel="Move now"
+        title={copy.confirmTitle}
+        description={confirmText(p, confirm?.force ?? false, copy)}
+        confirmLabel={copy.confirmMove}
+        cancelLabel={t.common.cancel}
       />
     </Card>
   );
 }
 
-function confirmText(p: BackendMigrationPlan | null | undefined, force: boolean): string {
-  const stops = (p?.takes_over ?? []).map((t) => ` ${t}`).join("");
+function confirmText(p: BackendMigrationPlan | null | undefined, force: boolean, copy: Translations["backendMigration"]): string {
+  const stops = (p?.takes_over ?? []).map((item) => ` ${item}`).join("");
   // Forced: the chats and gateways the plan named are stopped; messaging is down until the gateway service runs.
-  const forced = force
-    ? " Running chats are stopped, and messaging and the gateway are unavailable for a few seconds."
-    : "";
-  return (
-    `This page stops working while Hermes takes over ${p?.old_address ?? "this address"}; ` +
-    "afterwards you sign in again at this same address." + forced + stops +
-    " If anything goes wrong, everything is put back."
-  );
+  return formatTranslation(copy.confirmBody, {
+    address: p?.old_address ?? copy.thisAddress,
+    forced: force ? copy.confirmInterrupt : "",
+    stops,
+  });
 }
 
 /** What the move would change, what blocks it, and the Move / Move anyway buttons. */
@@ -240,6 +241,8 @@ function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
   onMove: (force: boolean) => void;
   onShowSteps: () => void;
 }) {
+  const { t, format } = useI18n();
+  const copy = t.backendMigration;
   const all = p.blockers ?? [];
   const byHand = p.unsupported.length > 0;
   // What consent clears is not a blocker on the card: the Move confirmation says it is stopped instead.
@@ -249,13 +252,13 @@ function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
   return (
     <>
       <ul className="list-disc pl-6 text-muted-foreground">
-        {impactLines(p).map((line) => (
+        {impactLines(p, copy).map((line) => (
           <li key={line}>{line}</li>
         ))}
       </ul>
       {p.unsupported.map((u) => (
         <div key={u.instructions} className="text-warning">
-          This server cannot be moved from here. {qualifyCommands(u.instructions, profile)}
+          {format(copy.unsupported, { instructions: qualifyCommands(u.instructions, profile) })}
           {blockers.length === 0 && !!u.steps?.length && (
             <div className="flex flex-col gap-1">
               <EngineSteps steps={u.steps} profile={null} />
@@ -281,14 +284,14 @@ function PlanDetails({ plan: p, profile, busy, onMove, onShowSteps }: {
             size="sm"
             className="uppercase"
             disabled={blockers.length > 0 || p.unsupported.length > 0}
-            title={blockers.length ? "Sort out the points above first" : undefined}
+            title={blockers.length ? copy.clearBlockers : undefined}
             onClick={() => onMove(needsConsent)}
           >
-            Move
+            {copy.move}
           </Button>
           {canForce && (
             <Button size="sm" ghost className="uppercase text-warning" onClick={onShowSteps}>
-              Show the steps anyway
+              {copy.showSteps}
             </Button>
           )}
         </div>
@@ -308,8 +311,12 @@ function RefusalNotice({ refusal }: { refusal: Refusal }) {
   );
 }
 
-function Cmd({ children }: { children: string }) {
-  return <code className="select-all">{children}</code>;
+function CommandText({ template, command }: { template: string; command: string }) {
+  return template.split(/(\{command\})/).map((part, index) => (
+    <Fragment key={index}>
+      {part === "{command}" ? <code className="select-all">{command}</code> : part}
+    </Fragment>
+  ));
 }
 
 function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
@@ -319,41 +326,39 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
   onCheckAgain?: () => void;
   onTryAgain?: () => void;
 }) {
+  const { t, format } = useI18n();
+  const copy = t.backendMigration;
   const status = migrateCommand(profile, "--status", commands);
   const checkAgain = onCheckAgain && (
     <div>
       <Button size="sm" ghost className="uppercase" onClick={onCheckAgain}>
-        Check again
+        {copy.checkAgain}
       </Button>
     </div>
   );
   switch (view.kind) {
     case "starting":
-      return <Line spin>Starting the move…</Line>;
+      return <Line spin>{copy.starting}</Line>;
     case "checking":
-      return <Line spin>Finding out whether the move started…</Line>;
+      return <Line spin>{copy.checking}</Line>;
     case "running":
-      return <Line spin>{stepWords(view.step)}…</Line>;
+      return <Line spin>{format(copy.running, { step: stepWords(view.step, copy) })}</Line>;
     case "switching":
       return (
         <div className="flex flex-col gap-2">
-          <Line spin>Switching over: this address is unavailable until Hermes answers on it again…</Line>
+          <Line spin>{copy.switching}</Line>
           <span className="text-muted-foreground">
-            A move that waits for running work, or puts everything back, can take several minutes. On this computer,
-            see where it stands with <Cmd>{status}</Cmd>
+            {copy.longWait}{" "}<CommandText template={copy.statusCommand} command={status} />
           </span>
         </div>
       );
     case "signInAgain":
       return (
         <div className="flex flex-col gap-2" data-slot="backend-migration-signin">
-          <span>
-            This address restarted, so your sign-in ended. Sign in again at this same address to see how the move
-            ended: if it worked, you will see the new Hermes web app.
-          </span>
+          <span>{copy.signInAgainDetail}</span>
           <div>
             <Button size="sm" className="uppercase" onClick={() => window.location.assign(`${HERMES_BASE_PATH}/`)}>
-              Sign in again
+              {copy.signInAgain}
             </Button>
           </div>
         </div>
@@ -363,10 +368,8 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
       return (
         <div className="flex flex-col gap-2 text-warning" data-slot="backend-migration-unknown">
           <span>
-            {view.kind === "unknown"
-              ? "It is not known yet whether the move started."
-              : "This address has not answered for a while, so how the move ended is not known."}{" "}
-            On this computer, see where it stands with <Cmd>{status}</Cmd>
+            {view.kind === "unknown" ? copy.startUnknown : copy.endUnknown}{" "}
+            <CommandText template={copy.statusCommand} command={status} />
           </span>
           {checkAgain}
         </div>
@@ -375,8 +378,8 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
       return (
         <div className="flex flex-col gap-2 text-warning" data-slot="backend-migration-stalled">
           <span>
-            The move stopped part-way ({stepWords(view.step).toLowerCase()}). On this computer, run{" "}
-            <Cmd>{migrateCommand(profile, "--restore", commands)}</Cmd> to put everything back.
+            {format(copy.stalled, { step: stepWords(view.step, copy).toLowerCase() })}{" "}
+            <CommandText template={copy.restoreCommand} command={migrateCommand(profile, "--restore", commands)} />
           </span>
           {checkAgain}
         </div>
@@ -384,19 +387,19 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
     case "done":
       return (
         <div className="text-success" data-slot="backend-migration-done">
-          Done. Hermes now answers {view.address ? `at ${view.address}` : "at the same address"}. Sign in again at this
-          same address. To undo it, run{" "}
-          <Cmd>{migrateCommand(profile, "--restore", commands)}</Cmd> on this computer.
+          {view.address ? format(copy.doneAt, { address: view.address }) : copy.doneSame}{" "}
+          {copy.signInAtSameAddress}{" "}
+          <CommandText template={copy.undoCommand} command={migrateCommand(profile, "--restore", commands)} />
         </div>
       );
     case "rolledBack":
       return (
         <div className="flex flex-col gap-2 text-warning" data-slot="backend-migration-rolled-back">
-          <span>The move did not work, so everything was put back the way it was. Reason: {view.reason}</span>
+          <span>{format(copy.rolledBack, { reason: view.reason })}</span>
           {onTryAgain && (
             <div>
               <Button size="sm" ghost className="uppercase" onClick={onTryAgain}>
-                Try again
+                {copy.tryAgain}
               </Button>
             </div>
           )}
@@ -405,17 +408,17 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
     case "manual":
       return (
         <div className="flex flex-col gap-1 text-destructive" data-slot="backend-migration-manual">
-          <span>The move failed and could not be fully undone ({view.reason}).</span>
+          <span>{format(copy.incomplete, { reason: view.reason })}</span>
           {view.detail && <span>{qualifyCommands(view.detail, profile)}</span>}
           <EngineSteps steps={view.steps} profile={profile} />
         </div>
       );
     case "restored":
-      return <div>The earlier move was undone; the older server is back.</div>;
+      return <div>{copy.restored}</div>;
     case "notStarted":
       return (
         <div className="flex flex-col gap-1 text-warning" data-slot="backend-migration-not-started">
-          <span>The move did not start. Its last words:</span>
+          <span>{copy.notStarted}</span>
           <pre className="whitespace-pre-wrap text-xs">{view.lines.map((line) => qualifyCommands(line, profile)).join("\n")}</pre>
         </div>
       );
@@ -426,11 +429,12 @@ function Progress({ view, profile, commands, onCheckAgain, onTryAgain }: {
  *  config.yaml or .env, then the steps in order (prose as words, commands as code). *profile*: qualify the
  *  `hermes` commands (null: shown as the server gave them). */
 function EngineSteps({ steps, profile }: { steps: string[]; profile: string | null }) {
+  const { t } = useI18n();
   if (steps.length === 0) return null;
   return (
     <>
-      {steps.some(replacesConfigFile) && <span>{SAVE_BOTH_WARNING}</span>}
-      <span>{steps.some(isProseStep) ? "Follow these steps:" : "On this computer, run:"}</span>
+      {steps.some(replacesConfigFile) && <span>{t.backendMigration.saveConfig}</span>}
+      <span>{steps.some(isProseStep) ? t.backendMigration.followSteps : t.backendMigration.runLocally}</span>
       <ol className="list-decimal pl-6">
         {steps.map((s, index) => (
           <li key={index}>

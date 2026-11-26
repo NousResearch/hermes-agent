@@ -1,9 +1,6 @@
 import { useMemo } from "react";
 import { Users } from "lucide-react";
-import {
-  Select,
-  SelectOption,
-} from "@nous-research/ui/ui/components/select";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -20,11 +17,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
   const { t } = useI18n();
 
   const currentDashboardLabel = useMemo(
-    () =>
-      (t.app.currentProfileOption ?? "this dashboard ({name})").replace(
-        "{name}",
-        currentProfile || "default",
-      ),
+    () => t.app.currentProfileOption.replace("{name}", currentProfile || "default"),
     [currentProfile, t.app.currentProfileOption],
   );
 
@@ -32,7 +25,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
 
   const managed = profile || currentProfile || "default";
   const isOther = !!profile && profile !== currentProfile;
-  const managingLabel = t.app.managingProfile ?? "Managing profile";
+  const managingLabel = t.app.managingProfile;
 
   return (
     <div
@@ -42,12 +35,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
       )}
       title={managingLabel}
     >
-      <Users
-        className={cn(
-          "h-3.5 w-3.5 shrink-0",
-          isOther ? "text-amber-300" : "text-text-tertiary",
-        )}
-      />
+      <Users className={cn("h-3.5 w-3.5 shrink-0", isOther ? "text-amber-300" : "text-text-tertiary")} />
 
       <Select
         className={cn(
@@ -57,8 +45,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
           "[&_button]:font-sans [&_button]:normal-case [&_button]:tracking-normal",
           "[&_[role=listbox]>div]:font-sans [&_[role=listbox]>div]:text-xs",
           "[&_[role=listbox]>div]:normal-case [&_[role=listbox]>div]:tracking-normal",
-          isOther &&
-            "[&_button]:border-amber-500/50 [&_button]:text-amber-300",
+          isOther && "[&_button]:border-amber-500/50 [&_button]:text-amber-300",
         )}
         id="hermes-profile-switcher"
         onValueChange={setProfile}

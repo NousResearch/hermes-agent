@@ -12,6 +12,9 @@
  * move started means "sign in again at this same address", never "failed".
  */
 import { authedFetch } from "@/lib/api";
+import { en } from "@/i18n/en";
+import { formatTranslation } from "@/i18n/runtime";
+import type { Translations } from "@/i18n/types";
 
 export type RunState = "none" | "running" | "done" | "rolled_back" | "failed" | "restored";
 
@@ -161,39 +164,36 @@ export function migrateCommand(
 }
 
 /** The finding, in plain words. */
-export function findingSentence(plan: BackendMigrationPlan): string {
+export function findingSentence(plan: BackendMigrationPlan, copy: Translations["backendMigration"]): string {
   const port = portOf(plan.old_address);
-  const where = port ? `on port ${port}` : "on this computer";
-  return `An older Hermes server is running ${where}. Phones and browsers that use it talk to a second copy of Hermes.`;
+  return port ? formatTranslation(copy.foundPort, { port }) : copy.foundLocal;
 }
 
 /** What the move does and what people will notice, one line each. */
-export function impactLines(plan: BackendMigrationPlan): string[] {
+export function impactLines(plan: BackendMigrationPlan, copy: Translations["backendMigration"]): string[] {
   const lines: string[] = [];
-  const same = plan.old_address && plan.old_address === plan.new_address;
+  const oldAddress = plan.old_address;
   // An address the engine could not read is null: never printed, never guessed.
-  const at = plan.new_address ? ` ${plan.new_address}` : " its address";
   lines.push(
     plan.keep_webapp_address
-      ? `The older server is switched off; the web app stays${plan.new_address ? ` at ${plan.new_address}` : " where it is"}.`
-      : same
-        ? `Hermes itself takes over the same address (${plan.old_address}); nothing becomes reachable from anywhere new.`
-        : `Hermes itself takes over${at}.`,
+      ? plan.new_address ? formatTranslation(copy.keepWebappAddress, { address: plan.new_address }) : copy.keepWebapp
+      : oldAddress && oldAddress === plan.new_address
+        ? formatTranslation(copy.takeSameAddress, { address: oldAddress })
+        : plan.new_address ? formatTranslation(copy.takeAddress, { address: plan.new_address }) : copy.takeOldAddress,
   );
   if (plan.auth_before?.auth_required) {
-    lines.push("The same username and password keep working. Everyone signs in once more afterwards.");
+    lines.push(copy.signInSameCredentials);
   } else {
-    lines.push("Everyone signs in once more afterwards.");
+    lines.push(copy.everyoneSignsIn);
   }
-  lines.push("Browsers get the new Hermes web app instead of this dashboard page.");
+  lines.push(copy.newWebapp);
   if (plan.webapp_bundle_missing) {
-    lines.push("The web app is built first; this can take a few minutes.");
+    lines.push(copy.buildWebapp);
   }
   if (!plan.gateway.installed) {
-    lines.push("Hermes is set up to start by itself when this computer starts.");
+    lines.push(copy.autoStart);
   }
-  lines.push("The address is unavailable for a few seconds during the switch.");
-  lines.push("If anything goes wrong, everything is put back the way it was.");
+  lines.push(copy.downtime, copy.rollbackOnError);
   return lines;
 }
 
@@ -293,9 +293,7 @@ export function replacesConfigFile(step: string): boolean {
 }
 
 /** The CLI's advice before steps that replace or remove config.yaml or .env, shown whenever any step does. */
-export const SAVE_BOTH_WARNING = "Before running these steps, save a copy of your current config.yaml and .env: the "
-  + "steps may replace or remove them. To keep changes you made to those files, merge them into any backup copy a "
-  + "step copies back (before you run it), or re-apply them after the last step.";
+const SAVE_BOTH_WARNING = en.backendMigration.saveConfig;
 
 /** The engine's account of an incomplete rollback (`<reason>; rollback incomplete: <detail>`), or "". */
 export function incompleteDetail(status: BackendMigrationStatus): string {
@@ -433,19 +431,8 @@ export function applyOutcome(res: { status: number; body: Started | Refusal | nu
   return body.error === "already_running" ? { kind: "running" } : { kind: "refused", refusal: body };
 }
 
-const STEP_WORDS: Record<string, string> = {
-  preflight: "Checking",
-  manifest: "Saving how things are now",
-  webapp_bundle: "Building the web app",
-  write_config: "Writing the settings",
-  gateway_service: "Setting Hermes up to start by itself",
-  stop_old_backend: "Switching off the older server",
-  start_gateway: "Starting Hermes on the same address",
-  verify: "Checking the address answers",
-};
-
-export function stepWords(step: string): string {
-  return STEP_WORDS[step] ?? step.replace(/_/g, " ");
+export function stepWords(step: string, copy: Translations["backendMigration"]): string {
+  return Object.hasOwn(copy.steps, step) ? copy.steps[step] : step.replace(/_/g, " ");
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────

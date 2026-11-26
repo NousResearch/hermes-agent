@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ReactNode } from "react";
 
 import { I18nProvider } from "@/i18n";
+import { I18nContext, formatTranslation, resolveTranslations } from "@/i18n/runtime";
 import { DashboardMovingModal } from "./DashboardMovingModal";
 import type { StatusResponse } from "@/lib/api";
 
@@ -66,6 +67,18 @@ describe("DashboardMovingModal", () => {
     );
     expect(document.activeElement).toBe(button("Open in web app"));
     expect(stateLabel()).toBe("Ready");
+  });
+
+  it("shows the Cloud notice and actions in Simplified Chinese", async () => {
+    await render(
+      <I18nContext.Provider value={{ locale: "zh", t: resolveTranslations("zh"), format: formatTranslation, setLocale: async () => {} }}>
+        <DashboardMovingModal status={cloud} />
+      </I18nContext.Provider>,
+    );
+    expect(modal()?.textContent).toContain("控制台即将迁移");
+    expect(modal()?.textContent).toContain("12月6日");
+    expect(stateLabel()).toBe("就绪");
+    expect(document.activeElement).toBe(button("打开网页应用"));
   });
 
   it.each([

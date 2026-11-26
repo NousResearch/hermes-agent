@@ -38,12 +38,9 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { useI18n } from "@/i18n";
+import { formatDateTime } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
-
-const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
 
 function joinPath(base: string, name: string): string {
   const cleanName = name.trim().replace(/^[\\/]+/, "");
@@ -70,15 +67,25 @@ function downloadDataUrl(dataUrl: string, name: string) {
   link.remove();
 }
 
-function displayPath(path: string | null | undefined): string {
-  return path?.trim() || "Files";
+function displayPath(path: string | null | undefined, fallback: string): string {
+  return path?.trim() || fallback;
 }
 
 function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
 
+function fileDeleteTitle(
+  entry: ManagedFileEntry | null,
+  copy: ReturnType<typeof useI18n>["t"]["files"],
+  format: ReturnType<typeof useI18n>["format"],
+): string {
+  if (!entry) return copy.deleteItemTitle;
+  return format(entry.is_directory ? copy.deleteFolderTitle : copy.deleteFileTitle, { name: entry.name });
+}
+
 export default function FilesPage() {
+  const { format, locale, t } = useI18n();
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -99,7 +106,7 @@ export default function FilesPage() {
   const activePath = listing?.path ?? currentPath ?? "";
   const canChangePath = listing?.can_change_path ?? false;
   const canUpload = Boolean(activePath) && !uploading;
-  const headerPath = displayPath(listing?.locked_root ?? listing?.path ?? currentPath);
+  const headerPath = displayPath(listing?.locked_root ?? listing?.path ?? currentPath, t.files.root);
 
   const load = useCallback(
     async (path = currentPath) => {
@@ -111,12 +118,12 @@ export default function FilesPage() {
         setCurrentPath(result.path);
         setPathInput(result.path);
       } catch (e) {
-        setError(errorMessage(e));
+        setError(errorMessage(e, t.common));
       } finally {
         setLoading(false);
       }
     },
-    [currentPath],
+    [currentPath, t.common],
   );
 
   useEffect(() => {
@@ -140,7 +147,7 @@ export default function FilesPage() {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh files"
+          aria-label={t.files.refresh}
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
@@ -150,7 +157,7 @@ export default function FilesPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [headerPath, load, loading, setAfterTitle, setEnd]);
+  }, [headerPath, load, loading, setAfterTitle, setEnd, t.files.refresh]);
 
   const openDirectory = (entry: ManagedFileEntry) => {
     if (entry.is_directory) {
@@ -161,7 +168,7 @@ export default function FilesPage() {
   const goToPath = async () => {
     const nextPath = pathInput.trim();
     if (!nextPath) {
-      showToast("Path required", "error");
+      showToast(t.files.pathRequired, "error");
       return;
     }
     await load(nextPath);
@@ -170,11 +177,11 @@ export default function FilesPage() {
   const createDirectory = async () => {
     const name = folderName.trim();
     if (!activePath) {
-      showToast("Directory unavailable", "error");
+      showToast(t.files.directoryUnavailable, "error");
       return;
     }
     if (!name) {
-      showToast("Folder name required", "error");
+      showToast(t.files.folderNameRequired, "error");
       return;
     }
     setCreating(true);
@@ -182,10 +189,10 @@ export default function FilesPage() {
       await api.createDirectory(joinPath(activePath, name));
       setFolderName("");
       setCreateDialogOpen(false);
-      showToast("Folder created", "success");
+      showToast(t.files.folderCreated, "success");
       await load();
     } catch (e) {
-      showToast(`Create failed: ${errorMessage(e)}`, "error");
+      showToast(format(t.files.createFailed, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setCreating(false);
     }
@@ -198,10 +205,10 @@ export default function FilesPage() {
       for (const file of Array.from(files)) {
         await api.uploadFile(joinPath(activePath, file.name), file, true);
       }
-      showToast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`, "success");
+      showToast(format(t.files.filesUploaded, { count: files.length }), "success");
       await load();
     } catch (e) {
-      showToast(`Upload failed: ${errorMessage(e)}`, "error");
+      showToast(format(t.files.uploadFailed, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -244,7 +251,7 @@ export default function FilesPage() {
       const file = await api.readFile(entry.path);
       downloadDataUrl(file.data_url, file.name);
     } catch (e) {
-      showToast(`Download failed: ${errorMessage(e)}`, "error");
+      showToast(format(t.files.downloadFailed, { error: errorMessage(e, t.common) }), "error");
     }
   };
 
@@ -253,11 +260,11 @@ export default function FilesPage() {
     setDeleting(true);
     try {
       await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
-      showToast("Deleted", "success");
+      showToast(t.files.deleted, "success");
       setPendingDelete(null);
       await load();
     } catch (e) {
-      showToast(`Delete failed: ${errorMessage(e)}`, "error");
+      showToast(format(t.files.deleteFailed, { error: errorMessage(e, t.common) }), "error");
     } finally {
       setDeleting(false);
     }
@@ -287,12 +294,12 @@ export default function FilesPage() {
             <Input
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
-              aria-label="Path"
-              placeholder="Path"
+              aria-label={t.files.path}
+              placeholder={t.files.path}
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">
-              Go
+              {t.files.go}
             </Button>
           </form>
         ) : (
@@ -310,7 +317,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={uploading ? <Spinner /> : <Upload />}
           >
-            Upload
+            {t.files.upload}
           </Button>
           <Button
             type="button"
@@ -321,7 +328,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={<FolderPlus />}
           >
-            Create
+            {t.files.create}
           </Button>
         </div>
       </div>
@@ -334,7 +341,7 @@ export default function FilesPage() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         disabled={!canUpload}
-        aria-label="Upload files"
+        aria-label={t.files.uploadFiles}
         className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
           draggingFiles
             ? "border-primary bg-primary/10 text-foreground"
@@ -347,31 +354,29 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading ? "Uploading" : draggingFiles ? "Release to upload" : "Drop files here"}
+              {uploading ? t.files.uploading : draggingFiles ? t.files.releaseToUpload : t.files.dropFilesHere}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
-              {activePath || "Loading"}
+              {activePath || t.files.loading}
             </span>
           </span>
         </span>
         <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary sm:block">
-          Choose files
+          {t.files.chooseFiles}
         </span>
       </button>
 
       <Card className="min-w-0 max-w-full overflow-hidden">
         <CardContent className="overflow-x-auto p-0">
           {error && (
-            <div className="border-b border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-              {error}
-            </div>
+            <div className="border-b border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-            <span>Name</span>
-            <span>Size</span>
-            <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span>{t.files.name}</span>
+            <span>{t.files.size}</span>
+            <span>{t.files.modified}</span>
+            <span className="text-right">{t.files.actions}</span>
           </div>
 
           {listing?.parent && (
@@ -393,10 +398,10 @@ export default function FilesPage() {
           {loading && !listing ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Spinner />
-              Loading files...
+              {t.files.loading}
             </div>
           ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">{t.files.noFiles}</div>
           ) : (
             listing?.entries.map((entry) => (
               <div
@@ -407,7 +412,7 @@ export default function FilesPage() {
                   type="button"
                   onClick={() => (entry.is_directory ? openDirectory(entry) : void downloadFile(entry))}
                   disabled={entry.broken_link}
-                  title={entry.broken_link ? "Broken symbolic link" : undefined}
+                  title={entry.broken_link ? t.files.brokenSymbolicLink : undefined}
                   className="flex min-w-0 items-center gap-2 text-left font-mono text-foreground disabled:cursor-not-allowed disabled:text-text-tertiary"
                 >
                   {entry.is_directory ? (
@@ -420,15 +425,13 @@ export default function FilesPage() {
                   <span className="truncate">{entry.name}</span>
                   {entry.broken_link && (
                     <Badge tone="destructive" className="shrink-0 text-xs">
-                      Broken link
+                      {t.files.brokenLink}
                     </Badge>
                   )}
                 </button>
                 <span className="text-xs tabular-nums text-text-secondary">{formatBytes(entry.size)}</span>
                 <span className="truncate text-xs text-text-secondary">
-                  {entry.mtime !== null && Number.isFinite(entry.mtime)
-                    ? DATE_FORMAT.format(entry.mtime * 1000)
-                    : "-"}
+                  {entry.mtime !== null && Number.isFinite(entry.mtime) ? formatDateTime(entry.mtime * 1000, locale) : "-"}
                 </span>
                 <span className="flex justify-end gap-1">
                   {entry.is_directory ? (
@@ -437,7 +440,7 @@ export default function FilesPage() {
                       size="icon"
                       type="button"
                       onClick={() => openDirectory(entry)}
-                      aria-label={`Open ${entry.name}`}
+                      aria-label={format(t.files.openItem, { name: entry.name })}
                     >
                       <FolderOpen />
                     </Button>
@@ -448,7 +451,9 @@ export default function FilesPage() {
                       type="button"
                       onClick={() => void downloadFile(entry)}
                       disabled={entry.broken_link}
-                      aria-label={`Download ${entry.name}`}
+                      aria-label={format(t.files.downloadItem, {
+                        name: entry.name,
+                      })}
                     >
                       <Download />
                     </Button>
@@ -458,7 +463,7 @@ export default function FilesPage() {
                     size="icon"
                     type="button"
                     onClick={() => setPendingDelete(entry)}
-                    aria-label={`Delete ${entry.name}`}
+                    aria-label={format(t.files.deleteItem, { name: entry.name })}
                     className="text-destructive hover:text-destructive"
                   >
                     <Trash2 />
@@ -482,9 +487,11 @@ export default function FilesPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Create folder</DialogTitle>
+            <DialogTitle>{t.files.createFolder}</DialogTitle>
             <DialogDescription>
-              Target: {activePath || "Loading"}
+              {format(t.files.target, {
+                path: activePath || t.files.loading,
+              })}
             </DialogDescription>
           </DialogHeader>
           <div className="p-4">
@@ -495,7 +502,7 @@ export default function FilesPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void createDirectory();
               }}
-              placeholder="Folder name"
+              placeholder={t.files.folderName}
               disabled={creating}
             />
           </div>
@@ -509,7 +516,7 @@ export default function FilesPage() {
               }}
               disabled={creating}
             >
-              Cancel
+              {t.files.cancel}
             </Button>
             <Button
               type="button"
@@ -517,7 +524,7 @@ export default function FilesPage() {
               disabled={creating}
               prefix={creating ? <Spinner /> : <FolderPlus />}
             >
-              Create
+              {t.files.create}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -528,12 +535,8 @@ export default function FilesPage() {
         loading={deleting}
         onCancel={() => setPendingDelete(null)}
         onConfirm={() => void confirmDelete()}
-        title={pendingDelete ? `Delete ${pendingDelete.name}?` : "Delete item?"}
-        description={
-          pendingDelete?.is_directory
-            ? "This removes the folder and everything inside it."
-            : "This removes the file."
-        }
+        title={fileDeleteTitle(pendingDelete, t.files, format)}
+        description={pendingDelete?.is_directory ? t.files.deleteFolderDescription : t.files.deleteFileDescription}
       />
     </div>
   );

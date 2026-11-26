@@ -11,26 +11,22 @@ const RETIREMENT_DATE = new Date(2026, 11, 6);
 /** Agent settings in the web app (a hash route, like every page there). */
 const WEBAPP_SETTINGS_HASH = "/#/settings";
 
-/** The machine row's status per web app state: its copy key, English fallback and colour. */
+/** The machine row's copy key and colour per web app state. */
 const MACHINE = {
   ready: {
     key: "dashboardMovingMachineReady",
-    label: "Ready",
     tone: "text-success",
   },
   starting: {
     key: "dashboardMovingMachineStarting",
-    label: "Starting",
     tone: "text-warning",
   },
   down: {
     key: "dashboardMovingMachineDown",
-    label: "Offline",
     tone: "text-destructive",
   },
   not_available: {
     key: "dashboardMovingMachineNotAvailable",
-    label: "Not available yet",
     tone: "opacity-65",
   },
 } as const;
@@ -48,7 +44,7 @@ export function DashboardMovingModal({
 }: {
   status: StatusResponse | null;
 }) {
-  const { t, locale } = useI18n();
+  const { t, locale, format } = useI18n();
   const state = status?.webapp_state ?? null;
   const webappUrl = state === "ready" ? (status?.webapp_url ?? null) : null;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -110,10 +106,7 @@ export function DashboardMovingModal({
     month: "long",
     day: "numeric",
   }).format(RETIREMENT_DATE);
-  const notice = (
-    t.app.dashboardMovingNotice ??
-    "This dashboard moves to the Hermes web app on {date}."
-  ).replace("{date}", date);
+  const notice = format(t.app.dashboardMovingNotice, { date });
 
   return createPortal(
     <div
@@ -129,7 +122,7 @@ export function DashboardMovingModal({
         className="flex w-full max-w-[740px] flex-col gap-6 rounded-[6px] border border-border bg-card p-6 font-sans normal-case text-midground shadow-2xl sm:p-[50px]"
       >
         <p className="text-[10px] leading-[16px] tracking-[0.6px] uppercase opacity-40 sm:px-8">
-          {t.app.dashboardMovingMeta ?? "Legacy dashboard / Retirement"}
+          {t.app.dashboardMovingMeta}
         </p>
 
         <div className="flex items-center gap-2 rounded-[6px] bg-midground/5 px-4 py-2.5 text-[13px] leading-[17px]">
@@ -141,15 +134,14 @@ export function DashboardMovingModal({
           id="dashboard-moving-title"
           className="font-compressed text-[40px] leading-[48px] font-light tracking-[-1px] sm:px-8"
         >
-          {t.app.dashboardMovingTitle ?? "Your dashboard is moving"}
+          {t.app.dashboardMovingTitle}
         </h2>
 
         <p
           id="dashboard-moving-body"
           className="text-[16px] leading-[21px] opacity-80 sm:px-8"
         >
-          {t.app.dashboardMovingBody ??
-            "Your agents, chats, skills and routines come with you. Use the same sign-in."}
+          {t.app.dashboardMovingBody}
         </p>
 
         <MachineCard state={state} webappUrl={webappUrl} />
@@ -161,11 +153,11 @@ export function DashboardMovingModal({
               type="button"
               onClick={() => window.open(webappUrl, "_self")}
             >
-              {t.app.dashboardMovingOpen ?? "Open in web app"}
+              {t.app.dashboardMovingOpen}
             </Button>
           )}
           <Button type="button" outlined onClick={later}>
-            {t.app.dashboardMovingLater ?? "Later"}
+            {t.app.dashboardMovingLater}
           </Button>
         </div>
       </div>
@@ -189,20 +181,18 @@ function MachineCard({
       <div className="flex min-h-16 items-center gap-4">
         <Cloud aria-hidden className="h-4 w-4 shrink-0 opacity-65" />
         <Row
-          title={t.app.dashboardMovingMachineTitle ?? "Your cloud machine"}
+          title={t.app.dashboardMovingMachineTitle}
           detail={
             state === "not_available"
-              ? (t.app.dashboardMovingMachineNotAvailableDetail ??
-                "The web app is not on this machine yet")
-              : (t.app.dashboardMovingMachineDetail ??
-                "Keep working in the new app")
+              ? t.app.dashboardMovingMachineNotAvailableDetail
+              : t.app.dashboardMovingMachineDetail
           }
         />
         <span
           data-testid="dashboard-moving-state"
           className={`shrink-0 text-[13px] leading-[17px] ${machine.tone}`}
         >
-          {t.app[machine.key] ?? machine.label}
+          {t.app[machine.key]}
         </span>
       </div>
       {webappUrl && (
@@ -217,11 +207,8 @@ function MachineCard({
               className="h-4 w-4 shrink-0 opacity-65"
             />
             <Row
-              title={t.app.dashboardMovingSettingsTitle ?? "Advanced settings"}
-              detail={
-                t.app.dashboardMovingSettingsDetail ??
-                "Available in Agent settings"
-              }
+              title={t.app.dashboardMovingSettingsTitle}
+              detail={t.app.dashboardMovingSettingsDetail}
             />
             <ChevronRight aria-hidden className="h-4 w-4 shrink-0 opacity-80" />
           </a>

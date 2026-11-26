@@ -116,8 +116,9 @@ dotted keys and may be partial. One merged dict per `(home, lang)` is cached; `r
 validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled tuple. `.tui.yaml` /
 `.desktop.yaml` pack files are opaque here beyond parse/flatten/serve (`surface_catalog`, RPC
 `i18n.catalog`); for the `tui` surface the bundled `locales/<lang>.tui.yaml` is the bottom layer of what
-`surface_catalog` serves (the TUI ships English only in TS). Endonyms for bundled ids live in `i18n_languages.py` and must agree with
-`apps/shared/src/i18n.ts`.
+`surface_catalog` serves (the TUI ships English only in TS). `locales/registry.json` owns bundled
+identities and aliases; `i18n_languages.py` loads it, while `node scripts/gen_locale_registry.mjs`
+generates the data inside `apps/shared` so that package builds independently.
 
 ## Memory, context engines, curator
 

@@ -65,14 +65,19 @@ async function renderSessionsPage(rows: Record<string, unknown>[]) {
     limit,
     offset: 0,
   }));
-  const [{ default: SessionsPage }, { I18nProvider }, { SystemActionsProvider }, { ProfileProvider }, { PageHeaderProvider }] =
-    await Promise.all([
-      import("./SessionsPage"),
-      import("@/i18n"),
-      import("@/contexts/SystemActions"),
-      import("@/contexts/ProfileProvider"),
-      import("@/contexts/PageHeaderProvider"),
-    ]);
+  const [
+    { default: SessionsPage },
+    { I18nProvider },
+    { SystemActionsProvider },
+    { ProfileProvider },
+    { PageHeaderProvider },
+  ] = await Promise.all([
+    import("./SessionsPage"),
+    import("@/i18n"),
+    import("@/contexts/SystemActions"),
+    import("@/contexts/ProfileProvider"),
+    import("@/contexts/PageHeaderProvider"),
+  ]);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -107,8 +112,18 @@ beforeEach(() => {
   apiMocks.deleteSession.mockResolvedValue({ ok: true });
   apiMocks.renameSession.mockResolvedValue({ ok: true, title: "Renamed" });
   apiMocks.exportSessionUrl.mockReturnValue("/api/sessions/x/export");
-  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
-  vi.stubGlobal("ResizeObserver", class { disconnect() {} observe() {} unobserve() {} });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: false, status: 500 })),
+  );
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      disconnect() {}
+      observe() {}
+      unobserve() {}
+    },
+  );
   // gsap ticks through rAF; a synchronous callback recurses to death.
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => setTimeout(() => cb(0), 0) as unknown as number);
   vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
@@ -123,10 +138,62 @@ afterEach(async () => {
 });
 
 describe("SessionsPage per-row profile routing (#99387)", () => {
+  it("keeps running sessions visible when a bulk deletion skips them", async () => {
+    await renderSessionsPage(
+      ["idle", "running"].map((id) => ({
+        id,
+        profile: "worker",
+        source: "cli",
+        model: null,
+        title: `Session ${id}`,
+        started_at: 1,
+        ended_at: null,
+        last_active: 1,
+        is_active: false,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 1,
+        output_tokens: 1,
+        preview: "hi",
+      })),
+    );
+    apiMocks.bulkDeleteSessions.mockResolvedValue({ deleted: 1, skipped_active: ["running"] });
+    // A failed refresh must retain the rows reconciled from the deletion response.
+    apiMocks.getSessions.mockRejectedValue(new Error("refresh unavailable"));
+    await act(async () => {
+      document.querySelectorAll('[role="checkbox"][aria-label="Select session"]').forEach(click);
+    });
+    await act(async () => click(button("Delete 2")));
+    await waitFor(() => Boolean(document.querySelector('[role="alertdialog"]')));
+    const confirm = Array.from(document.querySelectorAll('[role="alertdialog"] button')).find(
+      (b) => b.textContent?.trim() === "Delete",
+    );
+    await act(async () => click(confirm ?? null));
+
+    expect(apiMocks.bulkDeleteSessions).toHaveBeenCalledWith(["idle", "running"], "worker");
+    expect(document.body.textContent).toContain("Session running");
+    expect(document.body.textContent).not.toContain("Session idle");
+    expect(document.body.textContent).toContain("1 deleted; 1 kept because a turn is running");
+  });
+
   it("sends every per-row request to the row's owning profile, not the management default", async () => {
     await renderSessionsPage([
-      { id: "sid-guanli", profile: "guanli", source: "cli", model: null, title: "Managed", started_at: 1, ended_at: null,
-        last_active: 1, is_active: false, message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "hi" },
+      {
+        id: "sid-guanli",
+        profile: "guanli",
+        source: "cli",
+        model: null,
+        title: "Managed",
+        started_at: 1,
+        ended_at: null,
+        last_active: 1,
+        is_active: false,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 1,
+        output_tokens: 1,
+        preview: "hi",
+      },
     ]);
 
     // expand → transcript read
@@ -159,19 +226,48 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
   it("routes a search result through the profile stamped on that result", async () => {
     apiMocks.searchSessions.mockResolvedValue({
       results: [
-        { id: "sid-worker", session_id: "sid-worker", profile: "worker", source: "cli", model: null,
-          title: "Search hit", started_at: 1, ended_at: null, last_active: 1, is_active: false,
-          message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "found",
-          snippet: "found", role: "user", session_started: 1 },
+        {
+          id: "sid-worker",
+          session_id: "sid-worker",
+          profile: "worker",
+          source: "cli",
+          model: null,
+          title: "Search hit",
+          started_at: 1,
+          ended_at: null,
+          last_active: 1,
+          is_active: false,
+          message_count: 2,
+          tool_call_count: 0,
+          input_tokens: 1,
+          output_tokens: 1,
+          preview: "found",
+          snippet: "found",
+          role: "user",
+          session_started: 1,
+        },
       ],
     });
     await renderSessionsPage([
-      { id: "sid-default", profile: "default", source: "cli", model: null, title: "Listed", started_at: 1,
-        ended_at: null, last_active: 1, is_active: false, message_count: 2, tool_call_count: 0,
-        input_tokens: 1, output_tokens: 1, preview: "listed" },
+      {
+        id: "sid-default",
+        profile: "default",
+        source: "cli",
+        model: null,
+        title: "Listed",
+        started_at: 1,
+        ended_at: null,
+        last_active: 1,
+        is_active: false,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 1,
+        output_tokens: 1,
+        preview: "listed",
+      },
     ]);
 
-    const search = document.querySelector<HTMLInputElement>('input[placeholder]');
+    const search = document.querySelector<HTMLInputElement>("input[placeholder]");
     if (!search) throw new Error("search input not rendered");
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "found");

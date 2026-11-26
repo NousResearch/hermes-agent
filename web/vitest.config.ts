@@ -6,6 +6,8 @@ import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 function compilerPreset() {
   const preset = reactCompilerPreset();
   preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/;
+  // These are shipped scripts loaded through the host SDK, not React source modules.
+  preset.rolldown.filter.id = { exclude: /\/plugins\/[^/]+\/dashboard\/dist\// };
   return preset;
 }
 import path from "path";

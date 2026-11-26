@@ -7,8 +7,10 @@ import { PageHeaderProvider } from "./PageHeaderProvider";
 import { usePageHeader } from "./usePageHeader";
 import ChannelsPage from "@/pages/ChannelsPage";
 import FilesPage from "@/pages/FilesPage";
+import { en } from "@/i18n/en";
+import { formatTranslation } from "@/i18n/runtime";
 
-vi.mock("@/i18n", () => ({ useI18n: () => ({ t: { common: { cancel: "Cancel", delete: "Delete" } } }) }));
+vi.mock("@/i18n", () => ({ useI18n: () => ({ t: en, format: formatTranslation, locale: "en" }) }));
 vi.mock("@/lib/resolve-page-title", () => ({ resolvePageTitle: (path: string) => path }));
 vi.mock("@/lib/api", () => ({
   api: {

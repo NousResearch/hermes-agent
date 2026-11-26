@@ -361,6 +361,17 @@ describe("api.getAuthMe loopback contract", () => {
   });
 });
 
+it("configuration requests retain their selected profile and partial-save payload", async () => {
+  const request = jsonFetchMock();
+  vi.stubGlobal("fetch", request);
+  setManagementProfile("selected");
+  await api.getConfigRevision();
+  expect(request.mock.calls[0][0]).toBe("/api/config/revision?profile=selected");
+  await api.saveConfig({ display: { language: "zh" } }, "other");
+  expect(request.mock.calls[1][0]).toBe("/api/config?profile=other");
+  expect(JSON.parse(String(request.mock.calls[1][1]?.body))).toEqual({ config: { display: { language: "zh" } } });
+});
+
 describe("session token stays on the dashboard origin", () => {
   const foreign = [
     "https://evil.example/x.png",

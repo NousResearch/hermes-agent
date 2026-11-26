@@ -12,6 +12,7 @@ import { I18nProvider } from "@/i18n";
 import SystemPage from "@/pages/SystemPage";
 
 const PAGE_REQUESTS = [
+  "GET /api/config/revision",
   "GET /api/status",
   "GET /api/system/stats",
   "GET /api/memory",

@@ -616,15 +616,24 @@ importers:
       '@types/react':
         specifier: 19.3.0
         version: 19.3.0
+      '@types/react-dom':
+        specifier: 19.3.0
+        version: 19.3.0(@types/react@19.3.0)
       chalk:
         specifier: 5.6.2
         version: 5.6.2
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+      jsdom:
+        specifier: 29.1.1
+        version: 29.1.1(@noble/hashes@2.4.0)
       prettier:
         specifier: 3.9.9
         version: 3.9.9
+      react-dom:
+        specifier: 19.3.0
+        version: 19.3.0(react@19.3.0)
       strip-ansi:
         specifier: 7.2.0
         version: 7.2.0
@@ -637,6 +646,9 @@ importers:
       vitest:
         specifier: 4.1.12
         version: 4.1.12(@types/node@22.20.5)(jsdom@29.1.1(@noble/hashes@2.4.0))(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
 
   ui-tui/packages/hermes-ink:
     dependencies:
@@ -819,6 +831,9 @@ importers:
       eslint-plugin-react-refresh:
         specifier: 0.5.7
         version: 0.5.7(eslint@10.12.0(jiti@2.7.0)(supports-color@10.2.2))
+      jsdom:
+        specifier: 29.1.1
+        version: 29.1.1(@noble/hashes@2.4.0)
       three:
         specifier: 0.180.0
         version: 0.180.0

@@ -55,7 +55,11 @@ def _(rid, params: dict) -> dict:
     try:
         _load_language_packs()
         lang = resolve_language_id(params.get("lang", "")) or "en"
-        return _ok(rid, {"lang": lang, "surface": surface, "messages": surface_catalog(lang, surface)})
+        messages = surface_catalog(lang, surface)
+        if surface == "tui":
+            from .command_discovery import command_presentation_messages
+            messages = {**command_presentation_messages(lang), **messages}
+        return _ok(rid, {"lang": lang, "surface": surface, "messages": messages})
     except Exception as e:
         return _err(rid, _I18N_ERR, str(e))
 

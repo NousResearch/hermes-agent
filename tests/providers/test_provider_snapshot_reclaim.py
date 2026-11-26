@@ -199,3 +199,37 @@ def test_a_data_only_uninstall_keeps_the_snapshots_live_processes_import(loader,
 
     assert not failures and not (home / "notes.md").exists()
     assert (root / "pkg" / "lazy.py").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root writes into read-only directories")
+@pytest.mark.parametrize("copy_fails", [False, True], ids=["published", "failed copy"])
+def test_a_read_only_plugin_tree_is_snapshotted_and_cleaned_up(loader, tmp_path, copy_fails):
+    """A plugin installed from a read-only tree (a Nix store path) is copied read-only; the copy must still be
+    published, and removed on exit or when the copy fails."""
+    reload, hooks = loader
+    plugin = tmp_path / "store" / "my-provider"
+    (plugin / "pkg").mkdir(parents=True)
+    (plugin / "__init__.py").write_text("")
+    (plugin / "pkg" / "mod.py").write_text("")
+    if copy_fails:
+        (plugin / "unreadable.py").write_text("")
+        (plugin / "unreadable.py").chmod(0)
+    read_only = [plugin / "pkg", plugin]
+    for directory in read_only:
+        directory.chmod(0o555)
+    try:
+        if copy_fails:
+            with pytest.raises(OSError):
+                reload._snapshot(plugin, "mod")
+            assert not list((reload._snapshot_root / "mod").iterdir())
+        else:
+            copy = reload._snapshot(plugin, "mod")
+            assert (copy / "pkg" / "mod.py").is_file()
+            assert [e.name for e in copy.parent.iterdir()] == [plugin.name]
+            fn, args = hooks.pop()
+            fn(*args)  # normal process exit
+            assert not copy.exists()
+    finally:
+        for directory in read_only:
+            directory.chmod(0o755)

@@ -39,6 +39,14 @@ function unwrapMessageEnvelopes(content) {
   return cur;
 }
 
+// What /typing forwards to WhatsApp. `paused` withdraws the indicator; anything else shows it, as before,
+// so an adapter that sends no state still gets `composing`.
+export async function sendTypingPresence(sock, chatId, state) {
+  const presence = state === 'paused' ? 'paused' : 'composing';
+  await sock.sendPresenceUpdate(presence, chatId);
+  return presence;
+}
+
 export function getMessageContent(msg) {
   const raw = msg?.message || {};
   const content = unwrapMessageEnvelopes(raw);

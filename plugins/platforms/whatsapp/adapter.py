@@ -1293,12 +1293,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return await self._send_media_to_bridge(chat_id, file_path, "document", caption, file_name or os.path.basename(file_path))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        await self._send_typing_state(chat_id, "composing")
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """WhatsApp shows "typing…" until told otherwise (Telegram's and Discord's expire on their own), so a turn
+        that ends without a message, or a message a plugin skips, must withdraw it."""
+        await self._send_typing_state(chat_id, "paused")
+
+    async def _send_typing_state(self, chat_id: str, state: str) -> None:
         if await self._bridge_unavailable():
             return
         with suppress(Exception):
             import aiohttp
             # ``async with`` — a bare ``await session.post(...)`` leaves the response (and its CLOSE_WAIT socket) alive until GC.
-            async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_whatsapp_jid(chat_id)}, timeout=aiohttp.ClientTimeout(total=5)):
+            async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_whatsapp_jid(chat_id), "state": state}, timeout=aiohttp.ClientTimeout(total=5)):
                 pass
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:

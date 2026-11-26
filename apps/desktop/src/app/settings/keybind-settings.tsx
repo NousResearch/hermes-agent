@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useContext, useMemo, useState } from 'react'
+import { Fragment, useContext, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -308,7 +308,12 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
           {capturing ? (
             <Kbd variant="capturing">{k.pressKey}</Kbd>
           ) : combos.length > 0 ? (
-            combos.map(combo => <KbdCombo combo={combo} key={combo} />)
+            combos.map((combo, index) => (
+              <Fragment key={combo}>
+                {index > 0 && <span aria-hidden className="px-0.5 text-[0.7rem] text-(--ui-text-tertiary)">/</span>}
+                <KbdCombo combo={combo} />
+              </Fragment>
+            ))
           ) : (
             <Kbd variant="ghost">{k.set}</Kbd>
           )}
@@ -361,8 +366,11 @@ function ReadonlyRow({ shortcut }: { shortcut: KeybindReadonly }) {
     <div className="flex items-center gap-2.5 rounded-lg px-2.5 py-1">
       <span className="min-w-0 flex-1 truncate text-[0.82rem] text-foreground/75">{label}</span>
       <div className="flex shrink-0 items-center gap-1">
-        {shortcut.keys.map(key => (
-          <KbdCombo combo={key} key={key} />
+        {shortcut.keys.map((key, index) => (
+          <Fragment key={key}>
+            {index > 0 && <span aria-hidden className="px-0.5 text-[0.7rem] text-(--ui-text-tertiary)">/</span>}
+            <KbdCombo combo={key} />
+          </Fragment>
         ))}
       </div>
       <span aria-hidden className="size-6 shrink-0" />

@@ -32,7 +32,7 @@ import { CurrentPlanCard, CurrentPlanRow } from './current-plan-card'
 import { type BillingDevFixtureName, billingDevFixtures } from './dev-fixtures'
 import { StepUpInlineAction } from './inline-feedback'
 import { KeepGoingOnCreditsRow } from './keep-going-on-credits-row'
-import { openExternal } from './open-external'
+import { externalActionLabel, openExternal } from './open-external'
 import { BillingPlansView } from './plans-view'
 import { createSimulatedBillingApi } from './simulated-api'
 import type { BillingStateResponse } from './types'
@@ -109,7 +109,7 @@ function NoticeCard({ inStack = false, notice }: { inStack?: boolean; notice: Bi
             type="button"
             variant="outline"
           >
-            {notice.action.label}
+            {externalActionLabel(notice.action.label)}
             <ExternalLink className="size-3.5" />
           </Button>
         ))}

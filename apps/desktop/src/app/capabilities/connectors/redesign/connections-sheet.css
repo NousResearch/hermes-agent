@@ -587,6 +587,7 @@
 :root[data-shell='portal'] .conn-badge-off {
   display: inline-flex;
   align-items: center;
+  gap: 0.25rem;
   height: 1.25rem;
   padding-inline: 0.4375rem;
   border: 1px solid var(--portal-stroke-control);

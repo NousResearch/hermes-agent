@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils'
 import { LIST_ROW_COLUMNS, ListRow } from '../primitives'
 
 import { BillingRefusalInline } from './inline-feedback'
-import { openExternal } from './open-external'
+import { externalActionLabel, openExternal } from './open-external'
 import { TierArt } from './tier-art'
 import type { BillingPlanCardView } from './use-billing-state'
 import { useResumeFlow } from './use-subscription-change'
@@ -51,7 +51,7 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
           )}
           {plan.link && (
             <Button onClick={() => plan.link && openExternal(plan.link.url)} size="sm" type="button" variant="outline">
-              {plan.link.label}
+              {externalActionLabel(plan.link.label)}
               <ExternalLink className="size-3.5" />
             </Button>
           )}
@@ -86,7 +86,7 @@ export function CurrentPlanRow({ onViewPlans, plan }: { onViewPlans: () => void;
           )}
           {plan.link && (
             <Button onClick={() => plan.link && openExternal(plan.link.url)} size="sm" type="button" variant="outline">
-              {plan.link.label}
+              {externalActionLabel(plan.link.label)}
               <ExternalLink className="size-3.5" />
             </Button>
           )}

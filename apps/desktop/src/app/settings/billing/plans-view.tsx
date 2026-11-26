@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { Pill } from '../primitives'
 
 import { BillingRefusalInline } from './inline-feedback'
+import { externalActionLabel } from './open-external'
 import { TierArt } from './tier-art'
 import { type BillingPlanTierView, formatBillingDate, formatMonthlyCreditsDelta } from './use-billing-state'
 import { type DowngradePhase, useDowngradeFlow } from './use-subscription-change'
@@ -174,7 +175,7 @@ function PlanCard({ flow, tier }: { flow: DowngradeFlow; tier: BillingPlanTierVi
             type="button"
             variant="outline"
           >
-            {tier.action.label}
+            {externalActionLabel(tier.action.label)}
             <ExternalLink className="size-3.5" />
           </Button>
         )}

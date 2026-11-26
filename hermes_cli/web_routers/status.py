@@ -571,9 +571,7 @@ async def _status_caller_verified(request: Request) -> bool:
     from hermes_cli.web_server import _require_token
     if request is None:
         return True
-    if ((getattr(request.app.state, "auth_required", False)
-            or getattr(request.app.state, "ui_surface", None) == "webapp")
-            and getattr(request.state, "session", None) is None):
+    if getattr(request.app.state, "auth_required", False) and getattr(request.state, "session", None) is None:
         from hermes_cli.dashboard_auth.middleware import peek_session
         request.state.session = await run_in_threadpool(peek_session, request)
     try:

@@ -164,7 +164,7 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
       const quantMatch = base.match(/-(?:UD-)?(Q\d(?:_[A-Z0-9]+)*|IQ\d(?:_[A-Z0-9]+)*|F16|BF16)$/i)
 
       if (quantMatch) {
-        quant = quantMatch[1].split('_')[0].toUpperCase()
+        quant = quantMatch[1].toUpperCase()
         base = base.slice(0, -quantMatch[0].length)
         // Instruct/chat markers are noise once the quant confirmed a local build.
         base = base.replace(/-(?:Instruct|Chat)(?:-\d{4})?$/i, '')

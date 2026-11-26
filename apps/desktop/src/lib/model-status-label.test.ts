@@ -22,13 +22,15 @@ describe('model-status-label', () => {
   })
 
   it('renders local GGUF ids as a clean name with a quant tag', () => {
-    expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q4' })
+    // The full quant suffix stays in the tag: siblings like `Q4_K_M`/`Q4_K_S`/
+    // `Q4_K_XL` of one model must not collapse into a single "Q4" row.
+    expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q4_K_XL' })
     expect(modelDisplayParts('Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL')).toEqual({
       name: 'Nemotron 3 Nano 30B A3B',
-      tag: 'Q4'
+      tag: 'Q4_K_XL'
     })
-    expect(modelDisplayParts('Qwen3-4B-Instruct-2507-UD-Q8_K_XL')).toEqual({ name: 'Qwen3 4B', tag: 'Q8' })
-    expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
+    expect(modelDisplayParts('Qwen3-4B-Instruct-2507-UD-Q8_K_XL')).toEqual({ name: 'Qwen3 4B', tag: 'Q8_K_XL' })
+    expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6_K' })
     // Cloud ids keep their existing behavior.
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
   })
@@ -80,7 +82,7 @@ describe('model-status-label', () => {
     // A base model and its variant must NEVER share a display label.
     expect(displayModelName('claude-opus-5')).not.toBe(displayModelName('claude-opus-5-thinking'))
     // The quant/contextWindow tags ride along the same way.
-    expect(displayModelName('Qwen3.6-27B-UD-Q4_K_XL')).toBe('Qwen3.6 27B Q4')
+    expect(displayModelName('Qwen3.6-27B-UD-Q4_K_XL')).toBe('Qwen3.6 27B Q4_K_XL')
     expect(displayModelName('claude-sonnet-5[1m]')).toBe('Sonnet 5 1M')
   })
 
@@ -164,13 +166,13 @@ describe('model-status-label', () => {
     expect(modelVariantTag('Qwen3.6-27B-flash-Q4_K_XL')).toBe('Flash')
     expect(modelVariantTag('Qwen3.6-27B-Q4_K_XL-flash')).toBe('Flash')
     // Both orders decompose identically: clean name, variant + quant tag.
-    expect(modelDisplayParts('Qwen3.6-27B-flash-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Flash Q4' })
-    expect(modelDisplayParts('Qwen3.6-27B-Q4_K_XL-flash')).toEqual({ name: 'Qwen3.6 27B', tag: 'Flash Q4' })
+    expect(modelDisplayParts('Qwen3.6-27B-flash-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Flash Q4_K_XL' })
+    expect(modelDisplayParts('Qwen3.6-27B-Q4_K_XL-flash')).toEqual({ name: 'Qwen3.6 27B', tag: 'Flash Q4_K_XL' })
     // The pill rides the variant and keeps the quant as picker-row detail.
     expect(formatModelPillLabel('Qwen3.6-27B-flash-Q4_K_XL')).toBe('Qwen3.6 27B · Flash')
     expect(formatModelPillLabel('Qwen3.6-27B-Q4_K_XL-flash')).toBe('Qwen3.6 27B · Flash')
     // Quant-only ids are unchanged: quant stays off the pill.
-    expect(modelDisplayParts('Qwen3.6-27B-Q8_0')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q8' })
+    expect(modelDisplayParts('Qwen3.6-27B-Q8_0')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q8_0' })
     expect(formatModelPillLabel('Qwen3.6-27B-Q8_0')).toBe('Qwen3.6 27B')
   })
 

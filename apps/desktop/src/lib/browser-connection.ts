@@ -253,9 +253,18 @@ export function createBrowserConnectionBridge({
   }
 
   // Every saved gateway's served profiles as routes, as Electron lists every registry source's: a
-  // chat on a gateway the window is not on keeps its route. `primary` marks the window socket's own.
-  const relayedRoutes = async (primary?: string) =>
-    (await relayedRoster()).agents
+  // chat on a gateway the window is not on keeps its route. `primary` marks the window socket's own;
+  // when its own inventory cannot be read the read fails, so no caller takes the missing routes as
+  // the window's gateway lacking those profiles (boot would then drop the address's profile).
+  const relayedRoutes = async (primary?: string) => {
+    const roster = await relayedRoster()
+    const own = primary ? roster.sources.find(source => source.connectionId === primary) : undefined
+
+    if (own && !own.reachable) {
+      throw new Error(own.error || `Could not read the profiles of "${primary}"`)
+    }
+
+    return roster.agents
       .filter(row => row.reachable !== false)
       .map(row => ({
         connectionId: row.connectionId,
@@ -264,6 +273,7 @@ export function createBrowserConnectionBridge({
         profile: row.profile,
         targetProfile: row.targetProfile || row.profile
       }))
+  }
 
   const getRelayedWsUrl = async ({ connectionId, relays }: RelayTarget, profile?: null | string) => {
     try {

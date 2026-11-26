@@ -74,7 +74,8 @@ function dashboardHost({
   expired = new Set<string>(),
   profiles = { alpha: ['default'], beta: ['default'] } as Record<string, string[]>,
   refusedBy = new Set<string>(),
-  runsAs = {} as Record<string, string>
+  runsAs = {} as Record<string, string>,
+  unreadable = new Set<string>()
 }: {
   agents?: DesktopRegistryConnection[]
   expired?: Set<string>
@@ -83,6 +84,8 @@ function dashboardHost({
   primary?: string
   profiles?: Record<string, string[]>
   runsAs?: Record<string, string>
+  /** Agents whose profile list cannot be read (a 500). */
+  unreadable?: Set<string>
 } = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
@@ -108,6 +111,10 @@ function dashboardHost({
 
         if (refusedBy.has(id)) {
           return json({ detail: 'The agent did not accept this session. Reload to reconnect.', error: 'relay_reconnect' }, 409)
+        }
+
+        if (rest === '/api/profiles' && unreadable.has(id)) {
+          return json({ detail: 'unavailable' }, 500)
         }
 
         if (rest === '/api/profiles') {
@@ -374,6 +381,21 @@ describe('a Webapp whose host runs no agent', () => {
       'alpha/research primary',
       'beta/default'
     ])
+  })
+
+  // Boot drops the address's profile when the window's own routes lack it; an unreadable list must
+  // not read as one that lacks it.
+  it("fails the route read when the window socket's agent cannot list its profiles", async () => {
+    dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] }, unreadable: new Set(['alpha']) })
+
+    await expect(install().getProfileRoutes!(['research'])).rejects.toThrow()
+  })
+
+  it("still routes the window socket's agent when another agent cannot list its profiles", async () => {
+    dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] }, unreadable: new Set(['beta']) })
+    const routes = await install().getProfileRoutes!(['research'])
+
+    expect(routes.map(route => `${route.connectionId}/${route.profile}`)).toEqual(['alpha/default', 'alpha/research'])
   })
 
   // A Bot Chat on Alpha that is slow to load retries only while its route is still registered.

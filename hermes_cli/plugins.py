@@ -151,6 +151,11 @@ VALID_HOOKS: set[str] = {
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
     # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
     "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # on_session_prompt*: a gateway session owner opened / closed a prompt a person answers for its viewers
+    # (approval, clarify, sudo, secret, vault.*), with the prompt_id that answers it; observer, off-thread,
+    # in the owning profile. Kwargs: session_id, kind, prompt_id, execution_generation, then params
+    # (force-redacted) or reason. gateway/session_prompt_hooks.py.
+    "on_session_prompt", "on_session_prompt_settled",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token

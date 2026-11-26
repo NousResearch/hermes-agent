@@ -74,7 +74,7 @@ token). Other sessions do not see it.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `delegate_task` | Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its final summary returns to you. Provide 'goal' for a single task or 'tasks' for a parallel batch (limits and nesting rules… | — |
+| `delegate_task` | Spawn isolated subagents. Each gets its own conversation, terminal session, and toolset, and only its final summary returns to you. `tasks` takes one entry per subagent; `action` lists, steers, stops or continues children. | — |
 
 ## `feishu_doc` toolset
 

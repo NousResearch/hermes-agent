@@ -50,14 +50,18 @@ To diagnose an unexpected short Windows path, use `-ShowResolvedPaths` first.
 
 ### MSIX / App Installer and Microsoft Store
 
-The bundled desktop is separate from the source script. Its MSIX package
-requires **Windows 11 22H2 or later**. Windows 10 source-script support does
-not mean the MSIX package supports Windows 10.
+The bundled desktop is separate from the source script. Both the Microsoft Store
+package and the sideload `.appinstaller` MSIX bundle (x64 and ARM64) require
+**Windows 11 22H2 or later (`10.0.22621.0`)**. Windows 10 source-script support
+does not extend to MSIX packages: on Windows 10 or Windows 11 earlier than 22H2,
+use the [Windows source installer (`install.ps1`)](#quick-install) above or
+[WSL2](./windows-wsl-quickstart.md).
 
-Open the downloaded `.appinstaller` file with Windows App Installer. It installs
-a signed universal bundle and records the update source. The package includes
-Python, Node, supported dependencies, and prebuilt interfaces. It does not clone
-a checkout or build the base runtime on first launch.
+Install from the Microsoft Store, or open the downloaded `.appinstaller` file
+with Windows App Installer. It installs a signed universal bundle and records
+the update source. The package includes Python, Node, supported dependencies,
+and prebuilt interfaces. It does not clone a checkout or build the base runtime
+on first launch.
 
 The MSIX execution aliases expose `hermes`, `hermes-agent`, and `hermes-acp`.
 If another installation shadows an alias, inspect `Get-Command hermes -All`.
@@ -67,7 +71,9 @@ controls the aliases.
 Sideload updates use the app's Update control and Windows App Installer.
 Hermes downloads a local descriptor before teardown and registers automatic
 relaunch. It does not require the `ms-appinstaller:` URL protocol. An unknown
-update-check result is not a claim that the package is current.
+update-check result is not a claim that the package is current. See
+[Bundled desktop updates](../getting-started/updating.md#bundled-desktop-updates)
+for package sizes and update timing.
 
 The Microsoft Store variant uses its Partner Center package identity and Store
 updates. It does not use the sideload feed. `hermes update` inside either

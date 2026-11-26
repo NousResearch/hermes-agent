@@ -59,11 +59,21 @@ def _derived_version(
     return base_version
 
 
+def _git_unusable() -> bool:
+    """Missing git, or macOS's uninstalled CLT stub (any launch opens Apple's install dialog)."""
+    from hermes_cli._subprocess_compat import _git_argv0_unusable
+
+    return _git_argv0_unusable(["git"])
+
+
 def _run_git(repo_dir: Path, *args: str) -> str | None:
+    if _git_unusable():
+        return None
     # bounded_probe_run, not subprocess.run(timeout=3): on Windows run()'s post-timeout cleanup
     # calls an *unbounded* communicate(), and killing the direct child can leave a git descendant
     # (the bundled two-level launcher, a lazily-fetching child) holding duplicates of the captured
-    # pipes, so the reader threads never join and the probe never returns (#144964).
+    # pipes, so the reader threads never join and the probe never returns (#144964). It decodes with
+    # utf-8 / errors="replace" itself; the CLT guard above stays the cheap first answer.
     result = bounded_probe_run(["git", *args], timeout=3, cwd=str(repo_dir))
     if result is None:
         return None
@@ -228,7 +238,9 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
     if not include_untracked:
         status_command.append("-uno")
-    status_result = bounded_probe_run(status_command, timeout=3, cwd=str(repo_dir))
+    status_result = None
+    if not _git_unusable():
+        status_result = bounded_probe_run(status_command, timeout=3, cwd=str(repo_dir))
     dirty = (
         status_result is not None
         and status_result.returncode == 0

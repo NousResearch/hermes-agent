@@ -1118,16 +1118,11 @@ def _resolve_workspace_key() -> Optional[str]:
     subdirs/worktrees group together), else the CWD itself. Returns None when
     neither can be determined — callers fall back to the global MRU then.
     """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return os.path.abspath(result.stdout.strip())
-    except Exception:
-        pass
+    from hermes_cli._subprocess_compat import bounded_git_probe
+    # The user's own environment: a GIT_DIR/GIT_WORK_TREE pair names the workspace they resume in.
+    top = bounded_git_probe(["git", "rev-parse", "--show-toplevel"], timeout=5, env=os.environ)
+    if top:
+        return os.path.abspath(top)
     try:
         return os.getcwd()
     except Exception:

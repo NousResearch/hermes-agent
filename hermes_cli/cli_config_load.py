@@ -215,7 +215,7 @@ def _cli_config_defaults():
         },
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
-        # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
+        # delegation: empty model/provider = inherit parent; empty api_key = the parent's key, or a named provider's own
         "delegation": {"max_iterations": cfg_get(shared, "delegation", "max_iterations"), "model": "", "provider": "", "base_url": "", "api_key": ""},
         "onboarding": {"seen": {}},  # first-touch hint flags (agent/onboarding.py), latched once shown
     }

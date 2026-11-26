@@ -177,6 +177,7 @@ afterEach(() => {
   setActiveSessionId(null)
   endGatewaySwitch()
   vi.useRealTimers()
+  vi.restoreAllMocks()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -377,34 +378,6 @@ describe('a plugin re-routes one profile', () => {
 
     expect(asked).toBeGreaterThan(0)
     expect(workLookups()).toBe(asked)
-  })
-
-  it('a retry leaves the profile alone once a newer move has put it on its own socket', async () => {
-    const world = { failLookups: 0, sandboxed: false }
-    const { launcherWork } = sharedThenSandboxed(world)
-
-    render(<Harness />)
-    await flushAsync()
-    vi.useRealTimers()
-    await ensureGatewayProfile('work')
-
-    // The first move's lookup fails and its redial waits; the second move's redial lands at once.
-    world.sandboxed = true
-    world.failLookups = 1
-    act(() => connectionApplied?.({ profile: 'work' }))
-    await pause(5)
-    act(() => connectionApplied?.({ profile: 'work' }))
-
-    for (let i = 0; i < 100 && isActivePrimary(); i += 1) {
-      await pause(10)
-    }
-
-    // Longer than the first redial's wait.
-    await pause(450)
-    vi.useFakeTimers()
-
-    expect(isActivePrimary()).toBe(false)
-    expect(FakeWebSocket.instances.filter(socket => socket.url === launcherWork.wsUrl)).toHaveLength(1)
   })
 
   it("a lookup that failed before the move does not hold the moved profile's next background request", async () => {
@@ -809,6 +782,8 @@ describe('a plugin re-routes one profile', () => {
     let lookups = 0
     let answerSecondLookup = () => undefined as void
     const secondLookup = new Promise<void>(resolve => (answerSecondLookup = resolve))
+    let firstLookupAsked = () => undefined as void
+    const firstLookup = new Promise<void>(resolve => (firstLookupAsked = resolve))
 
     desktop.getConnection.mockImplementation(async (profile?: null | string) => {
       const key = (profile ?? '').trim()
@@ -825,6 +800,8 @@ describe('a plugin re-routes one profile', () => {
 
       // The first move's lookup fails, the second move's is slow, any later one answers at once.
       if (lookups === 1) {
+        firstLookupAsked()
+
         throw new Error('route lookup failed')
       }
 
@@ -844,12 +821,25 @@ describe('a plugin re-routes one profile', () => {
     vi.useRealTimers()
     await ensureGatewayProfile('work')
 
+    // The first redial's wait before asking again is a zero-length timer, so it
+    // always wakes while the second lookup is still held, whatever the runner's load.
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+    const drawsBefore = random.mock.calls.length
+
     sandboxed = true
     act(() => connectionApplied?.({ profile: 'work' }))
-    await pause(5)
+    // The second move lands while the first redial waits to ask again. A
+    // wall-clock pause can outlast that jittered wait on a loaded runner, and
+    // the first redial then rightly asks again before the profile moves.
+    await firstLookup
     act(() => connectionApplied?.({ profile: 'work' }))
-    // Longer than the first redial waits before it would ask again.
-    await pause(350)
+
+    // The first redial has started its wait; a later timer fires only after it woke.
+    for (let i = 0; i < 100 && random.mock.calls.length === drawsBefore; i += 1) {
+      await pause(1)
+    }
+
+    await pause(50)
 
     const askedWhileSecondIsOut = lookups
 

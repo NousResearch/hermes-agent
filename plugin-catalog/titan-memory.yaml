@@ -4,7 +4,7 @@ repo: https://github.com/kuwosaad/titan-pi-memory
 sha: fdd418ae63cc09724cd738846eb79c1a89388108
 subdir: integrations/hermes_titan_plugin
 version: "0.1.0"
-description: Save successful Hermes turns as searchable Titan memories with source scenes and a local knowledge graph.
+description: "Save successful Hermes turns as searchable Titan memories with source scenes and a local knowledge graph. Disclosure — Sends the prompt and final reply of every successful turn (up to 12,000 characters each) to your configured titan-memory MCP server; the separately installed Titan CLI then sends that text to its configured extraction provider (OpenCode Go by default) and stores memories locally."
 maintainer: kuwosaad
 tier: community
 category: memory

@@ -398,3 +398,30 @@ async def test_a_signed_in_owner_forwards_through_the_real_ticket_verifier(tmp_p
             request, None, 'session-8', request_id='req-8', expected_revision=0,
             operation='archive', payload={})
     assert [grant['subject'] for grant in grants] == [host_owner_subject()]
+
+
+@pytest.mark.asyncio
+async def test_a_forwarded_title_refusal_keeps_the_owners_sentence(tmp_path, monkeypatch):
+    """#160463 review: the owner refuses a held title as ``invalid_title`` with the store's sentence in
+    ``error.data.detail``; forwarded, the dashboard gets that sentence, as the direct path's 400 does."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_cli import web_server_sessions
+
+    request = _standalone_request(monkeypatch, tmp_path)
+    _discover(monkeypatch, 'owner-endpoint')
+    sentence = "Title 'Held' is already in use by session holder"
+
+    @asynccontextmanager
+    async def refusing_connect(endpoint=None, subject=None):
+        class Refuser:
+            async def rpc(self, method, **params):
+                raise GatewayRPCError('invalid_title', code=4001,
+                                      data={'reason': 'invalid_title', 'field': 'title', 'detail': sentence})
+        yield Refuser()
+
+    monkeypatch.setattr('hermes_cli.gateway_client.connect_gateway', refusing_connect)
+    with pytest.raises(HTTPException) as exc:
+        await web_server_sessions._mutate_session_request(
+            request, None, 'session-6', request_id='req-6', expected_revision=0,
+            operation='sidebar', payload={'title': 'Held'})
+    assert (exc.value.status_code, exc.value.detail) == (400, sentence)

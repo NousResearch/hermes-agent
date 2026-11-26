@@ -295,7 +295,10 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     except GatewayClientError as exc:
         # The owner's own refusal verdicts (transport failures already became 503 above),
         # wire-shaped like AuthorityRefusal's reasons, so a forwarded write answers as the direct path.
-        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 409), detail=str(exc)) from exc
+        data = getattr(exc, 'data', None) or {}
+        # A refused title keeps the owner's sentence (bounded error.data), as the direct path does.
+        detail = data.get('detail') if str(exc) == 'invalid_title' and isinstance(data.get('detail'), str) else str(exc)
+        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 409), detail=detail or str(exc)) from exc
     except MUTATION_GUARD_REFUSALS as exc:
         raise HTTPException(status_code=409, detail='session_busy') from exc
     except ValueError as exc:

@@ -26,7 +26,6 @@ export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
   __HERMES_DASHBOARD_PROFILE__?: string
-  __HERMES_LOGIN_AVAILABLE__?: boolean
   __HERMES_UI_SURFACE__?: string
 }
 

@@ -7,7 +7,6 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { CatalogMessagingPlatform } from "@/lib/api";
 import { errorMessage } from "@/lib/api-error";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n";
 
@@ -15,11 +14,10 @@ type Copy = Translations["channelsCatalog"];
 
 const BADGES: Record<
   CatalogMessagingPlatform["badge"],
-  { tone: "success" | "secondary" | "warning"; label: (c: Copy) => string }
+  { tone: "success" | "secondary"; label: (c: Copy) => string }
 > = {
   official: { tone: "success", label: (c) => c.badgeOfficial },
   verified: { tone: "secondary", label: (c) => c.badgeVerified },
-  labs: { tone: "warning", label: (c) => c.badgeLabs },
 };
 
 // Reason codes the backend sends in `blocked`; anything newer shows the backend's English sentence.
@@ -58,13 +56,11 @@ export function AvailablePlatforms({
   const { t } = useI18n();
   const copy = t.channelsCatalog;
   const [busy, setBusy] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<CatalogMessagingPlatform | null>(null);
   const [failures, setFailures] = useState<Record<string, RowFailure>>({});
 
   if (rows.length === 0) return null;
 
-  const install = async (row: CatalogMessagingPlatform, confirmed: boolean) => {
-    setConfirming(null);
+  const install = async (row: CatalogMessagingPlatform) => {
     setBusy(row.name);
     setFailures((prev) => {
       const next = { ...prev };
@@ -76,7 +72,7 @@ export function AvailablePlatforms({
       showToast(`${copy.installFailed(row.title)}: ${error}`, "error");
     };
     try {
-      const result = await api.installMessagingCatalogPlatform(row.name, confirmed);
+      const result = await api.installMessagingCatalogPlatform(row.name);
       if (!result.ok) {
         fail(result.error, result.install_command || row.install_command);
         return;
@@ -142,9 +138,7 @@ export function AvailablePlatforms({
                   size="sm"
                   className="shrink-0 self-start uppercase sm:self-center"
                   disabled={busy !== null}
-                  onClick={() =>
-                    row.needs_confirm ? setConfirming(row) : void install(row, false)
-                  }
+                  onClick={() => void install(row)}
                   prefix={installing ? <Spinner /> : <Download className="h-4 w-4" />}
                 >
                   {installing ? copy.installing : copy.install}
@@ -154,18 +148,6 @@ export function AvailablePlatforms({
           </Card>
         );
       })}
-
-      <ConfirmDialog
-        open={confirming !== null}
-        title={confirming ? copy.labsConfirmTitle(confirming.title) : ""}
-        description={copy.labsConfirmBody}
-        confirmLabel={copy.labsConfirmButton}
-        cancelLabel={t.common.cancel}
-        onCancel={() => setConfirming(null)}
-        onConfirm={() => {
-          if (confirming) void install(confirming, true);
-        }}
-      />
     </section>
   );
 }

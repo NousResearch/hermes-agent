@@ -64,7 +64,7 @@ export interface MessagingPlatformUpdate {
 export interface CatalogMessagingPlatform {
   name: string;
   title: string;
-  badge: "official" | "verified" | "labs";
+  badge: "official" | "verified";
   summary: string;
   /** The catalog's "Disclosure" sentence, "" when it has none. */
   disclosure: string;
@@ -74,8 +74,6 @@ export interface CatalogMessagingPlatform {
   blocked_reason: string;
   /** The one command that installs it into this profile. */
   install_command: string;
-  /** Hermes Labs: the install must be confirmed explicitly. */
-  needs_confirm: boolean;
 }
 
 export interface MessagingPlatformsResponse {
@@ -90,7 +88,7 @@ export interface MessagingPlatformsResponse {
 
 export type MessagingCatalogInstallResult =
   | { ok: true; plugin_name: string; platforms: string[]; warnings: string[] }
-  | { ok: false; error: string; install_command: string; confirm_required?: boolean };
+  | { ok: false; error: string; install_command: string };
 
 export interface RelayLinkedAccount {
   platformUserId: string;

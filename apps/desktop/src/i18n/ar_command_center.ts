@@ -174,7 +174,7 @@ export const arCommandCenter = {
   messaging: {
     catalog: {
       sectionTitle: 'متاح للتثبيت',
-      badges: { official: 'رسمي', verified: 'موثّق', labs: 'Hermes Labs' },
+      badges: { official: 'رسمي', verified: 'موثّق' },
       notInstalled: 'غير مثبّت',
       intro: (name: string) => `${name} إضافة من كتالوج Hermes. يفعّلها التثبيت، ثم يمكنك إدخال بيانات اعتمادها هنا.`,
       disclosure: 'إفصاح:',
@@ -185,9 +185,6 @@ export const arCommandCenter = {
       installFailed: (name: string) => `تعذّر تثبيت ${name}`,
       lazyOff: 'التثبيت التلقائي للإضافات متوقف (security.allow_lazy_installs)، لذا لا يثبّتها Hermes من هنا.',
       runCommand: 'ثبّتها من الطرفية:',
-      labsTitle: 'تثبيت إضافة من Hermes Labs؟',
-      labsBody: (name: string) => `${name} إضافة من Hermes Labs: بنتها Nous Research، بلا دعم، ومن المرجّح ألا تُصان.`,
-      labsConfirm: 'التثبيت على أي حال',
     },
     search: 'بحث',
     statusFilter: {

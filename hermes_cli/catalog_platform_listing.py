@@ -3,10 +3,10 @@
 ``hermes gateway setup``, ``hermes setup gateway``, the dashboard Channels page and the Desktop
 Messaging page list the same rows and install a pick through the same path: the catalog install
 ``hermes plugins install <name>`` uses (pinned commit, kill list, security scan), then enable, so
-the platform is configurable the moment the install returns. Only Nous-built entries are offered
-here (``official`` / ``verified`` tiers and the Hermes Labs repo); community platforms stay in the
-plugin browser, where their unreviewed status is the first thing shown. A Hermes Labs entry needs
-an explicit confirmation: it is built by Nous Research but not supported.
+the platform is configurable the moment the install returns. Only supported entries are offered
+here (``official`` / ``verified`` tiers); community platforms, Hermes Labs ones among them (built by
+Nous Research, unsupported, possibly out of date), stay in the plugin browser, where their status
+is the first thing shown.
 
 Callers bind the owning profile (``_profile_scope`` / ``-p``) before calling; every read and the
 install resolve ``get_hermes_home()``. A setup surface outlives the installs it lists: a dashboard
@@ -23,8 +23,7 @@ from pathlib import Path
 from dataclasses import asdict, dataclass
 from typing import Any, Collection, Literal, Optional
 
-LABS_REPO = "github.com/nousresearch/hermes-labs-plugins"
-Badge = Literal["official", "verified", "labs"]
+Badge = Literal["official", "verified"]
 _TIER_BADGES: dict[str, Badge] = {"official": "official", "verified": "verified"}
 # Why a row cannot install, keyed by the reason code the surfaces translate.
 LAZY_OFF = "lazy_installs_off"
@@ -47,20 +46,12 @@ class CatalogPlatform:
     blocked: str
     install_command: str
 
-    @property
-    def needs_confirm(self) -> bool:
-        return self.badge == "labs"
-
     def to_dict(self) -> dict[str, Any]:
-        return {**asdict(self), "needs_confirm": self.needs_confirm,
-                "blocked_reason": BLOCKED_SENTENCES.get(self.blocked, "")}
+        return {**asdict(self), "blocked_reason": BLOCKED_SENTENCES.get(self.blocked, "")}
 
 
 def badge_for(entry: Any) -> Optional[Badge]:
     """The row badge for a catalog entry, or None when this list does not offer it."""
-    from hermes_cli.plugin_catalog import _normalize_repo
-    if _normalize_repo(entry.repo) == LABS_REPO:
-        return "labs"
     return _TIER_BADGES.get(entry.tier)
 
 
@@ -187,12 +178,11 @@ def platforms_of(plugin_name: str) -> list[str]:
     return [entry.name for entry in platform_registry.all_entries() if entry.plugin_name == plugin_name]
 
 
-def install_catalog_platform(name: str, *, confirmed: bool = False) -> dict[str, Any]:
+def install_catalog_platform(name: str) -> dict[str, Any]:
     """Install and enable catalog platform *name* into the bound home. ``{"ok": True, "plugin_name",
-    "platforms": [ids], "warnings"}`` on success; else ``{"ok": False, "error", "install_command"}``,
-    plus ``"confirm_required": True`` when *name* is a Hermes Labs entry and *confirmed* is False.
-    Only a row :func:`available_catalog_platforms` offers installs: a community or unknown name is
-    refused here, never installed past the list's tier rule."""
+    "platforms": [ids], "warnings"}`` on success; else ``{"ok": False, "error", "install_command"}``.
+    Only a row :func:`available_catalog_platforms` offers installs: a community (Hermes Labs included)
+    or unknown name is refused here, never installed past the list's tier rule."""
     from hermes_cli.left_core_migration import _first_cause
     from hermes_cli.plugins_cmd_install import dashboard_install_plugin
 
@@ -203,9 +193,6 @@ def install_catalog_platform(name: str, *, confirmed: bool = False) -> dict[str,
         return {"ok": False, "error": f"'{name}' is not a catalog platform this home can add.", "install_command": ""}
     if row.blocked:
         return {"ok": False, "error": BLOCKED_SENTENCES[row.blocked], "install_command": row.install_command}
-    if row.needs_confirm and not confirmed:
-        return {"ok": False, "confirm_required": True, "error": "Hermes Labs plugins need an explicit confirmation.",
-                "install_command": row.install_command}
     result = dashboard_install_plugin("", force=False, enable=True, catalog_name=name)
     if not result.get("ok"):
         # Another installer (the gateway's default install) may have landed it while this one ran.

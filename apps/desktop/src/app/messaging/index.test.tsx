@@ -34,8 +34,8 @@ vi.mock('@/hermes', () => ({
     approvePairing(platformId, requestId, profile),
   getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
   getPairing: (profile?: null | string) => getPairing(profile),
-  installMessagingCatalogPlatform: (name: string, confirmed: boolean, profile?: null | string) =>
-    installMessagingCatalogPlatform(name, confirmed, profile),
+  installMessagingCatalogPlatform: (name: string, profile?: null | string) =>
+    installMessagingCatalogPlatform(name, profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
     revokePairing(platformId, userId, profile),
@@ -655,27 +655,24 @@ describe('MessagingView Telegram quick setup', () => {
 })
 
 describe('MessagingView catalog platforms', () => {
-  const yuanbao = {
-    badge: 'labs' as const,
+  const qqbot = {
+    badge: 'official' as const,
     blocked: '',
     blocked_reason: '',
-    disclosure: 'Messages travel between Yuanbao servers and your gateway.',
-    install_command: 'hermes plugins install yuanbao',
-    name: 'yuanbao',
-    needs_confirm: true,
-    summary: 'Tencent Yuanbao messaging platform.',
-    title: 'yuanbao'
+    disclosure: 'Messages travel between QQ servers and your gateway.',
+    install_command: 'hermes plugins install qqbot',
+    name: 'qqbot',
+    summary: 'QQ Bot messaging platform.',
+    title: 'qqbot'
   }
 
-  it('installs a Hermes Labs platform only after the confirm, then opens the card it registered', async () => {
+  it('installs a catalog platform on Install, then opens the card it registered', async () => {
     $settingsScopeOverride.set(null)
-    getMessagingPlatforms.mockResolvedValue({ available: [yuanbao], platforms: [platform()] })
-    installMessagingCatalogPlatform.mockResolvedValue({ ok: true, platforms: ['yuanbao'], plugin_name: 'yuanbao' })
+    getMessagingPlatforms.mockResolvedValue({ available: [qqbot], platforms: [platform()] })
+    installMessagingCatalogPlatform.mockResolvedValue({ ok: true, platforms: ['qqbot'], plugin_name: 'qqbot' })
 
     await renderMessaging()
-    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Hermes Labs/i }))
-    fireEvent.click(await screen.findByRole('button', { name: /^Install$/ }))
-    expect(installMessagingCatalogPlatform).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
 
     // What the backend lists once the plugin is installed: its own card, labelled and masked.
     getMessagingPlatforms.mockResolvedValue({
@@ -683,15 +680,15 @@ describe('MessagingView catalog platforms', () => {
       platforms: [
         platform(),
         platform({
-          id: 'yuanbao',
-          name: 'Yuanbao',
+          id: 'qqbot',
+          name: 'QQ Bot',
           env_vars: [
             {
               advanced: false,
               description: 'The App Secret',
               is_password: true,
               is_set: false,
-              key: 'YUANBAO_APP_SECRET',
+              key: 'QQ_CLIENT_SECRET',
               prompt: 'App Secret',
               redacted_value: null,
               required: true,
@@ -701,26 +698,26 @@ describe('MessagingView catalog platforms', () => {
         })
       ]
     })
-    fireEvent.click(await screen.findByRole('button', { name: 'Install anyway' }))
-    await waitFor(() => expect(installMessagingCatalogPlatform).toHaveBeenCalledWith('yuanbao', true, 'default'))
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Yuanbao' })).toBeTruthy())
+    fireEvent.click(await screen.findByRole('button', { name: /^Install$/ }))
+    await waitFor(() => expect(installMessagingCatalogPlatform).toHaveBeenCalledWith('qqbot', 'default'))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'QQ Bot' })).toBeTruthy())
   })
 
   it('drops a selected row that was installed elsewhere instead of still offering Install', async () => {
     $settingsScopeOverride.set(null)
-    getMessagingPlatforms.mockResolvedValue({ available: [yuanbao], platforms: [platform()] })
+    getMessagingPlatforms.mockResolvedValue({ available: [qqbot], platforms: [platform()] })
 
     await renderMessaging()
     await act(async () => {
       $changeEventsAvailable.set(true)
     })
-    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Hermes Labs/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
     expect(await screen.findByRole('button', { name: /^Install$/ })).toBeTruthy()
 
     // The background default install lands the plugin; the change watcher ticks platforms.changed.
     getMessagingPlatforms.mockResolvedValue({
       available: [],
-      platforms: [platform(), platform({ id: 'yuanbao', name: 'Yuanbao' })]
+      platforms: [platform(), platform({ id: 'qqbot', name: 'QQ Bot' })]
     })
     await act(async () => {
       $platformsChangeTick.set($platformsChangeTick.get() + 1)
@@ -734,7 +731,7 @@ describe('MessagingView catalog platforms', () => {
   it('leaves the user where they went when an install finishes after Messaging unmounted', async () => {
     $settingsScopeOverride.set(null)
     getMessagingPlatforms.mockResolvedValue({
-      available: [{ ...yuanbao, badge: 'official', needs_confirm: false }],
+      available: [qqbot],
       platforms: [platform()]
     })
     let finish!: (value: unknown) => void
@@ -763,7 +760,7 @@ describe('MessagingView catalog platforms', () => {
         </MemoryRouter>
       )
     })
-    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Official/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
     fireEvent.click(await screen.findByRole('button', { name: /^Install$/ }))
     await waitFor(() => expect(installMessagingCatalogPlatform).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Leave Messaging' }))
@@ -771,10 +768,10 @@ describe('MessagingView catalog platforms', () => {
 
     getMessagingPlatforms.mockResolvedValue({
       available: [],
-      platforms: [platform(), platform({ id: 'yuanbao', name: 'Yuanbao' })]
+      platforms: [platform(), platform({ id: 'qqbot', name: 'QQ Bot' })]
     })
     await act(async () => {
-      finish({ ok: true, platforms: ['yuanbao'], plugin_name: 'yuanbao' })
+      finish({ ok: true, platforms: ['qqbot'], plugin_name: 'qqbot' })
     })
 
     expect(screen.getByTestId('current-route').textContent).toBe('/elsewhere')
@@ -783,14 +780,14 @@ describe('MessagingView catalog platforms', () => {
   it('says why a row cannot install and the command to run instead', async () => {
     $settingsScopeOverride.set(null)
     getMessagingPlatforms.mockResolvedValue({
-      available: [{ ...yuanbao, blocked: 'lazy_installs_off', blocked_reason: 'off' }],
+      available: [{ ...qqbot, blocked: 'lazy_installs_off', blocked_reason: 'off' }],
       platforms: [platform()]
     })
 
     await renderMessaging()
-    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Hermes Labs/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
     expect(await screen.findByText(/security\.allow_lazy_installs/)).toBeTruthy()
-    expect(screen.getByText('hermes plugins install yuanbao')).toBeTruthy()
+    expect(screen.getByText('hermes plugins install qqbot')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Install$/ })).toBeNull()
   })
 })

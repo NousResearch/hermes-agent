@@ -31,32 +31,36 @@ def fixture_catalog(monkeypatch):
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)  # the suite's opt-out; config decides here
 
 
-def test_nous_built_catalog_platforms_are_offered_community_ones_are_not(fixture_catalog):
-    from hermes_cli.catalog_platform_listing import available_catalog_platforms
+def test_only_supported_catalog_platforms_are_offered_not_labs_or_community(fixture_catalog):
+    from hermes_cli.catalog_platform_listing import available_catalog_platforms, install_catalog_platform
 
     rows = {row.name: row for row in available_catalog_platforms(provided=())}
-    assert set(rows) == {"chatone", "chattwo", "labschat"}  # community and non-platform entries are not setup picks
-    assert rows["labschat"].badge == "labs" and rows["labschat"].needs_confirm
-    assert rows["chatone"].badge == "official" and not rows["chatone"].needs_confirm
-    assert rows["chattwo"].badge == "verified"
-    assert rows["labschat"].install_command == "hermes plugins install labschat"
-    assert rows["labschat"].summary == "labschat platform." and rows["labschat"].blocked == ""
-    assert "labschat" not in {row.name for row in available_catalog_platforms(provided={"labschat"})}
+    # Hermes Labs, community and non-platform entries are not setup picks: the plugin browser has them.
+    assert set(rows) == {"chatone", "chattwo"}
+    assert rows["chatone"].badge == "official" and rows["chattwo"].badge == "verified"
+    assert rows["chatone"].install_command == "hermes plugins install chatone"
+    assert rows["chatone"].summary == "chatone platform." and rows["chatone"].blocked == ""
+    assert "chatone" not in {row.name for row in available_catalog_platforms(provided={"chatone"})}
+    for name in ("labschat", "commchat"):  # a hand-crafted request does not get past the list's rule
+        refused = install_catalog_platform(name)
+        assert refused["ok"] is False and "not a catalog platform this home can add" in refused["error"]
+    assert not (get_hermes_home() / "plugins" / "labschat").exists()
 
 
 def test_setup_menu_lists_catalog_platforms_and_lazy_off_says_why(fixture_catalog):
     from hermes_cli import gateway
 
     rows = gateway._all_platforms(catalog=True)
-    pick = next(p for p in rows if p["key"] == "labschat" and p.get("_catalog_platform"))
-    assert gateway._platform_status(pick) == "not installed · Hermes Labs"
+    pick = next(p for p in rows if p["key"] == "chatone" and p.get("_catalog_platform"))
+    assert gateway._platform_status(pick) == "not installed · official"
+    assert not any(p["key"] == "labschat" and p.get("_catalog_platform") for p in rows)
     assert not any(p.get("_catalog_platform") for p in gateway._all_platforms())  # summaries: no progress
 
     (get_hermes_home() / "config.yaml").write_text("security:\n  allow_lazy_installs: false\n", encoding="utf-8")
     from hermes_cli.catalog_platform_listing import install_catalog_platform
-    refused = install_catalog_platform("labschat", confirmed=True)
+    refused = install_catalog_platform("chatone")
     assert refused["ok"] is False and "allow_lazy_installs is off" in refused["error"]
-    assert refused["install_command"] == "hermes plugins install labschat"
+    assert refused["install_command"] == "hermes plugins install chatone"
 
 
 def test_platform_plugin_installed_after_import_is_labelled_and_masked():
@@ -84,7 +88,8 @@ def test_platform_plugin_installed_after_import_is_labelled_and_masked():
         platform_registry.unregister("lateplat", scope=scope)
 
 
-def _install_late_platform(dir_name: str, platform: str, *, catalog_name: str = "") -> None:
+def _install_late_platform(dir_name: str, platform: str, *, catalog_name: str = "",
+                           repo: str = "https://github.com/NousResearch/hermes-official-plugins") -> None:
     """What an installer running in another process leaves behind: the tree, its install record when
     it came from the catalog, and the enable in config.yaml."""
     import json
@@ -98,8 +103,8 @@ def _install_late_platform(dir_name: str, platform: str, *, catalog_name: str = 
         f"    ctx.register_platform(name={platform!r}, label='Late', adapter_factory=lambda cfg: None,\n"
         "                          check_fn=lambda: True, required_env=['LATE_TOKEN'])\n", encoding="utf-8")
     if catalog_name:
-        record = {"catalog": {"name": catalog_name, "repo": "https://github.com/NousResearch/hermes-official-plugins",
-                              "tier": "official", "sha": "0" * 40, "pin": "0" * 40}}
+        record = {"catalog": {"name": catalog_name, "repo": repo, "tier": "official" if repo != LABS else "community",
+                              "sha": "0" * 40, "pin": "0" * 40}}
         (home / "plugins" / ".install-metadata.json").write_text(json.dumps({dir_name: record}), encoding="utf-8")
     (home / "config.yaml").write_text(f"plugins:\n  enabled:\n    - {dir_name}\n", encoding="utf-8")
 
@@ -121,6 +126,17 @@ def test_catalog_platform_installed_by_another_process_is_not_offered_and_instal
     result = install_catalog_platform("chatone")  # the stale page's Install click
     assert result["ok"] is True and result["already_installed"] is True
     assert result["plugin_name"] == "chatone" and result["platforms"] == ["chatone"]
+
+
+def test_an_installed_labs_platform_keeps_its_channel_card(fixture_catalog):
+    # A home that already has a Hermes Labs platform (installed by hand or by the left-core migration)
+    # configures it like any other: only the not-installed offer leaves out Labs.
+    from hermes_cli.catalog_platform_listing import available_catalog_platforms
+    from hermes_cli.web_server_messaging import _messaging_platform_catalog
+
+    _install_late_platform("labschat", "labschat", catalog_name="labschat", repo=LABS)
+    assert "labschat" in {card["id"] for card in _messaging_platform_catalog()}
+    assert "labschat" not in {row.name for row in available_catalog_platforms()}
 
 
 def test_channels_page_poll_signature_moves_when_a_platform_plugin_lands_elsewhere():

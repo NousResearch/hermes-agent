@@ -1822,7 +1822,7 @@ export const ruOverrides = {
   messaging: {
     catalog: {
       sectionTitle: 'Доступно для установки',
-      badges: { official: 'Официальный', verified: 'Проверенный', labs: 'Hermes Labs' },
+      badges: { official: 'Официальный', verified: 'Проверенный' },
       notInstalled: 'Не установлен',
       intro: (name: string) => `${name} — плагин из каталога Hermes. Установка включит его, затем здесь можно ввести учётные данные.`,
       disclosure: 'Раскрытие:',
@@ -1833,9 +1833,6 @@ export const ruOverrides = {
       installFailed: (name: string) => `Не удалось установить ${name}`,
       lazyOff: 'Автоматическая установка плагинов отключена (security.allow_lazy_installs), поэтому Hermes не устанавливает его отсюда.',
       runCommand: 'Установите из терминала:',
-      labsTitle: 'Установить плагин Hermes Labs?',
-      labsBody: (name: string) => `${name} — плагин Hermes Labs: создан Nous Research, без поддержки и, скорее всего, не будет сопровождаться.`,
-      labsConfirm: 'Всё равно установить',
     },
     search: 'Поиск в сообщениях...',
     statusFilter: {

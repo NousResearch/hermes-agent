@@ -94,8 +94,10 @@ vi.mock('@/store/session', () => ({
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
   $unreadFinishedSessionIds: atom<string[]>([]),
+  $unlistedSessionOwnerRows: atom<unknown[]>([]),
   applySessionTitle: vi.fn(),
   markSessionRead: vi.fn(),
+  ownerLookupSessionRows: vi.fn(() => []),
   sessionMatchesStoredId: vi.fn(() => false),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()

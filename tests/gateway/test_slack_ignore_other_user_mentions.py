@@ -103,6 +103,17 @@ def test_addressed_channel_and_broadcast_tokens_are_not_users():
     assert _addressed("<#C0000000000|general> see here") is False
 
 
+def test_addressed_leading_user_group_mention():
+    # A leading <!subteam^S...> addresses a team of people, not the room.
+    assert _addressed("<!subteam^S049GM4QC9G> anyone free?") is True
+    assert _addressed("<!subteam^S049GM4QC9G|dev-team> please review") is True
+
+
+def test_addressed_user_group_mention_mid_sentence_is_not_leading():
+    # Trigger stays on the first token; a group mention later on is just a reference.
+    assert _addressed("hi <!subteam^S049GM4QC9G> please review") is False
+
+
 # ---------------------------------------------------------------------------
 # _slack_message_mentions_self()
 # ---------------------------------------------------------------------------
@@ -198,6 +209,38 @@ async def test_free_response_replies_when_bot_mentioned_in_pipe_form(adapter):
         _event(
             f"<@{OTHER_USER_ID}|rasha> and <@{BOT_USER_ID}|hermes> please compare",
             ts="1700000000.000004",
+        ),
+    )
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_free_response_ignores_leading_user_group_mention(adapter):
+    """A leading @dev-team addresses a group of other people, so the
+    ``ignore_other_user_mentions`` gate keeps the bot silent."""
+    adapter.config.extra["free_response_channels"] = CHANNEL_ID
+    adapter.config.extra["ignore_other_user_mentions"] = True
+
+    await _run(
+        adapter,
+        _event("<!subteam^S049GM4QC9G|dev-team> anyone free?", ts="1700000000.000005"),
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_free_response_replies_when_bot_also_mentioned_with_group(adapter):
+    """An explicit @mention of the bot still wins over a leading group ping."""
+    adapter.config.extra["free_response_channels"] = CHANNEL_ID
+    adapter.config.extra["ignore_other_user_mentions"] = True
+
+    await _run(
+        adapter,
+        _event(
+            f"<!subteam^S049GM4QC9G|dev-team> and <@{BOT_USER_ID}> please compare",
+            ts="1700000000.000006",
         ),
     )
 

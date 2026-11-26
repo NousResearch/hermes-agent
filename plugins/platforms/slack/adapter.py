@@ -6519,10 +6519,10 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
     _slack_disable_dms = _extra_or_env_flag_getter("disable_dms", "SLACK_DISABLE_DMS", strip=True)
 
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
-        """True when the first token is a user mention (``<@U123>``/``<@U123|name>``)
-        of someone other than the bot; ``<!here>``/``<#C…>`` address the room, not a person."""
-        match = text and re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
-        return bool(match) and match.group(1) not in self_uids
+        """True when the first token mentions a person other than the bot: a user
+        (``<@U123>``) or a group (``<!subteam^S123>``); room tokens do not count."""
+        match = text and re.match(r"\s*<(?:@([^>|\s]+)|!subteam\^[^>|]+)(?:\|[^>]*)?>", text)
+        return bool(match) and (match.group(1) is None or match.group(1) not in self_uids)
 
     def _slack_is_free_channel(self, channel_id: str) -> bool:
         """Does ``channel_id`` admit messages without an @mention?"""

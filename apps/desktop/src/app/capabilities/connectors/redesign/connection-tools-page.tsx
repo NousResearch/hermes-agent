@@ -238,7 +238,7 @@ function ToolsMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button aria-label={copy.card.menu} className="conn-tools-menu ml-auto" size="icon-sm" variant="ghost">
-          <Codicon aria-hidden name="kebab-horizontal" />
+          <Codicon aria-hidden name="ellipsis" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">

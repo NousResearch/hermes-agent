@@ -1,4 +1,4 @@
-"""``desktop_project`` create during a Desktop chat served by the session authority moves the chat like
+"""``desktop_project`` switch during a Desktop chat served by the session authority moves the chat like
 the user's Move to project: the turn boundary commits the session's ``workspace`` mutation (its policy
 cwd), and the turn's own commands keep their folder. Before the gateway wired
 ``set_project_workspace_callback`` the tool reported success while the chat stayed put."""
@@ -13,7 +13,7 @@ from tests.gateway.test_session_resume_config_refresh import (
 
 
 @pytest.mark.asyncio
-async def test_desktop_project_create_in_a_local_viewer_turn_moves_the_session(tmp_path, monkeypatch):
+async def test_desktop_project_switch_in_a_local_viewer_turn_moves_the_session(tmp_path, monkeypatch):
     from gateway.session_context import clear_session_vars, set_session_vars
     from gateway.session_contract import SessionRef
     from gateway.session_mutation_policy import apply_pending_workspace
@@ -46,7 +46,8 @@ async def test_desktop_project_create_in_a_local_viewer_turn_moves_the_session(t
         tokens = set_session_vars(platform='local', session_key=route, session_id=sid)
         try:
             with policy_scope(_policy(authority, sid), authority=authority):
-                created = json.loads(project_tools.project_create('Worktree', path=str(worktree), task_id=sid))
+                made = json.loads(project_tools.project_create('Worktree', path=str(worktree), task_id=sid))
+                created = json.loads(project_tools.project_switch(made['id'], task_id=sid))
                 json.loads(terminal_tool.terminal_tool('pwd', task_id=sid))
         finally:
             clear_session_vars(tokens)

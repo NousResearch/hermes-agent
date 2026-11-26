@@ -22,10 +22,11 @@ execution stream, and the process sinks route by the process's ``session_key`` t
 session's event stream (a background process outlives the turn that started it). The callbacks
 are installed per turn on the cached agent and restored with the other turn sinks.
 
-``desktop_project`` create/switch (``tools/project_tools.py``) moves the chat like the user's Move to
+``desktop_project`` switch (``tools/project_tools.py``) moves the chat like the user's Move to
 project: the tool records the folder (``moved: pending``) and the running turn keeps its own; the
 session's ``workspace`` mutation (policy cwd, state.db row, terminal drop, ``session.info``) is
 committed at the turn boundary, where a policy mutation is allowed (``apply_pending_workspace``).
+``create`` only creates, and a delegated child never moves its parent.
 
 Card for ``manage_connections``: ``connection_callback`` publishes ``connection.request`` on the turn, and each later change of an operation is published as ``connection.update`` on the session that owns it (looked up by its session key, the route); the card answers through ``connection.respond`` (``gateway/session_connections.py``).
 """
@@ -167,11 +168,10 @@ def _move_workspace(task_id, path):
     the folder is committed at the end of the turn, as the user's Move to project, so the running
     turn keeps its own. A folder that does not exist raises, so the tool reports why."""
     import os
-    from tools.terminal_tool import _resolve_container_alias
     key = str(task_id or "")
     with _lock:
-        # A delegated child runs under its own task id, aliased at spawn to the turn that started it.
-        route = _workspace_routes.get(key) or _workspace_routes.get(_resolve_container_alias(key))
+        # Only the chat's own turn: a delegated child never moves its parent (and never gets the tool).
+        route = _workspace_routes.get(key)
     if route is None:
         return None
     authority, session_id, _session_key, _publish = route

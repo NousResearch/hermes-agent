@@ -1,13 +1,13 @@
 name: model-forge-desktop
 title: Model Forge Desktop
 repo: https://github.com/mr-pewpy/model-forge
-sha: 8b627e2001205d312796e59769c9b202100ebdbc
+sha: f497b536bad0faa525cce5999ff5046d118ec5a7
 subdir: model-forge-desktop
-description: "Model Forge native Desktop experience for Hermes Desktop — full /model-forge workspace page, sidebar nav entry, Settings -> Plugins -> Model Forge pages, command palette actions, and dockable cockpit side pane. Detect your GPU or connect network/cloud GPUs without editing JSON, add a Hugging Face token via Hermes' credential store, browse/pull models across every modality and engine (llama.cpp, Ollama, vLLM, SGLang, ComfyUI, Strata, Project Maya, Exo), inspect live loaded models and storage/residency, and pipe them into Hermes. Companion UI for the Model Forge plugin. Disclosure — reads local host facts (machine.facts), installed suite status and plugin settings (plugins.manage), and tool-registered targets (read-only shell read of Model Forge's own targets file); probes user-configured targets and declared engine endpoints (plus local default ports) with read-only GET requests (/props, /api/tags, /api/catalog, /system_stats, /version, /get_model_info, /node_id, /state, /v1/models); runs Model Forge's read-only cockpit and on-demand resource views via /model-forge slash commands (collapsed by default, manual refresh only, no polling); saves user-submitted target, engine, and image/video endpoint settings through plugins.manage settings and saves or removes HF_TOKEN through Hermes' model.save_key / model.disconnect credential routes (never displays secret values); routes destructive storage deletion, vendor engine installers, model pulls, and config activation to Hermes chat behind the human-approval gate; no background processes, no telemetry."
+description: "Standalone companion Desktop UI for Model Forge (note: the unified model-forge package now ships the full backend-backed Desktop UI directly, so most users only need model-forge). Provides the /model-forge workspace page, sidebar nav entry, Settings -> Plugins -> Model Forge pages, command palette actions, and dockable cockpit pane. Disclosure — reads local host facts (machine.facts), installed suite status and plugin settings (plugins.manage), and tool-registered targets (read-only shell read of Model Forge's own targets file); probes user-configured targets and declared engine endpoints (plus local default ports) with read-only GET requests; runs Model Forge's read-only cockpit and on-demand resource views via /model-forge slash commands (collapsed by default, manual refresh only, no polling); saves user-submitted target, engine, and image/video endpoint settings through plugins.manage settings and saves or removes HF_TOKEN through Hermes' model.save_key / model.disconnect credential routes (never displays secret values); routes destructive storage deletion, vendor engine installers, model pulls, and config activation to Hermes chat behind the human-approval gate; no background processes, no telemetry."
 maintainer: mr-pewpy
 tier: community
 category: desktop
-version: "1.3.1"
+version: "2.0.0"
 requires_hermes: ">=0.23.0"
 readme: false
 platforms: []

@@ -71,6 +71,24 @@ def test_port_selection_skips_env_expanded_claims_and_ignores_invalid_claims(mac
     assert webapp_access.plan("lan")[1] == 9124
 
 
+def test_port_selection_expands_stopped_sibling_dotenv_without_mutating_environ(machine):
+    root = machine["root"]
+    monkeypatch = machine["monkeypatch"]
+    monkeypatch.delenv("BM_WEBAPP_PORT", raising=False)
+    machine["listening"].clear()
+    other = _write(
+        root / "profiles" / "other",
+        "gateway:\n  standalone: true\nwebapp:\n  enabled: true\n  port: ${BM_WEBAPP_PORT}\n",
+    )
+    (other / ".env").write_text("BM_WEBAPP_PORT=09121\n", encoding="utf-8")
+    env_before = dict(os.environ)
+
+    assert webapp_access._claimed_ports(machine["solo"]) == {9120, 9121}
+    assert webapp_access.plan("lan")[1] == 9122
+    assert "BM_WEBAPP_PORT" not in os.environ
+    assert dict(os.environ) == env_before
+
+
 def test_root_with_invalid_port_still_claims_default_port(machine):
     root = machine["root"]
     _write(root, "webapp:\n  port: true\n")

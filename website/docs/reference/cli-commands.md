@@ -1623,7 +1623,7 @@ Inspect shell-script hooks declared in `~/.hermes/config.yaml`, test them agains
 | `list` (alias: `ls`) | List configured hooks with matcher, timeout, and consent status |
 | `test <event>` | Fire every hook matching `<event>` against a synthetic payload |
 | `revoke` (aliases: `remove`, `rm`) | Remove a command's allowlist entries (takes effect on next restart) |
-| `doctor` | Check each configured hook: exec bit, allowlist, mtime drift, JSON validity, and synthetic run timing |
+| `doctor` | Check each configured hook: exec bit, allowlist, script changed since approval, JSON validity, and synthetic run timing |
 
 See [Hooks](../user-guide/features/hooks.md) for event signatures and payload shapes.
 

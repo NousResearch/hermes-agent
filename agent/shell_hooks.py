@@ -320,11 +320,13 @@ def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]],
     """Allowlisted, or approved now (opt-in, or a TTY prompt when ``prompt``; recorded); ``allowed``
     caches one read."""
     pair = (spec.event, spec.command)
-    if pair in allowed:
-        return True
+    changed = (script_change_since_approval(allowlist_entry_for(*pair), spec.command)
+                if pair in allowed and prompt else None)
+    if pair in allowed and not changed:
+        return True  # a changed script elsewhere stays registered; its callback refuses to run it
     if not (accept or prompt):
         return False
-    if not _prompt_and_record(spec.event, spec.command, accept_hooks=accept):
+    if not _prompt_and_record(spec.event, spec.command, accept_hooks=accept, changed=changed):
         return False
     allowed.add(pair)
     return True
@@ -770,16 +772,19 @@ def _flock_unlock(lock_fh: Any) -> None:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
-def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
-    """Approve an unseen ``(event, command)`` pair; True iff granted and recorded."""
+def _prompt_and_record(event: str, command: str, *, accept_hooks: bool, changed: Optional[str] = None) -> bool:
+    """Approve an unseen ``(event, command)`` pair, or one whose script ``changed`` since its approval;
+    True iff granted and recorded."""
     if accept_hooks:
         _record_approval(event, command)
         logger.info("shell hook auto-approved via --accept-hooks / env / config: %s -> %s", event, command)
         return True
     if not sys.stdin.isatty():
         return False
+    header = (f"\n⚠ A shell hook you approved earlier changed ({changed}).\n\n" if changed else
+              "\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n")
     print(
-        f"\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n"
+        header +
         f"    Event:   {event}\n    Command: {command}\n\n"
         f"  Commands run with your full user credentials.  Only approve\n  commands you trust."
     )
@@ -794,13 +799,8 @@ def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
 
 
 def _record_approval(event: str, command: str) -> None:
-    entry = {
-        "event": event,
-        "command": command,
-        "approved_at": _utc_now_iso(),
-        "script_mtime_at_approval": script_mtime_iso(command),
-        "script_hash_at_approval": script_content_hash(command),
-    }
+    entry = {"event": event, "command": command, "approved_at": _utc_now_iso(),
+             "script_mtime_at_approval": script_mtime_iso(command), "script_hash_at_approval": script_content_hash(command)}
     with _locked_update_approvals() as data:
         data["approvals"] = [e for e in data.get("approvals", []) if not _entry_matches(e, event, command)] + [entry]
 
@@ -879,11 +879,11 @@ def script_change_since_approval(entry: Optional[dict[str, Any]], command: str) 
     if not isinstance(pinned, str):
         mtime_at, mtime_now = entry.get("script_mtime_at_approval"), script_mtime_iso(command)
         moved = isinstance(mtime_at, str) and mtime_now is not None and mtime_now != mtime_at
-        return "script modified since it was approved" if moved else None
+        return "script modified since approval" if moved else None
     current = script_content_hash(command)
     if current == pinned:
         return None
-    return "script unreadable since it was approved" if current is None else "script content changed since it was approved"
+    return "script unreadable since approval" if current is None else "script content changed since approval"
 
 
 def _unapproved_change(spec: ShellHookSpec) -> Optional[str]:

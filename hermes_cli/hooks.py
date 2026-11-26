@@ -57,13 +57,8 @@ def _cmd_list(_args) -> None:
                 entry = shell_hooks.allowlist_entry_for(spec.event, spec.command) if is_approved else None
                 if entry and entry.get("approved_at"):
                     print(f"      approved_at: {entry['approved_at']}")
-                    drift, mtime_at, mtime_now = _mtime_drift(shell_hooks, spec, entry)
-                    if drift is True:
-                        print(
-                            f"      ⚠ script modified since approval "
-                            f"(was {mtime_at}, now {mtime_now}) — "
-                            f"run `hermes hooks doctor` to re-validate"
-                        )
+                    if changed := shell_hooks.script_change_since_approval(entry, spec.command):
+                        print(f"      ⚠ {changed} — it does not run until approved again (`hermes hooks doctor`)")
             print()
 
     if outbound:
@@ -78,18 +73,6 @@ def _cmd_list(_args) -> None:
 
 def _matcher_part(obj) -> str:
     return f" matcher={obj.matcher!r}" if obj.matcher else ""
-
-
-def _mtime_drift(shell_hooks, spec, entry) -> tuple[bool | None, str, str]:
-    """``(drift, mtime_at, mtime_now)``: True if the script changed since approval, False if
-    unchanged, None when either mtime is unknown."""
-    mtime_now = shell_hooks.script_mtime_iso(spec.command)
-    mtime_at = entry.get("script_mtime_at_approval")
-    if not (mtime_now and mtime_at):
-        return None, mtime_at, mtime_now
-    if mtime_now > mtime_at:
-        return True, mtime_at, mtime_now
-    return (False if mtime_now == mtime_at else None), mtime_at, mtime_now
 
 
 # ---------------------------------------------------------------------------
@@ -307,16 +290,14 @@ def _doctor_one(spec, shell_hooks) -> int:
         problems += 1
         print("      ✗ not allowlisted — hook will NOT fire at runtime "
               "(run with --accept-hooks once, or confirm at the TTY prompt)")
-    # 3. Mtime drift
-    if entry and entry.get("script_mtime_at_approval"):
-        drift, mtime_at, mtime_now = _mtime_drift(shell_hooks, spec, entry)
-        if drift is True:
-            problems += 1
-            print(f"      ⚠ script modified since approval "
-                  f"(was {mtime_at}, now {mtime_now}) — review changes, "
-                  f"then `hermes hooks revoke` + re-approve to refresh")
-        elif drift is False:
-            print("      ✓ script unchanged since approval")
+    # 3. The script is still the one approved (sha256 pinned at approval; older approvals: their mtime)
+    changed = shell_hooks.script_change_since_approval(entry, spec.command) if entry else None
+    if changed:
+        problems += 1
+        print(f"      ✗ {changed}: it does not run (a fail_closed hook blocks) until approved again "
+              f"(review it, then `hermes hooks revoke` + approve at the next `hermes` prompt, or --accept-hooks)")
+    elif entry:
+        print("      ✓ script unchanged since approval")
     # 4. JSON smoke test on a synthetic payload — ONLY when already allowlisted. Otherwise doctor
     # would execute every script in a freshly-pulled config before the user reviewed it, which
     # contradicts the documented workflow ("spot newly-added hooks *before they register*").
@@ -324,6 +305,8 @@ def _doctor_one(spec, shell_hooks) -> int:
         print("      ℹ skipped JSON smoke test — not allowlisted yet. "
               "Approve the hook first (via TTY prompt or --accept-hooks), "
               "then re-run `hermes hooks doctor`.")
+    elif changed:
+        print("      ℹ skipped JSON smoke test — the script is not the approved one.")
     elif shell_hooks.script_is_executable(spec.command):
         result = shell_hooks.run_once(spec, _DEFAULT_PAYLOADS.get(spec.event, {"extra": {}}))
         if result.get("timed_out"):

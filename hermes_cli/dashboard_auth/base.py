@@ -118,7 +118,9 @@ class DashboardAuthProvider(ABC):
     ``interactive_login`` (False for a provider that verifies credentials but has no browser
     sign-in flow — kept out of the login page, ``/api/auth/providers`` and the auto-SSO redirect
     even though its ``verify_session`` is real; a session provider presenting a provisioned
-    shared token is the bundled consumer).
+    shared token is the bundled consumer), ``refresh_reuse_detection`` (False when a used refresh
+    token stays valid: a replay is then harmless, so ``refresh_singleflight`` caches no success for
+    it and every replay reaches ``refresh_session`` and the provider's own revocation check).
     """
     name: str = ""
     display_name: str = ""
@@ -127,6 +129,7 @@ class DashboardAuthProvider(ABC):
     supports_peer_pass: bool = False
     supports_session: bool = True
     interactive_login: bool = True
+    refresh_reuse_detection: bool = True
 
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
@@ -143,6 +146,10 @@ class DashboardAuthProvider(ABC):
 
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
+
+    def revoke_access_session(self, *, access_token: str) -> None:
+        """Logout's revoke by the access token, for a provider whose access token can outlive the
+        refresh token (and its cookie). Best-effort, must not raise; the default does nothing."""
 
     def complete_password_login(self, *, username: str, password: str) -> Session:
         """Verify a username/password pair and mint a :class:`Session` (only called when

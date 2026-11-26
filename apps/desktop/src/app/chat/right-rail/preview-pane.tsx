@@ -72,7 +72,7 @@ import {
   isNearConsoleBottom,
   PreviewConsolePanel
 } from './preview-console'
-import { type ConsoleEntry } from './preview-console-state'
+import { type ConsoleEntry, type PreviewConsoleState } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { runPreviewGuestScript, usePreviewDriveChannels, withPreviewDeadline } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
@@ -221,14 +221,16 @@ const PREVIEW_PRINT_GUARD_SCRIPT =
   'window.print=function(){console.warn("[Hermes] Printing is disabled in the in-app preview. ' +
   'Open the page in your browser to print.");};})()'
 
-function PreviewLoadError({
-  consoleHeight = 0,
+export function PreviewLoadError({
+  consoleOpen,
+  consoleState,
   error,
   onRestartServer,
   onRetry,
   restarting
 }: {
-  consoleHeight?: number
+  consoleOpen: boolean
+  consoleState: PreviewConsoleState
   error: PreviewLoadErrorState
   onRestartServer?: () => void
   onRetry: () => void
@@ -236,6 +238,11 @@ function PreviewLoadError({
 }) {
   const { t } = useI18n()
   const copy = t.preview.web
+  // Subscribed here, not in PreviewPane: the whole-pane subscription re-rendered
+  // the 1,600-line host (and every mounted preview surface) on every resize
+  // frame while dragging the console splitter. This state is only needed by the
+  // error layout.
+  const consoleHeight = useStore(consoleState.$height)
 
   return (
     <PreviewEmptyState
@@ -258,7 +265,7 @@ function PreviewLoadError({
           )}
         </>
       }
-      consoleHeight={consoleHeight}
+      consoleHeight={consoleOpen ? consoleHeight : 0}
       primaryAction={{ label: copy.tryAgain, onClick: onRetry }}
       secondaryAction={
         onRestartServer
@@ -320,7 +327,6 @@ export function PreviewPane({
   const webviewRef = useRef<PreviewWebview | null>(null)
   const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
   const previewServerRestart = useStore($previewServerRestart)
-  const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const [currentUrl, setCurrentUrl] = useState(target.url)
@@ -423,7 +429,7 @@ export function PreviewPane({
       const handle = event.currentTarget
       const pointerId = event.pointerId
       const startY = event.clientY
-      const startHeight = consoleHeight
+      const startHeight = consoleState.$height.get()
       const previousCursor = document.body.style.cursor
       const previousUserSelect = document.body.style.userSelect
       let active = true
@@ -471,7 +477,7 @@ export function PreviewPane({
       window.addEventListener('blur', cleanup)
       handle.addEventListener('lostpointercapture', cleanup)
     },
-    [consoleHeight, consoleState]
+    [consoleState]
   )
 
   const reloadPreview = useCallback(() => {
@@ -858,6 +864,7 @@ export function PreviewPane({
     }
 
     const lifetime = new AbortController()
+
     const unregister = registerPreviewPageReader(tabId, async () => {
       const webview = webviewRef.current
 
@@ -1401,7 +1408,6 @@ export function PreviewPane({
   // rebuild it. Per-page state (annotate pins, console log, history) resets
   // around the load so nothing bleeds across pages. Skipped when the guest
   // already shows the address (an in-page navigation got there first).
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!isWebPreview || isRemoteHtml) {
       return
@@ -1563,7 +1569,8 @@ export function PreviewPane({
           )}
           {isWebPreview && loadError && (
             <PreviewLoadError
-              consoleHeight={consoleOpen ? consoleHeight : 0}
+              consoleOpen={consoleOpen}
+              consoleState={consoleState}
               error={loadError}
               onRestartServer={target.kind === 'url' && onRestartServer ? () => void restartServer() : undefined}
               onRetry={reloadPreview}

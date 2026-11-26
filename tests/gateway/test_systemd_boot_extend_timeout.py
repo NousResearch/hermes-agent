@@ -1,4 +1,4 @@
-"""A Type=notify multiplex boot asks systemd for more start time before each serial secondary connect."""
+"""A Type=notify multiplex boot asks systemd for more start time before each secondary connect."""
 
 import os
 import socket
@@ -65,8 +65,14 @@ async def test_secondary_boot_extends_systemd_start_timeout(tmp_path, monkeypatc
     runner._restore_secondary_completion_ledgers = lambda *a: None
     runner._adapter_credential_claim = lambda *a: None
     runner._adapter_listener_claim = lambda *a: None
-    runner._create_adapter = lambda platform, config: SimpleNamespace(platform=platform)
+    seen_before_build: list[list[str]] = []
     seen_before_connect: list[list[str]] = []
+
+    def create(platform, config):
+        seen_before_build.append(_drain(receiver))
+        return SimpleNamespace(platform=platform)
+
+    runner._create_adapter = create
 
     async def connect(adapter, platform):
         seen_before_connect.append(_drain(receiver))
@@ -78,12 +84,15 @@ async def test_secondary_boot_extends_systemd_start_timeout(tmp_path, monkeypatc
     finally:
         receiver.close()
 
-    assert len(seen_before_connect) == 2
+    assert len(seen_before_build) == len(seen_before_connect) == 2
     if watchdog_seconds and notify_socket and connect_timeout is None:
-        # one fresh extension right before EACH serial secondary connect, sized past its connect budget
+        # preparation extends before each profile's build; then one fresh extension right before EACH
+        # secondary connect, sized past its connect budget
         budget = runner._platform_connect_timeout_secs(Platform.DISCORD, initial=True)
+        for datagrams in seen_before_build:
+            assert datagrams and all(d.startswith("EXTEND_TIMEOUT_USEC=") for d in datagrams)
         for datagrams in seen_before_connect:
             assert len(datagrams) == 1 and datagrams[0].startswith("EXTEND_TIMEOUT_USEC=")
             assert int(datagrams[0].split("=", 1)[1]) > budget * 1_000_000
     else:
-        assert seen_before_connect == [[], []]
+        assert seen_before_build == seen_before_connect == [[], []]

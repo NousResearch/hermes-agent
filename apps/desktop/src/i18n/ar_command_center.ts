@@ -164,9 +164,28 @@ export const arCommandCenter = {
     noModelUsage: 'لا يوجد استخدام نماذج',
     topSkills: 'أكثر المهارات استخداما',
     noSkillActivity: 'لا يوجد نشاط مهارات',
-    actions: count => `${count} إجراء`
+    actions: count => `${count} إجراء`,
+    maintenance: {
+      debugShareConfirm: 'رفع تقرير التصحيح إلى خدمة لصق عامة؟',
+      debugShareConfirmDesc:
+        'يرفع ملخصا إلى خدمة لصق عامة: إصدارات Hermes وPython ونظام التشغيل، وأسماء المنصات المتصلة ومجموعات الأدوات، وأسماء مفاتيح الإعداد (دون قيمها)، وأعداد التحذيرات والأخطاء. لا يحتوي على أي أسطر من السجلات أو نصوص الرسائل. تُحذف اللصقات تلقائيا بعد 6 ساعات؛ وإذا تعذّر الوصول إلى paste.rs فإن البديل dpaste.com يبقيها عامة ليوم واحد ولا يمكن حذفها قبل ذلك.'
+    }
   },
   messaging: {
+    catalog: {
+      sectionTitle: 'متاح للتثبيت',
+      badges: { official: 'رسمي', verified: 'موثّق' },
+      notInstalled: 'غير مثبّت',
+      intro: (name: string) => `${name} إضافة من كتالوج Hermes. يفعّلها التثبيت، ثم يمكنك إدخال بيانات اعتمادها هنا.`,
+      disclosure: 'إفصاح:',
+      install: 'تثبيت',
+      installing: 'جارٍ التثبيت…',
+      installed: (name: string) => `تم تثبيت ${name}`,
+      installedDetail: 'أدخل بيانات الاعتماد لربطها.',
+      installFailed: (name: string) => `تعذّر تثبيت ${name}`,
+      lazyOff: 'التثبيت التلقائي للإضافات متوقف (security.allow_lazy_installs)، لذا لا يثبّتها Hermes من هنا.',
+      runCommand: 'ثبّتها من الطرفية:',
+    },
     search: 'بحث',
     statusFilter: {
       all: 'الكل',
@@ -442,6 +461,8 @@ export const arCommandCenter = {
     remoteOverride: {
       menuItem: 'الاتصال بمضيف بعيد…',
       badge: (host: string) => `يعمل على ${host}`,
+      runHere: 'التشغيل على هذا الحاسوب…',
+      sandboxed: 'معزول',
       title: (profile: string) => `ربط ${profile} بمضيف بعيد`,
       description: 'ستعمل جلسات هذا الملف الشخصي على خادم Hermes البعيد الذي تحدده، بدلاً من هذا الجهاز.',
       urlLabel: 'العنوان البعيد',

@@ -1,0 +1,40 @@
+name: forgebruecke
+title: Forgebrücke
+repo: https://github.com/studioluftbruecke/hermes-forgebruecke
+sha: 71bb5c17e0f27df66d157f3b910ac4750dcdeaca
+description: "A bridge between Hermes and your self-hosted Forgejo: Hermes works as its own account, writes follow Hermes' approval setting, and a desk in Hermes Desktop shows the pull requests that wait for you. Disclosure — Talks only to the Forgejo address you set, as a separate Hermes account whose token you provide; the optional personal write token is used only for the desk's Merge and Comment buttons on your click, and is available to Hermes. Per-repo flows run a background loop in the gateway that reviews new pull requests by starting `hermes -p <reviewer profile> chat` processes, which send each pull request's title, description and diff to that profile's model provider and post the verdict as a comment. The \"Create a reviewer profile\" button clones your profile (config.yaml, SOUL.md and every key in .env) into `forgebruecke-reviewer`, then removes its memories and the two Forgebrücke tokens through `hermes` commands. The optional mention channel, once enabled in the profile, answers Forgejo mentions from any commenter on repos where mentions are on. The git credential helper setup prints `git config --global` lines for you to run."
+maintainer: studioluftbruecke
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://forgebruecke.luftbruecke.studio
+version: "0.0.26"
+image: https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-1.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-2.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-3.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-4.png
+  - https://raw.githubusercontent.com/studioluftbruecke/hermes-forgebruecke/71bb5c17e0f27df66d157f3b910ac4750dcdeaca/docs/screenshot-5.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Needs a Forgejo account for Hermes, added as a collaborator on each repo, with a token for read:notification, write:issue, write:repository and read:user."
+  - "A new setup only previews writes. Switch on \"Let Hermes write\" in Settings, Plugins, Forgebrücke."
+  - "With Hermes on a server, install the plugin on the Desktop computer too, on the same version: Desktop loads the desk from its own computer."
+capabilities:
+  provides_tools:
+    - forgejo_doctor
+    - forgejo_get
+    - forgejo_list
+    - forgejo_comment
+    - forgejo_create_pr
+    - forgejo_status
+    - forgejo_flows
+    - forgejo_repos
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

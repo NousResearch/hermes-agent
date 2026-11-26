@@ -4,23 +4,34 @@
 tool call, never a side effect of ``cd``. GUI-only: the `project` toolset stays off
 ``_HERMES_CORE_TOOLS``; the desktop/TUI gateway folds it in and wires
 ``set_project_workspace_callback`` so the live session's cwd and sidebar follow. A live
-session create/switch re-anchors only that session; it must not move the profile-global
-Desktop selection shared by concurrent chats."""
+session's switch re-anchors only that session, and create never moves it; neither may move the
+profile-global Desktop selection shared by concurrent chats."""
 
 import json
+import logging
 import os
 from typing import Callable, Optional
 
 from tools.registry import registry
 
+logger = logging.getLogger(__name__)
+
 # Set by the GUI gateway: ``(task_id, primary_path, project_name)`` re-anchors that session's
-# workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move.
-_workspace_callback: Optional[Callable[[str, str, str], None]] = None
+# workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move. It returns
+# False when it found no live session for *task_id* (or the folder is gone), and ``"pending"`` when
+# the move is committed at the end of the calling turn; ``None`` (an older callback with no verdict)
+# counts as moved.
+_workspace_callback: Optional[Callable[[str, str, str], object]] = None
 
 
-def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], None]]) -> None:
+def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], object]]) -> None:
     global _workspace_callback
     _workspace_callback = fn
+
+
+def get_project_workspace_callback() -> Optional[Callable[[str, str, str], object]]:
+    """The installed callback, so a second GUI host can wrap it (``gateway/local_desktop_ui.py``)."""
+    return _workspace_callback
 
 
 def _primary_path(proj) -> Optional[str]:
@@ -32,18 +43,25 @@ def _primary_path(proj) -> Optional[str]:
     return proj.folders[0].path if proj.folders else None
 
 
-def _moves_session(task_id: Optional[str], path: Optional[str]) -> bool:
-    """True when a live GUI session's workspace will follow the project — ``_apply_workspace``'s gate."""
-    return bool(_workspace_callback and task_id and path)
-
-
-def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> None:
+def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> tuple[object, Optional[str]]:
+    """Move the calling session into *path*: ``(moved, why_not)``. ``moved`` is True, ``"pending"``
+    (the move lands when the calling turn ends) or False with the reason, reported to the model so
+    it never keeps working in a folder it believes it left."""
     cb = _workspace_callback
-    if cb and task_id and path:
-        try:
-            cb(task_id, path, name)
-        except Exception:
-            pass
+    if not path:
+        return False, "project has no folder"
+    if not task_id:
+        return False, "no calling session"
+    if cb is None:
+        return False, "no live GUI session to move (CLI/messaging): only the active project changed"
+    try:
+        verdict = cb(task_id, path, name)
+    except Exception as exc:
+        logger.warning("desktop_project workspace callback failed for %s", task_id, exc_info=True)
+        return False, f"workspace move failed: {exc}"
+    if verdict is False:
+        return False, "no live GUI session owns this task"
+    return ("pending" if verdict == "pending" else True), None
 
 
 def _resolve(conn, token: str):
@@ -64,23 +82,45 @@ def _resolve(conn, token: str):
 
 
 def _activated(proj, task_id: Optional[str]) -> str:
+    """Move the live session into *proj*; one that cannot move (CLI/messaging, a pathless project,
+    no session found) switches the profile-global pointer instead. A live session that moves owns
+    its workspace, so it leaves the pointer alone (a background chat would otherwise redirect the
+    sidebar)."""
+    from hermes_cli import projects_db as pdb
     primary = _primary_path(proj)
-    _apply_workspace(task_id, primary, proj.name)
-    return json.dumps({
-        "success": True, "id": proj.id, "slug": proj.slug, "name": proj.name,
-        "primary_path": primary})
+    moved, reason = _apply_workspace(task_id, primary, proj.name)
+    if not moved:
+        with pdb.connect_closing() as conn:
+            pdb.set_active(conn, proj.id)
+    result = {"success": True, "id": proj.id, "slug": proj.slug, "name": proj.name,
+              "primary_path": primary, "moved": moved}
+    if reason is not None:
+        result["not_moved_reason"] = reason
+    if moved == "pending":
+        result["note"] = (f"This chat moves to {primary} when this turn ends; commands in this turn still "
+                          "run in the current folder. If the folder is gone by then, the chat stays put.")
+    return json.dumps(result)
 
 
 def _calling_session_project_id(conn, task_id: Optional[str]) -> tuple[bool, Optional[str]]:
     """``(scoped, project_id)`` for the calling session. The GUI gateway registers each session's
-    workspace (``cwd_source``) in the terminal override table; a caller it never registered (CLI,
-    scripts) is unscoped and falls back to the profile-global pointer."""
+    workspace (``cwd_source``) in the terminal override table, and a Desktop or TUI chat the gateway
+    owns runs its turn with its frozen policy bound (its ``cwd`` is the workspace); any other caller
+    (CLI, scripts, kanban) is unscoped and falls back to the profile-global pointer."""
     from hermes_cli import projects_db as pdb
     from tools.terminal_tool import resolve_task_overrides
     overrides = resolve_task_overrides(task_id) if task_id else {}
-    if "cwd_source" not in overrides:
-        return False, None
-    cwd = overrides.get("cwd") if overrides["cwd_source"] == "session" else overrides.get("host_workspace")
+    if "cwd_source" in overrides:
+        cwd = overrides.get("cwd") if overrides["cwd_source"] == "session" else overrides.get("host_workspace")
+    else:
+        try:
+            from gateway.session_policy import active_policy
+        except ImportError:  # install without the gateway package: no gateway turn can be running
+            return False, None
+        policy = active_policy()
+        if not task_id or policy is None or policy.source not in ("gui", "tui"):
+            return False, None
+        cwd = policy.cwd
     project = pdb.project_for_path(conn, cwd) if cwd else None
     return True, project.id if project else None
 
@@ -120,16 +160,13 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
             else:
                 pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
                 proj = pdb.get_project(conn, pid)
-            # A live session that moves owns its workspace, so it leaves the profile-global pointer
-            # alone (a background chat would otherwise redirect the sidebar). Anything that can't
-            # move — CLI/messaging, a pathless project — switches through the pointer instead.
-            if proj is not None and not _moves_session(task_id, _primary_path(proj)):
-                pdb.set_active(conn, proj.id)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
     if proj is None:
         return json.dumps({"success": False, "error": "project vanished after create"})
-    return _activated(proj, task_id)
+    # Create only creates: this chat stays where it is and the active project is untouched; `switch` moves.
+    return json.dumps({"success": True, "id": proj.id, "slug": proj.slug, "name": proj.name,
+                       "primary_path": _primary_path(proj)})
 
 
 def project_switch(project: str, task_id: Optional[str] = None) -> str:
@@ -138,9 +175,6 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
         proj = _resolve(conn, project)
         if proj is None:
             return json.dumps({"success": False, "error": f"no project matching '{project}'"})
-        # Same rule as create.
-        if not _moves_session(task_id, _primary_path(proj)):
-            pdb.set_active(conn, proj.id)
     return _activated(proj, task_id)
 
 
@@ -167,11 +201,11 @@ registry.register(
     schema={
         "name": "desktop_project",
         "description": (
-            "Create or switch desktop Projects (named workspaces). create: one and switch "
-            "this chat into it — pass path to anchor it to a repo/folder (the "
-            "chat's workspace moves there, the sidebar follows). switch: move "
-            "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which one this chat is in."
+            "Create or switch desktop Projects (named workspaces). create: make one; pass path to "
+            "anchor it to a repo/folder. This chat stays where it is and the active project is unchanged. "
+            "switch: move this chat into an existing project by name/slug/id (the chat's workspace "
+            "moves there, the sidebar follows); the intentional way to move the session, not `cd`. "
+            "list: all projects + which one this chat is in."
         ),
         "parameters": {
             "type": "object",

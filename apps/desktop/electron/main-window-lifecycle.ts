@@ -1,3 +1,6 @@
+import { extractDeepLink } from './deep-link-protocol'
+import { type MacApplicationsGuardResult, macGuardAllowsWindows } from './mac-applications-guard'
+import { hasClosePreviewFlag } from './preview-guest-escape'
 import { shouldFocusToTakeKeyboard } from './window-focus-policy'
 
 type MainWindowLike = {
@@ -36,6 +39,51 @@ export function ensureMainWindow<T extends MainWindowLike>(
   if (focusExisting) {
     focusWindow(window)
   }
+}
+
+interface SecondInstanceDeps<T extends MainWindowLike> {
+  mainWindow: T | null | undefined
+  /** The Applications move prompt's answer; null while it still waits. */
+  launchGuard: MacApplicationsGuardResult | null
+  deepLinkSchemes: readonly string[]
+  handleDeepLink: (url: string) => void
+  createWindow: () => unknown
+  focusWindow: (window: T) => unknown
+  log: (message: string) => void
+}
+
+/** The primary instance's `second-instance` handler: another launch's argv arrives here. */
+export function handleSecondInstance<T extends MainWindowLike>(
+  argv: readonly string[],
+  deps: SecondInstanceDeps<T>
+): void {
+  // --close-preview: the same escape hatch as hermes://close-preview, for
+  // environments where spawning a URL is harder than a flag (kiosk launchers,
+  // SSH-started sessions). Checked before deep links so a carried `hermes://`
+  // URL still routes normally when no flag is present.
+  if (hasClosePreviewFlag(argv)) {
+    deps.handleDeepLink('hermes://close-preview')
+  }
+
+  const url = extractDeepLink(argv, deps.deepLinkSchemes)
+
+  if (url) {
+    deps.handleDeepLink(url)
+  }
+
+  // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
+  // silently exit. Log it so a future silent exit stays diagnosable, then
+  // restore a live primary with activation (restore + show + focus), or
+  // re-create it when it was destroyed.
+  deps.log(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
+  ensureMainWindow(deps.mainWindow, {
+    // app.isReady() is already true while the move prompt waits; the first window waits for its answer.
+    isReady: macGuardAllowsWindows(deps.launchGuard),
+    createWindow: deps.createWindow,
+    focusWindow: deps.focusWindow,
+    // deep-link delivery focuses a live window after its renderer is ready.
+    focusExisting: !url
+  })
 }
 
 /**

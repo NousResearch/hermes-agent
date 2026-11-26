@@ -410,6 +410,65 @@ def _adopt_late_compute_host_compress_ack(sid: str, session: dict, ack: dict, *,
     _status_update(sid, "compacted", "✓ Context compression complete")
 
 
+def _send_claimed_compute_host_control(sid: str, session: dict, *, route_name: str, command: str, compress: bool):
+    """A transcript-writing control (``/compress``, ``/model``) sent under a parent-side transcript claim: the host
+    works under a borrowed token while ``running`` stays False here, so without the claim the idle reaper could
+    release the real lease mid-compression. Released when the ack lands; on ``queue.Empty`` (a compress waiter
+    giving up) the late-ack adopter releases it instead, since the host is still writing."""
+    release = _hold_transcript_claim(session)  # raises SessionNotOwned when another surface took the chat
+    handed_to_late_ack = False
+
+    def _on_late_ack(late: dict, _sid=sid) -> None:
+        try:
+            _adopt_late_compute_host_compress_ack(_sid, session, late, route_name=route_name)
+        finally:
+            release()
+    try:
+        return _send_compute_host_control(
+            sid, route_name=route_name, command=command, wait=True,
+            # compression.context_total_ceiling_seconds: the host legitimately runs that long.
+            **({"timeout": _compute_host_compress_wait_seconds(), "on_late_ack": _on_late_ack} if compress else {}))
+    except queue.Empty:
+        handed_to_late_ack = compress
+        raise
+    finally:
+        if not handed_to_late_ack:
+            release()
+
+
+def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
+    """``session.compress`` for a turn-isolated session: forward ``/compress`` to the host."""
+    sid = str(params.get("session_id") or "")
+    focus_topic = _str_param(params, "focus_topic")
+    try:
+        ack = _send_claimed_compute_host_control(
+            sid, session, route_name="session.compress",
+            command="/compress" + (f" {focus_topic}" if focus_topic else ""), compress=True)
+    except queue.Empty:
+        # Waiter gave up, host still compressing; the late-ack handler adopts the rotated session when it
+        # lands. Not an error (a 5019 here reported timeouts that later succeeded).
+        return _ok(rid, {"status": "pending", "turn_isolation": True,
+                         "message": ("compression still running in the background; "
+                                     "the transcript will refresh when it finishes")})
+    except SessionNotOwned:
+        raise  # refused before the host was contacted: the dispatcher answers 4090, not a host failure
+    except Exception as exc:
+        return _err(rid, 5019, f"compute-host compress failed: {exc}")
+    if (resp := _compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:
+        return resp
+    _apply_compute_host_metadata_mirror(session, ack)
+    if isinstance(host_result := ack.get("result"), dict):
+        # Host-owned result verbatim (carries `status: aborted` / `summary.aborted`).
+        return _ok(rid, {**host_result, "turn_isolation": True})
+    host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
+    return _ok(rid, {
+        "status": "compressed", "turn_isolation": True,
+        # `messages` goes top-level for the transcript replacement; don't duplicate it in the ack.
+        "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info,
+        "messages": _history_to_messages(ack.get("messages"), profile_home=session.get("profile_home")) if isinstance(ack.get("messages"), list) else [],
+        "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
+
+
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

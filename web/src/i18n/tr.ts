@@ -799,4 +799,17 @@ export const tr: Translations = {
     logTruncated: "(son 100 KB gösteriliyor — tam günlük şurada: ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Kurulabilir",
+    hint: "Hermes eklenti kataloğundaki mesajlaşma platformları. Birini kurmak eklentisini ekler ve etkinleştirir, ardından kurulumunu açar.",
+    badgeOfficial: "Resmî",
+    badgeVerified: "Doğrulanmış",
+    disclosure: "Açıklama:",
+    lazyInstallsOff: "Otomatik eklenti kurulumu kapalı (security.allow_lazy_installs).",
+    run: "Çalıştırın:",
+    install: "Kur",
+    installing: "Kuruluyor…",
+    installed: (title: string) => `${title} kuruldu. Bağlamak için kimlik bilgilerini girin.`,
+    installFailed: (title: string) => `${title} kurulamadı`,
+  },
 };

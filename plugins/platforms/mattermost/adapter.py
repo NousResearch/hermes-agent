@@ -165,7 +165,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     body = await resp.text()
                     if is_post:
                         self._last_post_error = body or ""
-                    logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])
+                    logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])  # health: allow HX017 -- server error body, not a message
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
@@ -233,7 +233,7 @@ class MattermostAdapter(BasePlatformAdapter):
                                       timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status >= 400:
                 body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                logger.error("MM file upload → %s: %s", resp.status, body[:200])  # health: allow HX017 -- server error body, not a message
                 return None
             infos = (await resp.json()).get("file_infos", [])
             return infos[0]["id"] if infos else None
@@ -339,6 +339,7 @@ class MattermostAdapter(BasePlatformAdapter):
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
         from gateway.platforms.base import read_httpx_body_with_limit
+        from gateway.platforms.helpers import ssrf_checked_aiohttp_get
         from tools.url_safety import is_safe_url
 
         async def fallback() -> SendResult:
@@ -350,18 +351,19 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         for attempt in range(3):  # retry 5xx/429 and network errors twice with linear backoff
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with ssrf_checked_aiohttp_get(self._session, url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if (resp.status >= 500 or resp.status == 429) and attempt < 2:
                         logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                      attempt + 1, url[:80], resp.status)
                     elif resp.status >= 400:
-                        return await fallback()
+                        file_data = None  # fall back outside the download's timeout scope
+                        break
                     else:
                         file_data = await read_httpx_body_with_limit(
                             resp, media_type="image", body=resp.content.iter_chunked(65536))
                         ct = resp.content_type or "application/octet-stream"
                         break
-            except ValueError as exc:  # over gateway.max_inbound_media_bytes; a retry would refetch it
+            except ValueError as exc:  # over the media cap or an SSRF-blocked redirect hop; a retry would repeat it
                 logger.warning("Mattermost: refusing %s: %s", url[:80], exc)
                 return await fallback()
             except (TimeoutError, aiohttp.ClientError) as exc:
@@ -369,6 +371,8 @@ class MattermostAdapter(BasePlatformAdapter):
                     logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
                     return await fallback()
             await asyncio.sleep(1.5 * (attempt + 1))
+        if file_data is None:
+            return await fallback()
         file_id = await self._upload_file(chat_id, file_data, _url_filename(url, f"{kind}.png"), ct)
         return await self._post_with_file(chat_id, file_id, caption, reply_to, metadata) if file_id else await fallback()
 
@@ -398,12 +402,13 @@ class MattermostAdapter(BasePlatformAdapter):
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
         from gateway.platforms.base import read_httpx_body_with_limit
+        from gateway.platforms.helpers import ssrf_checked_aiohttp_get
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None
         try:
-            async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with ssrf_checked_aiohttp_get(self._session, image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status >= 400:
                     logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
                     return None
@@ -548,6 +553,7 @@ class MattermostAdapter(BasePlatformAdapter):
             cache_audio_from_bytes_async,
             cache_document_from_bytes_async,
             cache_image_from_bytes_async,
+            read_httpx_body_with_limit,
         )
         media_urls, media_types = [], []
         cache_fns = {"image/": cache_image_from_bytes_async, "audio/": cache_audio_from_bytes_async}
@@ -562,7 +568,8 @@ class MattermostAdapter(BasePlatformAdapter):
                     if resp.status >= 400:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
                         continue
-                    file_data = await resp.read()
+                    file_data = await read_httpx_body_with_limit(
+                        resp, media_type="attachment", body=resp.content.iter_chunked(65536))
                     prefix = next((p for p in cache_fns if mime.startswith(p)), None)
                     if prefix:
                         media_urls.append(
@@ -598,7 +605,18 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id = post_id
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
             message_text = message_text.lstrip()
-        media_urls, media_types = await self._download_attachments(post.get("file_ids") or [])
+        chat_type = _CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel")
+        # The fetch spends the bot's token and disk on a sender-chosen file: only the gateway's explicit
+        # True permits it. The post still dispatches so the runner applies denial/pairing.
+        # A bot account's post carries props.from_bot (a string "true" on the wire).
+        is_bot = (str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
+                  or self._is_configured_bot_user(sender_id))
+        file_ids = post.get("file_ids") or []
+        if file_ids and self._is_sender_authorized(sender_id, chat_type, channel_id, is_bot=is_bot,
+                                                   thread_id=thread_id) is True:
+            media_urls, media_types = await self._download_attachments(file_ids)
+        else:
+            media_urls, media_types = [], []
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND
         elif media_types:
@@ -607,12 +625,9 @@ class MattermostAdapter(BasePlatformAdapter):
         else:
             msg_type = MessageType.TEXT
         source = self.build_source(
-            chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
+            chat_id=channel_id, chat_type=chat_type,
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
-            thread_id=thread_id, message_id=post_id,
-            # A bot account's post carries props.from_bot (a string "true" on the wire).
-            is_bot=str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
-            or self._is_configured_bot_user(sender_id))
+            thread_id=thread_id, message_id=post_id, is_bot=is_bot)
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,

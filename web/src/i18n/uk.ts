@@ -800,4 +800,17 @@ export const uk: Translations = {
     logTruncated: "(показано останні 100 KB — повний журнал у ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Доступно для встановлення",
+    hint: "Платформи обміну повідомленнями з каталогу плагінів Hermes. Встановлення додає й вмикає плагін, а потім відкриває його налаштування.",
+    badgeOfficial: "Офіційний",
+    badgeVerified: "Перевірений",
+    disclosure: "Розкриття:",
+    lazyInstallsOff: "Автоматичне встановлення плагінів вимкнено (security.allow_lazy_installs).",
+    run: "Виконайте:",
+    install: "Встановити",
+    installing: "Встановлення…",
+    installed: (title: string) => `${title} встановлено. Введіть облікові дані, щоб підключити його.`,
+    installFailed: (title: string) => `Не вдалося встановити ${title}`,
+  },
 };

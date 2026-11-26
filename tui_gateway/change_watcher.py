@@ -188,19 +188,9 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-# last_activity_at / _description are left out on purpose: the session activity heartbeat restamps
-# them mid-turn and on idle ticks, so hashing them re-fired sessions.changed every heartbeat window
-# (#98005). Liveness comes from session.active_list, and a real turn still moves message_count.
-_SESSION_SIGNATURE_FIELDS = (
-    "id", "source", "session_key", "display_name", "model", "parent_session_id",
-    "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
-    "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
-    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
-)
-# path -> (database/WAL mtime, session-table digest, whether that is a fallback rather than a
-# read answer). The mtime guard keeps the normal 0.5 s watch pass stat-only; SQLite is read only
-# after another process actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see
-# _settled_mtime).
+# path -> (database/WAL mtime, signature, whether that is a fallback rather than a read answer). The
+# mtime guard keeps the normal 0.5 s watch pass stat-only; the store is read only after another process
+# actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None, bool]] = {}
 
 
@@ -208,10 +198,10 @@ _MTIME_FALLBACK = "mtime-fallback"
 
 
 def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: None):
-    """``read(conn, mtime)`` over a read-only connection, cached behind the DB/WAL mtime so a watch pass
-    stays stat-only until another process commits. ``read`` returns ``(signature, is_fallback)``. A failed
-    read after a good answer keeps it and leaves the cached mtime stale so the next pass re-reads (answer ->
-    fallback -> answer would broadcast twice); otherwise the answer is ``fallback(mtime)``."""
+    """``read(db_path, mtime)``, cached behind the DB/WAL mtime so a watch pass stays stat-only until another
+    process commits. ``read`` returns ``(signature, is_fallback)``. A failed read after a good answer keeps it and
+    leaves the cached mtime stale so the next pass re-reads (answer -> fallback -> answer would broadcast twice);
+    otherwise the answer is ``fallback(mtime)``."""
     mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal")))
     cache_key = str(db_path)
     cached = cache.get(cache_key)
@@ -220,37 +210,26 @@ def _db_content_sig(db_path: Path, cache: dict, read, *, fallback=lambda mtime: 
     if not db_path.exists():
         cache[cache_key] = (mtime, None, True)
         return None
-    conn = None
     try:
-        from hermes_state import _connect_tracked_db
-        from hermes_state_holders import read_only_db_uri
-        conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=db_path, uri=True, timeout=0.05)
-        signature, is_fallback = read(conn, mtime)
+        signature, is_fallback = read(db_path, mtime)
     except Exception:  # health: allow BLE001 -- any failed read (busy, locked, foreign schema) falls back like a busy one
         if cached is not None and not cached[2]:
             return cached[1]
         signature, is_fallback = fallback(mtime), True
-    finally:
-        if conn is not None:
-            conn.close()
     cache[cache_key] = (_settled_mtime(mtime), signature, is_fallback)
     return signature
 
 
-def _session_rows_sig(conn, mtime):
-    import hashlib
-    available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
-    fields = tuple(field for field in _SESSION_SIGNATURE_FIELDS if field in available)
-    if not fields:
+def _session_rows_sig(db_path: Path, mtime):
+    from persistence_assembly import open_persistence_reader
+
+    with open_persistence_reader(db_path) as persistence:
+        projection = persistence.maintenance.session_projection_digest(busy_timeout_s=0.05)
+    if projection is None:
         # A state.db without a readable sessions table (foreign schema, legacy or transient file): keep
         # the old mtime contract so any move still wakes the sidebar instead of silently never broadcasting.
         return (_MTIME_FALLBACK, mtime), True
-    order = " ORDER BY id" if "id" in available else ""
-    digest = hashlib.blake2b(digest_size=16)
-    for row in conn.execute(f"SELECT {', '.join(fields)} FROM sessions{order}"):
-        digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
-        digest.update(b"\0")
-    return (fields, digest.digest()), False
+    return projection, False
 
 
 def _session_db_content_sig(db_path: Path):
@@ -295,10 +274,9 @@ def _sessions_sig():
     change signal. Hashing only those rows avoids false Desktop refreshes from
     unrelated state.db writes such as gateway heartbeats.
     """
-    return tuple(
-        _session_db_content_sig(root / "state.db")
-        for root in _watched_homes()
-    )
+    from persistence_assembly import profile_scope, store_location
+    locations = (store_location(profile_scope(home=root)) for root in _watched_homes())
+    return tuple(None if location is None else _session_db_content_sig(location) for location in locations)
 
 
 def _projects_sig():
@@ -373,10 +351,16 @@ def _bot_relay_outbox_sig():
     return _bot_relay_outbox_seen or None
 
 
-def _room_rows_sig(conn, _mtime) -> dict:
-    """Per live room in one store: what ``groups.log`` and ``groups.state`` read from it."""
+def _room_rows_sig(target, placement, _path, _mtime) -> dict:
+    """Per live room in one store: what ``groups.log`` and ``groups.state`` read from it. ``target`` is a live
+    store handle, or the ``state.db`` a read-only handle opens."""
     from gateway.hosted_room_driver import room_change_rows
-    return room_change_rows(conn), False
+    if not isinstance(target, Path):
+        return room_change_rows(target, placement=placement), False
+    from persistence_assembly import open_persistence_reader
+
+    with open_persistence_reader(target) as persistence:
+        return room_change_rows(persistence, placement=placement), False
 
 
 _room_store_sig_cache: dict[str, tuple[object, dict | None, bool]] = {}
@@ -389,15 +373,23 @@ def _groups_sig() -> dict:
     member progress (``live_progress``: tool, live confirmation, progress), signed once. Key ``""`` is
     process-wide (a worker started or stopped). Cron, the CLI and other gateways append to
     these stores from their own processes, so the files are the shared signal."""
+    from functools import partial
+
     from gateway.hosted_rooms import default_db_path
+    from persistence_assembly import profile_scope, store_location
     from tui_gateway.hosted_room_service import live_room_services
     services = live_room_services()
-    stores = {Path(path).resolve(): None for path in (
-        *(root / "state.db" for root in _watched_homes()), default_db_path(),
-        *(service.db_path for service in services))}
+    # Each file with how it is read: a served home's own store, the install's shared room store through the
+    # active home, and each room service's store through its own handle; a store with no file is skipped.
+    stores = {Path(path).resolve(): reader for path, reader in (
+        *((location, (location, "profile"))
+          for location in (store_location(profile_scope(home=root)) for root in _watched_homes())),
+        (default_db_path(), (store_location(profile_scope()), "shared")),
+        *((service.db_path, (service.store, service.placement)) for service in services)) if reader[0] is not None}
     rooms: dict[str, list] = {}
-    for store in stores:
-        for room_id, part in (_db_content_sig(store, _room_store_sig_cache, _room_rows_sig) or {}).items():
+    for store, (target, placement) in stores.items():
+        read = partial(_room_rows_sig, target, placement)
+        for room_id, part in (_db_content_sig(store, _room_store_sig_cache, read) or {}).items():
             rooms.setdefault(room_id, []).append((str(store), part))
     for service in services:
         with contextlib.suppress(Exception):  # health: allow BLE001 -- one broken service must not blind the rest
@@ -449,6 +441,13 @@ def _groups_changed_payload(before: dict, after: dict) -> dict:
     return {**scope, "broadcast_id": f"{replay_epoch()}:{next(_groups_broadcast_count)}"}
 
 
+def _platforms_sig():
+    """What the Messaging page lists moved (:func:`hermes_cli.catalog_platform_listing.platform_list_signature`;
+    the dashboard polls the same digest)."""
+    from hermes_cli.catalog_platform_listing import platform_list_signature
+    return platform_list_signature(_watcher_home())
+
+
 def _skills_sig():
     """The skill roots' stat signature for every scope a session resolved commands in (each profile
     home and session repo, not only the launch one: ``agent.skill_commands.published_scopes_signature``):
@@ -470,7 +469,7 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any] | tuple[float, Any, Any, Any]]
     # Projects created/switched by CLI or agent tooling write projects.db without any
     # state.db movement, so sessions.changed never fires and the desktop Projects
     # sidebar goes stale until a manual refresh (#56757).
-    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), dict),
+    "platforms.changed": (2.0, _platforms_sig, dict),
     "projects.changed": (2.0, _projects_sig, dict),
     "pairing.changed": (2.0, _pairing_sig, dict),
     "skills.changed": (2.0, _skills_sig, dict),

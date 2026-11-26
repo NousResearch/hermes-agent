@@ -17,6 +17,17 @@ from gateway.config import GatewayConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionStore
+from persistence.conversation.messages import (
+    ConversationRequest,
+    NewMessage,
+    ReplaceMode,
+    TranscriptRead,
+    TranscriptView,
+)
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
+
+ALL_ROWS = TranscriptRead(view=TranscriptView.ALL)
 
 
 def _composite_carrier(ask="REAL ASK"):
@@ -39,18 +50,15 @@ def _seed_pending_recovery(store, session_id):
 def test_rewrite_transcript_keeps_pending_recovery_state_when_lease_rejects(
     tmp_path, monkeypatch
 ):
-    import hermes_state
-
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewrite-pending-lease"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(session_id, "user", "old ask")
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(store.persistence, session_id, {"role": "user", "content": "old ask"})
     pending = _seed_pending_recovery(store, session_id)
-    before = store._db.get_messages(session_id, include_inactive=True)
+    before = transcript_rows(store.persistence, session_id, ALL_ROWS)
     holder = f"pid={os.getpid()}:turn=foreign"
-    assert store._db.try_acquire_session_turn_lease(
-        session_id, holder, ttl_seconds=60
+    assert store.persistence.coordination.try_acquire_turn_lease(
+        session_id=session_id, holder=holder, ttl_seconds=60
     )
 
     assert not store.rewrite_transcript(
@@ -60,11 +68,11 @@ def test_rewrite_transcript_keeps_pending_recovery_state_when_lease_rejects(
         reject_active_turn_lease=True,
     )
 
-    assert store._db.get_messages(session_id, include_inactive=True) == before
+    assert transcript_rows(store.persistence, session_id, ALL_ROWS) == before
     assert store._dirty_transcripts[session_id] == [pending]
     assert store._transcript_append_failures[session_id] == 3
 
-    store._db.release_session_turn_lease(session_id, holder)
+    store.persistence.coordination.release_turn_lease(session_id=session_id, holder=holder)
     assert store.rewrite_transcript(
         session_id,
         [{"role": "user", "content": "replacement ask"}],
@@ -78,30 +86,27 @@ def test_rewrite_transcript_keeps_pending_recovery_state_when_lease_rejects(
 def test_rewind_session_keeps_pending_recovery_state_when_lease_rejects(
     tmp_path, monkeypatch
 ):
-    import hermes_state
-
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewind-pending-lease"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(session_id, "user", _composite_carrier()["content"])
-    store._db.append_message(session_id, "assistant", "old answer")
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(store.persistence, session_id, {"role": "user", "content": _composite_carrier()["content"]})
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "old answer"})
     pending = _seed_pending_recovery(store, session_id)
-    before = store._db.get_messages(session_id, include_inactive=True)
+    before = transcript_rows(store.persistence, session_id, ALL_ROWS)
     holder = f"pid={os.getpid()}:turn=foreign"
-    assert store._db.try_acquire_session_turn_lease(
-        session_id, holder, ttl_seconds=60
+    assert store.persistence.coordination.try_acquire_turn_lease(
+        session_id=session_id, holder=holder, ttl_seconds=60
     )
 
     assert (
         store.rewind_session(session_id, require_retryable_composite=True) is None
     )
 
-    assert store._db.get_messages(session_id, include_inactive=True) == before
+    assert transcript_rows(store.persistence, session_id, ALL_ROWS) == before
     assert store._dirty_transcripts[session_id] == [pending]
     assert store._transcript_append_failures[session_id] == 3
 
-    store._db.release_session_turn_lease(session_id, holder)
+    store.persistence.coordination.release_turn_lease(session_id=session_id, holder=holder)
     result = store.rewind_session(
         session_id, require_retryable_composite=True
     )
@@ -116,21 +121,19 @@ def test_rewind_session_retry_text_is_the_stored_bytes_for_multipart_carriers(
 ):
     """/retry re-sends exactly what was stored: a carrier split across text parts comes back as the
     parts' concatenation (``"".join``), not the "\\n"-joined display flattening."""
-    import hermes_state
-    from agent.context_compressor import retryable_user_text
+    from session_rules.turns import retryable_user_text
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewind-composite-multipart"
-    store._db.create_session(session_id=session_id, source="test")
+    seed_session(store.persistence, session_id, "test")
     parts = [
         {"type": "text", "text": _composite_carrier("REAL")["content"]},
         {"type": "text", "text": " ASK"},
         {"type": "text", "text": "\ncontinued"},
     ]
-    store._db.append_message(session_id, "user", parts)
-    store._db.append_message(session_id, "assistant", "old answer")
-    stored = store._db.get_messages_as_conversation(session_id)[0]["content"]
+    seed_messages(store.persistence, session_id, {"role": "user", "content": parts})
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "old answer"})
+    stored = conversation(store.persistence, session_id)[0]["content"]
     assert isinstance(stored, list) and len(stored) == 3
 
     result = store.rewind_session(session_id, require_retryable_composite=True)
@@ -145,41 +148,38 @@ def test_rewind_session_retry_text_is_the_stored_bytes_for_multipart_carriers(
 def test_rewind_session_surfaces_unretryable_media_before_mutation(
     tmp_path, monkeypatch
 ):
-    import hermes_state
-
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewind-composite-media"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(
+        store.persistence,
         session_id,
-        "user",
-        [
-            {"type": "text", "text": _composite_carrier()["content"]},
-            {"type": "image_url", "image_url": {"url": "image"}},
-        ],
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": _composite_carrier()["content"]},
+                {"type": "image_url", "image_url": {"url": "image"}},
+            ],
+        },
     )
-    store._db.append_message(session_id, "assistant", "old answer")
-    before = store._db.get_messages(session_id, include_inactive=True)
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "old answer"})
+    before = transcript_rows(store.persistence, session_id, ALL_ROWS)
 
     with pytest.raises(ValueError, match="media or unknown content"):
         store.rewind_session(session_id, require_retryable_composite=True)
 
-    assert store._db.get_messages(session_id, include_inactive=True) == before
+    assert transcript_rows(store.persistence, session_id, ALL_ROWS) == before
 
 
 @pytest.mark.parametrize("operation", ["rewrite", "rewind"])
 def test_transcript_mutation_serializes_pending_queue_drain(
     operation, tmp_path, monkeypatch
 ):
-    import hermes_state
-
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = f"serialized-{operation}"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(session_id, "user", _composite_carrier()["content"])
-    store._db.append_message(session_id, "assistant", "old answer")
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(store.persistence, session_id, {"role": "user", "content": _composite_carrier()["content"]})
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "old answer"})
     _seed_pending_recovery(store, session_id)
 
     mutation_entered = threading.Event()
@@ -189,14 +189,15 @@ def test_transcript_mutation_serializes_pending_queue_drain(
     errors = []
 
     if operation == "rewrite":
-        original_mutation = store._db.replace_messages
+        messages = store.persistence.messages
+        original_mutation = messages.replace_transcript
 
         def gated_mutation(*args, **kwargs):
             mutation_entered.set()
             assert release_mutation.wait(timeout=5)
             return original_mutation(*args, **kwargs)
 
-        monkeypatch.setattr(store._db, "replace_messages", gated_mutation)
+        monkeypatch.setattr(messages, "replace_transcript", gated_mutation)
 
         def mutate():
             assert store.rewrite_transcript(
@@ -206,14 +207,15 @@ def test_transcript_mutation_serializes_pending_queue_drain(
             )
 
     else:
-        original_mutation = store._db.rewind_to_message
+        messages = store.persistence.messages
+        original_mutation = messages.rewind_user_turn
 
         def gated_mutation(*args, **kwargs):
             mutation_entered.set()
             assert release_mutation.wait(timeout=5)
             return original_mutation(*args, **kwargs)
 
-        monkeypatch.setattr(store._db, "rewind_to_message", gated_mutation)
+        monkeypatch.setattr(messages, "rewind_user_turn", gated_mutation)
 
         def mutate():
             assert store.rewind_session(session_id) is not None
@@ -255,16 +257,11 @@ def test_transcript_mutation_serializes_pending_queue_drain(
 
 @pytest.mark.asyncio
 async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, monkeypatch):
-    # Pin DEFAULT_DB_PATH so SessionDB() doesn't write to the real ~/.hermes/state.db.
-    # (Module-level constant snapshot, see test_load_transcript_db_only.)
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
 
     session_id = "retry_session"
-    store._db.create_session(session_id=session_id, source="test")
+    seed_session(store.persistence, session_id, "test")
     for msg in [
         {"role": "session_meta", "tools": []},
         {"role": "user", "content": "first question"},
@@ -314,17 +311,14 @@ async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, mon
 async def test_gateway_retry_redispatches_live_carrier_text_and_keeps_scaffold(
     tmp_path, monkeypatch
 ):
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
     session_id = "retry-carrier-session"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(session_id, "user", "older ask")
-    store._db.append_message(session_id, "assistant", "older answer")
-    store._db.append_message(session_id, "user", _composite_carrier()["content"])
-    store._db.append_message(session_id, "assistant", "failed answer")
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(store.persistence, session_id, {"role": "user", "content": "older ask"})
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "older answer"})
+    seed_messages(store.persistence, session_id, {"role": "user", "content": _composite_carrier()["content"]})
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "failed answer"})
 
     gw = GatewayRunner.__new__(GatewayRunner)
     gw.config = config
@@ -352,7 +346,7 @@ async def test_gateway_retry_redispatches_live_carrier_text_and_keeps_scaffold(
     gw._handle_message.assert_awaited_once()
     archived = [
         row
-        for row in store._db.get_messages(session_id, include_inactive=True)
+        for row in transcript_rows(store.persistence, session_id, ALL_ROWS)
         if not row["active"]
     ]
     assert [row["content"] for row in archived] == [
@@ -366,15 +360,12 @@ async def test_gateway_retry_does_not_rewind_a_newer_plain_turn(
     tmp_path, monkeypatch
 ):
     """The carrier selected for retry must still be latest at commit time."""
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
     session_id = "retry-carrier-race-session"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(session_id, "user", _composite_carrier()["content"])
-    store._db.append_message(session_id, "assistant", "failed answer")
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(store.persistence, session_id, {"role": "user", "content": _composite_carrier()["content"]})
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "failed answer"})
 
     gw = GatewayRunner.__new__(GatewayRunner)
     gw.config = config
@@ -384,8 +375,8 @@ async def test_gateway_retry_does_not_rewind_a_newer_plain_turn(
     original_rewind = store.rewind_session
 
     def append_newer_turn_then_rewind(*args, **kwargs):
-        store._db.append_message(session_id, "user", "newer ask")
-        store._db.append_message(session_id, "assistant", "newer answer")
+        seed_messages(store.persistence, session_id, {"role": "user", "content": "newer ask"})
+        seed_messages(store.persistence, session_id, {"role": "assistant", "content": "newer answer"})
         return original_rewind(*args, **kwargs)
 
     monkeypatch.setattr(store, "rewind_session", append_newer_turn_then_rewind)
@@ -511,21 +502,18 @@ async def test_gateway_retry_stops_when_transcript_rewrite_fails():
 def test_gateway_undo_prefills_live_carrier_text_and_keeps_scaffold(
     tmp_path, monkeypatch
 ):
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "undo-carrier-session"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(session_id, "user", _composite_carrier()["content"])
-    store._db.append_message(session_id, "assistant", "failed answer")
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(store.persistence, session_id, {"role": "user", "content": _composite_carrier()["content"]})
+    seed_messages(store.persistence, session_id, {"role": "assistant", "content": "failed answer"})
 
     result = store.rewind_session(session_id)
 
     assert result["target_text"] == "REAL ASK"
     assert result["rewound_count"] == 2
-    active = store._db.get_messages_as_conversation(
-        session_id, include_row_ids=True
+    active = conversation(
+        store.persistence, session_id, ConversationRequest(include_row_ids=True)
     )
     assert len(active) == 1
     assert active[0]["display_kind"] == "hidden"
@@ -538,43 +526,50 @@ async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails
 ):
     """/retry must not DELETE archives when an existence probe would fail.
 
-    With compression.in_place (the default, #38763) archive_and_compact()
+    With compression.in_place (the default, #38763) the compaction
     keeps the pre-compaction transcript on disk as active=0/compacted=1 rows
     under the same session id. /retry used to persist its truncation via a
-    bare rewrite_transcript(), whose replace_messages(active_only=False)
+    bare rewrite_transcript(), whose destructive replace
     DELETEs every row for the session and reinserts only the truncated live
     tail, wiping the archived history permanently (same class as #61145;
     #57803 named this call site as a residual gap). /retry never intends to
     purge archived history, so it must pass active_only=True unconditionally:
     a separate existence probe can fail open or race with the rewrite.
     """
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
 
     session_id = "retry_archived_session"
-    store._db.create_session(session_id=session_id, source="test")
-    store._db.append_message(session_id=session_id, role="user", content="old question")
-    store._db.append_message(session_id=session_id, role="assistant", content="old answer")
+    seed_session(store.persistence, session_id, "test")
+    seed_messages(store.persistence, session_id, {"role": "user", "content": "old question"},
+                  {"role": "assistant", "content": "old answer"})
     # In-place compaction: the two rows above are soft-archived and the
     # compacted transcript becomes the live set under the same id.
-    store._db.archive_and_compact(
+    store.persistence.messages.compact(
         session_id,
         [
-            {"role": "user", "content": "first question"},
-            {"role": "assistant", "content": "first answer"},
-            {"role": "user", "content": "retry me"},
-            {"role": "assistant", "content": "old answer"},
+            NewMessage.from_live(message)
+            for message in (
+                {"role": "user", "content": "first question"},
+                {"role": "assistant", "content": "first answer"},
+                {"role": "user", "content": "retry me"},
+                {"role": "assistant", "content": "old answer"},
+            )
         ],
     )
-    assert store._db.has_archived_messages(session_id) is True
+    assert any(not row["active"] for row in transcript_rows(store.persistence, session_id, ALL_ROWS))
 
-    # A failed preflight lookup must not turn this data-preservation path back
-    # into a destructive full-history rewrite. The write itself still works.
-    archived_probe = MagicMock(side_effect=OSError("transient archive lookup failure"))
-    monkeypatch.setattr(store._db, "has_archived_messages", archived_probe)
+    # The rewrite keeps the archive by its replace mode, never by an existence
+    # probe that could fail open into a destructive full-history rewrite.
+    messages = store.persistence.messages
+    replace = messages.replace_transcript
+    modes = []
+
+    def recording_replace(session_id, rows, mode, **kwargs):
+        modes.append(mode)
+        return replace(session_id, rows, mode, **kwargs)
+
+    monkeypatch.setattr(messages, "replace_transcript", recording_replace)
 
     gw = GatewayRunner.__new__(GatewayRunner)
     gw.config = config
@@ -597,10 +592,10 @@ async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails
     )
 
     assert result == "new answer"
-    archived_probe.assert_not_called()
+    assert modes == [ReplaceMode.PRESERVE_EXISTING_ARCHIVE]
     # The archived pre-compaction rows survive the rewrite untouched.
     archived = [
-        m for m in store._db.get_messages(session_id, include_inactive=True)
+        m for m in transcript_rows(store.persistence, session_id, ALL_ROWS)
         if not m["active"]
     ]
     assert [(m["role"], m["content"]) for m in archived] == [
@@ -619,14 +614,11 @@ async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails
 def _paused_runner_with_exchange(tmp_path, monkeypatch, session_id, rows):
     """Bare runner whose session holds one plain user/assistant exchange; returns
     ``(gw, store, session_entry)`` with the transcript snapshot taken before /retry."""
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
-    store._db.create_session(session_id=session_id, source="test")
+    seed_session(store.persistence, session_id, "test")
     for role, content in rows:
-        store._db.append_message(session_id, role, content)
+        seed_messages(store.persistence, session_id, {"role": role, "content": content})
 
     gw = GatewayRunner.__new__(GatewayRunner)
     gw.config = config
@@ -647,7 +639,7 @@ async def test_gateway_retry_paused_refusal_leaves_transcript_unchanged(tmp_path
         tmp_path, monkeypatch, "retry-paused-session",
         [("user", "retry me"), ("assistant", "old answer")],
     )
-    before = store._db.get_messages("retry-paused-session", include_inactive=True)
+    before = transcript_rows(store.persistence, "retry-paused-session", ALL_ROWS)
     paused_notice = "⏸️ Hermes is paused. New work is on hold; run `hermes resume`."
     monkeypatch.setattr("agent.estop.paused_reply", lambda: paused_notice)
 
@@ -656,7 +648,7 @@ async def test_gateway_retry_paused_refusal_leaves_transcript_unchanged(tmp_path
     )
 
     assert result == paused_notice
-    assert store._db.get_messages("retry-paused-session", include_inactive=True) == before
+    assert transcript_rows(store.persistence, "retry-paused-session", ALL_ROWS) == before
     gw._handle_message.assert_not_awaited()
     assert session_entry.last_prompt_tokens == 111
 
@@ -671,7 +663,7 @@ async def test_gateway_retry_paused_refusal_leaves_carrier_rewind_untouched(
         tmp_path, monkeypatch, "retry-paused-carrier-session",
         [("user", _composite_carrier()["content"]), ("assistant", "failed answer")],
     )
-    before = store._db.get_messages("retry-paused-carrier-session", include_inactive=True)
+    before = transcript_rows(store.persistence, "retry-paused-carrier-session", ALL_ROWS)
     paused_notice = "⏸️ Hermes is paused. New work is on hold; run `hermes resume`."
     monkeypatch.setattr("agent.estop.paused_reply", lambda: paused_notice)
 
@@ -680,7 +672,7 @@ async def test_gateway_retry_paused_refusal_leaves_carrier_rewind_untouched(
     )
 
     assert result == paused_notice
-    assert store._db.get_messages("retry-paused-carrier-session", include_inactive=True) == before
+    assert transcript_rows(store.persistence, "retry-paused-carrier-session", ALL_ROWS) == before
     gw._handle_message.assert_not_awaited()
     assert session_entry.last_prompt_tokens == 111
 
@@ -693,7 +685,7 @@ async def test_gateway_retry_draining_refusal_leaves_transcript_unchanged(tmp_pa
         tmp_path, monkeypatch, "retry-draining-session",
         [("user", "retry me"), ("assistant", "old answer")],
     )
-    before = store._db.get_messages("retry-draining-session", include_inactive=True)
+    before = transcript_rows(store.persistence, "retry-draining-session", ALL_ROWS)
     gw._external_drain_active = True
 
     result = await gw._handle_retry_command(
@@ -701,7 +693,7 @@ async def test_gateway_retry_draining_refusal_leaves_transcript_unchanged(tmp_pa
     )
 
     assert result == t("gateway.busy.draining_maintenance")
-    assert store._db.get_messages("retry-draining-session", include_inactive=True) == before
+    assert transcript_rows(store.persistence, "retry-draining-session", ALL_ROWS) == before
     gw._handle_message.assert_not_awaited()
     assert session_entry.last_prompt_tokens == 111
 
@@ -716,7 +708,7 @@ async def test_gateway_retry_session_cap_refusal_leaves_transcript_unchanged(
         tmp_path, monkeypatch, "retry-cap-session",
         [("user", "retry me"), ("assistant", "old answer")],
     )
-    before = store._db.get_messages("retry-cap-session", include_inactive=True)
+    before = transcript_rows(store.persistence, "retry-cap-session", ALL_ROWS)
     limit_message = "⏸️ Active session limit reached (4/4)."
     gw._active_session_limit_message = MagicMock(return_value=limit_message)
 
@@ -725,6 +717,6 @@ async def test_gateway_retry_session_cap_refusal_leaves_transcript_unchanged(
     )
 
     assert result == limit_message
-    assert store._db.get_messages("retry-cap-session", include_inactive=True) == before
+    assert transcript_rows(store.persistence, "retry-cap-session", ALL_ROWS) == before
     gw._handle_message.assert_not_awaited()
     assert session_entry.last_prompt_tokens == 111

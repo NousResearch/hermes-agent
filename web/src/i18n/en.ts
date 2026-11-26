@@ -122,6 +122,23 @@ export const en: Translations = {
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
     sharedMetricsSaveFailed: "Couldn't save your choice",
+    dashboardMovingMeta: "Legacy dashboard / Retirement",
+    dashboardMovingNotice: "This dashboard moves to the Hermes web app on {date}.",
+    dashboardMovingTitle: "Your dashboard is moving",
+    dashboardMovingBody:
+      "Your agents, chats, skills and routines come with you. Use the same sign-in.",
+    dashboardMovingMachineTitle: "Your cloud machine",
+    dashboardMovingMachineDetail: "Keep working in the new app",
+    dashboardMovingMachineReady: "Ready",
+    dashboardMovingMachineStarting: "Starting",
+    dashboardMovingMachineDown: "Offline",
+    dashboardMovingMachineNotAvailable: "Not available yet",
+    dashboardMovingMachineNotAvailableDetail:
+      "The web app is not on this machine yet",
+    dashboardMovingSettingsTitle: "Advanced settings",
+    dashboardMovingSettingsDetail: "Available in Agent settings",
+    dashboardMovingOpen: "Open in web app",
+    dashboardMovingLater: "Later",
   },
 
   // ── System page: Memory section ──
@@ -483,8 +500,7 @@ export const en: Translations = {
     catalogUpdateBtn: "Update available",
     catalogRemovedBadge: "Removed",
     catalogConfirmTitle: "Install this plugin?",
-    catalogConfirmInstallNote:
-      "Plugins install disabled; enable it after install to activate.",
+    catalogConfirmInstallNote: "The plugin turns on right away after install.",
     catalogRequiresEnv: "Requires env",
     removedFromCatalog: "Removed from catalog",
   },
@@ -948,5 +964,18 @@ export const en: Translations = {
       confirmTitle: "Delete task?",
       confirmManyTitle: "Delete {n} tasks?",
     },
+  },
+  channelsCatalog: {
+    title: "Available to install",
+    hint: "Messaging platforms from the Hermes plugin catalog. Installing one adds and enables its plugin, then opens its setup.",
+    badgeOfficial: "Official",
+    badgeVerified: "Verified",
+    disclosure: "Disclosure:",
+    lazyInstallsOff: "Automatic plugin installs are off (security.allow_lazy_installs).",
+    run: "Run:",
+    install: "Install",
+    installing: "Installing…",
+    installed: (title: string) => `${title} installed. Enter its credentials to connect it.`,
+    installFailed: (title: string) => `Could not install ${title}`,
   },
 };

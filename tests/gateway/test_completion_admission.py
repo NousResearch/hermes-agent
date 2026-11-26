@@ -9,8 +9,11 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
-from hermes_state import SessionDB
+from hermes_constants import get_hermes_home
+from persistence_assembly import open_persistence, profile_scope
 from plugins.platforms.discord.adapter import DiscordAdapter
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
 from tools import async_delegation as delegation
 
 
@@ -111,16 +114,16 @@ async def test_unavailable_raw_route_is_quiet_without_hiding_invalid_routes(tmp_
     # API recovery writes only the delivery row, never starts a model turn.
     from gateway.platforms.api_server import APIServerAdapter
     api = APIServerAdapter(PlatformConfig())
-    db = SessionDB(tmp_path / "api.db")
-    db.create_session(evt["session_key"], "api_server")
-    api._ensure_session_db = lambda: db
+    db = open_persistence(profile_scope(home=tmp_path / "api"))
+    seed_session(db, evt["session_key"], "api_server")
+    api._home_stores[str(get_hermes_home())] = db
     runner.adapters = {Platform.API_SERVER: api}
     try:
         caplog.clear()
         assert await runner._deliver_async_delegation_group([evt]) is True
         assert await runner._deliver_async_delegation_group([evt]) is None
-        rows = db.get_messages(evt["session_key"])
+        rows = transcript_rows(db, evt["session_key"])
         assert len(rows) == 1 and rows[0]["display_kind"] == "async_delegation_complete"
         assert not api._background_tasks and not caplog.records
     finally:
-        db.close()
+        api._close_cached_session_dbs()

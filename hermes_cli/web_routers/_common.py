@@ -26,6 +26,12 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 
 
+def client_error(text: Any) -> str:
+    """Error text bound for a dashboard client, with credentials force-redacted."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(str(text), force=True)
+
+
 @contextlib.contextmanager
 def config_write_scope(profile: Optional[str]):
     """Profile scope, then the config mutation lock — the write-path nesting
@@ -47,7 +53,7 @@ async def scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any
 
 async def config_scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any:
     """Run ``fn()`` inside ``_config_profile_scope(profile)`` on a worker thread —
-    home + secret scope without the process-global skills-module swap."""
+    home + secret scope without the process-wide lock ``_profile_scope`` takes."""
 
     def _run():
         with _config_profile_scope(profile):
@@ -108,7 +114,8 @@ def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, det
     ``HTTPException`` passes through; an expected config-backend refusal becomes its own status
     and message (:func:`config_refusal_http`); anything else is logged with ``log_msg`` (traceback),
     then re-raised as ``HTTPException(status, f"{prefix}: {exc}")`` — or ``detail`` when given
-    (fixed message, exception text only in the log).
+    (fixed message, exception text only in the log). The exception text is force-redacted: provider
+    and library errors echo the submitted key/bearer, and this detail goes to the HTTP client.
     """
     try:
         yield
@@ -118,11 +125,11 @@ def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, det
         refusal = config_refusal_http(exc)
         if refusal is None:
             log.exception(log_msg)
-            raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")
+            raise HTTPException(status_code=status, detail=detail if detail is not None else client_error(f"{prefix}: {exc}"))
         raise refusal from exc
     except Exception as exc:
         log.exception(log_msg)
-        raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")
+        raise HTTPException(status_code=status, detail=detail if detail is not None else client_error(f"{prefix}: {exc}"))
 
 
 def spawn_profile_action(
@@ -206,7 +213,7 @@ _STORE_STATUS_DETAIL_BY_CAUSE = {"deleted_wal": DELETED_WAL_DETAIL, "replaced": 
 def corrupt_store_status(db_path, exc) -> HTTPException:
     """The structured ``state_db_corrupt`` 503 for a malformed store, warning once per store per
     :data:`_CORRUPT_STORE_WARN_INTERVAL_S` (debug afterwards). Callers ``raise ... from exc``."""
-    from hermes_state_errors import classify_persistence_error
+    from storage_errors import classify_persistence_error
     key, now = str(db_path), time.monotonic()
     last = _corrupt_store_warned_at.get(key)
     detail = _STORE_STATUS_DETAIL_BY_CAUSE.get(classify_persistence_error(exc), CORRUPT_STORE_DETAIL)
@@ -221,14 +228,28 @@ def corrupt_store_status(db_path, exc) -> HTTPException:
 
 @contextlib.contextmanager
 def corrupt_store_as_status(db_path):
-    """Map a corrupt-image ``sqlite3.DatabaseError`` or ``StateDbReplacedError`` from a state.db read to a 503 status
+    """Map a corrupt-image ``CorruptStoreError`` or ``StoreReplaced`` from a state.db read to a 503 status
     payload, warning once per store per :data:`_CORRUPT_STORE_WARN_INTERVAL_S`.
     Busy/locked and every other error propagate unchanged."""
-    from hermes_state_errors import StateDbReplacedError, classify_persistence_error, is_malformed_db_error
+    from persistence.core.errors import CorruptStoreError, StoreReplaced
+    from storage_errors import is_malformed_db_error
 
     try:
         yield
-    except (sqlite3.DatabaseError, StateDbReplacedError) as exc:
-        if not isinstance(exc, StateDbReplacedError) and not is_malformed_db_error(exc):
+    except (CorruptStoreError, StoreReplaced) as exc:
+        cause = exc.__cause__
+        if isinstance(cause, sqlite3.DatabaseError) and not is_malformed_db_error(cause):
             raise
         raise corrupt_store_status(db_path, exc) from exc
+
+
+def is_transient_store_error(exc: BaseException) -> bool:
+    """Busy right now (lock, busy or disk I/O), not damaged: the 503-versus-500 split of a dashboard read. A SQLite
+    cause counts only as an ``OperationalError`` and never as "no more rows available", as the raw error did."""
+    from persistence.core.errors import DiskFull, TransientStoreError
+
+    cause = exc.__cause__
+    if isinstance(cause, sqlite3.Error) and (
+            not isinstance(cause, sqlite3.OperationalError) or "no more rows available" in str(cause).lower()):
+        return False
+    return isinstance(exc, TransientStoreError) and not isinstance(exc, DiskFull)

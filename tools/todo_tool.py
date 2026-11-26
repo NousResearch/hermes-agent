@@ -47,11 +47,16 @@ class TodoStore:
         except ValueError:
             self._items = before  # rejected write must not leave a partial list behind
             raise
-        del self._items[MAX_TODO_ITEMS:]  # keep the priority head; replays can't grow unbounded
-        self._sanitize_parents(self._items)
+        self._settle()
         if self._items != before:
             self._revision += 1
         return self.read()
+
+    def _settle(self) -> None:
+        """Trim and sanitize the list; shared by write() and restore() so a restored snapshot can't
+        carry a dangling parent or cycle that hides its items from format_for_injection."""
+        del self._items[MAX_TODO_ITEMS:]  # keep the priority head; replays can't grow unbounded
+        self._sanitize_parents(self._items)
 
     def _merge(self, todos: list[dict[str, Any]]) -> None:
         """Update existing items only in the fields provided; append new ones (validated)."""
@@ -92,7 +97,8 @@ class TodoStore:
 
     def restore(self, todos: list[dict[str, Any]], *, revision: Any = 0) -> list[dict[str, str]]:
         """Restore a trusted snapshot without manufacturing a new revision."""
-        self._items = self._fresh_items(todos)[:MAX_TODO_ITEMS]
+        self._items = self._fresh_items(todos)
+        self._settle()
         try:
             self._revision = max(0, int(revision or 0))
         except (TypeError, ValueError):
@@ -166,13 +172,16 @@ class TodoStore:
             if item.get("parent") and item["parent"] not in by_id:
                 item.pop("parent", None)
         for item in items:
-            seen, node = {item["id"]}, item
+            walked, node = {item["id"]: item}, item
             while node.get("parent"):
-                if node["parent"] in seen:
-                    item.pop("parent", None)
+                if node["parent"] in walked:
+                    # Cut at the node the loop returns to, taken from this walk: ``item``
+                    # may hang below the cycle and keeps its link (#156671), and a by_id
+                    # lookup can land on a same-id ``?`` placeholder outside the loop.
+                    walked[node["parent"]].pop("parent", None)
                     break
-                seen.add(node["parent"])
                 node = by_id[node["parent"]]
+                walked[node["id"]] = node
 
     @staticmethod
     def _dedupe_by_id(todos: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -301,7 +310,7 @@ def is_todo_tool_call(tool_call: Any) -> bool:
     only, never live tool-search config, and must wrap exactly one call. Keep this module free of model_tools / agent.tool_executor
     imports: TUI resume and run_agent call this without loading either.
     """
-    from agent.message_sanitization import _tc_field
+    from session_rules.turns import _tc_field
 
     fn = _tc_field(tool_call, "function")
     name, raw_args = _tc_field(fn, "name") or "", _tc_field(fn, "arguments")

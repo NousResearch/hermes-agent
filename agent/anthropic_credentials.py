@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 from agent.secret_scope import get_secret as _get_secret
 
 logger = logging.getLogger(__name__)
@@ -716,6 +716,14 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
         _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
         model,
     )
+
+
+def native_anthropic_fallback_token(base_url: Any, *, model: Optional[str] = None) -> str:
+    """``resolve_anthropic_token()`` for a native-anthropic route that has no key of its own, except
+    at an Azure Foundry host: it rejects Claude Code OAuth tokens and must get its Azure key (#154242)."""
+    if base_url_host_matches(str(base_url or ""), "azure.com"):
+        return ""
+    return resolve_anthropic_token(model=model) or ""
 
 
 def run_oauth_setup_token() -> Optional[str]:

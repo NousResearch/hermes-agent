@@ -40,6 +40,13 @@ def _home(tmp_path, monkeypatch, name, builtin_env, *, entry_extra=None, pool=No
     return hermes_home
 
 
+def _entry_manual_row():
+    """What ``hermes auth add deepseek`` records while ``providers.deepseek`` is configured: the
+    entry's address. A row with no address in the built-in's pool is the built-in's (#130410)."""
+    return {"id": "m1", "label": "manual", "auth_type": "api_key", "priority": 0, "source": "manual",
+            "access_token": MANUAL_KEY, "base_url": ENDPOINT}
+
+
 @pytest.mark.parametrize("name,builtin_env", SHADOWED_BUILTINS)
 def test_shadowing_entry_main_runtime_sends_its_key_env(tmp_path, monkeypatch, name, builtin_env):
     """``model.provider: custom:<name>`` (which pick a bare ``<name>`` routes to is #140107's scope)."""
@@ -103,8 +110,7 @@ def test_shadowing_entry_inline_api_key_beats_builtin_env(tmp_path, monkeypatch)
 def test_shadowing_entry_manual_pool_row_still_wins(tmp_path, monkeypatch):
     """``hermes auth add deepseek`` rows are the operator's credential for the slug and keep
     their precedence over key_env, exactly like a non-shadowing keyed entry."""
-    manual = {"id": "m1", "label": "manual", "auth_type": "api_key", "priority": 0, "source": "manual",
-              "access_token": MANUAL_KEY}
+    manual = _entry_manual_row()
     _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", pool={"deepseek": [manual]})
     from hermes_cli import runtime_provider as rp
 
@@ -120,13 +126,84 @@ def test_shadowing_entry_manual_pool_row_still_wins(tmp_path, monkeypatch):
     assert BUILTIN_KEY in {e.access_token for e in load_pool("deepseek").entries()}
 
 
-def test_entry_without_key_env_keeps_existing_resolution(tmp_path, monkeypatch):
-    """No key_env / api_key / key_cmd: resolution is unchanged by this fix (pool first, then
-    host-gated env, then the keyless placeholder)."""
+def test_entry_without_key_env_uses_builtin_rows_only_on_their_own_origin(tmp_path, monkeypatch):
+    """No key_env / api_key / key_cmd: the built-in's env-seeded row (recorded for api.deepseek.com)
+    serves the entry on that origin only; at any other host the entry goes keyless (#130410)."""
+    home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
+    from hermes_cli import runtime_provider as rp
+
+    assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == "no-key-required"
+    _edit_config(home, entry={"api": BUILTIN_HOST})
+    assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == BUILTIN_KEY
+
+
+def test_withheld_builtin_key_is_reported_once_with_the_remedy_never_the_key(tmp_path, monkeypatch, caplog):
+    """Before #130410 a key-less ``providers.deepseek`` entry on another host sent DEEPSEEK_API_KEY;
+    it now goes keyless, which must be visible in the log (once) with the opt-in, not only as a 401."""
+    import logging
+
+    from agent import custom_entry_pool
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
     _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
     from hermes_cli import runtime_provider as rp
 
-    assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == BUILTIN_KEY
+    with caplog.at_level(logging.WARNING):
+        for _ in range(2):
+            assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == "no-key-required"
+    warnings = [r.getMessage() for r in caplog.records if "providers.deepseek" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "key_env: DEEPSEEK_API_KEY" in warnings[0]
+    assert BUILTIN_KEY not in caplog.text
+
+    # The documented opt-in restores the key on the entry's own host, and says nothing more.
+    caplog.clear()
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
+    _edit_config(tmp_path / ".hermes", entry={"key_env": "DEEPSEEK_API_KEY"})
+    with caplog.at_level(logging.WARNING):
+        resolved = rp.resolve_runtime_provider(requested="custom:deepseek")
+    assert (resolved["base_url"], resolved["api_key"]) == (ENDPOINT, BUILTIN_KEY)
+    assert "providers.deepseek" not in caplog.text
+
+
+def test_withheld_builtin_key_warning_reaches_every_profile_home(tmp_path, monkeypatch, caplog):
+    """One process serves several profiles: profile A's warning must not silence profile B's."""
+    import logging
+
+    from agent import custom_entry_pool
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
+    from hermes_cli import runtime_provider as rp
+
+    counts = []
+    for profile in ("a", "b"):
+        (tmp_path / profile).mkdir()
+        _home(tmp_path / profile, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            for _ in range(2):
+                rp.resolve_runtime_provider(requested="custom:deepseek")
+        counts.append(sum("providers.deepseek" in r.getMessage() for r in caplog.records))
+    assert counts == [1, 1]
+
+
+def test_withheld_builtin_key_warning_on_the_builtins_own_host_names_the_recording(tmp_path, monkeypatch, caplog):
+    """An entry ON the built-in's host whose only key was recorded for another host is told so,
+    not that it points elsewhere."""
+    import logging
+
+    from agent import custom_entry_pool
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
+    row = {**_entry_manual_row(), "base_url": "https://elsewhere.example/v1"}
+    home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={},
+                 pool={"deepseek": [row]})
+    monkeypatch.delenv("DEEPSEEK_API_KEY")
+    _edit_config(home, entry={"api": BUILTIN_HOST})
+    from hermes_cli import runtime_provider as rp
+
+    with caplog.at_level(logging.WARNING):
+        rp.resolve_runtime_provider(requested="custom:deepseek")
+    warnings = [r.getMessage() for r in caplog.records if "providers.deepseek" in r.getMessage()]
+    assert len(warnings) == 1 and "recorded for another host" in warnings[0]
+    assert MANUAL_KEY not in caplog.text
 
 
 def test_non_shadowing_entry_sends_its_key_env(tmp_path, monkeypatch):
@@ -174,12 +251,12 @@ def test_url_matched_bare_custom_frozen_route_sends_the_entry_key(tmp_path, monk
     assert (resolved["base_url"], resolved["api_key"]) == (ENDPOINT, ENTRY_KEY)
 
 
-def test_url_matched_entry_without_declared_credential_keeps_existing_resolution(tmp_path, monkeypatch):
+def test_url_matched_entry_without_declared_credential_never_sends_the_builtin_key_elsewhere(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
     from hermes_cli import runtime_provider as rp
 
     resolved = rp.resolve_runtime_provider(requested="custom", explicit_base_url=ENDPOINT)
-    assert resolved["api_key"] == BUILTIN_KEY
+    assert resolved["api_key"] != BUILTIN_KEY
 
 
 @pytest.mark.parametrize("requested", ["custom:deepseek", "custom"])
@@ -304,8 +381,7 @@ def test_explicit_builtin_pick_keeps_its_env_key(tmp_path, monkeypatch, name, bu
 
 
 def test_persisting_the_entry_view_keeps_the_builtin_rows_and_writes_no_secret(tmp_path, monkeypatch):
-    manual = {"id": "m1", "label": "manual", "auth_type": "api_key", "priority": 0, "source": "manual",
-              "access_token": MANUAL_KEY}
+    manual = _entry_manual_row()
     home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", pool={"deepseek": [manual]})
     from agent.credential_pool import load_pool
     from hermes_cli import runtime_provider as rp
@@ -384,16 +460,26 @@ def test_aux_task_pinned_to_the_entry_sends_its_key_env(tmp_path, monkeypatch):
     assert sent == {(ENDPOINT, ENTRY_KEY)}
 
 
-def test_aux_task_pinned_to_the_builtin_keeps_its_env_key(tmp_path, monkeypatch):
+def test_aux_task_pinned_to_the_builtin_name_never_sends_the_builtin_key_to_the_entry(tmp_path, monkeypatch):
+    """A bare built-in name means its same-keyed entry when the entry declares an endpoint (#151775),
+    as on the main route: the aux key peek takes the entry's credential there, never the built-in's
+    env key. A tuning-only entry leaves the built-in, and its key, on the built-in's own address."""
     from unittest.mock import patch
 
-    _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
+    home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
     from agent import auxiliary_client as ac
 
-    monkeypatch.setattr(ac, "_client_cache", {})
-    with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-        ac._get_cached_client("deepseek", "m")
-    assert mock_openai.call_args.kwargs["api_key"] == BUILTIN_KEY
+    def _sent():
+        monkeypatch.setattr(ac, "_client_cache", {})
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            ac._get_cached_client("deepseek", "m")
+        return str(mock_openai.call_args.kwargs["base_url"]).rstrip("/"), mock_openai.call_args.kwargs["api_key"]
+
+    assert _sent() == (ENDPOINT, ENTRY_KEY)
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["providers"]["deepseek"] = {"request_timeout_seconds": 30}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    assert _sent() == (BUILTIN_HOST, BUILTIN_KEY)
 
 
 def test_aux_auth_failure_on_the_entry_never_rotates_the_builtin_pool(tmp_path, monkeypatch):
@@ -539,8 +625,7 @@ def test_a_snapshot_without_recorded_ownership_keeps_its_own_credential(tmp_path
 def test_restore_still_reselects_the_owners_own_pool_row(tmp_path, monkeypatch, builder):
     """Recorded ownership scopes the pool, it doesn't drop it: the entry's ``hermes auth add`` row
     replaces a stale snapshot key on restore, and the built-in's row stays out."""
-    manual = {"id": "m1", "label": "manual", "auth_type": "api_key", "priority": 0, "source": "manual",
-              "access_token": MANUAL_KEY}
+    manual = _entry_manual_row()
     _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", pool={"deepseek": [manual]})
     from hermes_cli import runtime_provider as rp
 

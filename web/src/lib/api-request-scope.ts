@@ -14,6 +14,7 @@ export const PROFILE_SCOPED_PREFIXES = [
   "/api/env",
   "/api/mcp",
   "/api/messaging/platforms",
+  "/api/messaging/catalog",
   "/api/messaging/telegram/onboarding",
   "/api/messaging/whatsapp/onboarding",
   // OAuth/account state is profile-owned too: status, login sessions, polling,

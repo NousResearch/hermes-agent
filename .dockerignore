@@ -40,6 +40,9 @@ ui-tui/packages/hermes-ink/dist/
 
 # CI/CD
 .github
+# written into the workspace by useblacksmith/setup-docker-builder
+/buildkitd.toml
+/docker-container-buildkitd.toml
 
 # Environment files
 .env

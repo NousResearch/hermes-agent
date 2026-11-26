@@ -166,9 +166,7 @@ except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
 
 
-# Backward-compat constants (built once after discovery)
-TOOL_TO_TOOLSET_MAP: dict[str, str] = registry.get_tool_to_toolset_map()
-
+# Backward-compat constant (built once after discovery)
 TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
 
 # Tool names from the last get_tool_definitions() call (execute_code sandbox fallback).
@@ -413,6 +411,17 @@ def _rewrite_browser_exec_vision(td: dict[str, Any], available: set) -> Optional
     return _fn_def({**fn, "description": desc.replace(SCREENSHOTS_DETACHED, SCREENSHOTS_DETACHED + hint, 1)})
 
 
+def _rewrite_terminal(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Steer file work to the file tools only when the session has all of them, and name
+    execute_code only when it is present (a terminal-only session keeps the shell as its file route)."""
+    from tools.terminal_tool import TERMINAL_EXECUTE_CODE_HINT, TERMINAL_FILE_TOOL_NAMES, TERMINAL_FILE_TOOLS_HINT
+    if not TERMINAL_FILE_TOOL_NAMES <= available:
+        return td
+    hint = TERMINAL_FILE_TOOLS_HINT + (TERMINAL_EXECUTE_CODE_HINT if "execute_code" in available else "") + "."
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "") + hint})
+
+
 def _rewrite_delegate_task(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Trim the child-restrictions line to sibling tools actually present, or drop
     the line when none apply, so the model never learns ghost vocabulary. Two
@@ -495,6 +504,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_vault": _rewrite_browser_vault,
     "drive_preview": _rewrite_input_tool_for_vault,
     "delegate_task": _rewrite_delegate_task,
+    "terminal": _rewrite_terminal,
 }
 
 
@@ -855,11 +865,17 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     dispatch_kwargs: dict[str, Any] = {
         "task_id": ids.task_id, "session_id": ids.session_id, "conversation_id": ids.conversation_id}
     if function_name == "execute_code":
+        dispatch_kwargs["turn_id"] = ids.turn_id
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
     else:
         dispatch_kwargs["user_task"] = user_task
+    from agent.plugin_session_fork import current_turn_origin
+    if (turn_origin := current_turn_origin()) is not None:
+        # Only inside a plugin session fork ("plugin_fork:<plugin id>"), so a plugin's tool can
+        # refuse calls the live agent makes; live-turn handlers see no new kwarg.
+        dispatch_kwargs["turn_origin"] = turn_origin
 
     def _dispatch(next_args: dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name
@@ -950,10 +966,14 @@ def handle_function_call(
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
             ), duration_ms=_elapsed_ms(start))
+        # The caller's skip_* flags describe the WRAPPER call it already policed, never the
+        # underlying tool: forwarding them left the real tool with no pre_tool_call hook,
+        # no request middleware and no execution middleware at all. Same rule as the
+        # connector batch re-dispatch (tools/connectors/dispatch.py).
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
-            skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
-            skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
+            skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
+            skip_tool_execution_middleware=False, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 
@@ -995,10 +1015,11 @@ def handle_function_call(
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
 
     except Exception as e:
+        from storage_user_copy import error_type_name
         error_msg = f"Error executing {function_name}: {e!s}"
         logger.exception(error_msg)
         return _emit(tool_error(_sanitize_tool_error(error_msg)), duration_ms=_elapsed_ms(start),
-                     status="error", error_type=type(e).__name__, error_message=str(e))
+                     status="error", error_type=error_type_name(e), error_message=str(e))
 
 
 # =============================================================================

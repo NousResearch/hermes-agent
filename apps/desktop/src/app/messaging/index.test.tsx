@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
@@ -27,12 +27,15 @@ const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
 const applyTelegramOnboarding = vi.fn()
 const notify = vi.fn()
+const installMessagingCatalogPlatform = vi.fn()
 
 vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
     approvePairing(platformId, requestId, profile),
   getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
   getPairing: (profile?: null | string) => getPairing(profile),
+  installMessagingCatalogPlatform: (name: string, profile?: null | string) =>
+    installMessagingCatalogPlatform(name, profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
     revokePairing(platformId, userId, profile),
@@ -455,6 +458,70 @@ describe('MessagingView restart banner', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
   })
+
+  it.each([
+    ['the gateway applied it live', { applied: true, state: 'connected' }, false],
+    ['the gateway could not build the adapter', { applied: false, detail: 'no adapter', state: 'unavailable' }, true]
+  ])('asks for a restart after a save only when %s says so', async (_label, live, wantsRestart) => {
+    // The running gateway answers for every profile (the default one included); `hot_served`
+    // stays unset as an older backend would leave it, so only `live` decides.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    updateMessagingPlatform.mockResolvedValue({ live, ok: true, platform: 'teams' })
+
+    await renderMessaging()
+
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'secret-1' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+
+    await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalled())
+    await waitFor(() => expect(Boolean(screen.queryByRole('button', { name: 'Restart now' }))).toBe(wantsRestart))
+  })
+
+  it('drops the restart banner once a later save of the same platform comes up live', async () => {
+    // Enabled before its credentials existed, the first save could not start it; the save that added
+    // them did. The page must not keep asking for a restart the gateway no longer needs.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    updateMessagingPlatform
+      .mockResolvedValueOnce({ live: { applied: false, detail: 'no adapter', state: 'unavailable' }, ok: true, platform: 'teams' })
+      .mockResolvedValueOnce({ live: { applied: true, state: 'connected' }, ok: true, platform: 'teams' })
+
+    await renderMessaging()
+
+    for (const value of ['secret-1', 'secret-2']) {
+      fireEvent.change(await screen.findByLabelText('Token'), { target: { value } })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+      })
+
+      if (value === 'secret-1') {
+        expect(await screen.findByRole('button', { name: 'Restart now' })).toBeTruthy()
+      }
+    }
+
+    await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
+  })
+
+  it('says an enabled platform without credentials needs setup, never a restart', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
+    updateMessagingPlatform.mockResolvedValue({
+      live: { applied: true, detail: 'needs TEAMS_TOKEN', state: 'not_configured' },
+      ok: true,
+      platform: 'teams'
+    })
+
+    await renderMessaging()
+
+    fireEvent.change(await screen.findByLabelText('Token'), { target: { value: 'secret-1' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+
+    await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'Needs setup' })))
+    expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull()
+  })
 })
 
 describe('MessagingView allowlist editor', () => {
@@ -584,5 +651,143 @@ describe('MessagingView Telegram quick setup', () => {
     } finally {
       $settingsScopeOverride.set(null)
     }
+  })
+})
+
+describe('MessagingView catalog platforms', () => {
+  const qqbot = {
+    badge: 'official' as const,
+    blocked: '',
+    blocked_reason: '',
+    disclosure: 'Messages travel between QQ servers and your gateway.',
+    install_command: 'hermes plugins install qqbot',
+    name: 'qqbot',
+    summary: 'QQ Bot messaging platform.',
+    title: 'qqbot'
+  }
+
+  it('installs a catalog platform on Install, then opens the card it registered', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ available: [qqbot], platforms: [platform()] })
+    installMessagingCatalogPlatform.mockResolvedValue({ ok: true, platforms: ['qqbot'], plugin_name: 'qqbot' })
+
+    await renderMessaging()
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
+
+    // What the backend lists once the plugin is installed: its own card, labelled and masked.
+    getMessagingPlatforms.mockResolvedValue({
+      available: [],
+      platforms: [
+        platform(),
+        platform({
+          id: 'qqbot',
+          name: 'QQ Bot',
+          env_vars: [
+            {
+              advanced: false,
+              description: 'The App Secret',
+              is_password: true,
+              is_set: false,
+              key: 'QQ_CLIENT_SECRET',
+              prompt: 'App Secret',
+              redacted_value: null,
+              required: true,
+              url: null
+            }
+          ]
+        })
+      ]
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /^Install$/ }))
+    await waitFor(() => expect(installMessagingCatalogPlatform).toHaveBeenCalledWith('qqbot', 'default'))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'QQ Bot' })).toBeTruthy())
+  })
+
+  it('drops a selected row that was installed elsewhere instead of still offering Install', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ available: [qqbot], platforms: [platform()] })
+
+    await renderMessaging()
+    await act(async () => {
+      $changeEventsAvailable.set(true)
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
+    expect(await screen.findByRole('button', { name: /^Install$/ })).toBeTruthy()
+
+    // The background default install lands the plugin; the change watcher ticks platforms.changed.
+    getMessagingPlatforms.mockResolvedValue({
+      available: [],
+      platforms: [platform(), platform({ id: 'qqbot', name: 'QQ Bot' })]
+    })
+    await act(async () => {
+      $platformsChangeTick.set($platformsChangeTick.get() + 1)
+    })
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Install$/ })).toBeNull())
+    expect(screen.queryByText('Not installed')).toBeNull()
+    expect(installMessagingCatalogPlatform).not.toHaveBeenCalled()
+  })
+
+  it('leaves the user where they went when an install finishes after Messaging unmounted', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({
+      available: [qqbot],
+      platforms: [platform()]
+    })
+    let finish!: (value: unknown) => void
+    installMessagingCatalogPlatform.mockImplementation(() => new Promise(resolve => (finish = resolve)))
+
+    function Nav() {
+      const navigate = useNavigate()
+      const location = useLocation()
+
+      return (
+        <>
+          <button onClick={() => navigate('/elsewhere')}>Leave Messaging</button>
+          <div data-testid="current-route">{location.pathname}</div>
+        </>
+      )
+    }
+
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/messaging']}>
+          <Nav />
+          <Routes>
+            <Route element={<MessagingView />} path="/messaging" />
+            <Route element={<div>Elsewhere</div>} path="/elsewhere" />
+          </Routes>
+        </MemoryRouter>
+      )
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Install$/ }))
+    await waitFor(() => expect(installMessagingCatalogPlatform).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Leave Messaging' }))
+    expect(screen.getByTestId('current-route').textContent).toBe('/elsewhere')
+
+    getMessagingPlatforms.mockResolvedValue({
+      available: [],
+      platforms: [platform(), platform({ id: 'qqbot', name: 'QQ Bot' })]
+    })
+    await act(async () => {
+      finish({ ok: true, platforms: ['qqbot'], plugin_name: 'qqbot' })
+    })
+
+    expect(screen.getByTestId('current-route').textContent).toBe('/elsewhere')
+  })
+
+  it('says why a row cannot install and the command to run instead', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({
+      available: [{ ...qqbot, blocked: 'lazy_installs_off', blocked_reason: 'off' }],
+      platforms: [platform()]
+    })
+
+    await renderMessaging()
+    fireEvent.click(await screen.findByRole('button', { name: /qqbot.*Official/i }))
+    expect(await screen.findByText(/security\.allow_lazy_installs/)).toBeTruthy()
+    expect(screen.getByText('hermes plugins install qqbot')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Install$/ })).toBeNull()
   })
 })

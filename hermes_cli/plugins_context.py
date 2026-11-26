@@ -518,6 +518,11 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
                 _facade().logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
                                          "with a built-in command. Skipping.", self.manifest.name, clean)
                 return
+        owner = (self._manager._plugin_commands.get(clean) or {}).get("plugin_key")
+        if owner is not None and owner != self.plugin_id:  # first plugin keeps /name (#160166)
+            _facade().logger.warning("Plugin '%s' tried to register command '/%s' which plugin '%s' already "
+                                     "registered. Skipping.", self.plugin_id, clean, owner)
+            return
         hint = (args_hint or "").strip()
         entry = {
             "handler": handler, "description": description or "Plugin command",

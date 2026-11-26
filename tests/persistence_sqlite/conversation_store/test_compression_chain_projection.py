@@ -1,6 +1,8 @@
-"""Compression lineage in the conversation store on a backend store's StoreHolder: ``get_compression_tip`` and ``get_compression_lineage`` walk the chain and stop at reset forks, the routing lineage CTE agrees with that walk, and ``list_sessions_rich`` surfaces each compressed conversation as its live tip in one batched fetch."""
+"""Compression lineage in the conversation store on a backend store's StoreHolder: ``get_compression_tip`` and ``get_compression_lineage`` walk the chain and stop at reset forks and at a chat's subagent rows, the routing lineage CTE agrees with that walk, and ``list_sessions_rich`` surfaces each compressed conversation as its live tip in one batched fetch."""
 
+import sqlite3
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -8,8 +10,11 @@ from persistence.sqlite.conversation._store import portability as store_portabil
 from persistence.sqlite.conversation._store import session_list as store_session_list
 from persistence.sqlite.conversation._store.compression import (
     _is_compression_child_row,
+    _publish_child_session_row,
+    publish_compression_child,
     get_compression_lineage,
     get_compression_tip,
+    stamp_legacy_compression_chains,
 )
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import (
@@ -18,6 +23,9 @@ from persistence.sqlite.conversation._store.sessions import (
     list_sessions_rich,
     update_session_cwd,
 )
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
@@ -29,6 +37,110 @@ def store(backend, scope_a):
 def db(store):
     """The store's StoreHolder, shared with its repositories."""
     return store.holder()
+
+
+ROUTE = dict(user_id="u1", session_key="agent:main:telegram:dm:42", chat_id="42", chat_type="dm")
+
+
+def _compress(db, parent, child, source):
+    publish_compression_child(db, parent_session_id=parent, child_session_id=child, source=source, system_prompt="p",
+                              messages=[{"role": "user", "content": "summary"}], require_compression_lease=False)
+
+
+def _worker_row(store, parent, sid):
+    """A markerless row a subagent created, relabelled onto the chat by the peer stamp."""
+    seed_session(store, sid, "subagent", parent_session_id=parent)
+    store.routing.record_session_peer(sid, source="telegram", **ROUTE)
+
+
+class TestChainStepSkipsSubagentRows:
+    def test_a_chat_never_continues_into_its_markerless_worker_row(self, store):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        _worker_row(store, "chat", "worker")
+        store.sessions.end("chat", "compression")
+        assert store.lineage.tip("chat") == "chat"
+
+    def test_a_newer_worker_row_does_not_outrank_the_chat_continuation(self, store, db):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        _compress(db, "chat", "chat-c1", "telegram")
+        _worker_row(store, "chat", "worker")
+        assert store.lineage.tip("chat") == "chat-c1"
+
+    def test_a_chat_the_user_adopted_a_worker_row_onto_still_continues(self, store):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        seed_session(store, "adopted", "subagent", parent_session_id="chat", model_config={"_chat_adopted": True})
+        store.sessions.end("chat", "compression")
+        assert store.lineage.tip("chat") == "adopted"
+
+    def test_a_newer_worker_row_does_not_outrank_an_adopted_chats_continuation(self, store, db):
+        seed_session(store, "chat", "telegram", **ROUTE)
+        seed_session(store, "adopted", "subagent", parent_session_id="chat", model_config={"_chat_adopted": True})
+        _compress(db, "adopted", "adopted-c1", "telegram")
+        _worker_row(store, "adopted", "worker")
+        assert store.lineage.tip("adopted") == "adopted-c1"
+
+    def test_a_local_reset_of_a_subagent_row_still_continues(self, store, db):
+        # A local /new copies the parent's created_source onto the reset row, which then carries only _reset_from.
+        seed_session(store, "worker", "subagent")
+        db._execute_write(lambda conn: _publish_child_session_row(
+            db, conn, conn.execute("SELECT * FROM sessions WHERE id = 'worker'").fetchone(), parent_session_id="worker",
+            child_session_id="reset", source="cli", model="m", model_config={"_reset_from": "worker"},
+            system_prompt=None, cwd=None, profile_name=None))
+        _compress(db, "reset", "reset-c1", "cli")
+        assert store.lineage.tip("reset") == "reset-c1"
+
+    def test_a_workers_own_compression_chain_still_resolves(self, store, db):
+        seed_session(store, "worker", "subagent")
+        _compress(db, "worker", "worker-c1", "subagent")
+        store.routing.record_session_peer("worker-c1", source="telegram", **ROUTE)
+        _compress(db, "worker-c1", "worker-c2", "subagent")
+        assert store.lineage.tip("worker") == "worker-c2"
+        assert store.lineage.lineage("worker-c2") == ("worker", "worker-c1", "worker-c2")
+
+    def test_a_worker_parent_from_before_created_source_still_continues(self, store, db):
+        seed_session(store, "worker", "subagent")
+        _compress(db, "worker", "worker-c1", "subagent")
+        db._execute_write(lambda conn: conn.execute("UPDATE sessions SET created_source = NULL WHERE id = 'worker'"))
+        assert store.lineage.tip("worker") == "worker-c1"
+        assert stamp_legacy_compression_chains(db) == 1
+        assert get_session(db, "worker")["created_source"] == "subagent"
+
+    def test_a_reader_on_a_store_without_created_source_follows_the_chain(self, tmp_path, monkeypatch):
+        with open_persistence(profile_scope(home=tmp_path)) as writer:
+            seed_session(writer, "chat", "telegram", **ROUTE)
+            _compress(raw_holder(writer), "chat", "chat-c1", "telegram")
+            _compress(raw_holder(writer), "chat-c1", "chat-c2", "telegram")
+            raw_holder(writer)._execute_write(lambda conn: (
+                conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started"),
+                conn.execute("ALTER TABLE sessions DROP COLUMN created_source")))
+        missing_column_errors = []
+        with open_persistence_reader(tmp_path / "state.db") as reader:
+            holder = raw_holder(reader)
+            read_ctx = holder._read_ctx
+
+            @contextmanager
+            def counting_read_ctx():
+                with read_ctx() as conn:
+                    yield _ErrorCountingConn(conn, missing_column_errors)
+            monkeypatch.setattr(holder, "_read_ctx", counting_read_ctx)
+            assert reader.lineage.tip("chat") == "chat-c2"
+        assert len(missing_column_errors) <= 1
+
+
+class _ErrorCountingConn:
+    def __init__(self, conn, errors):
+        self._conn, self._errors = conn, errors
+
+    def execute(self, sql, params=()):
+        try:
+            return self._conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            if "created_source" in str(exc):
+                self._errors.append(sql)
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 class TestCompressionChainProjection:

@@ -29,6 +29,22 @@ def test_a_resumed_delegate_child_keeps_the_route(tmp_path):
     db.close()
 
 
+def test_resuming_a_markerless_subagent_row_adopts_it(tmp_path):
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    db = store.persistence
+    source = SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="1", chat_type="dm")
+    entry = store.get_or_create_session(source)
+    child = entry.session_id + "-worker"
+    seed_session(db, child, "subagent", parent_session_id=entry.session_id)
+    assert session_row(db, child)["created_source"] == "subagent"
+
+    assert store.switch_session(entry.session_key, child) is not None
+
+    assert db.sessions.get_model_config_value(child, "_chat_adopted") is True
+    assert store.get_or_create_session(source).session_id == child
+    db.close()
+
+
 def test_adoption_keeps_the_childs_delegate_lineage(tmp_path):
     """``_delegate_from`` is lineage, not a routing flag: the still-running worker's compression publish
     re-sends it and a compression-ended parent would otherwise read the child as its continuation."""

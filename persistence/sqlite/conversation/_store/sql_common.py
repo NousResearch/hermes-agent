@@ -145,6 +145,15 @@ def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
     ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
 
 
+# A row a subagent created: the ``_delegate_from`` marker, or ``created_source`` (which the peer stamp never
+# rewrites), unless the chat owns it (a /new continuation, or a row the user switched onto). The Python twin is
+# ``gateway.session_lifecycle.is_delegate_child_row``; format with ``a`` = the sessions alias.
+_DELEGATE_CHILD_SQL = (f"((COALESCE({_sql_json_extract('{a}.model_config', '$._delegate_from')}, '') <> ''"
+    " OR COALESCE({a}.created_source, '') = 'subagent')"
+    f" AND {_sql_json_extract('{a}.model_config', '$._reset_from')} IS NULL"
+    f" AND {_sql_json_extract('{a}.model_config', '$._chat_adopted')} IS NULL)")
+
+
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).
 _LISTABLE_CHILD_SQL = (f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"
     f" OR {_RESET_CHILD_SQL.format(a='s')})")

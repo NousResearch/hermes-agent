@@ -938,7 +938,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
             api._ensure_store, api._store_beside = (lambda: store), (lambda _db: store)
             runner.adapters = {Platform.API_SERVER: api}
         if unavailable == "owner_db":
-            live = SimpleNamespace(ended_at=None, end_reason=None, source=None, model_config={})
+            live = SimpleNamespace(ended_at=None, end_reason=None, source=None, created_source=None, model_config={})
             runner.session_store.persistence = SimpleNamespace(
                 aio=SimpleNamespace(sessions=SimpleNamespace(get=AsyncMock(return_value=live))))
         assert asyncio.run(runner._deliver_async_delegation_group(events)) is True

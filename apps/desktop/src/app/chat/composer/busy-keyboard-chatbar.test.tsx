@@ -110,8 +110,12 @@ function setMode(mode: BusyInputMode) {
   })
 }
 
-function mountChatBar(mode: BusyInputMode, overrides: Partial<ChatBarProps> = {}) {
-  setMode(mode)
+function mountChatBar(mode: BusyInputMode | null, overrides: Partial<ChatBarProps> = {}) {
+  if (mode === null) {
+    $busyInputConfig.set(null)
+  } else {
+    setMode(mode)
+  }
   const attachments = createComposerAttachmentScope()
   const scope = { ...MAIN_COMPOSER_SCOPE, attachments, $awaitingInput: atom(false) }
   const onCancel = vi.fn<ChatBarProps['onCancel']>()
@@ -471,6 +475,27 @@ describe('real ChatBar correction fallbacks', () => {
     await press(view, init)
     expectAction(view, 'queue')
     expect($compactingSessions.get()[RUNTIME]).toBe(true)
+  })
+
+  it.each(CHORDS)('$name queues during compaction before the busy policy loads', async ({ init }) => {
+    setSessionCompacting(RUNTIME, true)
+    const view = mountChatBar(null)
+    await writeDraft(view)
+    expect($busyInputConfig.get()).toBeNull()
+    expect(screen.getByRole('button', { name: en.composer.queueMessage })).toHaveProperty('disabled', false)
+    await press(view, init)
+    expectAction(view, 'queue')
+  })
+
+  it('clicking Send queues during compaction before the busy policy loads', async () => {
+    setSessionCompacting(RUNTIME, true)
+    const view = mountChatBar(null)
+    await writeDraft(view)
+    expect($busyInputConfig.get()).toBeNull()
+    const button = screen.getByRole('button', { name: en.composer.queueMessage })
+    expect(button).toHaveProperty('disabled', false)
+    await act(async () => { fireEvent.click(button) })
+    expectAction(view, 'queue')
   })
 
   it.each(corrections)('$mode / $name queues attachments with the text', async ({ mode, init }) => {

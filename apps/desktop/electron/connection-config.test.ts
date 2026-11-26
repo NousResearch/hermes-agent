@@ -715,7 +715,10 @@ test('non-auth 4xx is a terminal rejection, not a transport blip', () => {
   assert.equal(isGatewayTerminalRejection({ statusCode: 403 }), false)
   assert.equal(isGatewayTerminalRejection({ needsOauthLogin: true }), false)
 
-  // Genuinely retryable failures are untouched.
+  // Genuinely retryable failures are untouched, including the retryable 4xx.
+  assert.equal(isGatewayTerminalRejection({ statusCode: 408 }), false)
+  assert.equal(isGatewayTerminalRejection({ statusCode: 425 }), false)
+  assert.equal(isGatewayTerminalRejection({ statusCode: 429 }), false)
   assert.equal(isGatewayTerminalRejection({ statusCode: 500 }), false)
   assert.equal(isGatewayTerminalRejection({ statusCode: 503 }), false)
   assert.equal(isGatewayTerminalRejection(new Error('network timeout')), false)
@@ -728,6 +731,12 @@ test('gatewayErrorDetail unwraps the gateway explanation from a fetch error', ()
     "Unknown provider: ''"
   )
   assert.equal(gatewayErrorDetail(new Error('400: {"error":"bad request"}')), 'bad request')
+
+  // A non-string detail (FastAPI validation errors) is kept as JSON.
+  assert.equal(
+    gatewayErrorDetail(new Error('422: {"detail":[{"loc":["body","code"],"msg":"field required"}]}')),
+    '[{"loc":["body","code"],"msg":"field required"}]'
+  )
 
   // Non-JSON bodies fall back to the raw text.
   assert.equal(gatewayErrorDetail(new Error('404: Not Found')), 'Not Found')

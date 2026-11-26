@@ -126,9 +126,14 @@ function isGatewayAuthRejection(error) {
   return statusCode === 401 || statusCode === 403
 }
 
+// Request Timeout, Too Early and Too Many Requests: a retry after backoff can
+// succeed, so these stay on the transport-error path.
+const RETRYABLE_4XX_STATUSES = new Set([408, 425, 429])
+
 /**
  * True when the gateway answered with a 4xx that retrying cannot fix — 400,
- * 404, 422 and friends, but NOT the 401/403 "sign in again" pair.
+ * 404, 422 and friends, but NOT the 401/403 "sign in again" pair, and not
+ * 408/425/429, which can succeed on a later retry.
  *
  * These are configuration faults (unknown provider, bad request shape): the
  * identical request fails identically on every retry. Treating them as
@@ -141,6 +146,10 @@ function isGatewayTerminalRejection(error) {
   }
 
   const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  if (RETRYABLE_4XX_STATUSES.has(statusCode)) {
+    return false
+  }
 
   return Number.isFinite(statusCode) && statusCode >= 400 && statusCode < 500
 }
@@ -166,6 +175,14 @@ function gatewayErrorDetail(error) {
 
     if (typeof detail === 'string' && detail.trim()) {
       return detail.trim()
+    }
+
+    // FastAPI validation errors put a list/object in `detail`. Keep just that
+    // part, so the explanation is not lost to the truncation below.
+    if (detail && typeof detail === 'object') {
+      const text = JSON.stringify(detail)
+
+      return text.length > 200 ? `${text.slice(0, 200)}…` : text
     }
   } catch {
     // Not JSON — the raw body is the best explanation we have.

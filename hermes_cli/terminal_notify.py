@@ -1,8 +1,10 @@
-"""Terminal-native desktop notifications: OSC 9 and Warp's OSC 777 CLI-agent protocol.
+"""Terminal-native desktop notifications and protocol reporters (OSC 9, OSC 777, OSC 7501, OSC 7577).
 
 OSC 9 (``ESC ] 9 ; <body> BEL``): Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
 others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``): Warp's
-structured CLI-agent protocol (tab status + notification mailbox).
+structured CLI-agent protocol (tab status + notification mailbox). OSC 7501 reports live
+turn/prompt status. OSC 7577 reports an authenticated resume command so supporting terminals
+can bring Hermes back across terminal/server restarts.
 
 Inside the running CLI, ``HermesCLI._ring_bell`` sends ``notification_sequence()`` through the
 prompt_toolkit output on the app loop (a second writer on the tty would splice into an in-flight kitty
@@ -13,11 +15,16 @@ terminal). Never raises.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import ntpath
 import os
 import re
 import sys
+import time
 from base64 import b64encode
+from collections.abc import Mapping, Sequence
+from contextlib import suppress
 
 _C0_AND_DEL = re.compile(r"[\x00-\x1f\x7f]")
 _WARP_PROTOCOL_VERSION = 1
@@ -29,6 +36,12 @@ _PROGRAM_KINDS = frozenset({"permission", "question", "auth"})
 _PROGRAM_MESSAGE_LIMIT = 2048
 # OSC 7501 discards a whole report whose decoded msg holds C0, DEL or C1 controls.
 _PROGRAM_MSG_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+
+# OSC 7577 Program Resume Protocol (rev 0.5)
+_OSC7577_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{22,64}")
+_OSC7577_CONTROLS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_OSC7577_MAX_BYTES = 2048
+_OSC7577_MAX_ARGV = 64
 
 
 def write_tty(seq: str) -> None:
@@ -73,6 +86,160 @@ def program_status_sequence(state: str, *, kind: str = "", message: str = "") ->
 def program_status_clear_sequence() -> str:
     """OSC 7501 ``state=clear`` with no id: removes every record this program left on the terminal."""
     return "\x1b]7501;state=clear\x1b\\"
+
+
+def osc7577_token(env: Mapping[str, str] | None = None) -> str | None:
+    """Return the pane's validated ``OSC7577_TOKEN`` or ``None`` if absent/malformed."""
+    source = os.environ if env is None else env
+    token = source.get("OSC7577_TOKEN")
+    if not isinstance(token, str) or not _OSC7577_TOKEN_RE.fullmatch(token):
+        return None
+    return token
+
+
+def _is_valid_osc7577_abs_path(path: str) -> bool:
+    """True when *path* is an absolute path without C0, DEL, or C1 control characters."""
+    if not isinstance(path, str) or not path or _OSC7577_CONTROLS_RE.search(path):
+        return False
+    return path.startswith("/") or ntpath.isabs(path)
+
+
+def _is_valid_osc7577_argv0(arg: str) -> bool:
+    """True when *arg* satisfies OSC 7577 ``argv[0]`` rules (absolute path or bare command)."""
+    if not isinstance(arg, str) or not arg or _OSC7577_CONTROLS_RE.search(arg):
+        return False
+    return _is_valid_osc7577_abs_path(arg) or ("/" not in arg and "\\" not in arg and not arg.startswith("-"))
+
+
+def _resolve_osc7577_params(token: str | None, pid: int | None, now: int | None) -> tuple[str, int, int]:
+    """Validate common OSC 7577 header fields (`token`, `pid`, `time`)."""
+    resolved_token = osc7577_token() if token is None else token
+    if not isinstance(resolved_token, str) or not _OSC7577_TOKEN_RE.fullmatch(resolved_token):
+        raise ValueError("missing or invalid OSC7577_TOKEN")
+    resolved_pid = os.getpid() if pid is None else pid
+    resolved_time = int(time.time()) if now is None else now
+    if isinstance(resolved_pid, bool) or not isinstance(resolved_pid, int) or resolved_pid < 1:
+        raise ValueError("invalid OSC 7577 pid")
+    if isinstance(resolved_time, bool) or not isinstance(resolved_time, int) or resolved_time < 1:
+        raise ValueError("invalid OSC 7577 time")
+    return resolved_token, resolved_pid, resolved_time
+
+
+def _finalize_osc7577(body: str, resolved_token: str) -> str:
+    """Append plain SHA-256 ``mac`` trailer and enforce the 2048-byte sequence ceiling."""
+    mac = hashlib.sha256(f"{body}:{resolved_token}".encode("ascii")).hexdigest()
+    seq = f"\x1b]7577;{body}:mac={mac}\x1b\\"
+    if len(seq.encode("utf-8")) > _OSC7577_MAX_BYTES:
+        raise ValueError("OSC 7577 sequence exceeds 2048 bytes")
+    return seq
+
+
+def program_resume_sequence(
+    argv: Sequence[str],
+    *,
+    token: str | None = None,
+    pid: int | None = None,
+    now: int | None = None,
+    cwd: str | None = None,
+) -> str:
+    """Encode an authenticated OSC 7577 Program Resume report (``argv`` form)."""
+    resolved_token, resolved_pid, resolved_time = _resolve_osc7577_params(token, pid, now)
+    if isinstance(argv, (str, bytes)) or not isinstance(argv, Sequence):
+        raise ValueError("argv must be a sequence of strings")
+    if not 1 <= len(argv) <= _OSC7577_MAX_ARGV:
+        raise ValueError("OSC 7577 argv must contain between 1 and 64 elements")
+    for idx, arg in enumerate(argv):
+        if not isinstance(arg, str) or _OSC7577_CONTROLS_RE.search(arg):
+            raise ValueError("OSC 7577 argv element contains unsupported control characters")
+        if idx == 0 and not _is_valid_osc7577_argv0(arg):
+            raise ValueError("OSC 7577 argv[0] must be an absolute path or bare command name")
+    argv_b64 = ",".join(b64encode(arg.encode("utf-8")).decode("ascii") for arg in argv)
+    body = f"pid={resolved_pid}:time={resolved_time}:argv={argv_b64}"
+    if cwd is not None:
+        if not _is_valid_osc7577_abs_path(cwd):
+            raise ValueError("OSC 7577 cwd must be an absolute path without control characters")
+        cwd_b64 = b64encode(cwd.encode("utf-8")).decode("ascii")
+        body = f"{body}:cwd={cwd_b64}"
+    return _finalize_osc7577(body, resolved_token)
+
+
+def program_resume_clear_sequence(
+    *,
+    token: str | None = None,
+    pid: int | None = None,
+    now: int | None = None,
+) -> str:
+    """Encode an authenticated OSC 7577 ``clear=1`` report removing this process's record."""
+    resolved_token, resolved_pid, resolved_time = _resolve_osc7577_params(token, pid, now)
+    body = f"pid={resolved_pid}:time={resolved_time}:clear=1"
+    return _finalize_osc7577(body, resolved_token)
+
+
+def build_hermes_resume_argv_prefix(
+    *,
+    surface: str = "cli",
+    tui_native: bool = False,
+    tui_dev: bool = False,
+) -> list[str]:
+    """Build the entrypoint + profile + surface prefix for OSC 7577 resume commands.
+
+    Omits session creation policy flags (``-m``, ``--provider``, ``--safe-mode``, etc.)
+    because ``hermes --resume`` validates launch flags against the session's frozen route.
+    """
+    argv: list[str] = []
+    bin_path: str | None = None
+    with suppress(Exception):
+        from hermes_cli.relaunch import resolve_hermes_bin
+        bin_path = resolve_hermes_bin()
+    if bin_path and _is_valid_osc7577_argv0(bin_path):
+        argv.append(bin_path)
+    elif sys.executable and _is_valid_osc7577_argv0(sys.executable):
+        argv.extend((sys.executable, "-m", "hermes_cli.main"))
+    else:
+        argv.append("hermes")
+
+    explicit_profile: str | None = None
+    active_profile = "default"
+    for mod_name in ("hermes_cli.main", "__main__"):
+        main_mod = sys.modules.get(mod_name)
+        fn = getattr(main_mod, "explicit_cli_profile", None) if main_mod is not None else None
+        if callable(fn):
+            with suppress(Exception):
+                val = fn()
+                if val:
+                    explicit_profile = val
+                    break
+    with suppress(Exception):
+        from hermes_cli.profiles import get_active_profile_name
+        active_profile = get_active_profile_name()
+    if explicit_profile == "default":
+        argv.extend(("-p", "default"))
+    elif active_profile and active_profile not in ("default", "custom"):
+        argv.extend(("-p", active_profile))
+
+    if surface == "tui":
+        argv.append("--tui")
+        if tui_native:
+            argv.append("--tui-native")
+        if tui_dev:
+            argv.append("--dev")
+    else:
+        argv.append("--cli")
+    return argv
+
+
+def build_hermes_resume_argv(
+    session_id: str | None = None,
+    *,
+    surface: str = "cli",
+    tui_native: bool = False,
+    tui_dev: bool = False,
+) -> list[str]:
+    """Build the full OSC 7577 resume ``argv``, appending ``--resume <session_id>`` when durable."""
+    argv = build_hermes_resume_argv_prefix(surface=surface, tui_native=tui_native, tui_dev=tui_dev)
+    if session_id:
+        argv.extend(("--resume", session_id))
+    return argv
 
 
 def warp_supported(env=None) -> bool:

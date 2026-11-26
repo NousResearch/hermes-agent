@@ -31,7 +31,9 @@ class CLITuiRuntimeMixin:
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         held = None
+        self._program_resume_interactive = True
         self._sync_program_status()
+        self._sync_program_resume()
         while not self._should_exit:
             try:
                 if held is not None:
@@ -160,6 +162,7 @@ class CLITuiRuntimeMixin:
         self._program_turn_outcome = None
         self._agent_running = self._interactive_turn = True
         self._sync_program_status()
+        self._sync_program_resume()
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
@@ -182,6 +185,8 @@ class CLITuiRuntimeMixin:
             _cprint(f"\n[dim]{t('cli.tui.command_interrupted')}[/dim]")
             return None
         _seed, self._pending_agent_seed = self._pending_agent_seed, None
+        if not self._should_exit:
+            self._sync_program_resume()
         return _seed or None
 
     def _tui_after_turn(self):
@@ -189,6 +194,7 @@ class CLITuiRuntimeMixin:
         from cli import _DIM, _RST, _cprint
         self._agent_running = self._pet_reasoning = False
         self._sync_program_status()  # setup failures and early returns land here too
+        self._sync_program_resume()
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
@@ -528,6 +534,15 @@ class CLITuiRuntimeMixin:
         # First, before anything that can hang or be cut short by the exit watchdog: a pane back at its
         # shell must not keep listing Hermes as an agent (OSC 7501 idle/done outlive the process).
         self._clear_program_status()
+        import cli as _cli_mod_resume
+        if (
+            not _cli_mod_resume._signal_watchdog_armed
+            and not self._viewer_disconnected
+            and not getattr(self, "_terminal_io_broken", False)
+        ):
+            self._clear_program_resume()
+        else:
+            self._program_resume_closed = True
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):

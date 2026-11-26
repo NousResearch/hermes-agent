@@ -11,6 +11,7 @@ import {
   normalizeStatusBar,
   syncMcpReload
 } from '../app/useConfigSync.js'
+import { $programResumeEnabled } from '../lib/programResume.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -153,6 +154,20 @@ describe('applyDisplay', () => {
     )
 
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
+  })
+
+  it('tracks display.program_resume and preserves it on config RPC failure', () => {
+    const setBell = vi.fn()
+    $programResumeEnabled.set(null)
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($programResumeEnabled.get()).toBe(true)
+
+    applyDisplay({ config: { display: { program_resume: false } } }, setBell)
+    expect($programResumeEnabled.get()).toBe(false)
+
+    applyDisplay(null, setBell)
+    expect($programResumeEnabled.get()).toBe(false)
   })
 })
 

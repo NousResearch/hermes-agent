@@ -16,6 +16,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import { clearProgramResume, consumeProgramResumeEnv, suppressProgramResumeClear } from './lib/programResume.js'
 import { clearProgramStatus } from './lib/programStatus.js'
 import { clearNativeTuiFrame, resetTerminalModes } from './lib/terminalModes.js'
 
@@ -27,6 +28,9 @@ if (!process.stdin.isTTY) {
 // Start from a clean slate. If a previous TUI crashed or was kill -9'd, the
 // terminal tab can still have mouse/focus/paste modes enabled.
 resetTerminalModes()
+
+// Cache OSC 7577 token/owner metadata and strip it from process.env before spawning gateway/child procs.
+consumeProgramResumeEnv()
 
 // Final backstop for terminal cleanup. setupGracefulExit() resets modes on
 // signals/uncaught errors, and die()/dieWithCode() call process.exit() after
@@ -41,8 +45,10 @@ resetTerminalModes()
 // before the process is gone. Idempotent and cheap, so layering it under the
 // graceful-exit cleanups is safe.
 process.on('exit', () => {
+  const fd = typeof process.stdout.fd === 'number' ? process.stdout.fd : 1
   // Same rule as the classic CLI: a pane back at its shell must not keep listing Hermes as an agent.
-  clearProgramStatus(seq => writeSync(typeof process.stdout.fd === 'number' ? process.stdout.fd : 1, seq))
+  clearProgramStatus(seq => writeSync(fd, seq))
+  clearProgramResume(seq => writeSync(fd, seq))
   resetTerminalModes()
 
   if (NATIVE_MODE) {
@@ -97,6 +103,7 @@ setupGracefulExit({
 
     if (code === 'EIO' || code === 'EPIPE') {
       if (++consecutiveDeadStreamErrors >= 5) {
+        suppressProgramResumeClear()
         recordParentLifecycle(`dead output stream (${code} x${consecutiveDeadStreamErrors}) → exiting`)
         void gw.kill('dead-output-stream')
         process.exit(1)
@@ -114,6 +121,10 @@ setupGracefulExit({
     }
   },
   onSignal: signal => {
+    if (signal === 'SIGHUP' || signal === 'SIGTERM') {
+      suppressProgramResumeClear()
+    }
+
     // The next line in the crash log is the child's `=== SIGTERM received ===`
     // (gw.kill forwards SIGTERM regardless of which signal hit us) — this is
     // what tells SIGHUP (terminal/SSH dropped) apart from a real SIGTERM.
@@ -130,6 +141,7 @@ setupGracefulExit({
 
 const stopMemoryMonitor = startMemoryMonitor({
   onCritical: (snap, dump) => {
+    suppressProgramResumeClear()
     // process.exit(137) closes the child's stdin → the gateway logs a clean
     // EOF, NOT SIGTERM. Recording it here is the only way a crash report can
     // attribute a death to Node OOM rather than a signal-driven kill.

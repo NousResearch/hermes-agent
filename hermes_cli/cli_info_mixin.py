@@ -559,6 +559,9 @@ class CLIInfoMixin:
             writer=lambda line: self._console_print(_rich_text_from_ansi(line)))
         if exit_code:
             self._console_print(f"[dim]{t('cli.shell.exited', code=str(exit_code))}[/]")
+        sync_resume = getattr(self, "_sync_program_resume", None)
+        if callable(sync_resume):
+            sync_resume(force=True)
         return True
 
     def _show_gateway_status(self):

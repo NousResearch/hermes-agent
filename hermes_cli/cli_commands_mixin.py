@@ -1668,7 +1668,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin, CLIHandoffMixin):
             except ValueError:
                 return ""  # unbalanced quotes in $EDITOR: cancel, never retry through a shell
             try:
-                status = subprocess.call(editor_argv)
+                status = subprocess.call(editor_argv, env={k: v for k, v in os.environ.items() if k.upper() != "OSC7577_TOKEN"})  # health: allow HX006 -- interactive $EDITOR runs until the user saves and exits
             except OSError:
                 return ""  # editor not runnable: cancel the compose (#81364)
             # A failed editor may leave seeded or abandoned text in the buffer.

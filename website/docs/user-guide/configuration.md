@@ -2426,6 +2426,8 @@ display:
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
   program_status: true    # CLI + TUI: OSC 7501 Program Status reports (idle, working, blocked on approval/question/credential,
                           # done, error) so terminals that track them show each Hermes tab's state; others ignore it
+  program_resume: true    # CLI + TUI: OSC 7577 Program Resume reports (authenticated with OSC7577_TOKEN) so supporting
+                          # terminals can restore the active Hermes session across restarts; cleared on explicit exit
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide). On a gateway reply that was streamed, it follows the answer as its own message
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar

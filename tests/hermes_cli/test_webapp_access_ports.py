@@ -49,6 +49,13 @@ def machine(monkeypatch, tmp_path):
     return {"root": root, "solo": solo, "listening": listening, "probed": probed, "monkeypatch": monkeypatch}
 
 
+def test_port_selection_skips_decimal_string_claims(machine):
+    root = machine["root"]
+    _write(root, "webapp:\n  port: '9122'\n")
+    _write(root / "profiles" / "other", "webapp:\n  port: '9123'\n")
+    assert webapp_access.plan("lan")[1] == 9124
+
+
 def _webapp_block(home: Path) -> dict:
     from hermes_cli.config import read_user_config_raw
 

@@ -61,8 +61,8 @@ import {
   closeAllOpenSessionTiles,
   requestForOwnedSession
 } from '@/store/session-states'
-import { ackStoredSessionId } from '@/store/session-unread'
 import { broadcastSessionsChanged, requestSessionsListRefresh } from '@/store/session-sync'
+import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'

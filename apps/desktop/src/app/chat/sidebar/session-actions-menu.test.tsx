@@ -103,7 +103,7 @@ vi.mock('@/store/session', () => ({
   setSessions: vi.fn()
 }))
 vi.mock('@/store/session-sync', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/store/session-sync')>()),
+  ...(await importOriginal()),
   broadcastSessionsChanged: vi.fn()
 }))
 vi.mock('@/store/session-color', () => ({

@@ -51,8 +51,8 @@ import {
   type SessionTombstoneGenerationSnapshot,
   tombstoneRowIds
 } from '@/store/session-removal'
-import { $sessionsListRefresh } from '@/store/session-sync'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+import { $sessionsListRefresh } from '@/store/session-sync'
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 

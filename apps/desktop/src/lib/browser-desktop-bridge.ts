@@ -7,6 +7,7 @@ import { createBrowserCloudBridge } from '@/lib/browser-cloud'
 import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
+import { createHostedRoute } from '@/lib/browser-hosted-route'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
@@ -68,24 +69,16 @@ export function installBrowserDesktopBridge(): boolean {
     ? createBrowserSavedConnections({ api, bootstrap, hostless })
     : null
 
-  // A host that runs no agent has no `local` gateway: that name, and a request that names no
-  // connection, mean the gateway this window is on, the list's primary until boot publishes one.
-  // Boot sends requests before it publishes the window's connection, so those wait for the list.
-  // REST, sockets and profile routes all resolve through `routeTo`, so they name one agent.
-  const hostedAgent = hostless && relays ? relays : null
+  // A host that runs no agent has no `local` gateway: every member below and the connection bridge
+  // resolve a request's agent through this one route (browser-hosted-route.ts).
+  const hosted =
+    hostless && relays ? createHostedRoute({ relays, windowAgent: () => $connection.get()?.connectionId }) : null
 
-  const ownConnection = (connectionId?: null | string) => {
-    if (!hostedAgent || (connectionId && connectionId !== LOCAL_CONNECTION_ID)) {
-      return connectionId || LOCAL_CONNECTION_ID
-    }
-
-    const current = $connection.get()?.connectionId
-
-    return current && current !== LOCAL_CONNECTION_ID ? current : hostedAgent.knownWindowConnection()
-  }
+  const ownConnection = (connectionId?: null | string) =>
+    hosted ? hosted.knownAgentFor(connectionId) : connectionId || LOCAL_CONNECTION_ID
 
   const routeTo = async (connectionId?: null | string) =>
-    ownConnection(connectionId) ?? (await hostedAgent!.windowConnection())
+    hosted ? hosted.agentFor(connectionId) : connectionId || LOCAL_CONNECTION_ID
 
   // Synchronous callers (file links, upload URLs) run after boot has read the list; before that a
   // hostless page has no gateway to name, and saying so beats sending the request to the host.
@@ -108,7 +101,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   // The gateway's own routes (health, Portal status): the host's, or on a host with no agent, the
   // window's gateway's.
-  const agentApi = hostedAgent ? activeApi : api
+  const agentApi = hosted ? activeApi : api
 
   // Members with no connection of their own (host files, uploads) follow the window's connection.
   const activeBootstrap: BrowserBootstrap = {
@@ -191,13 +184,13 @@ export function installBrowserDesktopBridge(): boolean {
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
     // On a host with no agent the host's list is the account's agents, each signed in already.
-    cloud: createBrowserCloudBridge({ api: agentApi, relays: hostedAgent ? null : relays }),
+    cloud: createBrowserCloudBridge({ api: agentApi, relays: hosted ? null : relays }),
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
-    ...createBrowserConnectionBridge({ api, bootstrap, hostedAgent: hostedAgent ? routeTo : null, relays }),
+    ...createBrowserConnectionBridge({ api, bootstrap, hosted, relays }),
     ...(relays ? { connections: relays.connections } : {}),
     ...files,
     // The desktop-plugins folder is the serving machine's; a host with no agent has none to offer.
-    ...(hostedAgent ? {} : createBrowserDesktopPluginsBridge({ api, files })),
+    ...(hosted ? {} : createBrowserDesktopPluginsBridge({ api, files })),
     ...uploads,
     api: rendererApi,
     // This renderer is built from the serving checkout, so its version is the
@@ -233,7 +226,7 @@ export function installBrowserDesktopBridge(): boolean {
     openSessionWindow: async (sessionId, opts) => {
       // A window boots on this page's gateway, which does not hold another gateway's chats.
       // On a host with no agent a new window opens on the list's primary, like this one did.
-      const opensOn = hostedAgent ? await hostedAgent.windowConnection().catch(() => null) : LOCAL_CONNECTION_ID
+      const opensOn = hosted ? await hosted.relays.windowConnection().catch(() => null) : LOCAL_CONNECTION_ID
 
       if (opts?.connectionId && opts.connectionId !== LOCAL_CONNECTION_ID && opts.connectionId !== opensOn) {
         return { error: 'A chat on another gateway opens in this tab, not in a new window.', ok: false }
@@ -260,7 +253,7 @@ export function installBrowserDesktopBridge(): boolean {
       currentConnection: activeConnectionId,
       // The host terminal of the gateway the terminal started on, relayed when it is not the serving one.
       websocketUrl: async (profile, connectionId) => {
-        if (!relays || (!hostedAgent && connectionId === LOCAL_CONNECTION_ID)) {
+        if (!relays || (!hosted && connectionId === LOCAL_CONNECTION_ID)) {
           return ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile)
         }
 

@@ -438,6 +438,25 @@ def test_bare_git_readers_with_a_child_cwd_resolve_relative_path_entries_there(t
 
 
 @pytest.mark.platforms("posix")
+def test_git_context_reference_resolves_relative_path_entries_from_the_repo(tmp_path, clt_stub_env, monkeypatch):
+    """``@diff`` gates once, then launches bare ``git`` with ``cwd=`` the repo: look git up from there."""
+    from agent import context_references
+
+    trap_bin, _trap_git, spawn_log = clt_stub_env
+    parent = tmp_path / "parent"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _make_exe(parent / "bin" / "git", "#!/usr/bin/env bash\nexit 0\n")
+    monkeypatch.chdir(parent)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{trap_bin}")
+
+    ref = context_references.ContextReference(kind="diff", target="", raw="@diff", start=0, end=5)
+    err, block = context_references._expand_git_reference(ref, repo, ["diff"], "git diff")
+    assert err == "@diff: git is not available" and block is None
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

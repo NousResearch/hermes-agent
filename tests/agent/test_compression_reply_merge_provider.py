@@ -173,7 +173,7 @@ def test_api_sidecar_merge_reaches_next_request_and_durable_active_set(tmp_path)
     )
     try:
         older, reply = messages[-4], messages[-2]
-        db.conversation.messages.set_message_api_content(session_id, older["_row_id"], older["content"], "stale provider text")
+        db.messages.set_message_api_content(session_id, older["_row_id"], older["content"], "stale provider text")
         older["api_content"] = "stale provider text"
         fold[1] = deepcopy(older)
         older_uid, reply_uid = older[MESSAGE_UID], reply[MESSAGE_UID]
@@ -198,4 +198,4 @@ def test_api_sidecar_merge_reaches_next_request_and_durable_active_set(tmp_path)
         assert sum(str(m.get("content", "")).count(REPLY.strip()) for m in display) == 1
         assert sum(m.get("content") == "noted" for m in display) == 1
     finally:
-        close_storage_handles()
+        db.close()

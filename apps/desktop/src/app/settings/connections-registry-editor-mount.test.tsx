@@ -1,0 +1,85 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type * as RemoteSetup from '@/components/remote-setup/use-remote-setup'
+import type { DesktopConnectionsRegistry } from '@/global'
+
+import { ConnectionsRegistrySection } from './connections-registry'
+
+const setups = vi.hoisted(() => ({ count: 0 }))
+
+// Counts every render that sets up the credential draft (the editor's sign-in, probe and token).
+vi.mock('@/components/remote-setup/use-remote-setup', async importOriginal => {
+  const real = await importOriginal<typeof RemoteSetup>()
+
+  return {
+    ...real,
+    useRemoteSetup: (options: RemoteSetup.RemoteSetupOptions) => {
+      setups.count += 1
+
+      return real.useRemoteSetup(options)
+    }
+  }
+})
+
+const registry: DesktopConnectionsRegistry = {
+  connections: [
+    {
+      authMode: 'oauth',
+      id: 'alpha',
+      kind: 'cloud',
+      label: 'Alpha',
+      tokenPreview: null,
+      tokenSet: true,
+      url: 'https://alpha.agents.example'
+    }
+  ],
+  primary: 'alpha',
+  secureTokenStorage: true,
+  version: 2
+}
+
+function mount(managedByHost: boolean) {
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: {
+      connections: {
+        list: vi.fn(async () => registry),
+        managedByHost,
+        remove: vi.fn(),
+        save: vi.fn(),
+        setLaunchMode: vi.fn(),
+        setPrimary: vi.fn(),
+        test: vi.fn()
+      }
+    }
+  })
+  render(<ConnectionsRegistrySection />)
+}
+
+beforeEach(() => {
+  setups.count = 0
+})
+
+afterEach(() => {
+  cleanup()
+  Reflect.deleteProperty(window, 'hermesDesktop')
+})
+
+describe('the connection editor', () => {
+  it('is never set up on a list the host manages for the account', async () => {
+    mount(true)
+
+    expect(await screen.findByText('Alpha')).toBeTruthy()
+    expect(setups.count).toBe(0)
+  })
+
+  it('is set up only once Add connection opens it on a list this page edits', async () => {
+    mount(false)
+
+    fireEvent.click(await screen.findByText('Add connection'))
+
+    expect(await screen.findByPlaceholderText('Homelab')).toBeTruthy()
+    expect(setups.count).toBeGreaterThan(0)
+  })
+})

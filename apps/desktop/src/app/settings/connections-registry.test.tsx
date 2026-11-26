@@ -6,13 +6,8 @@ import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-ros
 import { $connection } from '@/store/session'
 import { deferred } from '@/test/deferred'
 
-import {
-  ConnectionsRegistrySection,
-  findDuplicateConnection,
-  normalizeGatewayUrl,
-  sameBackendPeerLabel,
-  sshCompositeKey
-} from './connections-registry'
+import { findDuplicateConnection, normalizeGatewayUrl, sshCompositeKey } from './connection-editor'
+import { ConnectionsRegistrySection, sameBackendPeerLabel } from './connections-registry'
 
 const list = vi.fn()
 const save = vi.fn()

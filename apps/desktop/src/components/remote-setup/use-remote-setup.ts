@@ -26,6 +26,8 @@ export interface RemoteCredentials {
 export interface RemoteSetupOptions {
   host: RemoteSetupHost
   enabled?: boolean
+  /** The credentials the form opens on, read on mount; `reset` replaces them later. */
+  initial?: Partial<RemoteCredentials>
   beforeOAuthLogin?: (payload: DesktopConnectionConfigInput) => Promise<void>
   /**
    * Registry-draft identity (id, label, kind, authMode) for a sign-in that
@@ -77,7 +79,7 @@ export function useRemoteSetup(options: RemoteSetupOptions): RemoteSetup {
   const { host, enabled = true } = options
   const callbacks = useRef<RemoteSetupOptions>(options)
   callbacks.current = options
-  const [credentials, setCredentials] = useState<RemoteCredentials>(credentialsFrom)
+  const [credentials, setCredentials] = useState<RemoteCredentials>(() => credentialsFrom(options.initial))
   const [revision, setRevision] = useState<number>(0)
 
   const url = coerceRemoteUrlScheme(credentials.url)

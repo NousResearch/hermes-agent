@@ -17,7 +17,12 @@ import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { browserApi, type BrowserBootstrap, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
 import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
-import { announceWebappWindow, createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
+import {
+  announceWebappWindow,
+  createBrowserWindowOpener,
+  sessionWindowTarget,
+  withoutWindowTarget
+} from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { signsInToCloudAgents } from '@/lib/hermes-cloud-host'
 import { browserHostRunsNoAgent } from '@/lib/platform'
@@ -77,13 +82,14 @@ export function installBrowserDesktopBridge(): boolean {
       ? createHostedRoute({
           launchAgent: windowConnectionOverride,
           onUnavailable: error => {
-            // An address naming that agent names its profile too; without them, Retry opens the
-            // primary. One naming another agent (the window moved there) reopens on that one.
-            const address = new URL(window.location.href)
+            // An address naming that agent, or naming none (the window opened on the primary that
+            // left), holds that agent's profile, chat and watch flag too; without them, Retry opens
+            // the primary on a new chat. One naming another agent (the window moved there) reopens
+            // on that one.
+            const named = windowConnectionOverride()
 
-            if (address.searchParams.get('connectionId') === error.agentId) {
-              address.searchParams.delete('connectionId')
-              address.searchParams.delete('profile')
+            if (!named || named === error.agentId) {
+              const address = withoutWindowTarget(window.location.href)
               window.history.replaceState(window.history.state, '', `${address.pathname}${address.search}${address.hash}`)
             }
 

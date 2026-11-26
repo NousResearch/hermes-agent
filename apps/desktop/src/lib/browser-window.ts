@@ -218,3 +218,20 @@ export function sessionWindowTarget(
 
   return target
 }
+
+/**
+ * *href* without the window target `sessionWindowTarget` writes: the window kind, profile, agent,
+ * watch flag and chat route. What a window whose agent left the account reloads to, so Retry
+ * opens the account's primary on a new chat, not that agent's chat on another one.
+ */
+export function withoutWindowTarget(href: string): URL {
+  const target = new URL(href)
+
+  for (const name of ['win', 'profile', 'connectionId', 'watch']) {
+    target.searchParams.delete(name)
+  }
+
+  target.hash = '/'
+
+  return target
+}

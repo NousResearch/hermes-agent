@@ -419,6 +419,34 @@ describe('a Webapp whose host runs no agent', () => {
     expect(requests.filter(request => request.path.startsWith('/api/relay/beta/'))).toEqual([])
   })
 
+  // The chat in the address is the removed agent's: Retry opens the primary on a new chat, not on a
+  // resume of that chat id there.
+  it.each([
+    ['a popped-out chat', '/?win=secondary&profile=research&connectionId=beta&watch=1#/s1', 'beta'],
+    ['a window on the primary', '/?profile=default#/s1', 'alpha']
+  ])("drops the removed agent's chat from the address of %s", async (_window, href, removed) => {
+    const agents = [ALPHA, BETA]
+    dashboardHost({ agents, profiles: { alpha: ['default'], beta: ['default', 'research'] } })
+    window.history.replaceState(null, '', href)
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    expect($connection.get()?.connectionId).toBe(removed)
+
+    agents.splice(agents.findIndex(row => row.id === removed), 1)
+    await desktop.connections!.list()
+
+    expect($desktopBoot.get().error).toContain(removed)
+    const address = new URL(window.location.href)
+    expect(['win', 'profile', 'connectionId', 'watch'].map(name => address.searchParams.get(name))).toEqual([
+      null,
+      null,
+      null,
+      null
+    ])
+    expect(address.hash).not.toContain('s1')
+    window.history.replaceState(null, '', '/')
+  })
+
   it('keeps the agent the window moved to in its address when the one its socket opened on leaves', async () => {
     const agents = [ALPHA, BETA]
     dashboardHost({ agents })

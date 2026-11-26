@@ -1,0 +1,29 @@
+name: benchforge
+repo: https://github.com/ohjay-official/hermes-benchforge
+sha: 62e633037f9ba253066d17818b533a8ee5549c32
+description: "The flight simulator for AI-written Arduino firmware. Describe what the board should do and approve the checks in plain English; BenchForge compiles the sketch with arduino-cli, runs it instruction by instruction on a simulated ATmega328P with simulated sensors, buttons, relays, servos and buzzers, crash-tests it (noisy sensors, button bounce, millis() rollover, a cut sensor wire) and has Hermes fix it until every check passes, with a reproducible proof receipt, an animated board GIF and a live browser board. A pre_tool_call flash gate stops the agent flashing any firmware without a passing receipt against checks a person approved. Disclosure — hermes bench setup downloads the official arduino-cli 1.4.1 (SHA-256 pinned) from downloads.arduino.cc or GitHub, then the arduino:avr@1.8.6 core and Servo@1.2.2 library through arduino-cli's own package index, and Node.js through Hermes's package manager only if it isn't installed; at run time it compiles the model-written sketch on the host with arduino-cli (compile only, in a sealed temp folder with a fixed environment) and runs the firmware in an emulated chip under node (Node's permission model), and makes no network calls; /bench sends the request, bench, sketch and failure details to the user's own model provider through ctx.llm; the \"watch it run\" link opens the author's GitHub Pages site (ohjay-official.github.io) with the firmware and checks in the URL fragment; writes only under HERMES_HOME/plugin-data/benchforge (receipts, firmware, drafts kept 7 days, approvals stored as platform plus a hashed user id); the flash gate reads the .hex file an upload command names."
+maintainer: ohjay-official
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ohjay-official/hermes-benchforge#readme
+version: "1.0.0"
+title: "BenchForge"
+image: https://raw.githubusercontent.com/ohjay-official/hermes-benchforge/62e633037f9ba253066d17818b533a8ee5549c32/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ohjay-official/hermes-benchforge/62e633037f9ba253066d17818b533a8ee5549c32/docs/board.gif
+  - https://raw.githubusercontent.com/ohjay-official/hermes-benchforge/62e633037f9ba253066d17818b533a8ee5549c32/docs/live-board.png
+platforms: [linux, macos, windows]
+readme: true
+known_issues:
+  - "Simulates an Arduino Uno (ATmega328P) with LEDs, relays, buzzers, servos, buttons, potentiometers, LM35 and NTC temperature sensors and HC-SR04 sonar. Parts it can't simulate are listed as not simulated when the checks are written."
+  - "Live progress and the approval message use ctx.post_message, so BenchForge runs in-process (plugins.isolation: in_process, the default), not in the plugin host."
+  - "Needs Node.js 18 or newer for the simulator; when it is missing, hermes bench setup gets it through Hermes's own package manager."
+capabilities:
+  provides_tools:
+    - bench_guide
+    - bench_test
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

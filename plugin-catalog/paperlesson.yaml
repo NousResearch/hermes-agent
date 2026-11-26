@@ -1,0 +1,22 @@
+name: paperlesson
+title: PaperLesson
+repo: https://github.com/AbigailDavised/paperlesson-mcp
+sha: b4e4c98ce7215922459bc699a5c0f6beed9d4142
+version: "1.0.2"
+description: "Deterministic seeded K-12 arithmetic drill generator, primary handwriting baseline/midline ruling specifications (Zaner-Bloser & D'Nealian), custom name-tracing layout configurator, cursive stroke-group progression lookup, and printable classroom calendar/graph paper geometry calculator through PaperLesson's official MCP server (Streamable HTTP at https://paperlesson.com/api/mcp, no sign-in, no keys in config). Bundles the paperlesson workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to paperlesson.com/api/mcp with only the grade level, math operation or ruling paper size query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: PaperLesson
+tier: community
+category: tools
+docs_url: https://paperlesson.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/paperlesson-mcp/b4e4c98ce7215922459bc699a5c0f6beed9d4142/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/paperlesson-mcp/b4e4c98ce7215922459bc699a5c0f6beed9d4142/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/paperlesson-mcp/b4e4c98ce7215922459bc699a5c0f6beed9d4142/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

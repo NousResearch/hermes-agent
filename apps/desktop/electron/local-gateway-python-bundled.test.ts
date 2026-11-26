@@ -2,19 +2,19 @@ import fs from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
 
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
 import type { InstallStamp } from './install-stamp'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { shortSocketTmpDir } from './local-gateway.test-helpers'
 import { bundledPayload, payloadTicketRuntime } from './payload-backend'
 
-// #138906 (RT-21): the Store/MSIX bundled backend is `kind: 'python'` but its command is the
-// payload's CLI shim (bin/hermes.exe), which rejects the ticket helper's `-P -u -c`. This runs
-// the real resolver and helper process against a payload laid out the way the builder stamps it.
-test.skipIf(process.platform === 'win32')('a bundled payload mints tickets with its interpreter, not the CLI shim', async () => {
+/** A payload laid out the way the builder stamps it, the shape resolveHermesBackend() returns for
+ * it (main.ts), and an owner socket that grants one ticket. */
+async function bundledPayloadFixture() {
   const home = await shortSocketTmpDir('gw-bundled-')
   const resources = await shortSocketTmpDir('gw-bundled-res-')
+  const userHome = await shortSocketTmpDir('gw-bundled-user-')
   const repo = path.resolve('../..')
   const python = process.env.HERMES_TEST_PYTHON || 'python3'
   const root = path.join(resources, 'agent-payload')
@@ -39,10 +39,10 @@ test.skipIf(process.platform === 'win32')('a bundled payload mints tickets with 
   const payload = bundledPayload(resources, stamp)!
   const endpoint = { profile_id: home, instance_id: 'owner', runtime_protocol: 1, control_home: null }
 
-  // The shape resolveHermesBackend() returns for a bundled payload (main.ts).
   const backend = {
     kind: 'python', command: payload.shim, shell: false, root: payload.repoDir,
-    env: { PYTHONPATH: '', PYTHONHOME: '', HERMES_RUNTIME_DIR: payload.toolsDir }, ...payloadTicketRuntime(payload)
+    env: { PYTHONPATH: '', PYTHONHOME: '', HERMES_RUNTIME_DIR: payload.toolsDir },
+    ...payloadTicketRuntime(payload, { HOME: userHome })
   }
 
   const server = net.createServer(socket => socket.once('data', () => {
@@ -53,14 +53,49 @@ test.skipIf(process.platform === 'win32')('a bundled payload mints tickets with 
   await fs.chmod(path.join(home, 'gateway.sock'), 0o600)
   await fs.chmod(home, 0o700)
 
-  try {
-    const mint = createGatewayTicketResolver(async () => backend, () => home)
-    const ticket = await mint(endpoint, 'native-http')
-    expect(ticket).toBe('bundled-grant')
-  } finally {
+  const close = async () => {
     closeGatewayTicketBridges()
     await new Promise<void>(resolve => server.close(() => resolve()))
-    await fs.rm(home, { recursive: true, force: true })
-    await fs.rm(resources, { recursive: true, force: true })
+
+    for (const dir of [home, resources, userHome]) {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  }
+
+  const mint = () => createGatewayTicketResolver(async () => backend, () => home)(endpoint, 'native-http')
+
+  return { payload, userHome, mint, close }
+}
+
+// #138906 (RT-21): the Store/MSIX bundled backend is `kind: 'python'` but its command is the
+// payload's CLI shim (bin/hermes.exe), which rejects the ticket helper's `-P -u -c`. This runs
+// the real resolver and helper process against a payload laid out the way the builder stamps it.
+test.skipIf(process.platform === 'win32')('a bundled payload mints tickets with its interpreter, not the CLI shim', async () => {
+  const { mint, close } = await bundledPayloadFixture()
+
+  try {
+    expect(await mint()).toBe('bundled-grant')
+  } finally {
+    await close()
+  }
+}, 30_000)
+
+// A pyc the helper writes inside a signed macOS app breaks the app's code signature, and
+// Gatekeeper then holds the next update behind a prompt. A module it imports from the payload
+// (sitecustomize, beside the dependencies) has no pyc yet.
+test.skipIf(process.platform === 'win32')('the ticket helper caches bytecode outside the bundled payload', async () => {
+  const { payload, userHome, mint, close } = await bundledPayloadFixture()
+  await fs.writeFile(path.join(payload.sitePackages, 'sitecustomize.py'), 'PAYLOAD_MODULE = 1\n')
+  vi.stubEnv('PYTHONDONTWRITEBYTECODE', '')
+  vi.stubEnv('PYTHONPYCACHEPREFIX', '')
+
+  try {
+    expect(await mint()).toBe('bundled-grant')
+    expect(await fs.readdir(payload.sitePackages)).toEqual(['sitecustomize.py'])
+    const cached = await fs.readdir(path.join(userHome, '.cache', 'hermes-pycache'), { recursive: true })
+    expect(cached.filter(name => path.basename(String(name)).startsWith('sitecustomize.'))).toHaveLength(1)
+  } finally {
+    vi.unstubAllEnvs()
+    await close()
   }
 }, 30_000)

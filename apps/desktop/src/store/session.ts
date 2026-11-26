@@ -5,17 +5,25 @@ import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
-import { browserPageBasePath, readBrowserDefaultProjectDir } from '@/lib/browser-settings'
+import { browserFolderBasePath, readBrowserDefaultProjectDir } from '@/lib/browser-settings'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   activeConnectionScopeSuffix,
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
-import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
+import {
+  arraysEqual,
+  persistBoolean,
+  persistString,
+  readJson,
+  storedBoolean,
+  storedString,
+  writeJson
+} from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
@@ -24,6 +32,12 @@ import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
+
+export interface ComposerModelSelection {
+  model: string
+  provider: string
+  source: ComposerModelSource
+}
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
@@ -594,7 +608,7 @@ export function resolveComposerSessionKey(
  *
  *  Two reasons the server drops a row we must keep:
  *
- *  1. A brand-new session's first user message isn't flushed to the SessionDB
+ *  1. A brand-new session's first user message isn't flushed to the session store
  *     until its turn is persisted, so `listSessions(min_messages=1)` skips
  *     sessions that are mid-first-response. Because every `message.complete`
  *     triggers a full refresh, a hard replace makes concurrent new chats vanish
@@ -881,6 +895,13 @@ export function keepFailedProfileMeta<T>(
   return next
 }
 
+/** Whether the last recents scan left `profile` unread: it failed, alone or as part of a failed
+ *  unified read. Its rows may be carried forward, but an empty section for it would claim
+ *  "No sessions yet" about a store nobody could read. */
+export function isSessionProfileUnread(failed: readonly string[], profile: string): boolean {
+  return failed.includes(ALL_PROFILES_SCAN) || failed.includes(profileKeyOf(profile))
+}
+
 /** Raise a session in recents on user send (before stream / turn resolve). */
 export function touchSessionActivity(
   sessionId: string | null | undefined,
@@ -1125,6 +1146,9 @@ export interface ProfileUsage {
 
 export const $sessionProfilesUsage = atom<Record<string, ProfileUsage>>({})
 
+/** Profiles named in the last recents scan's errors (see isSessionProfileUnread). */
+export const $sessionProfilesFailed = atom<string[]>([])
+
 /** Profiles whose state.db the backend reports as structurally corrupt (the list
  *  endpoints' `storage` map, #72046). An empty or partial list for one of these
  *  is a damaged store, not deleted history, and the sidebar says so. */
@@ -1167,6 +1191,12 @@ export const $awaitingResponse = atom(false)
 // resume on the next render/focus/reconnect instead of stranding the window.
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
+// Stored-session id whose last resume RPC failed while the REST fallback still
+// painted its history: readable, but bound to no runtime, so a turn running
+// there never streams its reply in. use-resume-reattach re-attempts the resume
+// quietly. Unlike $resumeFailedSessionId it never ends in the exhausted
+// overlay, which would cover the history the window can already show.
+export const $resumeReattachSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
   authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
@@ -1459,10 +1489,12 @@ function rescopeComposerSelection(nextScope: string | null): void {
 /** Publish an exact registry route before active-profile effects can persist a
  * forced default. A registry id is authority even while its descriptive
  * HermesConnection lookup is unavailable. */
+/** The composer storage scope of the (connection, profile) owner. */
+export const composerScopeForOwner = (connectionId: string, profile: string): string =>
+  `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
+
 export function setComposerSelectionOwner(connectionId: string, profile: string): void {
-  rescopeComposerSelection(
-    `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
-  )
+  rescopeComposerSelection(composerScopeForOwner(connectionId, profile))
 }
 
 /** Fail closed while a successful legacy profile activation has no descriptor. */
@@ -1501,6 +1533,16 @@ export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean
   updateAtom($sessionProfilesTruncated, next)
 export const setSessionProfilesUsage = (next: Updater<Record<string, ProfileUsage>>) =>
   updateAtom($sessionProfilesUsage, next)
+
+/** Publish the profiles a recents scan reported as failed; unchanged keeps the array identity. */
+export function setSessionProfilesFailed(errors: Array<{ profile?: string }> | undefined | null): void {
+  const next = [...new Set((errors ?? []).map(error => profileKeyOf(error.profile)))].sort()
+
+  if (!arraysEqual($sessionProfilesFailed.get(), next)) {
+    $sessionProfilesFailed.set(next)
+  }
+}
+
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setSessionsLoadError = (next: Updater<boolean>) => updateAtom($sessionsLoadError, next)
 
@@ -1528,7 +1570,7 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // list refresh — so the green dot survives an app restart, and a session that
 // finished while the app was CLOSED still comes up unread. The explicit
 // Mark-as-unread toggle rides the BACKEND watermark instead
-// (SessionDB.set_session_read, session-unread-remote.ts). Written by
+// (the store's sessions.set_read, session-unread-remote.ts). Written by
 // session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
@@ -1614,6 +1656,7 @@ export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshD
 export { $freshDraftKey, rotateFreshDraftKey } from './composer'
 
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
+export const setResumeReattachSessionId = (next: Updater<string | null>) => updateAtom($resumeReattachSessionId, next)
 
 export const requestSessionResume = (
   sessionId: string,
@@ -1703,6 +1746,48 @@ export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 
   return source === 'default' || source === 'manual' ? source : ''
+}
+
+/** The owner's sticky choice, not the runtime/fallback currently painted in the pill. */
+export const getComposerModelSelection = (): ComposerModelSelection => ({
+  model: storedComposerString(COMPOSER_MODEL_KEY) ?? '',
+  provider: storedComposerString(COMPOSER_PROVIDER_KEY) ?? '',
+  source: getCurrentModelSource()
+})
+
+/** Which owner's saved pick the composer reads now; fences a write that outlives an await. */
+export const getComposerSelectionScope = (): null | string => composerSelectionScope
+
+export const restoreComposerModelSelection = (): void => {
+  const selection = getComposerModelSelection()
+
+  if (selection.model !== $currentModel.get() || selection.provider !== $currentProvider.get()) {
+    // The wire level described the outgoing chat's route.
+    $currentReasoningEffortWire.set('')
+  }
+
+  setCurrentModelTransient(selection.model)
+  setCurrentProviderTransient(selection.provider)
+}
+
+/** A saved pick that turned out not to apply hands new chats back to the Settings default, rather than
+ *  guess which earlier pick to restore. In the storage of the owner `scope` that saved it, which the answer
+ *  can outlive, and only while that exact route is still its saved pick. */
+export const releaseComposerModelSelection = (route: { model: string; provider: string }, scope: null | string) => {
+  if (
+    scope === null ||
+    storedString(`${COMPOSER_MODEL_SOURCE_KEY}${scope}`) !== 'manual' ||
+    storedString(`${COMPOSER_MODEL_KEY}${scope}`) !== route.model ||
+    (storedString(`${COMPOSER_PROVIDER_KEY}${scope}`) ?? '') !== route.provider
+  ) {
+    return
+  }
+
+  if (scope === composerSelectionScope) {
+    setCurrentModelSource('default')
+  } else {
+    persistString(`${COMPOSER_MODEL_SOURCE_KEY}${scope}`, 'default')
+  }
 }
 
 // Reactive mirror of the persisted source so UI (the composer pill's
@@ -1874,8 +1959,8 @@ export const workspaceCwdForNewSession = (profile?: string): string => {
   // chat reads its own profile's key and stays detached when it never chose one.
   const owner = profile?.trim()
 
-  if (owner && isBrowserHostedDesktop()) {
-    return readBrowserDefaultProjectDir(browserPageBasePath(), owner)
+  if (owner && hostHas('originScopedPrefs')) {
+    return readBrowserDefaultProjectDir(browserFolderBasePath($connection.get()?.connectionId), owner)
   }
 
   return getConfiguredDefaultProjectDir()

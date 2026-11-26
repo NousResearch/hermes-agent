@@ -95,6 +95,30 @@ def test_first_stamp_persists_while_monotonic_clock_is_below_interval(monkeypatc
     )
 
 
+def _with_writer(agent):
+    """Give ``agent`` a writer's storage handle beside its store; returns the handle's sessions."""
+    agent.persistence = SimpleNamespace(read_only=False, sessions=MagicMock())
+    return agent.persistence.sessions
+
+
+def test_touch_activity_persists_through_the_writer_handle(monkeypatch):
+    agent = _agent_with_db()
+    sessions = _with_writer(agent)
+    monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_000.0)
+    monkeypatch.setattr(run_agent.time, "monotonic", lambda: 5.0)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    agent._touch_activity("starting API call #1")
+
+    sessions.touch_activity.assert_called_once_with(
+        "sess-1",
+        1_700_000_000.0,
+        description="starting API call #1",
+        provenance=ActivityProvenance.UNKNOWN,
+    )
+    agent._session_db.touch_session_activity.assert_not_called()
+
+
 def test_touch_activity_persist_errors_are_swallowed(monkeypatch):
     agent = _agent_with_db()
     agent._session_db.touch_session_activity.side_effect = RuntimeError("db locked")
@@ -174,6 +198,17 @@ def test_reset_activity_labels_after_turn_keeps_ts_and_clears_labels():
     assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
     agent._session_db.clear_session_activity_labels.assert_called_once_with("sess-1")
     agent._session_db.touch_session_activity.assert_not_called()
+
+
+def test_reset_activity_labels_after_turn_clears_through_the_writer_handle():
+    agent = _agent_with_db()
+    sessions = _with_writer(agent)
+    agent._last_activity_desc = "compressing context"
+
+    agent._reset_activity_labels_after_turn()
+
+    sessions.clear_activity_labels.assert_called_once_with("sess-1")
+    agent._session_db.clear_session_activity_labels.assert_not_called()
 
 
 def test_reset_activity_labels_after_turn_skips_db_without_session():

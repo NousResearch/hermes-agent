@@ -19,7 +19,11 @@ from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_runtime import discover_gateway_endpoint
 from hermes_cli.gateway_session_store import GatewaySessionStore
 from hermes_cli.profiles import parked_marker_path
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.waiting import wait_until
 
 
@@ -99,17 +103,15 @@ def _turn(store, session_id, text):
     request_id = uuid.uuid4().hex
     store.call("prompt.submit", session_id=session_id, input_id=request_id, text=text)
     def settled():
-        with store._db()._read_ctx() as db:
-            row = db.execute("SELECT status FROM session_admissions WHERE request_id=?", (request_id,)).fetchone()
-        return row is not None and row[0] == "terminal"
+        rows = store._db().persistence.admissions.match(request_id=request_id)
+        return bool(rows) and rows[0].status == "terminal"
     wait_until(settled, timeout=40, interval=.05, what=f"gateway turn {text} to settle")
     assert any(text in str(row.get("content")) and row.get("role") == "assistant"
                for row in store.get_messages_as_conversation(session_id))
 
 
 def _epoch(store):
-    with store._db()._read_ctx() as db:
-        return db.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()[0]
+    return store._db().persistence.runtime.current_epoch()
 
 
 def _default_profile_state(home):
@@ -122,15 +124,11 @@ def _default_profile_state(home):
 
 def _legacy_row(home):
     """A pre-authority CLI row the gateway has not imported yet, as the old in-process CLI wrote it."""
-    from hermes_state import SessionDB
-    db = SessionDB(home / "state.db")
-    try:
-        db.create_session("legacy-cli", source="cli", model="fixture")
-        db.append_message("legacy-cli", role="user", content="BEFORE_SNAPSHOT")
-        db.append_message("legacy-cli", role="assistant", content="BEFORE_SNAPSHOT answer")
-        db.end_session("legacy-cli", "cli_exit")
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, "legacy-cli", "cli", model="fixture")
+        seed_messages(store, "legacy-cli", {"role": "user", "content": "BEFORE_SNAPSHOT"},
+                      {"role": "assistant", "content": "BEFORE_SNAPSHOT answer"})
+        store.sessions.end("legacy-cli", "cli_exit")
     return "legacy-cli"
 
 
@@ -161,8 +159,7 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
     assert store.get_messages_as_conversation(sid) == history_before
     old_reader = store._reader
     assert old_reader is not None
-    from hermes_state_registry import acquire
-    shared_reader = acquire(home / "state.db")
+    shared_holder = raw_holder(storage_handle(home))
     before = discover_gateway_endpoint(home).endpoint
     assert before is not None
     before_epoch = _epoch(store)
@@ -197,7 +194,9 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
     finally:
         cli._release_active_session()
     assert store.connection is not connection and not store.connection.final
-    assert old_reader._wrapped._conn is None and shared_reader._conn is None
+    assert shared_holder._conn is None
+    with pytest.raises(RuntimeError, match="used after close"):
+        old_reader.get_session(sid)
     assert cli.agent is None
     from hermes_cli import gateway_tools
     assert gateway_tools._view.connection is store.connection  # /agents, /stop and the status bar

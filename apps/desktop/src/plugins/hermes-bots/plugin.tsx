@@ -47,6 +47,7 @@ import {
   botMentionTag,
   botSelectionKey,
   cachedUnionRoster,
+  claimDefaultHandles,
   isActiveRosterBot,
   migrateBotMeta,
   primeRoster,
@@ -65,9 +66,10 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
+import { hydrateDurableGroupChatRoom } from './group-chat-record'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
-import { BOTS_LOCALES } from './i18n'
+import { BOTS_LOCALES, botsText } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
@@ -83,6 +85,7 @@ import { startScreenAutoRaise } from './screen-autoraise'
 import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
+import { TeammateWaits } from './teammate-waits'
 import type { GroupChat, RosterRow } from './types'
 import { loadBotSections } from './user-sections'
 
@@ -281,26 +284,10 @@ export default {
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
                 rooms[name] = {
+                  ...hydrateDurableGroupChatRoom(room),
                   // Pre-thread entries get synthetic thread ids on hydrate so
                   // every UI/engine path can assume entry.thread exists.
                   log: assignLegacyThreads(room.log),
-                  watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
-                  sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
-                  sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
-                  stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
-                  // #93129: rehydrate sticky stop holds with the same shape
-                  // guard as the other maps — a held bot stays held across
-                  // window restarts until explicitly released.
-                  holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
-                  externalCursors:
-                    room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
-                  members: Array.isArray(room.members) ? room.members : [],
-                  roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-                  image: typeof room.image === 'string' && room.image ? room.image : null,
-                  rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
-                  pinned: Boolean(room.pinned),
-                  sectionId: room.sectionId ?? null,
-                  syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false
                 }
@@ -434,6 +421,9 @@ export default {
     startHideSweepScheduler(ctx)
     // Sessions sidebar: each gateway/profile group gets the profile's Screen portal
     // above its sessions, so the bot's computer is reachable from either mode.
+    // Above a Bot Chat's composer: that bot's unsettled teammate deliveries (renders nothing
+    // in any other chat, or when none are pending).
+    ctx.register({ id: 'teammate-waits', area: COMPOSER_AREAS.top, render: () => <TeammateWaits /> })
     ctx.register({
       id: 'screen-portal',
       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
@@ -592,7 +582,7 @@ export default {
             setBotsWorkspaceOwner(
               groupWorkspaceOwnerKey(group),
               null,
-              'New group conversations start in the group composer.'
+              botsText().group.startInComposer()
             )
           } else if (selected) {
             setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
@@ -737,7 +727,7 @@ export default {
       area: PALETTE_AREA,
       data: {
         id: `${ID}.new-agent`,
-        label: 'New Bot…',
+        label: 'New bot…',
         keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
         run: () => {
           host.notify({
@@ -830,7 +820,9 @@ export default {
 
               // Same resolver as the cached path — renamed bots (display_name
               // / ui_meta title) stay taggable when the roster cache is cold.
-              mentionedBots = resolveRosterMentions(text, res?.profiles ?? [], live).map(bot => ({
+              // The same handle claim the pane applies: a real 'hermes'
+              // profile keeps @hermes, so the default must not answer it too.
+              mentionedBots = resolveRosterMentions(text, claimDefaultHandles(res?.profiles ?? []), live).map(bot => ({
                 ...bot,
                 remoteSource: false
               }))
@@ -860,8 +852,12 @@ export default {
             // local path a bare profile name or 'hermes'. botHandle() prefers
             // the row's source-qualified UI alias ('default-vera'), which
             // neither resolver accepts — annotate the canonical form instead.
+            // The default's canonical form is 'hermes' only while no real
+            // 'hermes' profile holds it; then it is 'default' itself.
             const target =
-              bot.remoteSource && bot.connectionId ? `${bot.name}@${bot.connectionId}` : botHandle(bot.name)
+              bot.remoteSource && bot.connectionId
+                ? `${bot.name}@${bot.connectionId}`
+                : botHandle(bot.name, { hermesHandleTaken: bot.hermesHandleTaken })
 
             // Local rows get the same annotation whenever their UI alias
             // ('default-this-device') differs from the resolvable handle —

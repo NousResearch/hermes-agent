@@ -3,7 +3,7 @@
 Phase 1 of the machine-checked conformance suite proposed in #80921, following
 the contract framing of "Resume Means Resume" (arXiv:2608.03836): each cell is
 a deterministic, LLM-free probe of one persistence contract clause, run against
-the **real `SessionDB`** with a real `SIGKILL` delivered to a separate OS
+the **real SQLite store** (opened through `persistence_assembly.open_persistence`) with a real `SIGKILL` delivered to a separate OS
 process mid-write.
 
 ## Cells
@@ -18,7 +18,7 @@ process mid-write.
 
 ## Method
 
-- Real `SessionDB(db_path=...)` in an isolated `tmp_path`; no mocks on the
+- A real store, `open_persistence(profile_scope(home=tmp_path))`, in an isolated `tmp_path`; no mocks on the
   persistence layer.
 - Crashes are real `SIGKILL`s to a separate interpreter, asserted to be
   **alive at kill time** (a clean early exit cannot masquerade as a crash

@@ -1,5 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
-import { mergeUsage, parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
+import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
@@ -33,10 +33,12 @@ import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import {
   $activeGatewayProfile,
-  $newChatProfile,
   captureNewChatSource,
+  currentNewChatIntent,
   ensureGatewayProfile,
-  normalizeProfileKey
+  invalidateNewChatIntent,
+  normalizeProfileKey,
+  pinNewChatProfile
 } from '@/store/profile'
 import {
   $connection,
@@ -268,7 +270,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         return false
       }
 
-      const submissionId = options?.submission_id ?? crypto.randomUUID()
+      const submissionId = options?.submission_id ?? randomUuid()
 
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
@@ -1170,8 +1172,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
+          invalidateNewChatIntent()
+          let intent = currentNewChatIntent()
+
           try {
             const { profiles } = await getProfiles()
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             const match = profiles.find(profile => profile.name === target)
 
             if (!match) {
@@ -1184,16 +1194,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const key = normalizeProfileKey(match.name)
-
-            $newChatProfile.set(key)
+            const key = pinNewChatProfile(match.name)
+            intent = currentNewChatIntent()
             await ensureGatewayProfile(key)
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             // Capture the source the swap landed on (null on the v1 profile path)
             // so the draft's owner matches the socket that will mint it.
             captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
-            notifyError(err, copy.setProfileFailed)
+            if (intent === currentNewChatIntent()) {
+              notifyError(err, copy.setProfileFailed)
+            }
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {

@@ -25,6 +25,7 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setMessages,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
@@ -72,9 +73,7 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
 
     setActiveSessionId('runtime-A')
     setSelectedStoredSessionId('stored-A')
-    render(
-      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
-    )
+    render(<PublishingHarness onReady={value => (cache = value)} />)
 
     act(() => {
       cache.updateSessionState('runtime-A', state => state, 'stored-A')
@@ -238,9 +237,7 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
 
     setActiveSessionId('runtime-A')
     setSelectedStoredSessionId('stored-A')
-    render(
-      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
-    )
+    render(<PublishingHarness onReady={value => (cache = value)} />)
 
     try {
       openPreview({ kind: 'url', label: 'Docs', source: 'https://docs.example', url: 'https://docs.example' })
@@ -421,9 +418,7 @@ describe('useSessionStateCache — journal migration on stored-id rotation', () 
 
     setActiveSessionId('runtime-A')
     setSelectedStoredSessionId('stored-A')
-    render(
-      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
-    )
+    render(<PublishingHarness onReady={value => (cache = value)} />)
 
     // Busy turn journaled under the lineage tip A.
     act(() => {
@@ -948,6 +943,59 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
   })
 
+  it('keeps a view-only assistant error when the next reply starts streaming', () => {
+    $messages.set([])
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+    const first = userMessage('user-a', 'first try')
+    const retry = userMessage('user-b', 'retry')
+    const error = assistantError('assistant-a-error', 'Provider unavailable')
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, messages: [first, retry] }), 'stored-A')
+    })
+    $messages.set([first, error, retry])
+    act(() => {
+      cache.updateSessionState(
+        'thread-A',
+        state => ({ ...state, messages: [...state.messages, assistantText('assistant-b', 'answer')] }),
+        'stored-A',
+        true
+      )
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['user-a', 'assistant-a-error', 'user-b', 'assistant-b'])
+    expect($messages.get()[1].error).toBe('Provider unavailable')
+  })
+
+  it("publishes a queued prompt's started mark, its only change, to the view resume reads", () => {
+    $messages.set([])
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="thread-A" onReady={c => (cache = c)} />)
+
+    const queued = userMessage('user-queued-thread-A', 'next question')
+    const transcript = [userMessage('user-a', 'first'), assistantText('assistant-a', 'working'), queued]
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: transcript }), 'stored-A')
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['user-a', 'assistant-a', queued.id])
+    expect($messages.get().at(-1)?.queuedTurnStarted).toBeUndefined()
+
+    // message.start for the queued prompt's turn marks only that row.
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({
+        ...state,
+        messages: state.messages.map(message =>
+          message.id === queued.id ? { ...message, queuedTurnStarted: true } : message
+        )
+      }))
+    })
+
+    expect($messages.get().at(-1)?.queuedTurnStarted).toBe(true)
+  })
+
   it('evicts the oldest warm transcript with its reverse ownership while retaining lightweight state', () => {
     let cache!: Cache
     render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
@@ -1390,5 +1438,126 @@ describe('useSessionStateCache — parked tiles release their warm transcript (#
 
     expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
     expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
+  })
+})
+
+function PublishingHarness({ onReady }: { onReady: (cache: Cache) => void }) {
+  const cache = useSessionStateCache({
+    activeSessionId: 'runtime-A',
+    busyRef: { current: false },
+    selectedStoredSessionId: 'stored-A',
+    setAwaitingResponse: () => undefined,
+    setBusy: () => undefined,
+    setMessages
+  })
+
+  onReady(cache)
+
+  return null
+}
+
+describe('useSessionStateCache — live publish provenance', () => {
+  afterEach(() => {
+    cleanup()
+    clearAllSessionStates()
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    $sessionStates.set({})
+  })
+
+  it('does not repaint an equal-content resume even when the state carries a streamId', () => {
+    let cache!: Cache
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(<PublishingHarness onReady={value => (cache = value)} />)
+
+    const message: ChatMessage = { id: 'a1', parts: [{ type: 'text', text: 'streaming' }], role: 'assistant' }
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({ ...state, busy: false, messages: [message], streamId: 'stream-1', storedSessionId: 'stored-A' }),
+        'stored-A'
+      )
+    })
+
+    const published = $messages.get()
+    // A resume rebuilds equal content into new objects while the runtime still
+    // reports the running stream id. Without an explicit delta cause this took
+    // the direct-publish path and repainted the whole transcript.
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          messages: [{ id: 'a1', parts: [{ type: 'text', text: 'streaming' }], role: 'assistant' }]
+        }),
+        'stored-A'
+      )
+    })
+
+    expect($messages.get()).toBe(published)
+  })
+
+  it('keeps view-only completion timing through later live deltas', () => {
+    let cache!: Cache
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    render(<PublishingHarness onReady={value => (cache = value)} />)
+
+    const user: ChatMessage = { id: 'u1', parts: [{ type: 'text', text: 'hi' }], role: 'user' }
+
+    const timed: ChatMessage = {
+      completedAt: 200,
+      id: 'a1',
+      parts: [{ completedAt: 200, text: 'done', timestamp: 100, type: 'text' }],
+      role: 'assistant',
+      timestamp: 100
+    }
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => ({ ...state, messages: [user, timed] }), 'stored-A')
+    })
+
+    // A hydration refresh rebuilds the reply without the live completion stamps.
+    const hydrated: ChatMessage = {
+      id: 'a1',
+      parts: [{ text: 'done', type: 'text' }],
+      role: 'assistant',
+      timestamp: 100
+    }
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => ({ ...state, messages: [user, hydrated] }), 'stored-A')
+    })
+    expect($messages.get()[1].completedAt).toBe(200)
+
+    const tail: ChatMessage = { id: 'a2', parts: [{ text: 'next', type: 'text' }], pending: true, role: 'assistant' }
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({ ...state, messages: [...state.messages, tail] }),
+        'stored-A',
+        true
+      )
+    })
+
+    const settled = $messages.get()[1]
+    expect(settled.completedAt).toBe(200)
+    expect(settled.parts[0]).toMatchObject({ completedAt: 200 })
+
+    // A second delta reuses the merged row instead of rebuilding it.
+    act(() => {
+      cache.updateSessionState(
+        'runtime-A',
+        state => ({
+          ...state,
+          messages: [...state.messages.slice(0, -1), { ...tail, parts: [{ text: 'next more', type: 'text' }] }]
+        }),
+        'stored-A',
+        true
+      )
+    })
+    expect($messages.get()[1]).toBe(settled)
   })
 })

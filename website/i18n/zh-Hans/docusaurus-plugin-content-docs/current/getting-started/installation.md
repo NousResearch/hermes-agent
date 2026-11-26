@@ -10,7 +10,9 @@ description: "在 Linux、macOS、WSL2 或原生 Windows 上安装 Hermes Agent"
 
 ## 快速安装
 
-### 一行安装命令（Linux / macOS / WSL2）
+<a id="一行安装命令linux--macos--wsl2"></a>
+
+### 一行安装命令（Linux / macOS / WSL2） {#linux--macos--wsl2}
 
 基于 git 的安装方式，跟踪 `main` 分支，可立即获取最新变更：
 
@@ -18,7 +20,9 @@ description: "在 Linux、macOS、WSL2 或原生 Windows 上安装 Hermes Agent"
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-### Windows（原生，PowerShell）
+<a id="windows原生powershell"></a>
+
+### Windows（原生，PowerShell） {#windows-native}
 
 原生 Windows 无需 WSL 即可运行 Hermes——CLI、gateway、TUI 和工具均可原生运行。（原生安装与 WSL2 安装可干净共存；唯一仅限 WSL2 的功能见下方功能说明。）遇到 bug 请[提交 issue](https://github.com/NousResearch/hermes-agent/issues)。
 
@@ -28,18 +32,17 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-源码安装脚本克隆仓库，再由 PM 准备 Python 3.14、Node.js、npm、ripgrep、FFmpeg 和 Python 依赖。
+源码安装脚本克隆仓库，再由 PM 准备 Python 3.14、Node.js、npm、pnpm、ripgrep、FFmpeg 和 Python 依赖。
 缺少 Git 时，脚本下载经过 SHA-256 验证的 Git for Windows 到工具存储目录。
 它不替换系统 Git，也不再使用 MinGit 或 `hermes\node` 的旧布局。
 安装完成后，打开新终端以读取用户 PATH。
 
-**桌面软件包：** MSIX/App Installer 是自包含的软件包，与源码脚本不同。
-它要求 Windows 11 22H2 或更新版本，首次启动无需克隆源码或编译基础运行时。
-打开 `.appinstaller` 文件安装并登记更新源。Microsoft Store 版本由商店更新。
-`Hermes-Setup.exe` 则是下载并配置源码的引导安装程序。
+**桌面软件包：** 自包含桌面软件包与源码脚本不同，首次启动无需克隆源码或编译基础运行时：
 
-macOS 的 DMG 包含应用；将它复制到 Applications 后启动。
-其自动更新使用包含已签名应用的 ZIP。详情见 [桌面指南](../user-guide/desktop.md)。
+- **Windows（Windows 11 22H2 / `10.0.22621.0` 及以上，x64 或 ARM64）：** 可从 Microsoft Store 安装，或打开 `.appinstaller` 文件通过 Windows App Installer 安装签名 MSIX 包并登记更新源。Microsoft Store 版本由商店更新。Windows 10 和低于 22H2 的 Windows 11 不支持 MSIX / 商店包，请使用上方的源码安装脚本（`install.ps1`）或 [WSL2](../user-guide/windows-wsl-quickstart.md)。`Hermes-Setup.exe` 则是下载并配置源码的引导安装程序。
+- **macOS（macOS 13 Ventura 及以上，仅支持 Apple Silicon `arm64`）：** 打开 DMG，将 `Hermes Agent.app` 复制到 Applications 后启动。应用内更新使用包含已签名应用的 ZIP。Intel Mac 和 macOS 12 及更早版本不支持桌面软件包，请使用上方的 CLI / 源码安装脚本（`install.sh`）。
+
+关于软件包下载体积及本地校验替换耗时，请参阅 [捆绑桌面应用更新](./updating.md#bundled-desktop-updates)。详情见 [桌面指南](../user-guide/desktop.md)。
 
 ### Android / Termux
 

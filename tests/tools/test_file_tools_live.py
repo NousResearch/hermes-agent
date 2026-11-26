@@ -10,7 +10,9 @@ asserts zero contamination from shell noise via _assert_clean().
 
 import pytest
 
+import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -95,6 +97,71 @@ class TestLocalEnvironmentExecute:
         _assert_clean(result["output"])
 
 # ── _has_command ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("secret_source", [True, False])
+def test_quoted_yaml_reads_preserve_source_policy(ops, env, tmp_path, monkeypatch, secret_source):
+    """Real file and terminal output mask secret config while preserving code examples."""
+    from tools import file_tools
+    from tools.terminal_tool_result import finalize_foreground_result
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config = (home if secret_source else tmp_path) / "config.yaml"
+    text = 'password: "shortsecret"\napi_key: "os.getenv(\'OPENAI_API_KEY\')"\n'
+    config.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: ops)
+    read = json.loads(file_tools.read_file_tool(str(config), task_id="quoted-yaml"))
+    assert not read.get("error")
+    assert 'api_key: "os.getenv(\'OPENAI_API_KEY\')"' in read["content"]
+    expected = 'password: "«redacted-secret»"' if secret_source else 'password: "shortsecret"'
+    assert expected in read["content"]
+    assert "1|" in read["content"]
+
+    command = "cat " + shlex.quote(str(config))
+    raw = env.execute(command)
+    assert raw["returncode"] == 0
+    result = json.loads(finalize_foreground_result(
+        command=command, result=raw, env=env, env_type="local", effective_task_id="quoted-yaml",
+        task_id="quoted-yaml", session_id=None, session_key="quoted-yaml", workdir=str(tmp_path),
+        command_cwd=str(tmp_path), approval_note=None,
+    ))
+    expected = text.replace('"shortsecret"', '"***"') if secret_source else text
+    assert result["output"] == expected.strip()
+
+
+
+@pytest.mark.parametrize("rel, body", [
+    (".netrc", "machine api.example.com login bob password {pw}\n"),
+    (".pgpass", "db.example.com:5432:app:bob:{pw}\n"),
+    (".aws/credentials", "[default]\naws_secret_access_key = {pw}\n"),
+])
+def test_credential_store_reads_mask_the_stored_secret(ops, env, tmp_path, monkeypatch, rel, body):
+    """read_file and a terminal ``cat`` of a credential store never return its stored value (#124999)."""
+    from tools import file_tools
+    from tools.terminal_tool_result import finalize_foreground_result
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    secret = "hunter2weak"
+    store = tmp_path / rel
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(body.format(pw=secret), encoding="utf-8")
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: ops)
+    read = json.loads(file_tools.read_file_tool(str(store), task_id="cred-store"))
+    assert not read.get("error") and "1|" in read["content"]
+    assert secret not in read["content"]
+
+    command = "cat " + shlex.quote(str(store))
+    raw = env.execute(command)
+    assert raw["returncode"] == 0 and secret in raw["output"]
+    result = json.loads(finalize_foreground_result(
+        command=command, result=raw, env=env, env_type="local", effective_task_id="cred-store",
+        task_id="cred-store", session_id=None, session_key="cred-store", workdir=str(tmp_path),
+        command_cwd=str(tmp_path), approval_note=None,
+    ))
+    assert secret not in result["output"]
+
 
 class TestHasCommand:
     def test_finds_echo(self, ops):

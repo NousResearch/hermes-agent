@@ -16,10 +16,12 @@ class VertexProfile(ProviderProfile):
 
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Emit ``extra_body.google.thinking_config`` like the ``gemini`` provider's OpenAI-compat subpath."""
-        from agent.transports.chat_completions import _build_gemini_thinking_config, _snake_case_gemini_thinking_config
+        from agent.gemini_model_family import build_gemini_thinking_config, snake_case_gemini_thinking_config
+        from agent.reasoning_effort import gemini_top_thinking_level
 
-        raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
-        thinking_config = _snake_case_gemini_thinking_config(raw) if raw else None
+        raw = build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
+        raw = gemini_top_thinking_level(context.get("model"), context.get("reasoning_config"), raw) if raw else raw
+        thinking_config = snake_case_gemini_thinking_config(raw) if raw else None
         return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
 
 

@@ -1,0 +1,36 @@
+name: crowdcode
+repo: https://github.com/sr33j/crowdcode-mcp
+sha: d23d30f20cc44c704955ff7bb5161068084124b2
+subdir: plugins/hermes
+title: CrowdCode
+description: "Cloud agents with their own wallets. Create CrowdCode agents owned by this install's Base wallet (no sign-up or API key), fund them with USDC, give them tasks that buy x402/MPP services or deploy paid services of their own, list and download the files they produce, and withdraw the earnings. A pre_tool_call guard sends every money-moving call (create, fund, task budget, withdraw, transfer) to Hermes's approval prompt by default and blocks spending above a daily cap; unattended runs are denied. Disclosure — Network calls go to crowdcode.app (agent creation is paid by x402 on Base; owner requests are signed) and to a Base RPC to read the wallet's USDC balance. The wallet's private key is a declared secret kept in Hermes's credential store. Agent creation, funding, task budgets, withdrawals and transfers spend real USDC; each goes to Hermes's approval prompt by default, spending above a daily cap is blocked, and unattended runs are denied. crowdcode_download writes files only when asked, into ./crowdcode-files/<agent>/ or another folder inside the session's working directory, never overwriting; a folder outside it needs approval first, and paths refused by Hermes's file-safety policy, HERMES_HOME and autostart/service folders are never written."
+maintainer: sr33j
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/sr33j/crowdcode-mcp/tree/main/plugins/hermes
+version: "0.2.2"
+image: https://raw.githubusercontent.com/sr33j/crowdcode-mcp/d23d30f20cc44c704955ff7bb5161068084124b2/plugins/hermes/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/d23d30f20cc44c704955ff7bb5161068084124b2/plugins/hermes/docs/approval.png
+  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/d23d30f20cc44c704955ff7bb5161068084124b2/plugins/hermes/docs/dashboard.png
+platforms: []
+capabilities:
+  provides_tools:
+    - crowdcode_wallet
+    - crowdcode_agents
+    - crowdcode_create_agent
+    - crowdcode_fund_agent
+    - crowdcode_run_task
+    - crowdcode_task_status
+    - crowdcode_services
+    - crowdcode_withdraw
+    - crowdcode_transfer
+    - crowdcode_demand
+    - crowdcode_files
+    - crowdcode_download
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - CROWDCODE_WALLET_KEY

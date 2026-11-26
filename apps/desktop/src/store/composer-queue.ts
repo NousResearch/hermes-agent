@@ -1,28 +1,32 @@
-import { SLASH_COMMAND_RE } from '@hermes/shared'
+import { randomUuid, SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import {
   type ComposerAttachment,
   draftHasTerminalChips,
+  isFreshDraftScope,
   revokeAttachmentPreviewUrls,
   revokeDiscardedAttachmentPreviews
 } from './composer'
+import { connectionWire } from './connection-wire'
 import { $connection } from './session'
 import { knownOwnerForSession } from './session-states'
 
-/** Local owner routes use canonical admission; remote legacy queues stay local. */
+/** The owner's connection admits queued input, attachments and rewinds when it negotiated the
+ *  canonical session wire, local or remote; a legacy peer's queue stays in the renderer. */
 export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
   const owner = knownOwnerForSession(sessionId)
-
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'local'
-  }
-
+  const route = owner && typeof owner === 'object' ? owner : null
   const connection = $connection.get()
+  const wire = connectionWire(route ?? connection)
 
-  if (owner && typeof owner === 'object' && owner.connectionId !== connection?.connectionId) {
-    return false
-  }
+  if (wire) { return wire === 'canonical' }
+
+  // Before the owner's socket is ready: a local owner is a native dial, and so is a window whose
+  // own socket carries the native-dial marker.
+  if (route?.mode === 'local') { return true }
+
+  if (route && route.connectionId !== connection?.connectionId) { return false }
 
   return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
 }
@@ -57,9 +61,17 @@ export interface QueuedPromptEntry {
    *  A user gesture — manual send, redirect, queueing a fresh prompt — clears
    *  it, exactly like the composer's in-process counter. */
   drainFailures?: number
+  /** The submission id a local entry drains under once its words or attachments were edited (else
+   *  `id`). The first drain may already be admitted with its ack lost: under that id the edit would
+   *  read as the original's retry and settle as delivered without ever running. */
+  submissionId?: string
   attachments: ComposerAttachment[]
   queuedAt: number
 }
+
+/** The `submission_id` a queued entry is sent (and matched against the owner's admissions) under. */
+export const queuedSubmissionId = (entry: Pick<QueuedPromptEntry, 'id' | 'submissionId'>): string =>
+  entry.submissionId ?? entry.id
 
 export interface EnqueueQueuedPromptPayload {
   /** Stable id to reuse (a canonical submission id), else one is minted. */
@@ -327,6 +339,24 @@ const nextId = () => `queued-${Date.now()}-${Math.random().toString(36).slice(2,
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
 
+const attachmentKeys = (attachments: ComposerAttachment[]) => JSON.stringify(attachments.map(a => a.id))
+
+// An edited local entry is a new message: it drains under a fresh submission id (see `submissionId`).
+// The frozen `@terminal` transport is part of what is sent: a new selection behind the same chip text
+// changes the payload, so under the old id it would read as the original's retry and be dropped.
+const editedSubmission = (
+  entry: QueuedPromptEntry,
+  text: string,
+  attachments: ComposerAttachment[],
+  previousTransport: string | undefined
+) =>
+  !entry.serverStatus &&
+  (entry.text !== text ||
+    attachmentKeys(entry.attachments) !== attachmentKeys(attachments) ||
+    (previousTransport?.trim() ?? '') !== (frozenQueuedTransportById.get(entry.id)?.trim() ?? ''))
+    ? { submissionId: randomUuid() }
+    : {}
+
 export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEntry[] => {
   const sid = sidOf(key)
 
@@ -443,6 +473,21 @@ export const removeQueuedPrompt = (
   return true
 }
 
+/**
+ * Remove an entry its send has delivered. A new chat's queue (a fresh draft key) moves to the chat's
+ * stored id the moment `session.create` assigns it (use-composer-draft's announced handoff), while the
+ * send that creates the session is still in flight. When that send is the queue's own entry, the
+ * entry has moved too: it is removed from whichever queue holds it now, or it would be sent again.
+ */
+export const removeSentQueuedPrompt = (
+  drainedFrom: string,
+  id: string,
+  options?: RemoveQueuedPromptOptions
+): boolean =>
+  isFreshDraftScope(drainedFrom)
+    ? Object.keys(current()).filter(sid => removeQueuedPrompt(sid, id, options)).length > 0
+    : removeQueuedPrompt(drainedFrom, id, options)
+
 /** Count one more rejected auto-drain attempt against a queued entry and
  *  persist it with the queue (#98015). The in-process retry ladder stays
  *  identical; only its budget survives restarts, so a session that is dead in
@@ -541,6 +586,7 @@ export const updateQueuedPrompt = (
       }
 
       changed = true
+      const previousTransport = frozenQueuedTransportById.get(entry.id)
 
       if (update.frozenTransport !== undefined) {
         const nextFrozen = update.frozenTransport?.trim() ?? ''
@@ -561,6 +607,7 @@ export const updateQueuedPrompt = (
 
       return {
         ...rest,
+        ...editedSubmission(entry, update.text, attachments, previousTransport),
         text: update.text,
         attachments,
         ...(nextDisplay ? { displayText: nextDisplay } : {})

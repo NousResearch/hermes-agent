@@ -340,6 +340,38 @@ describe('detectBundleSkew against a real git repo', () => {
     expect(result).toEqual(expected)
   })
 
+  // A change and its revert in one update range: `hermes update` reuses the packaged app because
+  // its inputs are byte-identical, so a commit count alone would warn until some later desktop
+  // change happened to rebuild it.
+  it('is quiet when runtime commits since the stamp net to no change', async () => {
+    const { repoRoot } = makeScratchRepo()
+    const git = scratchGit(repoRoot)
+
+    writeFiles(repoRoot, ['apps/desktop/src/app/shell.tsx'])
+    git('add', '.')
+    git('commit', '-q', '-m', 'built')
+    const stamp = git('rev-parse', 'HEAD')
+    writeFileSync(join(repoRoot, 'apps/desktop/src/app/shell.tsx'), 'export const broken = true\n')
+    git('commit', '-q', '-am', 'renderer change')
+    git('revert', '--no-edit', 'HEAD')
+
+    const runGit = realGitRun(repoRoot)
+
+    expect(await detectBundleSkew({ commit: stamp, source: 'local' }, runGit, repoRoot)).toEqual({
+      desktopCommitsBehind: 2,
+      outOfSync: false
+    })
+
+    writeFiles(repoRoot, ['apps/desktop/src/app/new-feature.tsx'])
+    git('add', '.')
+    git('commit', '-q', '-m', 'real renderer change')
+
+    expect(await detectBundleSkew({ commit: stamp, source: 'local' }, runGit, repoRoot)).toEqual({
+      desktopCommitsBehind: 3,
+      outOfSync: true
+    })
+  })
+
   // The #92233 install, reproduced: the update rewrote the tree onto a fresh
   // orphan root, so the stamp resolves but is unreachable. Real git answers
   // `rev-list` with a positive count here — ancestry is the only thing that

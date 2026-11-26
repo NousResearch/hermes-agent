@@ -14,6 +14,11 @@ import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  gatewayGroupOpen: {
+    opening: "正在開啟群組聊天…",
+    lookupFailed: "無法在閘道上查找此群組，請重試。",
+    missing: "此群組聊天已不存在。"
+  },
 
   catalog: {
     add: '新增',
@@ -25,6 +30,9 @@ export const zhHantOverrides = {
     mostStarred: '星標最多',
     newest: '最新發布',
     recentlyUpdated: '最近更新',
+    mostUsed: '最常使用',
+    updateAvailable: '可更新',
+    updatesAvailable: (count: number) => `更新 · ${count}`,
     alphabetical: '名稱',
     sortBy: '排序方式',
     seeAll: '查看全部',

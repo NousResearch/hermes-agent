@@ -12,8 +12,8 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { SHIKI_COLOR_REPLACEMENTS } from '@/components/chat/shiki-config'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 
 import type { CachedShikiBlockProps } from './shiki-block'
 import { isChunkLoadError, ShikiChunkBoundary } from './shiki-chunk-boundary'
@@ -204,7 +204,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
               Native Desktop keeps main's fence, whose <pre> scrolls itself. */}
           <Pre
             className={
-              isBrowserHostedDesktop()
+              hostHas('sidewaysCodeFences')
                 ? 'aui-shiki m-0 min-w-max bg-transparent p-0'
                 : 'aui-shiki m-0 overflow-hidden bg-transparent p-0'
             }

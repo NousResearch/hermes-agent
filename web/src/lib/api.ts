@@ -981,11 +981,11 @@ export const api = {
       { method: "DELETE" },
     ),
   // Catalog platform install: can take minutes; a refusal is `ok: false` with the command to run.
-  installMessagingCatalogPlatform: (name: string, confirmed: boolean) =>
+  installMessagingCatalogPlatform: (name: string) =>
     fetchJSON<MessagingCatalogInstallResult>(`/api/messaging/catalog/${encodeURIComponent(name)}/install`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirmed }),
+      body: JSON.stringify({}),
     }),
   testMessagingPlatform: (id: string) =>
     fetchJSON<MessagingPlatformTestResult>(

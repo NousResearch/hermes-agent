@@ -2913,7 +2913,7 @@ export const esOverrides = {
   messaging: {
     catalog: {
       sectionTitle: 'Disponibles para instalar',
-      badges: { official: 'Oficial', verified: 'Verificado', labs: 'Hermes Labs' },
+      badges: { official: 'Oficial', verified: 'Verificado' },
       notInstalled: 'No instalado',
       intro: (name: string) => `${name} es un plugin del catálogo de Hermes. Al instalarlo se activa y luego puedes introducir sus credenciales aquí.`,
       disclosure: 'Aviso:',
@@ -2924,9 +2924,6 @@ export const esOverrides = {
       installFailed: (name: string) => `No se pudo instalar ${name}`,
       lazyOff: 'Las instalaciones automáticas de plugins están desactivadas (security.allow_lazy_installs), así que Hermes no lo instala desde aquí.',
       runCommand: 'Instálalo desde una terminal:',
-      labsTitle: '¿Instalar un plugin de Hermes Labs?',
-      labsBody: (name: string) => `${name} es un plugin de Hermes Labs: creado por Nous Research, sin soporte y probablemente sin mantenimiento.`,
-      labsConfirm: 'Instalar de todos modos',
     },
     search: 'Buscar mensajería...',
     statusFilter: {

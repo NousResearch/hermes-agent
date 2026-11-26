@@ -50,7 +50,14 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
-import { type CatalogInstallHandlers, CatalogPlatformDetail, CatalogPlatformRow, catalogRowId } from './catalog-platforms'
+import {
+  type CatalogInstallHandlers,
+  CatalogPlatformDetail,
+  CatalogPlatformList,
+  catalogRowId,
+  catalogRowsWithKept,
+  visibleCatalogRows
+} from './catalog-platforms'
 import { appliedLive, needsCredentials, optimisticToggleState, restartPendingAfter, restartReason } from './live-apply'
 import { PlatformAvatar } from './platform-icon'
 import { RelayLinkSetup } from './relay-link'
@@ -187,7 +194,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [saving, setSaving] = useState<string | null>(null)
 
   const platformIds = useMemo(() => {
-    const catalogIds = [...available, ...(keptCatalog ? [keptCatalog] : [])].map(catalogRowId)
+    const catalogIds = catalogRowsWithKept(available, keptCatalog).map(catalogRowId)
 
     return [...(platforms?.map(p => p.id) ?? []), ...new Set(catalogIds)]
   }, [available, keptCatalog, platforms])
@@ -357,7 +364,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const selectedCatalog = useMemo(
     () =>
-      [...available, ...(keptCatalog ? [keptCatalog] : [])].find(row => catalogRowId(row) === selectedId) ?? null,
+      catalogRowsWithKept(available, keptCatalog).find(row => catalogRowId(row) === selectedId) ?? null,
     [available, keptCatalog, selectedId]
   )
 
@@ -386,14 +393,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [activeStatusFilter, platforms, query]
   )
 
-  // Not installed has no status yet: the rows show under All only.
-  const visibleAvailable = useMemo(() => {
-    const needle = normalize(query)
-
-    return activeStatusFilter !== 'all'
-      ? []
-      : available.filter(row => !needle || normalize(`${row.title} ${row.name}`).includes(needle))
-  }, [activeStatusFilter, available, query])
+  const visibleAvailable = useMemo(
+    () => visibleCatalogRows(available, query, activeStatusFilter),
+    [activeStatusFilter, available, query]
+  )
 
   // An install from this page: re-read the list (the plugin's card replaces its catalog row) and open
   // the card it registered, whose credential form is what the user picked the row for. Only while the
@@ -671,22 +674,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     </li>
                   ))}
                 </ul>
-                {visibleAvailable.length > 0 && (
-                  <section className="mt-3">
-                    <SectionTitle>{m.catalog.sectionTitle}</SectionTitle>
-                    <ul className="mt-1 space-y-1">
-                      {visibleAvailable.map(row => (
-                        <li key={row.name}>
-                          <CatalogPlatformRow
-                            active={selectedCatalog?.name === row.name}
-                            onSelect={() => setSelectedId(catalogRowId(row))}
-                            row={row}
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
+                <CatalogPlatformList
+                  activeName={selectedCatalog?.name}
+                  onSelect={row => setSelectedId(catalogRowId(row))}
+                  rows={visibleAvailable}
+                  title={<SectionTitle>{m.catalog.sectionTitle}</SectionTitle>}
+                />
               </ListColumn>
 
               <DetailColumn

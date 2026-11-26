@@ -1,11 +1,12 @@
+import type * as React from 'react'
 import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { installMessagingCatalogPlatform, type MessagingCatalogPlatform } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Download } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
 
@@ -14,6 +15,22 @@ import { PlatformAvatar } from './platform-icon'
 /** Selection id of a catalog row; installed platforms keep their bare id. */
 export const catalogRowId = (row: MessagingCatalogPlatform) => `catalog:${row.name}`
 
+/** The listed rows plus the one this page is installing (kept while the refreshed list has dropped it). */
+export function catalogRowsWithKept(rows: MessagingCatalogPlatform[], kept: MessagingCatalogPlatform | null) {
+  return kept ? [...rows, kept] : rows
+}
+
+/** Rows the list shows for a search and status filter. Not installed has no status yet: All only. */
+export function visibleCatalogRows(rows: MessagingCatalogPlatform[], query: string, statusFilter: string) {
+  if (statusFilter !== 'all') {
+    return []
+  }
+
+  const needle = normalize(query)
+
+  return rows.filter(row => !needle || normalize(`${row.title} ${row.name}`).includes(needle))
+}
+
 const CAPTION =
   'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)'
 
@@ -21,12 +38,7 @@ function BadgePill({ badge }: { badge: MessagingCatalogPlatform['badge'] }) {
   const { t } = useI18n()
 
   return (
-    <span
-      className={cn(
-        'inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[0.68rem] font-medium',
-        badge === 'labs' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-300' : 'bg-primary/10 text-primary'
-      )}
-    >
+    <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-primary/10 px-2 text-[0.68rem] font-medium text-primary">
       {t.messaging.catalog.badges[badge]}
     </span>
   )
@@ -59,6 +71,36 @@ export function CatalogPlatformRow({
   )
 }
 
+/** The "Available to install" section of the platform list; nothing when no row matches. */
+export function CatalogPlatformList({
+  activeName,
+  onSelect,
+  rows,
+  title
+}: {
+  activeName: string | undefined
+  onSelect: (row: MessagingCatalogPlatform) => void
+  rows: MessagingCatalogPlatform[]
+  title: React.ReactNode
+}) {
+  if (rows.length === 0) {
+    return null
+  }
+
+  return (
+    <section className="mt-3">
+      {title}
+      <ul className="mt-1 space-y-1">
+        {rows.map(row => (
+          <li key={row.name}>
+            <CatalogPlatformRow active={activeName === row.name} onSelect={() => onSelect(row)} row={row} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 export interface CatalogInstallHandlers {
   /** The install request for `row` is about to go out (the page keeps the row while it runs). */
   onInstallStart: (row: MessagingCatalogPlatform) => void
@@ -68,8 +110,8 @@ export interface CatalogInstallHandlers {
   onInstalled: (row: MessagingCatalogPlatform, platformIds: string[], profile: string | undefined) => Promise<void>
 }
 
-/** A catalog platform's pane: what it is, then Install (a Hermes Labs one asks first), or why it cannot
- *  install here and the command that does. The pane is reused across rows: an install still running for
+/** A catalog platform's pane: what it is, then Install, or why it cannot install
+ *  here and the command that does. The pane is reused across rows: an install still running for
  *  a row the user has left reports nothing here. */
 export function CatalogPlatformDetail({
   onInstallEnd,
@@ -84,7 +126,6 @@ export function CatalogPlatformDetail({
   const { t } = useI18n()
   const c = t.messaging.catalog
   const [installing, setInstalling] = useState(false)
-  const [confirming, setConfirming] = useState(false)
   const [failure, setFailure] = useState<null | { command: string; error: string }>(null)
   const [prevName, setPrevName] = useState(row.name)
   const shownName = useRef(row.name)
@@ -94,10 +135,9 @@ export function CatalogPlatformDetail({
     setPrevName(row.name)
     setFailure(null)
     setInstalling(false)
-    setConfirming(false)
   }
 
-  async function install(confirmed: boolean) {
+  async function install() {
     const target = row
     const profile = scopeProfile
     const stillShown = () => shownName.current === target.name
@@ -106,7 +146,7 @@ export function CatalogPlatformDetail({
     onInstallStart(target)
 
     try {
-      const result = await installMessagingCatalogPlatform(target.name, confirmed, profile)
+      const result = await installMessagingCatalogPlatform(target.name, profile)
 
       if (!result.ok) {
         if (stillShown()) {
@@ -152,7 +192,6 @@ export function CatalogPlatformDetail({
               <span className="font-medium">{c.disclosure}</span> {row.disclosure}
             </p>
           )}
-          {row.needs_confirm && <p className={cn('mt-1', CAPTION)}>{c.labsBody(row.title)}</p>}
         </div>
       </header>
 
@@ -165,7 +204,7 @@ export function CatalogPlatformDetail({
         </section>
       ) : (
         <div>
-          <Button disabled={installing} onClick={() => (row.needs_confirm ? setConfirming(true) : void install(false))} size="sm">
+          <Button disabled={installing} onClick={() => void install()} size="sm">
             <Download />
             {installing ? c.installing : c.install}
           </Button>
@@ -183,17 +222,6 @@ export function CatalogPlatformDetail({
           )}
         </ErrorBanner>
       )}
-
-      <ConfirmDialog
-        busyLabel={c.installing}
-        cancelLabel={t.common.cancel}
-        confirmLabel={c.labsConfirm}
-        description={c.labsBody(row.title)}
-        onClose={() => setConfirming(false)}
-        onConfirm={() => install(true)}
-        open={confirming}
-        title={c.labsTitle}
-      />
     </>
   )
 }

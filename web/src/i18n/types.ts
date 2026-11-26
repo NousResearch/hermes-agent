@@ -959,15 +959,11 @@ export interface Translations {
     hint: string;
     badgeOfficial: string;
     badgeVerified: string;
-    badgeLabs: string;
     disclosure: string;
     lazyInstallsOff: string;
     run: string;
     install: string;
     installing: string;
-    labsConfirmTitle: (title: string) => string;
-    labsConfirmBody: string;
-    labsConfirmButton: string;
     installed: (title: string) => string;
     installFailed: (title: string) => string;
   };

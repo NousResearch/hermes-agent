@@ -35,14 +35,13 @@ const CATALOG_INSTALL_TIMEOUT_MS = 300_000
  *  A refusal resolves `ok: false` with the reason and the terminal command. */
 export function installMessagingCatalogPlatform(
   name: string,
-  confirmed: boolean,
   profile?: null | string
 ): Promise<MessagingCatalogInstallResponse> {
   return hermesApi<MessagingCatalogInstallResponse>({
     ...profileScoped(profile),
     path: `/api/messaging/catalog/${encodeURIComponent(name)}/install`,
     method: 'POST',
-    body: { confirmed },
+    body: {},
     timeoutMs: CATALOG_INSTALL_TIMEOUT_MS
   })
 }

@@ -66,8 +66,6 @@ class MessagingPlatformUpdate(BaseModel):
     profile: Optional[str] = None
 
 class MessagingCatalogInstall(BaseModel):
-    # The user confirmed a Hermes Labs platform (built by Nous Research, not supported).
-    confirmed: bool = False
     profile: Optional[str] = None
 
 class TelegramOnboardingStart(BaseModel):

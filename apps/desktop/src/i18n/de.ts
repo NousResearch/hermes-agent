@@ -2921,7 +2921,7 @@ export const deOverrides = {
   messaging: {
     catalog: {
       sectionTitle: 'Zum Installieren verfügbar',
-      badges: { official: 'Offiziell', verified: 'Geprüft', labs: 'Hermes Labs' },
+      badges: { official: 'Offiziell', verified: 'Geprüft' },
       notInstalled: 'Nicht installiert',
       intro: (name: string) => `${name} ist ein Plugin aus dem Hermes-Katalog. Die Installation aktiviert es, danach kannst du hier die Zugangsdaten eingeben.`,
       disclosure: 'Offenlegung:',
@@ -2932,9 +2932,6 @@ export const deOverrides = {
       installFailed: (name: string) => `${name} konnte nicht installiert werden`,
       lazyOff: 'Automatische Plugin-Installationen sind aus (security.allow_lazy_installs), daher installiert Hermes es nicht von hier.',
       runCommand: 'Im Terminal installieren:',
-      labsTitle: 'Hermes-Labs-Plugin installieren?',
-      labsBody: (name: string) => `${name} ist ein Hermes-Labs-Plugin: von Nous Research gebaut, ohne Support und vermutlich nicht weiter gepflegt.`,
-      labsConfirm: 'Trotzdem installieren',
     },
     search: 'Messaging durchsuchen...',
     statusFilter: {

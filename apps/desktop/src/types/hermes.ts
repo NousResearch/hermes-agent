@@ -420,7 +420,7 @@ export interface RelayLinkCodeState {
 /** A catalog messaging platform the profile has not installed (`available` on the platforms list):
  *  picking it installs and enables the plugin, then its own card takes over. */
 export interface MessagingCatalogPlatform {
-  badge: 'labs' | 'official' | 'verified'
+  badge: 'official' | 'verified'
   /** '' when a pick can install it; else a reason code (`lazy_installs_off`). */
   blocked: string
   blocked_reason: string
@@ -428,14 +428,11 @@ export interface MessagingCatalogPlatform {
   /** The one command that installs it into this profile from a terminal. */
   install_command: string
   name: string
-  /** Hermes Labs: built by Nous Research, not supported. The install asks first. */
-  needs_confirm: boolean
   summary: string
   title: string
 }
 
 export interface MessagingCatalogInstallResponse {
-  confirm_required?: boolean
   error?: string
   install_command?: string
   ok: boolean

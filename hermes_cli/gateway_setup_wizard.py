@@ -96,12 +96,9 @@ def _registry_row(entry) -> dict:
     }
 
 
-_CATALOG_BADGES = {"official": "official", "verified": "verified", "labs": "Hermes Labs"}
-
-
 def _catalog_status(row) -> str:
-    badge = _CATALOG_BADGES[row.badge]
-    return f"not installed · {badge}" if not row.blocked else f"not installed · {badge} · cannot install here"
+    status = f"not installed · {row.badge}"
+    return status if not row.blocked else f"{status} · cannot install here"
 
 
 def _platform_status(platform: dict) -> str:
@@ -382,9 +379,8 @@ def _configure_platform(platform: dict) -> None:
 
 
 def _install_catalog_pick(row) -> list[dict]:
-    """Say what a catalog platform is, install it on a yes (a Hermes Labs one only on an explicit yes,
-    default no) and return the setup rows of the platforms it registered. Blocked or failed: the
-    reason and the one command to run, and nothing to configure."""
+    """Say what a catalog platform is, install it on a yes and return the setup rows of the platforms
+    it registered. Blocked or failed: the reason and the one command to run, and nothing to configure."""
     from hermes_cli.catalog_platform_listing import BLOCKED_SENTENCES, install_catalog_platform
     from gateway.platform_registry import platform_registry
     print_setup_header(f"📦 {row.title}")
@@ -395,16 +391,12 @@ def _install_catalog_pick(row) -> list[dict]:
         _gw().print_warning(f"  {row.title} is not installed. {BLOCKED_SENTENCES[row.blocked]}")
         _gw().print_info(f"  Install it with: {row.install_command}")
         return []
-    if row.needs_confirm:
-        _gw().print_warning("  A Hermes Labs plugin: built by Nous Research, not supported, and likely not maintained.")
-        question = f"  Install the Hermes Labs plugin '{row.name}' anyway?"
-    else:
-        question = f"  {row.title} is a plugin from the Hermes catalog. Install and enable it now?"
-    if not _gw().prompt_yes_no(question, not row.needs_confirm):
+    question = f"  {row.title} is a plugin from the Hermes catalog. Install and enable it now?"
+    if not _gw().prompt_yes_no(question, True):
         _gw().print_info(f"  Skipped. Install it later with: {row.install_command}")
         return []
     _gw().print_info(f"  Installing '{row.name}' from the plugin catalog...")
-    result = install_catalog_platform(row.name, confirmed=True)
+    result = install_catalog_platform(row.name)
     if not result["ok"]:
         _gw().print_error(f"  Could not install '{row.name}': {result['error']}")
         _gw().print_info(f"  Install it with: {result['install_command'] or row.install_command}")

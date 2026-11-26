@@ -1039,7 +1039,7 @@ async def install_messaging_catalog_platform(name: str, body: MessagingCatalogIn
     installer serializes its own config writes), like the Plugins page's installs."""
     def _run():
         with _config_profile_scope(body.profile or profile):
-            return install_catalog_platform(name, confirmed=body.confirmed)
+            return install_catalog_platform(name)
 
     return await asyncio.to_thread(_run)
 

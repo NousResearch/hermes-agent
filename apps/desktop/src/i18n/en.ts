@@ -2531,7 +2531,7 @@ export const en: Translations = {
   messaging: {
     catalog: {
       sectionTitle: 'Available to install',
-      badges: { official: 'Official', verified: 'Verified', labs: 'Hermes Labs' },
+      badges: { official: 'Official', verified: 'Verified' },
       notInstalled: 'Not installed',
       intro: (name: string) => `${name} is a plugin from the Hermes catalog. Install turns it on, then you can enter its credentials here.`,
       disclosure: 'Disclosure:',
@@ -2542,9 +2542,6 @@ export const en: Translations = {
       installFailed: (name: string) => `Could not install ${name}`,
       lazyOff: 'Automatic plugin installs are off (security.allow_lazy_installs), so Hermes does not install it from here.',
       runCommand: 'Install it from a terminal:',
-      labsTitle: 'Install a Hermes Labs plugin?',
-      labsBody: (name: string) => `${name} is a Hermes Labs plugin: built by Nous Research, not supported, and likely not maintained.`,
-      labsConfirm: 'Install anyway',
     },
     search: 'Search messaging...',
     statusFilter: {

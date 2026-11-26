@@ -283,25 +283,6 @@ def _is_search_echo(persistence, hit: SearchHit) -> bool:
     return all(_is_recall_only_call(call) for call in row.tool_calls)
 
 
-# A unit is a quoted phrase or a run of characters the store keeps: it turns these
-# punctuation characters into whitespace before matching (persistence/conversation/search.py),
-# so `alpha,beta` is two implicitly ANDed words there and must be two units here.
-_FTS_UNIT_RE = re.compile(r'"[^"]*"|[^\s+{}():^@/#&|~\[\]<>,;!?$=\\\']+')
-
-
-def _any_term_query(query: str) -> Optional[str]:
-    """``query`` rewritten as an any-term FTS ``OR`` query, or None when that does not apply:
-    explicit ``OR``/``NOT`` (exact semantics were asked for) or fewer than two searchable
-    units. Quoted phrases stay whole; the store sanitizes each unit as it does the original."""
-    units = []
-    for unit in _FTS_UNIT_RE.findall(query):
-        if unit in ("OR", "NOT"):
-            return None
-        if unit != "AND" and re.search(r"\w", unit):
-            units.append(unit)
-    return " OR ".join(units) if len(units) >= 2 else None
-
-
 def _is_compacted_state(state: Optional[MessageStorageState]) -> bool:
     """Rows compaction took out of live context: archived rows and superseded originals (a demoted tool
     result's full text). Plain rewound (rewind/undo) rows must stay hidden."""
@@ -652,10 +633,10 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
     # calls often hold the only all-terms match. They are skipped above, but their presence kept
     # the store's any-term fallback (which runs only on zero rows) from firing, so a fresh
     # question found nothing. Retry once with an explicit OR query: the retry's query contains
-    # OR, so _any_term_query returns None for it and it cannot recurse again. A hidden-lineage
+    # OR, so the store's any_term_query returns None for it and it cannot recurse again. A hidden-lineage
     # disclosure is kept as the answer instead: those rows ARE the match.
     if not seen_sessions and not title_result and not hidden_rows and relaxed_from is None and (
-            any_term := _any_term_query(query)):
+            any_term := _quiet(lambda: persistence.search.any_term_query(query), None, "any-term rewrite failed")):
         return _discover(persistence, any_term, role_filter, limit, sort, detail, current_session_id,
                          link_profile, after_ts, before_ts, exclude_session_ids, relaxed_from=query)
     for lineage_root, hit in seen_sessions.items():

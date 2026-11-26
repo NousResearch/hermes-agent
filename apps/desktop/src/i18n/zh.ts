@@ -2454,6 +2454,23 @@ export const zhOverrides = {
   },
 
   messaging: {
+    catalog: {
+      sectionTitle: '可安装',
+      badges: { official: '官方', verified: '已验证', labs: 'Hermes Labs' },
+      notInstalled: '未安装',
+      intro: (name: string) => `${name} 是 Hermes 目录中的插件。安装后即启用，然后可在此填写凭据。`,
+      disclosure: '披露：',
+      install: '安装',
+      installing: '正在安装…',
+      installed: (name: string) => `已安装 ${name}`,
+      installedDetail: '填写凭据以完成连接。',
+      installFailed: (name: string) => `无法安装 ${name}`,
+      lazyOff: '插件自动安装已关闭（security.allow_lazy_installs），因此 Hermes 不会在此安装。',
+      runCommand: '在终端中安装：',
+      labsTitle: '安装 Hermes Labs 插件？',
+      labsBody: (name: string) => `${name} 是 Hermes Labs 插件：由 Nous Research 构建，不提供支持，且可能不再维护。`,
+      labsConfirm: '仍然安装',
+    },
     search: '搜索消息平台…',
     statusFilter: {
       all: '全部',

@@ -223,6 +223,16 @@
   background-color: var(--portal-surface-scrim);
 }
 
+/* The image lightbox is a viewer, not a themed sheet: it keeps a dark scrim in
+   BOTH modes (Light's 0.2 page scrim left photos washed out against a bright
+   window). `media-lightbox-overlay` comes from zoomable-image.tsx, so this never
+   depends on sibling order inside the Radix portal. */
+:root[data-shell='portal'] [data-slot='dialog-overlay'].media-lightbox-overlay,
+:root[data-shell='portal']:not(.dark) [data-slot='dialog-overlay'].media-lightbox-overlay {
+  background-color: color-mix(in srgb, var(--portal-raw-black) 70%, transparent);
+  backdrop-filter: none;
+}
+
 /* A dialog's text is page text, not chat text: its body reads at the redesign's 14px body size (the
    owner's standing ruling, restated in the design review of 2026-11-17), not the transcript's 13px. */
 :root[data-shell='portal'] [data-slot='dialog-content'] {
@@ -399,7 +409,7 @@
    the bottom edge (the sticky footer above) clear of the home indicator; a focused field scrolls
    into the body's view, above the keyboard where the browser resizes for it. */
 @media (max-width: 639.98px) {
-  :root[data-shell='portal'] [data-slot='dialog-content'] {
+  :root[data-shell='portal'] [data-slot='dialog-content']:not([data-variant='media-lightbox']) {
     inset: 0;
     width: 100%;
     max-width: none;

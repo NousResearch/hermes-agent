@@ -284,6 +284,20 @@
   font-weight: 500;
 }
 
+/* Blocked-image placeholders (rehype-harden): its span asks for `bg-gray-200` and
+   `dark:bg-gray-700` plus `text-gray-600 dark:text-gray-400`. Those variants come
+   from node_modules and are not compiled here, so Dark painted near-white paper
+   under the portal's near-white ink. Paint both modes from the card language —
+   chrome plate, hairline edge, secondary ink — so the notice is legible either way. */
+:root[data-shell='portal']
+  :is([data-slot='aui_thread-content'], [data-slot='aui_markdown-content'])
+  span.bg-gray-200.text-gray-600 {
+  border: 1px solid var(--portal-stroke-edge);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-chrome);
+  color: var(--portal-text-secondary);
+}
+
 /* ── Tool steps summary (491:40658) ────────────────────────────────────── */
 
 /* Single-call runs have no aggregate header, so their collapsed row takes the

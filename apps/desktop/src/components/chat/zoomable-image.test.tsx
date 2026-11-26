@@ -74,6 +74,22 @@ describe('ZoomableImage lightbox', () => {
     expect(lightboxImg()).toBeTruthy()
   })
 
+  it('uses a compact-safe image size and a dark overlay in every mode', async () => {
+    await renderImage()
+    await openLightbox()
+
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]')
+
+    expect(overlay?.classList.contains('media-lightbox-overlay')).toBe(true)
+
+    const img = lightboxImg()
+
+    expect(img.className).toContain('max-w-[calc(100vw-2rem)]')
+    expect(img.className).toContain('sm:max-w-[calc(100vw-12rem)]')
+    expect(img.className).toContain('max-h-[calc(100vh-5rem)]')
+    expect(screen.getByRole('dialog').className).toContain('max-w-[calc(100vw-2rem)]')
+  })
+
   it.each(['Escape', 'image click'] as const)(
     'returns focus to the transcript opener after closing via %s',
     async closeWith => {

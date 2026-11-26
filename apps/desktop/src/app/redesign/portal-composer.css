@@ -16,6 +16,20 @@
   --composer-fill: var(--portal-composer-fill);
 }
 
+/* The jump-to-bottom pill mounts in `composer-bounds`, a sibling of the dock
+   rather than a child of the composer root, so it never inherited that fill and
+   fell back to classic's translucent card mix. Give the button the opaque portal
+   fill itself. Its shared offset clears the whole dock, but the dock's top 1rem is
+   the transparent fade (stage.css), so the pill floated ~2rem over the transcript;
+   trimming 2px leaves a 14px gap to the card's visible top edge in the portal
+   shell. `!important` overrides the shared inline offset; classic stays untouched. */
+:root[data-shell='portal'] [data-chat-surface] .thread-jump-button {
+  --composer-fill: var(--portal-composer-fill);
+  /* max() keeps the popped-out composer (metrics publish 0) at the shared 1rem
+     seat instead of dropping the pill under the surface edge. */
+  bottom: max(1rem, calc(var(--composer-measured-height) - 0.125rem)) !important;
+}
+
 /* Floating Composer, still docked: a 6px transparent grab band along the card's top edge. Without
    it the only draggable target is the 5px margin around the card, which reads as part of the card
    and is a graze to hit; the band gives the drag-out gesture a real target, and hovering it lights
@@ -307,10 +321,40 @@
 }
 
 /* Attachments (file chip 491:40665): brand-blue 6px chips with the glyph
-   inline; images keep their thumbnail on the card's neutral fill. */
+   inline; images keep their thumbnail on the card's neutral fill. The list keeps
+   an 8px lip on the top and end edges: the remove badge rides at `-top-1 -right-1`
+   on a 14px chip, and the shared list clips (`overflow: hidden`), so zeroing the
+   padding cut that badge off on the first row and the rightmost chip. */
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachments'] {
   gap: 0.375rem;
-  padding: 0;
+  padding: 0.5rem 0.5rem 0 0;
+}
+
+/* Touch has no hover, so the remove badge would never appear. Keep it visible and
+   give it a 28px hit target (the 14px visual plus a 7px ring) while its desktop
+   size stays the hover-clean one. The extra 12px lip on the list keeps that ring
+   inside the clipping box on the first row and the rightmost chip. */
+@media (hover: none), (pointer: coarse) {
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachments'] {
+    padding-block-start: 0.75rem;
+    padding-inline-end: 0.75rem;
+  }
+
+  :root[data-shell='portal']
+    [data-redesigned-composer]
+    [data-slot='composer-attachments']
+    [data-slot='composer-attachment-remove'] {
+    opacity: 1;
+  }
+
+  :root[data-shell='portal']
+    [data-redesigned-composer]
+    [data-slot='composer-attachments']
+    [data-slot='composer-attachment-remove']::before {
+    content: '';
+    position: absolute;
+    inset: -0.4375rem;
+  }
 }
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-attachment'] {

@@ -209,6 +209,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
             <button
               aria-label={c.removeAttachment(attachment.label)}
               className="absolute -right-1 -top-1 grid size-3.5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground opacity-0 shadow-xs transition hover:bg-accent hover:text-foreground group-hover/attachment:opacity-100 focus-visible:opacity-100"
+              data-slot="composer-attachment-remove"
               onClick={() => onRemove(attachment.id)}
               type="button"
             >

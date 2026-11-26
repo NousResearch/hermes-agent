@@ -253,19 +253,12 @@ export function createBrowserConnectionBridge({
   }
 
   // Every saved gateway's served profiles as routes, as Electron lists every registry source's: a
-  // chat on a gateway the window is not on keeps its route. `primary` marks the window socket's own;
-  // when its own inventory cannot be read (the list or its profiles unreadable) the read fails, so no
-  // caller takes the missing routes as the window's gateway lacking those profiles (boot would then
-  // drop the address's profile).
-  const relayedRoutes = async (primary?: string) => {
-    const roster = await relayedRoster()
-    const own = primary ? roster.sources.find(source => source.connectionId === primary) : undefined
-
-    if (primary && !own?.reachable) {
-      throw new Error(own?.error || `Could not read the profiles of "${primary}"`)
-    }
-
-    return roster.agents
+  // chat on a gateway the window is not on keeps its route. `primary` marks the window socket's own.
+  // A gateway that cannot answer is left out and the rest still route: a chat's retry asks whether
+  // its own route is listed, and another gateway's failure says nothing about that. Boot's check of
+  // the window's own profiles reads `own`, which fails instead.
+  const relayedRoutes = async (primary?: string) =>
+    (await relayedRoster()).agents
       .filter(row => row.reachable !== false)
       .map(row => ({
         connectionId: row.connectionId,
@@ -274,7 +267,6 @@ export function createBrowserConnectionBridge({
         profile: row.profile,
         targetProfile: row.targetProfile || row.profile
       }))
-  }
 
   const getRelayedWsUrl = async ({ connectionId, relays }: RelayTarget, profile?: null | string) => {
     try {
@@ -420,7 +412,8 @@ export function createBrowserConnectionBridge({
       if (home && options?.own) {
         const { connectionId, relays } = home
 
-        // A list or a roster that cannot be read fails the read, as `relayedRoutes` does.
+        // A list or a roster that cannot be read fails the read: boot would take missing routes as
+        // the agent lacking the address's profile, and drop it.
         if (!(await relays.gateways()).some(row => row.id === connectionId)) {
           throw new Error(`"${connectionId}" is not in this account's list`)
         }
@@ -440,8 +433,13 @@ export function createBrowserConnectionBridge({
         return relayedRoutes(home.connectionId)
       }
 
-      // The serving gateway's: only the named profiles it has and serves.
-      const [installed, remote] = await Promise.all([installedProfiles(), options?.own ? [] : relayedRoutes()])
+      // The serving gateway's: only the named profiles it has and serves. Its own list failing fails
+      // boot's own read; the full list still routes the saved gateways, as on a host with no agent.
+      const [installed, remote] = await Promise.all([
+        options?.own ? installedProfiles() : installedProfiles().catch(() => []),
+        options?.own ? [] : relayedRoutes()
+      ])
+
       const available = new Set(installed.filter(reachesSocket))
 
       return [

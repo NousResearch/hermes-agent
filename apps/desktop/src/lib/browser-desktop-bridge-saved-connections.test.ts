@@ -510,6 +510,24 @@ describe('a Webapp on a machine with saved gateway connections', () => {
     ])
   })
 
+  // A Bot Chat on Mini that is slow to load retries while its route is still registered: the serving
+  // gateway's own list failing says nothing about Mini. Boot's own check still fails on it.
+  it("still routes a saved gateway's profiles when this gateway cannot list its own", async () => {
+    servingGateway()
+    const desktop = install()
+    const host = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) =>
+      new URL(String(url), window.location.origin).pathname === '/hermes/api/profiles'
+        ? json({ detail: 'unavailable' }, 500)
+        : host(url, init)
+    )
+
+    const routes = await desktop.getProfileRoutes!(['default'])
+
+    expect(routes.map(route => `${route.connectionId}/${route.profile}`)).toEqual(['mini/default', 'mini/research'])
+    await expect(desktop.getProfileRoutes!(['default'], { own: true })).rejects.toThrow()
+  })
+
   it('lists each saved gateway as its own roster source under its registry id and label', async () => {
     servingGateway()
     const roster = await install().getAgentRoster!()

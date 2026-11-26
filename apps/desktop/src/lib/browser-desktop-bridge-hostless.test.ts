@@ -432,12 +432,21 @@ describe('a Webapp whose host runs no agent', () => {
 
   // Boot drops the address's profile when the window's own routes lack it; an unreadable list must
   // not read as one that lacks it.
-  it("fails the route read when the window socket's agent cannot list its profiles", async () => {
+  it("fails the window's own route read when the window socket's agent cannot list its profiles", async () => {
     dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] }, unreadable: new Set(['alpha']) })
 
-    const desktop = install()
-    await expect(desktop.getProfileRoutes!(['research'])).rejects.toThrow()
-    await expect(desktop.getProfileRoutes!(['research'], { own: true })).rejects.toThrow()
+    await expect(install().getProfileRoutes!(['research'], { own: true })).rejects.toThrow()
+  })
+
+  // A Bot Chat on Beta that is slow to load retries while its route is still registered: Alpha's
+  // failure says nothing about Beta.
+  it("still registers a chat route on a healthy agent when the window socket's agent cannot list its profiles", async () => {
+    dashboardHost({ profiles: { alpha: ['default'], beta: ['default', 'bot'] }, unreadable: new Set(['alpha']) })
+    install()
+
+    const route = { connectionId: 'beta', mode: 'remote' as const, profile: 'bot', targetProfile: 'bot' }
+
+    await expect(pluginRouteStillRegistered(route)).resolves.toBe(true)
   })
 
   // Boot checks the address's profile against the window's own routes only; another agent that
@@ -456,7 +465,7 @@ describe('a Webapp whose host runs no agent', () => {
     ])
   })
 
-  it('fails the route read when the account list cannot be read after boot', async () => {
+  it("fails the window's own route read when the account list cannot be read after boot", async () => {
     dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] } })
     const desktop = install()
     $connection.set(await desktop.getConnection())
@@ -467,7 +476,6 @@ describe('a Webapp whose host runs no agent', () => {
         : host(url, init)
     )
 
-    await expect(desktop.getProfileRoutes!(['research'])).rejects.toThrow()
     await expect(desktop.getProfileRoutes!(['research'], { own: true })).rejects.toThrow()
   })
 

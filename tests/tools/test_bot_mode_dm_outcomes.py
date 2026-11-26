@@ -98,3 +98,15 @@ def test_every_dead_request_reads_as_never_answered_with_its_reason():
     summary = bot_mode_dm_outcome.combined_summary(
         [{"to": "@gamma", "status": "pending", "detail": "No outcome"}, {"to": "@beta", "status": "settled", "reply": "y"}])
     assert summary.startswith("@beta answered. @gamma never answered within the wait")
+
+
+def test_a_cancelled_wait_still_says_why_the_teammate_was_blocked():
+    """#160403: a cancel outcome dropped target_state, so a teammate parked on its own
+    approval read as a hung background process."""
+    line = bot_mode_dm_outcome.outcome_line
+
+    assert line("@lauren", {"status": "cancelled", "target_state": "waiting_approval"}) == (
+        "@lauren never answered: the request was cancelled. Right now it is waiting for its own "
+        "user to approve a command. Tell your user, do not resend.")
+    assert line("@lauren", {"status": "cancelled"}) == (
+        "@lauren never answered: the request was cancelled.")

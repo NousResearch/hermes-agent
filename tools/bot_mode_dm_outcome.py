@@ -10,6 +10,17 @@ runner imports it before Hermes boots.
 from __future__ import annotations
 
 _NOT_YET = ("queued", "claimed", "pending")
+_BLOCKED_WHERE = {
+    "unreachable": "its gateway is not reachable",
+    "waiting_approval": "it is waiting for its own user to approve a command",
+    "waiting_clarify": "it is waiting for its own user to answer a question",
+    "paused": "it is not starting new turns (restarting or updating)",
+    "working": "its turn is still running",
+}
+
+
+def _blocked_where(state) -> str:
+    return _BLOCKED_WHERE.get(str(state or ""), "")
 
 
 def outcome_line(to: str, entry: dict) -> str:
@@ -19,14 +30,13 @@ def outcome_line(to: str, entry: dict) -> str:
         return f"{to} answered." if entry.get("reply") else f"{to} finished its turn without replying."
     why = str(entry.get("error") or entry.get("detail") or "").strip().rstrip(".")
     if status == "cancelled":
+        where = _blocked_where(entry.get("target_state"))
+        if where:
+            return (f"{to} never answered: the request was cancelled. Right now {where}. "
+                    "Tell your user, do not resend.")
         return f"{to} never answered: the request was cancelled."
     if status in _NOT_YET:
-        state = entry.get("target_state")
-        where = {"unreachable": "its gateway is not reachable",
-                 "waiting_approval": "it is waiting for its own user to approve a command",
-                 "waiting_clarify": "it is waiting for its own user to answer a question",
-                 "paused": "it is not starting new turns (restarting or updating)",
-                 "working": "its turn is still running"}.get(str(state or ""), "it has not finished")
+        where = _blocked_where(entry.get("target_state")) or "it has not finished"
         return (f"{to} never answered within the wait: {where}. The request is still on their side and its "
                 "answer will NOT wake you; tell your user, do not resend.")
     if status == "ambiguous":

@@ -331,10 +331,11 @@ class GatewayConfigLoadersMixin:
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         model: str = "",
     ) -> dict | None:
-        """Session ``/reasoning --session`` > per-model ``agent.reasoning_overrides`` > global.
+        """Session ``/reasoning`` > ``channel_overrides`` ``reasoning_effort`` > per-model
+        ``agent.reasoning_overrides`` > global ``agent.reasoning_effort``.
 
         ``model`` must be the session's *effective* model (session ``/model`` override included);
-        empty uses ``model.default``.
+        empty uses ``model.default``. The channel level needs *source*; without one it is skipped.
         """
         resolved_session_key = self._resolve_session_key_or_none(source, session_key)
         if resolved_session_key:
@@ -345,7 +346,35 @@ class GatewayConfigLoadersMixin:
         if (policy := local_policy(self, source)) is not None:
             # A local session runs its frozen (or followed) level, not the profile's.
             return policy.current_reasoning_config(self, resolved_session_key)
+        channel = self._channel_reasoning_config(source)
+        if channel is not None:
+            return channel
         return self._load_reasoning_config(model)
+
+    def _channel_reasoning_config(self, source: Optional[SessionSource]) -> dict | None:
+        """The ``reasoning_effort`` of *source*'s ``channel_overrides`` entry, parsed; None when the
+        entry is absent, sets no effort, or sets one that does not parse (warned, so the per-model
+        and global levels apply instead of a silent provider default).
+
+        The entry is the first match along chat -> thread -> parent, as for the channel ``model``:
+        a thread entry that sets only a model keeps the parent's model out, and its effort too.
+        """
+        if source is None or getattr(source, "platform", None) is None:
+            return None
+        # Same lookup (and failure behavior) as the channel model and system prompt.
+        override = self._channel_override(
+            source.platform, source.chat_id, source.thread_id, source.parent_chat_id, source)
+        raw = getattr(override, "reasoning_effort", None) if override is not None else None
+        if raw is None:
+            return None
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(raw)
+        if parsed is None and str(raw).strip():
+            logger.warning(
+                "Unknown channel_overrides reasoning_effort %r for %s chat=%s; using the profile's level",
+                raw, source.platform.value, source.chat_id,
+            )
+        return parsed
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
         """Set or clear the session-scoped reasoning override."""

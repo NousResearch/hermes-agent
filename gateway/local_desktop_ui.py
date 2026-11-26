@@ -178,10 +178,12 @@ def _move_workspace(task_id, path):
     live = authority.sessions.get(session_id)
     if live is None:
         return False
+    from gateway.config import Platform
+    if live.source.platform != Platform.LOCAL:
+        return None  # only a local chat's drain commits the move: a messaging chat keeps its folder
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if not os.path.isdir(resolved):
         raise FileNotFoundError(f"folder does not exist: {resolved}")
-    from gateway.config import Platform
     from gateway.session_local_recovery import local_adapter_map
     # The chat's current folder, as its last committed move published it.
     policy = local_adapter_map(authority)[Platform.LOCAL].policies.get(live.source.chat_id)

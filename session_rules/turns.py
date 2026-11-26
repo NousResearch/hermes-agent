@@ -1119,8 +1119,8 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
 def _remember_absorbed_row(survivor: dict[str, Any], dropped: dict[str, Any], *, folded: bool) -> None:
     """Retire *dropped*'s row ids onto *survivor*; record its uid as a merge witness only when *folded* (its
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
-    absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
-    the plain row's id) is not an absorbed row: the survivor IS that row."""
+    absorbed nothing. A dropped id that equals the survivor's own live id is not an absorbed row: the
+    survivor IS that row."""
     own_id = survivor.get("_row_id")
     ids = []
     row_id = dropped.get("_row_id")
@@ -1145,6 +1145,92 @@ def _remember_absorbed_row(survivor: dict[str, Any], dropped: dict[str, Any], *,
     # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
     if folded:
         record_absorbed_message(survivor, dropped)
+
+
+# Leading text of the model-switch notice; tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX (keep in sync).
+_MODEL_SWITCH_NOTICE_PREFIX = "[System: The active model for this chat has changed to "
+
+
+_DISPLAY_NOTICE_LEAD = "[System: "
+
+
+def _split_display_notices(text: str) -> tuple[list[str], str]:
+    """The one-line ``[System: …]`` notice paragraphs a display-marker fold put ahead of a turn's wire text,
+    and the text after them."""
+    notices: list[str] = []
+    while text.startswith(_DISPLAY_NOTICE_LEAD):
+        head, separator, rest = text.partition("\n\n")
+        if "\n" in head:  # a notice is one line; anything else is the turn's own text
+            break
+        notices.append(head)
+        text = rest if separator else ""
+    return notices, text
+
+
+def folded_display_notices(sidecar: Any, content: Any) -> str:
+    """The notices a display-marker fold put ahead of *content* in a turn's wire *sidecar* (``""`` when none):
+    the sidecar's leading notice paragraphs, less the ones that are the turn's own text. A rebuild of the
+    sidecar from content keeps exactly these in front."""
+    notices = _split_display_notices(sidecar)[0] if isinstance(sidecar, str) else []
+    own = _split_display_notices(content)[0] if isinstance(content, str) else []
+    if own and notices[-len(own):] == own:
+        notices = notices[:-len(own)]
+    return "\n\n".join(notices)
+
+
+def _without_switch_notices(text: str) -> str:
+    """*text* without the model-switch notices among its leading notice paragraphs; other notices stay."""
+    notices, rest = _split_display_notices(text)
+    kept = [notice for notice in notices if not notice.startswith(_MODEL_SWITCH_NOTICE_PREFIX)]
+    return "\n\n".join([*kept, rest] if rest else kept)
+
+
+def _drop_stale_switch_notices(messages: list[dict[str, Any]]) -> None:
+    """Only the newest model-switch notice names the active model (#65891). The switch strips stale marker
+    rows, but a notice an earlier fold put in a turn's wire sidecar is not a marker row, so the fold of a newer
+    notice drops it there: a turn whose wire is its own content again loses the sidecar."""
+    for message in messages:
+        sidecar = message.get("api_content") if isinstance(message, dict) else None
+        if not isinstance(sidecar, str) or (kept := _without_switch_notices(sidecar)) == sidecar:
+            continue
+        if kept and kept != message.get("content"):
+            message["api_content"] = kept
+        else:
+            message.pop("api_content", None)
+
+
+def _fold_display_marker_into_turn(marker: dict[str, Any], turn: dict[str, Any]) -> None:
+    """Fold a display-marker row (a model-switch or personality notice, a ``role=user`` row on purpose, #48338)
+    into the plain user turn right after it, as wire bytes only.
+
+    The turn keeps its ``content``, ``_row_id``, uid, timestamp and persist marker, so it stays the row the
+    user typed: addressable for rewind and submit (#94486), shown by every display projection, and copied
+    by a compaction as that row's copy. The notice leads the turn's ``api_content`` sidecar, which every
+    request sends in place of ``content``, so the model reads the bytes the text fold sent. The marker's row
+    is retired onto the turn like a row the repair drops, and its uid is the merge witness.
+
+    Folding the notice into ``content`` put ``[System: …]`` first: display projections hid the turn as a
+    gateway notice, the next switch stripped it as a stale marker, and a compaction carried it forward as
+    the turn's only live row, so the prompt vanished from the thread.
+    """
+    notice = marker.get("content") or ""
+    sidecar = turn.get("api_content")
+    has_sidecar = isinstance(sidecar, str) and bool(sidecar)
+    wire = sidecar if has_sidecar else (turn.get("content") or "")
+    if has_sidecar and _MODEL_SWITCH_NOTICE_PREFIX in notice:
+        # A turn first written after its fold stored a notice in its sidecar and a reload folds the rows again,
+        # or an older switch's notice is still there: the newest notice replaces them.
+        wire = _without_switch_notices(wire) or (turn.get("content") or "")
+    if notice and not wire.startswith(notice):
+        turn["api_content"] = f"{notice}\n\n{wire}" if wire else notice
+    metadata = turn.get("display_metadata")
+    typed_ask = metadata.get(TYPED_ASK) if isinstance(metadata, dict) else None
+    _count_unnamed_row(turn, marker)
+    _remember_absorbed_row(turn, marker, folded=True)
+    # The turn's content is still the one ask the user typed (the notice went to the wire sidecar), so the
+    # fold's merge bookkeeping must not forget its typed-ask stamp.
+    if typed_ask is not None:
+        turn["display_metadata"] = {**(turn.get("display_metadata") or {}), TYPED_ASK: typed_ask}
 
 
 def _count_unnamed_row(survivor: dict[str, Any], retired: dict[str, Any]) -> None:
@@ -1325,6 +1411,17 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
             and bool(prev.get("observed")) == bool(msg.get("observed"))
         ):
+            # A display-marker row (e.g. a model-switch notice persisted as role=user on purpose) and the
+            # plain row after it: the plain row survives and carries the notice in its wire sidecar, so its
+            # identity and display are untouched. When BOTH rows carry display_kind (two consecutive
+            # markers) the text fold below keeps the first marker's classification: no plain row is in it.
+            if prev.get("display_kind") and not msg.get("display_kind"):
+                if _MODEL_SWITCH_NOTICE_PREFIX in (prev.get("content") or ""):
+                    _drop_stale_switch_notices(merged[:-1])
+                _fold_display_marker_into_turn(prev, msg)
+                merged[-1] = msg
+                repairs += 1
+                continue
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
@@ -1341,33 +1438,12 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
                 prev[MERGED_TURN_PREFIX] = prev_content
-            # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
+            # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes. A
+            # notice an earlier display-marker fold put ahead of the turn is not stale: it leads the new bytes.
+            folded_notices = folded_display_notices(prev.get("api_content"), prev_content)
             drop_stale_api_content(prev)
-            # A display-marker row (e.g. a model-switch marker persisted as role=user on
-            # purpose) merging with a plain user row must not bury the plain row's
-            # addressable identity: keeping the marker's display_kind hides the merged pair
-            # from every user-turn index used for rewind/submit addressing (display rows are
-            # excluded), so the plain row's durable id becomes unresolvable and the client's
-            # next prompt.submit fails closed with the input silently dropped. Keep
-            # the pair addressable instead: drop the display classification and carry the
-            # plain row's id, retiring the marker's own id onto the absorbed list. display_kind
-            # never reaches providers (stripped from every outgoing copy), so the merged
-            # turn's wire payload is unchanged. Deliberate scope: when BOTH rows carry
-            # display_kind (two consecutive model-switch markers) the pair keeps the first
-            # marker's classification and id — no plain row is swallowed there, so no
-            # addressable turn is lost.
-            if prev.get("display_kind") and not msg.get("display_kind"):
-                marker_row_id = prev.get("_row_id")
-                prev.pop("display_kind", None)
-                if msg.get("_row_id") is not None:
-                    if isinstance(marker_row_id, int) and not isinstance(marker_row_id, bool):
-                        absorbed_ids = prev.setdefault("_absorbed_row_ids", [])
-                        if marker_row_id not in absorbed_ids:
-                            absorbed_ids.append(marker_row_id)
-                    prev["_row_id"] = msg["_row_id"]
-                # display_kind is part of the persisted row; reclassifying stales it even
-                # when the merged bytes reproduce the persisted content (empty absorb).
-                prev.pop(_DB_PERSISTED_MARKER, None)
+            if folded_notices:
+                prev["api_content"] = f"{folded_notices}\n\n{merged_content}"
             # Pop the persist marker only when the durable row actually changed: a merge that
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
             if merged_content != prev_content or had_api_sidecar:

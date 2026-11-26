@@ -570,8 +570,9 @@ class InProcessCronScheduler(CronScheduler):
 
         def tick_adapters_for(profile_name):
             # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
-            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
-            # an exact enabled route maps here; else fail closed (delivery skipped this tick).
+            # (wrong bot). A credentialless satellite may ride the PRIMARY's native adapter only for
+            # targets an exact enabled route maps here, and the process Relay for platforms it fronts;
+            # else fail closed (delivery skipped this tick).
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}

@@ -1133,8 +1133,8 @@ def _resolve_target_transport(
     target_adapters = adapters
     transport = None
     if isinstance(adapters, _preflight.SharedRouteAdapters):
-        # Credentialless satellite: the primary adapter serves THIS target only when an exact
-        # primary route maps it to this profile; a miss fails closed below.
+        # Credentialless satellite: the primary's native adapter serves THIS target only when an
+        # exact primary route maps it to this profile; otherwise only the process Relay may.
         # See #101113.
         shared = adapters.get(platform, target)
         # No routed native bot: the process Relay may carry the platform. ``resolve_delivery_transport``

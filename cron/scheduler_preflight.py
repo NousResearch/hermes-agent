@@ -315,7 +315,8 @@ class SharedRouteAdapters:
 
 def shared_route_adapters_for_current_home(primary_adapters) -> SharedRouteAdapters:
     """Cron's view of the primary's bots for the profile being served, with its own routes and the
-    dispatch routes taken from one read; falsy when no route maps here (or the read failed)."""
+    dispatch routes taken from one read; falsy when it can lend nothing (no route maps here, or the
+    read failed, and the primary holds no Relay)."""
     routes, dispatch_routes = _primary_route_tables_for_current_home()
     return SharedRouteAdapters(primary_adapters, routes, dispatch_routes=dispatch_routes)
 

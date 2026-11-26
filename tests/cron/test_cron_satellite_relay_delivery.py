@@ -113,6 +113,44 @@ def test_satellite_delivers_through_the_process_relay(satellite_home):
     assert standalone == []
 
 
+def test_queued_satellite_delivery_drains_through_the_process_relay(satellite_home, monkeypatch):
+    """The restart-safe worker queues a satellite's result; the primary gateway's drain must send it
+    through the Relay (it used to keep the satellite's empty map, since the view was falsy)."""
+    import threading
+    from types import SimpleNamespace
+
+    from cron import delivery_queue
+    from gateway import run as gateway_run
+
+    home = satellite_home({"gateway": {"multiplex_profiles": True}})
+    (home / "cron").mkdir()
+    relay = _Relay()
+
+    token = set_hermes_home_override(str(home))
+    try:
+        delivery_queue.enqueue("exec-1", {"id": "job1", "name": "brief", "deliver": f"telegram:{CHAT}"}, "hello")
+    finally:
+        reset_hermes_home_override(token)
+
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True), _profile_adapters={"fitness": {}})
+    monkeypatch.setattr(gateway_run, "_handoff_watch_scopes", lambda _r: [("fitness", home)])
+    try:
+        with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            gateway_run._drain_restart_safe_cron_deliveries({Platform.RELAY: relay}, loop, runner)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+
+    token = set_hermes_home_override(str(home))
+    try:
+        row = delivery_queue.get_status("exec-1")
+    finally:
+        reset_hermes_home_override(token)
+    assert row["status"] == "delivered", row
+    assert relay.sent == [(Platform.TELEGRAM, CHAT)]
+
+
 def test_satellite_that_opted_out_of_the_relay_stays_out(satellite_home):
     """The profile's OWN ``platforms.relay.enabled: false`` keeps its output off the Relay."""
     home = satellite_home({"gateway": {"multiplex_profiles": True}},

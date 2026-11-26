@@ -11,6 +11,7 @@ import errno
 import hashlib
 import itertools
 import json
+import socket
 from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar, copy_context
 from functools import wraps
@@ -169,7 +170,28 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
-_BIND_ATTEMPTS = 5  # EADDRINUSE retries while a restart's predecessor releases the port (#91547)
+# EADDRINUSE retries while a restart's predecessor drains and releases the port (#91547).
+# While the port still ACCEPTS, the predecessor is alive and worth waiting for. A REFUSED
+# bind is retried too: the macOS wildcard bind stays refused while a SIGKILLed or released
+# predecessor's server-side TIME_WAIT lingers (2*MSL = 30 s at the default MSL of 15 s, and
+# start_tcp_site's SO_REUSEADDR retry does not cover a wildcard host), so parking fatal on
+# the FIRST EADDRINUSE kills any restart that respawns inside that window — the observed
+# pathology is a dead api_server until someone restarts a second time. Refusals retry once
+# per second until the budget expires; a real port conflict still parks fatal at the
+# deadline (non-retryable) so the reconnect watcher never feeds on it forever (#52132).
+_BIND_RETRY_BUDGET_S = 90.0
+_BIND_RETRY_SLEEP_CAP_S = 2.0
+_BIND_REFUSED_RETRY_SLEEP_S = 1.0
+
+
+def _port_accepting(host: str | None, port: int, timeout: float = 0.5) -> bool:
+    """True when something still ACCEPTs connections on host:port (a draining predecessor)."""
+    probe_host = "127.0.0.1" if host in (None, "", "0.0.0.0", "::") else host
+    try:
+        with socket.create_connection((probe_host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def listen_address(extra: dict[str, Any]) -> tuple[str, int]:
@@ -3978,17 +4000,37 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             try:
                 # aiohttp registers a site with its runner before binding, so a failed start leaves the
                 # site registered: rebuild the runner per attempt rather than reach into its internals.
-                for attempt in range(_BIND_ATTEMPTS):
+                _retry_deadline = time.monotonic() + _BIND_RETRY_BUDGET_S
+                attempt = 0
+                while True:
+                    attempt += 1
                     try:
                         self._site = await start_tcp_site(self._runner, self._host, self._port, log_tag=self.name)
                         break
                     except OSError as exc:
-                        if exc.errno != errno.EADDRINUSE or attempt == _BIND_ATTEMPTS - 1:
+                        _budget_left = _retry_deadline - time.monotonic()
+                        if exc.errno != errno.EADDRINUSE or _budget_left <= 0:
                             raise
+                        if await asyncio.to_thread(_port_accepting, self._host, self._port):
+                            sleep_s = min(0.5 * attempt, _BIND_RETRY_SLEEP_CAP_S)
+                            logger.warning(
+                                "[%s] %s:%d still held by a draining predecessor; bind attempt %d, "
+                                "retrying in %.1fs (%.0fs of budget left)",
+                                self.name, self._host, self._port, attempt, sleep_s, _budget_left)
+                        else:
+                            # Nobody listens yet the bind is refused: most likely the released
+                            # predecessor's TIME_WAIT. Ride it out at one attempt per second
+                            # instead of parking on the first EADDRINUSE.
+                            sleep_s = _BIND_REFUSED_RETRY_SLEEP_S
+                            logger.warning(
+                                "[%s] %s:%d refuses the bind with no live listener (a released "
+                                "predecessor's TIME_WAIT lingers?); bind attempt %d, retrying in "
+                                "%.0fs (%.0fs of budget left)",
+                                self.name, self._host, self._port, attempt, sleep_s, _budget_left)
                         await self._runner.cleanup()
                         self._runner = web.AppRunner(self._app)
                         await self._runner.setup()
-                        await asyncio.sleep(0.2 * (attempt + 1))
+                        await asyncio.sleep(sleep_s)
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

@@ -185,7 +185,7 @@ export function announceWebappWindow(): void {
 export function sessionWindowTarget(
   currentHref: string,
   sessionId: string,
-  opts?: { profile?: null | string; watch?: boolean }
+  opts?: { connectionId?: null | string; profile?: null | string; watch?: boolean }
 ): URL | null {
   const id = sessionId.trim()
 
@@ -199,6 +199,13 @@ export function sessionWindowTarget(
 
   if (profile) {
     target.searchParams.set('profile', profile)
+  }
+
+  // The agent the window opens on, on a host that runs no agent; never the opener's own.
+  if (opts?.connectionId) {
+    target.searchParams.set('connectionId', opts.connectionId)
+  } else {
+    target.searchParams.delete('connectionId')
   }
 
   if (opts?.watch) {

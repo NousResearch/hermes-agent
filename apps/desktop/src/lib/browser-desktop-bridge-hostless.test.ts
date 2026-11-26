@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { pluginRouteStillRegistered } from '@/sdk/profile-request'
 import { $connection } from '@/store/session'
+import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { ManagedConnectionsError, NoHostedAgentError } from './browser-saved-connections'
@@ -328,6 +329,32 @@ describe('a Webapp whose host runs no agent', () => {
 
     expect(dialed(await desktop.getGatewayWsUrl()).pathname).toBe('/api/relay/beta/api/ws')
     expect((await desktop.getConnection()).connectionId).toBe('beta')
+  })
+
+  // The account's primary can change in another tab while this one is open: a chat popped out of
+  // this window must open on its own agent, not on whichever agent the list names primary by then.
+  it("pops a chat out into a window that opens on the chat's agent", async () => {
+    dashboardHost({ primary: 'alpha', profiles: { alpha: ['default'], beta: ['default', 'research'] } })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    $connection.set(await desktop.getConnectionFor!({ connectionId: 'beta', profile: 'research' }))
+    const { open } = browserOpensWebappWindows()
+
+    await expect(desktop.openSessionWindow('s1', { connectionId: 'beta', profile: 'research' })).resolves.toEqual({ ok: true })
+    await expect(desktop.openSessionWindow('s2', { profile: 'research' })).resolves.toEqual({ ok: true })
+
+    const opened = open.mock.calls.map(([url]) => new URL(String(url)))
+    expect(opened.map(url => url.searchParams.get('connectionId'))).toEqual(['beta', 'beta'])
+
+    // The new window boots on the agent its address names.
+    Reflect.deleteProperty(win, 'hermesDesktop')
+    $connection.set(null)
+    window.history.replaceState(null, '', `${opened[0].pathname}${opened[0].search}${opened[0].hash}`)
+    const popped = install()
+
+    expect((await popped.getConnection()).connectionId).toBe('beta')
+    expect(dialed(await popped.getGatewayWsUrl('research')).pathname).toBe('/api/relay/beta/api/ws')
+    window.history.replaceState(null, '', '/')
   })
 
   it("routes every agent's profiles, the window socket's agent marked primary", async () => {

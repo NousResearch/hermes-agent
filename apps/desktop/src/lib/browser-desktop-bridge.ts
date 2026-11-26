@@ -22,7 +22,7 @@ import { createBrowserZoom } from '@/lib/browser-zoom'
 import { browserHostRunsNoAgent } from '@/lib/platform'
 import { failDesktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
-import { windowProfileOverride } from '@/store/windows'
+import { windowConnectionOverride, windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
 import { tagRegistrySessionResponse } from '../../electron/profile-session-routing'
@@ -72,7 +72,13 @@ export function installBrowserDesktopBridge(): boolean {
   // A host that runs no agent has no `local` gateway: every member below and the connection bridge
   // resolve a request's agent through this one route (browser-hosted-route.ts).
   const hosted =
-    hostless && relays ? createHostedRoute({ relays, windowAgent: () => $connection.get()?.connectionId }) : null
+    hostless && relays
+      ? createHostedRoute({
+          launchAgent: windowConnectionOverride,
+          relays,
+          windowAgent: () => $connection.get()?.connectionId
+        })
+      : null
 
   const ownConnection = (connectionId?: null | string) =>
     hosted ? hosted.knownAgentFor(connectionId) : connectionId || LOCAL_CONNECTION_ID
@@ -224,15 +230,15 @@ export function installBrowserDesktopBridge(): boolean {
       }
     },
     openSessionWindow: async (sessionId, opts) => {
-      // A window boots on this page's gateway, which does not hold another gateway's chats.
-      // On a host with no agent a new window opens on the list's primary, like this one did.
-      const opensOn = hosted ? await hosted.relays.windowConnection().catch(() => null) : LOCAL_CONNECTION_ID
+      // On a host with no agent the new window opens on the agent its address names: the chat's.
+      // Elsewhere a window boots on this page's gateway, which does not hold another gateway's chats.
+      const connectionId = hosted ? await hosted.agentFor(opts?.connectionId) : null
 
-      if (opts?.connectionId && opts.connectionId !== LOCAL_CONNECTION_ID && opts.connectionId !== opensOn) {
+      if (!hosted && opts?.connectionId && opts.connectionId !== LOCAL_CONNECTION_ID) {
         return { error: 'A chat on another gateway opens in this tab, not in a new window.', ok: false }
       }
 
-      const target = sessionWindowTarget(window.location.href, sessionId, opts)
+      const target = sessionWindowTarget(window.location.href, sessionId, { ...opts, connectionId })
 
       return target ? openWindow(target) : { error: 'invalid_session_id', ok: false }
     },

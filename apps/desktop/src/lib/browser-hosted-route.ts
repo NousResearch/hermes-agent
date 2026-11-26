@@ -28,12 +28,14 @@ interface HostedRouteOptions {
   relays: BrowserSavedConnections
   /** The agent boot or the last switch published for this window, if any. */
   windowAgent: () => null | string | undefined
+  /** The agent this window was opened for, if any (a popped-out chat's address names it). */
+  launchAgent: () => null | string | undefined
 }
 
 const named = (connectionId?: null | string) =>
   connectionId && connectionId !== LOCAL_CONNECTION_ID ? connectionId : undefined
 
-export function createHostedRoute({ relays, windowAgent }: HostedRouteOptions): HostedRoute {
+export function createHostedRoute({ launchAgent, relays, windowAgent }: HostedRouteOptions): HostedRoute {
   let pinned: string | undefined
 
   // A candidate counts only while the account still lists it: an agent that left the list is
@@ -44,12 +46,13 @@ export function createHostedRoute({ relays, windowAgent }: HostedRouteOptions): 
     return id && relays.gateway(id) ? id : undefined
   }
 
-  // The window's own socket: the agent it opened on while listed, else the list's primary (or
-  // first), which the next dial opens on and so becomes the pin.
-  const knownHome = () => listed(pinned) ?? relays.knownWindowConnection()
+  // The window's own socket: the agent it opened on while listed, else the one the window was
+  // opened for, else the list's primary (or first). The next dial opens on that, so it becomes the pin.
+  const knownHome = () => listed(pinned) ?? listed(launchAgent()) ?? relays.knownWindowConnection()
 
   const home = async () => {
-    pinned = listed(pinned) ?? (await relays.windowConnection())
+    const primary = await relays.windowConnection()
+    pinned = listed(pinned) ?? listed(launchAgent()) ?? primary
 
     return pinned
   }

@@ -231,6 +231,23 @@ class TestTerminalToolConfig:
             env.cleanup()
 
 
+@pytest.mark.parametrize("persistent", [True, False], ids=["persistent", "per-turn"])
+def test_ssh_turn_cleanup_uses_shell_persistence(monkeypatch, tmp_path, persistent):
+    from tools.terminal_tool import _active_environments, _resolve_container_task_id
+    from tools.terminal_tool_lifecycle import is_persistent_env
+
+    monkeypatch.setattr(ssh_env, "_open_control_dir", lambda: (tmp_path, False))
+    monkeypatch.setattr(ssh_env, "_ensure_ssh_available", lambda: None)
+    monkeypatch.setattr(SSHEnvironment, "_establish_connection", lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, "_detect_remote_home", lambda self: "/home/test")
+    monkeypatch.setattr(SSHEnvironment, "init_session", lambda self: None)
+    env = SSHEnvironment(host="example.invalid", user="test", persistent=persistent, sync_files=False)
+
+    task_id = "ssh-turn-persistence"
+    monkeypatch.setitem(_active_environments, _resolve_container_task_id(task_id), env)
+    assert is_persistent_env(task_id) is persistent
+
+
 class TestSSHPreflight:
     def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):
         monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: None)

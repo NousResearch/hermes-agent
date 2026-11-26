@@ -26,6 +26,8 @@ from typing import Any, Optional
 
 #: What the adaptive start asks for before and after its 5m entry first expires.
 START_TIER, UPGRADED_TIER = "5m", "1h"
+#: Clock reasons that say a compaction replaced the cached prompt.
+_PROMPT_REWRITTEN = frozenset({"compacted", "session_rotated"})
 #: The gap (seconds since the cache was last touched, keep-alives included) that upgrades: the 5m entry is gone.
 UPGRADE_AFTER_SECONDS = 300.0
 
@@ -76,18 +78,24 @@ def carry_cache_tier(old_session_id: Optional[str], new_session_id: Optional[str
 
 
 def _paused_past_start_window(agent: Any, now: float) -> bool:
-    """The clock says the 5m entry is gone: no guarantee is left and the cache was last touched more
-    than :data:`UPGRADE_AFTER_SECONDS` ago, a keep-alive whose reply is still in flight included. A
-    compaction leaves the clock naming the rewritten prompt's last touch, so a return after a committed
-    cache-edge compaction upgrades here and a skipped one still sees the warm entry. A chat that never
+    """No warm 5m entry matches the next prompt: a cache-edge compaction claimed this idle stretch
+    rewrote the prompt (the clock names it ``compacted`` / ``session_rotated``; a skipped one leaves
+    the clock as it was), or the clock holds no guarantee and the cache was last touched more than
+    :data:`UPGRADE_AFTER_SECONDS` ago, a keep-alive still waiting for its reply included (read in one
+    snapshot with the clock, so its fold can never fall between the two reads). A chat that never
     touched a cache has not paused."""
-    from agent.prompt_cache_clock import cache_certainly_warm, cache_window
+    from agent.prompt_cache_clock import cache_certainly_warm
+    from agent.prompt_cache_lifecycle.warmer import cache_touch_snapshot
 
-    window = cache_window(agent)
+    window, in_flight = cache_touch_snapshot(agent)
     refreshed = getattr(window, "refreshed_at", None)
-    if window is None or refreshed is None or cache_certainly_warm(window, now=now):
+    if window is None or refreshed is None:
         return False
-    in_flight = getattr(getattr(agent, "_prompt_cache_warmer", None), "last_sent_at", None)
+    edge_compacted = getattr(getattr(agent, "_prompt_cache_warmer", None), "_compacted", False) is True
+    if edge_compacted and window.reason in _PROMPT_REWRITTEN:
+        return True
+    if cache_certainly_warm(window, now=now):
+        return False
     return now - max(float(refreshed), in_flight or 0.0) >= UPGRADE_AFTER_SECONDS
 
 

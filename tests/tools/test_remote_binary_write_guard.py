@@ -11,6 +11,7 @@ target directory — only PATHS are substituted, never probe results.
 """
 
 import json
+import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,3 +191,102 @@ def test_remote_probe_failure_fails_closed(remote_target):
         error = result.get("error") or ""
         assert "Refusing" in error and "establish" in error, (failure_mode, result)
         assert target_path.read_bytes() == original
+
+
+def test_remote_overwrite_requires_a_current_complete_read(remote_target):
+    target = remote_target.target / "notes.txt"
+    view = remote_target.view / "notes.txt"
+    original = "first\nsecond\nthird\n"
+    target.write_text(original, encoding="utf-8")
+    task = remote_target.task_id
+
+    refused = _write_file(view, task)
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == original
+
+    for offset in (1, 2):
+        assert "error" not in _dispatch(
+            "read_file", {"path": str(view), "offset": offset, "limit": 1}, task)
+        refused = _write_file(view, task)
+        assert refused.get("stale_write_blocked"), refused
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 3, "limit": 1}, task)
+    assert "error" not in _write_file(view, task, original)
+
+    stamp = target.stat()
+    external = "first\nchanged\nthird\n"
+    target.write_text(external, encoding="utf-8")
+    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    refused = _write_file(view, task)
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == external
+
+    assert "error" not in _dispatch("read_file", {"path": str(view)}, task)
+    assert "error" not in _write_file(view, task, "accepted\n")
+    assert "error" not in _write_file(view, task, "own next write\n")
+    assert target.read_text(encoding="utf-8") == "own next write\n"
+    assert "error" not in _write_file(remote_target.view / "created.txt", task)
+
+
+def test_remote_read_baseline_is_bound_to_the_backend(remote_target):
+    target = remote_target.target / "notes.txt"
+    view = remote_target.view / "notes.txt"
+    original = "unchanged bytes\n"
+    target.write_text(original, encoding="utf-8")
+    task = remote_target.task_id
+    assert "error" not in _dispatch("read_file", {"path": str(view)}, task)
+
+    replacement = VercelSandboxEnvironment(
+        remote_target.view, remote_target.target, remote_target.env._inner)
+    with terminal_tool._env_lock:
+        terminal_tool._active_environments[task] = replacement
+    with file_tools_mod._file_ops_lock:
+        file_tools_mod._file_ops_cache.pop(task, None)
+    refused = _write_file(view, task)
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == original
+
+    assert "error" not in _dispatch("read_file", {"path": str(view)}, task)
+    assert "error" not in _write_file(view, task, "accepted\n")
+    replacement.failure_mode = "error"
+    refused = _write_file(view, task)
+    assert "error" in refused, refused
+    assert target.read_text(encoding="utf-8") == "accepted\n"
+
+
+def test_refused_repeated_read_does_not_authorize_overwrite(remote_target):
+    """A BLOCKED repeat read must not record a whole-file baseline it never served.
+
+    The fourth consecutive read of one region is refused without content. The
+    backend digest of the current bytes must not become the write baseline:
+    an overwrite the task never saw would then verify as read.
+    """
+    target = remote_target.target / "notes.txt"
+    view = remote_target.view / "notes.txt"
+    seen = "first\nsecond\nthird\n"
+    target.write_text(seen, encoding="utf-8")
+    task = remote_target.task_id
+
+    for _ in range(3):
+        served = _dispatch("read_file", {"path": str(view)}, task)
+        assert "error" not in served, served
+
+    unseen = "external\nbytes\nhere\n"
+    stamp = target.stat()
+    target.write_text(unseen, encoding="utf-8")
+    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    refused_read = _dispatch("read_file", {"path": str(view)}, task)
+    assert "BLOCKED" in refused_read.get("error", ""), refused_read
+
+    refused = _write_file(view, task, seen.upper())
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == unseen
+
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 1, "limit": 1}, task)
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 2, "limit": 1}, task)
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 3, "limit": 1}, task)
+    assert "error" not in _write_file(view, task, "accepted after full reread\n")
+    assert target.read_text(encoding="utf-8") == "accepted after full reread\n"

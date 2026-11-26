@@ -473,10 +473,12 @@ def _launchd_manual_stop(item: Optional[BackendItem]) -> Optional[str]:
     """The stop+disable shell line for a launchd backend (with ``sudo`` for a system LaunchDaemon)."""
     if not item or item.supervisor != "launchd" or not item.unit:
         return None
-    if _is_system_launchd(item):
-        domain = getattr(item, "scope", None) or "system"
-        return f"sudo launchctl bootout {domain}/{item.unit}; sudo launchctl disable {domain}/{item.unit}"
-    return f"launchctl bootout {item.scope}/{item.unit}; launchctl disable {item.scope}/{item.unit}"
+    is_system = _is_system_launchd(item)
+    domain = (getattr(item, "scope", None) or "system") if is_system else item.scope
+    prefix = ["sudo"] if is_system else []
+    target = f"{domain}/{item.unit}"
+    return (f"{shlex.join([*prefix, 'launchctl', 'bootout', target])}; "
+            f"{shlex.join([*prefix, 'launchctl', 'disable', target])}")
 
 
 def _supervisor_kind(item: BackendItem, host) -> str:
@@ -1126,8 +1128,8 @@ def _restart_hint(plan: BackendPlan) -> str:
         user = " --user" if rec.get("scope") == "user" else ""
         return f"{'sudo ' if not user else ''}systemctl{user} restart {rec['unit']}"
     if rec.get("supervisor") == "launchd" and rec.get("unit") and rec.get("scope"):
-        sudo = "" if _is_user_launchd_scope(rec.get("scope")) else "sudo "
-        return f"{sudo}launchctl kickstart -k {rec['scope']}/{rec['unit']}"
+        prefix = [] if _is_user_launchd_scope(rec.get("scope")) else ["sudo"]
+        return shlex.join([*prefix, "launchctl", "kickstart", "-k", f"{rec['scope']}/{rec['unit']}"])
     return "stop it and start it again the way it was started"
 
 

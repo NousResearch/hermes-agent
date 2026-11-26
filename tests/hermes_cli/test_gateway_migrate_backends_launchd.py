@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shlex
+from pathlib import Path
 
 import pytest
 
@@ -58,6 +60,18 @@ class LaunchdHost(FakeHost):
 
     def linger(self):
         return None
+
+    def old_disable(self, rec):
+        super().old_disable(rec)
+        if self.plist and Path(self.plist).exists():
+            Path(self.plist).rename(Path(f"{self.plist}.disabled"))
+
+    def old_enable(self, rec):
+        super().old_enable(rec)
+        if self.plist:
+            p, dis = Path(self.plist), Path(f"{self.plist}.disabled")
+            if dis.exists() and not p.exists():
+                dis.rename(p)
 
 
 def _env_keys(home):
@@ -333,15 +347,95 @@ def test_manual_rollback_steps_use_sudo_for_system_launchdaemon_when_disabled(ho
                          f"sudo launchctl bootstrap system {_SYSTEM_PLIST}")
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_manual_rollback_steps_for_system_launchdaemon_failed_at_stop_omit_mv_and_use_sudo(home, legacy):
-    m = _system_manifest(home, stopped=False, disabled=False, stop_state="failed", legacy=legacy)
+def test_manual_rollback_steps_for_system_launchdaemon_failed_at_stop_omit_mv_and_use_sudo(home):
+    m = _system_manifest(home, stopped=False, disabled=False, stop_state="failed", legacy=False)
 
     steps = engine._manual_rollback_steps(m)
 
     assert steps[-1] == (f"sudo launchctl kickstart system/{_SYSTEM_LABEL} || "
                          f"sudo launchctl bootstrap system {_SYSTEM_PLIST}")
     assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1]
+
+
+def test_manual_rollback_steps_for_legacy_manifest_failed_at_stop_include_enable_without_mv(home, tmp_path):
+    p = tmp_path / "agent.plist"
+    p.touch()
+    m = _system_manifest(home, stopped=False, disabled=False, stop_state="failed", legacy=True)
+    m["old_backend"] = {"supervisor": "launchd", "unit": "org.example.agent", "scope": _DOMAIN,
+                        "unit_path": str(p), "was_active": True, "was_loaded": True}
+
+    steps = engine._manual_rollback_steps(m)
+
+    assert steps[-1] == (f"launchctl enable {_DOMAIN}/org.example.agent; "
+                         f"launchctl kickstart {_DOMAIN}/org.example.agent || launchctl bootstrap {_DOMAIN} {p}")
+    assert ".disabled" not in steps[-1]
+
+
+def test_manual_rollback_steps_quote_plist_paths_and_labels_with_spaces(home):
+    spaced_plist = "/Library/LaunchDaemons/Hermes Service.plist"
+    m = _system_manifest(home, stopped=True, disabled=True, stop_state="done")
+    m["old_backend"]["unit_path"] = spaced_plist
+
+    step = engine._manual_rollback_steps(m)[-1]
+    cmds = [shlex.split(part) for part in step.split(";")]
+
+    assert cmds == [
+        ["sudo", "mv", f"{spaced_plist}.disabled", spaced_plist],
+        ["sudo", "launchctl", "enable", f"system/{_SYSTEM_LABEL}"],
+        ["sudo", "launchctl", "bootstrap", "system", spaced_plist],
+    ]
+    item = BackendItem(supervisor="launchd", running=True, unit="com.example.Hermes Service",
+                       scope="system", unit_path=spaced_plist)
+    stop_line = next(s for s in manual_steps("0.0.0.0", 9119, item) if "launchctl bootout" in s)
+    assert [shlex.split(part) for part in stop_line.split(";")] == [
+        ["sudo", "launchctl", "bootout", "system/com.example.Hermes Service"],
+        ["sudo", "launchctl", "disable", "system/com.example.Hermes Service"],
+    ]
+
+
+@pytest.mark.parametrize(("scope", "prefix", "legacy", "stopped", "disabled"), [
+    ("system", "sudo ", False, True, True),
+    (_DOMAIN, "", False, True, False),
+    ("system", "sudo ", True, False, False),
+])
+@pytest.mark.parametrize("unit_path", [None, ""])
+def test_manual_rollback_steps_with_missing_unit_path_instruct_bootstrap_not_kickstart(
+    home, scope, prefix, legacy, stopped, disabled, unit_path
+):
+    m = _system_manifest(home, stopped=stopped, disabled=disabled,
+                         stop_state="done" if not legacy else "failed", legacy=legacy)
+    m["old_backend"].update(scope=scope, unit_path=unit_path)
+
+    step = engine._manual_rollback_steps(m)[-1]
+
+    assert "kickstart" not in step
+    assert f"locate the original plist for {_SYSTEM_LABEL} and run: {prefix}launchctl bootstrap {scope} <plist-path>" in step
+    if disabled or legacy:
+        assert step.startswith(f"{prefix}launchctl enable {scope}/{_SYSTEM_LABEL}; ")
+    else:
+        assert "launchctl enable" not in step
+
+
+def test_manual_rollback_steps_omit_mv_when_restore_already_renamed_plist_before_enable_failed(home, plist):
+    host = LaunchdHost(home, plist)
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    disabled_plist = Path(f"{plist}.disabled")
+    assert not plist.exists() and disabled_plist.exists()
+
+    def rename_then_fail_enable(rec):
+        host._change("old_enable")
+        disabled_plist.rename(plist)
+        raise RuntimeError("launchctl enable denied")
+
+    host.old_enable = rename_then_fail_enable
+    host.fail_at["old_start"] = RuntimeError("job still disabled")
+
+    assert engine.restore(host, yes=True) == engine.EXIT_ROLLBACK_INCOMPLETE
+    assert plist.exists() and not disabled_plist.exists()
+
+    steps = engine.status_payload(host)["manual_steps"]
+    assert steps[-1] == f"launchctl enable {_DOMAIN}/{_LABEL}; launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-1]
 
 
 def test_manual_rollback_steps_when_old_stop_fails_omit_mv_and_skip_old_enable(home, plist):

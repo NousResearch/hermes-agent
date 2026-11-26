@@ -1049,6 +1049,8 @@ Semantics:
 
 `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). `script` is always a **file**, never a command line: `--script "echo hi"` is refused at creation (write the command into `~/.hermes/scripts/hi.sh` and pass `hi.sh`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. A Python `script` or `monitor_script` can also pin a user-managed venv (for packages the Hermes runtime doesn't carry) by passing `--interpreter ~/venvs/.../bin/python` at create/edit time — see [Using your own Python environment](../../guides/cron-script-only.md#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically. The subprocess environment is sanitized (`_sanitize_subprocess_env`), so provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
 
+Keep everything a job needs on later runs out of the scratch dir (`~/.hermes/cache/scratch/`, the agent's `TMPDIR`): its entries are pruned after 24h idle, so a weekly job would find them gone. Create and edit print a warning when the script mentions that dir, or the `workdir` or `--interpreter` lives in it.
+
 #### Giving a script a credential
 
 A script that must authenticate to an external service (an API token, a service-account key) gets it the same way terminal and `execute_code` children do — declare the variable name in the owning profile's `config.yaml` and define the value in that profile's `.env` (or an external [secret source](../secrets/index.md)):
@@ -1445,8 +1447,8 @@ cronjob(action="create", name="process-feed",
 ```bash
 #!/usr/bin/env bash
 # ~/.hermes/scripts/flag-ready.sh
-if test -f ~/.hermes/cache/scratch/new-data-ready; then
-  rm -f ~/.hermes/cache/scratch/new-data-ready
+if test -f ~/data/new-data-ready; then
+  rm -f ~/data/new-data-ready
   echo '{"wakeAgent": true}'
 else
   echo '{"wakeAgent": false}'

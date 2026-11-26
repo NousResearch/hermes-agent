@@ -3,7 +3,10 @@ tools/cronjob_tools.py)."""
 
 import contextlib
 import logging
+import os
+import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
@@ -186,6 +189,78 @@ def _mode_guidance_notes(job: dict[str, Any], user_deliver: Optional[str]) -> li
                     "the main chat, not a topic.")
                 break
     return notes
+
+
+# A script names its dependencies near the top; a bounded read keeps create/update
+# cheap on a large or binary file.
+_SCRATCH_SCAN_BYTES = 256 * 1024
+# The scratch dir's ``cache/scratch`` tail as a script spells it (absolute, ``~``- or
+# ``$HERMES_HOME``-relative, either separator), not ``~/.cache/scratch``/``scratchpad``.
+_SCRATCH_TAIL = r"(?<![\w.-])cache[\\/]+scratch"
+
+
+def _mentions_scratch(path: Path, scratch_real: Path) -> bool:
+    with path.open("rb") as handle:
+        head = handle.read(_SCRATCH_SCAN_BYTES)
+    if b"\0" in head:
+        return False
+    pattern = rf"(?:{_SCRATCH_TAIL}|{re.escape(str(scratch_real))})(?![\w.-])"
+    return re.search(pattern, head.decode("utf-8", errors="ignore")) is not None
+
+
+def _is_under(path: Path, roots: tuple[Path, ...]) -> bool:
+    # abspath too: a venv interpreter in scratch resolves to the Python it links to.
+    candidates = (Path(os.path.abspath(path)), path.resolve())
+    return any(c.is_relative_to(root) for c in candidates for root in roots)
+
+
+def _scratch_dependency_warning(job: dict[str, Any]) -> Optional[str]:
+    """Warning when a job's script, workdir or interpreter depends on the scratch dir.
+
+    Scratch entries are pruned after ``SCRATCH_MAX_IDLE_HOURS`` idle, so a job idle
+    longer than that between runs finds its files gone and fails with
+    FileNotFoundError (#150365). Advisory only, so it never raises: an unreadable path
+    is skipped, never reported.
+    """
+    from hermes_constants import (
+        SCRATCH_MAX_IDLE_HOURS,
+        display_hermes_home,
+        get_hermes_home,
+        get_scratch_dir,
+    )
+
+    scratch = get_scratch_dir(prune=False)
+    try:
+        roots = (scratch, scratch.resolve())
+    except (OSError, RuntimeError):
+        return None
+    scripts_dir = get_hermes_home() / "scripts"
+    found: list[str] = []
+    for field in ("script", "monitor_script", "workdir", "interpreter"):
+        value = str(job.get(field) or "").strip()
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        try:
+            if field in ("script", "monitor_script"):
+                hit = _mentions_scratch(scripts_dir / path, roots[1])
+            else:
+                hit = _is_under(path, roots)
+        except (OSError, RuntimeError, ValueError):
+            logger.debug("scratch check skipped %s=%r", field, value, exc_info=True)
+            continue
+        if hit:
+            found.append(f"{field} {value!r}")
+    if not found:
+        return None
+    home = display_hermes_home()
+    return (
+        f"This job depends on the scratch dir ({home}/cache/scratch/): "
+        f"{', '.join(found)}. Scratch entries idle for {SCRATCH_MAX_IDLE_HOURS}h are "
+        "pruned, so anything the job needs on a later run can be gone by then and the "
+        "run fails with FileNotFoundError. Move those files to a persistent directory "
+        f"(for example {home}/scripts/) and point the job at it."
+    )
 
 
 def _split_monitor_arg(

@@ -809,6 +809,12 @@ def _print_job_details(job_data: dict[str, Any]) -> None:
             print(template.format(job_data[key]))
 
 
+def _print_scratch_warning(result: dict[str, Any]) -> None:
+    """Echo the tool's scratch-dependency warning (#150365); the job is saved anyway."""
+    if result.get("scratch_warning"):
+        print(color(f"  Warning: {result['scratch_warning']}", Colors.YELLOW))
+
+
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
@@ -832,6 +838,7 @@ def cron_create(args):
         print("  Created PAUSED — resume to schedule, or explicitly run now.")
     else:
         print(f"  Next run: {result['next_run_at']}")
+    _print_scratch_warning(result)
     _warn_if_gateway_not_running()
     return 0
 
@@ -874,6 +881,7 @@ def cron_edit(args):
     print(f"  Skills: {', '.join(updated['skills'])}" if updated.get("skills") else
           "  Skills: none")
     _print_job_details(updated)
+    _print_scratch_warning(result)
     return 0
 
 

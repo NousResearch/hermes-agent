@@ -174,7 +174,7 @@ def _markers(agent):
             if isinstance(part, dict) and "cache_control" in part}
 
 
-def test_2_a_human_auto_chat_sends_5m_until_its_first_long_pause_then_1h_for_good():
+def test_2_a_human_auto_chat_sends_5m_until_its_first_long_pause_then_1h_for_good(monkeypatch):
     from agent.prompt_cache_lifecycle.tier import carry_cache_tier, maybe_upgrade_cache_tier
 
     import time
@@ -191,9 +191,16 @@ def test_2_a_human_auto_chat_sends_5m_until_its_first_long_pause_then_1h_for_goo
     assert _markers(agent) == {"5m"}
     _respond(agent, _request("5m"), at=t0 + 240)
     assert not maybe_upgrade_cache_tier(agent, now=t0 + 240 + 299), "the TTL changed while the 5m entry was warm"
-    pcl.get_prompt_cache_warmer(agent).last_sent_at = t0 + 240 + 250  # a keep-alive whose reply is still due
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    warmer.last_sent_at = t0 + 240 + 250  # a keep-alive whose reply is still due
     assert not maybe_upgrade_cache_tier(agent, now=t0 + 240 + 301), "the TTL changed under an in-flight refresh"
-    pcl.get_prompt_cache_warmer(agent).last_sent_at = None
+
+    def _unreachable(_run):
+        raise ConnectionError("refresh never reached the provider")
+    monkeypatch.setattr(warmer, "_send", _unreachable)
+    with monkeypatch.context() as at_send:
+        at_send.setattr(time, "time", lambda: t0 + 240 + 250)
+        _fire(warmer)  # that keep-alive fails: it renewed nothing, so it stops counting as a touch
 
     assert maybe_upgrade_cache_tier(agent, now=t0 + 240 + 301)  # the first pause past five minutes
     assert _markers(agent) == {"1h"}

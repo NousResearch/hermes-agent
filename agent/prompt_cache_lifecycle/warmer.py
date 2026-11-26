@@ -173,8 +173,8 @@ class PromptCacheWarmer:
         self._inactive_reason = "waiting for first request"
         self._logged_reason: Optional[str] = None
         self._last_decision: Optional[CacheWarmingDecision] = None
-        #: When the latest keep-alive went out, before its reply folds into the clock: a reply still in
-        #: flight renewed the entry, so the next message's tier check counts it as a touch.
+        #: When the keep-alive still waiting for its reply went out (None once it failed or its reply
+        #: folded into the clock): it renewed the entry, so the next message's tier check counts it.
         self.last_sent_at: Optional[float] = None
         #: Set when a budget ended (keep-alives spent, or a miss) and carried to each later prompt of the
         #: same user turn; cleared by a new user message or a claim, never by a run ending. At most one
@@ -522,12 +522,14 @@ class PromptCacheWarmer:
         try:
             message = self._send(run)
         except Exception as exc:  # health: allow BLE001 -- warming must never disturb the live turn; logged
+            self.last_sent_at = None  # it renewed nothing
             logger.info("%sprompt cache warm failed: %s", self._prefix(), exc, exc_info=True)
             self._stop_if_current(run, f"warm request failed: {type(exc).__name__}")
             return
         finally:
             run.refreshing = False
         miss = self._record(run, message, decision, sent_at, reserved)
+        self.last_sent_at = None  # the reply is folded: the clock is the touch again (a miss renewed nothing)
         if miss is not None and not miss.startswith("cache refresh missed"):
             self._stop_if_current(run, miss)
             return

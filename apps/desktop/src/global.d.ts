@@ -865,10 +865,12 @@ export interface DesktopMarketplaceThemeResult {
 export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
 
 export interface HermesTerminalSession {
-  /** Gateway the shell runs on (`local` = This device); Electron only. */
+  /** Gateway the shell runs on (`local` = This device); Electron, and a host that runs no agent. */
   connectionId?: null | string
   cwd: string
   id: string
+  /** Profile the shell runs as; a host that runs no agent only. */
+  profile?: null | string
   shell: string
   /** No shell was started: the tab's gateway was removed (`missing`) or has
    *  no shell transport (`no-shell`). */

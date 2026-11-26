@@ -574,3 +574,16 @@ it('native Desktop: a removed gateway shows the exited state and never attaches'
   expect(attach).not.toHaveBeenCalled()
   expect($terminals.get().some(tab => tab.id === id)).toBe(true)
 })
+
+// A tab opened before the renderer had the list records no gateway; the host's terminal says which
+// agent and profile it started the shell on (on a host that runs no agent), and the tab keeps both,
+// so Enter after the shell expires starts the next one there.
+it('a tab that recorded no gateway adopts the agent and profile its shell started on', async () => {
+  const start = vi.fn(async () => ({ connectionId: 'alpha', id: 'pty-1', profile: 'research', shell: 'bash' }))
+  nativeTerminalApi(start)
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+  expect($terminals.get().find(tab => tab.id === id)).toMatchObject({ connectionId: 'alpha', profile: 'research' })
+})

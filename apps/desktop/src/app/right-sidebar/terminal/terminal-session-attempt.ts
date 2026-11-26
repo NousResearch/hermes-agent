@@ -162,9 +162,12 @@ export function createSessionAttemptController(
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
       .start({ cols: term.cols, cwd: resolveCwd(), restoreKey: id, resumeOnly, rows: term.rows, ...gateway })
       .then(async session => {
-        // No registry to pick from (Webapp, early boot): main routed it.
+        // No registry to pick from (Webapp, early boot): main, or the page, routed it.
         if (!gateway && session.connectionId) {
-          adoptTerminalGateway(id, { connectionId: session.connectionId })
+          adoptTerminalGateway(id, {
+            connectionId: session.connectionId,
+            ...(session.profile ? { profile: session.profile } : {})
+          })
         }
 
         if (session.unavailable) {

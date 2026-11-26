@@ -194,6 +194,20 @@ describe('persistent browser terminals', () => {
     expect(Socket.instances[0].url.searchParams.get('profile')).toBe('default')
   })
 
+  // A tab opened before the renderer had the list names no agent: the session says which one it started on.
+  it('says which agent and profile a hosted shell started on', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: 'relay-ticket' }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    const api = install()
+
+    await expect(api.start({ cwd: '/original', restoreKey: 'tab-early' })).resolves.toMatchObject({
+      connectionId: 'alpha',
+      profile: 'original'
+    })
+  })
+
   // A trimmed replay can start mid-way through a full-screen program; an unchanged size sends no SIGWINCH.
   it('forces one redraw by a real size change only when resuming from a trimmed replay', async () => {
     const api = install()

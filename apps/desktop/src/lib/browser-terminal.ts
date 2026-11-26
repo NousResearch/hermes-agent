@@ -145,6 +145,7 @@ interface DialContext {
   finish: (state: TerminalState, signal: string | null) => void
   reconnect: (state: TerminalState) => void
   closeSignal: (code: number) => string
+  pinned: boolean
 }
 
 async function dialTerminal(state: TerminalState, context: DialContext): Promise<HermesTerminalSession> {
@@ -249,7 +250,11 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
             settled = true
             window.clearTimeout(timer)
             state.cancelDial = undefined
-            resolve({ id: state.id, cwd: state.cwd, shell: state.shell, persistent: Boolean(state.terminalId) })
+            resolve({
+              id: state.id, cwd: state.cwd, shell: state.shell, persistent: Boolean(state.terminalId),
+              // Where a pinned shell runs, so a tab that named no agent records it.
+              ...(context.pinned ? { connectionId: state.connectionId, profile: state.profile } : {})
+            })
           }
         } catch (error) {
           fail(error instanceof Error ? error : new Error('Host terminal returned invalid startup metadata'))
@@ -412,7 +417,7 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
 
   const dial = (state: TerminalState) => dialTerminal(state, {
     websocketUrl: options.websocketUrl, storageKey, isPaused: () => paused, stopSocket, emitData, setStatus, forget, finish, reconnect,
-    closeSignal
+    closeSignal, pinned: Boolean(options.pinConnection)
   })
 
   const detach = async (id: string) => {

@@ -198,3 +198,21 @@ def test_systemd_install_continues_when_non_root_system_legacy_unit_is_skipped(t
     gw.systemd_install(system=False, non_interactive=True)
     assert sys_unit.exists()
     assert new_unit.exists()
+
+
+@pytest.mark.platforms("linux")
+def test_systemd_install_rejects_malformed_legacy_removal_result(tmp_path, monkeypatch):
+    new_unit = tmp_path / "hermes-gateway.service"
+    monkeypatch.setattr(gw, "has_legacy_hermes_units", lambda: True)
+    monkeypatch.setattr(gw, "print_legacy_unit_warning", lambda: None)
+    monkeypatch.setattr(gw, "remove_legacy_hermes_units", lambda interactive=False: None)
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: new_unit)
+    monkeypatch.setattr(gw, "generate_systemd_unit", lambda **kw: "[Service]\n")
+    monkeypatch.setattr(gw, "_prepare_service_launcher", lambda **kw: None)
+    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: CompletedProcess(args, 0))
+    monkeypatch.setattr(gw, "_ensure_linger_enabled", lambda: None)
+    monkeypatch.setattr(gw, "print_systemd_scope_conflict_warning", lambda: None)
+
+    with pytest.raises(TypeError):
+        gw.systemd_install(system=False, non_interactive=True)
+    assert not new_unit.exists()

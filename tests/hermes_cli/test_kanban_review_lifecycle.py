@@ -483,6 +483,105 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_review_handoff_ignores_stale_crash_billing_output(
+    kanban_home: Path,
+) -> None:
+    """A crashed run's captured output is context, not a quota diagnosis.
+
+    ``last_failure_error`` keeps the worker's last output, so a crash whose
+    prose merely mentions "Billing" is exempt while the latest run is
+    ``crashed``. Once the card is claimed again and handed to review the latest
+    run is ``review_requested``, which reintroduced the stale text as a
+    ``blocker_auth`` guard and parked the handoff. A successful handoff must
+    clear the failure context and leave the review lane spawnable.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="crash then review", assignee="worker")
+        crashed = kb.claim_task(conn, tid)
+        assert crashed is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET outcome = 'crashed', status = 'failed', "
+                "ended_at = 1 WHERE id = ?",
+                (crashed.current_run_id,),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', current_run_id = NULL, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "consecutive_failures = 1, last_failure_error = ? WHERE id = ?",
+                (
+                    "pid 4242 killed by signal 9. Worker's last output: "
+                    "'Billing service status: all systems operational'",
+                    tid,
+                ),
+            )
+
+        review_run = kb.claim_task(conn, tid)
+        assert review_run is not None
+        assert kb.request_review(
+            conn, tid, summary="implementation complete", reviewer="reviewer",
+            expected_run_id=review_run.current_run_id,
+        ) is True
+
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+
+        row = conn.execute(
+            "SELECT consecutive_failures, last_failure_error FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["consecutive_failures"] == 0
+        assert row["last_failure_error"] is None
+
+
+def test_review_handoff_clears_stale_crash_context_without_active_run(
+    kanban_home: Path,
+) -> None:
+    """A manual handoff from ``ready`` must shed the crash context too.
+
+    With no active run ``request_review`` synthesizes the ``review_requested``
+    run, so ``_end_run`` returns early and previously left ``last_failure_error``
+    and ``consecutive_failures`` on the task. The stale "Billing" prose then
+    re-armed the review lane's ``blocker_auth`` guard even though the handoff
+    succeeded.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="crash then manual review", assignee="worker",
+        )
+        crashed = kb.claim_task(conn, tid)
+        assert crashed is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET outcome = 'crashed', status = 'failed', "
+                "ended_at = 1 WHERE id = ?",
+                (crashed.current_run_id,),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', current_run_id = NULL, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "consecutive_failures = 1, last_failure_error = ? WHERE id = ?",
+                (
+                    "pid 4242 killed by signal 9. Worker's last output: "
+                    "'Billing service status: all systems operational'",
+                    tid,
+                ),
+            )
+
+        assert kb.request_review(
+            conn, tid, summary="implementation complete", reviewer="reviewer",
+        ) is True
+        assert kb.get_task(conn, tid).status == "review"
+
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+
+        row = conn.execute(
+            "SELECT consecutive_failures, last_failure_error FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["consecutive_failures"] == 0
+        assert row["last_failure_error"] is None
+
+
 def _backdate_comments(conn, tid, seconds=60):
     """Second-granularity timestamps: make the PR comment older than the
     handoff that follows it in the same test."""

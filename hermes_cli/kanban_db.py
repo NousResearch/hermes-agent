@@ -3343,13 +3343,12 @@ def request_review(
                 *(() if reviewer is None else (reviewer,)), task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
+            # A successful handoff supersedes the crashed run's stale failure evidence.
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status        = 'review',
-                       claim_lock    = NULL,
-                       claim_expires = NULL,
-                       worker_pid    = NULL
+                   SET status = 'review', claim_lock = NULL, claim_expires = NULL,
+                       worker_pid = NULL, consecutive_failures = 0, last_failure_error = NULL
                 """ + assignee_sql + """
                  WHERE id = ?
                    AND status IN ('running', 'ready')

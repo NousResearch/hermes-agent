@@ -472,14 +472,13 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
 @pytest.mark.parametrize(
     "error_text, expected",
     [
-        # Worker progress prose talking about *writing*, not an auth failure
-        # (#117009): must NOT trip the guard.
+        # Worker progress prose, not an auth failure (#117009): must NOT trip the guard.
         ("Workstream C items C-3 and C-4: author t  (90.59s)", None),
         ("docs authored by the previous cycle", None),
         ("relying on an authoritative source", None),
-        # Genuine auth failures must still trip the guard, one row per
-        # curated stem family (bare, -ate, -ize, -ise).
+        # Genuine auth failures still trip the guard, one row per curated stem family.
         ("401 auth failed", "blocker_auth"),
+        ("403 forbidden", "blocker_auth"),
         ("authentication error from provider", "blocker_auth"),
         ("still authorizing the request", "blocker_auth"),
         ("still authorising the request", "blocker_auth"),

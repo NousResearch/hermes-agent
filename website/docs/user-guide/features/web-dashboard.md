@@ -1463,6 +1463,8 @@ Custom providers can implement `supports_token`/`verify_token` the same way to e
 
 ### Peer passes (`/api/peer`)
 
+A provider that issues RFC 8693 token-exchange tokens can vouch for them with `is_exchanged_token(token=...)` (the default says no): on the gateway's Webapp a token it verifies as its own exchanged token for this agent works on its own as a bearer. Raise `ProviderError` only when it cannot tell (its keys are unreachable); the gate then answers 503.
+
 A provider can also accept **peer passes** (`supports_peer_pass = True` + `verify_peer_pass(token=...)`): short-lived tokens minted for one agent that let another Hermes agent call this agent's API server through the dashboard, without the agent's `API_SERVER_KEY`.
 
 - `/api/peer/<path>` forwards to the gateway API server on loopback and adds the API server key on the way; `/api/peer/p/<profile>/<path>` reaches one profile, named as the API server's `/p/<profile>/` prefix names it (`hermes` is the default profile unless a profile has that name).

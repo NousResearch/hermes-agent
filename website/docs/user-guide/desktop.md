@@ -222,8 +222,9 @@ also accepts one that Nous Portal minted by token exchange (RFC 8693), which the
 sends: such a token carries an `act` claim naming the client it was exchanged for. The Nous provider
 decides: it verifies the token as its own (signature, issuer, audience, agent instance and scope) and
 checks that the verified claims name an actor. A token with `act` that Portal did not sign for this
-agent, or that another sign-in provider issued, stays bound to its login, and while Portal's keys
-cannot be fetched such a token is refused. The refresh route still accepts only tokens given to a
+agent, or that another sign-in provider issued, stays bound to its login. While Portal's keys cannot
+be fetched such a token is not let through and the agent answers `503`, as for any sign-in outage,
+so the page is not sent to sign in again. The refresh route still accepts only tokens given to a
 native app.
 
 ### Terminal in the Webapp

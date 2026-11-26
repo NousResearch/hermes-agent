@@ -1,13 +1,13 @@
 name: model-forge-desktop
 title: Model Forge Desktop
 repo: https://github.com/mr-pewpy/model-forge
-sha: f497b536bad0faa525cce5999ff5046d118ec5a7
+sha: a0f8a93bb7da48adb72f2052b103dab642435529
 subdir: model-forge-desktop
 description: "Standalone companion Desktop UI for Model Forge (note: the unified model-forge package now ships the full backend-backed Desktop UI directly, so most users only need model-forge). Provides the /model-forge workspace page, sidebar nav entry, Settings -> Plugins -> Model Forge pages, command palette actions, and dockable cockpit pane. Disclosure — reads local host facts (machine.facts), installed suite status and plugin settings (plugins.manage), and tool-registered targets (read-only shell read of Model Forge's own targets file); probes user-configured targets and declared engine endpoints (plus local default ports) with read-only GET requests; runs Model Forge's read-only cockpit and on-demand resource views via /model-forge slash commands (collapsed by default, manual refresh only, no polling); saves user-submitted target, engine, and image/video endpoint settings through plugins.manage settings and saves or removes HF_TOKEN through Hermes' model.save_key / model.disconnect credential routes (never displays secret values); routes destructive storage deletion, vendor engine installers, model pulls, and config activation to Hermes chat behind the human-approval gate; no background processes, no telemetry."
 maintainer: mr-pewpy
 tier: community
 category: desktop
-version: "2.0.0"
+version: "2.0.1"
 requires_hermes: ">=0.23.0"
 readme: false
 platforms: []

@@ -1,12 +1,17 @@
 name: home-dashboard
 repo: https://github.com/albertocvrrbs/hermes-home-dashboard
-sha: a8a018225d8ecd21b281788131775adeade4c577
+sha: abc20418df9ef41853ef1709c7e8a80a8bcdccc7
 description: Personalizable rice-style Home page with draggable, resizable glass widgets for Hermes Web
   and Desktop.
 maintainer: albertocvrrbs
 tier: community
 category: desktop
+requires_hermes: ">=0.21.5"
 docs_url: https://github.com/albertocvrrbs/hermes-home-dashboard#readme
+version: "1.6.0"
+image: https://raw.githubusercontent.com/albertocvrrbs/hermes-home-dashboard/abc20418df9ef41853ef1709c7e8a80a8bcdccc7/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/albertocvrrbs/hermes-home-dashboard/abc20418df9ef41853ef1709c7e8a80a8bcdccc7/assets/screenshot-home.png
 capabilities:
   provides_tools: []
   provides_hooks: []

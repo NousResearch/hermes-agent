@@ -249,6 +249,34 @@ def test_an_exchanged_token_in_the_session_token_header_costs_no_key_lookup(gate
     assert lookups == []
 
 
+def test_an_oversized_token_is_never_sent_to_a_provider(gated, nous, portal_key):
+    """A token over 16 KiB is not read as exchanged at all, however well it is addressed."""
+    lookups = []
+
+    class CountingKeys:
+        def get_signing_key_from_jwt(self, token):
+            lookups.append(token)
+            raise AssertionError("no key lookup expected")
+
+    nous._jwks_client = CountingKeys()
+    token = _token(portal_key, pad="x" * 16384)
+    assert len(token) > 16384
+    _refused(gated.browser().get("/api/auth/me", headers=_bearer(token)))
+    assert lookups == []
+
+
+def test_a_parse_that_recurses_too_deep_reads_as_not_exchanged(monkeypatch):
+    """On Python 3.11 a deeply nested header under the size cap raises RecursionError while it is
+    parsed (newer versions parse it); that reads as not exchanged, not as an error."""
+    from hermes_cli import webapp_sign_in
+
+    def too_deep(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(webapp_sign_in.json, "loads", too_deep)
+    assert webapp_sign_in.reads_as_exchanged(f"{_b64({'alg': 'RS256'})}.{_b64({'act': ACTOR})}.c2ln") is False
+
+
 @pytest.mark.parametrize("first", ["exchanged token", "browser login"])
 def test_a_key_outage_leaves_tokens_whose_key_already_verified_working(gated, nous, portal_key, monkeypatch, first):
     """The key client keeps every key it handed out (``cache_keys``) after its key set expires, so a

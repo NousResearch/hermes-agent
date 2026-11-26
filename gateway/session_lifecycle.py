@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Optional
 
+from gateway.session_persistence import _apply_to_held_row
 from session_rules.session_ids import new_session_id
 
 if TYPE_CHECKING:
@@ -176,8 +177,11 @@ class SessionLifecycleMixin:
         with self._lock:
             self._ensure_loaded_locked()
             changed = sum(1 for entry in self._entries.values() if mutate(entry))
-            if getattr(self, "_unparsed_routes", None):  # a held row gets the same verdict when it joins
-                self._lazy("_held_route_verdicts", list).append(mutate)
+            held = getattr(self, "_unparsed_routes", None) or {}
+            for key, data in list(held.items()):  # a held row gets the verdict now, on disk too
+                updated = _apply_to_held_row(data, mutate)
+                if updated is not None:
+                    held[key], changed = updated, changed + 1
             if changed:
                 self._save()
         return changed

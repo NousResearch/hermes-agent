@@ -151,6 +151,10 @@ export function createBrowserConnectionBridge({
     return relays && connectionId && connectionId !== LOCAL_CONNECTION_ID ? { connectionId, relays } : null
   }
 
+  // A profile named with no agent at all is one of the agent the window's own socket opened on.
+  const homeOf = async (): Promise<null | RelayTarget> =>
+    hosted ? { connectionId: await hosted.home(), relays: hosted.relays } : null
+
   // The gateway's own profile, or another one it serves: the only profiles this tab's socket reaches.
   const reachesSocket = (profile?: null | string) => !ridesWithProfile(profile) || served.serves(profile)
 
@@ -333,15 +337,16 @@ export function createBrowserConnectionBridge({
     // that same socket (sharedPrimary), so its requests carry `profile`. Routing reads the cached
     // served set and never fetches it.
     getConnection: async (profile?: null | string) => {
-      if (!hosted) {
+      const home = await homeOf()
+
+      if (!home) {
         return { ...connectionFor(bootstrap, profile, served.serves(profile)), connectionId: LOCAL_CONNECTION_ID }
       }
 
-      const connectionId = await hosted.agentFor()
       // Boot adopts the profile the page's server runs as; here that is the agent's own.
-      adoptBrowserLaunchProfile(await hosted.relays.launchProfile(connectionId))
+      adoptBrowserLaunchProfile(await home.relays.launchProfile(home.connectionId))
 
-      return hosted.relays.connection(connectionId, profile)
+      return home.relays.connection(home.connectionId, profile)
     },
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async ({ connectionId, profile }: { connectionId?: null | string; profile?: null | string }) => {
@@ -367,10 +372,11 @@ export function createBrowserConnectionBridge({
         sharedRemote: Boolean(profile) && reachesSocket(profile)
       }
     },
-    getGatewayWsUrl: async (profile?: null | string) =>
-      hosted
-        ? relayedGatewayWsUrl({ connectionId: await hosted.agentFor(), relays: hosted.relays }, profile)
-        : getGatewayWsUrl(profile),
+    getGatewayWsUrl: async (profile?: null | string) => {
+      const home = await homeOf()
+
+      return home ? relayedGatewayWsUrl(home, profile) : getGatewayWsUrl(profile)
+    },
     getGatewayWsUrlFor: async ({ connectionId, profile }: { connectionId?: null | string; profile?: null | string }) => {
       const target = await targetOf(connectionId)
 
@@ -454,11 +460,11 @@ export function createBrowserConnectionBridge({
     // it routes, so the profile rides the tab's socket; dials keep reading the cache alone. The read
     // is its own: one already in flight may have gone out before the create.
     refreshServedProfile: async (profile: string) => {
-      if (hosted) {
-        const connectionId = await hosted.agentFor()
+      const home = await homeOf()
 
-        if (!hosted.relays.serves(connectionId, profile)) {
-          await hosted.relays.refreshServed(connectionId)
+      if (home) {
+        if (!home.relays.serves(home.connectionId, profile)) {
+          await home.relays.refreshServed(home.connectionId)
         }
 
         return

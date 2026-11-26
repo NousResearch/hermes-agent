@@ -285,7 +285,8 @@ describe('a Webapp whose host runs no agent', () => {
 
     expect(await desktop.api({ path: '/api/config' })).toEqual({ from: 'beta', path: '/api/config' })
     expect(await desktop.api({ connectionId: 'local', path: '/api/config' })).toEqual({ from: 'beta', path: '/api/config' })
-    expect(dialed(await desktop.getGatewayWsUrl()).pathname).toBe('/api/relay/beta/api/ws')
+    // A profile named with no agent at all stays on the window socket's agent, as a served Webapp's does.
+    expect(dialed(await desktop.getGatewayWsUrl()).pathname).toBe('/api/relay/alpha/api/ws')
     expect(dialed(await desktop.getGatewayWsUrlFor!({ connectionId: 'local' })).pathname).toBe('/api/relay/beta/api/ws')
 
     const audio = await desktop.getAudioWsUrl!({ connectionId: 'local', path: '/api/audio/transcribe-stream' })

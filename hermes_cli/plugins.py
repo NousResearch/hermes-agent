@@ -784,8 +784,9 @@ def _plugin_home_key() -> str:
     """The active Hermes home's remembered key (``hermes_home_key``): the key for per-profile plugin managers
     (plugins capture the home at registration, so a process serving several profiles cannot share one manager).
     Not the link's live target: a name repointed while the process runs finds the manager it was opened by, which
-    refuses (``PluginManager.owner_home``), never the manager of the directory it now leads to."""
-    return hermes_home_key(get_hermes_home())
+    refuses (``PluginManager.owner_home``), never the manager of the directory it now leads to. A relative home is
+    made absolute first, so a later lookup from another working directory finds the directory it names there."""
+    return hermes_home_key(get_hermes_home().absolute())
 
 
 def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:

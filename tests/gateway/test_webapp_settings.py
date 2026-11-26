@@ -104,7 +104,7 @@ def test_the_webapp_and_its_sign_in_gate_agree_on_which_hosts_stay_on_this_machi
 
 def _gateway(monkeypatch, tmp_path, config):
     """The runtime's listener start for *config*, with the listener itself replaced by a stand-in."""
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     from gateway.control_socket import GatewayControlServer
 
     home = _home(tmp_path, config)
@@ -116,7 +116,7 @@ def _gateway(monkeypatch, tmp_path, config):
     monkeypatch.setattr(run_api, "start_gateway_api", start)
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     return runner
 
 

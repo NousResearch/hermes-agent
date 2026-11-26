@@ -11,6 +11,7 @@ import { categoryLabel, UNCATEGORISED } from '../derive-tools'
 import type { ToolRowModel } from '../types'
 
 import { type ConnectionsCopy, useConnectionsCopy } from './connections-copy'
+import { onFilterGroupKeyDown } from './connections-filter'
 import {
   activeToolsChipCount,
   CONNECTION_TOOL_FACETS,
@@ -274,7 +275,12 @@ function ToolFilterPopover({ copy, filter, filteredCount, onFilterChange, tools 
           <section className="conn-filter-section">
             <span className="conn-filter-label">{copy.toolFilters.status}</span>
             <p className="conn-filter-hint">{copy.filters.chooseOne}</p>
-            <div aria-label={copy.toolFilters.status} className="conn-filter-status" role="radiogroup">
+            <div
+              aria-label={copy.toolFilters.status}
+              className="conn-filter-status"
+              onKeyDown={onFilterGroupKeyDown}
+              role="radiogroup"
+            >
               <StatusPill
                 checked={filter.status === 'any'}
                 label={copy.filters.statusAny}
@@ -426,6 +432,7 @@ function AreaPicker({ areas, copy, filter, onFilterChange, onQueryChange, query 
         aria-label={copy.toolFilters.areas}
         aria-multiselectable
         className="conn-filter-area-list"
+        onKeyDown={onFilterGroupKeyDown}
         role="listbox"
       >
         <button

@@ -729,7 +729,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-raw-black` | `#000` | ″ |  |
 | `--portal-raw-green` | `#00f279` | ″ | Figma secondary/green (live dots and gradients); at .6 it is the connected / online ink on dark (1089:8305). |
 | `--portal-raw-green-60` | `color-mix(in srgb, var(--portal-raw-green) 60%, transparent)` | ″ |  |
-| `--portal-raw-mint-deep` | `#1f8a65` | ″ | Connected / online ink on light: the green darkened to AA. |
+| `--portal-raw-mint-deep` | `#0f6d4a` | ″ | Connected / online ink on light: the green darkened to AA. |
 | `--portal-raw-orange` | `#f27900` | ″ | Figma secondary/orange: pending and warning. |
 | `--portal-raw-red-signal` | `#f20000` | ″ | Figma secondary/red: a status badge's fill under black ink (UNVERIFIED, 18732:33155). |
 | `--portal-raw-danger` | `#a22a20` | ″ | Danger fill and stroke (877:4212, 878:7066, 1038:7836) and its soft status text (877:4312). |

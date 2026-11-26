@@ -109,6 +109,8 @@ export function ConnectionsView({
   const [toolsCardKey, setToolsCardKey] = useState<null | string>(null)
   // Set only by the Tools page's Disconnect action, so the drawer opens its own confirmation.
   const [disconnectKey, setDisconnectKey] = useState<null | string>(null)
+  // The Tools page a Disconnect request came from: canceling it goes straight back there.
+  const [disconnectOriginToolsKey, setDisconnectOriginToolsKey] = useState<null | string>(null)
 
   const toolsCard = useMemo(
     () => (toolsCardKey === null ? null : (cards.find(card => cardKey(card) === toolsCardKey) ?? null)),
@@ -127,25 +129,42 @@ export function ConnectionsView({
     setActiveCategory(null)
     setToolsCardKey(null)
     setDisconnectKey(null)
+    setDisconnectOriginToolsKey(null)
   }, [profile])
 
   useEffect(() => {
     if (openCard === null && disconnectKey !== null) {
       setDisconnectKey(null)
+      setDisconnectOriginToolsKey(null)
     }
   }, [disconnectKey, openCard])
 
   const openSheet = (card: ConnectorCardModel) => {
     setDisconnectKey(null)
+    setDisconnectOriginToolsKey(null)
     onOpenCard(card)
   }
 
   const closeSheet = () => {
     setDisconnectKey(null)
+    setDisconnectOriginToolsKey(null)
     onCloseCard()
   }
 
+  // Cancel or Escape on the Disconnect modal: a Tools page request returns to that same page.
+  const dismissDisconnect = () => {
+    setDisconnectKey(null)
+    const origin = disconnectOriginToolsKey
+    setDisconnectOriginToolsKey(null)
+
+    if (origin !== null) {
+      setToolsCardKey(origin)
+      onCloseCard()
+    }
+  }
+
   const openDisconnect = (card: ConnectorCardModel) => {
+    setDisconnectOriginToolsKey(toolsCardKey)
     setToolsCardKey(null)
     setDisconnectKey(cardKey(card))
     onOpenCard(card)
@@ -239,11 +258,11 @@ export function ConnectionsView({
           initialDisconnect={wantsDisconnect}
           installFields={installFieldsFor?.(openCard)}
           installing={installingKey === cardKey(openCard)}
-          key={`${cardKey(openCard)}:${wantsDisconnect ? 'disconnect' : 'sheet'}`}
+          key={cardKey(openCard)}
           onClose={closeSheet}
           onConnect={alias => onConnect(openCard, alias)}
           onDisconnectApp={() => onDisconnectApp(openCard)}
-          onDisconnectDismiss={() => setDisconnectKey(null)}
+          onDisconnectDismiss={dismissDisconnect}
           onGiveUp={onGiveUp}
           onInstall={env => onInstall(openCard, env)}
           onOpenToolsPage={openToolsPage}

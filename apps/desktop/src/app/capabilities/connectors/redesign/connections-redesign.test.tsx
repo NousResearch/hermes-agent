@@ -285,6 +285,28 @@ describe('ConnectionsView directory', () => {
     expect(screen.getByRole('dialog', { name: 'Slack' })).toBeTruthy()
   })
 
+  it('stays on the tools page when its Disconnect confirmation is canceled', async () => {
+    renderDirectory()
+
+    fireEvent.click(within(sectionFor('Connected')).getByRole('button', { name: 'Manage' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review all 4' }))
+    expect(screen.getByRole('heading', { level: 1, name: 'Slack Tools' })).toBeTruthy()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More options' }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: 'mouse'
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Disconnect/ }))
+
+    const confirm = await screen.findByRole('alertdialog', { name: 'Disconnect Slack?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(screen.getByRole('heading', { level: 1, name: 'Slack Tools' })).toBeTruthy()
+    expect(screen.queryByRole('dialog', { name: 'Slack' })).toBeNull()
+  })
+
   it('filters by status and category, shows the matching count, and clears chips', async () => {
     renderDirectory()
 

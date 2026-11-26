@@ -569,6 +569,13 @@ function AccountRowView({
   )
 }
 
+/** An inline account editor hands focus back to the sheet, never to `document.body`. */
+function restoreSheetFocus(): void {
+  requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>('[data-slot="connection-sheet"]')?.focus()
+  })
+}
+
 function RemoveAccountCard({
   alias,
   appName,
@@ -708,7 +715,10 @@ export function HostedAccountsCard({
         alias={accountName(removing)}
         appName={appName}
         busy={busy}
-        onCancel={() => setRemoving(null)}
+        onCancel={() => {
+          setRemoving(null)
+          restoreSheetFocus()
+        }}
         onConfirm={() => {
           setRemoving(null)
           onRemove(removing)
@@ -732,7 +742,10 @@ export function HostedAccountsCard({
                 error={edit.error}
                 initial={edit.draft}
                 label={t.connectorsPage.accounts.aliasLabel}
-                onCancel={() => setEdit(null)}
+                onCancel={() => {
+                  setEdit(null)
+                  restoreSheetFocus()
+                }}
                 onSubmit={alias => void rename(account.connection_id, alias)}
                 self={account.connection_id}
                 submitLabel={t.common.save}
@@ -763,6 +776,7 @@ export function HostedAccountsCard({
           onCancel={() => {
             setAdding(false)
             setAddError(null)
+            restoreSheetFocus()
           }}
           onSubmit={alias => void add(alias)}
           submitLabel={copy.card.connect}

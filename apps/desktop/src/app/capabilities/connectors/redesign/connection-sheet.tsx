@@ -115,6 +115,14 @@ export function ConnectionSheet({
   const [renameAccountId, setRenameAccountId] = useState<null | string>(null)
   const [handledRename, setHandledRename] = useState<null | string>(null)
 
+  // A Tools page Disconnect request can arrive while the sheet is already mounted: open on the
+  // flip to true, with no `key` churn and no remount.
+  useEffect(() => {
+    if (initialDisconnect) {
+      setDisconnectOpen(true)
+    }
+  }, [initialDisconnect])
+
   const closeDisconnect = useCallback(() => {
     setDisconnectOpen(false)
     onDisconnectDismiss?.()

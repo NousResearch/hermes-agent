@@ -44,7 +44,7 @@
   --portal-raw-green: #00f279;
   --portal-raw-green-60: color-mix(in srgb, var(--portal-raw-green) 60%, transparent);
   /* Connected / online ink on light: the green darkened to AA. */
-  --portal-raw-mint-deep: #1f8a65;
+  --portal-raw-mint-deep: #0f6d4a;
   /* Figma secondary/orange: pending and warning. */
   --portal-raw-orange: #f27900;
   /* Figma secondary/red: a status badge's fill under black ink (UNVERIFIED, 18732:33155). */

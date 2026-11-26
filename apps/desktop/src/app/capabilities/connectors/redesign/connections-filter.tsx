@@ -1,4 +1,12 @@
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -46,6 +54,44 @@ function isTypingTarget(target: EventTarget | null): boolean {
     target.tagName === 'TEXTAREA' ||
     target.tagName === 'SELECT'
   )
+}
+
+const GROUP_KEYS: Record<string, true> = {
+  ArrowDown: true,
+  ArrowLeft: true,
+  ArrowRight: true,
+  ArrowUp: true,
+  End: true,
+  Home: true
+}
+
+/** Arrow keys and Home/End walk a radiogroup or listbox option by option, as forms mode expects. */
+export function onFilterGroupKeyDown(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (event.altKey || event.ctrlKey || event.metaKey || !Object.hasOwn(GROUP_KEYS, event.key)) {
+    return
+  }
+
+  const options = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="option"], [role="radio"]')]
+
+  if (options.length === 0) {
+    return
+  }
+
+  const current = options.findIndex(option => option === event.target || option.contains(event.target as Node))
+  let next = current
+
+  if (event.key === 'Home') {
+    next = 0
+  } else if (event.key === 'End') {
+    next = options.length - 1
+  } else {
+    const forward = event.key === 'ArrowDown' || event.key === 'ArrowRight'
+    const base = current === -1 ? (forward ? -1 : options.length) : current
+    next = (base + (forward ? 1 : -1) + options.length) % options.length
+  }
+
+  event.preventDefault()
+  options[next]?.focus()
 }
 
 function chipLabel(status: ConnectionStatusFilter, copy: ConnectionsCopy): string {
@@ -238,7 +284,12 @@ export function ConnectionsToolbar({
               <section className="conn-filter-section">
                 <span className="conn-filter-label">{copy.filters.status}</span>
                 <span className="conn-filter-hint">{copy.filters.chooseOne}</span>
-                <div aria-label={copy.filters.status} className="conn-status-chips" role="radiogroup">
+                <div
+                  aria-label={copy.filters.status}
+                  className="conn-status-chips"
+                  onKeyDown={onFilterGroupKeyDown}
+                  role="radiogroup"
+                >
                   {(['any', 'connected', 'not_connected'] as const).map(status => (
                     <button
                       aria-checked={draft.status === status}
@@ -313,6 +364,7 @@ export function ConnectionsToolbar({
                         aria-label={copy.filters.categories}
                         aria-multiselectable
                         className="conn-filter-area-list conn-picker-list"
+                        onKeyDown={onFilterGroupKeyDown}
                         role="listbox"
                       >
                         <button

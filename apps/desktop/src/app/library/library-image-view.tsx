@@ -92,10 +92,10 @@ export function ImagePreview(props: ImagePreviewProps) {
   const chat = chatOfItem(chats, item)
   const { failed, src } = useItemImageSrc(item, chat)
   const [zoom, setZoom] = useState<null | number>(null)
-  const rootRef = useRef<HTMLDivElement>(null)
+  const titleRef = useRef<HTMLHeadingElement>(null)
 
   useEffect(() => setZoom(null), [item.id])
-  useEffect(() => rootRef.current?.focus({ preventScroll: true }), [])
+  useEffect(() => titleRef.current?.focus({ preventScroll: true }), [])
 
   const zoomBy = (direction: 1 | -1) => {
     const current = zoom ?? 1
@@ -118,7 +118,6 @@ export function ImagePreview(props: ImagePreviewProps) {
           stepKeys(event, props)
         }
       }}
-      ref={rootRef}
       tabIndex={-1}
     >
       <div className="library-preview-head">
@@ -127,7 +126,9 @@ export function ImagePreview(props: ImagePreviewProps) {
           {backLabel}
         </Button>
         <div className="library-preview-title">
-          <h1 className="library-preview-name">{item.label}</h1>
+          <h1 className="library-preview-name" ref={titleRef} tabIndex={-1}>
+            {item.label}
+          </h1>
           <p>{copy.position(index + 1, items.length)}</p>
         </div>
         <div className="library-preview-steps">
@@ -200,14 +201,13 @@ export function ImagePreview(props: ImagePreviewProps) {
         </div>
       </div>
 
-      <div aria-label={copy.thumbnails} className="library-filmstrip" role="list">
+      <div aria-label={copy.thumbnails} className="library-filmstrip" role="group">
         {strip.map((entry, offset) => (
           <button
             aria-current={first + offset === index ? 'true' : undefined}
             aria-label={entry.label}
             key={entry.id}
             onClick={() => onIndex(first + offset)}
-            role="listitem"
             type="button"
           >
             <ItemThumb chat={chatOfItem(chats, entry)} className="library-filmstrip-thumb" item={entry} />

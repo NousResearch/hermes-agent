@@ -217,6 +217,8 @@ export function LibraryPage(props: ComponentProps<'section'>) {
   const [lightbox, setLightbox] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const enlargeRef = useRef<HTMLButtonElement>(null)
+  // What opened the preview: its focus returns there when the preview closes.
+  const openerRef = useRef<HTMLElement | null>(null)
   const { chats, items } = index
 
   useRefreshHotkey(() => void index.refresh())
@@ -250,6 +252,24 @@ export function LibraryPage(props: ComponentProps<'section'>) {
   const closePreview = useCallback(() => {
     setPreview(null)
     setLightbox(false)
+    const opener = openerRef.current
+    openerRef.current = null
+
+    // The row that opened it is gone with the preview: the search field is the page's fallback.
+    requestAnimationFrame(() => {
+      if (opener?.isConnected) {
+        opener.focus()
+
+        return
+      }
+
+      searchRef.current?.focus()
+    })
+  }, [])
+
+  const openPreview = useCallback((item: ArtifactRecord) => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setPreview(item.id)
   }, [])
 
   // The previewed image left the list (a refresh dropped its chat): close it here, so neither view
@@ -314,7 +334,7 @@ export function LibraryPage(props: ComponentProps<'section'>) {
       chats={chats}
       images={images}
       onOpenChat={openChat}
-      onOpenImage={item => setPreview(item.id)}
+      onOpenImage={openPreview}
       onOpenItem={openItem}
       onPage={next => setPages(current => ({ ...current, [tab]: next }))}
       onTab={selectTab}

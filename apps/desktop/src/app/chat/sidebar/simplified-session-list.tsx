@@ -222,6 +222,7 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }
   // The row is the click target (a modified click opens a tab or window), its title the one
   // focusable button, as in the classic sidebar: plugin decorations (`sessionRow.*`) sit in the row
   // beside that button, never inside it, so an interactive one stays a control of its own.
+  // Both wear aria-current: the row for the selection rule, the button so Tab announces the page.
   const button = (
     <div
       aria-current={selected ? 'page' : undefined}
@@ -299,7 +300,7 @@ function SessionRow({ row, selected, surface, meta, sortable, onMove, ...props }
       <span className="contents" data-slot="session-row-leading">
         <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(row)} />
       </span>
-      <RowButton className="portal-session-open">
+      <RowButton aria-current={selected ? 'page' : undefined} className="portal-session-open">
         <OverflowTip label={title}>
           <span className="portal-session-title" data-slot="session-title">
             {title}

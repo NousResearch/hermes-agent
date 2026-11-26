@@ -20,6 +20,9 @@ paid per request) and available wherever a browser is. Its actions:
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
   no later browser tool call can echo them back to the model.
+- ``check`` → a dry run of ``fill``: the same item lookup, tab choice and exact-origin test, reported
+  (``would_fill``, the page, the item's saved origins) instead of acted on. No secret is resolved,
+  nobody is prompted and the page is not written to.
 - ``enter_code`` → a one-time code for the current page: minted from a saved
   login's authenticator key (same origin binding as ``fill``, checked before
   the code is generated) or typed by the user into their surface's prompt.
@@ -1205,6 +1208,87 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     return json.dumps(out)
 
 
+# Password boxes in the document and every open shadow root (what ``_deep_probe`` reaches), as a count.
+_PASSWORD_COUNT_JS = ("((c) => c(c, document))((c, r) => r.querySelectorAll('input[type=password]').length + "
+                      "Array.from(r.querySelectorAll('*')).reduce((n, e) => n + (e.shadowRoot ? c(c, e.shadowRoot) : 0), 0))")
+
+
+def _check_page_js(kind: str) -> str:
+    """What ``check`` reads from the checked page: where it is (no query or fragment, which can carry
+    tokens), whether it holds the form ``kind`` fills, and how many password boxes it has."""
+    return ("JSON.stringify({origin: window.location.origin, path: window.location.pathname, "
+            f"form: {_TAB_PROBES.get(kind, 'true')}, password_fields: {_PASSWORD_COUNT_JS}}})")
+
+
+def _unprompted_meta(handle: str) -> tuple[Any, Optional[dict[str, Any]]]:
+    """``(meta, None)`` for a handle whose metadata can be read without asking the user anything, else
+    ``(None, refusal)``. A locked manager is reported, never unlocked."""
+    from agent.vault_backends import UnlockRequired, backend_for_handle
+
+    backend = backend_for_handle(handle) if handle else None
+    locked = backend is not None and backend.needs_unlock and not backend.is_unlocked()
+    meta = None
+    if backend is not None and not locked:
+        try:
+            meta = backend.get_meta(handle)
+        except UnlockRequired:
+            locked = True
+    if locked:
+        return None, {"success": False, "would_fill": False, "error_type": "unlock_required",
+                      "error": (f"{backend.display_name} is locked, so this item cannot be checked. fill would "
+                                "first ask the user to unlock it (browser_vault action=unlock).")}
+    if meta is None:
+        return None, {"success": False, "would_fill": False,
+                      "error": f"No vault item with handle {handle!r}. Use browser_vault action=list."}
+    return meta, None
+
+
+@plugin_errors_as_refusal
+def browser_vault_check(handle: str, task_id: Optional[str] = None) -> str:
+    """Dry run of ``fill``: the same item lookup (metadata only), the same tab choice and the same
+    exact-origin test (``_bound_page_origin``), reported instead of acted on.
+
+    Resolves no secret, asks the user nothing (a locked manager is reported, a card is not put up
+    for confirmation), enters no backend ``fill_context`` and writes nothing to the page. Like
+    ``fill`` it leaves the supervisor on the tab it chose. ``would_fill`` covers what ``fill``
+    decides before it resolves a value; ``fill`` runs every check again itself.
+    """
+    effective_task_id = task_id or "default"
+    meta, refusal = _unprompted_meta(handle)
+    if refusal is not None:
+        return json.dumps(refusal)
+    out: dict[str, Any] = {"success": True, "would_fill": False, "handle": meta.id, "kind": meta.kind,
+                           "item_origins": saved_origins(meta)}
+    page = _bound_page_origin(effective_task_id, meta, meta.kind)
+    if isinstance(page, dict):  # the refusal fill would return, word for word
+        return json.dumps({**out, "refusal": page.get("error_type") or "no_page", "reason": page["error"]})
+    with _pinned_page_session(effective_task_id, page) as unpinned:
+        read = unpinned or _eval_js(effective_task_id, _check_page_js(meta.kind))
+    seen = _parse_json_result(read.get("result")) if read.get("success") else None
+    if isinstance(seen, str):
+        seen = _parse_json_result(seen)
+    out["page_origin"] = page.origin
+    if not isinstance(seen, dict) or seen.get("origin") != page.origin:
+        return json.dumps({**out, "refusal": "page_moved",
+                           "reason": "The page moved or could not be read after its origin was checked. "
+                                     "Check again once it settles."})
+    out["page"] = page.origin + str(seen.get("path") or "")
+    out["form_found"] = bool(seen.get("form"))
+    if meta.kind == "login":
+        out["password_fields"] = int(seen.get("password_fields") or 0)
+    if not out["form_found"]:
+        out["refusal"] = "no_form"
+        out["reason"] = (f"The page is on the item's saved origin but shows no {meta.kind} form"
+                         + (" (no password box)" if meta.kind == "login" else "")
+                         + ". fill would have nothing to fill.")
+        return json.dumps(out)
+    out["would_fill"] = True
+    out["reason"] = (f"This tab of your own browser session is on the item's exact saved origin and holds a "
+                     f"{meta.kind} form. fill would act on it"
+                     + (" after the user confirms the card." if meta.kind == "payment" else "."))
+    return json.dumps(out)
+
+
 def _login_next(meta: Any, *, identifier_filled: bool) -> str:
     """The next step after a login fill landed: submit, after typing the identifier when the fill
     found no single box for it (the password field is filled; the username box may still be empty)."""
@@ -1239,7 +1323,8 @@ BROWSER_VAULT_SCHEMA = {
         "Actions: list (call first: saved logins/cards/addresses as handles; locked password managers appear "
         "under `locked`); fill (handle: a login writes the identifier and the password, card fields after the "
         "user confirms, address fields; refused unless the page "
-        "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
+        "origin matches the item); check (handle: dry run of fill, reports would_fill, the page and the "
+        "origin test; reads no secret, changes nothing); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
         "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
@@ -1249,12 +1334,12 @@ BROWSER_VAULT_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list", "fill", "save_login", "enter_code", "unlock"]},
-            "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
+            "action": {"type": "string", "enum": ["list", "check", "fill", "save_login", "enter_code", "unlock"]},
+            "handle": {"type": "string", "description": "check / fill / enter_code: a handle from list."},
             "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
             "target": {"type": "string", "enum": ["browser", "preview"],
-                       "description": "fill / save_login / enter_code: 'preview' = the Desktop in-app browser "
+                       "description": "check / fill / save_login / enter_code: 'preview' = the Desktop in-app browser "
                                       "page beside the chat, 'browser' = the managed automation browser."},
         },
         "required": ["action"],
@@ -1290,12 +1375,13 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     if action == "unlock":
         return browser_vault_unlock(str(args.get("backend") or ""))
     page_ops = {
+        "check": lambda: browser_vault_check(handle=handle, task_id=tid),
         "fill": lambda: browser_vault_fill(handle=handle, task_id=tid),
         "save_login": lambda: browser_vault_save_login(label=label, task_id=tid),
         "enter_code": lambda: browser_vault_enter_code(handle=handle, task_id=tid),
     }
     if action not in page_ops:
-        return json.dumps({"success": False, "error": f"Unknown action {action!r}; use list, fill, save_login, "
+        return json.dumps({"success": False, "error": f"Unknown action {action!r}; use list, check, fill, save_login, "
                                                        "enter_code or unlock."})
     target = args.get("target") or "browser"
     if target == "preview":

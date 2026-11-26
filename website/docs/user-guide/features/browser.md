@@ -603,7 +603,10 @@ Uses saved logins, passwords, cards, addresses and one-time codes on the
 current page without the secrets ever entering the conversation. The agent
 calls `browser_vault(action="list")` to see saved items as handles, then `fill`,
 `save_login`, `enter_code` or `unlock` (1Password / Bitwarden). Fills are
-refused unless the page origin matches the saved item. See the
+refused unless the page origin matches the saved item. `check` is a dry run of
+`fill`: it reports whether a fill would go ahead (`would_fill`), on which page
+and against which saved origins, without reading a secret, prompting you or
+changing the page. See the
 [credential vault](credential-vault.md) page for setup, password-manager
 backends, and headless use.
 

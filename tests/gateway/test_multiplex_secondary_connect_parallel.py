@@ -18,7 +18,7 @@ reached ``ready``. These tests prove:
    isolation (omitted from ``_served_profile_signatures`` and
    ``_profile_configs``), per-adapter connect failure isolation + reconnect
    scheduling, parked-profile skipping, single-profile (multiplex off)
-   unchanged, class-level mixin monkeypatch fallback, and systemd boot timeout
+   unchanged, and systemd boot timeout
    renewal during preparation plus max-budget batch extension.
 """
 from __future__ import annotations
@@ -34,7 +34,6 @@ from agent.secret_scope import get_secret, is_multiplex_active, set_multiplex_ac
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner, MultiplexConfigError
-from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.status import flush_runtime_status, read_runtime_status
 from hermes_constants import get_hermes_home
 
@@ -278,6 +277,59 @@ async def test_duplicate_credential_refused_before_concurrent_connect(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_whatsapp_secondaries_connect_one_per_wave_in_profile_order(tmp_path, monkeypatch):
+    """A WhatsApp secondary picks its bridge port from the ports bound when it connects, so a sibling's
+    configured port is safe only once that sibling's bridge is up. WhatsApp adapters carry no credential or
+    listener claim, so they connect one per wave in profile order, as the serial sweep did, while other
+    platforms keep connecting in the first wave."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    for name in ("alpha", "beta", "gamma"):
+        session = _mkprofile(home, name, "") / "platforms" / "whatsapp" / "session"
+        session.mkdir(parents=True)
+        (session / "creds.json").write_text("{}", encoding="utf-8")
+
+    def load_cfg():
+        name = Path(get_hermes_home()).name
+        cfg = GatewayConfig(multiplex_profiles=True)
+        cfg.platforms = {Platform.WHATSAPP: PlatformConfig(enabled=True)}
+        if name == "beta":
+            cfg.platforms[Platform.TELEGRAM] = PlatformConfig(enabled=True, token="tok-beta")
+        return cfg
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", load_cfg)
+    started: list[str] = []
+    in_flight = {"whatsapp": 0, "max": 0}
+
+    async def connect(adapter: _FakeAsyncAdapter, *, is_reconnect: bool = False) -> bool:
+        started.append(f"{adapter.profile}:{adapter.platform.value}")
+        if adapter.platform is Platform.WHATSAPP:
+            in_flight["whatsapp"] += 1
+            in_flight["max"] = max(in_flight["max"], in_flight["whatsapp"])
+        for _ in range(20):  # yield so every other connect in this wave starts meanwhile
+            await asyncio.sleep(0)
+        if adapter.platform is Platform.WHATSAPP:
+            in_flight["whatsapp"] -= 1
+        return True
+
+    def make_adapter(platform, cfg):
+        adapter = _FakeAsyncAdapter(platform, cfg, connect)
+        adapter.profile = Path(get_hermes_home()).name
+        return adapter
+
+    runner._create_adapter = make_adapter
+
+    try:
+        connected = await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert connected == 4
+    assert in_flight["max"] == 1
+    assert [s for s in started if s.endswith(":whatsapp")] == ["alpha:whatsapp", "beta:whatsapp", "gamma:whatsapp"]
+    assert started.index("beta:telegram") < started.index("beta:whatsapp")  # not held back behind alpha
+
+
+@pytest.mark.asyncio
 async def test_duplicate_listener_refused_before_concurrent_connect(tmp_path, monkeypatch):
     """Two secondary Photon adapters on the same bind:port with distinct secrets collide
     deterministically before connect()."""
@@ -516,8 +568,8 @@ async def test_parked_profiles_skipped_and_single_profile_unchanged(tmp_path, mo
 @pytest.mark.asyncio
 async def test_systemd_boot_extension_uses_max_budget_once_for_batch(tmp_path, monkeypatch):
     """Each adapter in a concurrent connect wave extends with the wave's largest platform
-    budget without extra preparation notifications on fast 2-profile boots, so a shorter-budget
-    sibling (Discord) prepared last cannot shorten Telegram's parallel connect deadline."""
+    budget, so a shorter-budget sibling (Discord) prepared last cannot shorten Telegram's
+    parallel connect deadline."""
     runner, home = _make_runner(tmp_path, monkeypatch)
     runner.config.systemd_watchdog_seconds = 30.0
     _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
@@ -540,13 +592,13 @@ async def test_systemd_boot_extension_uses_max_budget_once_for_batch(tmp_path, m
     tg_budget = runner._platform_connect_timeout_secs(Platform.TELEGRAM, initial=True)
     dc_budget = runner._platform_connect_timeout_secs(Platform.DISCORD, initial=True)
     expected = max(tg_budget, dc_budget) + 30.0
-    assert extensions == [expected, expected]
+    assert extensions[-2:] == [expected, expected]
 
 
 @pytest.mark.asyncio
 async def test_slow_wall_clock_preparation_renews_systemd_boot_deadline(tmp_path, monkeypatch):
     """When preparing the first secondary profile consumes >= 30s of monotonic wall-clock time,
-    systemd's start deadline is renewed before the second profile loads."""
+    systemd's start deadline is renewed again before the second profile loads."""
     runner, home = _make_runner(tmp_path, monkeypatch)
     runner.config.systemd_watchdog_seconds = 30.0
     _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
@@ -577,9 +629,9 @@ async def test_slow_wall_clock_preparation_renews_systemd_boot_deadline(tmp_path
         await _drain_background_tasks(runner)
 
     assert connected == 2
-    assert extensions_at_load["alpha"] == 0
-    assert extensions_at_load["beta"] == 1
-    assert len(extensions) == 3
+    assert extensions_at_load["alpha"] == 1
+    assert extensions_at_load["beta"] == 3
+    assert len(extensions) == 6
 
 
 @pytest.mark.asyncio
@@ -628,8 +680,8 @@ async def test_slow_multi_platform_single_profile_prep_renews_systemd_boot_deadl
     assert connected == 3
     assert now == 105.0
     assert not expired, f"crossed systemd start deadline during single-profile prep: {expired}"
-    assert extensions_at_create == [0, 1, 2]
-    assert len(extensions) == 5
+    assert extensions_at_create == [2, 3, 4]
+    assert len(extensions) == 7
 
 
 @pytest.mark.asyncio
@@ -669,6 +721,59 @@ async def test_slow_preparation_renews_systemd_boot_deadline(tmp_path, monkeypat
 
     assert connected == 3
     assert not expired, f"crossed systemd start deadline before notification: {expired}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_step", ["profile_load", "platform_build"])
+async def test_each_preparation_step_renews_a_partly_spent_start_budget(tmp_path, monkeypatch, second_step):
+    """Slow primary connects can leave the secondary sweep part of systemd's 90s start timeout. Each
+    preparation step renews the deadline before it runs, as the serial sweep did before each connect:
+    a 29s build and then a 32s profile load (or a 32s build of the profile's next platform) must not
+    cross a deadline that the start of preparation set 60s ahead."""
+    runner, home = _make_runner(tmp_path, monkeypatch)
+    runner.config.systemd_watchdog_seconds = 30.0
+    if second_step == "profile_load":
+        _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
+        _mkprofile(home, "beta", "DISCORD_BOT_TOKEN=tok-beta\n")
+    else:
+        _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-tg\nDISCORD_BOT_TOKEN=tok-dc\n")
+
+    now, deadline = 60.0, 90.0  # the primary phase already used 60s of the unit's start timeout
+    expired: list[tuple[str, float, float]] = []
+    steps = iter([29.0, 32.0, 0.0])
+    real_load = runner._load_secondary_profile_config
+
+    def notify(secs: float) -> bool:
+        nonlocal deadline
+        deadline = max(deadline, now + secs)
+        return True
+
+    def spend(what: str, secs: float) -> None:
+        nonlocal now
+        now += secs
+        if now >= deadline:
+            expired.append((what, now, deadline))
+
+    async def load(profile_name, profile_home):
+        if profile_name == "beta":
+            spend("load beta", next(steps))
+        return await real_load(profile_name, profile_home)
+
+    def create(platform, cfg):
+        spend(f"build {platform.value}", next(steps))
+        return _FakeAsyncAdapter(platform, cfg, AsyncMock(return_value=True))
+
+    monkeypatch.setattr("gateway.systemd_notify.extend_start_timeout", notify)
+    runner._load_secondary_profile_config = load
+    runner._create_adapter = create
+
+    try:
+        connected = await runner._start_secondary_profile_adapters()
+    finally:
+        await _drain_background_tasks(runner)
+
+    assert connected == 2
+    assert not expired, f"crossed systemd start deadline during preparation: {expired}"
 
 
 @pytest.mark.asyncio
@@ -723,9 +828,17 @@ async def test_cancellation_before_gather_workers_releases_all_claims_without_di
         return adapter
 
     runner._create_adapter = make_adapter
+    real_prepare, prepared = runner._prepare_one_profile_adapters, []
+
+    async def prepare(profile_name, profile_home, claimed, batch):
+        await real_prepare(profile_name, profile_home, claimed, batch)
+        prepared.append(profile_name)
+
+    runner._prepare_one_profile_adapters = prepare
 
     def cancel_before_wave(platforms):
-        asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+        if len(prepared) == 2:  # preparation renewals look the budget up too; the wave's lookup comes last
+            asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
         return next(iter(platforms), None)
 
     runner._max_boot_timeout_platform = cancel_before_wave
@@ -886,26 +999,3 @@ async def test_provisional_claim_released_on_permanent_failure_lets_sibling_conn
     beta_status = (state.get("platforms") or {}).get("beta:photon") or {}
     assert beta_status.get("state") == "fatal"
     assert beta_status.get("error_code") == "duplicate_listener"
-
-
-@pytest.mark.asyncio
-async def test_class_level_mixin_monkeypatch_uses_patched_starter(tmp_path, monkeypatch):
-    """Patching GatewayAdapterLifecycleMixin._start_one_profile_adapters with a plain async
-    function must fall back to the patched method instead of bypassing it."""
-    runner, home = _make_runner(tmp_path, monkeypatch)
-    _mkprofile(home, "alpha", "TELEGRAM_BOT_TOKEN=tok-alpha\n")
-
-    calls: list[str] = []
-
-    async def override(self, profile_name, profile_home, claimed):
-        calls.append(profile_name)
-        return 0
-
-    monkeypatch.setattr(GatewayAdapterLifecycleMixin, "_start_one_profile_adapters", override)
-    try:
-        connected = await runner._start_secondary_profile_adapters()
-    finally:
-        await _drain_background_tasks(runner)
-
-    assert connected == 0
-    assert calls == ["alpha"]

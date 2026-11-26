@@ -25,7 +25,8 @@ def _runtime(tmp_path, monkeypatch, failing):
     registry = SessionAuthorities(launch, multiplexed=True)
     runner = SimpleNamespace(
         session_authorities=registry, session_control_server=None, _running_agents={},
-        config=SimpleNamespace(multiplex_profiles=True, _runtime_profile_homes=tuple(homes.items())),
+        config=SimpleNamespace(multiplex_profiles=True, _runtime_profile_homes=tuple(homes.items()),
+                               systemd_watchdog_seconds=0),
         session_runtime_descriptor={"served_profiles": []},
         session_ticket_store=SimpleNamespace(profile_ids=frozenset()),
         session_store=SimpleNamespace(list_sessions=list))
@@ -109,11 +110,10 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         host.pairing_store, host.pairing_stores, host._served_profile_signatures = None, {}, {}
         host._primary_profile_name = "default"
 
-        async def start_one(name, home, claimed):
+        async def start_one(name, home, claimed, batch):
             started.append(name)
-            return 0
 
-        host._start_one_profile_adapters = start_one
+        host._prepare_one_profile_adapters = start_one
         host._restore_secondary_completion_ledgers = lambda profile_homes: None
         monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: [])
         monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: published.update(kw))

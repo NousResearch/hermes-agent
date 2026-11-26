@@ -26,7 +26,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,8 @@ VOICE_LIVE_TURN_NOTE = (
     "before it actually did.]"
 )
 
+_VOICE_TRANSCRIPT_PREFIX = f"{VOICE_LIVE_TURN_NOTE}\n[Recent spoken conversation, newest last:\n"
+
 
 def voice_live_turn_note(context: str = "") -> str:
     """The per-turn note plus, when the client sent one, the recent spoken exchange the delegation
@@ -87,7 +89,23 @@ def voice_live_turn_note(context: str = "") -> str:
     context = context.strip()
     if not context:
         return VOICE_LIVE_TURN_NOTE
-    return f"{VOICE_LIVE_TURN_NOTE}\n[Recent spoken conversation, newest last:\n{context}]"
+    return f"{_VOICE_TRANSCRIPT_PREFIX}{context}]"
+
+
+def extract_voice_live_transcript(message: Mapping[str, object]) -> str:
+    """Read the transcript from a persisted live-voice user's request."""
+    content, api_content = message.get("content"), message.get("api_content")
+    if message.get("role") != "user" or not isinstance(content, str) or not isinstance(api_content, str):
+        return ""
+    # Managed turns append the note. Older gateways prepend it to the live prompt.
+    before, separator, after = f"\n\n{api_content}\n\n".partition(f"\n\n{content}\n\n")
+    if not separator:
+        return ""
+
+    _, _, transcript = f"{before}\n\n{after}".partition("\n\n" + _VOICE_TRANSCRIPT_PREFIX)
+    # Desktop writes one line per speaker turn, so a blank line separates any later note.
+    body, end, _ = transcript.partition("]\n\n")
+    return body if end else ""
 
 
 def _voice_section() -> dict[str, Any]:

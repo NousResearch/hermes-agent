@@ -420,14 +420,24 @@ def test_a_provider_extraction_whose_link_is_repointed_while_it_picks_its_launch
 
 
 @pytest.mark.platforms("posix")  # a directory symlink
+@pytest.mark.parametrize("env_builder", ["imported", "not_imported_yet"])
 def test_a_host_start_whose_link_is_repointed_before_it_reads_ambient_credentials_imports_no_provider(
-        tmp_path, monkeypatch):
+        env_builder, tmp_path, monkeypatch):
     """A start reads which providers take ambient credentials by scanning the home's provider plugins, and an
-    in-process home imports them into Hermes. A link repointed before that scan refuses the start, and the other
-    directory's provider code never runs."""
+    in-process home imports them into Hermes; so does the first import of the child-env builder, whose blocklist
+    reads the provider registry. A link repointed before either refuses the start, and the other directory's
+    provider code never runs."""
+    import sys
+
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.plugin_host import PluginHost
     from hermes_cli.plugin_isolation import ISOLATION_IN_PROCESS
     from hermes_cli.plugins_loader import PluginHomeMoved
+
+    if env_builder == "not_imported_yet":  # the start is the process's first importer
+        for module in ("tools.environments.local", "tools.environments.local_env_policy"):
+            monkeypatch.delitem(sys.modules, module, raising=False)
+        PROVIDER_REGISTRY.sync_before_first_read()
 
     home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
     other = _home_with_plugins(tmp_path / "other", monkeypatch, {}, isolation=ISOLATION_IN_PROCESS)

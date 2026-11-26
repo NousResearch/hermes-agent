@@ -562,6 +562,39 @@ class TestScrollShape:
         ))
         assert result["window"] == 20
 
+    def test_guessed_anchor_between_ids_scrolls_to_the_nearest_message(self, db, persistence):
+        """Message ids are global: a model reaching for the middle of a truncated read guesses an id
+        between two of the session's. Main failed it ('not in session_id'); now it scrolls there."""
+        seed_session(db, "s_a", "cli")
+        seed_session(db, "s_b", "cli")
+        first = seed_messages(db, "s_a", {"role": "user", "content": "alpha one"})[0]
+        foreign = seed_messages(db, "s_b", {"role": "user", "content": "other session"})[0]
+        after = seed_messages(db, "s_a", {"role": "assistant", "content": "alpha two"})[0]
+        for guess, expected in ((foreign, after), (after + 10_000, after)):
+            result = json.loads(session_search(session_id="s_a", around_message_id=guess, persistence=persistence))
+            assert result["success"] is True, result
+            assert result["around_message_id"] == expected and "nearest" in result["warning"]
+            assert {m["id"] for m in result["messages"]} == {first, after}
+
+    def test_scroll_and_discovery_cap_tool_output_but_keep_the_answer(self, db, persistence):
+        """Stored tool-call arguments and tool rows were returned uncapped: one real 8-result discovery
+        was 152K chars, 118K of it tool_calls JSON, and scrolls spilled past the result budget."""
+        seed_session(db, "s1", "cli")
+        for i in range(10):
+            seed_messages(db, "s1", {"role": "assistant", "content": "x" * 50, "tool_calls": [{
+                "id": f"c{i}", "type": "function",
+                "function": {"name": "terminal", "arguments": json.dumps({"command": "y" * 20000})}}]},
+                {"role": "tool", "content": "z" * 30000, "tool_call_id": f"c{i}"})
+        anchor = seed_messages(db, "s1", {"role": "assistant", "content": "The answer is TEAL-HERON-4417. " + "a" * 3000})[0]
+        seed_messages(db, "s1", *({"role": "tool", "content": "w" * 30000, "tool_call_id": "c9"} for _ in range(10)))
+        out = session_search(session_id="s1", around_message_id=anchor, window=20, persistence=persistence)
+        disc = session_search(query="TEAL-HERON-4417 OR terminal", role_filter="user,assistant", limit=5,
+                              detail="full", persistence=persistence)
+        assert len(out) < 60_000 and len(disc) < 60_000, (len(out), len(disc))
+        anchor_row = next(m for m in json.loads(out)["messages"] if m.get("anchor"))
+        assert "TEAL-HERON-4417" in anchor_row["content"] and not anchor_row.get("content_truncated")
+        rows = json.loads(out)["messages"] + [m for r in json.loads(disc)["results"] for m in r["messages"]]
+        assert all(len(c["function"]["arguments"]) <= 2001 for m in rows for c in m.get("tool_calls") or [])
 
     def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db, persistence):
         seed_session(db, "s_current", "cli")

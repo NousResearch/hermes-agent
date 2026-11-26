@@ -23,8 +23,8 @@ from typing import Any, Dict, List, Optional, Union
 
 from agent.redact import redact_derived_text
 from hermes_time import safe_strftime
-from persistence import RowVisibility
-from persistence.conversation.messages import MessageRecord, MessageStorageState, TranscriptRow
+from persistence import MessageId, RowVisibility
+from persistence.conversation.messages import MessageRecord, MessageStorageState, TranscriptRead, TranscriptRow, TranscriptView
 from persistence.conversation.search import SearchHit, SearchSort
 from persistence.conversation.sessions import BOUNDARY_END_REASONS, RecentBrowseQuery, SessionRecord
 from persistence.sqlite._state.common import _PREVIEW_MAX_CHARS
@@ -49,6 +49,16 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # Bounding message COUNT (head/tail) is not enough when content per message is
 # unbounded; the agent can scroll around a message for detail (#114344).
 _READ_MAX_CONTENT = 2000
+# Scroll caps (#147548): a window=10 scroll on a real 440K-message store ran p90 100K chars, half of
+# it tool output, and past the tool-result budget it spilled to a preview without the anchor.
+_SCROLL_TOOL_ROW_MAX, _SCROLL_TEXT_MAX = 1500, 8000
+# Stored tool-call arguments (whole file bodies, heredocs) are uncapped: one 8-result discovery
+# returned 152K chars, 118K of it tool_calls JSON. The anchor row keeps more of its own call.
+_TOOL_ARGS_PREVIEW, _ANCHOR_TOOL_ARGS_MAX = 200, 2000
+# Asked for "the resume command" in 7 of 81 recall requests; agents then queried state.db for the
+# compression children because nothing said a resume follows the lineage (resolve_resume_target).
+_RESUME_HINT = ("To resume one: `hermes --resume <session_id>`; it opens the latest continuation, "
+                "so any session_id from its lineage works.")
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
@@ -341,6 +351,23 @@ def _content_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def _slim_tool_calls(tool_calls: Any, cap: int) -> Any:
+    """Each call's ``function.arguments`` cut to *cap* chars, keeping the stored call shape. Runs after
+    redaction, so a cut can never split a secret the redactor would otherwise have matched."""
+    if not isinstance(tool_calls, (list, tuple)):
+        return tool_calls
+    out = []
+    for call in tool_calls:
+        fn = call.get("function") if isinstance(call, dict) else None
+        args = fn.get("arguments") if isinstance(fn, dict) else None
+        if args is not None and not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False)
+        if isinstance(fn, dict) and args is not None and len(args) > cap:
+            call = {**call, "function": {**fn, "arguments": args[:cap] + "…"}}
+        out.append(call)
+    return out
+
+
 def _shape_message(m: TranscriptRow | MessageRecord, anchor_id: Optional[int] = None,
                    max_content_len: Optional[int] = None, derived: bool = False) -> dict[str, Any]:
     """Slim a stored row; keeps ``content`` even when empty (tool-call-only turns).
@@ -358,7 +385,10 @@ def _shape_message(m: TranscriptRow | MessageRecord, anchor_id: Optional[int] = 
     entry.update({k: getattr(m, k) for k in ("tool_name", "tool_calls", "tool_call_id") if getattr(m, k)})
     if derived and entry.get("tool_calls"):
         entry["tool_calls"] = _redact_tool_calls(entry["tool_calls"])
-    if anchor_id is not None and m.id == anchor_id:
+    is_anchor = anchor_id is not None and m.id == anchor_id
+    if entry.get("tool_calls"):
+        entry["tool_calls"] = _slim_tool_calls(entry["tool_calls"], _ANCHOR_TOOL_ARGS_MAX if is_anchor else _TOOL_ARGS_PREVIEW)
+    if is_anchor:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:
         entry.update(content=content[:max_content_len] + "…", content_truncated=True,
@@ -651,7 +681,7 @@ def _discover(persistence, query: str, role_filter: Optional[list[str]], limit: 
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "
         "title/id/date. To read more around a compact result, scroll: "
-        "session_search(session_id=..., around_message_id=match_message_id)."))
+        "session_search(session_id=..., around_message_id=match_message_id). " + _RESUME_HINT))
 
 
 def _search_session(persistence, session_id: str, query: str, role_filter: Optional[list[str]], limit: int,
@@ -818,7 +848,7 @@ def _list_recent_sessions(persistence, limit: int, current_session_id: str | Non
             for s in [x for x in sessions if x.session_id not in hidden][:limit]]
         return _ok(mode="browse", results=results, count=len(results), message=(
             f"Showing {len(results)} most recent sessions. Pass a query= to search, "
-            "or session_id+around_message_id to scroll."))
+            "or session_id+around_message_id to scroll. " + _RESUME_HINT))
 
     out, err = _loud(_browse, "Error listing recent sessions: %s", "Failed to list recent sessions")
     return err or out
@@ -840,6 +870,27 @@ def _anchor_in_live_context(persistence, anchor_state, anchor_sid: str, current_
     if not _same_lineage(persistence, anchor_sid, current_session_id) or _is_compacted_state(anchor_state):
         return False
     return (anchor_state is not None and anchor_state.visibility is not RowVisibility.ACTIVE) or not _session_left_live_context(persistence, anchor_sid)
+
+
+def _snap_to_nearest(persistence, session_id: str, anchor: int, window: int, current_session_id: str | None):
+    """``(nearest_id, view)`` for an anchor that is not in *session_id*, or None.
+
+    Message ids are global and increasing, so a guessed id between two of this session's ids (models
+    pick one to reach the middle of a truncated read) still names a position: scroll there instead of
+    failing and inviting another guess. The snapped row passes the same live-context guard."""
+    def _first(request):
+        rows = persistence.messages.read_transcript(session_id, request)
+        return rows[0].id if rows else None
+    nearest = _quiet(lambda: _first(TranscriptRead(view=TranscriptView.ALL, after_id=MessageId(anchor), limit=1)), None,
+                     "nearest-anchor lookup failed for %s", session_id) or _quiet(
+        lambda: _first(TranscriptRead(view=TranscriptView.ALL, latest=True, limit=1)), None,
+        "nearest-anchor lookup failed for %s", session_id)
+    if not nearest or (current_session_id and _anchor_in_live_context(
+            persistence, _get_message_storage_state(persistence, nearest), session_id, current_session_id)):
+        return None
+    view = _quiet(lambda: persistence.messages.read_around(session_id, nearest, window=window), None,
+                  "nearest-anchor get_messages_around failed for %s", session_id)
+    return (nearest, view) if view and view.window else None
 
 
 def _scroll(persistence, session_id: str, around_message_id: int, window: int = 5,
@@ -875,12 +926,21 @@ def _scroll(persistence, session_id: str, around_message_id: int, window: int = 
                                 f"(child of {session_id}); rebound transparently")
             view, messages, session_id = rebind_view, rebind_view.window, owning
             session_meta = _get_session_meta(persistence, owning) or session_meta
+    if not messages and (snapped := _snap_to_nearest(persistence, session_id, around_message_id, window, current_session_id)):
+        extra["warning"] = (f"around_message_id {around_message_id} is not in {session_id}; "
+                            f"scrolled to its nearest message, {snapped[0]}")
+        around_message_id, view = snapped
+        messages = view.window
     if not messages:
         return tool_error(f"around_message_id {around_message_id} not in session_id {session_id}", success=False)
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
-        messages=[_shape_message(m, anchor_id=around_message_id) for m in messages],
+        # Tool output is most of a window and rarely the answer: cut it at 1,500 chars; user and
+        # assistant text keep 8,000 (that held every answer keyword on a real recall set, #147548).
+        messages=[_shape_message(m, anchor_id=around_message_id,
+                                 max_content_len=_SCROLL_TOOL_ROW_MAX if m.role == "tool" and m.id != around_message_id
+                                 else _SCROLL_TEXT_MAX) for m in messages],
         messages_before=view.before, messages_after=view.after,
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "
               "id; backward: the FIRST message's id (the boundary message repeats "

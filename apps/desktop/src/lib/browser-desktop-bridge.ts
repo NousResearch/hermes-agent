@@ -287,7 +287,12 @@ export function installBrowserDesktopBridge(): boolean {
         }
       }
     }),
-    ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),
+    ...createBrowserProfileBridge({
+      basePath: bootstrap.basePath,
+      currentConnection: hosted ? () => ownConnection($connection.get()?.connectionId) : undefined,
+      currentProfile,
+      openWindow
+    }),
     uiPreferences: createBrowserUiPreferences(api),
     zoom: createBrowserZoom(bootstrap.basePath)
   }

@@ -197,6 +197,7 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
   $connection.set(null)
+  window.history.replaceState(null, '', '/')
   _resetAdoptedLaunchProfileForTests()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -380,6 +381,46 @@ describe('a Webapp whose host runs no agent', () => {
       'alpha/default primary',
       'alpha/research primary',
       'beta/default'
+    ])
+  })
+
+  // A switch writes the profile into the address; on this host it writes the agent beside it, or a
+  // reload of a popped-out window would open the profile on the agent the window was opened for.
+  it('keeps the agent the window switched to in its address, so a reload opens on it', async () => {
+    dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] } })
+    window.history.replaceState(null, '', '/?win=secondary&connectionId=beta')
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    expect($connection.get()?.connectionId).toBe('beta')
+
+    $connection.set(await desktop.getConnectionFor!({ connectionId: 'alpha', profile: 'research' }))
+    await desktop.profile!.remember('research')
+
+    const address = new URL(window.location.href)
+    expect([address.searchParams.get('connectionId'), address.searchParams.get('profile')]).toEqual(['alpha', 'research'])
+
+    Reflect.deleteProperty(win, 'hermesDesktop')
+    $connection.set(null)
+    const reloaded = install()
+
+    expect((await reloaded.getConnection()).connectionId).toBe('alpha')
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('opens a new window on the agent this one is on, or the one the route names', async () => {
+    dashboardHost({ profiles: { alpha: ['default'], beta: ['default', 'research'] } })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    $connection.set(await desktop.getConnectionFor!({ connectionId: 'beta', profile: 'research' }))
+    const { open } = browserOpensWebappWindows()
+
+    await desktop.openWindow!()
+    await desktop.openWindow!({ connectionId: 'alpha', profile: 'default' })
+
+    const opened = open.mock.calls.map(([url]) => new URL(String(url)))
+    expect(opened.map(url => `${url.searchParams.get('connectionId')}/${url.searchParams.get('profile')}`)).toEqual([
+      'beta/research',
+      'alpha/default'
     ])
   })
 

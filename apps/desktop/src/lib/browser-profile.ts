@@ -5,6 +5,9 @@ import { browserStartupProfileKey, readBrowserStartupProfile, requireProfileRout
 interface BrowserProfileOptions {
   basePath: string
   currentProfile: () => string | null
+  /** On a host that runs no agent, the agent the window is on: the address names it beside the
+   *  profile, so a reload or a new window opens on that agent, not on the list's primary. */
+  currentConnection?: () => null | string | undefined
   openWindow: (target: URL) => Promise<{ ok: true }>
 }
 
@@ -18,8 +21,25 @@ function setUrlProfile(url: URL, profile: string | null): void {
   }
 }
 
+function setUrlConnection(url: URL, connectionId: null | string | undefined): void {
+  if (connectionId) {
+    url.searchParams.set('connectionId', connectionId)
+  } else {
+    url.searchParams.delete('connectionId')
+  }
+}
+
+// A route naming an agent (on a host that runs no agent): its profile checked as any route's is.
+const agentRoute = (value: unknown) => {
+  const { connectionId } = (value ?? {}) as Record<string, unknown>
+  const named = typeof connectionId === 'string' && connectionId ? connectionId : null
+
+  return { connectionId: named, profile: requireProfileRoute({ ...(value as object), connectionId: null }).profile }
+}
+
 export function createBrowserProfileBridge({
   basePath,
+  currentConnection,
   currentProfile,
   openWindow
 }: BrowserProfileOptions): Pick<Window['hermesDesktop'], 'openWindow' | 'profile'> {
@@ -33,6 +53,11 @@ export function createBrowserProfileBridge({
     const selected = profile?.trim() || null
     const url = new URL(window.location.href)
     setUrlProfile(url, selected)
+
+    if (currentConnection) {
+      setUrlConnection(url, currentConnection())
+    }
+
     // Keep react-router's entry state (idx/key/usr): only the URL changes.
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
 
@@ -42,7 +67,14 @@ export function createBrowserProfileBridge({
   return {
     openWindow: async options => {
       const url = new URL(window.location.href)
-      setUrlProfile(url, options === undefined ? currentProfile() : requireProfileRoute(options).profile)
+
+      if (currentConnection) {
+        const route = options === undefined ? null : agentRoute(options)
+        setUrlProfile(url, route ? route.profile : currentProfile())
+        setUrlConnection(url, route?.connectionId ?? currentConnection())
+      } else {
+        setUrlProfile(url, options === undefined ? currentProfile() : requireProfileRoute(options).profile)
+      }
 
       url.searchParams.delete('win')
       url.searchParams.delete('watch')

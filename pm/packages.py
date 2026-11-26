@@ -1072,6 +1072,41 @@ class Ripgrep(BinaryPackage):
 
 
 @register
+class Bun(BinaryPackage):
+    """Bun JS runtime for Debian-family Linux hosts (x64 and arm64 glibc only)."""
+
+    name = "bun"
+    optional = True
+    binary_rel = {"linux-x64": "bun", "linux-arm64": "bun"}
+    flatten = True
+    probe_args = ["--version"]
+    gaps = {
+        target: "bun runtime is only provisioned for Debian-family glibc Linux"
+        for target in ALL_TARGETS
+        if target not in ("linux-x64", "linux-arm64")
+    }
+
+    def fetch_url(self, version: str, target: str) -> str:
+        arch = {"linux-x64": "x64", "linux-arm64": "aarch64"}[target]
+        return f"https://github.com/oven-sh/bun/releases/download/bun-v{version}/bun-linux-{arch}.zip"
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        super().stage(store, staged, version, target)
+        bun = staged / "bun"
+        bunx = staged / "bunx"
+        if bun.is_file() and not bunx.exists():
+            bunx.symlink_to("bun")
+
+    def known_sha256(self, version: str, url: str) -> Optional[str]:
+        return _github_release_digests("oven-sh/bun", f"bun-v{version}").get(
+            url.rsplit("/", 1)[-1]
+        )
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("oven-sh/bun", strip_prefix="bun-v")
+
+
+@register
 class Just(BinaryPackage):
     """The developer command runner. Activation installs it; user installs and desktop bundles never do."""
 

@@ -1,5 +1,18 @@
 {
   "packages": {
+    "bun": {
+      "artifacts": {
+        "linux-arm64": {
+          "sha256": "18656a3bf0ea5641f5796ae4213b75255579a70a0fded2f337933785568cdf84",
+          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/bun-linux-aarch64.zip"
+        },
+        "linux-x64": {
+          "sha256": "94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb",
+          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/bun-linux-x64.zip"
+        }
+      },
+      "version": "1.4.5"
+    },
     "bws": {
       "artifacts": {
         "darwin-arm64": {

@@ -274,14 +274,23 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
 
 
 # Bare MCP launchers Hermes ships through PM, keyed to the package that provides them.
-_MANAGED_LAUNCHERS = {"npx": "npm", "npm": "npm", "node": "npm", "uv": "uv", "uvx": "uv"}
+_MANAGED_LAUNCHERS = {
+    "bun": "bun",
+    "bunx": "bun",
+    "npx": "npm",
+    "npm": "npm",
+    "node": "npm",
+    "uv": "uv",
+    "uvx": "uv",
+}
 
 
 def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
     """PM's executable for a bare launcher name and the toolchain dirs its children need first on
     PATH (npx's ``env node``, uvx's sibling uv). Never the user's copy: a missing managed tool is
     provisioned through PM, which raises naming the remedy when it may not. None only when PM
-    ships no build for this platform (Termux), where the platform's own copy IS the toolchain."""
+    ships no build for this platform (Termux, or ``bun`` off Linux glibc), where the platform's own
+    copy IS the toolchain."""
     import pm
 
     package = _MANAGED_LAUNCHERS[command]
@@ -291,6 +300,9 @@ def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
     if package == "uv":
         launcher = pm.uv_launcher(command)
         dirs = [str(launcher.parent)] if launcher is not None else []
+    elif package == "bun":
+        installed = pm.installed_package("bun")
+        dirs = [str(installed.binary.parent)] if installed is not None and installed.binary is not None else []
     else:
         from hermes_constants import with_hermes_node_path
 
@@ -414,7 +426,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         # (#125300). Step past managed dirs to the user's own hit; the explicit launcher
         # family keeps the managed-first resolution (that is the point of
         # ``_launcher_fallback``), and a managed-only PATH keeps the managed hit.
-        if which_hit and resolved_command not in {"npx", "npm", "node", "uv", "uvx"}:
+        if which_hit and resolved_command not in _MANAGED_LAUNCHERS:
             which_hit = _first_user_which_hit(resolved_command, path_arg, resolved_env) or which_hit
         if which_hit:
             resolved_command = which_hit

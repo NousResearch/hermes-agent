@@ -1,0 +1,19 @@
+name: web-kagi
+repo: https://github.com/freeformz/hermes-plugin-kagi
+sha: 8cbbfe4b0f641c05be9194d5701ac9df6d288663
+description: "Kagi as a backend for Hermes' existing web_search and web_extract tools, using Kagi's paid v1 Search and Extract APIs (premium results, markdown page extraction). Disclosure — sends search queries and the URLs passed to web_extract to kagi.com (or KAGI_API_BASE_URL) with your KAGI_API_KEY; Kagi bills each call to your account. Reads KAGI_API_KEY and KAGI_API_BASE_URL through Hermes' profile-scoped get_secret. Registers one web provider, with no new tools, hooks, background processes, file writes, shell commands, telemetry, or self-updater. No Python dependencies beyond Hermes (uses its httpx). Independent community plugin, not affiliated with Kagi."
+maintainer: freeformz
+tier: community
+category: web
+title: Kagi Web Search
+requires_hermes: ">=0.22.6"
+version: "0.2.2"
+docs_url: https://github.com/freeformz/hermes-plugin-kagi#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - KAGI_API_KEY

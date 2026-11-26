@@ -1211,9 +1211,13 @@ def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
     rescanned once when it has no user copy of ``name`` or that copy's manifest files changed since
     the scan (installed again or updated); the enable check reads the requesting profile's lists on
     every request."""
-    from hermes_cli.plugin_isolation import requested_plugin_host
+    from hermes_cli.plugin_isolation import refuse_moved_home, requested_plugin_host
     from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
     from hermes_cli.web_server import _get_dashboard_plugins
+
+    # The copy is read through the process's own home name. Once that name leads elsewhere (the launch profile
+    # renamed, its old name reused), it is another directory's plugin, whichever name this request came through.
+    refuse_moved_home(get_process_hermes_home())
 
     def hosted_copy(plugins: list) -> Optional[dict]:
         return next((p for p in plugins if p.get("name") == name and p.get("_api_file")

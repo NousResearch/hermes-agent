@@ -290,20 +290,20 @@ def user_plugin_host() -> Any:
 
 def requested_plugin_host() -> Any:
     """The active profile's shared plugin host, for a caller that hands it plugin paths read through the active
-    home's name (:func:`refuse_moved_active_home`)."""
+    home's name (:func:`refuse_moved_home`)."""
     from hermes_cli.plugins import get_plugin_manager
-    refuse_moved_active_home()
+    from hermes_constants import get_hermes_home
+    refuse_moved_home(get_hermes_home())
     return get_plugin_manager()._plugin_host()
 
 
-def refuse_moved_active_home() -> None:
-    """``PluginHomeMoved`` when the active home's name leads to another directory than the one the process opened
-    it as. Its manager is found by the remembered key, so it is that directory's, possibly running under another
-    name (a renamed profile's) with that profile's environment: paths read through this name are another
-    directory's plugin code."""
+def refuse_moved_home(home: Path) -> None:
+    """``PluginHomeMoved`` when *home*'s name leads to another directory than the one the process opened it as.
+    Managers are found by the remembered key, so the active one is that directory's, possibly running under
+    another name (a renamed profile's) with that profile's environment: plugin paths read through *home*'s name
+    are another directory's plugin code."""
     from hermes_cli.plugins_loader import PluginHomeMoved
-    from hermes_constants import get_hermes_home
-    if (moved := home_moved_refusal(get_hermes_home().absolute())) is not None:
+    if (moved := home_moved_refusal(Path(home).absolute())) is not None:
         raise PluginHomeMoved(moved)
 
 
@@ -316,7 +316,8 @@ def transient_plugin_host() -> Iterator[Any]:
     if isolation_mode() != ISOLATION_HOST:
         yield None
         return
-    refuse_moved_active_home()  # its manager keys the remembered directory too
+    from hermes_constants import get_hermes_home
+    refuse_moved_home(get_hermes_home())  # its manager keys the remembered directory too
     import uuid
 
     from hermes_cli.plugins import PluginManager

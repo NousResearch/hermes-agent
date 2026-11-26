@@ -1,6 +1,6 @@
 name: seatbelt
 repo: https://github.com/deeworksonline-debug/hermes-seatbelt
-sha: fe7c810479ad7480e04d853da08047c41586d1cc
+sha: 3dfdbccea1f1214d4a69a27420ed7eec8bea879e
 subdir: seatbelt
 description: >-
   Seatbelt enforces your trading limits in front of every trading-looking tool call

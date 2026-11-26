@@ -237,7 +237,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
             retry_parked = reason == "control-socket"
             added = [n for n in live if n not in known and n != active and (retry_parked or n not in parked)]
             removed = [n for n in known if n not in live and n != active]
-            unreadable = self._unreadable_platform_configs
+            unreadable = getattr(self, "_unreadable_signatures", None) or {}
             changed = [n for n in live if n in known and n != active and n not in added
                        and profile_serve_signature(live[n]) not in (sigs.get(n), unreadable.get(n))]
             current = {n: h for n, h in live.items() if n in known or n == active}
@@ -308,7 +308,7 @@ class GatewayProfileReconcileMixin(GatewayPlatformReconcileMixin):
                 transient_failed.add(name)
             else:
                 sigs[name] = scan_signature
-                self._unreadable_platform_configs.pop(name, None)
+                (getattr(self, "_unreadable_signatures", None) or {}).pop(name, None)
             if name in added:
                 logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                 result["added"].append(name)

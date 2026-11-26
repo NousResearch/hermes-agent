@@ -180,7 +180,8 @@ def load_platform_config_strict():
 def publish_runner_owned_settings(live_platforms: dict, fresh_platforms: dict) -> None:
     """Copy the settings the runner (not the adapter) reads, e.g. ``home_channel``, from a fresh load
     into the live platform configs in place: no rebuild is owed, and every holder of the live object
-    (the delivery router, the adapter's ``config``) sees the new value."""
+    (the delivery router, the adapter built from it) sees the new value. A served profile needs none:
+    its rescan replaces the cached config the runner reads."""
     for platform, current in live_platforms.items():
         new = fresh_platforms.get(platform)
         if new is None or new is current:
@@ -480,7 +481,6 @@ class GatewayPlatformReconcileMixin:
             built.pop(platform, None)
         # Runner-read settings (the home channel) are live at once, whatever the adapter plan says.
         publish_runner_owned_settings(self.config.platforms, fresh.platforms)
-        publish_runner_owned_settings({p: a.config for p, a in self.adapters.items()}, fresh.platforms)
         if not plan:
             return plan, installed
         self._primary_platform_plan = plan  # what a ``pending`` verb answer reports while this runs
@@ -566,7 +566,6 @@ class GatewayPlatformReconcileMixin:
         profile_map = self._profile_adapters.get(profile_name) or {}
         queued = (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}
         built = (getattr(self, "_profile_build_prints", None) or {}).setdefault(profile_name, {})
-        publish_runner_owned_settings({p: a.config for p, a in profile_map.items()}, current.platforms)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             wanted_cfg = {p: c for p, c in current.platforms.items()
                           if c.enabled and _platform_has_bot_credential(p, c)}

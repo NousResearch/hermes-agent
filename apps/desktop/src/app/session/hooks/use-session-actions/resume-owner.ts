@@ -1,5 +1,7 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
 import type { SessionInfo } from '@/hermes'
-import { isActivePrimary, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
+import { activeGatewayConnectionId, isActivePrimary, openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
 import { $showAllProfiles, ensureGatewayAgent, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection, setSessionOwnerHint } from '@/store/session'
 import type { SessionOwnerScope, SessionProfileRoute } from '@/store/session-request-router'
@@ -100,7 +102,23 @@ export async function openResumeGateway(
   } else if (resolvedConnectionId) {
     await ensureGatewayAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
   } else {
-    await ensureGatewayProfile(sessionProfile)
+    // An ownerless row — no captured route, no `connection_id`, nothing
+    // remembered — cannot prove it belongs to this machine. The bare profile
+    // door resolves the name against the PRIMARY route, and every source
+    // exposes `default`, so reaching it while a registry connection is in front
+    // re-homes the window onto the local gateway: the pick that put it there is
+    // undone and the sidebar follows it back to this machine's sessions. An
+    // ownerless row resumed on the source the window is already looking at
+    // keeps that source; the local pool (and an unpublished source) keeps the
+    // profile door unchanged.
+    const profile = ownerRoute?.profile || sessionProfile || 'default'
+    const activeConnection = activeGatewayConnectionId()
+
+    if (activeConnection && activeConnection !== LOCAL_CONNECTION_ID) {
+      await ensureGatewayAgent(activeConnection, profile)
+    } else {
+      await ensureGatewayProfile(sessionProfile)
+    }
   }
 }
 

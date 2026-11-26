@@ -740,26 +740,6 @@ def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restar
         logger.info("Skipping signal handlers (not running in main thread).")
 
 
-async def _abort_startup_before_runner(runner, _signal_initiated_shutdown: list) -> bool:
-    """Finish an operator stop or restart that arrived while the runtime listener was starting."""
-    import asyncio
-    from gateway.run import _resolve_gateway_exit_verdict, _shutdown_gateway_health_export
-    try:
-        stop_task = getattr(runner, "_stop_task", None)
-        if stop_task is not None and stop_task is not asyncio.current_task():
-            await stop_task
-        elif not runner._shutdown_event.is_set():
-            await runner.stop(
-                restart=getattr(runner, "_restart_requested", False),
-                detached_restart=getattr(runner, "_restart_detached", False),
-                service_restart=getattr(runner, "_restart_via_service", False),
-            )
-        await runner.wait_for_shutdown()
-        return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
-    finally:
-        _shutdown_gateway_health_export(runner)
-
-
 async def _start_gateway_listener_and_runner(
     runner, _signal_initiated_shutdown: list, *, idle_exit: bool
 ) -> tuple[Optional[bool], Any, Optional[dict]]:
@@ -769,11 +749,20 @@ async def _start_gateway_listener_and_runner(
     during the Webapp address wait, aborts before recording startup, starting keepalive, or
     discovering MCP tools.
     """
-    from gateway.run import _best_effort, _ensure_windows_gateway_venv_imports
-    from gateway.run_runtime import is_runner_stopping, start_gateway_runtime_api
+    from gateway.run import (
+        _best_effort, _ensure_windows_gateway_venv_imports,
+        _resolve_gateway_exit_verdict, _shutdown_gateway_health_export,
+    )
+    from gateway.run_common import abort_startup_if_shutdown_requested, startup_should_abort
+    from gateway.run_runtime import start_gateway_runtime_api
     await start_gateway_runtime_api(runner)
-    if is_runner_stopping(runner):
-        return await _abort_startup_before_runner(runner, _signal_initiated_shutdown), None, None
+    if startup_should_abort(runner):
+        try:
+            await abort_startup_if_shutdown_requested(runner, check=False)
+            await runner.wait_for_shutdown()
+            return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0]), None, None
+        finally:
+            _shutdown_gateway_health_export(runner)
     from gateway.run_api import preload_session_socket
     ws_preload = preload_session_socket() if idle_exit else None  # overlaps the adapter/cron start
 

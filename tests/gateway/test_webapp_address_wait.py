@@ -342,7 +342,6 @@ def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(
             _restart_requested=False,
             _stop_requested_by_signal=False,
             _planned_takeover_shutdown=False,
-            _startup_should_abort=lambda: shutdown_event.is_set(),
         )
 
         async def teardown(self):
@@ -397,10 +396,10 @@ def test_restart_requested_during_wait_aborts_without_binding(monkeypatch):
     asyncio.run(run_scenario())
 
 
-def test_bootstrap_abort_before_runner_awaits_stop_and_returns_exit_verdict():
-    from gateway import run_bootstrap
+def test_unified_startup_abort_handles_restart_flags_and_minimal_test_doubles():
+    from gateway.run_common import abort_startup_if_shutdown_requested, startup_should_abort
 
-    async def run_scenario(signal_initiated: bool):
+    async def run_scenario():
         shutdown_event = asyncio.Event()
         stop_calls = []
 
@@ -411,31 +410,44 @@ def test_bootstrap_abort_before_runner_awaits_stop_and_returns_exit_verdict():
         runner = types.SimpleNamespace(
             _stop_task=None,
             _shutdown_event=shutdown_event,
-            _restart_requested=False,
+            _restart_requested=True,
             _restart_detached=False,
-            _restart_via_service=False,
-            should_exit_with_failure=False,
-            exit_code=None,
-            exit_reason=None,
-            _gateway_health_export_runtime=None,
+            _restart_via_service=True,
             stop=stop,
-            wait_for_shutdown=shutdown_event.wait,
         )
-        verdict = await run_bootstrap._abort_startup_before_runner(runner, [signal_initiated])
-        assert stop_calls == [(False, False, False)]
+        assert startup_should_abort(runner) is True
+        assert await abort_startup_if_shutdown_requested(runner) is True
+        assert stop_calls == [(True, False, True)]
         assert shutdown_event.is_set()
-        return verdict
 
-    assert asyncio.run(run_scenario(False)) is True
-    assert asyncio.run(run_scenario(True)) is False
+        # Minimal test double without _shutdown_event and with 0-arg stop() (test_startup_restart_race).
+        minimal_stops = []
+
+        class MinimalRunner:
+            _restart_requested = True
+            _restart_via_service = True
+
+            async def stop(self):
+                minimal_stops.append(True)
+
+        minimal = MinimalRunner()
+        assert startup_should_abort(minimal) is True
+        assert await abort_startup_if_shutdown_requested(minimal) is True
+        assert minimal_stops == [True]
+
+    asyncio.run(run_scenario())
 
 
-def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(monkeypatch):
+@pytest.mark.parametrize(("signal_initiated", "expected_verdict"), [(False, True), (True, False)])
+def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(
+    monkeypatch, signal_initiated, expected_verdict
+):
     from gateway import run_bootstrap
 
     async def run_scenario():
         shutdown_event = asyncio.Event()
         called_runner = []
+        stop_calls = []
 
         async def fake_start_api(r):
             r._stop_requested_by_signal = True
@@ -445,6 +457,7 @@ def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(
             called_runner.append(True)
 
         async def stop(*, restart=False, detached_restart=False, service_restart=False):
+            stop_calls.append((restart, detached_restart, service_restart))
             shutdown_event.set()
 
         monkeypatch.setattr(run_runtime, "start_gateway_runtime_api", fake_start_api)
@@ -464,9 +477,11 @@ def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(
             wait_for_shutdown=shutdown_event.wait,
         )
         verdict, ws_preload, unclean = await run_bootstrap._start_gateway_listener_and_runner(
-            runner, [False], idle_exit=False
+            runner, [signal_initiated], idle_exit=False
         )
-        assert (verdict, ws_preload, unclean) == (True, None, None)
+        assert (verdict, ws_preload, unclean) == (expected_verdict, None, None)
+        assert stop_calls == [(False, False, False)]
+        assert shutdown_event.is_set()
         assert called_runner == []
 
     asyncio.run(run_scenario())

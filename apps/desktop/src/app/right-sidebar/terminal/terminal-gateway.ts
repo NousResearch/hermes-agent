@@ -2,6 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { computed } from 'nanostores'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
+import { browserHostRunsNoAgent } from '@/lib/platform'
 import { $activeConnectionId, $connectionsRegistry } from '@/store/connections'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
@@ -16,8 +17,10 @@ export interface TerminalGateway {
 
 /** Where a shell for `connectionId` runs: an SSH gateway runs it on its own
  *  host; This device, URL/token and cloud gateways (no shell transport) run it
- *  here and say so. Undefined while the registry is unknown (or on a host with
- *  none, like the Webapp), so main keeps routing by the window. */
+ *  here and say so. On a host that runs no agent there is no This device: the
+ *  page relays each agent's own shell, so the tab names that agent and profile,
+ *  as an SSH tab does. Undefined while the registry is unknown (or on a host
+ *  with none, like the Webapp), so main keeps routing by the window. */
 export function shellGatewayFor(
   connectionId: null | string | undefined,
   profile: null | string | undefined,
@@ -29,7 +32,7 @@ export function shellGatewayFor(
     return undefined
   }
 
-  return source.kind === 'ssh'
+  return source.kind === 'ssh' || browserHostRunsNoAgent()
     ? { connectionId: source.id, profile: normalizeProfileKey(profile) }
     : { connectionId: LOCAL_CONNECTION_ID }
 }
@@ -42,8 +45,9 @@ const $defaultTerminalGateway = computed(
 
 export const defaultTerminalGateway = () => $defaultTerminalGateway.get()
 
-/** The tab's shell rides an SSH gateway's tunnel (only SSH gateways keep a
- *  connection id other than This device on a tab). */
+/** The tab's shell rides an SSH gateway's tunnel, or a hostless page's relay to
+ *  its agent: only those keep a connection id other than This device on a tab,
+ *  and either can come back. */
 export const runsOverSsh = (gateway: TerminalGateway | undefined): boolean =>
   Boolean(gateway && gateway.connectionId !== LOCAL_CONNECTION_ID)
 

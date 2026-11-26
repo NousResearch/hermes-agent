@@ -42,6 +42,7 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
+import { createImeTextInput } from "@/lib/pty-ime-text-input";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -654,8 +655,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       (text) => term.paste(text),
     );
 
+    let imeTextInput: ReturnType<typeof createImeTextInput> | null = null;
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
+      if (imeTextInput?.xtermShouldHandleKeydown(ev) === false) return false;
 
       // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
       // key handler per Terminal, so a second registration overwrites this one.
@@ -846,7 +849,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
+      imeTextInput = createImeTextInput(textarea, (data) => term.input(data));
       mobileInputCleanup = () => {
+        imeTextInput?.dispose();
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
       };

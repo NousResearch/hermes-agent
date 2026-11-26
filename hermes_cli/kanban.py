@@ -360,6 +360,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    acceptance = None
+    if getattr(args, "acceptance", None) is not None:
+        from hermes_cli.kanban_acceptance import parse_acceptance_arg
+        try:
+            canonical = parse_acceptance_arg(args.acceptance)
+        except ValueError as exc:
+            return _err(f"kanban: --acceptance: {exc}", 2)
+        acceptance = json.loads(canonical) if canonical else None
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -374,6 +382,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
+            acceptance=acceptance,
             initial_status=getattr(args, "initial_status", "running"),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
@@ -471,6 +480,17 @@ def _print_section(title: str, lines) -> None:
         print(line)
 
 
+def _show_acceptance(field, acceptance: Optional[str], submission: Optional[dict]) -> None:
+    """The declared machine-acceptance check and the current submission, if any."""
+    if not acceptance:
+        return
+    field("acceptance", acceptance)
+    if submission:
+        verdict = f" ({submission['verdict']}: {submission['reason']})" if submission["verdict"] else ""
+        field("submission", f"#{submission['id']} {submission['state']}{verdict}, "
+                            f"implementer {submission['implementer'] or '-'}, attempts {submission['attempts']}")
+
+
 def _cmd_show(args: argparse.Namespace) -> int:
     rsk, rc = _run_state_kwargs(args, "show")
     if rc:
@@ -488,6 +508,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        from hermes_cli.kanban_db_acceptance import submission_summary
+        acceptance_submission = submission_summary(conn, args.task_id)
         if not want_json:
             graph = kb.task_graph_context(conn, task.id)
 
@@ -497,6 +519,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
+            "acceptance_submission": acceptance_submission,
         })
         return 0
 
@@ -516,6 +539,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         field("model", f"{task.model_override}{_prov}")
+    _show_acceptance(field, task.acceptance, acceptance_submission)
     # Effective retry threshold (task > config > default) explains auto-blocks.
     if task.max_retries is not None:
         print(f"  max-retries: {task.max_retries} (task)")
@@ -910,7 +934,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
-            gate_err = _goal_gate_error(
+            # A declared acceptance replaces the judge.
+            _task = kb.get_task(conn, tid)
+            gate_err = None if getattr(_task, "acceptance", None) else _goal_gate_error(
                 conn, tid, (summary or args.result or "").strip(), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
                 "Provide evidence matching the task's acceptance criteria.")
@@ -931,6 +957,13 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
                                  f"describing what was done (an empty completion is not evidence).")
                 return False
+            except kb.AcceptanceSubmissionError as acc_err:
+                fail_msg[tid] = f"cannot complete {tid}: {acc_err}"
+                return False
+            if not done and _machine_wait(conn, tid):
+                fail_msg[tid] = (f"cannot complete {tid}: it is waiting for machine acceptance; the "
+                                 f"dispatcher decides it (`hermes kanban edit {tid} --acceptance ...` "
+                                 f"to change the check).")
             if not done:
                 # complete_task returns bare False for a dependency refusal too;
                 # name the open parents instead of claiming the id is unknown.
@@ -941,7 +974,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
             return done
 
-        return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
+        return _bulk_apply(ids, op, lambda tid: (
+            f"Submitted {tid} for machine acceptance (done only if the check passes)"
+            if _machine_wait(conn, tid) else f"Completed {tid}"), fail_msg.__getitem__)
+
+
+def _machine_wait(conn, tid: str) -> bool:
+    from hermes_cli.kanban_db_acceptance import is_machine_wait
+    return is_machine_wait(conn, tid)
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
@@ -951,13 +991,29 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    raw_acceptance = getattr(args, "acceptance", None)
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, raw_acceptance)):
+        return _err("kanban edit: provide --title, --body, --priority, --result, or --acceptance", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
+    if raw_acceptance is not None:
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            return _err("kanban edit --acceptance is operator-only; a worker cannot change its own check")
+        from hermes_cli.kanban_acceptance import parse_acceptance_arg
+        from hermes_cli.kanban_db_acceptance import set_acceptance
+        try:
+            canonical = parse_acceptance_arg(raw_acceptance)
+        except ValueError as exc:
+            return _err(f"kanban edit: --acceptance: {exc}", 2)
+        with kbc.connect_closing() as conn:
+            if not set_acceptance(conn, args.task_id, json.loads(canonical) if canonical else None):
+                return _err(f"cannot edit {args.task_id} (unknown id, or the task is done/archived)")
+        if all(value is None for value in (title, body, priority, result)):
+            print(f"Edited {args.task_id}")
+            return 0
     with kbc.connect_closing() as conn:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,

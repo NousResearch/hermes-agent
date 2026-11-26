@@ -205,6 +205,11 @@ _SPECS = [
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+        _arg("--acceptance", metavar="JSON",
+             help='Machine check gating done, one JSON object: {"kind":"file","path":"/abs","exists":true}, '
+                  '{"kind":"git_commit","repo":"/abs","branch":"B","base":"<40-hex>"}, '
+                  '{"kind":"pr_checks","pr_url":"https://github.com/O/R/pull/N"} or {"kind":"tbd"}. '
+                  "Completion then submits the card; the dispatcher passes it to done or returns it."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -311,6 +316,9 @@ _SPECS = [
         _arg("--priority", type=int, help="Replace the task priority"),
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
+        _arg("--acceptance", metavar="JSON|none",
+             help="Operator only: replace the machine-acceptance check (same JSON as create) or 'none' "
+                  "to remove it; a waiting submission is re-checked against the new one."),
     ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("block", [
         _TASK_ID,

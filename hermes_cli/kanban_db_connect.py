@@ -775,7 +775,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # Idempotent; runs under _INIT_LOCK so same-process dispatcher
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
-                conn.executescript(_kb.SCHEMA_SQL)
+                conn.executescript(SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
 
@@ -886,6 +886,8 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Machine-acceptance spec (canonical JSON); NULL = none.
+    ("acceptance", "acceptance TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -905,6 +907,7 @@ _TASK_RUN_COLUMNS = (
     # terminal-worker reaper; NULL = legacy row, never signalled).
     ("worker_started_at", "worker_started_at INTEGER"),
 )
+
 
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -983,6 +986,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             if name not in run_cols:
                 _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
+
 
     # One-shot event-kind rename: old names still worked but were awkward on
     # the wire. Fires once per DB — after the UPDATE no rows match.
@@ -1294,3 +1298,4 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb
+from hermes_cli.kanban_db.schema import SCHEMA_SQL

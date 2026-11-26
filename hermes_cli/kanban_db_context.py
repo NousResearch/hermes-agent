@@ -102,6 +102,10 @@ def _ctx_header(lines: list[str], task: Task) -> None:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
+    if task.acceptance:
+        lines.append(f"Machine acceptance: `{task.acceptance}`")
+        lines.append("(kanban_complete submits the card; after you exit the dispatcher checks this — pass "
+                     "-> done, fail -> back to you with the failure under Prior attempts.)")
     lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")

@@ -1545,7 +1545,7 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
         assert healed <= cols
         # Healed DDL matches the fresh schema (NOT NULL DEFAULT 'scratch' etc.).
         fresh = sqlite3.connect(":memory:")
-        fresh.executescript(kb.SCHEMA_SQL)
+        fresh.executescript(kb.schema.SCHEMA_SQL)
         fresh_info = {r[1]: r[2:] for r in fresh.execute("PRAGMA table_info(tasks)")}
         healed_info = {r["name"]: tuple(r)[2:] for r in conn.execute("PRAGMA table_info(tasks)")}
         assert {c: healed_info[c] for c in healed} == {c: fresh_info[c] for c in healed}
@@ -1635,7 +1635,7 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
 
     from hermes_cli import kanban_db_dispatch as kbd
 
-    root = str(Path(kbd.__file__).resolve().parents[1])
+    root = str(Path(kbd.__file__).resolve().parents[2])
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

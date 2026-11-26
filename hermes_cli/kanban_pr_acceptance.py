@@ -11,8 +11,10 @@ org's private repos (#122689).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,16 +31,29 @@ def validate_contract(value: str | None) -> str:
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
-    command = ["gh", "api", endpoint, "--hostname", "github.com"]
+         profile_home: str | None = None, deadline: float | None = None, gh_binary: str | None = None):
+    # ``deadline`` (time.monotonic) bounds the whole
+    # collection; ``gh_binary`` (the machine evaluator) pins an absolute gh, a whitelisted env and
+    # byte-capped reads. Without them the original behaviour is unchanged.
+    command = [gh_binary or "gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
         command += ["--paginate", "--slurp"]
+    timeout = 30
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, 0)
+        timeout = min(timeout, remaining)
     try:
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, encoding="utf-8", errors="replace", timeout=30,
-                                check=True, env=_gh_env(profile_home))
+        if gh_binary is None:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                                    check=True, env=_gh_env(profile_home))
+            stdout = result.stdout
+        else:
+            stdout = _machine_gh_call(command, profile_home=profile_home, timeout=timeout, deadline=deadline)
     except subprocess.CalledProcessError as exc:
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
@@ -49,7 +64,7 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
         raise
-    value = json.loads(result.stdout)
+    value = json.loads(stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
@@ -121,6 +136,58 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     return env
 
 
+# Machine evaluator gh boundary.
+_MACHINE_GH_MAX_STDOUT = 8 * 1024 * 1024
+_MACHINE_GH_MAX_STDERR = 64 * 1024
+
+
+def machine_gh_env(profile_home: str | None, home: str) -> dict[str, str]:
+    """Whitelisted env for the machine evaluator's gh: fixed PATH/locale, an empty ``home``, the
+    assignee profile's own github.com login (GH_TOKEN / GITHUB_TOKEN / GH_CONFIG_DIR) and its explicit
+    proxy/CA keys — nothing inherited from the launcher (no provider/OAuth/cloud keys, no loader
+    variables). With no token or config dir in the profile scope, gh reads the same config dir the
+    legacy gate's env would resolve for that profile, passed only as GH_CONFIG_DIR."""
+    if not profile_home:
+        raise _GateAuthError("no assignee identity for the machine check")
+    from agent.secret_scope import build_profile_secret_scope
+    scope = build_profile_secret_scope(Path(profile_home))
+    env = {"PATH": "/usr/bin:/bin", "HOME": home, "XDG_CONFIG_HOME": home, "LANG": "C.UTF-8",
+           "LC_ALL": "C.UTF-8", "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1", "NO_COLOR": "1"}
+    env.update((key, scope[key]) for key in _GH_GITHUB_LOGIN_KEYS if scope.get(key))
+    env.update((key, scope[key]) for key in _GH_TRANSPORT_KEYS if key in scope)
+    if not (env.keys() & set(_GH_GITHUB_LOGIN_KEYS)):
+        legacy = _gh_env(profile_home) or {}
+        config_dir = legacy.get("GH_CONFIG_DIR") or os.path.join(
+            legacy.get("XDG_CONFIG_HOME") or os.path.join(legacy.get("HOME") or home, ".config"), "gh")
+        env["GH_CONFIG_DIR"] = config_dir
+    return env
+
+
+def _machine_gh_call(command: list[str], *, profile_home: str | None, timeout: float,
+                     deadline: float | None = None) -> str:
+    """One gh call for the machine evaluator: whitelisted env, byte-capped stdout/stderr (overflow
+    kills gh and raises, so truncated JSON is never parsed), CalledProcessError on failure. The
+    budget is re-read after the env (profile ``.env``) is built, so gh never starts past it."""
+    import shutil
+    import tempfile
+    from hermes_cli.kanban_acceptance import run_capped
+    home = tempfile.mkdtemp(prefix="hermes-acceptance-gh-")
+    try:
+        env = machine_gh_env(profile_home, home)
+        if deadline is not None:
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                raise subprocess.TimeoutExpired(command, 0)
+        rc, out, err = run_capped(command, env=env, cwd=home, timeout=timeout,
+                                  max_stdout=_MACHINE_GH_MAX_STDOUT, max_stderr=_MACHINE_GH_MAX_STDERR)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    stdout = out.decode("utf-8", "replace")
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, command, output=stdout, stderr=err.decode("utf-8", "replace"))
+    return stdout
+
+
 def _assignee_profile_home(assignee: str | None) -> str | None:
     """Home whose ``gh`` login must read the contract repo — the assignee's, resolved
     exactly as the dispatcher resolves the worker's home — or None (unassigned) so the
@@ -136,13 +203,16 @@ def _assignee_profile_home(assignee: str | None) -> str | None:
 
 
 def collect_acceptance(contract: str, published_pr: str | None,
-                       assignee: str | None = None) -> dict:
+                       assignee: str | None = None, *, deadline: float | None = None,
+                       gh_binary: str | None = None, mark_complete: bool = False) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
                            "Use kanban_block if human input is needed; receipts remain on the task event log."}
     try:
         profile_home = _assignee_profile_home(assignee)
+        # Only set keys reach _api, so legacy calls are unchanged.
+        api_kw = {k: v for k, v in (("deadline", deadline), ("gh_binary", gh_binary)) if v is not None}
         declared = _PR.fullmatch(contract)
         url = contract if declared else published_pr
         match = _PR.fullmatch(url or "")
@@ -153,7 +223,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["pr_url"] = url
         owner, name = repo.split("/")
         query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
-        repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
+        repository = _api("graphql", query=query, profile_home=profile_home, **api_kw)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
             raise _GateAuthError(f"HTTP 404 on graphql {repo}")
@@ -165,7 +235,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
         rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+                     paginate=True, profile_home=profile_home, **api_kw)
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -176,12 +246,12 @@ def collect_acceptance(contract: str, published_pr: str | None,
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
-                     paginate=True, profile_home=profile_home)
+                     paginate=True, profile_home=profile_home, **api_kw)
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
-                                                       paginate=True, profile_home=profile_home) for s in page]
+                                                       paginate=True, profile_home=profile_home, **api_kw) for s in page]
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
@@ -206,10 +276,12 @@ def collect_acceptance(contract: str, published_pr: str | None,
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
-        current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
+        current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home, **api_kw)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
+        if mark_complete:  # Every page read, head re-verified
+            receipt["collection_complete"] = True
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
         return receipt

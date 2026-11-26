@@ -153,35 +153,6 @@ class DispatchResult:
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
 
 
-def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
-    """One line naming why the tick(s) held ready work back, or ``""``.
-
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
-    """
-    counts: dict[str, int] = {}
-    pressure: Optional[str] = None
-    for res in results:
-        if res is None:
-            continue
-        for _task_id, reason in res.respawn_guarded:
-            counts[reason] = counts.get(reason, 0) + 1
-        if res.rate_limited:
-            counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
-        if res.skipped_locked:
-            counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
-        if res.memory_pressure:
-            pressure = res.memory_pressure
-    parts = [f"{k}={v}" for k, v in sorted(counts.items())]
-    if pressure:
-        parts.append(f"memory_pressure={pressure}")
-    return ", ".join(parts)
-
-
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
 # ``dispatch_once`` and read by ``detect_crashed_workers`` to classify a dead-pid
 # task. Entry: ``pid -> (raw_wait_status, reaped_at_epoch)``; raw status kept so
@@ -1382,6 +1353,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    _nested: bool = False,  # Compose under the verdict txn
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1404,7 +1376,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
-    with _kb.write_txn(conn):
+    with _kb.write_txn(conn, allow_nested=_nested):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
@@ -1654,9 +1626,24 @@ def check_respawn_guard(
                 conn, "task_events", task_id, max(pr_times),
                 "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
             return None
+        if _machine_fail_after_comments(conn, task_id):
+            return None
         return "active_pr"
 
     return None
+
+
+def _machine_fail_after_comments(conn: sqlite3.Connection, task_id: str) -> bool:
+    """A failed machine acceptance is a rework handoff to the implementer named on it: it lifts
+    ``active_pr`` when it is newer than every comment, ordered by event id (same-second safe)."""
+    last_comment = conn.execute(
+        "SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'commented'", (task_id,)).fetchone()[0]
+    for row in conn.execute(
+            "SELECT id, payload FROM task_events WHERE task_id = ? AND kind = 'acceptance_verdict' "
+            "AND id > ? ORDER BY id DESC", (task_id, last_comment or 0)):
+        if _kb._json_dict(row["payload"]).get("verdict") == "fail":
+            return True
+    return False
 
 
 _GUARD_TIME_COLS = {"task_runs": "ended_at", "task_events": "created_at", "task_comments": "created_at"}
@@ -1792,7 +1779,8 @@ def dispatch_profile_allowlist_summary() -> str:
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
+        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL"
+        + (_NOT_MACHINE_WAIT if status == "review" else ""),
         (status,),
     ).fetchall()
     if not rows:
@@ -2264,12 +2252,19 @@ def _tick_spawn_budget(
     return True, spawn_budget
 
 
+# A review card with an open acceptance submission is a
+# machine wait: no reviewer spawn, claim, or capacity reservation may see it.
+_NOT_MACHINE_WAIT = (" AND NOT EXISTS (SELECT 1 FROM task_acceptance_submissions s "
+                     "WHERE s.task_id = tasks.id AND s.state = 'open') ")
+
+
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
         "SELECT id, assignee FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        + (_NOT_MACHINE_WAIT if status == "review" else "")
+        + "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
 
 
@@ -2879,6 +2874,9 @@ def run_daemon(
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                 )
+                # Outside the tick lock; estop-gated inside.
+                from hermes_cli.kanban_acceptance import run_acceptance_pass
+                run_acceptance_pass(conn, failure_limit=failure_limit)
             if on_tick is not None:
                 with contextlib.suppress(Exception):
                     on_tick(res)

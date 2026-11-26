@@ -496,6 +496,21 @@ KANBAN_CREATE_SCHEMA = _schema(
             "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
             "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
         )),
+        "acceptance": {
+            "type": "object",
+            "description": (
+                "Optional machine check that must pass before the card counts as done. One object: "
+                "{\"kind\":\"file\",\"path\":\"/abs/path\",\"exists\":true} (an entry exists at the path; content "
+                "is not checked) | "
+                "{\"kind\":\"git_commit\",\"repo\":\"/abs/repo\",\"branch\":\"name\",\"base\":\"<40-hex sha>\"} "
+                "(branch descends from base with at least one new commit) | "
+                "{\"kind\":\"pr_checks\",\"pr_url\":\"https://github.com/OWNER/REPO/pull/N\"} "
+                "(required checks green at the exact head) | {\"kind\":\"tbd\"} (waits for an operator "
+                "to fill it in). With it, kanban_complete submits the card; after the worker exits the "
+                "dispatcher checks it: pass -> done, fail -> back to the worker with the failure, "
+                "unproven -> waits in review. Malformed objects are rejected."
+            ),
+        },
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "
                 "continuation turns the worker may take before the task "

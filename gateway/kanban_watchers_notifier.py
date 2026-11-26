@@ -44,10 +44,17 @@ def _pin_first():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested",
+                  "acceptance_verdict")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
-_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected",
+               "acceptance_verdict")  # Fail only, see _wakes
+
+
+def _wakes(ev) -> bool:
+    """A wake kind; an ``acceptance_verdict`` wakes only on fail (pass wakes via ``completed``)."""
+    return ev.kind in _WAKE_KINDS and (ev.kind != "acceptance_verdict" or (ev.payload or {}).get("verdict") == "fail")
 
 
 def diagnostic_event(ev) -> bool:
@@ -478,6 +485,17 @@ def _fmt_gave_up(ev, n) -> tuple:
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
+def _fmt_acceptance_verdict(ev, n) -> tuple:
+    """Only a failed check pings; pending/pass/cancelled are bookkeeping (pass pings as ``completed``)."""
+    payload = ev.payload or {}
+    if payload.get("verdict") != "fail":
+        return None, None, None
+    reason = _safe_review_reason(payload.get("error") or payload.get("reason"), 200)
+    implementer = _safe_review_reason(payload.get("implementer"), 48) or "-"
+    return t("gateway.kanban.ping.acceptance_failed", head=n.head, implementer=implementer,
+             reason=reason or ""), None, None
+
+
 def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
@@ -501,6 +519,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    "acceptance_verdict": _fmt_acceptance_verdict,
 }
 
 
@@ -593,7 +612,7 @@ class _KanbanNotification:
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_kinds = {ev.kind for ev in self.d["events"] if _wakes(ev)} if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return

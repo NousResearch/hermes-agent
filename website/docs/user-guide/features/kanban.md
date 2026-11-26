@@ -94,6 +94,32 @@ guard, not OS isolation against arbitrary direct database writes. GitHub Enterpr
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
+## Machine acceptance
+
+A worker saying "done" is not proof the work exists. A card can declare one machine-checkable
+`acceptance` object at creation (`--acceptance JSON` on `hermes kanban create`, `acceptance` on
+`kanban_create`). With one declared, completion from the worker tool, the CLI, the dashboard or a
+review approval **submits** the card instead of finishing it: the card waits in `review` with an
+open submission, and no LLM reviewer claims it. On a later tick, after the worker that did the work
+has provably exited, the dispatcher checks it:
+
+| kind | fields | passes when |
+|---|---|---|
+| `file` | `path` (absolute), `exists` (default `true`) | the path exists (or is absent), by `lstat` |
+| `git_commit` | `repo`, `branch`, `base` (40-hex) | `refs/heads/<branch>` exists, descends from `base` and differs from it |
+| `pr_checks` | `pr_url` | every required check on the PR succeeded (the same collector as PR completion contracts) |
+| `tbd` | — | never; an operator replaces it with `hermes kanban edit <id> --acceptance JSON\|none` |
+
+- **pass:** the card completes through the normal completion path (events, hooks, child promotion).
+- **fail:** the card returns to its implementer with the failure as that attempt's error, and counts once toward the failure limit.
+- **pending:** an unproven worker exit, an unreadable file, a GitHub API problem or pending checks. The card waits with backoff and spends no retry budget.
+
+A completion contract and an acceptance check on the same card must both pass. Cards without
+`acceptance` behave exactly as before. There is deliberately no command kind: a declared shell
+command would be a second way to run arbitrary commands outside the approval gate. Git runs with
+hooks, fsmonitor, replace refs and transports disabled, and each check runs in its own process
+group under a deadline. `hermes pause` also pauses the checks.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.

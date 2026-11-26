@@ -690,6 +690,21 @@ describe('a Webapp whose host runs no agent', () => {
     expect(requests).toEqual([])
   })
 
+  it("tells a switch that names no profile the profile the picked agent runs as, through that agent's relay", async () => {
+    const requests = dashboardHost({ runsAs: { beta: 'research' } })
+    const connections = install().connections!
+
+    await connections.list()
+    expect(await connections.launchProfile?.('beta')).toBe('research')
+    expect(requests.map(request => request.path)).toContain('/api/relay/beta/api/profiles/active')
+  })
+
+  it('leaves the landing profile to the store on a Webapp whose host runs its own agent', () => {
+    dashboardHost()
+
+    expect(install({ hostAgent: undefined }).connections?.launchProfile).toBeUndefined()
+  })
+
   it.each([
     ['the host', '/api/gateway-connections'],
     ['a relayed agent', '/api/relay/alpha/api/config']

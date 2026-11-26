@@ -468,7 +468,8 @@ export function createBrowserSavedConnections({
   }
 
   const connections: Bridge = {
-    ...(hostless ? { managedByHost: true } : {}),
+    // A switch to an agent that names no profile lands on the one it runs as, not on `default`.
+    ...(hostless ? { launchProfile, managedByHost: true } : {}),
     list,
     onChanged: callback => {
       listeners.add(callback)

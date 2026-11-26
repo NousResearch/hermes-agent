@@ -246,6 +246,10 @@ declare global {
         /** The host keeps this list for the signed-in account (the hosted dashboard): it can be
          *  read, tested and ordered here, never added to, edited or removed from. */
         managedByHost?: boolean
+        /** The profile a listed gateway runs as, where the host can read it (the hosted dashboard);
+         *  undefined when it names none. A pick that names no profile lands there. Rejects when the
+         *  read fails. */
+        launchProfile?: (id: string) => Promise<string | undefined>
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput

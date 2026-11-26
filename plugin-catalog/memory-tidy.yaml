@@ -1,7 +1,7 @@
 name: memory-tidy
 title: Memory Tidy
 repo: https://github.com/Santrionlinecom/hermes-memory-tidy
-sha: f6d83e4ce3e3b2df894f20bc6d570f9e26c18622
+sha: 55eb5e0e2f6de658b66c3f008aa3974fea6a185b
 description: >-
   Keeps the persistent memory files (MEMORY.md, USER.md) lean: finds entries that duplicate SOUL.md or a
   skill, procedures that belong in a skill and overlapping entries, and applies a reviewed tidy plan with
@@ -19,10 +19,11 @@ tier: community
 category: general
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/Santrionlinecom/hermes-memory-tidy#readme
-version: "0.1.0"
+version: "0.1.1"
 platforms: [linux, macos]
 known_issues:
   - "Similarity is lexical (shingles and token containment), not semantic: a paraphrase of a SOUL.md rule in other words is reported as an overlap to review, not as a duplicate."
+  - "move_to_skill targets are word-based hints: a skill must name the entry's topic in its name/description, but a good home described in other words is missed. Review the dry run before append_skill."
 capabilities:
   provides_tools: [memory_tidy_scan, memory_tidy_apply]
   provides_hooks: [pre_llm_call]

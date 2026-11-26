@@ -171,5 +171,13 @@ class ProcessCheckpointMixin:
                     "notify_on_complete": session.notify_on_complete,
                     "parent_session_id": session.parent_session_id,
                 })
+        if any(s.heartbeat_seconds > 0 for s in self._running.values()):
+            # Checkpoint recovery re-arms completion watchers but the heartbeat emitter
+            # thread only ever started at spawn time (arm_heartbeat is its sole call
+            # site), so an adopted job's periodic heartbeats stayed silently dead for
+            # the rest of its life. The loop's due-filter handles the rest: a tick with
+            # nothing new is skipped outright, so a freshly adopted session emits only
+            # when it has new output.
+            self._ensure_heartbeat_thread()
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
         return recovered

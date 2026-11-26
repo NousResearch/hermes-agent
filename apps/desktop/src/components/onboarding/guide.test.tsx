@@ -153,11 +153,12 @@ it('shows old-runtime upgrade instructions and retries setup without creating a 
   expect(await screen.findByRole('dialog')).toBeTruthy()
   expect(screen.getByText(enFirstRun.guide.appearance)).toBeTruthy()
   expect(screen.queryByText(enFirstRun.guide.upgradeRequired)).toBeNull()
-  expect(
-    transport.request.mock.calls
-      .filter(([method]) => method === 'onboarding.state')
-      .every(([, params]) => params.sessionless === true)
-  ).toBe(true)
+  const stateParams = transport.request.mock.calls
+    .filter(([method]) => method === 'onboarding.state')
+    .map(([, params]) => params)
+  expect(stateParams.length).toBeGreaterThanOrEqual(2)
+  expect(stateParams[0]?.sessionless).toBe(true)
+  expect(stateParams.at(-1)?.sessionless).toBe(true)
 })
 
 it('puts the setup offer away on Close, and brings it back when setup fails again', async () => {

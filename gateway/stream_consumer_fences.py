@@ -13,6 +13,17 @@ def escape_code_fences_for_display(text: str) -> str:
     return text.replace("```", "\\`\\`\\`") if isinstance(text, str) else text
 
 
+def open_code_fence_span(text: str, upto: int) -> tuple[int, int] | None:
+    """(start, end) of the opening ``` line of a code block ``text[:upto]`` leaves open. The line
+    is read from the whole ``text``: a cut inside the language tag still yields the full tag."""
+    head = text[:upto]
+    if head.count("```") % 2 == 0:
+        return None
+    start = head.rfind("```")
+    end = text.find("\n", start)
+    return start, len(text) if end < 0 else end
+
+
 def ensure_closed_code_fences(text: str) -> str:
     """Append a closing ``` and/or ` if the text has orphaned code markers.
 

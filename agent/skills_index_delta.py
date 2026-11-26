@@ -19,7 +19,7 @@ import logging
 import re
 from typing import Any
 
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 
 logger = logging.getLogger("run_agent")
 

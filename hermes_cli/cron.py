@@ -8,8 +8,11 @@ from datetime import timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(PROJECT_ROOT))
+from hermes_cli._startup_fast import project_root_str
+
+PROJECT_ROOT = Path(project_root_str())
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
 
@@ -779,7 +782,8 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
                    ("interpreter", "interpreter"), ("timezone", "timezone"),
-                   ("grace_minutes", "grace_minutes"), ("catch_up", "catch_up"))
+                   ("grace_minutes", "grace_minutes"), ("catch_up", "catch_up"),
+                   ("wrap_response", "wrap_response"))
 
 
 def _job_api_kwargs(args) -> dict[str, Any]:

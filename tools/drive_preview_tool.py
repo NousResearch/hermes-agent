@@ -11,6 +11,7 @@ the platform-injected callback. ``desktop_ui`` toolset: desktop-sourced sessions
 from typing import Callable, Optional
 
 from tools.desktop_ui import passthrough_json
+from tools.browser_vault_preview import redact_preview_result
 from tools.registry import registry, tool_error
 
 ACTIONS = ("elements", "click", "hover", "type", "scroll", "press", "strobe", "back", "forward", "reload")
@@ -52,13 +53,13 @@ def drive_preview_tool(
     try:
         raw = callback({name: val for name, val in fields if val is not None})
     except Exception as exc:
-        return tool_error(f"Failed to act on the in-app browser: {exc}")
+        return redact_preview_result(tool_error(f"Failed to act on the in-app browser: {exc}"))
     if not raw:
         return tool_error(
             "No GUI window answered with a page: no preview tab is open. "
             "Open a page with open_preview first. If the pane IS open, the desktop app "
             "may be older than this backend — its bridge-unavailable error names that case.")
-    return passthrough_json(raw)
+    return redact_preview_result(passthrough_json(raw))
 
 
 ACT_PREVIEW_SCHEMA = {

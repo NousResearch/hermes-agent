@@ -371,6 +371,13 @@ export const uk: Translations = {
     authRequired: "Потрібна автентифікація",
     authRequiredHint: "Виконайте цю команду, щоб автентифікуватися:",
     updateGit: "Git pull",
+    updateAll: "Оновити всі",
+    updatingAll: "Оновлення плагінів…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Оновлено ${updated}, потребують перевірки ${needsReview}, з помилкою ${failed}`,
+    autoUpdate: "Автооновлення",
+    autoUpdateDesc: (hours: number) =>
+      `Автоматично застосовувати оновлення плагінів під час перевірки шлюзом (кожні ${hours} год). Оновлений код завантажується в нових сесіях.`,
     versionBadge: "Версія",
     showInSidebar: "Показати у бічній панелі",
     hideFromSidebar: "Сховати з бічної панелі",

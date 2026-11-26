@@ -1,3 +1,4 @@
+import { PROFILE_ID_ARG_RE } from '@hermes/shared/profile-id'
 import { useEffect, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
@@ -21,10 +22,8 @@ import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
 
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
 export function isValidProfileName(name: string): boolean {
-  return PROFILE_NAME_RE.test(name.trim())
+  return PROFILE_ID_ARG_RE.test(name.trim())
 }
 
 // Self-contained create flow (name + clone toggle + optional SOUL.md). Owns the

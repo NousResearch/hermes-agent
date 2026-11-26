@@ -249,7 +249,7 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     # ACCESS_TOKEN_TYPE_UNSUPPORTED (reserved for OAuth 2 tokens); plain keys use ``x-goog-api-key``.
     if url and (base_url_host_matches(url, "generativelanguage.googleapis.com")
                 or base_url_host_matches(url, "aiplatform.googleapis.com")):
-        from agent.gemini_native_adapter import is_vertex_express_base_url, normalize_gemini_base_url
+        from agent.gemini_urls import is_vertex_express_base_url, normalize_gemini_base_url
         root = url.rsplit("/models", 1)[0]
         if base_url_host_matches(url, "generativelanguage.googleapis.com") or is_vertex_express_base_url(root):
             # Normalize guarantees the version segment and completes an explicitly configured express
@@ -422,11 +422,12 @@ def build_probes() -> list:
     ]
 
 
-def run_probes(probes: list) -> list:
+def run_probes(probes: list, *, aws_imds: bool = False) -> list:
     """Run every probe in a thread pool; results in submission order.
 
     Probes are independent HTTP calls (series cost ~5s wall, 2s of it boto3's IMDS lookup);
     parallel collapses the section to roughly the slowest single probe without changing the output.
+    ``aws_imds=True`` keeps boto3's instance-metadata lookup for probes that must see an EC2 role.
     """
     # Disable boto3's EC2 instance-metadata probe (169.254.169.254, multi-second timeout off-EC2). Set on the
     # parent thread before submitting so it never races a worker; has_aws_credentials() already gates on real creds.
@@ -434,7 +435,8 @@ def run_probes(probes: list) -> list:
     # trust_env client a probe builds raise InvalidURL at construction (#118159) — sanitize once, before any
     # worker runs, so no probe ever reports "(Invalid port: :1])" as provider downtime.
     _imds_prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
-    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+    if not aws_imds:
+        os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
     try:
         # 8 workers is plenty — each probe is one HTTP call plus a TLS handshake.
         with concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="doctor-probe") as ex:

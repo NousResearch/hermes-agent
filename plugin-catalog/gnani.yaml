@@ -1,0 +1,21 @@
+name: gnani
+repo: https://github.com/ANAMASGARD/hermes-gnani
+sha: 19b1e2396c909656144ff6cab4b16dc2e14260dd
+subdir: gnani
+title: Gnani AI Speech
+image: https://raw.githubusercontent.com/ANAMASGARD/hermes-gnani/b862955d08be0932bedcb2c08800f06d262fb539/assets/gnani-banner.png
+description: "Gnani Prisma transcription and Timbre speech synthesis for Hermes voice notes, live dictation, and voice replies. Registers one native STT provider and one native TTS provider. Sends selected recordings, live audio, optional transcription hints and speech text to api.vachana.ai over HTTPS or WSS. GNANI_API_KEY is resolved through the active Hermes profile. Batch can transfer audio and fetch results through Gnani-issued signed S3 links without the API key. The plugin uses the locally installed ffprobe executable for compressed media inspection, writes requested speech output, and runs a bounded worker during live transcription. Gnani bills the active account. No telemetry. Independent community integration. Disclosure — sends the recordings you transcribe, live microphone audio, optional transcription hints and the text to speak to Gnani (api.vachana.ai) using your GNANI_API_KEY, billed to your Gnani account; long recordings are uploaded and transcripts downloaded through Gnani-issued signed Amazon S3 links; runs your installed ffprobe to measure compressed recordings; requires Python 3.14."
+maintainer: ANAMASGARD
+tier: community
+category: voice
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/ANAMASGARD/hermes-gnani
+version: "0.1.0"
+known_issues:
+  - The documented presigned upload creation route returned HTTP 404 during testing. Use FLAC or split recordings above 10 MB into smaller files.
+  - Select STT in config.yaml on Hermes v0.23.2.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [GNANI_API_KEY]

@@ -20,21 +20,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, MutableMapping, Optional
 
+from agent.provider_registry import ProviderRegistry, exact_key
 from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key, normalize_scope
+from hermes_constants import hermes_home_key, is_launch_only_env_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
 # Ordered registry: name → source. Dict insertion order doubles as the default
 # apply order. Origin is recorded so consumers never infer ownership from names.
-_SOURCES: dict[str, SecretSource] = {}
+# Storage and the snapshot/restore pair are the shared ProviderRegistry; the lock is
+# reentrant because ``_ensure_builtin_sources`` registers while holding it.
+_registry: ProviderRegistry[SecretSource] = ProviderRegistry(
+    label="Secret source", provider_cls=SecretSource, logger=logger, normalize=exact_key,
+    lock=threading.RLock(),
+)
+_SOURCES: dict[str, SecretSource] = _registry._providers
 _SOURCE_ORIGINS: dict[str, str] = {}
-_SCOPED_SOURCES: dict[str, dict[str, SecretSource]] = {}
+_SCOPED_SOURCES: dict[str, dict[str, SecretSource]] = _registry._scoped_providers
 _BUILTINS_LOADED = False
-_REGISTRY_LOCK = threading.RLock()
+_REGISTRY_LOCK = _registry._lock
 
 # (module, class, label) for the bundled sources, in registration order.
 _BUILTIN_SOURCES = (
@@ -126,56 +133,33 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
             logger.warning("Ignoring secret source '%s': scheme '%s://' is already owned by source '%s'",
                            name, source.scheme, owner)
             return False
-        target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
-        target[name] = source
+        _registry._target(scope, create=True)[name] = source
         if scope is None:
             _SOURCE_ORIGINS[name] = "builtin" if builtin else "plugin"
     return True
 
 
-def _merged(scope: Optional[str]) -> dict[str, SecretSource]:
-    """Global sources overlaid with the scope's (default: current home) registrations."""
-    merged = dict(_SOURCES)
-    merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
-    return merged
-
-
 def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     _ensure_builtin_sources()
-    with _REGISTRY_LOCK:
-        return _merged(scope).get(name)
+    return _registry.merged(scope).get(name)
 
 
 def snapshot_registration(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     """Return the registration owned by exactly one registry layer."""
     _ensure_builtin_sources()
-    scope = normalize_scope(scope)
-    with _REGISTRY_LOCK:
-        return (_SOURCES if scope is None else _SCOPED_SOURCES.get(scope, {})).get(name)
+    return _registry.snapshot_registration(name, scope=scope)
 
 
 def restore_registration(name: str, current: SecretSource, previous: Optional[SecretSource], *,
                          scope: Optional[str] = None) -> bool:
     """Restore a host-owned source registration if it is still current."""
     _ensure_builtin_sources()
-    scope = normalize_scope(scope)
-    with _REGISTRY_LOCK:
-        target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
-        if target.get(name) is not current:
-            return False
-        if previous is None:
-            target.pop(name, None)
-        else:
-            target[name] = previous
-        if scope is not None and not target:
-            _SCOPED_SOURCES.pop(scope, None)
-    return True
+    return _registry.restore_registration(name, current, previous, scope=scope)
 
 
 def list_sources(*, scope: Optional[str] = None) -> list[SecretSource]:
     _ensure_builtin_sources()
-    with _REGISTRY_LOCK:
-        return list(_merged(scope).values())
+    return list(_registry.merged(scope).values())
 
 
 def list_plugin_sources() -> list[SecretSource]:
@@ -212,9 +196,8 @@ def _ensure_builtin_sources() -> None:
 def _reset_registry_for_tests() -> None:
     global _BUILTINS_LOADED
     with _REGISTRY_LOCK:
-        _SOURCES.clear()
+        _registry.reset_for_tests()
         _SOURCE_ORIGINS.clear()
-        _SCOPED_SOURCES.clear()
         _BUILTINS_LOADED = False
 
 
@@ -357,7 +340,7 @@ class _Applier:
         if not is_valid_env_name(var):
             sr.skipped_invalid.append(var)
             return False
-        if var in self.protected:
+        if var in self.protected or is_launch_only_env_key(var):
             sr.skipped_protected.append(var)
             return False
         if var in self.claimed:

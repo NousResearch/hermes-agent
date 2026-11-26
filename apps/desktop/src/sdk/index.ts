@@ -19,7 +19,6 @@
  */
 
 import { computed, type ReadableAtom } from 'nanostores'
-import type { ReactNode } from 'react'
 
 import { capabilityScoped, getApiRequestConnection } from '@/api/client'
 import { mutateSessionFenced } from '@/api/sessions'
@@ -45,7 +44,7 @@ import {
 } from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
-import type { WorkspaceMode } from '@/contrib/types'
+import type { PluginWorkspaceOptions, WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
@@ -107,10 +106,12 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
+import { logBotWake } from './bot-wake-log'
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { profileBackendHost } from './profile-backend'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
   type PluginProfileRequestOptions,
@@ -748,6 +749,9 @@ export const host = {
     }
   },
 
+  // Route a profile to a backend this plugin runs on this computer (e.g. a sandbox), and back. See profile-backend.ts.
+  ...profileBackendHost,
+
   // ── Multi-source agents (the Bot Mode door) ───────────────────────────────
 
   /** Registry connection id serving the gateway `host.request` currently hits
@@ -790,8 +794,9 @@ export const host = {
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
    *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded
-   *  resolver (prewarmProfileBackend): a pointer sweep across a
-   *  multi-source roster must not spawn past the pool cap either.
+   *  resolver (prewarmProfileBackend): its throttle covers a pointer sweep
+   *  across a multi-source roster, and an SSH source is never warmed
+   *  (connect-on-demand, #89756).
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {
@@ -1115,7 +1120,7 @@ export const host = {
 
           // Logged per attempt so a support bundle shows the retry happened at
           // all; the terminal failure is reported once by the catch below.
-          console.warn('[bot-wake] hydration timed out, retrying', {
+          logBotWake('hydration timed out, retrying', {
             attempt,
             hydrationWaitMs: Date.now() - profileActiveAt,
             profile: targetProfile,
@@ -1132,7 +1137,7 @@ export const host = {
       ) {
         const timedOutAt = Date.now()
 
-        console.warn('[bot-wake] hydration timed out', {
+        logBotWake('hydration timed out', {
           attempts: wakePhase === 'hydration' ? maxAttempts : 1,
           hydrationWaitMs: wakePhase === 'hydration' ? timedOutAt - profileActiveAt : 0,
           phase: wakePhase,
@@ -1172,18 +1177,7 @@ export const host = {
    *  fires `onClose`. Feature-detect on older desktops
    *  (`typeof host.openWorkspace === 'function'`) and keep an in-panel
    *  fallback. */
-  openWorkspace: (
-    id: string,
-    options: {
-      dock?: { before?: null | string; pane: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
-      headerVeto?: boolean
-      minWidth?: string
-      onClose?: () => void
-      render: () => ReactNode
-      title?: string
-      uncloseable?: boolean
-    }
-  ): (() => void) => {
+  openWorkspace: (id: string, options: PluginWorkspaceOptions): (() => void) => {
     const key = (id ?? '').trim()
 
     if (!key || typeof options?.render !== 'function') {
@@ -1195,6 +1189,7 @@ export const host = {
     const dispose = registry.register({
       area: 'panes',
       data: {
+        approvalScope: options.approvalScope,
         // The session-tile shape: a full workspace surface docked beside main,
         // closeable so it keeps its tab when it lands in a zone of its own.
         dock: options.dock ?? { pane: 'workspace', pos: 'center' },
@@ -1252,7 +1247,7 @@ export const host = {
       const openTab = $newSessionTabAction.get()
 
       if (!openTab) {
-        notify({ kind: 'error', message: 'Update Hermes Desktop to open another Bot chat.' })
+        notify({ kind: 'error', message: 'Update Hermes Desktop to open another bot chat.' })
 
         return
       }
@@ -1574,6 +1569,9 @@ export {
   type ComposerModelPillContext,
   type ComposerModelPillProvider
 } from '@/app/chat/composer/contrib'
+/** The main composer's surface pieces, so a plugin composer (Bot Mode rooms) reads as the
+ *  same input: the ring, the fill layer behind the editor, and the ghost / primary icon buttons. */
+export { GHOST_ICON_BTN, PRIMARY_ICON_BTN } from '@/app/chat/composer/control-classes'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1604,6 +1602,7 @@ export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
  *  that prints a next run switches its label on this (`t.cron.next` →
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
+
 /** Master-detail components for pane content; the overlay-bound Panel root is deliberately private. */
 export {
   PanelAction,
@@ -1623,7 +1622,6 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,
@@ -1679,6 +1677,7 @@ export type { TitlebarTool } from '@/app/shell/titlebar-controls'
  * `MEDIA:` delivery directives) and the same rich Markdown/media components as
  * core chat. Prefer this over raw Streamdown for transcript-style messages. */
 export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
+export { composerInputBacking, composerSurfaceRing } from '@/components/chat/composer-dock'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
@@ -1946,8 +1945,8 @@ export type { StatusResponse } from '@/types/hermes'
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
 /** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
 export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
-/** `session.list` / `profiles.list` session rows, generated from `tui_gateway/contracts`. */
-export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
+/** Profile creation and session rows, generated from `tui_gateway/contracts`. */
+export type { ProfilesCreateResult, ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'
@@ -1969,6 +1968,9 @@ export {
 /** WCAG contrast, from the sRGB primitives shared with the TUI (`null` for
  *  an unparseable colour, never a fake 0). */
 export { contrastRatio } from '@hermes/shared/color'
+/** THE profile-id grammar (`^[a-z0-9][a-z0-9_-]{0,63}$`, Python's PROFILE_ID_RE), so a plugin
+ *  that names a profile validates it exactly as the backend will. */
+export { PROFILE_ID_ARG_RE } from '@hermes/shared/profile-id'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** The app's data-fetching layer. Plugins share the ONE QueryClient mounted at

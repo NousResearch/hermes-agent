@@ -7,8 +7,7 @@ exits.  The reply child writes to a stdout pipe owned by the dying parent and
 is destroyed a few seconds later — the handoff reply is silently lost.
 
 Fix under test: ``ProcessRegistry.wait_for_pending_completions`` gives the
-one-shot exit paths (``cli._finalize_single_query`` and
-``hermes_cli.oneshot``) a bounded linger over every tracked
+one-shot exit path (``cli._finalize_single_query``) a bounded linger over every tracked
 ``notify_on_complete`` process, so the delivery lands before the parent dies.
 
 Covers:

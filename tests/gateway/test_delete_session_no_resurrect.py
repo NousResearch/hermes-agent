@@ -20,16 +20,19 @@ Two invariants pin the fix:
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import hermes_constants
-import hermes_state
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.session_ingress_media import native_inputs_root
+from session_retention import after_sessions_removed
+from tests.fixtures.storage_read import session_row
 
 
 def _source(user_id: str = "user-1") -> SessionSource:
@@ -46,7 +49,6 @@ def _source(user_id: str = "user-1") -> SessionSource:
 def home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME so the store, its DB and the mirror all land in tmp."""
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     return tmp_path
 
 
@@ -56,7 +58,7 @@ def store(home) -> SessionStore:
 
 
 def _routing_rows(store: SessionStore) -> dict:
-    return store._routing_db.load_gateway_routing_entries(scope=store._routing_scope())
+    return store._routing_persistence.routing.load_routing_entries(routing_scope=store._routing_scope())
 
 
 def _mirror_entries(store: SessionStore) -> dict:
@@ -96,12 +98,15 @@ class TestOutOfProcessDeleteSelfHeals:
     def test_hard_deleted_row_yields_a_fresh_session_not_a_resurrected_id(self, store):
         entry = store.get_or_create_session(_source())
         key = entry.session_key
-        db = store._db_for_key(key)
-        assert db.get_session(entry.session_id) is not None
+        db = store._persistence_for_key(key)
+        assert session_row(db, entry.session_id) is not None
 
         # Out-of-process hard delete (CLI `hermes sessions delete`, TUI): only the
         # durable row goes; the gateway's in-memory index is untouched.
-        assert db.delete_session(entry.session_id, sessions_dir=store.sessions_dir)
+        removed = db.sessions.delete(entry.session_id, media_root=str(native_inputs_root()))
+        after_sessions_removed(db, db.scope.profile_dir, removed, reason="delete", primary=entry.session_id,
+                               sessions_dir=store.sessions_dir)
+        assert removed
 
         routed = store.get_or_create_session(_source())
 
@@ -116,15 +121,15 @@ class TestOutOfProcessDeleteSelfHeals:
             assert route["session_id"] == routed.session_id
             assert route["session_id"] != entry.session_id
         # And the fresh route points at a live row.
-        assert store._db_for_key(key).get_session(routed.session_id) is not None
+        assert session_row(store._persistence_for_key(key), routed.session_id) is not None
 
 
 class TestDeleteEndpointClearsRouting:
     @pytest.mark.asyncio
-    async def test_delete_scrubs_row_files_and_routing(self, store, home):
+    async def test_delete_scrubs_row_files_and_routing(self, store, home, api_store):
         entry = store.get_or_create_session(_source())
         sid = entry.session_id
-        db = store._db_for_key(entry.session_key)
+        db = store._persistence_for_key(entry.session_key)
         transcript = store.sessions_dir / f"{sid}.json"
         dump = store.sessions_dir / f"request_dump_{sid}_0.json"
         store.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -133,6 +138,7 @@ class TestDeleteEndpointClearsRouting:
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         adapter._session_db = db
+        api_store(SimpleNamespace(db_path=home / "state.db"))
         app = web.Application()
         app["gateway_runner"] = type("Runner", (), {"session_store": store})()
         app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
@@ -143,7 +149,7 @@ class TestDeleteEndpointClearsRouting:
             assert (await resp.json())["deleted"] is True
 
         # DB row and on-disk artifacts are gone.
-        assert db.get_session(sid) is None
+        assert session_row(db, sid) is None
         assert not transcript.exists()
         assert not dump.exists()
         # Routing entries for the deleted id are gone from memory and both durable copies.

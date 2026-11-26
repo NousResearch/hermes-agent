@@ -27,8 +27,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _prepare_gateway_status_message
 from gateway.session import SessionSource, build_session_key
 
 
@@ -212,3 +213,25 @@ def test_matrix_handoff_key_matches_the_thread_reply_key(is_dm, monkeypatch):
     _dest, handoff = _handoff_destination(Platform.MATRIX, room_id, "$seed", None, adapter)
     assert handoff == _organic_matrix_reply_key(adapter, room_id, "$seed")
     assert handoff.split(":")[3] == ("dm" if is_dm else "group")
+
+
+@pytest.mark.parametrize(
+    ("home_type", "expected_chat_type"),
+    [("channel", "group"), ("dm", "dm")],
+)
+def test_discord_handoff_without_thread_filters_blocked_warning_by_home_type(home_type, expected_chat_type):
+    """A failed Discord handoff thread must not label a guild fallback as a DM (#101003)."""
+    adapter = SimpleNamespace(
+        create_handoff_thread=AsyncMock(return_value=None),
+        get_chat_info=AsyncMock(return_value={"type": home_type}),
+    )
+    dest, _ = _handoff_destination(Platform.DISCORD, "1523581766923845724", None, None, adapter)
+    assert dest.source.chat_type == expected_chat_type
+
+    warning = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="structural_backoff:295",
+    )
+    expected_output = warning if expected_chat_type == "dm" else None
+    assert _prepare_gateway_status_message(
+        Platform.DISCORD, "warn", warning, dest.source.chat_type,
+    ) == expected_output

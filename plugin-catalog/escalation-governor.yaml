@@ -1,0 +1,16 @@
+name: escalation-governor
+repo: https://github.com/jusst01/escalation-governor
+sha: 50fcf38919b721fe481a60f728bf7271b15b6e82
+description: "Deterministic stuck-detection for Hermes sessions. Watches tool/API failure signals (consecutive tool errors, repeated identical calls, API error bursts, model calls without progress) and, when a threshold trips, injects a structured escalation packet (goal, what was tried, what failed) directing the agent to delegate the remaining work to a stronger model via delegate_task instead of retrying blindly; writes a per-session JSONL report with escalation and token-usage accounting. Disclosure — local code only: injects an escalation packet (the session's first user message and recent tool targets/errors) into tool results and into each following turn's context once a stuck threshold trips, directing the agent to call delegate_task (which spends model usage on a subagent); reads an optional escalation-governor.json and appends one line per session to a shared escalation-governor-reports.jsonl in the Hermes home; adds a /governor status command; opens no network connections, starts no processes and never blocks a tool call."
+maintainer: jusst
+tier: community
+category: automation
+docs_url: https://github.com/jusst01/escalation-governor#readme
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, post_tool_call, transform_tool_result, post_api_request, api_request_error, subagent_start, subagent_stop, on_session_end]
+  provides_middleware: []
+  requires_env: []

@@ -67,6 +67,8 @@ export const enLocalModels: Translations['settings']['localModels'] = {
   updateTitle: 'Engine update available',
   updateDetail: (next, current) =>
     `A newer llama.cpp build (${next}) is ready to install — you're on ${current}. Models keep working during the download.`,
+  updateSameBuildDetail: tag =>
+    `Hermes now packages llama.cpp ${tag} with files it needs to run. Updating downloads the engine again; models keep working during the download.`,
   updateAction: 'Update engine',
   updating: 'Updating engine…',
   upToDateTitle: 'Engine up to date',

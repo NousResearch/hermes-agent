@@ -18,19 +18,19 @@ from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases import lanes as lane_set
+from scripts.releases.desktop_targets import MANIFEST_TARGETS
 from scripts.releases.draft_warning import strip_draft_warning
 from scripts.releases.versioning import tag_record
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
-DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
+DESKTOP_TARGETS = tuple(f"{platform}/{arch}" for platform, arch in MANIFEST_TARGETS)
 ALL_TARGETS = tuple(lane_set.TARGET_LANE)
 SMOKE_JOBS = {
     "smoke-darwin-arm64": "macOS DMG + ZIP (arm64)",
-    "smoke-darwin-x64": "macOS DMG + ZIP (x64)",
     "smoke-win32-arm64": "Windows MSIX (arm64)",
     "smoke-win32-x64": "Windows MSIX (x64)",
 }
-SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64", "smoke-darwin-x64": "macos/x64",
+SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64",
                  "smoke-win32-arm64": "windows/arm64", "smoke-win32-x64": "windows/x64"}
 
 
@@ -80,6 +80,94 @@ def require_stable_identity(tag: str, commit: str) -> None:
         raise ValueError("Invalid stable payload identity")
 
 
+def is_canary_claim(tag: object) -> bool:
+    """A canary runs the stable pipeline on its own annotated ``canary.<stamp>-vX.Y.Z`` tag."""
+    from hermes_cli.update_channel import is_canary_tag
+
+    return is_canary_tag(tag)
+
+
+def is_commit_claim(tag: object) -> bool:
+    """A commit build runs the stable pipeline on its own annotated ``commit.<stamp>-vX.Y.Z`` tag."""
+    from hermes_cli.update_channel import is_commit_tag
+
+    return is_commit_tag(tag)
+
+
+def is_stamped_claim(tag: object) -> bool:
+    """A claim tag that is its own release identity and carries its build time (canary, commit)."""
+    return is_canary_claim(tag) or is_commit_claim(tag)
+
+
+def _deb_version(tag: str) -> str:
+    # Imported here: release.py's isolated entrypoint copies scripts/releases alone.
+    from scripts.termux.deb_version import deb_version_for_tag
+
+    return deb_version_for_tag(tag)
+
+
+def payload_version(tag: str) -> str:
+    """The version a stable or canary tag publishes (update_channel.release_version)."""
+    from hermes_cli.update_channel import release_version
+
+    version = release_version(tag)
+    if version is None:
+        raise ValueError("Invalid release payload identity")
+    return version
+
+
+def require_release_identity(tag: str, commit: str) -> None:
+    """A payload the pipeline may validate: a stable release, canary or commit claim.
+
+    Only the stable shape may ever receive a final receipt tag (require_stable_identity)."""
+    if not isinstance(tag, str) or not (STABLE_TAG_RE.fullmatch(tag) or is_stamped_claim(tag)) \
+            or not SHA.fullmatch(commit or ""):
+        raise ValueError("Invalid release payload identity")
+
+
+def canary_epoch(tag: str) -> int:
+    """The canary's immutable build time: the UTC stamp its tag name carries."""
+    if not is_canary_claim(tag):
+        raise ValueError("Invalid canary release identity")
+    return stamped_epoch(tag)
+
+
+def stamped_epoch(tag: str) -> int:
+    """A canary's or commit build's immutable build time: the UTC stamp its tag name carries."""
+    from hermes_cli.update_channel import canary_timestamp, commit_timestamp
+
+    stamp = canary_timestamp(tag) or commit_timestamp(tag)
+    if stamp is None:
+        raise ValueError("Invalid canary release identity")
+    try:
+        instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError as error:
+        raise ValueError(f"Invalid canary calendar timestamp: {stamp}") from error
+    if instant.strftime("%Y%m%dT%H%M%SZ") != stamp:
+        raise ValueError("Invalid canary calendar timestamp")
+    return int(instant.timestamp())
+
+
+def canary_windows_version(tag: str) -> str:
+    """The canary package quad ``yy.mmdd.hh.mmss`` (scripts/msix-shared.mjs canaryPackageVersionAt)."""
+    if not is_canary_claim(tag):
+        raise ValueError("Invalid canary release identity")
+    return stamped_windows_version(tag)
+
+
+def stamped_windows_version(tag: str) -> str:
+    """The package quad ``yy.mmdd.hh.mmss`` of a canary or commit build, from its tag stamp."""
+    instant = datetime.fromtimestamp(stamped_epoch(tag), tz=UTC)
+    return (f"{instant.year % 100}.{instant.month * 100 + instant.day}.{instant.hour}."
+            f"{instant.minute * 100 + instant.second}")
+
+
+def release_windows_version(tag: str, epoch: object) -> str:
+    """The Windows package version a release must carry: a canary's or commit build's comes from its
+    tag stamp, a stable release's from its claim epoch."""
+    return stamped_windows_version(tag) if is_stamped_claim(tag) else stable_windows_version(epoch)
+
+
 def require_success(needs: dict, required: list[str]) -> None:
     if not required or len(set(required)) != len(required):
         raise ValueError("Invalid required-job list")
@@ -91,22 +179,21 @@ def require_success(needs: dict, required: list[str]) -> None:
 
 # Each signed-package upgrade arm and the transitions job that plans it.
 PACKAGED_BY = {"macos-packaged-arm64": "transitions-darwin-arm64",
-               "macos-packaged-x64": "transitions-darwin-x64",
                "windows-packaged": "transitions-win32"}
 
 
-def gate_expectations(required: list[str], lanes: Iterable[str]) -> dict:
+def gate_expectations(required: list[str], lanes: Iterable[str], policy: str = "stable") -> dict:
     """Each gated job's required result under the claim's lanes: `skipped` for a job a
-    lane it needs is off for, `success` for every other."""
-    runs = lane_set.jobs_to_run(lanes)
+    lane it needs is off for (or that belongs to the other release policy), `success` for every other."""
+    runs = lane_set.jobs_to_run(lanes, policy)
     return {name: "success" if runs.get(name, True) else "skipped" for name in required}
 
 
-def require_gate(needs: dict, required: list[str], *, lanes: Iterable[str]) -> None:
+def require_gate(needs: dict, required: list[str], *, lanes: Iterable[str], policy: str = "stable") -> None:
     """``require_success`` that also demands a lane-removed job really was skipped."""
     if not required or len(set(required)) != len(required):
         raise ValueError("Invalid required-job list")
-    expected = gate_expectations(required, lanes)
+    expected = gate_expectations(required, lanes, policy)
     for packaged, planner in PACKAGED_BY.items():
         # Without a published baseline there is no OLD package, so the planner
         # skips the upgrade arm. Only that planner's own successful output can excuse it.
@@ -175,7 +262,6 @@ def stable_windows_version(epoch: object) -> str:
 
 RECEIPT_TARGETS = {
     "darwin-arm64": ("macos/arm64",),
-    "darwin-x64": ("macos/x64",),
     "win32-bundle": ("windows/x64", "windows/arm64"),
 }
 
@@ -187,22 +273,59 @@ RECEIPT_TARGETS = {
 # enforces the signing facts (teamId, publisher).
 RECEIPT_HANDOFFS = {
     "darwin-arm64": ("darwin-arm64",),
-    "darwin-x64": ("darwin-x64",),
     "win32-bundle": ("win32-x64", "win32-arm64", "windows-universal"),
 }
 RECEIPT_INCLUDES = ("metadata-*.json",)
 
 
+def _validate_package_platform_row(item: dict, tag: str, expected_windows_version: str,
+                                   url) -> None:
+    """Validate platform-specific version and signing metadata for one candidate package row.
+
+    A commit claim built from a pre-PR commit (legacyCommitBuild=True) carries tagless commit
+    versions (X.Y.Z.0 / X.Y.Z / X.Y.Z+commit<sha12>); stable and canary releases never admit
+    legacyCommitBuild.
+    """
+    legacy = bool(item.get("legacyCommitBuild"))
+    if legacy and not is_commit_claim(tag):
+        raise ValueError("Legacy commit build metadata is only allowed for commit claims")
+    core = None
+    if legacy:
+        from hermes_cli.update_channel import tag_core
+
+        core = tag_core(tag)
+    if item["platform"] == "windows":
+        if legacy:
+            expected_quad = f"{core}.0"
+            if (item.get("version") != expected_quad
+                    or item.get("executableVersion") not in (core, expected_quad)):
+                raise ValueError("Windows legacy commit candidate version differs from the claim core")
+        elif (item.get("version") != expected_windows_version
+              or item.get("executableVersion") != expected_windows_version):
+            raise ValueError("Windows candidate version differs from the admitted release epoch")
+        windows_version(item["version"])
+        if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
+            raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
+    elif item["platform"] == "macos":
+        expected_mac = core if legacy else payload_version(tag)
+        if item.get("version") != expected_mac or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
+            raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
+    else:
+        expected_deb = f"{core}+commit{item['commit'][:12]}" if legacy else _deb_version(tag)
+        if item.get("version") != expected_deb:
+            raise ValueError("Termux candidate version differs from the admitted release")
+
+
 def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
                     release_epoch: int | None, *, archive: str) -> dict:
     """The per-row checks shared by the full-manifest and receipt validators."""
-    require_stable_identity(tag, commit)
+    require_release_identity(tag, commit)
     if manifest.get("schema") != 2 or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
         raise ValueError("Candidate manifest does not match release identity")
     if manifest.get("archive") != archive:
         raise ValueError("Candidate manifest names a different release archive")
     admitted_epoch = manifest.get("releaseEpoch")
-    expected_windows_version = stable_windows_version(admitted_epoch)
+    expected_windows_version = release_windows_version(tag, admitted_epoch)
     if release_epoch is not None and admitted_epoch != release_epoch:
         raise ValueError("Candidate release epoch differs from the admitted claim")
     prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{archive}/")
@@ -222,18 +345,7 @@ def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
             raise ValueError(f"Candidate package is outside its immutable tag archive: {target}")
         if not DIGEST.fullmatch(artifact.get("sha256", "")) or not item.get("identity"):
             raise ValueError(f"Invalid candidate digest or identity: {target}")
-        if item["platform"] == "windows":
-            if (item.get("version") != expected_windows_version
-                    or item.get("executableVersion") != expected_windows_version):
-                raise ValueError("Windows candidate version differs from the admitted release epoch")
-            windows_version(item["version"])
-            if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
-                raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
-        elif item["platform"] == "macos":
-            if item.get("version") != tag[1:] or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
-                raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
-        elif item.get("version") != f"{tag[1:]}-1":
-            raise ValueError("Termux candidate version differs from the admitted release")
+        _validate_package_platform_row(item, tag, expected_windows_version, url)
         rows[target] = item
     return rows
 
@@ -451,6 +563,67 @@ def validate_claim(metadata: object, *, version: str, attempt: int, commit: str)
     return {**metadata, "lanes": lane_set.claim_lanes(metadata)}
 
 
+def stamped_claim(raw: str, *, tag: str, commit: str) -> dict:
+    """A canary or commit claim message's exact shape: its lanes and its green policy, plus a
+    commit build's baked bundle defaults (``bundleEnv``).
+
+    ``scripts/release.py --canary`` / ``--build-commit`` write it. The kind is the tag's prefix. The
+    lanes are read exactly as a stable claim's (lanes.claim_lanes), then held to what that kind can
+    run (lanes.POLICY_REFUSED).
+    """
+    from hermes_cli.update_channel import tag_core, tag_kind
+
+    kind = tag_kind(tag)
+    if kind not in ("canary", "commit"):
+        raise ValueError("Claim tag is neither a canary nor a commit build")
+    label = kind.capitalize()
+    try:
+        metadata = tag_record(raw)
+    except (TypeError, AttributeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label} claim metadata is invalid") from error
+    expected = {"schema": 1, "kind": kind, "version": tag_core(tag), "commit": commit,
+                "lanesRevision": lane_set.LANES_REVISION}
+    keys = {*expected, "lanes", "requireGreen", *(("bundleEnv",) if kind == "commit" else ())}
+    if (not isinstance(metadata, dict) or set(metadata) != keys
+            or any(metadata[key] != value for key, value in expected.items())
+            or not isinstance(metadata["requireGreen"], bool)):
+        raise ValueError(f"{label} claim metadata is invalid")
+    if kind == "commit":
+        from scripts.releases.bundle_env import validate
+
+        try:
+            validate(metadata["bundleEnv"])
+        except ValueError as error:
+            raise ValueError(f"Commit claim metadata is invalid: {error}") from error
+    try:
+        lanes = lane_set.claim_lanes(metadata)
+        lane_set.require_allowed(lanes, kind)
+    except ValueError as error:
+        raise ValueError(f"{label} claim metadata is invalid: {error}") from error
+    return {**metadata, "lanes": lanes}
+
+
+def canary_claim(raw: str, *, tag: str, commit: str) -> dict:
+    """A canary claim message's exact shape (stamped_claim) for a canary tag only."""
+    if not is_canary_claim(tag):
+        raise ValueError("Canary claim metadata is invalid")
+    return stamped_claim(raw, tag=tag, commit=commit)
+
+
+def commit_actor_permissions(env: dict, run=output) -> None:
+    """A commit build of any pushed commit needs the dispatching and triggering actors to hold
+    write, maintain or admin on the repository (scripts/releases/commit_build.py's tagless rule)."""
+    repository = env.get("GITHUB_REPOSITORY", "")
+    actors = {env.get("GITHUB_ACTOR", ""), env.get("GITHUB_TRIGGERING_ACTOR") or env.get("GITHUB_ACTOR", "")}
+    for actor in sorted(actors):
+        if not actor or not repository:
+            raise ValueError("Commit builds require a repository maintainer")
+        permission = run(["gh", "api", f"repos/{repository}/collaborators/{actor}/permission",
+                          "--jq", ".permission"])
+        if permission not in {"write", "maintain", "admin"}:
+            raise ValueError("Commit builds require repository write, maintain or admin permission")
+
+
 def _claim_metadata(raw: str, *, version: str, attempt: int, commit: str) -> dict:
     try:
         metadata = tag_record(raw)
@@ -512,7 +685,8 @@ CONTROLLER_WORKFLOW = "stable-release.yml"
 
 def claim_run_title(claim_tag: str) -> str:
     """The run-name stable-release.yml sets. Every run is on the default branch, so this names the claim."""
-    return f"Stable release {claim_tag}"
+    prefix = "Canary" if is_canary_claim(claim_tag) else "Commit" if is_commit_claim(claim_tag) else "Stable"
+    return f"{prefix} release {claim_tag}"
 
 
 def is_claim_run(*, title: str | None, head_branch: str | None, head_sha: str | None,
@@ -560,6 +734,26 @@ def check_claim(env: dict, run=output) -> dict:
         raise ValueError("Stable claim tag moved")
     run(["git", "fetch", "origin", *release_line_refspecs("origin")])
 
+    if is_stamped_claim(claim_tag):
+        # A canary's or commit build's tag prefix is its policy and its stamp is its build time;
+        # its claim message records the lanes it runs and whether a red suite holds its
+        # publication (and a commit build's bundle defaults). Only main may cut a canary. A commit
+        # build may build any commit: its claim tag on origin is what pushed it, and the actors
+        # who dispatched it must be able to write the repository.
+        policy = "canary" if is_canary_claim(claim_tag) else "commit"
+        if policy == "canary" and not run(["git", "for-each-ref", "--contains", commit,
+                                           "--format=%(refname)", "refs/remotes/origin/main"]):
+            raise ValueError(f"{commit} is not on main")
+        if policy == "commit":
+            commit_actor_permissions(env, run=run)
+        metadata = stamped_claim(run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
+                                 tag=claim_tag, commit=commit)
+        return {"claim_tag": claim_tag, "tag": claim_tag, "version": payload_version(claim_tag),
+                "attempt": None, "commit": commit, "claim_object": local_object, "autopublish": True,
+                "lanes": metadata["lanes"], "require_green": metadata["requireGreen"],
+                "bundle_env": metadata.get("bundleEnv", {}),
+                "claim_epoch": stamped_epoch(claim_tag), "policy": policy}
+
     def on_main(sha: str) -> bool:
         return bool(run(release_line_contains(sha, "origin")))
 
@@ -572,7 +766,7 @@ def check_claim(env: dict, run=output) -> dict:
         raise ValueError("Stable claim epoch differs from its annotated tagger timestamp")
     return {**admitted, "claim_object": local_object,
             "autopublish": metadata["autopublish"], "lanes": metadata["lanes"],
-            "claim_epoch": claim_epoch}
+            "require_green": True, "claim_epoch": claim_epoch, "policy": "stable"}
 
 
 def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
@@ -659,7 +853,7 @@ def read_admitted_candidate(tag: str, commit: str, public_base: str, digest: str
     """The page and package promoter consume the same pinned admission."""
     if not DIGEST.fullmatch(digest or ""):
         raise ValueError("Pinned candidate manifest digest is required")
-    require_stable_identity(tag, commit)
+    require_release_identity(tag, commit)
     manifest = read_manifest(f"{public_base.rstrip('/')}/releases/tag/{archive}/release-candidates.json",
                              digest, expected_origin=public_base)
     validate_candidates(manifest, tag, commit, public_base, archive=archive)
@@ -672,37 +866,100 @@ def summary(text: str, env: dict) -> None:
 
 
 def admit(env: dict) -> None:
-    """Admit the claim. The checkout carries 0.0.0, so the tag is the version."""
+    """Admit the claim. The checkout carries 0.0.0, so the tag is the version.
+
+    A canary tag admits the same pipeline with its claim's lanes; its GitHub release is a prerelease
+    (still a draft, or already published by an earlier attempt that advanced no head)."""
     admitted = check_claim(env)
     repository = env["GITHUB_REPOSITORY"]
-    release = json.loads(output([
+    policy = admitted["policy"]
+    # A commit build owns no GitHub release and publishes to no channel: its packages and builds
+    # page live only in its claim archive (releases/tag/<claim>/index.html).
+    release = {"databaseId": ""} if policy == "commit" else json.loads(output([
         "gh", "release", "view", admitted["claim_tag"], "--repo", repository,
         "--json", "databaseId,tagName,isDraft,isPrerelease",
     ]))
-    if (release.get("tagName") != admitted["claim_tag"] or release.get("isDraft") is not True
+    if policy == "commit":
+        pass
+    elif policy == "canary":
+        if (release.get("tagName") != admitted["claim_tag"] or not isinstance(release.get("isDraft"), bool)
+                or release.get("isPrerelease") is not True or not isinstance(release.get("databaseId"), int)):
+            raise ValueError("Canary must already own one prerelease")
+    elif (release.get("tagName") != admitted["claim_tag"] or release.get("isDraft") is not True
             or release.get("isPrerelease") is not False or not isinstance(release.get("databaseId"), int)):
         raise ValueError("Stable claim must already own one non-prerelease draft")
     emit({
         "claim-tag": admitted["claim_tag"], "claim-object": admitted["claim_object"],
         "tag": admitted["tag"], "commit": admitted["commit"], "version": admitted["version"],
         "release-id": release["databaseId"], "release-epoch": admitted["claim_epoch"],
+        # Which publication jobs run (lanes.POLICY_JOBS); every build and smoke job is shared.
+        "policy": policy,
         # `lanes` is every lane's flag; `jobs` is every lane-controlled job's run flag. Each
         # job's `if` reads `jobs`, so the lane table is the only place that says what runs.
-        "lanes": lane_set.flags(admitted["lanes"]), "jobs": lane_set.jobs_to_run(admitted["lanes"]),
+        "lanes": lane_set.flags(admitted["lanes"]),
+        "jobs": lane_set.jobs_to_run(admitted["lanes"], policy),
+        # Whether the policy's publication job waits for acceptance (every suite green) or only
+        # for the accepted candidate. Always true for a stable release; a canary or commit claim
+        # chooses.
+        "require-green": "true" if admitted["require_green"] else "false",
+        # A commit build's baked bundle defaults (claim bundleEnv); empty for every release.
+        "bundle-env": json.dumps(admitted.get("bundle_env") or {}, sort_keys=True),
     }, env)
     summary(
-        f"## Stable candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
+        f"## {policy.capitalize()} candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
         f"Version: {admitted['version']}\nPayload tag: {admitted['tag']}\n"
-        f"Lanes {lane_set.describe(admitted['lanes'])}\n",
+        f"Lanes {lane_set.describe(admitted['lanes'])}\n"
+        f"Publication {'waits for every suite' if admitted['require_green'] else 'waits only for the built, smoked candidate'}\n",
         env,
     )
 
 
-def verify(env: dict) -> None:
+# Where a claimed tree declares the commit-claim build contract its packaging honours, and the
+# contracts this controller can build. A tree without the file builds through the tagless path.
+CLAIM_BUILD_FILE = "scripts/releases/commit_claim_build.txt"
+CLAIM_BUILD_VERSIONS = frozenset({"1"})
+
+
+def commit_supports_claim_tag(commit: str, run=output) -> bool:
+    """Whether ``commit`` declares a commit-claim build this controller can run (CLAIM_BUILD_FILE).
+
+    A commit without the declaration (every commit forked before commit claims could build)
+    still builds cleanly through the tagless ``--commit`` path while the trusted controller
+    records, stages, smokes and renders its candidate under the claim archive. Matching the
+    claim readers' source text let a tree that had the readers but not the packaging through. A
+    failed read, or a contract this controller doesn't know, raises rather than passing for an
+    old commit.
+    """
+    if not run(["git", "ls-tree", "--name-only", commit, "--", CLAIM_BUILD_FILE]):
+        return False
+    declared = [line.strip() for line in run(["git", "show", f"{commit}:{CLAIM_BUILD_FILE}"]).splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+    if len(declared) != 1 or declared[0] not in CLAIM_BUILD_VERSIONS:
+        raise ValueError(f"{commit} declares commit-claim build {declared!r}; this controller builds "
+                         f"{', '.join(sorted(CLAIM_BUILD_VERSIONS))}")
+    return True
+
+
+def verify(env: dict, run=output) -> None:
     """Revalidate claim custody in a reusable privileged workflow."""
+    from hermes_cli.update_channel import tag_core
+
     tag, commit, claim = stable_context(env)
-    emit({"tag": tag, "sha": commit, "channel": "stable", "payload-version": tag[1:],
-          "release-epoch": claim["claim_epoch"]}, env)
+    # Bundle defaults reach the builds only from the claim: a commit build's bundleEnv, nothing for
+    # a release. A caller passing anything else is refused here, before any build.
+    from scripts.releases.bundle_env import decode
+
+    if decode(env.get("BUNDLE_ENV_JSON", "")) != (claim.get("bundle_env") or {}):
+        raise ValueError("Bundle environment differs from the admitted claim")
+    policy = claim.get("policy", "stable")
+    outputs = {
+        "tag": tag, "sha": commit, "channel": policy, "payload-version": payload_version(tag),
+        "release-epoch": claim["claim_epoch"],
+    }
+    if policy == "commit":
+        outputs["core-version"] = tag_core(tag) or ""
+        outputs["legacy-commit-build"] = "false" if commit_supports_claim_tag(commit, run=run) else "true"
+    emit(outputs, env)
 
 
 def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
@@ -786,11 +1043,10 @@ def transitions(env: dict) -> None:
 # smokes run in the bundle call, beside assembly, not after each per-arch build.
 SMOKE_CALLS = {
     "smoke-darwin-arm64": "candidates-darwin-arm64",
-    "smoke-darwin-x64": "candidates-darwin-x64",
     "smoke-win32-arm64": "candidates-win32-bundle",
     "smoke-win32-x64": "candidates-win32-bundle",
 }
-CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
+CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-arm64",
                       "termux", "windows-universal")
 CANDIDATE_INCLUDES = ("metadata-*.json",)
 
@@ -809,7 +1065,7 @@ def candidate_manifest(env: dict) -> None:
         raise ValueError("A claim that builds no bundle has no candidate manifest")
     handoffs = lane_set.handoffs(lanes, CANDIDATE_HANDOFFS)
     # A call the claim did not build never ran, so it has no smoke to record.
-    runs = lane_set.jobs_to_run(lanes)
+    runs = lane_set.jobs_to_run(lanes, claim.get("policy", "stable"))
     # A call whose package is not a target (the Store variant is not install-smoked) has no smoke.
     built = lane_set.targets(lanes)
     calls = {job: call for job, call in SMOKE_CALLS.items() if runs[call] and SMOKE_TARGETS[job] in built}
@@ -1018,11 +1274,12 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
     if argv and argv[0] == "gate":
         needs = json.loads(env["RELEASE_NEEDS"])
         summary("\n".join(f"- {name}: {needs.get(name, {}).get('result', 'missing')}" for name in argv[1:]), env)
-        require_gate(needs, argv[1:], lanes=lane_set.from_flags(json.loads(env.get("LANES") or "null")))
+        require_gate(needs, argv[1:], lanes=lane_set.from_flags(json.loads(env.get("LANES") or "null")),
+                     policy=env.get("POLICY") or "stable")
         return
     if argv and argv[0] == "stage-receipt":
         if len(argv) != 3 or argv[1] != "--receipt" or argv[2] not in RECEIPT_TARGETS:
-            raise ValueError("Expected stage-receipt --receipt darwin-arm64|darwin-x64|win32-bundle")
+            raise ValueError("Expected stage-receipt --receipt darwin-arm64|win32-bundle")
         stage_receipt(env, argv[2])
         return
     commands = {"admit": admit, "verify": verify, "transitions": transitions,

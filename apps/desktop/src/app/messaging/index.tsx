@@ -20,6 +20,7 @@ import {
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
+  type MessagingPlatformUpdateResponse,
   type PairingUser,
   revokePairing,
   type TelegramOnboardingApplyResponse,
@@ -31,6 +32,7 @@ import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icon
 import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
@@ -47,7 +49,9 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
+import { appliedLive, needsCredentials, optimisticToggleState, restartPendingAfter, restartReason } from './live-apply'
 import { PlatformAvatar } from './platform-icon'
+import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
@@ -157,6 +161,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // vanishing toast is not enough: the page keeps a banner up until a restart
   // actually happens (dashboard parity). Cleared on a completed restart.
   const [restartNeeded, setRestartNeeded] = useState(false)
+  // Platforms whose last save the running gateway could not apply (see restartPendingAfter).
+  const [restartPlatforms, setRestartPlatforms] = useState<ReadonlySet<string>>(() => new Set())
   const gatewayRestarting = useStore($gatewayRestarting)
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
@@ -181,20 +187,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     if (ok) {
       setRestartNeeded(false)
+      setRestartPlatforms(new Set())
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
   }, [])
 
-  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
-  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
-  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
-    if (hotServed) {
+  // The running gateway applied the save itself (any profile): no restart banner; re-read status once
+  // the adapter had a moment to connect. Only a gateway that could not (or an older one) needs a restart.
+  const settleAfterUpdate = useCallback((platformId: string, result: MessagingPlatformUpdateResponse) => {
+    setRestartPlatforms(pending => restartPendingAfter(pending, platformId, result))
+
+    if (appliedLive(result)) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
-
-      return
     }
-
-    setRestartNeeded(true)
   }, [])
 
   // The scope each in-flight fetch was issued for. A→B: A's request can resolve
@@ -384,16 +389,20 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               ? {
                   ...row,
                   enabled,
-                  state: enabled ? (row.configured ? 'pending_restart' : 'not_configured') : 'disabled'
+                  state: optimisticToggleState(enabled, row.configured, result)
                 }
               : row
           ) ?? current
       )
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: result.hot_served ? m.appliedLive : m.restartToApply
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.appliedLive
+            : restartReason(result, m.restartToApply)
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -416,11 +425,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
       setEdits(current => ({ ...current, [platform.id]: {} }))
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: result.hot_served ? m.connectingLive : m.restartToReconnect
+        message: needsCredentials(result)
+          ? m.states.not_configured
+          : appliedLive(result)
+            ? m.connectingLive
+            : restartReason(result, m.restartToReconnect)
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -442,7 +455,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      settleAfterUpdate(result.hot_served)
+      settleAfterUpdate(platform.id, result)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))
@@ -606,7 +619,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   )
                 }
               >
-                {restartNeeded && (
+                {(restartNeeded || restartPlatforms.size > 0) && (
                   <Alert variant="warning">
                     <AlertTriangle />
                     <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
@@ -743,12 +756,8 @@ function PlatformDetail({
 }) {
   const { t } = useI18n()
   const m = t.messaging
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
-  const hiddenCount = advancedFields.length
+  const connectionId = useStore($activeConnectionId)
+  const viaRelay = Boolean(platform.relay_exclusive)
 
   return (
     <>
@@ -757,9 +766,13 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-            <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            {viaRelay ? (
+              <SetupPill active>{m.relayLink.title}</SetupPill>
+            ) : (
+              <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            )}
             {/* Resting states earn no pill — only actionable ones. */}
-            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
+            {!platform.configured && !viaRelay && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {/* The state pill already reads "gateway stopped" when that is the
                 platform's whole story; only add the hint when it is not. */}
             {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
@@ -835,6 +848,68 @@ function PlatformDetail({
         </section>
       )}
 
+      {platform.relay_fronted && (
+        <section>
+          <RelayLinkSetup
+            // A new backend or profile is a new flow: no code, poll or account list carries over.
+            key={`${connectionId ?? 'local'}:${scopeProfile ?? ''}:${platform.id}`}
+            platform={platform}
+            scopeProfile={scopeProfile}
+          />
+        </section>
+      )}
+
+      {/* Not carried by the shared bot yet switched off at every start: say so instead of a toggle
+          that reverts (#141175). */}
+      {platform.disabled_by_relay && !platform.relay_exclusive && (
+        <p className="text-xs text-muted-foreground">{m.relayLink.managedNote(platform.name)}</p>
+      )}
+
+      {/* Under an exclusive relay a direct bot is switched off at every start: the shared-bot link
+          above is the whole setup, so the credential sections would only lead nowhere (#141546). */}
+      {!platform.relay_exclusive && (
+        <DirectSetupSections
+          edits={edits}
+          onClear={onClear}
+          onEdit={onEdit}
+          onTelegramApplied={onTelegramApplied}
+          platform={platform}
+          saving={saving}
+          scopeProfile={scopeProfile}
+        />
+      )}
+    </>
+  )
+}
+
+function DirectSetupSections({
+  edits,
+  onClear,
+  onEdit,
+  onTelegramApplied,
+  platform,
+  saving,
+  scopeProfile
+}: {
+  edits: Record<string, string>
+  onClear: (key: string) => void
+  onEdit: (key: string, value: string) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
+  platform: MessagingPlatformInfo
+  saving: string | null
+  scopeProfile: string | undefined
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const requiredFields = platform.env_vars.filter(field => field.required)
+  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
+  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const hiddenCount = advancedFields.length
+
+  return (
+    <>
       {platform.id === 'telegram' && (
         <section>
           <SectionTitle>{m.telegramQr.quickSetup}</SectionTitle>
@@ -963,17 +1038,22 @@ function PlatformActionBar({
   const m = t.messaging
   const isSavingEnv = saving === `env:${platform.id}`
 
+  // Under an exclusive relay the direct adapter never runs; the link panel is the whole setup.
+  if (platform.relay_exclusive) {
+    return null
+  }
+
   return (
     <>
       <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
         <Switch
           aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
           checked={platform.enabled}
-          disabled={saving === `enabled:${platform.id}`}
+          disabled={platform.disabled_by_relay || saving === `enabled:${platform.id}`}
           onCheckedChange={onToggle}
           size="xs"
         />
-        {platform.enabled ? m.enabled : m.disabled}
+        {platform.disabled_by_relay ? m.relayLink.managed : platform.enabled ? m.enabled : m.disabled}
       </label>
 
       <div className="ml-auto flex items-center gap-2">

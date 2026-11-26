@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "最後活動：{activity}（{seconds} 秒前，{progress}）。代理可能一直在等待 API 回應。"
     timeout_hint: "若要提高上限，請在 config.yaml 中設定 agent.gateway_timeout（單位為秒，0 = 不限制）並重新啟動閘道。\n請再試一次，或使用 /reset 重新開始。"
     working_heartbeat: "⏳ 處理中 — {minutes} 分鐘{detail}"
+    working_heartbeat_stale_surface: "⏳ 仍在處理——{minutes} 分鐘{detail} · 進度卡片已 {idle_minutes} 分鐘未更新"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

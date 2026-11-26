@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "最後のアクティビティ: {activity} ({seconds} 秒前、{progress})。エージェントは API 応答を待っていた可能性があります。"
     timeout_hint: "上限を引き上げるには、config.yaml で agent.gateway_timeout を設定し (秒単位、0 = 無制限)、ゲートウェイを再起動してください。\nもう一度試すか、/reset で新しく始めてください。"
     working_heartbeat: "⏳ 作業中 — {minutes} 分{detail}"
+    working_heartbeat_stale_surface: "⏳ 作業中 — {minutes} 分{detail} · 進捗カードは {idle_minutes} 分間更新されていません"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

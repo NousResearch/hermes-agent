@@ -1002,6 +1002,7 @@ gateway:
       Pour augmenter la limite, définissez agent.gateway_timeout dans config.yaml (valeur en secondes, 0 = aucune limite) et redémarrez le gateway.
       Réessayez, ou utilisez /reset pour repartir de zéro.
     working_heartbeat: "⏳ En cours — {minutes} min{detail}"
+    working_heartbeat_stale_surface: "⏳ Toujours en cours — {minutes} min{detail} · la carte de progression n'a pas été mise à jour depuis {idle_minutes} min"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: |-

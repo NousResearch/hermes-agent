@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "Последняя активность: {activity} ({seconds} с назад, {progress}). Возможно, агент ждал ответа API."
     timeout_hint: "Чтобы увеличить лимит, задайте agent.gateway_timeout в config.yaml (значение в секундах, 0 = без лимита) и перезапустите шлюз.\nПопробуйте ещё раз или используйте /reset, чтобы начать заново."
     working_heartbeat: "⏳ Работаю — {minutes} мин{detail}"
+    working_heartbeat_stale_surface: "⏳ Всё ещё работаю — {minutes} мин{detail} · карточка прогресса не обновлялась {idle_minutes} мин"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

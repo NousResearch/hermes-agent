@@ -11,6 +11,7 @@ from agent.session_activity import (
     build_activity_snapshot,
     format_iteration_progress,
     normalize_activity_provenance,
+    should_override_card_suppression,
 )
 
 @pytest.mark.parametrize(
@@ -64,3 +65,41 @@ def test_build_activity_snapshot_includes_compat_aliases():
     assert snap["api_call_count"] == 1
     assert "phase" not in snap
     assert "last_progress_at" not in snap
+
+
+@pytest.mark.parametrize(
+    "seconds_since_activity, interval, expected",
+    [
+        # Unknown observation is not a stall: keep the surface's claim.
+        (None, 180, False),
+        # A non-positive interval disables the heartbeat, so there is nothing to override.
+        (600, 0, False),
+        (600, -5, False),
+        # Non-finite / non-numeric inputs are treated as unknown, never as a stall.
+        (float("inf"), 180, False),
+        (float("nan"), 180, False),
+        ("not-a-number", 180, False),
+        (True, 180, False),
+        (600, None, False),
+        # Fresh activity keeps the claim; the boundary itself already overrides.
+        (0, 180, False),
+        (179.9, 180, False),
+        (180, 180, True),
+        (600, 180, True),
+    ],
+)
+def test_should_override_card_suppression_contract(seconds_since_activity, interval, expected):
+    assert should_override_card_suppression(seconds_since_activity, interval) is expected
+
+
+def test_stale_surface_heartbeat_copy_names_the_card():
+    """The override must explain *why* a text heartbeat appeared under a silent card."""
+    from agent.i18n import t
+
+    text = t(
+        "gateway.progress.working_heartbeat_stale_surface",
+        lang="en", minutes=20, detail=" — terminal", idle_minutes=7,
+    )
+    assert "Still working — 20 min" in text
+    assert "progress card hasn't updated for 7 min" in text
+    assert "{" not in text

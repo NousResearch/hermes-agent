@@ -879,6 +879,10 @@ gateway:
     timeout_last_activity: "Last activity: {activity} ({seconds}s ago, {progress}). The agent may have been waiting on an API response."
     timeout_hint: "To increase the limit, set agent.gateway_timeout in config.yaml (value in seconds, 0 = no limit) and restart the gateway.\nTry again, or use /reset to start fresh."
     working_heartbeat: "⏳ Working — {minutes} min{detail}"
+    # A progress surface (e.g. a streaming card) claimed this turn, so the heartbeat above is
+    # normally suppressed as a duplicate. It has gone quiet for a full interval: say so instead
+    # of silently doing nothing, and name the surface so the copy doesn't read as "card broken".
+    working_heartbeat_stale_surface: "⏳ Still working — {minutes} min{detail} · the progress card hasn't updated for {idle_minutes} min"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

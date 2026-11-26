@@ -856,6 +856,7 @@ gateway:
     timeout_last_activity: "Son etkinlik: {activity} ({seconds} sn önce, {progress}). Ajan bir API yanıtı bekliyor olabilir."
     timeout_hint: "Sınırı yükseltmek için config.yaml içinde agent.gateway_timeout ayarlayın (saniye cinsinden, 0 = sınırsız) ve gateway'i yeniden başlatın.\nYeniden deneyin veya temiz bir başlangıç için /reset kullanın."
     working_heartbeat: "⏳ Çalışıyor — {minutes} dk{detail}"
+    working_heartbeat_stale_surface: "⏳ Hâlâ çalışıyorum — {minutes} dk{detail} · ilerleme kartı {idle_minutes} dk'dır güncellenmedi"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

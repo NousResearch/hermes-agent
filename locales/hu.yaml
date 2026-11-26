@@ -868,6 +868,7 @@ gateway:
     timeout_last_activity: "Utolsó aktivitás: {activity} ({seconds} s-mal ezelőtt, {progress}). Az ügynök valószínűleg API-válaszra várt."
     timeout_hint: "A limit növeléséhez állítsd be az agent.gateway_timeout értékét a config.yaml fájlban (másodpercben, 0 = nincs limit), és indítsd újra az átjárót.\nPróbáld újra, vagy kezdj tisztán a /reset paranccsal."
     working_heartbeat: "⏳ Dolgozom — {minutes} perc{detail}"
+    working_heartbeat_stale_surface: "⏳ Még dolgozom — {minutes} perc{detail} · az állapotkártya {idle_minutes} perce nem frissült"
     thinking_prefix: "💬 {text}"
     tool_head: "{emoji} {tool}"
     tool_verbose: "{emoji} {tool}({keys})\n{args}"

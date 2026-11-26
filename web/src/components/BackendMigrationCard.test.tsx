@@ -603,6 +603,24 @@ describe("BackendMigrationCard", () => {
     expect(shown).toContain("Reason: verify failed: verification failed after 300s: no HTTP 200");
     expect(button("Try again")).toBeDefined();
   });
+
+  it("names the status command while the address stays dark past the old 150 s cutoff", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      if (String(input).includes("/apply")) {
+        return json(200, { ok: true, confirmed: true, requested_at: 100, old_address: "0.0.0.0:9119", new_address: "0.0.0.0:9119" });
+      }
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }));
+
+    await render(planWith({}));
+    await confirmMove();
+    await wait(200_000);
+
+    const progress = container.querySelector('[data-slot="backend-migration-progress"]')?.textContent ?? "";
+    expect(progress).toContain("Switching over");
+    expect(progress).not.toContain("for a few seconds");
+    expect(container.textContent).toContain("hermes -p work gateway migrate --backends --status");
+  });
 });
 
 describe("readPoll", () => {

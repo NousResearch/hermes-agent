@@ -56,9 +56,9 @@ class SessionAuthorities:
 
     def remove(self, home):
         """Drop *home*'s slot (a parked boot, a hot-unserved profile); returns the authority or None.
-        The launch slot is never removed."""
+        The launch slot can only be dropped while its authority is still being built."""
         key = hermes_home_key(home)
-        if key == self.launch_key:
+        if key == self.launch_key and key not in self._starting:
             raise RuntimeError('the launch session authority cannot be removed')
         self._names.pop(key, None)
         self._end_start(key)

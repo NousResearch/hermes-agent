@@ -34,6 +34,38 @@ def _runner(root, homes):
 
 
 @pytest.mark.asyncio
+async def test_failed_launch_build_releases_reservation_and_preserves_error(tmp_path, monkeypatch):
+    from gateway.run_runtime import _build_profile_authority
+    from gateway.session_authorities import SessionAuthorities
+    from persistence_assembly import open_persistence, profile_scope
+
+    home = tmp_path.resolve()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    registry = SessionAuthorities(home)
+    store = open_persistence(profile_scope(home=home))
+    runner = SimpleNamespace(session_authorities=registry, persistence=store,
+                             session_runtime_descriptor={'instance_id': 'launch-test'})
+    error = RuntimeError('authority initialization failed')
+
+    async def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr('gateway.session_authority.initialize_session_authority', fail)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            await _build_profile_authority(runner, 'default', home, register=True)
+        assert caught.value is error
+        assert not registry.starting_homes()
+        authority = object()
+        registry.add(home, authority, name='default')
+        with pytest.raises(RuntimeError, match='launch session authority cannot be removed'):
+            registry.remove(home)
+        assert registry.launch is authority
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_multiplex_builds_one_authority_per_reserved_home(tmp_path, monkeypatch):
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership

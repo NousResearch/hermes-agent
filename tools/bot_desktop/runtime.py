@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional
 
 from agent.deadline import poll_until
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, socket_safe_tmpdir
 from tools.bot_desktop import placement
 
 logger = logging.getLogger(__name__)
@@ -811,9 +811,10 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         })
         from tools.bot_desktop.browser import dock_exec_line, dock_launch
         if (browser := dock_launch()) is not None:
-            # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
+            # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line. The
+            # desktop inherits the profile's scratch TMPDIR, which can be too deep for Chromium's SingletonSocket.
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
-            child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
+            child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser, socket_tmpdir=socket_safe_tmpdir())
         # A new file per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise. Not
         # truncated in place: the old screen's idle check (in a session of its own) may still hold the old file
         # open, and its late write would land in this one behind a run of NUL bytes.

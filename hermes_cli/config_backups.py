@@ -10,7 +10,6 @@ for the same reason is skipped, and only the newest ``keep`` per reason survive,
 
 from __future__ import annotations
 
-import filecmp
 import logging
 import shutil
 import time
@@ -47,20 +46,37 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
 
     Skips when the file is missing/empty, or when the newest backup for *reason* already holds
     identical bytes. Never raises: a failed backup must not block the write it precedes.
+    Skipped entirely for a config backend without file tooling (no local copies, D2).
     """
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():
+        return None
     try:
-        if not config_path.is_file() or config_path.stat().st_size == 0:
+        if not config_path.is_file() or config_path.stat().st_size == 0:  # config-reader: ok — file tooling, gated above
             return None
         root = backups_dir(config_path)
         root.mkdir(parents=True, exist_ok=True)
         _sweep_legacy_siblings(config_path, root)
+        # Copies written before backups were secured kept their source's (often 0644) mode, and a
+        # reason that never fires again never rotates them out. Drop only the world bits, as for
+        # config.yaml writes: a shared-group home may keep its backups group-readable on purpose.
+        from hermes_cli.config_backend import drop_other_access
+        for old in list_config_backups(config_path):
+            if not old.is_symlink():
+                drop_other_access(old)
         existing = list_config_backups(config_path, reason)
-        if existing and filecmp.cmp(config_path, existing[0], shallow=False):
+        # Not filecmp.cmp: its process-wide cache keys on (size, mtime), so an equal-size edit
+        # within one mtime tick of an earlier comparison is reported identical and never backed up.
+        if existing and config_path.read_bytes() == existing[0].read_bytes():  # config-reader: ok — file tooling, gated above
             return None
         dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
-        shutil.copy2(config_path, dest)
+        shutil.copy2(config_path, dest)  # config-reader: ok — file tooling, gated above
+        # copy2 carries the source mode over, so a config.yaml left 0644 by an editor would yield a
+        # world-readable copy of the user's credentials. Apply the same owner-only policy as config.yaml.
+        from hermes_cli.config import _secure_file
+        _secure_file(dest)
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest
@@ -76,6 +92,9 @@ def load_newest_good_backup(config_path: Path) -> Optional[dict]:
     tried: a backup that fails to parse means the on-disk copy was damaged after the fact, and
     guessing further back would serve a config the user never saw as current.
     """
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():
+        return None
     newest = list_config_backups(config_path, "good")[:1]
     if not newest:
         return None
@@ -90,11 +109,13 @@ def load_newest_good_backup(config_path: Path) -> Optional[dict]:
 
 
 def _sweep_legacy_siblings(config_path: Path, root: Path) -> None:
+    from hermes_cli.config import _secure_file
     for pattern in _LEGACY_SIBLING_GLOBS:
         for old in config_path.parent.glob(pattern):
             if not old.is_file() or old.is_symlink():
                 continue
             try:
                 old.replace(root / old.name)
+                _secure_file(root / old.name)  # pre-backups-dir copies were often written 0644
             except OSError as exc:
                 logger.debug("Could not move legacy backup %s: %s", old, exc)

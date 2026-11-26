@@ -13,6 +13,8 @@ import os
 import sys
 import time
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -91,10 +93,10 @@ class RemoteKernelBase(unittest.TestCase):
         shutdown_all_remote_kernels()
         # No approval session key in tests → owner falls back to task id,
         # which is exactly the isolation-by-key behavior under test.
-        self._ship = patch(
-            "tools.code_execution_tool._ship_file_to_remote",
-        )
+        self._ship = patch("tools.code_execution_tool._remote_write")
         self._ship.start()
+        self._kernel_ship = patch("tools.code_kernel_remote._remote_write")
+        self._kernel_ship.start()
         self._poll = patch(
             "tools.code_execution_tool._rpc_poll_loop",
         )
@@ -102,6 +104,7 @@ class RemoteKernelBase(unittest.TestCase):
 
     def tearDown(self):
         self._ship.stop()
+        self._kernel_ship.stop()
         self._poll.stop()
         shutdown_all_remote_kernels()
 
@@ -346,7 +349,7 @@ class TestDispatchIntegration(unittest.TestCase):
                    return_value=(env, "ssh")), \
              patch("tools.code_kernel_remote.execute_in_remote_kernel",
                    return_value=None), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool._remote_write"), \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=MagicMock()):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
@@ -361,6 +364,7 @@ class TestSharedHostLockdown(RemoteKernelBase):
 
     def test_spawn_locks_down_dirs_and_hides_token(self):
         self._ship.stop()  # let the real ship commands reach env.commands
+        self._kernel_ship.stop()
         env = ScriptedEnv(_spawn_ok_handlers([_cell(stdout="hi\n")]))
         result = _run(env)
         self.assertEqual(result["status"], "success", result)
@@ -384,7 +388,7 @@ class TestSharedHostLockdown(RemoteKernelBase):
             self.addCleanup(shutil.rmtree, root, True)
             local = root + kernel.kernel_dir
             r = subprocess.run(["bash", "-c", mkdir_cmd.replace(kernel.kernel_dir, local)],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, check=False)
             self.assertEqual(r.returncode, 0, r.stderr)
             for d in (local, f"{local}/cells", f"{local}/rpc"):
                 self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
@@ -410,6 +414,44 @@ class TestSharedHostLockdown(RemoteKernelBase):
                           + _spawn_ok_handlers([_cell()]))
         self.assertIsNone(_run(env))
         self.assertFalse(any("base64 -d" in c for c in env.commands), env.commands)
+
+
+@pytest.mark.platforms("posix")
+class TestRemotePerCallSpillE2E(RemoteKernelBase):
+    """Real-transport end-to-end for the stdout spill emitter: LocalEnvironment is
+    a real local bash transport, so _run_remote_per_call exercises the actual
+    ship/execute/capture pipeline a remote backend uses."""
+
+    def test_per_call_stdout_spill_is_sanitized_on_real_fs(self):
+        """A remote script's oversized stdout spills to cache/exec, and the
+        on-disk file must carry the same redaction and ANSI strip the inline
+        result got; the warning sends the model to read it."""
+        self._ship.stop()
+        self._kernel_ship.stop()
+        self._poll.stop()
+        from tools.environments.local import LocalEnvironment
+        from tools.code_execution_tool import _run_remote_per_call
+        env = LocalEnvironment(cwd="/", timeout=60)
+        secret = "ghp_" + "0123456789abcdef"
+        code = ("import sys\n"
+                f"sys.stdout.write('\\x1b[31m{secret}\\x1b[0m\\n' "
+                "+ 'x' * 80_000 + '\\nTAIL\\n')\n")
+        out = json.loads(_run_remote_per_call(
+            env, "local", code, "t-e2e-spill", frozenset(),
+            timeout=60, max_tool_calls=5, exec_start=time.monotonic()))
+        self.assertEqual(out["status"], "success", out)
+        self.assertNotIn(secret, out["output"])  # inline copy is masked
+        spill = out.get("stdout_spill_path", "")
+        self.assertTrue(spill, out)
+        with open(spill, encoding="utf-8") as f:
+            body = f.read()
+        from agent.redact import redact_sensitive_text
+        self.assertNotIn(secret, body)
+        # Masked remnant proves the pipeline ran; derive it so the mask format is not frozen.
+        self.assertIn(redact_sensitive_text(secret, code_file=True), body)
+        self.assertNotIn("\x1b[", body)
+        self.assertEqual(os.stat(spill).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(spill)).st_mode & 0o777, 0o700)
 
 
 if __name__ == "__main__":

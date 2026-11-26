@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -24,9 +25,10 @@ from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._startup_fast import project_root_str
 
 if TYPE_CHECKING:
-    from cron.scheduler import _CancelEventLike
+    from cron.cancellation import _CancelEventLike
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -93,6 +95,19 @@ def _get_media_send_timeout() -> int:
     return _DEFAULT_MEDIA_SEND_TIMEOUT if resolved is None else resolved
 
 
+def _media_scaled_timeout(base: float, media_files) -> float:
+    """``base`` widened for the on-disk ``(path, is_voice)`` attachments the way the gateway's own
+    upload deadline grows (``gateway.platforms.helpers.scaled_upload_deadline``): a platform answers
+    an upload only once the file arrived, so a fixed cap reported a delivered file as failed."""
+    from gateway.platforms.helpers import media_upload_seconds, scaled_upload_deadline
+    return scaled_upload_deadline(base, media_upload_seconds(path for path, _voice in media_files or ()))
+
+
+def _media_send_timeout_for(media_path) -> float:
+    """``_get_media_send_timeout()`` for one attachment, widened by its upload time."""
+    return _media_scaled_timeout(_get_media_send_timeout(), [(media_path, False)])
+
+
 def _get_session_db_timeout() -> float:
     """Bound on run_job's SessionDB init: HERMES_CRON_SESSION_DB_TIMEOUT env, then
     ``cron.session_db_timeout_seconds`` (in DEFAULT_CONFIG), then 10s. Unlike sibling timeouts,
@@ -149,7 +164,7 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     from hermes_cli._launchers import resolve_store_python
     from pm.environments import project_python
 
-    repo = Path(__file__).resolve().parents[1]
+    repo = Path(project_root_str())
     if resolve_store_python(repo) is None:
         return [sys.executable, str(script)], {}
     # project_python, not committed_venv as on Windows: a pre-PM venv selected before the first
@@ -181,7 +196,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     from hermes_cli._launchers import resolve_store_python
     from pm.environments import committed_venv, site_packages as dependency_site
 
-    repo = Path(__file__).resolve().parents[1]
+    repo = Path(project_root_str())
     managed_python = resolve_store_python(repo)
     if managed_python is not None:
         # Only the committed generation may overlay the store Python: ``selected_venv``
@@ -202,7 +217,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             interpreter = base_python
             env_overlay["VIRTUAL_ENV"] = str(venv_dir)
             pythonpath_entries = [
-                str(_sched.Path(__file__).resolve().parents[1]), str(site_packages)]
+                project_root_str(), str(site_packages)]
             existing_pythonpath = os.environ.get("PYTHONPATH", "")
             if existing_pythonpath:
                 pythonpath_entries.append(existing_pythonpath)
@@ -365,12 +380,45 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     return path, None
 
 
-def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
+def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional[str]]:
+    """``(python_exe, error)`` for a job's ``interpreter`` field. Checked at run time, not create
+    time: a user venv can be rebuilt or moved while the job lives. Bare names are refused — they
+    silently change meaning with PATH. The name (and the symlink target's name) must look like a
+    Python: the lifecycle guard classifies ``.py`` scripts as Python and skips its shell reference
+    walk, so ``interpreter=/bin/bash`` would run an unscanned ``.py`` body as shell. ``pythonw``
+    is refused because it discards captured output (an agent job would go silently quiet)."""
+    from cron.lifecycle_guard import _INTERPRETER_IMAGE_RE
+
+    raw = interpreter.strip()
+    try:
+        resolved = Path(raw).expanduser()
+        if not resolved.is_absolute():
+            return None, (f"Interpreter must be an absolute or ~-prefixed path (got {raw!r}). "
+                          "Bare names like 'python3' are not stable across PATH changes.")
+        mode = resolved.stat().st_mode
+        names = {resolved.name.lower(), resolved.resolve().name.lower()}
+    except FileNotFoundError:
+        return None, f"Interpreter not found: {raw}"
+    except (RuntimeError, OSError) as exc:  # unknown ~user, unreadable parent, symlink loop
+        return None, f"Unable to resolve interpreter path {raw!r}: {exc}"
+    if not stat.S_ISREG(mode):
+        return None, f"Interpreter path is not a file: {resolved}"
+    if sys.platform != "win32" and not mode & 0o111:
+        return None, f"Interpreter is not executable: {resolved}"
+    if not all(_INTERPRETER_IMAGE_RE.match(name) and not name.startswith("pythonw")
+               for name in names):
+        return None, f"Interpreter must be a Python executable (python, python3, python3.12, ...): {resolved}"
+    return str(resolved), None
+
+
+def _script_argv(
+    path: Path, interpreter: Optional[str] = None,
+) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else a Python chosen by ``_posix_cron_script_argv`` / ``_windows_cron_python_invocation``.
-    Interpreter selection reads PM's install records and may raise; callers run this inside
-    their ``try``."""
+    else the job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
+    / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
+    may raise; callers run this inside their ``try``."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -381,6 +429,11 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
+    if isinstance(interpreter, str) and interpreter.strip():
+        # A user venv gets none of the managed-store overlays: the repo bootstrap / PYTHONPATH
+        # exist to run Hermes' own dependency venv and would shadow the user's packages.
+        python_exe, err = _resolve_cron_interpreter(interpreter)
+        return ([python_exe, str(path)] if python_exe else None), {}, err
     if sys.platform != "win32":
         argv, env_overlay = _posix_cron_script_argv(path)
         return argv, env_overlay, None
@@ -392,7 +445,7 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
 
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
-    cancel_event: Optional[_CancelEventLike] = None,
+    cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -402,14 +455,18 @@ def _run_job_script(
     Args: script_path: Path to the script. Relative paths are resolved against HERMES_HOME/scripts/.
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
-    instead of the scripts-dir parent. See #69396.
+    instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
+    ``.py`` scripts (#8714).
     """
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("cron_scripts", "A cron script"):
+        return False, refusal
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
     try:
-        argv, env_overlay, err = _script_argv(path)
+        argv, env_overlay, err = _script_argv(path, interpreter)
         if argv is None:
             return False, err
         from tools.environments.local import build_subprocess_env
@@ -419,6 +476,7 @@ def _run_job_script(
         # or stderr raises UnicodeDecodeError in communicate() and fails the whole run,
         # discarding the output (#105582; the Windows branch decodes lossily per #45099).
         popen_kwargs: dict[str, Any] = {
+            # detached-spawn: ok — awaited; cancel and timeout tree-kill the group
             "start_new_session": True,
             "errors": "replace",
         }
@@ -433,10 +491,11 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace"}
         # The process env is the LAUNCH profile's. For a job owned by a routed profile, drop that
-        # profile's .env residue from the base first (no-op for the launch profile's own jobs);
-        # the sanitizer then overlays the names the owning profile declares in
-        # terminal.env_passthrough from its own secret scope (#114209). The factory snapshots the
-        # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
+        # profile's .env residue from the base first (no-op for the launch profile's own jobs), then
+        # overlay the routed profile's own scope (which never enters os.environ under multiplex
+        # semantics) before the sanitizer, which also overlays the names the owning profile declares
+        # in terminal.env_passthrough from that scope (#114209). The factory snapshots the process
+        # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
@@ -453,7 +512,8 @@ def _run_job_script(
             if cancel_event is not None and cancel_event.is_set():
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
-                return False, "Script cancelled because cron fire ownership was lost"
+                from cron.cancellation import cancel_reason
+                return False, f"Script cancelled: {cancel_reason(cancel_event)}"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _terminate_cron_script_tree(proc)
@@ -517,11 +577,15 @@ def _run_job_script_with_claim_heartbeat(
     the stale-claim TTL; without a heartbeat another scheduler would re-dispatch the one-shot.
     Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from the
     dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
+    def run() -> tuple[bool, str]:
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
+                               interpreter=job.get("interpreter"))
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return run()
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -539,10 +603,10 @@ def _run_job_script_with_claim_heartbeat(
             "Job '%s': could not start script run_claim heartbeat", job_id, exc_info=True),
     )
     if heartbeat_thread is None:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return run()
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return run()
     finally:
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.
@@ -551,4 +615,4 @@ def _run_job_script_with_claim_heartbeat(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched  # noqa: E402
+from cron import scheduler as _sched

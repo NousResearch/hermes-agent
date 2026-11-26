@@ -1,7 +1,6 @@
 """install.sh child output: one status line on a terminal, the full stream in CI."""
 import os
 from pathlib import Path
-import pty
 import re
 import shlex
 import subprocess
@@ -27,6 +26,8 @@ def _script(code: int) -> str:
 
 def _on_terminal(tmp_path: Path, code: int) -> tuple[str, str]:
     """Run under a pseudo-terminal; return the transcript as the screen shows it."""
+    import pty  # POSIX-only (needs termios); a module-level import breaks collection on Windows
+
     controller, terminal = pty.openpty()
     proc = subprocess.Popen(["bash", "-c", _script(code)], stdin=terminal, stdout=terminal, stderr=terminal,
                             env=_env(tmp_path), close_fds=True)
@@ -62,7 +63,7 @@ def test_terminal_run_keeps_output_in_the_log_and_shows_it_only_on_failure(tmp_p
 
 def test_ci_streams_every_line_and_writes_no_log(tmp_path):
     result = subprocess.run(["bash", "-c", _script(0)], env=_env(tmp_path, CI="true"),
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "noisy-first" in result.stdout and "noisy-second" in result.stderr
     assert "Noisy step" in result.stdout

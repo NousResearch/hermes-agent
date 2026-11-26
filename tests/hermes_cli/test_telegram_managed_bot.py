@@ -170,7 +170,6 @@ class TestSetupTelegramAuto:
 
         def fake_auto_setup_telegram_bot_result(*, profile_name=None):
             seen["profile_name"] = profile_name
-            return None
 
         monkeypatch.setattr(
             "hermes_cli.telegram_managed_bot.auto_setup_telegram_bot_result",

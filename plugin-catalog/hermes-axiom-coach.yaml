@@ -1,0 +1,39 @@
+name: hermes-axiom-coach
+title: Axiom Coach
+repo: https://github.com/percyhendrux123-prog/hermes-axiom-coach
+sha: "24c7e8244b8036ae3f40c3e24654a2a6c28d5099"
+version: "0.1.1"
+maintainer: percyhendrux123-prog
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/percyhendrux123-prog/hermes-axiom-coach/blob/24c7e8244b8036ae3f40c3e24654a2a6c28d5099/README.md
+readme: true
+platforms: []
+description: >-
+  The Hermes side of an open-source coach app, its free self-serve plan and the Lite fitness
+  calculators. Three local tools (axiom_lite_split for a starting training week, axiom_lite_macros
+  for Mifflin-St Jeor calorie and macro targets behind a five-question health screen where any yes
+  returns no numbers, axiom_lite_cardio for MET-based session estimates) ported from the Lite app's
+  TypeScript engines and parity-tested against 3,580 exported cases; every result carries a
+  general-education, not-medical-advice line. Four bundled skills: coach-desk (read-only pass first,
+  every send drafted and waiting for the coach), my-plan (work your own plan; never answers the
+  health screen), deploy (walks the app's SETUP.md) and lite. `hermes axiom-coach setup <site>` and
+  /axiom-coach print the steps to connect Hermes's built-in MCP client to the app's own OAuth
+  connector with trust: untrusted, so app writes ask first. Disclosure — registers three local
+  calculator tools, four read-only bundled skills, a /axiom-coach slash command and a `hermes
+  axiom-coach` CLI subcommand; no hooks or middleware; reads only its own SKILL.md files at load;
+  writes no files, edits no config, stores no tokens, reads no credentials or environment
+  variables, and makes no network, subprocess, shell or model calls; the setup command only prints
+  commands for the user to run, and the coach app's own tools come from Hermes's built-in MCP
+  client, which the user configures and signs in themselves.
+known_issues:
+  - "The coach-desk, my-plan and deploy skills need a running copy of the open coach app; without one only the Lite tools and the deploy skill are useful."
+  - "Lite results are estimates for general education, not medical advice, and are not saved or synced."
+  - "0.1.0 named its Lite toolset like the connector its setup steps add, which hid the app's tools from model sessions; fixed in 0.1.1 (toolset axiom-lite). Observed on 0.1.1: a full OAuth sign-in, an app tool call, and a model-driven coach-desk session on a demo workspace."
+  - "Not observed for this release: a my-plan session with a self-serve member sign-in, and an app write through Hermes's approval prompt."
+capabilities:
+  provides_tools: [axiom_lite_split, axiom_lite_macros, axiom_lite_cardio]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,32 @@
+name: flightlog
+repo: https://github.com/piyushpradhan/flightlog
+sha: c201d602219f6890c380954c1229692e6bfc3f44
+title: Flightlog
+description: "Flight recorder for Hermes. Records every tool call, model call, subagent and approval to local SQLite and flags runs that finish green but went wrong: tool errors the answer hides, loops, token spikes and effort collapse against each cron job's own baseline, failed subagents behind a \"done\", and \"tests pass\" claims with no passing check after the last edit. Flagged runs get a short incident report, a footer on the reply, per-step timelines in the CLI, dashboard tab and desktop page, and an opt-in loop tripwire that hands the 5th repeat to Hermes's own approval prompt. Disclosure — local only: no network calls, subprocesses or background services beyond one in-process SQLite writer thread; stores short redacted previews of every tool call's arguments and result in $HERMES_HOME/flightlog/flightlog.db (pruned after 30 days); flagged runs' redacted evidence goes to your configured model via ctx.llm for the incident report; appends a footer to agent replies when a run is flagged, and by default (break_silence) makes a flagged [SILENT] cron job post that note instead of staying silent; the opt-in loop tripwire registers a pre_tool_call hook that sends the 5th identical call to Hermes's approval prompt."
+maintainer: Piyush Pradhan
+tier: community
+category: tools
+docs_url: https://github.com/piyushpradhan/flightlog/tree/c201d602219f6890c380954c1229692e6bfc3f44#readme
+version: "0.1.0"
+requires_hermes: ">=0.21"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - post_api_request
+    - api_request_error
+    - subagent_start
+    - subagent_stop
+    - pre_approval_request
+    - post_approval_response
+    - transform_llm_output
+    - on_session_end
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/piyushpradhan/flightlog/c201d602219f6890c380954c1229692e6bfc3f44/docs/screenshots/flagged-run.png
+  - https://raw.githubusercontent.com/piyushpradhan/flightlog/c201d602219f6890c380954c1229692e6bfc3f44/docs/screenshots/failed-helpers.png
+  - https://raw.githubusercontent.com/piyushpradhan/flightlog/c201d602219f6890c380954c1229692e6bfc3f44/docs/screenshots/healthy-run.png

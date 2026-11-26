@@ -13,15 +13,28 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
-import { mkdir, readdir } from 'node:fs/promises'
+import { copyFile, mkdir, readdir } from 'node:fs/promises'
 import { runPython } from '../../../scripts/build/python.mjs'
 
 import { assertPackagedBackendReadyArtifact, resolvePackagedAsarPath } from './backend-ready-artifact.mjs'
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
+import { assertPackagedPayload, preparedPayloadSource } from './packaged-payload.mjs'
 import { rehashPayloadDigests } from './payload-digests.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
 import { signWheelZipMembers } from './sign-wheel-zips.mjs'
 import { sanitizeTree } from './sanitize-pe-signatures.mjs'
+
+/**
+ * Put our full-resolution `assets/icon.icns` back as the bundle's legacy icon.
+ * When `mac.icon` is the Icon Composer package, electron-builder replaces the
+ * bundled `icon.icns` with actool's 256px fallback; macOS <= 15 shows that
+ * file, so it must be the 16→1024 artwork the generator produced.
+ * @param {{ appOutDir: string, packager: { appInfo: { productFilename: string } } }} context
+ * @param {string} [appDir] the apps/desktop directory
+ */
+export async function restoreLegacyMacIcon({ appOutDir, packager }, appDir = path.resolve(import.meta.dirname, '..')) {
+  await copyFile(path.join(appDir, 'assets', 'icon.icns'), path.join(packager.getResourcesDir(appOutDir), 'icon.icns'))
+}
 
 /**
  * Restore the empty app-level localizations dropped during Electron extraction.
@@ -61,11 +74,23 @@ export default async function afterPack(context) {
     ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
     : path.join(context.appOutDir, 'resources')
   const payload = path.join(resources, 'agent-payload')
+  const prepared = preparedPayloadSource(context.packager)
+  // Check the copy before relocation, framework repairs and signing change it on purpose.
+  if (prepared) {
+    assertPackagedPayload(prepared, payload)
+    console.log(`[after-pack] packaged payload matches the prepared payload ${prepared}`)
+  }
+  await packPlatform(context, payload)
+}
+
+async function packPlatform(context, payload) {
+  const platform = context.electronPlatformName
   if (platform !== 'win32' && fs.existsSync(path.join(payload, 'manifest.json'))) {
     runPython([
       path.resolve(import.meta.dirname, '../../../scripts/bundles/payload.py'), 'relocate', payload], { stdio: 'inherit' })
   }
   if (platform === 'darwin') {
+    await restoreLegacyMacIcon(context)
     await restoreMacLocaleMarkers(context)
     if (fs.existsSync(payload)) {
       const entitlements = path.join(import.meta.dirname, '..', 'electron', 'entitlements.mac.inherit.plist')
@@ -105,6 +130,7 @@ export default async function afterPack(context) {
   // one bad payload DLL fails the whole package. Unlike the stamp below this
   // is NOT best-effort: shipping past it means shipping an unsignable bundle.
   // this is a hack until https://github.com/astral-sh/python-build-standalone/pull/1217 is merged.
+  console.log(`[after-pack] scanning PE certificate headers in ${context.appOutDir}`)
   const { scanned, repaired } = sanitizeTree(context.appOutDir)
   console.log(`[after-pack] ${scanned} PEs scanned, ${repaired.length} dangling certificate tables cleared`)
   for (const file of repaired) {

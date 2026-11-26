@@ -205,7 +205,7 @@ async def test_gateway_startup_applies_limit_before_gateway_initialization(monke
 
 def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     from hermes_cli import main as cli_main
-    import hermes_cli.main_web_build as main_web_build
+    from hermes_cli import main_web_build
     import hermes_cli.plugins
     import hermes_cli.web_server
 
@@ -227,18 +227,22 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     monkeypatch.setattr(main_web_build, "_build_web_ui", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_main, "_maybe_setup_dashboard_auth_interactively", lambda args: None)
     monkeypatch.setattr(hermes_cli.plugins, "discover_plugins", lambda: None)
+    served: dict = {}
     monkeypatch.setattr(
         hermes_cli.web_server,
         "start_server",
-        lambda **kwargs: calls.append("server"),
+        lambda **kwargs: (calls.append("server"), served.update(kwargs)),
     )
+    # Desktop SSH serve: the owner watchdog's lock sits next to the validated token (#132034).
+    token_dir = Path("/home/u/.hermes/desktop-ssh") / ("f" * 32)
+    monkeypatch.setattr(cli_main, "_read_ssh_session_token_file", lambda path: "s" * 64)
 
     args = SimpleNamespace(
         status=False,
         stop=False,
         headless_backend=True,
-        ssh_owner_nonce=None,
-        ssh_session_token_file=None,
+        ssh_owner_nonce="0123456789abcdef",
+        ssh_session_token_file=str(token_dir / "0123456789abcdef.token"),
         host="127.0.0.1",
         port=0,
         no_open=True,
@@ -251,6 +255,7 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
     cli_main.cmd_dashboard(args)
 
     assert calls == ["limit", "server"]
+    assert served["ssh_lock_path"] == token_dir / "backend.lock.json"
 
 
 @pytest.mark.platforms("linux")
@@ -331,7 +336,7 @@ def test_dashboard_lifecycle_flags_skip_limit_adjustment(monkeypatch, lifecycle_
         "apply_nofile_soft_limit",
         lambda: calls.append("limit"),
     )
-    monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda: [])
+    monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", list)
     monkeypatch.setattr(cli_main, "_find_stale_dashboard_pids", lambda **_: [])
     monkeypatch.setattr(hermes_cli_main_dashboard, "_find_stale_dashboard_pids", lambda **_: [])
 

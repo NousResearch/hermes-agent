@@ -1,7 +1,8 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
-import type { DesktopBootProgress } from '@/global'
+import type { DesktopBootProgress, UpdateHoldWire } from '@/global'
 import { translateNow } from '@/i18n'
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 
 export interface DesktopBootState extends DesktopBootProgress {
   visible: boolean
@@ -19,6 +20,9 @@ const INITIAL_BOOT_STATE: DesktopBootState = {
 }
 
 export const $desktopBoot = atom<DesktopBootState>(INITIAL_BOOT_STATE)
+
+/** A Webapp tab whose sign-in ended: the sign-in view covers it until it signs in again. */
+export const $webappSignedOut = computed($desktopBoot, boot => Boolean(boot.error?.includes(WEBAPP_LAUNCH_REQUIRED)))
 
 function clampProgress(value: number) {
   if (!Number.isFinite(value)) {
@@ -44,6 +48,11 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
     progress: mergedProgress,
     visible: progress.running || mergedProgress < 100 || Boolean(error)
   })
+}
+
+/** The blocked-update screen's hold alone, outside the boot steps (R8 M6). */
+export function applyDesktopUpdateHold(hold: UpdateHoldWire | null) {
+  $desktopBoot.set({ ...$desktopBoot.get(), updateHold: hold })
 }
 
 export function setDesktopBootStep(step: {

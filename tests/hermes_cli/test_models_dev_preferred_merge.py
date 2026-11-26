@@ -129,7 +129,6 @@ class TestProviderModelIdsPreferred:
 
         def fake_select(model_list, **_kwargs):
             captured["models"] = model_list
-            return None
 
         with (
             patch("hermes_cli.main_provider_setup._prompt_api_key", return_value=("sk-kimi-test", False)),
@@ -140,3 +139,10 @@ class TestProviderModelIdsPreferred:
             _model_flow_kimi({}, current_model="")
 
         assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
+
+
+def test_setup_menu_merge_leads_with_curated_in_full():
+    from hermes_cli.model_setup_flows_common import _models_dev_merged
+    with patch("agent.models_dev.list_agentic_models", return_value=["a/x", "b/Y", "c/z"]):
+        assert _models_dev_merged("nvidia", ["B/y", "d/w"]) == ["b/Y", "d/w", "a/x", "c/z"]
+        assert _models_dev_merged("opencode-zen", ["B/y", "d/w"]) == ["a/x", "b/Y", "c/z", "d/w"]

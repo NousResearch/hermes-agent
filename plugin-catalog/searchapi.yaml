@@ -1,0 +1,24 @@
+name: searchapi
+repo: https://github.com/christofilojohn/hermes-searchapi
+sha: c82b6f7e9967fab049b13f16c176b6f4f0d64ff7
+subdir: hermes_searchapi
+title: "SearchApi"
+description: "SearchApi (searchapi.io) as a backend for the built-in web_search (provider name searchapi): Google by default, or Bing, YouTube, DuckDuckGo, Google News, Google Scholar and other engines via SEARCHAPI_ENGINE. Disclosure — sends web_search queries to www.searchapi.io/api/v1/search with your SEARCHAPI_API_KEY (Authorization header) read through Hermes; SearchApi is a paid service billed per successful search; no other endpoint, no telemetry, no file or shell access, no background process. Independent community plugin, not affiliated with SearchApi."
+maintainer: christofilojohn
+tier: community
+category: web
+requires_hermes: ">=0.18.1"
+version: "0.1.0"
+docs_url: https://github.com/christofilojohn/hermes-searchapi#readme
+readme: true
+platforms: []
+known_issues:
+  - "Paid: every web_search routed to searchapi uses one SearchApi search credit, billed to the account that owns SEARCHAPI_API_KEY (new accounts get 100 free searches)"
+  - "Installing does not switch web_search over: run hermes config set web.search_backend searchapi. The backend is search-only, so web_extract stays with another backend"
+  - "One request per search, no paging: most engines return about 10 rows, so a web_search limit above 10 usually gets 10"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SEARCHAPI_API_KEY

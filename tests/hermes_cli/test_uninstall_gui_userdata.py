@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gui_uninstall as gui_uninstall
-import hermes_cli.uninstall as uninstall
+from hermes_cli import gui_uninstall
+from hermes_cli import uninstall
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def homes(tmp_path, monkeypatch):
                  "remove_node_symlinks", "remove_legacy_runtime_trees",
                  "remove_dashboard_launchd_jobs", "_macos_cache_leftover_dirs"):
         monkeypatch.setattr(uninstall, name, lambda *a, **k: [])
-    monkeypatch.setattr(gui_uninstall, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gui_uninstall, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gui_uninstall, "desktop_userdata_dir", lambda: userdata)
 
     real_rmtree = shutil.rmtree

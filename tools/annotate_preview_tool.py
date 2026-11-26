@@ -7,9 +7,9 @@ navigation clears them. Same ``preview.act`` bridge as ``drive_preview`` (the
 renderer resolves refs and owns the overlay). ``desktop_ui`` toolset only.
 """
 
-import json
 from typing import Callable, Optional
 
+from tools.desktop_ui import passthrough_json
 from tools.registry import registry, tool_error
 
 ACTIONS = ("add", "hold", "remove", "clear")
@@ -39,19 +39,18 @@ def annotate_preview_tool(
     except Exception as exc:
         return tool_error(f"Failed to annotate the in-app browser: {exc}")
     if not raw:
-        return tool_error("The annotation timed out, or no GUI window answered. Open a page with open_preview first.")
-    try:
-        return json.dumps(json.loads(raw), ensure_ascii=False)
-    except (TypeError, ValueError):
-        return json.dumps({"text": str(raw)}, ensure_ascii=False)
+        return tool_error(
+            "No GUI window answered with a page: no preview tab is open. "
+            "Open a page with open_preview first. If the pane IS open, the desktop app "
+            "may be older than this backend — its bridge-unavailable error names that case.")
+    return passthrough_json(raw)
 
 
 ANNOTATE_PREVIEW_SCHEMA = {
     "name": "annotate_preview",
     "description": (
-        "Highlight elements on the preview-pane page, lastingly (drive_preview's own "
-        "marks fade; annotations stay until removed) — point at findings, "
-        "flag what you're about to change, keep your place. Use the refs "
+        "Highlight preview-pane elements with lasting marks (drive_preview's fade). "
+        "Point at findings, flag what you're about to change, keep your place. Use the refs "
         "from drive_preview action='elements'. add: outline one element "
         "(optional short label — a word or two, drawn on the page). hold: "
         "freeze the whole visible field, every element outlined and named. "

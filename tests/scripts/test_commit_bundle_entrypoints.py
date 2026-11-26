@@ -26,7 +26,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("BUILD_NUMBER", "123")
-    defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
+    defaults = {"HERMES_PREVIEW_FULL_CONNECTORS": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
     monkeypatch.setenv("HERMES_BUNDLE_ENV_JSON", json.dumps(defaults))
     request = BuildRequest.create(repo, tag=None, commit=sha, variant=variant,
                                   work=tmp_path / "work", cache=tmp_path / "cache", bundle_env=defaults)
@@ -38,7 +38,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     lock = Lockfile(repo / "pm/lock.json")
     store = request.cache / "tools"
     binaries = {}
-    for name in ("python", "node", "npm"):
+    for name in ("python", "node", "pnpm"):
         package = get_package(name)
         version = lock.version(name)
         assert version is not None
@@ -83,10 +83,13 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
 
 
 
-@pytest.mark.parametrize("tag,commit", [(None, "a" * 40), ("v1.2.3+canary.20260911T120000Z", None)])
-def test_store_build_rejects_nonstable_before_reading_or_preparing_repo(tmp_path, tag, commit):
+# A canary tag is a release selector: it assembles (never submits) its Store package like stable.
+# A commit build, and a tag in the retired canary shape, never package for the Store.
+@pytest.mark.parametrize("tag,commit,message", [(None, "a" * 40, "Store.*stable"),
+                                                ("v1.2.3+canary.20260911T120000Z", None, "")])
+def test_store_build_rejects_nonrelease_before_reading_or_preparing_repo(tmp_path, tag, commit, message):
     absent = tmp_path / "must-not-be-created"
-    with pytest.raises(ValueError, match="Store.*stable"):
+    with pytest.raises(ValueError, match=message):
         desktop.build(absent, tag, "store", [], commit_build=commit)
     assert not absent.exists()
 
@@ -105,7 +108,7 @@ def test_termux_commit_args_reach_prerequisite_checks_without_mutation(tmp_path)
         if script.name == "build_deb.sh":
             args += ["--payload", str(tmp_path / "absent")]
         result = subprocess.run([_BASH, str(script), *args], env=env, cwd=tmp_path,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 1, result.stdout + result.stderr
         assert "usage:" not in result.stderr
         assert not out.exists()

@@ -1,0 +1,91 @@
+/* The demo layout's narrower reading column (the landed column read a tad too wide). */
+:root[data-onboarding-demo] {
+  --composer-width: 36rem;
+}
+
+/* Covers the empty setup chat above the composer until the first assistant row lands. */
+[data-slot='intro-copy'] {
+  position: absolute;
+  inset: 0 0 var(--composer-measured-height);
+  z-index: 20;
+  pointer-events: none;
+  background: var(--ui-chat-surface-background);
+}
+
+/* The thread waits under the copy until the spring settles (`$introHoldsThread`). */
+[data-intro-holding] > [data-slot='thread'] {
+  visibility: hidden;
+}
+
+/* Same column as the thread content, so the risen copy sits where the first message lands. */
+.intro-copy-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  gap: 0.35rem;
+  width: min(var(--composer-width), 100%);
+  padding-inline: 1.5rem;
+  color: var(--ui-text-primary);
+  font-size: 1.125rem;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: center;
+  transform: translate(-50%, -50%);
+  transition:
+    top 530ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    transform 530ms cubic-bezier(0.34, 1.45, 0.64, 1),
+    font-size 530ms ease,
+    gap 530ms ease;
+}
+
+.intro-copy-text p {
+  min-height: 1lh;
+  margin: 0;
+}
+
+.intro-copy-second {
+  color: var(--ui-text-secondary);
+  transition: color 530ms ease;
+}
+
+[data-slot='intro-copy'][data-risen] .intro-copy-text {
+  top: calc(var(--titlebar-height) - 0.5rem);
+  gap: var(--paragraph-gap);
+  font-size: var(--conversation-text-font-size);
+  font-weight: 400;
+  line-height: var(--conversation-line-height);
+  text-align: left;
+  transform: translate(-50%, 0);
+}
+
+[data-slot='intro-copy'][data-risen] .intro-copy-second {
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-copy-text,
+  .intro-copy-second {
+    transition: none;
+  }
+}
+
+/* The composer dock fades in once the setup guide has arrived (data-guide-arrived on the chat). */
+@keyframes guide-controls-arrive {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+[data-guide-arrived] [data-slot='composer-dock'] {
+  animation: guide-controls-arrive 100ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-guide-arrived] [data-slot='composer-dock'] {
+    animation: none;
+  }
+}

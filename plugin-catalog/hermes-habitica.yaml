@@ -1,0 +1,29 @@
+name: hermes-habitica
+repo: https://github.com/Jessy-Boo/hermes-habitica
+sha: 3d769045ad2d5c8a6d410298da30f8d4f3687da2
+description: "Manage a Habitica character from Hermes: view stats and streaks, tick habits and dailies, create and edit tasks and rewards, and follow party and quest progress, with optional party chat posting. Disclosure — calls habitica.com/api/v3 with your stored user ID and API token; ticks, edits and deletes are irreversible writes that change streaks, stats and gold, and task deletes and party chat posts or deletes ask for your approval first; party chat posts are visible to party members; not affiliated with or endorsed by Habitica."
+maintainer: Jessy-Boo
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Jessy-Boo/hermes-habitica#readme
+version: "1.0.1"
+readme: true
+image: https://raw.githubusercontent.com/Jessy-Boo/hermes-habitica/3d769045ad2d5c8a6d410298da30f8d4f3687da2/assets/hero.png
+platforms: []
+capabilities:
+  provides_tools:
+  - habitica_status
+  - habitica_tasks
+  - habitica_task_create
+  - habitica_task_update
+  - habitica_task_delete
+  - habitica_tick
+  - habitica_tags
+  - habitica_party
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env:
+  - HABITICA_USER_ID
+  - HABITICA_API_TOKEN

@@ -21,6 +21,11 @@ from agent.context_compressor import SUMMARY_PREFIX
 from agent.conversation_compression_reply_anchor import (
     _ensure_compressed_keeps_last_assistant_reply,
 )
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+import itertools
 
 # Trailing whitespace on purpose: a conforming engine may hand the row back stripped.
 REPLY = "x" * 200 + " just-delivered verdict report the user is still reading.  "
@@ -33,7 +38,7 @@ def _assert_no_same_role_adjacency(messages):
     """Strict alternation, tool rows included: a tool-call assistant is an assistant row
     too, so never assistant;assistant (or user;user / tool;tool) anywhere in the view."""
     roles = [m.get("role") for m in messages]
-    assert not any(a == b for a, b in zip(roles, roles[1:])), f"same-role adjacency in {roles}"
+    assert not any(a == b for a, b in itertools.pairwise(roles)), f"same-role adjacency in {roles}"
 
 
 def _count_reply(messages):
@@ -90,16 +95,14 @@ def _tool_chain(*call_ids):
 
 
 def _seed(tmp_path, tail_rows, fold, follower):
-    """Real SessionDB with the persisted history, a stub engine returning ``fold``, and the
+    """A real store with the persisted history, a stub engine returning ``fold``, and the
     live list ending on the just-typed ``follower`` turn (unpersisted, like production)."""
     import os
     from unittest.mock import MagicMock, patch
 
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "E2E_118900_REPLY"
-    db.create_session(session_id, source="cli")
+    seed_session(db, session_id, "cli")
     rows = [
         ("user", "Audit the auth module."),
         ("assistant", "Short ack."),
@@ -108,10 +111,10 @@ def _seed(tmp_path, tail_rows, fold, follower):
     for i in range(6):
         rows += [("user", f"bulk q {i} " + "q" * 80), ("assistant", f"bulk a {i} " + "a" * 80)]
     for role, content in [*rows, *tail_rows, ("assistant", REPLY)]:
-        db.append_message(session_id, role, content)
+        seed_messages(db, session_id, {"role": role, "content": content})
     # Production live dicts carry _row_id + timestamp (session flush stamps both).
     messages = [
-        *db.get_messages_as_conversation(session_id, include_row_ids=True),
+        *conversation(db, session_id, ConversationRequest(include_row_ids=True)),
         {"role": "user", "content": follower},
     ]
     assert isinstance(messages[-2].get("_row_id"), int) and messages[-2].get("timestamp") is not None
@@ -125,7 +128,7 @@ def _seed(tmp_path, tail_rows, fold, follower):
             model="test/model",
             platform="telegram",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -163,7 +166,7 @@ class TestEngineDropsReplyEndToEnd:
 
     def _compress_and_read(self, db, session_id, agent, messages, tail_role):
         out_messages = _compress(agent, messages)
-        live = db.get_messages_as_conversation(session_id)
+        live = conversation(db, session_id)
         live_contents = [m.get("content") for m in live]
         # Compression still folds: the superseded early rows are archived, not live.
         assert "Short ack." not in live_contents
@@ -192,8 +195,9 @@ class TestEngineDropsReplyEndToEnd:
         assert any(str(c).startswith(FOLLOWER) for c in live_contents)
         # Display projection (include_compacted): the reply renders once, not as archived
         # original + fresh twin.
-        display = db.get_messages_as_conversation(
-            session_id, include_ancestors=True, include_row_ids=True, include_compacted=True,
+        display = conversation(
+            db, session_id,
+            ConversationRequest(view=TranscriptView.DISPLAY, include_lineage=True, include_row_ids=True),
         )
         assert _count_reply(display) == 1
 
@@ -253,7 +257,7 @@ class TestEngineDropsReplyEndToEnd:
 
         out_messages = _compress(agent, messages)
 
-        live = db.get_messages_as_conversation(session_id)
+        live = conversation(db, session_id)
         live_contents = [m.get("content") for m in live]
         for view in (out_messages, live):
             _assert_no_same_role_adjacency(view)

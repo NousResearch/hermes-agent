@@ -53,6 +53,7 @@ def netns_usable() -> bool:
             [shutil.which("bwrap") or "bwrap", "--dev-bind", "/", "/", "--unshare-net", "--unshare-pid",
              "--proc", "/proc", "--die-with-parent", sys.executable, "-I", "-c", probe],
             capture_output=True, text=True, timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -85,7 +86,7 @@ class TestCA:
         directory.mkdir(parents=True, exist_ok=True)
         self._key = ec.generate_private_key(ec.SECP256R1())
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Hermes E2E TLS Inspection Root")])
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         self._cert = (
             x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(self._key.public_key()).serial_number(x509.random_serial_number())
@@ -136,7 +137,7 @@ class TestCA:
     def _leaf_context(self, host: str) -> ssl.SSLContext:
         x509, hashes, ser, ec, oid = self._x509, self._hashes, self._ser, self._ec, self._oid
         key = ec.generate_private_key(ec.SECP256R1())
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         try:
             san = x509.IPAddress(ipaddress.ip_address(host))
         except ValueError:
@@ -190,7 +191,7 @@ App = Callable[[Request], Response]
 @dataclass
 class Hit:
     host: str
-    kind: str  # "request" | "refused" | "eof" | "auth-required" | "tls-rejected"
+    kind: str  # "request" | "refused" | "eof" | "auth-required" | "tls-rejected" | "tunnel" | "tunnel-failed"
     method: str = ""
     path: str = ""
     status: int = 0
@@ -246,6 +247,8 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
                 return queue.pop(0)
         path, _, query = req.path.partition("?")
         body = req.body
+        if req.headers.get("content-encoding", "").lower() == "gzip":
+            body = gzip.decompress(body)
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "GIT_PROJECT_ROOT": str(project_root), "GIT_HTTP_EXPORT_ALL": "1",
@@ -254,9 +257,7 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
             "GIT_PROTOCOL": req.headers.get("git-protocol", ""), "REMOTE_ADDR": "127.0.0.1",
             "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(project_root),
         }
-        if req.headers.get("content-encoding", "").lower() == "gzip":
-            body = gzip.decompress(body)
-        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300)
+        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300, check=False)
         head, _, payload = cp.stdout.partition(b"\r\n\r\n")
         if not _:
             head, _, payload = cp.stdout.partition(b"\n\n")
@@ -291,7 +292,7 @@ class _SiteHandler(http.server.BaseHTTPRequestHandler):
     site_host: str
     hits: list[Hit]
 
-    def log_message(self, format, *args) -> None:  # noqa: A002 - quiet
+    def log_message(self, format, *args) -> None:
         pass
 
     def _read_body(self) -> bytes:
@@ -372,14 +373,18 @@ class HttpSite:
 
 
 class EdgeProxy:
-    """HTTP(S) forward proxy with TLS inspection for routed hosts; refuses (and logs) the rest."""
+    """HTTP(S) forward proxy with TLS inspection for routed hosts; refuses (and logs) the rest, or
+    with ``tunnel_unrouted`` passes them through to the real host (an update from an older release
+    downloads the dependencies the newer one adds)."""
 
     def __init__(self, ca: TestCA, routes: dict[str, App] | None = None, *,
-                 eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None) -> None:
+                 eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None,
+                 tunnel_unrouted: bool = False) -> None:
         self.ca = ca
         self.routes: dict[str, App] = dict(routes or {})
         self.eof_hosts = set(eof_hosts)
         self.auth = auth
+        self.tunnel_unrouted = tunnel_unrouted
         self.hits: list[Hit] = []
         outer = self
 
@@ -452,6 +457,20 @@ class EdgeProxy:
                     sock.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 return  # drop the tunnel before any TLS bytes: UNEXPECTED_EOF at the client
             app = self.routes.get(host)
+            if app is None and self.tunnel_unrouted and method == "CONNECT":
+                port = int(target.rsplit(":", 1)[1]) if ":" in target else 443
+                try:
+                    upstream = socket.create_connection((host, port), timeout=30)
+                except OSError as exc:
+                    self.hits.append(Hit(host, "tunnel-failed", method, target, 502, str(exc)[:200]))
+                    sock.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    return
+                self.hits.append(Hit(host, "tunnel", method, target, 200))
+                sock.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                sock.settimeout(None)
+                upstream.settimeout(None)
+                _pipe_pair(sock, upstream)
+                return
             if app is None:
                 self.hits.append(Hit(host, "refused", method, target, 403))
                 sock.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")

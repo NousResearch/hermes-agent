@@ -1,5 +1,8 @@
 import asyncio
+import os
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,7 +13,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
-from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 
 @pytest.mark.asyncio
@@ -20,7 +23,6 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
 
     async def block_forever(_event):
         await release.wait()
-        return None
 
     adapter.set_message_handler(block_forever)
     event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
@@ -54,14 +56,13 @@ def test_cron_provider_stop_cannot_override_gateway_exit_code():
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()
     runner._pending_messages = {"session": "pending text"}
-    runner._pending_approvals = {"session": {"command": "rm -rf /tmp/x"}}
+    runner._session_state("session").persistent.approvals = {"command": "rm -rf /tmp/x"}
     runner._restart_drain_timeout = 0.0
 
     release = asyncio.Event()
 
     async def block_forever(_event):
         await release.wait()
-        return None
 
     adapter.set_message_handler(block_forever)
     event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
@@ -91,7 +92,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner.adapters == {}
     assert runner._running_agents == {}
     assert runner._pending_messages == {}
-    assert runner._pending_approvals == {}
+    assert all(state.persistent.approvals is None for state in runner._sessions_map().values())
     assert runner._shutdown_event.is_set() is True
 
 
@@ -236,7 +237,7 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     # Patch the module-level names the stop() helper imports lazily.
     import tools.process_registry as _pr
     import tools.terminal_tool as _tt
-    import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
+    from tools import terminal_tool_lifecycle
     monkeypatch.setattr(_pr.process_registry, "kill_all", _fake_kill_all)
     monkeypatch.setattr(_tt, "cleanup_all_environments", _fake_cleanup_envs)
     monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_all_environments", _fake_cleanup_envs)
@@ -407,3 +408,169 @@ async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
         done = await gateway_run._shutdown_mcp_servers_nonblocking(timeout=5)
     assert done is True
     assert calls == [1]
+
+
+# A real stop in a disposable process, so the watchdog's real os._exit ends only that process. The
+# watchdog stop() arms is started only once the stop has unwound, on a short leash: its expiry then
+# follows whatever the stop did, on any runner. The child is outside pytest's fences, so it gets a
+# seeded home, an empty managed dir (without PYTEST_CURRENT_TEST nothing else skips /etc/hermes) and
+# loads no .env (a checkout .env overrides the shell when the home has none), and it bounds itself: on
+# a Windows venv the parent's timeout reaches only the launcher shim.
+_STOP_WATCHDOG_CHILD = '''
+import asyncio, logging, os, sys, threading
+deadline = threading.Timer(60.0, os._exit, args=(97,))
+deadline.daemon = True
+deadline.start()
+repo_root, ending = sys.argv[1:3]
+sys.path.insert(0, repo_root)
+
+import hermes_cli.env_loader as env_loader
+env_loader.load_hermes_dotenv = lambda **_kwargs: []
+
+from unittest.mock import AsyncMock
+
+from gateway import run_runtime, run_shutdown
+from tests.gateway.restart_test_helpers import make_restart_runner
+
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr, force=True)
+armed, real_arm = [], run_shutdown.arm_shutdown_watchdog
+run_shutdown.arm_shutdown_watchdog = lambda _delay_s, *, done_event=None, **kw: armed.append((done_event, kw))
+
+
+async def main():
+    settling = asyncio.Event()
+
+    async def settle(*_args, **_kwargs):
+        settling.set()
+        if ending == "phase_raises":
+            raise RuntimeError("settle failed")
+        await asyncio.Event().wait()
+
+    def quiesce_fails(*_args, **_kwargs):
+        raise RuntimeError("quiesce failed")
+
+    if ending == "late_phase_raises":
+        run_shutdown.GatewayShutdownMixin._stop_quiesce_and_close_session_dbs = quiesce_fails
+    elif ending != "completes":
+        run_runtime.settle_gateway_runtime = settle
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    stopping = asyncio.create_task(runner.stop())
+    if ending == "stop_cancelled":
+        await asyncio.wait_for(settling.wait(), 30)
+        stopping.cancel()
+    try:
+        await stopping
+    except (Exception, asyncio.CancelledError) as exc:
+        print("stop ended:", type(exc).__name__, flush=True)
+    print("shutdown_event set:", runner._shutdown_event.is_set(), "armed:", len(armed), flush=True)
+    for done_event, kwargs in armed:
+        real_arm(0.2, done_event=done_event, **kwargs)
+    for thread in [t for t in threading.enumerate() if t.name == "gateway-shutdown-watchdog"]:
+        await asyncio.to_thread(thread.join)
+    print("watchdog stood down", flush=True)
+
+
+asyncio.run(main())
+'''
+
+
+def _run_stop_child(tmp_path, ending):
+    child = tmp_path / "stop_child.py"
+    repo_root = str(Path(__file__).resolve().parents[2])
+    child.write_text(_STOP_WATCHDOG_CHILD, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("terminal:\n  backend: local\n", encoding="utf-8")
+    env = {key: value for key, value in os.environ.items() if key != "PYTEST_CURRENT_TEST"}  # arms it
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    env.update(HERMES_HOME=str(home), HERMES_MANAGED_DIR=str(managed), HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"),
+               PYTHONIOENCODING="utf-8")
+    return subprocess.run([sys.executable, str(child), repo_root, ending], cwd=tmp_path, env=env,
+                          stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                          timeout=120, check=False)
+
+
+@pytest.mark.parametrize("ending", ["phase_raises", "stop_cancelled"])
+def test_stop_that_does_not_complete_is_still_ended_by_the_watchdog(tmp_path, ending):
+    """A stop that raises or is cancelled midway leaves teardown as unfinished as one that hangs:
+    nothing releases ``wait_for_shutdown()``, so the thread watchdog must stay armed and force the
+    exit (#158360). Cancelling a task that awaits ``_stop_task`` tunnels into it (#12875)."""
+    proc = _run_stop_child(tmp_path, ending)
+
+    output = f"{proc.stdout}\n{proc.stderr[-3000:]}"
+    assert "shutdown_event set: False armed: 1" in proc.stdout, output
+    assert "watchdog stood down" not in proc.stdout, output
+    assert proc.returncode == 1, output
+    assert "Gateway shutdown watchdog fired" in proc.stderr, output  # the watchdog's exit, not a crash
+    if ending == "phase_raises":
+        assert "Gateway stop failed" in proc.stderr, output
+        assert "RuntimeError: settle failed" in proc.stderr, output
+
+
+def test_stop_that_completes_disarms_the_watchdog(tmp_path):
+    """The exit after a completed stop keeps its own exit code: the watchdog stands down."""
+    proc = _run_stop_child(tmp_path, "completes")
+
+    output = f"{proc.stdout}\n{proc.stderr[-3000:]}"
+    assert "shutdown_event set: True armed: 1" in proc.stdout, output
+    assert "watchdog stood down" in proc.stdout, output
+    assert proc.returncode == 0, output
+    assert "Gateway shutdown watchdog fired" not in proc.stderr, output
+
+
+def test_stop_that_fails_after_shutdown_began_disarms_the_watchdog(tmp_path):
+    """Once the shutdown event is set, the caller runs the shutdown tail and exits on its own, as
+    after a completed stop. A phase that raises after that point leaves the watchdog disarmed, so
+    it cannot cut the tail (cron drain, housekeeping, MCP shutdown) short."""
+    proc = _run_stop_child(tmp_path, "late_phase_raises")
+
+    output = f"{proc.stdout}\n{proc.stderr[-3000:]}"
+    assert "stop ended: RuntimeError" in proc.stdout, output
+    assert "shutdown_event set: True armed: 1" in proc.stdout, output
+    assert "watchdog stood down" in proc.stdout, output
+    assert proc.returncode == 0, output
+    assert "Gateway shutdown watchdog fired" not in proc.stderr, output
+    assert "RuntimeError: quiesce failed" in proc.stderr, output  # still logged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_restart, code", [(False, 1), (True, 75)], ids=["stop", "service_restart"])
+async def test_start_gateway_turns_a_failed_stop_into_an_exit_verdict(monkeypatch, service_restart, code):
+    """A stop that failed after the shutdown began reaches start_gateway()'s caller as a SystemExit, which
+    the entry points send to their hard exit, never as the raw exception: that one would reach interpreter
+    finalization, which joins live non-daemon workers for as long as they run. An exit code the shutdown
+    tail already chose (75 for a service restart) is kept; otherwise it is 1."""
+    import threading
+
+    from gateway import run_bootstrap, run_runtime, run_shutdown
+    from gateway.config import GatewayConfig
+    from hermes_constants import get_hermes_home
+
+    get_hermes_home().chmod(0o700)
+    stopped, threads = threading.Event(), []
+
+    def start_owned_threads(runner):
+        threads.extend(threading.Thread(target=stopped.wait, daemon=True) for _ in range(2))
+        for thread in threads:
+            thread.start()
+        return stopped, None, *threads
+
+    async def serve_until_stop(runner):
+        if service_restart:
+            runner._restart_requested = runner._restart_via_service = True
+
+    def quiesce_fails(*_args, **_kwargs):
+        raise RuntimeError("quiesce failed")
+
+    monkeypatch.setattr(run_bootstrap, "_start_gateway_start_cron_and_housekeeping", start_owned_threads)
+    monkeypatch.setattr(run_runtime, "wait_gateway_runtime", serve_until_stop)
+    monkeypatch.setattr(run_shutdown.GatewayShutdownMixin, "_stop_quiesce_and_close_session_dbs", quiesce_fails)
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            await asyncio.wait_for(run_bootstrap.start_gateway(GatewayConfig()), 30)
+        assert exc_info.value.code == code
+        assert stopped.is_set() and all(not thread.is_alive() for thread in threads)  # the tail ran
+    finally:
+        stopped.set()

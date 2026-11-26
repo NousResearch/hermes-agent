@@ -1,0 +1,20 @@
+name: deapi
+title: deAPI
+repo: https://github.com/deapi-ai/hermes-plugin-deapi
+sha: c93b9bb5ae4efff0299e9a50ad4045f27650cb64
+description: "deAPI backends for image_generate, video_generate, text_to_speech and speech-to-text: text-to-image, image editing, text-to-video and image-to-video, speech with preset voices (Kokoro, Chatterbox, Qwen3-TTS) and transcription of voice messages (Whisper Large V3) on deAPI's native API, with models, limits, voices and defaults from the key's live model list. Each backend is used only when selected (image_gen.provider, video_gen.provider, tts.provider or stt.provider set to deapi). Disclosure — prompts, source images, the text Hermes asks it to speak, the recordings Hermes asks it to transcribe and the deAPI API key (DEAPI_API_KEY) are sent to api.deapi.ai; source-image URLs are downloaded by the plugin through Hermes's SSRF-guarded client, and a local source path is read in full only when its header is an image header (PNG, JPEG, GIF, BMP, WebP); every generation, spoken reply and transcription is billed to the deAPI account with no Hermes approval prompt; generated images and videos are written under $HERMES_HOME/cache/generated/ through Hermes's helpers, and speech to the output path Hermes supplies, after downloading results from deAPI's result URLs through the same SSRF-guarded client without the key; the model list is cached in memory only; no telemetry, shell commands, background processes, extra dependencies or self-updates."
+maintainer: deapi-ai
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/deapi-ai/hermes-plugin-deapi#readme
+version: "0.4.0"
+known_issues:
+  - A job that outlives the timeout (image 300 s, video 900 s, speech 180 s, transcription 300 s by default) may still finish and be billed; the error gives its request_id
+  - Speech is MP3 and file-based (no sentence-by-sentence streaming); Hermes needs ffmpeg to turn it into voice bubbles. Transcription is file-based too (no live dictation)
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEAPI_API_KEY

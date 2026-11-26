@@ -37,5 +37,5 @@ def test_default_and_uncomputable_still_catch_up(tmp_path, monkeypatch, uncomput
         stored[0]["next_run_at"] = (jobs._hermes_now() - timedelta(hours=4)).isoformat()
         jobs.save_jobs(stored)
         if uncomputable:
-            monkeypatch.setattr(jobs, "compute_next_run", lambda *args: None)
+            monkeypatch.setattr(jobs, "compute_next_run", lambda *args, **kwargs: None)
         assert [row["id"] for row in jobs.get_due_jobs()] == [job["id"]]

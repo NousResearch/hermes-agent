@@ -16,7 +16,7 @@ from __future__ import annotations
 import types
 from unittest.mock import MagicMock
 
-from agent.turn_context import TurnContext, build_turn_context  # noqa: F401
+from agent.turn_context import TurnContext, build_turn_context
 from run_agent import AIAgent
 from tests.agent.test_turn_context import _FakeAgent, _build
 

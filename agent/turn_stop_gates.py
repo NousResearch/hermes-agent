@@ -1,7 +1,8 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, three gates may instead append the answer as an
-interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
+When the model stops with a text answer, four gates may instead append the answer as an
+interim row plus a user-role nudge and continue the turn: late language-server verdicts on this
+turn's edits (a durable row, see ``_late_lsp_verdicts``), verify-on-stop (#65919),
 the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
@@ -91,11 +92,39 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+_MAX_LSP_TURN_END_NOTES = 3
+
+
+def _late_lsp_verdicts(agent) -> Optional[str]:
+    """Language-server verdicts on this turn's edits that no tool result carried yet (the edit was the
+    last tool call; a one-shot run has no next turn to carry them): waits briefly for checks still
+    running (``agent.lsp.deferred.settle_for_agent``) and returns them as a message for the model."""
+    issued = getattr(agent, "_lsp_turn_end_notes", 0)
+    if not isinstance(issued, int) or issued >= _MAX_LSP_TURN_END_NOTES:
+        return None
+    try:
+        from agent.lsp.deferred import settle_for_agent
+
+        notes = settle_for_agent(agent)
+    except Exception:
+        logger.debug("late LSP verdict check failed", exc_info=True)
+        return None
+    if not notes:
+        return None
+    body = "\n\n".join(text for _path, text in notes)
+    return ("[System note: the language server reported problems in files you edited this turn, after "
+            "those tool results had returned. Fix them if they are real, then give your final answer.]\n\n"
+            + body)
+
+
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
-    only the nudge is flagged synthetic (#65919)."""
+    only the nudge is flagged synthetic (#65919). A held turn's answer (typed hidden) is not shown
+    and flushes with the turn instead, so a budget fallback can still publish it as the rewrite."""
     agent._emit_interim_assistant_message(final_msg)
     append_message(messages, final_msg)
+    if final_msg.get("display_kind") == "hidden":
+        return
     try:
         agent._flush_messages_to_session_db(messages, conversation_history)
     except Exception:
@@ -103,7 +132,7 @@ def _append_interim_answer(agent, final_msg, messages, conversation_history, flu
 
 
 def apply_stop_gates(
-    agent: Any, final_msg: Dict[str, Any], *, final_response: Any, messages: List[Dict[str, Any]],
+    agent: Any, final_msg: dict[str, Any], *, final_response: Any, messages: list[dict[str, Any]],
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
@@ -127,6 +156,23 @@ def apply_stop_gates(
             pending_verification_response_previewed=agent._interim_content_was_streamed(
                 final_response or ""
             ),
+        )
+
+    _lsp_note = _late_lsp_verdicts(agent)
+    if _lsp_note:
+        agent._lsp_turn_end_notes = getattr(agent, "_lsp_turn_end_notes", 0) + 1  # int: checked above
+        final_msg["finish_reason"] = "verification_required"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history, "late-LSP interim flush failed"
+        )
+        # A durable row (no scaffolding flag): it is never stripped, so no sent byte changes later.
+        append_message(messages, {"role": "user", "content": _lsp_note})
+        agent._session_messages = messages
+        logger.debug("late LSP verdicts delivered before the final answer (%d)", agent._lsp_turn_end_notes)
+        return StopGateVerdict(
+            continue_turn=True, final_response=None,
+            pending_verification_response=final_response,
+            pending_verification_response_previewed=agent._interim_content_was_streamed(final_response or ""),
         )
 
     _verify_nudge = _verify_on_stop_nudge(agent)

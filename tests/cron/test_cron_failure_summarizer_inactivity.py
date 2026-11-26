@@ -20,7 +20,7 @@ via get_fallback_chain() and reports "No fallback chain configured." when
 it's empty.
 """
 
-import cron.scheduler as scheduler
+from cron import scheduler
 from cron.scheduler import _summarize_cron_failure_for_delivery
 
 

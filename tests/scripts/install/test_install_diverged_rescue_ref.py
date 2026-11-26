@@ -65,6 +65,8 @@ def _assert_local_commit_parked(repo: Path, local_sha: str, output: str) -> None
     assert _git(repo, "log", "--format=%H", f"origin/main..{ref}").split() == [local_sha]
 
 
+# install.sh runs on Linux and macOS only; Windows installs through install.ps1, tested below.
+@pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass
 @pytest.mark.skipif(
     shutil.which("git") is None or shutil.which("bash") is None,
@@ -80,6 +82,7 @@ def test_install_sh_repository_stage_parks_local_commits_before_reset(tmp_path: 
     result = subprocess.run(
         ["bash", str(INSTALL_SH), "--stage", "repository", "--non-interactive"],
         cwd=tmp_path, env=env, capture_output=True, text=True,
+        check=False,
     )
 
     assert result.returncode == 0, result.stderr
@@ -118,6 +121,7 @@ def test_install_ps1_repository_stage_parks_local_commits_before_reset(tmp_path:
             "-HermesHome", str(tmp_path / "hermes-home"),
         ],
         cwd=tmp_path, env=env, capture_output=True, text=True,
+        check=False,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr

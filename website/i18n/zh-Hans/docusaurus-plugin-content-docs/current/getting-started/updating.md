@@ -14,25 +14,41 @@ description: "如何将 Hermes Agent 更新至最新版本或将其卸载"
 hermes update
 ```
 
-此命令会从 `main` 拉取最新代码、更新依赖项，并提示你配置自上次更新以来新增的选项。
+官方仓库的源码安装默认跟踪 **stable** 渠道：最新正式发布的 `vX.Y.Z` GitHub 版本（不含草稿、预发布或 canary 标签），并检出其确切提交。`hermes update` 和桌面应用的更新按钮只会在正式版本之间升级，不再逐个提交跟进。Fork 和镜像仍跟踪各自的 `main` 分支。此命令还会更新依赖项，并提示你配置自上次更新以来新增的选项。
+
+```bash
+hermes update --set-channel main     # 改为跟踪 main 上的每个提交
+hermes update --set-channel stable   # 恢复为仅正式版本
+```
+
+从未选择渠道的安装只会向前更新：已经比最新正式版本更新的检出（例如此前跟踪 `main` 的安装）会保持不动，直到发布更新的版本。显式运行 `--set-channel stable` 会把检出固定到该版本的确切提交，即使它更旧。Windows 应用商店、MSIX 和捆绑桌面安装不受影响。
 
 :::tip
 `hermes update` 会自动检测新的配置选项并提示你添加。如果跳过了该提示，可手动运行 `hermes config check` 查看缺失的选项，再运行 `hermes config migrate` 以交互方式添加。
 :::
+
+### 捆绑桌面应用更新 {#bundled-desktop-updates}
+
+自包含桌面软件包要求 **macOS 13 Ventura 或更新版本（Apple Silicon `arm64`，`Hermes Agent.app`）** 或 **Windows 11 22H2 或更新版本（`10.0.22621.0`，x64 或 ARM64，涵盖 Microsoft Store 与 `.appinstaller` MSIX）**。Intel Mac 和 macOS 12 及更早版本请使用源码安装脚本（`install.sh`）；Windows 10 和低于 22H2 的 Windows 11 请使用 `install.ps1` 或 [WSL2](../user-guide/windows-wsl-quickstart.md)。
+
+桌面软件包的更新耗时由**网络下载时间**（取决于带宽）与**本地校验和替换时间**两部分组成。以下体积为近似值，会随版本变化：
+
+- **macOS：** 首次安装的 DMG 约 948 MB。在应用内选择**更新**后，应用会下载签名更新 ZIP（完整大小约 983 MB）。下载完成后，Squirrel.Mac 在本地解压、校验代码签名并替换应用约需 **50 秒**（在 Apple Silicon M4 上实测），随后自动重启应用。
+- **Windows：** 分架构完整 MSIX 包约为 1.89 GB（ARM64）至 2.86 GB（x64）。Windows App Installer 和 Microsoft Store 仅下载当前主机架构并支持版本间差分块更新，因此常规增量下载量小于完整安装包，随后执行本地包部署。
 
 ### 更新过程
 
 运行 `hermes update` 时，将依次执行以下步骤：
 
 1. **更新前快照** — Hermes 在每个 profile 的 `state-snapshots/` 目录中保存指定的状态文件，包括配对数据、cron 任务、`config.yaml`、`.env` 和 `auth.json`。自动快速快照会跳过单个大于 1 GiB 的文件。`updates.pre_update_backup` 可选择 `quick`、`full` 或 `off`。完整归档遵循[备份排除规则](../reference/faq.md#hermes-backup-vs-hermes-profile-export)。恢复方法见[快照与回滚](../user-guide/checkpoints-and-rollback.md)。快速快照恢复的是状态文件，不是应用程序代码。
-2. **Git pull** — 从 `main` 分支拉取最新代码并更新子模块
+2. **代码更新** — 检出所选渠道的目标（默认最新 stable 版本）并更新子模块
 3. **依赖安装** — 运行 `python -m pm.cli install` 以获取新增或变更的依赖项
 4. **配置迁移** — 检测自当前版本以来新增的配置选项并提示设置
 5. **Gateway 自动重启** — 更新完成后刷新正在运行的 gateway，使新代码立即生效。由服务管理的 gateway（Linux 上的 systemd、macOS 上的 launchd）通过服务管理器重启；手动启动的 gateway 在 Hermes 能将运行中的 PID 映射回某个 profile 时会自动重新启动。
 
 ### 仅预览：`hermes update --check`
 
-想在拉取前确认是否有更新？运行 `hermes update --check` — 它会获取并与 `origin/main` 比较提交。不修改任何文件，不重启 gateway。适合在以"是否有更新"为条件的脚本和 cron 任务中使用。
+想在拉取前确认是否有更新？运行 `hermes update --check` — 它会与所选渠道的目标（默认最新 stable 版本，main 渠道为 `origin/main`）比较。不修改任何文件，不重启 gateway。适合在以"是否有更新"为条件的脚本和 cron 任务中使用。
 
 ### 完整更新前备份：`--backup`
 

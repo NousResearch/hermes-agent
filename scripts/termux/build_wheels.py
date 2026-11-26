@@ -4,7 +4,7 @@ against THIS container's bionic python, retag, and run the offline
 completeness + import gates. Invoked by termux_build.sh inside the
 digest-pinned termux/termux-docker container.
 
-Usage: build_wheels.py --resolved RESOLVED.txt --build-set BUILD_SET.txt \
+Usage: build_wheels.py --resolved RESOLVED.txt --lock UV.LOCK --build-set BUILD_SET.txt \
            --wheelhouse DIR --retag RETAG_SCRIPT --platform-tag TAG
 
 Everything here runs under the container's termux python (bionic): pip
@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--resolved", required=True, help="tab-separated name/spec/marker file")
+    p.add_argument("--lock", required=True, help="uv.lock the resolved graph was exported from")
     p.add_argument("--build-set", required=True, help="names needing sdist builds (one per line)")
     p.add_argument("--wheelhouse", required=True)
     p.add_argument("--retag", required=True, help="path to retag_wheel.py")
@@ -65,7 +66,8 @@ def normalize_reqs(export: Path, lock: Path, resolved: Path) -> None:
                 raise ValueError(f"Source requirement does not match one locked package: {name}")
             spec = f"=={matches[0]['version']}"
         rows.append((name, spec, str(req.marker) if req.marker else "", source))
-    resolved.write_text("".join("\t".join(row) + "\n" for row in rows), encoding="utf-8")
+    resolved.write_text("".join("\t".join(row) + "\n" for row in rows),
+                        encoding="utf-8", newline="\n")
 
 
 def load_entries(resolved: Path) -> dict[str, str]:
@@ -94,7 +96,7 @@ def write_reqs_file(resolved: Path, reqs: Path) -> None:
             line += " ; " + marker
         out.append(line)
     body = chr(10).join(out) + chr(10)
-    reqs.write_text(body, encoding="utf-8")
+    reqs.write_text(body, encoding="utf-8", newline="\n")
 
 
 def safe_extract(archive: Path, dest: Path) -> Path:
@@ -289,7 +291,7 @@ def fetch_pure_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: P
     # Build-backend deps the deb-venv's app install resolves offline:
     # the app dir install (even --no-deps) prepares metadata through
     # build-system.requires, which needs setuptools in the find-links.
-    reqs.append("setuptools==83.0.0")
+    reqs.append("setuptools==84.1.0")
     if not reqs:
         return
     proc = subprocess.run(
@@ -346,7 +348,7 @@ def import_native_modules(build_set: list[str]) -> None:
         print("  imported", module, flush=True)
 
 
-def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> None:
+def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str], lock: Path) -> None:
     """Offline install of every marker-admitted dep into ONE clean venv,
     shared by both gates (the full offline install runs once, not twice).
 
@@ -367,6 +369,7 @@ def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> 
         vp = build_requirements_environment(
             reqs.read_text(encoding="utf-8-sig").splitlines(), out=tmp / "venv",
             python=Path(sys.executable), wheelhouse=wheelhouse, offline=True, explicit=True,
+            lock=lock,
         )
         print("  completeness gate: offline install of the marker-admitted graph OK")
         subprocess.run(
@@ -403,7 +406,7 @@ def main() -> int:
         repaired = repair_wheel(wheel, library)
         if repaired:
             print(f"  linked {repaired} native extensions to {library.name}: {wheel.name}")
-    wheelhouse_gates(resolved, wheelhouse, build_set)
+    wheelhouse_gates(resolved, wheelhouse, build_set, Path(args.lock))
     print(f"wheelhouse complete: {len(list(wheelhouse.glob('*.whl')))} wheels in {wheelhouse}")
     return 0
 

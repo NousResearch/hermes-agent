@@ -13,7 +13,7 @@ import {
 
 // These cover the non-macOS (host-native on the Linux CI lane) arms. The
 // macOS arms key off a module-level `isMac` and would need the interpreter to
-// believe it is on darwin — see AGENTS.md "Don't fake the host OS".
+// believe it is on darwin — see tests/AGENTS.md "Don't fake the host OS".
 const describeHost = describe.skipIf(isMac)
 
 describeHost('platform action modifier', () => {

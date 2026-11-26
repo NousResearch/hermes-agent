@@ -8,6 +8,7 @@ and the pet signature only moves for a *renderable* pet.
 """
 
 import os
+import sqlite3
 import time
 
 import pytest
@@ -27,12 +28,28 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_change_broadcast_at", {})
     monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
     monkeypatch.setattr(server, "_pairing_roots_cache", None, raising=False)
+    monkeypatch.setattr(server, "_sessions_db_sig_cache", {})
 
     events = []
     monkeypatch.setattr(
         server, "_broadcast_global_event", lambda ev, payload=None: events.append((ev, payload))
     )
     return tmp_path, events
+
+
+def _write_session_change(db_path, title):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions "
+        "(id TEXT PRIMARY KEY, title TEXT, last_activity_at REAL, message_count INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO sessions(id, title, last_activity_at, message_count) VALUES ('s1', ?, 1, 1) "
+        "ON CONFLICT(id) DO UPDATE SET title = excluded.title",
+        (title,),
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_first_sighting_seeds_without_broadcasting(watcher_home):
@@ -59,10 +76,82 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "state.db").write_text("x")
+    _write_session_change(home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("sessions.changed", {}) in events
+
+
+def _seed_store(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, started_at REAL, "
+        "message_count INTEGER, last_activity_at REAL, last_activity_description TEXT);"
+        "CREATE TABLE gateway_heartbeats (backend_id TEXT PRIMARY KEY, last_heartbeat REAL);"
+        "INSERT INTO sessions VALUES ('s1', 'hello', 1, 3, 1, NULL);"
+        "INSERT INTO gateway_heartbeats VALUES ('backend-1', 1);"
+    )
+    conn.commit()
+    conn.close()
+
+
+def _write(db_path, sql, *params):
+    conn = sqlite3.connect(db_path)
+    conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+
+def test_activity_heartbeats_do_not_broadcast_sessions_changed(watcher_home):
+    """#98005: the gateway heartbeat and the session activity stamp rewrite state.db every
+    minute with no session change. Each used to fire sessions.changed, so the Desktop
+    Sessions panel refreshed on its own every heartbeat window."""
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+
+    for tick in range(1, 4):
+        time.sleep(0.02)
+        _write(db, "UPDATE gateway_heartbeats SET last_heartbeat = ?", tick * 60.0)
+        _write(db, "UPDATE sessions SET last_activity_at = ?, last_activity_description = ? "
+                   "WHERE id = 's1'", tick * 60.0, f"tool {tick}")
+        server._broadcast_watched_changes(now=tick * 10.0)
+
+    assert ("sessions.changed", {}) not in events
+
+
+@pytest.mark.parametrize("sql", [
+    "INSERT INTO sessions VALUES ('s2', 'new', 2, 0, 2, NULL)",
+    "UPDATE sessions SET title = 'renamed' WHERE id = 's1'",
+    "UPDATE sessions SET message_count = 4 WHERE id = 's1'",
+    "DELETE FROM sessions WHERE id = 's1'",
+])
+def test_session_row_changes_broadcast_sessions_changed(watcher_home, sql):
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+
+    time.sleep(0.02)
+    _write(db, sql)
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) in events
+
+
+def test_unreadable_store_keeps_last_digest(watcher_home):
+    """A locked/unreadable moment after a good read must not flip to the mtime signature:
+    digest -> mtime -> digest would broadcast twice for nothing."""
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+
+    db.write_text("not-sqlite")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) not in events
 
 
 def test_projects_db_move_broadcasts_projects_changed(watcher_home):
@@ -119,7 +208,7 @@ def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, mon
     assert server._profile_home("bot") == bot_home
     server._broadcast_watched_changes(now=0.0)
 
-    (bot_home / "state.db").write_text("x")
+    _write_session_change(bot_home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)
 
     assert ("sessions.changed", {}) in events
@@ -201,6 +290,43 @@ def test_pairing_probe_reuses_live_profile_roots_until_the_profile_set_moves(wat
     assert sorted(live_calls) == ["play", "work", "work"]
 
 
+def test_second_ledger_with_the_same_mtime_still_broadcasts_pairing_changed(watcher_home):
+    """Coarse-timestamp filesystems give two ledgers written in one tick the same mtime; a
+    newest-mtime signature cannot see the second one, so the badge for it never appears."""
+    home, events = watcher_home
+    store = home / "platforms" / "pairing"
+    store.mkdir(parents=True)
+    first = store / "telegram-pending.json"
+    first.write_text("{}", encoding="utf-8")
+    server._broadcast_watched_changes(now=0.0)
+
+    second = store / "discord-pending.json"
+    second.write_text("{}", encoding="utf-8")
+    pinned = first.stat().st_mtime_ns
+    os.utime(second, ns=(pinned, pinned))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert events == [("pairing.changed", {})]
+
+
+def test_sibling_projects_db_write_in_the_same_mtime_tick_broadcasts(watcher_home, monkeypatch):
+    """One served profile's projects.db write that lands in the same timestamp tick as
+    another's must not be masked by a newest-mtime-across-homes signature."""
+    home, events = watcher_home
+    coder_home = home / "profiles" / "coder"
+    coder_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", {coder_home})
+    (home / "projects.db").write_text("x", encoding="utf-8")
+    server._broadcast_watched_changes(now=0.0)
+
+    (coder_home / "projects.db").write_text("x", encoding="utf-8")
+    pinned = (home / "projects.db").stat().st_mtime_ns
+    os.utime(coder_home / "projects.db", ns=(pinned, pinned))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("projects.changed", {}) in events
+
+
 def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
     """_rate_limits.json moves on every unauthorized DM, including ones that
     produce no new row — signalling on it would refetch for nothing."""
@@ -220,13 +346,13 @@ def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
 
-    (home / "state.db").write_text("x")
+    _write_session_change(home / "state.db", "first")
     server._broadcast_watched_changes(now=10.0)
     events.clear()
 
     # A second write lands inside the 2s floor: no broadcast yet…
     time.sleep(0.02)
-    (home / "state.db").write_text("xy")
+    _write_session_change(home / "state.db", "second")
     server._broadcast_watched_changes(now=11.0)
     assert events == []
 
@@ -335,7 +461,7 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
 
 
 def test_no_outbox_dir_never_fires_pending(watcher_home):
-    home, events = watcher_home
+    _home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
     server._broadcast_watched_changes(now=10.0)
 
@@ -349,10 +475,71 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
     monkeypatch.setitem(
         server._CHANGE_WATCHES,
         "cron.changed",
-        (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), lambda: {}),
+        (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), dict),
     )
-    (home / "state.db").write_text("x")
+    _write_session_change(home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)
 
     # The broken cron probe is skipped; sessions still broadcasts.
     assert ("sessions.changed", {}) in events
+
+
+def test_skill_installed_from_another_terminal_broadcasts_skills_changed(watcher_home, monkeypatch):
+    """CFG-8: the gateway notices a new skill dir and tells attached clients to refetch
+    ``commands.catalog``; clients never rescan disk themselves."""
+    home, events = watcher_home
+    import tools.skills_tool as st
+    skills = home / "skills"
+    skills.mkdir()
+    monkeypatch.setattr(st, "SKILLS_DIR", skills)
+    server._broadcast_watched_changes(now=0.0)
+    assert not [e for e in events if e[0] == "skills.changed"]
+
+    skill = skills / "new-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: new-skill\ndescription: d\n---\nbody\n")
+    os.utime(skills, (time.time() + 5, time.time() + 5))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("skills.changed", {}) in events
+
+
+def test_a_skill_installed_in_another_sessions_repo_broadcasts_skills_changed(watcher_home, monkeypatch, tmp_path):
+    """The gateway runs in repo A; a session's catalog resolved under repo B (its workspace, via the
+    session cwd). Installing a skill in B's ``.hermes/skills`` must still notify viewers: the watcher
+    signs every scope a session resolved commands in, not only the launch repo."""
+    import json
+    import agent.skill_commands as sc
+    import tools.skills_tool as st
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    home, events = watcher_home
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "skills").mkdir()
+    monkeypatch.setattr(st, "SKILLS_DIR", home / "skills")
+    monkeypatch.setattr(sc, "_skill_commands_by_key", {})
+    monkeypatch.setattr(sc, "_skill_commands_sig_by_key", {})
+    repo_a, repo_b = tmp_path / "repo-a", tmp_path / "repo-b"
+    for repo in (repo_a, repo_b):
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".hermes" / "skills").mkdir(parents=True)
+    (home / "config.yaml").write_text(json.dumps({"skills": {"trusted_project_dirs": [str(repo_a), str(repo_b)]}}))
+    monkeypatch.chdir(repo_a)
+    st.clear_skills_cache()
+    token = set_session_cwd(str(repo_b))
+    try:
+        assert "/workspace-only" not in sc.get_skill_commands()  # B's session catalog: publishes B's scope
+    finally:
+        reset_session_cwd(token)
+    server._broadcast_watched_changes(now=0.0)
+    assert not [e for e in events if e[0] == "skills.changed"]
+
+    skill = repo_b / ".hermes" / "skills" / "workspace-only"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: workspace-only\ndescription: d\n---\nbody\n")
+    server._broadcast_watched_changes(now=10.0)
+    assert ("skills.changed", {}) in events
+    token = set_session_cwd(str(repo_b))
+    try:
+        assert "/workspace-only" in sc.get_skill_commands()
+    finally:
+        reset_session_cwd(token)

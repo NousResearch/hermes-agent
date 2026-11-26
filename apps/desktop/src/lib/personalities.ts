@@ -34,6 +34,9 @@ export const NEUTRAL_PERSONALITY_NAMES = new Set(['', 'none', 'default', 'neutra
  * Returns '' for a neutral/blank name (caller skips it).
  */
 export function foldPersonalityName(name: unknown): string {
-  const key = String(name ?? '').trim().toLowerCase()
+  const key = String(name ?? '')
+    .trim()
+    .toLowerCase()
+
   return NEUTRAL_PERSONALITY_NAMES.has(key) ? '' : key
 }

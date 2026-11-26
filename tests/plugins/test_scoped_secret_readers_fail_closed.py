@@ -1,7 +1,7 @@
 """Credential shims outside the memory plugins honour the secret-scope contract.
 
-``langfuse._secret`` and ``azure_identity_adapter._scoped_env`` used to catch ``UnscopedSecretError``
-and fall back to ``os.environ`` / ``""``. Under multiplex ``os.environ`` is the DEFAULT profile's
+``azure_identity_adapter._scoped_env`` used to catch ``UnscopedSecretError`` and fall back to
+``os.environ`` / ``""``. Under multiplex ``os.environ`` is the DEFAULT profile's
 ``.env``, so that fallback either shipped another profile's credentials or hid the spawn-site bug the
 exception exists to surface. Contract: scope wins over environ; no scope while multiplexing raises.
 """
@@ -11,10 +11,8 @@ import pytest
 
 from agent import secret_scope
 from agent.azure_identity_adapter import _scoped_env as azure_scoped_env
-from plugins.observability.langfuse import _secret as langfuse_secret
 
-_READERS = {"langfuse": (langfuse_secret, "LANGFUSE_SECRET_KEY"),
-            "azure": (azure_scoped_env, "AZURE_CLIENT_SECRET")}
+_READERS = {"azure": (azure_scoped_env, "AZURE_CLIENT_SECRET")}
 
 
 @pytest.fixture

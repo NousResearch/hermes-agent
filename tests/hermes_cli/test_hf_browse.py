@@ -10,13 +10,28 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli.local_runtime.estimator import HardwareBudget
-from hermes_cli.local_runtime.hf_browse import (
-    HFFileGroup,
-    HFModelHit,
-    repo_files,
-    rough_fit,
-    search_models,
-)
+from hermes_cli.local_runtime.hf_browse import HFFileGroup, HFModelHit, rough_fit
+
+
+def _hf():
+    """The ``hf_browse`` module as ``monkeypatch`` sees it, resolved per call.
+
+    ``search_models`` / ``repo_files`` resolve ``_get_json`` through their own
+    module globals, and these tests stub that name by dotted path — which
+    monkeypatch resolves through ``sys.modules`` at patch time. In a
+    shared-process run something evicts the ``hf_browse`` entry, so a later
+    import builds a SECOND module object from the same file. Any name bound at
+    import time (whether the functions themselves or the module) then points at
+    the first, now-unregistered copy: the stub lands on copy #2 while the test
+    calls copy #1, the real ``_get_json`` runs, and the assertion sees live
+    huggingface.co data instead of the canned fixture. Re-reading
+    ``sys.modules`` at call time is what guarantees the call and the patch meet
+    on one object. Invisible under the canonical per-file runner; reproducible
+    in a single bulk ``pytest`` invocation across many files.
+    """
+    import sys
+
+    return sys.modules["hermes_cli.local_runtime.hf_browse"]
 
 GIB = 1 << 30
 
@@ -47,7 +62,7 @@ def test_search_parses_hf_hits(monkeypatch):
     ]
     monkeypatch.setattr("hermes_cli.local_runtime.hf_browse._get_json",
                         lambda url: canned)
-    hits = search_models("qwen")
+    hits = _hf().search_models("qwen")
     assert hits[0].repo == "unsloth/Qwen3.8-27B-GGUF"
     assert hits[0].downloads == 872724
     assert hits[1].gated is True  # HF 'auto'-gated counts as gated
@@ -64,7 +79,7 @@ def test_repo_files_groups_splits_and_excludes_companions(monkeypatch):
     ]
     monkeypatch.setattr("hermes_cli.local_runtime.hf_browse._get_json",
                         lambda url: canned)
-    groups = repo_files("any/repo")
+    groups = _hf().repo_files("any/repo")
     labels = {g.label: g for g in groups}
     assert "Q4_K_M" in labels and labels["Q4_K_M"].total_bytes == 17 * GIB
     # Split parts collapse into one group, ordered, summed.

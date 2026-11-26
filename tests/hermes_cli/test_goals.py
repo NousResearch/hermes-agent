@@ -1004,3 +1004,75 @@ class TestJudgedGoalChangedMeanwhile:
             decision = mgr.evaluate_after_turn("partial work")
         assert decision["should_continue"] is True and decision["verdict"] == "continue"
         assert mgr.state.turns_used == 1
+
+
+@pytest.mark.parametrize("boundary", ["failed_read", "control_after_read"])
+def test_pro_review_preserves_a_confirmed_clear(hermes_home, monkeypatch, boundary):
+    from hermes_cli import goals
+
+    sid = "pro-review-judged-clear"
+    judged = goals.GoalManager(sid)
+    judged.set("ship the PR")
+    operator = goals.GoalManager(sid)
+    db = goals._get_session_db()
+    assert db is not None
+    meta = db.state_meta
+    get_original = type(meta).get
+    armed = False
+    observed = []
+
+    def clear_now():
+        operator.clear()
+        raw = get_original(meta, goals._meta_key(sid))
+        observed.append(goals.GoalState.from_json(raw).status)
+
+    def get_with_control(repo, key):
+        nonlocal armed
+        if armed and key == goals._meta_key(sid):
+            armed = False
+            if boundary == "failed_read":
+                raise OSError("one-shot final goal validation read failure")
+            snapshot = get_original(repo, key)
+            clear_now()
+            return snapshot
+        return get_original(repo, key)
+
+    def judge(*_args, **_kwargs):
+        nonlocal armed
+        if boundary == "failed_read":
+            clear_now()
+        armed = True
+        return ("continue", "one step remains", False, None, False)
+
+    monkeypatch.setattr(type(meta), "get", get_with_control)
+    monkeypatch.setattr(goals, "judge_goal", judge)
+    decision = judged.evaluate_after_turn("partial work")
+    assert observed == ["cleared"]
+    stored = goals.load_goal(sid)
+    assert stored is not None and stored.status == "cleared"
+    assert decision["should_continue"] is False
+
+
+@pytest.mark.parametrize("criterion", ["gate", "subgoal"])
+def test_pro_review_rejects_done_based_on_superseded_criteria(hermes_home, monkeypatch, criterion):
+    from hermes_cli import goals
+
+    sid = "pro-review-judged-done"
+    judged = goals.GoalManager(sid)
+    judged.set("ship the PR")
+
+    def judge(*_args, **_kwargs):
+        operator = goals.GoalManager(sid)
+        if criterion == "gate":
+            operator.add_gate("false")
+        else:
+            operator.add_subgoal("tag the release before completing")
+        return ("done", "original criteria met", False, None, False)
+
+    monkeypatch.setattr(goals, "judge_goal", judge)
+    decision = judged.evaluate_after_turn("original criteria completed")
+    stored = goals.load_goal(sid)
+    assert stored is not None
+    assert bool(stored.gates if criterion == "gate" else stored.subgoals)
+    assert stored.status != "done"
+    assert decision["verdict"] != "done"

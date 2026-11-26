@@ -4326,6 +4326,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.debug(
                     "[%s] Late-arrival pending message during cleanup — spawning drain task",
                     self.name)
+                metadata = late_pending.metadata or {}
+                if current_task is not None and metadata.get("goal_created_at") is not None:
+                    current_task._goal_drain = (session_key, metadata.get("gateway_session_id"),
+                                                metadata["goal_created_at"])
                 self._spawn_drain_task(late_pending, session_key)
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
@@ -4426,6 +4430,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 pending_event = self._pending_messages[session_key]
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
+                    metadata = pending_event.metadata or {}
+                    if metadata.get("goal_created_at") is not None:
+                        asyncio.current_task()._goal_drain = (session_key, metadata.get("gateway_session_id"),
+                                                              metadata["goal_created_at"])
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
@@ -4457,6 +4465,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)
+            asyncio.current_task()._goal_drain = None
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
@@ -4505,9 +4514,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         # Capture the guard this drain owns now: a /stop//new guard swapped in during the
         # back-off must survive the slot-empty exit (#48300).
         guard = self._active_sessions.get(session_key)
-        self._track_session_task(
-            session_key,
-            asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
+        task = asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard))
+        owner = asyncio.current_task()
+        task._goal_drain = getattr(owner, "_goal_drain", None)
+        if owner is not None:
+            owner._goal_drain = None
+        self._track_session_task(session_key, task)
 
     async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
                            guard: Optional[asyncio.Event]) -> None:
@@ -4518,6 +4530,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if pending_event is None:  # consumed elsewhere during the back-off
                 self._cleanup_finished_session_task(session_key, guard)
                 return
+            metadata = pending_event.metadata or {}
+            if metadata.get("goal_created_at") is not None:
+                asyncio.current_task()._goal_drain = (session_key, metadata.get("gateway_session_id"),
+                                                      metadata["goal_created_at"])
         await self._process_message_background(pending_event, session_key)
 
     def _clear_session_guard(self, session_key: str) -> None:

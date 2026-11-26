@@ -412,6 +412,11 @@ class GatewayBusySessionMixin:
             pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
             if isinstance(pending_slot, dict) and waiting(pending_slot.get(session_key)):
                 return True
+            # The adapter task owns the selected event while it leaves the slot and is admitted.
+            tasks = tuple(getattr(adapter, "_background_tasks", ())) if adapter is not None else ()
+            if any(getattr(task, "_goal_drain", None) == (session_key, session_id, generation)
+                   for task in tasks):
+                return True
             if any(waiting(e) for e in self._overflow_queue(session_key) or ()):
                 return True
             from gateway.session_automation import queued_route_wake

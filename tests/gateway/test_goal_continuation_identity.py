@@ -369,7 +369,8 @@ async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["cleared_during_follow_up", "judged_during_follow_up"])
+@pytest.mark.parametrize("case", ["cleared_during_follow_up", "judged_during_follow_up",
+                                  "handoff_in_cleanup", "handoff_in_flight", "handoff_then_continue"])
 async def test_drained_continuation_behind_a_follow_up_is_still_the_goals(tmp_path, monkeypatch, case):
     """A message sent during a goal turn is queued ahead of that turn's continuation, which waits in the
     adapter slot until the turn's task drains it into the FIFO. While the follow-up runs, a /goal clear
@@ -378,7 +379,38 @@ async def test_drained_continuation_behind_a_follow_up_is_still_the_goals(tmp_pa
     from tests.waiting import async_wait_until
 
     runner, authority, adapter, db, _sent = await _telegram_gateway(tmp_path, monkeypatch, "goal-follow-up")
+    assert authority is not None
     calls, gates = [], {"work": asyncio.Event(), "meanwhile": asyncio.Event()}
+    conversion_started, release_conversion, followup_judged = (asyncio.Event() for _ in range(3))
+    handoff = case.startswith("handoff_")
+    if handoff:
+        admit, post_turn = runner._admit_goal_continuation, runner._post_turn_goal_continuation
+        stop_typing = adapter._stop_typing_refresh
+
+        async def hold_first_conversion(*args, **kwargs):
+            if not conversion_started.is_set():
+                conversion_started.set()
+                await release_conversion.wait()
+            return await admit(*args, **kwargs)
+
+        async def signal_followup_judged(**kwargs):
+            await post_turn(**kwargs)
+            if kwargs["final_response"] == "answered 2":
+                followup_judged.set()
+
+        async def hold_adapter_cleanup(*args, **kwargs):
+            event = kwargs.get("event")
+            if (getattr(event, "message_id", None) == "1" and route not in adapter._pending_messages
+                    and not conversion_started.is_set()):
+                conversion_started.set()
+                await release_conversion.wait()
+            return await stop_typing(*args, **kwargs)
+
+        if case == "handoff_in_cleanup":
+            monkeypatch.setattr(adapter, "_stop_typing_refresh", hold_adapter_cleanup)
+        else:
+            monkeypatch.setattr(runner, "_admit_goal_continuation", hold_first_conversion)
+        monkeypatch.setattr(runner, "_post_turn_goal_continuation", signal_followup_judged)
 
     async def respond(**kw):
         message = kw["message"]
@@ -388,12 +420,13 @@ async def test_drained_continuation_behind_a_follow_up_is_still_the_goals(tmp_pa
         return _reply(f"answered {len(calls)}")
 
     monkeypatch.setattr(runner, "_run_agent", respond)
-    verdicts = iter([("continue", "one step remains", False, None, False)] * 2)
+    verdicts = iter([("continue", "one step remains", False, None, False)] * (3 if case == "handoff_then_continue" else 2))
     monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: next(verdicts, ("done", "all done", False, None, False)))
     source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
     route = runner._session_key_for_source(source)
     sid = runner.session_store.get_or_create_session(source).session_id
     goals.GoalManager(sid).set("finish the report")
+    early_wakes = 0
     try:
         await adapter.handle_message(MessageEvent(text="work", source=source, message_id="1"))
         await async_wait_until(lambda: calls == ["work"], what="the goal turn started")
@@ -403,7 +436,15 @@ async def test_drained_continuation_behind_a_follow_up_is_still_the_goals(tmp_pa
                                what="the follow-up runs and the continuation left the slot")
         if case == "cleared_during_follow_up":
             await runner._handle_goal_command(MessageEvent(text="/goal clear", source=source, message_id="c"))
+        if handoff:
+            await asyncio.wait_for(conversion_started.wait(), 15)
         gates["meanwhile"].set()
+        if handoff:
+            await asyncio.wait_for(followup_judged.wait(), 15)
+            early_wakes = sum("goal-continuation" in row.request_id for row in authority.persistence.admissions.list(
+                session_id=authority.logical_owner(sid), pending_only=False,
+            ))
+            release_conversion.set()
         live = authority.sessions[authority.logical_owner(sid)]
         await async_wait_until(lambda: not adapter._background_tasks and (live.task is None or live.task.done())
                                and all(r.status == "terminal" for r in authority.persistence.admissions.list(
@@ -411,8 +452,19 @@ async def test_drained_continuation_behind_a_follow_up_is_still_the_goals(tmp_pa
                                what="the route settled")
 
         continued = [c for c in calls if c.startswith(MARKER)]
-        assert len(continued) == (0 if case == "cleared_during_follow_up" else 1), calls
+        expected = {"cleared_during_follow_up": 0, "handoff_then_continue": 2}.get(case, 1)
+        assert len(continued) == expected, calls
+        assert [c for c in calls if not c.startswith(MARKER)] == ["work", "meanwhile"]
+        if handoff:
+            # Count committed inputs too: a second wake discarded after the first finishes is
+            # still a duplicate admission, even though it did not reach the model.
+            rows = authority.persistence.admissions.list(
+                session_id=authority.logical_owner(sid), pending_only=False,
+            )
+            assert sum("goal-continuation" in row.request_id for row in rows) == expected
+            assert early_wakes == 0
     finally:
+        release_conversion.set()
         db.close()
 
 

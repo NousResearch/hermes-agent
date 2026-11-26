@@ -6,12 +6,12 @@ Registered onto the assembled backend as the ``state_meta`` attribute per the ap
 from __future__ import annotations
 
 import string
-from typing import Dict, Optional
+from typing import Optional
 
 from persistence import ProfileScope
 from persistence.housekeeping.state_meta import StateMetaEntry
 
-from ..backend import InMemoryBackend, register_repository
+from ..backend import InMemoryBackend, InMemoryStore, register_repository
 
 __all__ = ["InMemoryStateMetaRepository", "state_meta_table"]
 
@@ -23,7 +23,7 @@ def _fold(text: str) -> str:
     return text.translate(_ASCII_LOWER)
 
 
-def state_meta_table(backend: InMemoryBackend, scope: ProfileScope) -> dict[str, str]:
+def state_meta_table(backend: InMemoryBackend | InMemoryStore, scope: ProfileScope) -> dict[str, str]:
     """The scope's meta table, created on first touch; shared with the sessions reference's retag gate."""
     table: dict[str, str] = backend.scope_store(scope).setdefault("state_meta", {})
     return table
@@ -38,7 +38,7 @@ def require_key(key: str) -> None:
 class InMemoryStateMetaRepository:
     """See module docstring; semantics follow persistence/housekeeping/state_meta.py exactly."""
 
-    def __init__(self, backend: InMemoryBackend) -> None:
+    def __init__(self, backend: InMemoryStore) -> None:
         self._backend = backend
 
     def get(self, key: str) -> Optional[str]:
@@ -50,6 +50,14 @@ class InMemoryStateMetaRepository:
         scope = self._backend.scope
         require_key(key)
         state_meta_table(self._backend, scope)[key] = value
+
+    def compare_and_set(self, key: str, expected: str | None, value: str) -> bool:
+        require_key(key)
+        table = state_meta_table(self._backend, self._backend.scope)
+        if table.get(key) != expected:
+            return False
+        table[key] = value
+        return True
 
     def list_prefix(self, prefix: str) -> tuple[StateMetaEntry, ...]:
         scope = self._backend.scope

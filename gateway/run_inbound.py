@@ -1338,7 +1338,11 @@ class GatewayInboundMixin(
                 # Committed as the wake a turn without a drainer queues, never as a plain row: a /goal
                 # pause, clear or new goal while it waits behind a follow-up still stops it, and the
                 # follow-up's judgment sees it waiting. Not admitted: the goal stays active, as there.
-                if await self._admit_goal_continuation(source, event.text, pinned, generation):
+                try:
+                    accepted = await self._admit_goal_continuation(source, event.text, pinned, generation)
+                finally:
+                    asyncio.current_task()._goal_drain = None
+                if accepted:
                     return True, None
                 logger.warning("goal continuation: no wake admitted for a drained continuation; not run")
                 return True, t("gateway.goal.continuation_not_queued")

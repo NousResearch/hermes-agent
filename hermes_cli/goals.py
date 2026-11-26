@@ -1141,22 +1141,45 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
-        if self._judged is not None:
-            # Gates and the judge take seconds; another manager (a /goal command sent meanwhile) may
-            # have written since this state was read, and that write wins. A pause, clear or new goal
-            # ends this evaluation; any other field it changed (a /subgoal, a gate, a wait) is kept.
-            # Nothing stored (no session DB yet, or never saved) means nothing was written over.
-            stored = load_goal(self.session_id)
-            if stored is not None and (stored.status != "active" or stored.created_at != self._judged["created_at"]):
-                self._state = None if stored.status == "cleared" else stored
-                raise _GoalSuperseded
-            for name, value in asdict(stored).items() if stored is not None else ():
-                if value != self._judged[name]:
-                    setattr(self._state, name, getattr(stored, name))
-        save_goal(self.session_id, self._state)
-        if self._judged is not None:
+        if self._judged is None:
+            save_goal(self.session_id, self._state)
+        else:
+            self._save_judged(self._judged)
             self._judged = asdict(self._state)
         return self._state
+
+    def _save_judged(self, before: dict[str, Any]) -> None:
+        # The model/gates ran without the store lock. User commands win both before and after the
+        # final read; an unreadable goal is not evidence that nothing was stored.
+        db = _get_session_db()
+        if db is None:
+            _warn_dropped_write("GoalManager", "goal", self.session_id)
+            return  # In-memory bootstrap; do not reacquire the store and attempt a blind write.
+        meta, key = db.state_meta, _meta_key(self.session_id)
+        try:
+            raw = meta.get(key)
+            stored = GoalState.from_json(raw) if raw is not None else None
+        except Exception as exc:
+            logger.warning("GoalManager: cannot verify judged state for %s", self.session_id, exc_info=True)
+            self.refresh()
+            raise _GoalSuperseded("the stored goal could not be verified") from exc
+        if stored is not None:
+            changed = {name for name, value in asdict(stored).items() if before[name] != value}
+            if (stored.status != "active" or "created_at" in changed
+                    or (self._state.status == "done" and changed & {"goal", "contract", "gates", "subgoals"})):
+                self._state = None if stored.status == "cleared" else stored
+                raise _GoalSuperseded
+            for name in changed:
+                setattr(self._state, name, getattr(stored, name))
+        try:
+            saved = meta.compare_and_set(key, raw, self._state.to_json())
+        except Exception as exc:
+            logger.warning("GoalManager: cannot persist judged state for %s", self.session_id, exc_info=True)
+            self.refresh()
+            raise _GoalSuperseded("the judged goal could not be recorded") from exc
+        if not saved:
+            self.refresh()
+            raise _GoalSuperseded
 
     def _require_goal(self) -> GoalState:
         if self._state is None or not self.has_goal():
@@ -1503,9 +1526,9 @@ class GoalManager:
         try:
             return self._judge_turn(last_response, background_processes=background_processes,
                                     active_delegations=active_delegations)
-        except _GoalSuperseded:
+        except _GoalSuperseded as exc:
             return _decision(self._state.status if self._state else None, False, None, "superseded",
-                             "the goal changed while this turn was judged", "")
+                             str(exc) or "the goal changed while this turn was judged", "")
         finally:
             self._judged = None
 

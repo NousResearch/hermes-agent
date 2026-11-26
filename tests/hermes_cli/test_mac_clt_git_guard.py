@@ -365,6 +365,32 @@ def test_clt_stub_skips_gh_calls_that_make_gh_run_git(tmp_path, clt_stub_env):
 
 
 @pytest.mark.platforms("posix")
+def test_clt_stub_refuses_direct_review_push(tmp_path, clt_stub_env):
+    from hermes_cli import web_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+
+    with pytest.raises(RuntimeError, match="git is not available"):
+        web_git.review_push(str(repo))
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
+def test_clt_stub_refuses_review_revert(tmp_path, clt_stub_env):
+    from hermes_cli import web_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+
+    with pytest.raises(RuntimeError, match="git is not available"):
+        web_git.review_revert(str(repo), "tracked.txt")
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

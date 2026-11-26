@@ -378,6 +378,8 @@ def review_unstage(cwd: str, file_path: str | None) -> dict:
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
+    if _git_argv0_unusable(["git"]):
+        raise RuntimeError("git is not available")
     target = ["--", file_path or "."]
     _git_write(cwd, ["checkout", "HEAD", *target])
     _git_write(cwd, ["clean", "-fd", *target])
@@ -447,6 +449,8 @@ def _review_push(cwd: str) -> None:
 
 
 def review_push(cwd: str) -> dict:
+    if _git_argv0_unusable(["git"]):
+        raise RuntimeError("git is not available")
     _review_push(cwd)
     return {"ok": True}
 

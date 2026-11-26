@@ -338,45 +338,73 @@ class GatewayBusySessionMixin:
             self._peek_session_state(session_key).conversation.queued_events = kept
         return removed
 
-    def _goal_still_active_for_session(self, session_id: str) -> bool:
-        """Best-effort fresh DB check before running a queued continuation."""
+    def _goal_still_active_for_session(self, session_id: str, generation: Optional[float] = None) -> bool:
+        """Best-effort fresh DB check before running a queued continuation: the session's goal is
+        active and, when the continuation names one, is the goal it was queued for."""
         if not session_id:
             return False
         try:
             from hermes_cli.goals import GoalManager
-            return GoalManager(session_id=session_id).is_active()
+            mgr = GoalManager(session_id=session_id)
+            return mgr.is_active() and (generation is None or mgr.state.created_at == generation)
         except Exception as exc:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
 
-    async def _drop_admitted_event(self, event: Any, source: Any, is_internal: bool) -> bool:
-        """Record a human event's slash-command metric; True for an internal one that must not run.
+    @staticmethod
+    def _goal_continuation_generation(event: Any) -> Optional[float]:
+        """The ``GoalState.created_at`` of the goal a /goal continuation was queued for, None for any
+        other input. Not its text: a goal set again with the same text, or a criterion edited on it,
+        must not be mistaken for another. An adapter-FIFO continuation carries it in its metadata, a
+        durable ``goal-continuation`` wake (internal) as the last item of its admission identity."""
+        metadata = getattr(event, "metadata", None) or {}
+        if "goal_created_at" in metadata or not getattr(event, "internal", False):
+            return metadata.get("goal_created_at")
+        try:
+            identity = json.loads(getattr(event, "message_id", None) or "")
+        except (TypeError, ValueError):
+            return None
+        wake = isinstance(identity, list) and len(identity) == 4 and identity[0] == "goal-continuation"
+        return identity[3] if wake else None
 
-        A durable goal-continuation wake was queued while its goal was active. /goal pause or clear
-        since then leaves that row in the authority FIFO (only the adapter slot is cleared), so it is
-        rechecked against the route's current session (a compression moves the goal to its child),
-        as ``_run_agent_queued_followup`` rechecks the adapter slot."""
+    def _stale_goal_continuation(self, event: Any, session_id: str) -> bool:
+        """A queued /goal continuation whose goal is no longer the active one (paused, cleared or
+        replaced since it was queued)."""
+        return self._is_goal_continuation_event(event) and not self._goal_still_active_for_session(
+            session_id, self._goal_continuation_generation(event))
+
+    async def _drop_admitted_event(self, event: Any, source: Any, is_internal: bool) -> bool:
+        """Record a human event's slash-command metric; True for a queued /goal continuation that
+        must not run.
+
+        A continuation was queued while its goal was active. /goal pause, clear or a new goal since
+        then leaves a durable wake in the authority FIFO (only the adapter slot is cleared), and a
+        new goal does not clear the slot either, so it is rechecked against the route's current
+        session (a compression moves the goal, with its identity, to its child), as
+        ``_run_agent_queued_followup`` rechecks the adapter slot it drains in-band."""
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)
-            return False
-        if not self._is_goal_continuation_event(event):
+        generation = self._goal_continuation_generation(event)
+        if generation is None and not (is_internal and self._is_goal_continuation_event(event)):
             return False
         entry = await self.async_session_store.lookup_by_session_key(self._session_key_for_source(source))
         current = getattr(entry, "session_id", None)
-        if not current or await asyncio.to_thread(self._goal_still_active_for_session, current):
+        if not current or await asyncio.to_thread(self._goal_still_active_for_session, current, generation):
             return False
-        logger.info("Discarding stale goal continuation for session %s — goal is no longer active", current)
+        logger.info("Discarding stale goal continuation for session %s — its goal is no longer active", current)
         return True
 
-    def _goal_continuation_waiting(self, source: Any, session_id: str) -> bool:
-        """Whether this chat already holds a /goal continuation for ``session_id`` that has not
-        started: in the adapter's pending slot/overflow, or as a queued ``goal-continuation``
-        authority wake. A slot event pinned to another session (a compression or reset since) is
-        dropped when it drains, so it does not count."""
+    def _goal_continuation_waiting(self, source: Any, session_id: str, generation: Optional[float] = None) -> bool:
+        """Whether this chat already holds a /goal continuation of the goal ``generation`` for
+        ``session_id`` that has not started: in the adapter's pending slot/overflow, or as a queued
+        ``goal-continuation`` authority wake. A slot event pinned to another session (a compression
+        or reset since) or a continuation of an earlier goal is dropped when it would start, so it
+        does not count."""
         def waiting(e: Any) -> bool:
             pin = (getattr(e, "metadata", None) or {}).get("gateway_session_id")
-            return self._is_goal_continuation_event(e) and pin in (None, session_id)
+            return (self._is_goal_continuation_event(e) and pin in (None, session_id)
+                    and self._goal_continuation_generation(e) in (None, generation))
 
         try:
             session_key = self._session_key_for_source(source)
@@ -387,7 +415,7 @@ class GatewayBusySessionMixin:
             if any(waiting(e) for e in self._overflow_queue(session_key) or ()):
                 return True
             from gateway.session_automation import queued_route_wake
-            return queued_route_wake(self, source, "goal-continuation")
+            return queued_route_wake(self, source, "goal-continuation", generation)
         except Exception:  # health: allow BLE001 -- best-effort read; on failure the continuation is queued as before
             logger.debug("goal continuation: queued-continuation check failed", exc_info=True)
             return False

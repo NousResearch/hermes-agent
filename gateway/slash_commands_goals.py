@@ -62,7 +62,10 @@ class GatewayGoalCommandsMixin:
         if result.clear_pending:
             self._clear_goal_continuations(event, result.clear_pending)
         if result.prompt:
-            self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff)
+            # A resume continuation is the goal's own: it carries the goal's identity like a judged one.
+            self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff,
+                                    goal=None if result.kickoff or mgr.state is None else
+                                    (mgr.session_id, mgr.state.created_at))
         return result.output
 
     def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
@@ -74,7 +77,7 @@ class GatewayGoalCommandsMixin:
             logger.debug("goal %s: pending continuation cleanup failed: %s", verb, exc)
 
     def _enqueue_goal_turn(
-        self, event: MessageEvent, text: str, *, label: str, kickoff: bool
+        self, event: MessageEvent, text: str, *, label: str, kickoff: bool, goal: tuple | None = None
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
@@ -108,6 +111,11 @@ class GatewayGoalCommandsMixin:
                     media_text_inlined=list(event.media_text_inlined) if media else [],
                     media_filenames=list(event.media_filenames) if media else [],
                 )
+                if goal is not None:
+                    # Pinned to its session and goal like a judged continuation: when its task drains
+                    # it, it is committed as the same identified wake (``_hm_admit_to_fifo``).
+                    turn.metadata.update(gateway_session_key=quick_key, gateway_session_strict=True,
+                                         gateway_session_id=goal[0], goal_created_at=goal[1])
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
             logger.debug("goal %s failed: %s", label, exc)

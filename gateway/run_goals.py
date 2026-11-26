@@ -346,7 +346,11 @@ class GatewayGoalsMixin:
         msg = decision.get("message") or ""
         prompt = decision.get("continuation_prompt") or ""
         continuing = bool(decision.get("should_continue") and prompt and source is not None)
-        if continuing and await asyncio.to_thread(self._goal_continuation_waiting, source, session_entry.session_id):
+        # The judged goal's persistent identity: its continuation runs only while that goal stands, not
+        # a goal set since (``GatewayBusySessionMixin._goal_continuation_generation``).
+        generation = mgr.state.created_at if continuing else None
+        if continuing and await asyncio.to_thread(
+                self._goal_continuation_waiting, source, session_entry.session_id, generation):
             # A turn that ran while an earlier continuation was still queued (a message sent during
             # a background-result turn) is judged too: queuing a second one would spend two goal
             # turns on one step. The waiting continuation carries the goal on.
@@ -355,15 +359,7 @@ class GatewayGoalsMixin:
         durable = continuing and (authority_owned_wake or getattr(source, "platform", None) == Platform.LOCAL)
         if durable:
             # A producer without a native waiter has no adapter drain, just like a local turn.
-            from gateway.session_automation import admit_route_wake
-            try:
-                accepted = await admit_route_wake(
-                    self, self._delivery_adapter_for(source), source, prompt, "goal-continuation",
-                    metadata={"gateway_session_id": session_entry.session_id},
-                )
-            except Exception:  # health: allow BLE001 -- refusal must not fail the completed turn
-                logger.debug("goal continuation: authority admission failed", exc_info=True)
-                accepted = False
+            accepted = await self._admit_goal_continuation(source, prompt, session_entry.session_id, generation)
             if not accepted and authority_owned_wake:
                 logger.warning("goal continuation: no wake admitted for a turn without an adapter drainer")
                 msg = t("gateway.goal.continuation_not_queued")
@@ -379,12 +375,28 @@ class GatewayGoalsMixin:
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
                 event = self._synthetic_prompt_event(source, prompt)
-                # Pinned to the judged session: a /new or reset before the slot drains drops it.
+                # Pinned to the judged session and goal: a /new, reset or new goal before the slot
+                # drains drops it.
                 event.metadata.update(gateway_session_key=_quick_key, gateway_session_strict=True,
-                                      gateway_session_id=session_entry.session_id)
+                                      gateway_session_id=session_entry.session_id, goal_created_at=generation)
                 self._enqueue_fifo(_quick_key, event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    async def _admit_goal_continuation(self, source: Any, prompt: str, session_id: str, generation: float) -> bool:
+        """Commit a /goal continuation to the authority FIFO as a ``goal-continuation`` wake naming its
+        judged session and goal, which ``_drop_admitted_event`` checks when it starts and
+        ``_goal_continuation_waiting`` counts. False when none was admitted (no authority or route
+        envelope, or a refusal)."""
+        from gateway.session_automation import admit_route_wake
+        try:
+            return await admit_route_wake(
+                self, self._delivery_adapter_for(source), source, prompt, "goal-continuation",
+                metadata={"gateway_session_id": session_id}, generation=generation,
+            )
+        except Exception:  # health: allow BLE001 -- refusal must not fail the completed turn
+            logger.debug("goal continuation: authority admission failed", exc_info=True)
+            return False
 
     async def _run_post_turn_hooks(
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,

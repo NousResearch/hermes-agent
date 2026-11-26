@@ -947,9 +947,10 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     return entry, release
 
 
-def queued_route_wake(runner, source, producer):
+def queued_route_wake(runner, source, producer, generation=None):
     """Whether ``source``'s route already holds a ``producer`` wake (``admit_route_wake``) that is
-    still queued, i.e. not yet claimed. Blocking store read: call off the event loop."""
+    still queued, i.e. not yet claimed, and was admitted for ``generation`` when one is given.
+    Blocking store read: call off the event loop."""
     from gateway.session_authorities import active_authority
     from gateway.session_detached import route_entry
     authority = active_authority(runner)
@@ -963,19 +964,23 @@ def queued_route_wake(runner, source, producer):
             identity = json.loads(row.request_id)
         except ValueError:
             continue
-        if isinstance(identity, list) and identity[:1] == [producer]:
+        if isinstance(identity, list) and identity[:1] == [producer] and (
+                generation is None or identity[3:] == [generation]):
             return True
     return False
 
 
-async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *, request_id=None, replay=None):
+async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *,
+                           request_id=None, replay=None, generation=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
     interrupts or races the admitted one. ``False`` when no authority serves the scope or the
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
     path (nothing is queued there either). Raises ``AuthorityRefusal`` on a refusal. A producer
     that names its own ``request_id`` (a plugin card's id) gets the admission's replay dedupe and
-    reads created-versus-existing from the ``AdmissionReplay`` it passes as ``replay``."""
+    reads created-versus-existing from the ``AdmissionReplay`` it passes as ``replay``.
+    ``generation`` (a /goal continuation's goal ``created_at``) ends the admission identity
+    ``[producer, route, id, generation]``: the only producer field a restored row keeps."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
     from gateway.session_detached import detached_live, detached_route_of, route_entry
@@ -986,7 +991,8 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     if authority is None or entry is None:
         return False
     import uuid
-    identity = json.dumps([producer, key, request_id or uuid.uuid4().hex], separators=(',', ':'))
+    identity = json.dumps([producer, key, request_id or uuid.uuid4().hex] +
+                          ([generation] if generation is not None else []), separators=(',', ':'))
     if source.platform == Platform.LOCAL or detached_route_of(source):
         # A local route (or a conversation its chat moved past, answered by its app viewers) has no
         # messaging provenance to borrow: its wake rides local_automation_v1 on the live session's own

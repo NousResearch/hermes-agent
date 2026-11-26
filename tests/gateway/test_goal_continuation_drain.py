@@ -427,6 +427,7 @@ def test_waiting_continuation_counts_only_for_the_judged_session():
         _delivery_adapter_for=lambda source: SimpleNamespace(_pending_messages=slot),
         _overflow_queue=lambda session_key: [],
         _is_goal_continuation_event=GatewayBusySessionMixin._is_goal_continuation_event,
+        _goal_continuation_generation=GatewayBusySessionMixin._goal_continuation_generation,
     )
     waiting = GatewayBusySessionMixin._goal_continuation_waiting
     slot[key] = SimpleNamespace(text=text, metadata={"gateway_session_id": "old-root"})

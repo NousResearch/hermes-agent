@@ -1,9 +1,10 @@
 """A /goal continuation queued on the adapter FIFO belongs to the session that judged it.
 
-``_post_turn_goal_continuation`` parks the continuation in the chat's pending slot; if the route
-is reset (/new, idle/daily policy) before that slot drains, the stale continuation must not run in
-the fresh session, while an unreset route still continues as before. Under a session authority the
-drained continuation is admitted as native input (``_hm_admit_to_fifo``); without one it resolves
+``_post_turn_goal_continuation`` parks the continuation of a turn its adapter task drains in the
+chat's pending slot; if the route is reset (here at the storage level, as /new does) before that
+slot drains, the stale continuation must not run in the fresh session, while an unreset route still
+continues as before. Under a session authority the drained continuation is checked against this pin
+in ``_hm_admit_to_fifo`` and then committed as a ``goal-continuation`` wake; without one it resolves
 its session in ``_hmwa_resolve_session``. Both honour the strict pin.
 """
 

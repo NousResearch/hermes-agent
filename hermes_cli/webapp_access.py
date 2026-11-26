@@ -329,18 +329,17 @@ def _claimed_ports(home: Path) -> set[int]:
     """The Webapp ports the other Hermes homes beside *home* claim: the default profile's (9120 unless
     set) and every other profile's own ``webapp.port``, whether or not its gateway runs now. Only that
     setting is read from their configs."""
-    from gateway.webapp_listener import DEFAULT_PORT
+    from gateway.webapp_listener import DEFAULT_PORT, configured_port
     from hermes_constants import named_profile_home
 
     profile = named_profile_home(home)
     if profile is None:
         return set()
     root = profile.parent.parent
-    root_port = _own_port(root)
-    claimed = {root_port if isinstance(root_port, int) else DEFAULT_PORT}
+    claimed = {configured_port(_own_port(root)) or DEFAULT_PORT}
     for other in profile.parent.iterdir() if profile.parent.is_dir() else ():
-        port = _own_port(other) if other != profile and other.is_dir() else None
-        if isinstance(port, int) and not isinstance(port, bool):
+        port = configured_port(_own_port(other)) if other != profile and other.is_dir() else None
+        if port is not None:
             claimed.add(port)
     return claimed
 

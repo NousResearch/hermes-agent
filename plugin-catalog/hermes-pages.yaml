@@ -1,0 +1,26 @@
+name: hermes-pages
+title: Hermes Pages
+repo: https://github.com/kenhendricks00/hermes-pages-plugin
+sha: d93e3540ec7c931c4c70c021a123861ac959c768
+description: Offline-first response pages with explicit publishing and guided free Cloudflare Pages hosting.
+maintainer: kenhendricks00
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+docs_url: https://github.com/kenhendricks00/hermes-pages-plugin
+image: https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/d93e3540ec7c931c4c70c021a123861ac959c768/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/d93e3540ec7c931c4c70c021a123861ac959c768/docs/light.png
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/d93e3540ec7c931c4c70c021a123861ac959c768/docs/dark.png
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-pages-plugin/d93e3540ec7c931c4c70c021a123861ac959c768/docs/phone.png
+readme: true
+platforms: [linux, macos, windows]
+known_issues:
+  - Publishing requires separately installed Wrangler and user-completed Cloudflare OAuth. No live deployment was exercised for this release.
+  - HTML input is trusted, not sanitized. Every managed page and the library become public when explicitly published.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

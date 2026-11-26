@@ -39,7 +39,7 @@ logger = logging.getLogger("gateway.run")
 
 
 def _profile_channel_overrides(home: Path, platform: Platform):
-    """A config holding only *platform*'s ``channel_overrides`` and ``allow_silence`` from *home*'s
+    """A config holding the profile silence fallback and *platform*'s overrides from *home*'s
     config.yaml, read the way the loader does: merge every nested platform block, then the block
     ``platform_section`` picks (a top-level ``<platform>:`` block first) wins for the overrides and
     the platform keys it sets. ``GatewayConfig.from_dict(raw)`` alone reads only the nested form."""
@@ -59,9 +59,12 @@ def _profile_channel_overrides(home: Path, platform: Platform):
         authored = merged.get("extra")
         extra = {**extra, **PlatformConfig.from_dict(section).extra,
                  **(authored if isinstance(authored, dict) else {})}
-    return GatewayConfig.from_dict({"platforms": {name: {
-        "channel_overrides": overrides if isinstance(overrides, dict) else {},
-        "allow_silence": extra.get("allow_silence")}}})
+    profile_allow = raw.get("allow_silence", cfg_get(raw, "gateway", "allow_silence", default=False))
+    return GatewayConfig.from_dict({
+        "allow_silence": profile_allow,
+        "platforms": {name: {"channel_overrides": overrides if isinstance(overrides, dict) else {},
+                             "allow_silence": extra.get("allow_silence")}},
+    })
 
 
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
@@ -120,6 +123,10 @@ def _effective_allow_silence(platform_config, source: SessionSource) -> Optional
 
 # "" = an unclassified source: treated as a DM, where a question must get a visible answer.
 _DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})
+
+
+def _shared_chat(source: SessionSource) -> bool:
+    return str(getattr(source, "chat_type", "") or "").strip().lower() not in _DM_CHAT_TYPES
 
 
 class GatewayConfigLoadersMixin:
@@ -210,8 +217,8 @@ class GatewayConfigLoadersMixin:
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
         """Evaluate existing exemptions before consulting the optional room/platform permission.
 
-        An explicit ``allow_silence`` (room or platform, true or false) decides. Only where it is
-        unset everywhere does the warning policy apply: with warning notifications hidden for the
+        A room or platform setting decides first, followed by a profile opt-in for shared chats.
+        Otherwise the existing warning policy applies: with warning notifications hidden for the
         turn's platform, the unexpected-silence notice is one of them, so a healthy marker-only
         final in a shared chat stays silent instead. Never in a DM: there the notice is the only
         answer a direct question gets, and suppression predates this rule (legacy default).
@@ -220,8 +227,7 @@ class GatewayConfigLoadersMixin:
         if silence_allowed(display_kind, reply_expected):
             return True
         allow = self._room_allow_silence(source)
-        shared = str(getattr(source, "chat_type", "") or "").strip().lower() not in _DM_CHAT_TYPES
-        if allow is None and shared and self._silence_notice_suppressed(source):
+        if allow is None and _shared_chat(source) and self._silence_notice_suppressed(source):
             silent = silence_allowed(display_kind, reply_expected, allow_silence=True, agent_result=agent_result)
             if silent:
                 logger.info("silence marker kept silent: warning notifications are suppressed for %s chat=%s",
@@ -248,12 +254,15 @@ class GatewayConfigLoadersMixin:
 
         The first ``channel_overrides`` entry along chat -> thread -> parent decides when it sets
         it (true or false); otherwise the platform's own ``platforms.<platform>.allow_silence``
-        applies, else None (the default reply rule).
+        applies. Shared chats can also inherit the serving profile's opt-in.
         """
         try:
             config = self._serving_channel_config(source, unbound_reads_home=True)
             platform_config = (getattr(config, "platforms", None) or {}).get(source.platform)
-            return _effective_allow_silence(platform_config, source)
+            allow = _effective_allow_silence(platform_config, source)
+            if allow is None and getattr(config, "allow_silence", False) is True and _shared_chat(source):
+                return True
+            return allow
         except Exception:
             # No permission means the default reply rule; a lookup failure must not become an error reply.
             logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",

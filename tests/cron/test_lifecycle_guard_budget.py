@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 import shlex
 from pathlib import Path
+from types import SimpleNamespace
 
 from cron import lifecycle_guard
 
@@ -153,7 +154,7 @@ def test_line_budget_fails_closed_before_tokenizing_every_line(
         lexers += 1
         return real_shlex(*args, **kwargs)
 
-    monkeypatch.setattr(lifecycle_guard.shlex, "shlex", counting)
+    monkeypatch.setattr(lifecycle_guard, "shlex", SimpleNamespace(shlex=counting))
     root = f"bash {shlex.quote(str(script))}"
     assert guard(root) is True
     # Only the one-line root was tokenized (a handful of lexers across the
@@ -186,7 +187,7 @@ def test_check_gateway_lifecycle_python_path_charges_masker(monkeypatch, tmp_pat
     small.write_text("x = 1\n", encoding="utf-8")
     lifecycle_guard.check_gateway_lifecycle("run report", str(small))
 
-    monkeypatch.setattr(lifecycle_guard.shlex, "shlex", _explode)
+    monkeypatch.setattr(lifecycle_guard, "shlex", SimpleNamespace(shlex=_explode))
     long_line = tmp_path / "long.py"
     long_line.write_text("x = 1\n" + "y" * 40 + "\n", encoding="utf-8")
     with pytest.raises(lifecycle_guard.GatewayLifecycleBlocked):

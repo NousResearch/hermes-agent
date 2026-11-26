@@ -10,6 +10,7 @@ import asyncio
 import json
 import queue
 from collections import OrderedDict
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -125,6 +126,37 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_watcher_delivers_queued_completion_while_orphan_sweep_stalls(
+    monkeypatch, isolated_registry, caplog,
+):
+    runner = _runner(SimpleNamespace())
+    event = _async_event()
+    isolated_registry.completion_queue.put(event)
+    entered, release = Event(), Event()
+    sweeps = []
+
+    def stalled_sweep():
+        sweeps.append(None)
+        entered.set()
+        assert release.wait(10), "test did not release the stalled sweep"
+
+    deliver = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "_sweep_orphaned_completion_ledgers", stalled_sweep)
+    monkeypatch.setattr(runner, "_deliver_async_delegation_group", deliver)
+    _stop_after_sleeps(monkeypatch, runner, count=4, minutes_apart=True)
+    try:
+        with caplog.at_level("WARNING", logger=run_notifications.logger.name):
+            await asyncio.wait_for(runner._async_delegation_watcher(interval=0), timeout=5)
+        assert entered.is_set()
+        deliver.assert_awaited_once_with([event])
+        assert isolated_registry.completion_queue.empty()
+        assert len(sweeps) == 1  # multiple sweep intervals elapsed, but never start an overlapping sweep
+        assert "Orphaned async completion sweep timed out" in caplog.text
+    finally:
+        release.set()
 
 
 def test_unroutable_async_event_remains_retryable(

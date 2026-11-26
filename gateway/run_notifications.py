@@ -1639,6 +1639,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if count:
                 logger.info("%s %d undelivered async completion(s) for profile %r", verb, count, profile_name)
 
+    async def _run_orphan_sweep(self) -> None:
+        with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
+            await asyncio.to_thread(self._sweep_orphaned_completion_ledgers)
+
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.
 
@@ -1649,12 +1653,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
         from tools.process_registry import process_registry as _pr
         last_orphan_sweep = None
+        sweep = None
         while self._running:
+            # A timed-out thread can still be running. Keep one sweep in flight and let the
+            # queue drain on every tick, even if that sweep never returns.
+            if (sweep is None or sweep.done()) and (
+                last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S
+            ):
+                last_orphan_sweep = time.monotonic()
+                sweep = self._retain_background_task(asyncio.create_task(self._run_orphan_sweep()))
+                done, _ = await asyncio.wait({sweep}, timeout=1.0)
+                if not done:
+                    logger.warning("Orphaned async completion sweep timed out; continuing queue drain")
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
-                # Completions whose owner process died while this gateway runs (#97202).
-                if last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S:
-                    last_orphan_sweep = time.monotonic()
-                    await asyncio.to_thread(self._sweep_orphaned_completion_ledgers)
                 # Pattern events also need an idle consumer; foreground turns are optional.
                 await self._drain_watch_notifications(_pr.completion_queue)
                 # Process completions remain owned by their per-process watchers.

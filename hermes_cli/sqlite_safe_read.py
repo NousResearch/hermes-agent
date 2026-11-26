@@ -132,8 +132,9 @@ def has_live_connection(path: Path | str) -> bool:
 
     Point-in-time answer: a raw open/close right after it returns ``False`` can still race a
     new connection. Hold :func:`offline_file_access` across the I/O whenever possible."""
+    key = _key(path)
     with _live_lock:
-        return _live_main_key(_key(path)) is not None
+        return _live_main_key(key) is not None
 
 
 class _TrackingMixin:

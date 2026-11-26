@@ -50,6 +50,7 @@ class OAuthClient:
     scope_separator: str = " "  # how the scope list is joined; some IdPs (Linear) want ","
     redirect_port: int = 0  # 0 = OS-assigned; pinned for an IdP that allowlists an exact redirect URI
     redirect_path: str = "/callback"
+    redirect_host: str = "127.0.0.1"  # "localhost" for an IdP that refuses IP-address redirect URIs
 
     @property
     def fingerprint(self) -> str:
@@ -59,7 +60,7 @@ class OAuthClient:
         return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-_DEFAULTED = {"scope_separator": " ", "redirect_port": 0, "redirect_path": "/callback"}
+_DEFAULTED = {"scope_separator": " ", "redirect_port": 0, "redirect_path": "/callback", "redirect_host": "127.0.0.1"}
 _REDIRECT_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
 
 
@@ -125,6 +126,8 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
     path = entry.get("redirect_path", "/callback")
     if not (isinstance(path, str) and _REDIRECT_PATH_RE.match(path)):
         problems.append(f"{where}.redirect_path: must be a URL path starting with / (letters, digits, ._~-/)")
+    if entry.get("redirect_host", "127.0.0.1") not in ("127.0.0.1", "localhost"):
+        problems.append(f"{where}.redirect_host: must be 127.0.0.1 or localhost")
     return problems
 
 
@@ -135,7 +138,7 @@ def _client(entry: dict) -> OAuthClient:
         client_secret_env=entry.get("client_secret_env") or "",
         authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())),
         scope_separator=entry.get("scope_separator", " "), redirect_port=entry.get("redirect_port", 0),
-        redirect_path=entry.get("redirect_path", "/callback"))
+        redirect_path=entry.get("redirect_path", "/callback"), redirect_host=entry.get("redirect_host", "127.0.0.1"))
 
 
 def parse_oauth_clients(manifest: Mapping[str, Any]) -> tuple[list[OAuthClient], list[str]]:
@@ -371,7 +374,8 @@ def _pkce_config(client: OAuthClient, key: str, *, timeout: Optional[float] = No
         client_id=_env(client.client_id_env, "oauth_client_id_missing", key), authorize_url=client.authorize_url,
         token_url=client.token_url, scopes=client.scopes, extra_authorize_params=dict(client.authorize_params),
         label=key, token_request=_token_request(client, key), timeout_seconds=timeout or 180.0,
-        scope_separator=client.scope_separator, redirect_port=client.redirect_port, redirect_path=client.redirect_path)
+        scope_separator=client.scope_separator, redirect_port=client.redirect_port, redirect_path=client.redirect_path,
+        redirect_host=client.redirect_host)
 
 
 # ── Bearer for credentialed_provider_request ───────────────────────────────────────────────────────

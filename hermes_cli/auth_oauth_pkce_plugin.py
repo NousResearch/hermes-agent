@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 POOL_SOURCE = "manual:loopback_pkce"  # ``manual:`` prefix = never pruned by load_pool() re-seeding
 _LOOPBACK_LITERALS = frozenset({"127.0.0.1", "::1"})
+REDIRECT_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,9 @@ class OAuthPKCEConfig:
     scope_separator: str = " "  # RFC 6749 says space; a few IdPs (Linear) require a comma-joined list
     redirect_port: int = 0  # 0 = OS-assigned; pin it when the IdP allowlists an exact redirect URI
     redirect_path: str = "/callback"
+    # Host written into the redirect URI. The listener always binds 127.0.0.1; "localhost" is for IdPs
+    # that refuse IP-address redirect URIs (QuickBooks).
+    redirect_host: str = "127.0.0.1"
     audience: Optional[str] = None
     extra_authorize_params: Mapping[str, str] = field(default_factory=dict)
     extra_token_params: Mapping[str, str] = field(default_factory=dict)
@@ -96,6 +100,8 @@ def validate_config(provider: str, cfg: OAuthPKCEConfig) -> None:
                    f"{sorted(allowlist)}.", "oauth_token_host_rejected")
     if not 0 <= int(cfg.redirect_port) <= 65535:
         raise _err(provider, "OAuth redirect_port must be within 0..65535.", "oauth_redirect_invalid")
+    if cfg.redirect_host not in REDIRECT_HOSTS:
+        raise _err(provider, f"OAuth redirect_host must be one of {sorted(REDIRECT_HOSTS)}.", "oauth_redirect_invalid")
 
 
 def _post_token(provider: str, cfg: OAuthPKCEConfig, data: dict[str, str], *, code: str) -> dict[str, Any]:
@@ -173,7 +179,7 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
     handler_cls, result = _make_loopback_callback_handler(path, display_name=cfg.label or provider)
     server = _bind_loopback_callback_server(
         "127.0.0.1", int(cfg.redirect_port), handler_cls, err=err, bind_failed_code="oauth_callback_bind_failed")
-    redirect_uri = f"http://127.0.0.1:{server.server_address[1]}{path}"
+    redirect_uri = f"http://{cfg.redirect_host}:{server.server_address[1]}{path}"
     verifier = _pkce_code_verifier()
     state = secrets.token_urlsafe(32)
     params = {

@@ -942,8 +942,14 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     try:
         _start_gateway_configure_logging(verbosity)
 
-        from gateway.run_startup import recover_left_core_at_gateway_start
-        if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
+        # A platform plugin owed to the credentials this profile has installs beside the start, never
+        # long ahead of it: one landing within the head start is in the runner's config; a slower one
+        # (a clone, another installer's lock) leaves the ready platforms serving and starts when it lands.
+        from gateway.run_platform_reconcile import (
+            recover_plugins_beside_start, recovered_before_start, start_recovered_platforms)
+        _plugin_recovery = recover_plugins_beside_start()
+        _recovered = await recovered_before_start(_plugin_recovery)
+        if _recovered and config is None:
             resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
@@ -1010,6 +1016,8 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         from gateway.run_api import await_session_socket_preload
         _early_verdict, ws_preload, _unclean_exit = await _start_gateway_listener_and_runner(
             runner, _signal_initiated_shutdown, idle_exit=idle_exit)
+        if _early_verdict is None and _recovered is None:
+            start_recovered_platforms(runner, _plugin_recovery)
         if _early_verdict is not None:
             await await_session_socket_preload(ws_preload)  # never left unawaited on the way out
             return _early_verdict

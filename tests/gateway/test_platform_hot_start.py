@@ -283,4 +283,5 @@ def test_a_verb_answer_past_its_window_names_what_is_still_starting(monkeypatch)
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=5)
         loop.close()
-    assert answer == {"applied": True, "pending": True, "starting": ["telegram"], "restarting": [], "stopping": []}
+    assert answer == {"applied": True, "pending": True, "starting": ["telegram"], "restarting": [], "stopping": [],
+                      "installing": False}

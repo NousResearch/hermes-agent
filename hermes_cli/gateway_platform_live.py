@@ -40,11 +40,33 @@ def config_set_live_note(key: str) -> Optional[str]:
     from hermes_cli.gateway import _current_profile_name
     from hermes_constants import get_hermes_home
     answer = reconcile_running_gateway_platforms(_current_profile_name() or "default", get_hermes_home())
-    if answer and answer.get("pending"):
-        return _pending_note(answer)
-    if not answer or not answer.get("changed"):
+    if answer is None:
         return None
-    return _live_note(answer)
+    # What the gateway's plugin recovery said for this profile (installed, or why not and the command
+    # that installs it), now instead of at the next turn someone sees.
+    from hermes_cli.left_core_migration import claim_kept_notices
+    lines = [f"  {notice}" for notice in claim_kept_notices()]
+    if answer.get("pending"):
+        lines.append(_pending_note(answer))
+    elif answer.get("changed"):
+        lines.append(_live_note(answer))
+    elif not lines:
+        lines.append(_unserved_note(key, answer, get_hermes_home()))
+    return "\n".join(line for line in lines if line) or None
+
+
+def _unserved_note(key: str, answer: dict, home: Path) -> str:
+    """The key belongs to a platform that left core whose plugin this profile lacks, and the gateway
+    neither serves it nor installed it now: say so and how it arrives, instead of a bare "✓ Set"."""
+    from hermes_cli.left_core_migration import LEFT_CORE, platform_install_hint, plugin_present
+    from hermes_cli.profile_channels import declared_channel_env_keys, platform_env_prefixes
+    name = key.upper()
+    owner = declared_channel_env_keys().get(name)
+    feature = next((f for f in LEFT_CORE if f.platform and (f.platform == owner or name.startswith(
+        platform_env_prefixes(f.platform)))), None)
+    if feature is None or feature.platform in (answer.get("platforms") or {}) or plugin_present(feature.plugin, home):
+        return ""
+    return f"  Running gateway does not serve {feature.label} yet{platform_install_hint(feature.platform)}."
 
 
 def _can_change_a_platform(key: str) -> bool:
@@ -63,6 +85,9 @@ def _can_change_a_platform(key: str) -> bool:
 
 def _pending_note(answer: dict) -> str:
     """The gateway's verb window closed before its apply finished: say what it is still doing."""
+    if answer.get("installing"):
+        return ("  Running gateway is installing the plugin this platform needs; it starts the platform when "
+                "the install finishes (`hermes logs` shows the outcome)")
     parts = [f"{verb} {', '.join(names)}" for verb, names in (
         ("starting", answer.get("starting")), ("restarting", answer.get("restarting")),
         ("stopping", answer.get("stopping"))) if names]

@@ -232,6 +232,27 @@ def test_parse_dashboard_runtime_keeps_valid_port_before_flattened_path_fragment
 
 
 @pytest.mark.parametrize(
+    "cmd,expected",
+    [
+        (
+            "hermes serve --port 9120 --ssh-session-token-file /home/user/keys --port 8111 notes/token",
+            ("serve", "127.0.0.1", 9120),
+        ),
+        (
+            "hermes serve --host 0.0.0.0 --ssh-session-token-file /home/user/keys --host 10.0.0.9 notes/token",
+            ("serve", "0.0.0.0", 9119),
+        ),
+    ],
+    ids=["port-only", "host-only"],
+)
+def test_parse_dashboard_runtime_keeps_first_flag_when_only_one_is_named(cmd, expected):
+    from hermes_cli.main_dashboard import _parse_dashboard_runtime
+
+    # With only one bind flag named, each first-value guard independently keeps the real bind.
+    assert _parse_dashboard_runtime(cmd) == expected
+
+
+@pytest.mark.parametrize(
     "exact_argv,expected_bind",
     [
         (
@@ -256,15 +277,36 @@ def test_parse_dashboard_runtime_keeps_valid_port_before_flattened_path_fragment
             ],
             ("0.0.0.0", 9120),
         ),
+        (
+            [
+                "/usr/bin/python3",
+                "-I",
+                "-c",
+                "import os, re, sys\nif sys.argv[1:2] == ['--run-module']:\n    sys.exit(0)\nfrom hermes_cli.main import main\nsys.exit(main())",
+                "serve",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "9120",
+                "--ssh-session-token-file",
+                "/home/user/keys --port 8111 notes/token",
+            ],
+            ("0.0.0.0", 9120),
+        ),
     ],
-    ids=["default-bind-with-path-fragments", "explicit-bind-after-path-fragments"],
+    ids=[
+        "default-bind-with-path-fragments",
+        "explicit-bind-after-path-fragments",
+        "posix-launcher-source-newlines",
+    ],
 )
 def test_report_dashboard_status_preserves_argv_boundaries_from_psutil(monkeypatch, exact_argv, expected_bind):
     import psutil
     from hermes_cli import dashboard_procs, main_dashboard
 
     pid = 424242
-    flattened = " ".join(exact_argv)
+    # ps prints argv joined by spaces, the published launcher's multi-line -c source included.
+    flattened = " ".join(exact_argv).replace("\n", " ")
 
     class _FakeProcess:
         def __init__(self, target_pid):

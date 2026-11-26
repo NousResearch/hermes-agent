@@ -83,8 +83,6 @@ def _extract_dashboard_bind(tokens: list[str], *, exact: bool) -> tuple[str, int
             host, explicit_host = value or "127.0.0.1", True
         else:
             step = 1
-        if not exact and explicit_port and explicit_host:
-            break
         i += step
     return host, port
 
@@ -660,13 +658,13 @@ def _pid_argv(pid: int) -> list[str] | None:
 
 def _status_runtime_source(pid: int, command: str) -> list[str] | str:
     """Prefer *pid*'s exact OS argv when it matches the scanned *command*, else *command*."""
-    if not command:
+    normalized_cmd = " ".join(command.split())
+    if not normalized_cmd:
         return command
     exact_argv = _pid_argv(pid)
-    if exact_argv:
-        joined = " ".join(exact_argv).strip()
-        if joined == command or joined.startswith(command):
-            return exact_argv
+    # ps prints a multi-line -c source (the published launcher's) with its newlines as spaces.
+    if exact_argv and " ".join(" ".join(exact_argv).split()).startswith(normalized_cmd):
+        return exact_argv
     return command
 
 

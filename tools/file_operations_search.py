@@ -958,7 +958,7 @@ class SearchMixin:
                  "-e", self._escape_shell_arg(pattern, translate_path=False), "--", self._escape_native_tool_arg(path)]
         bound = 1000
         probe = self._run_rg_bounded(words, bound, timeout=30, shell_prefix="set -o pipefail; ")
-        lines = (probe.stdout or "").strip().splitlines()
+        lines = (probe.stdout or "").splitlines()  # no strip: a name may begin with a space
         if probe.exit_code not in (0, 1) or len(lines) >= bound:
             return None
         counts = {}

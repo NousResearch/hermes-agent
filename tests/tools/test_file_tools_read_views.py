@@ -3,6 +3,7 @@
 cell can use without parsing (``text`` without the ``N|`` gutter, match dicts, no char budget)."""
 
 import json
+import os
 
 from model_tools import handle_function_call
 from tools.code_execution_rpc import _default_dispatch
@@ -67,7 +68,7 @@ def test_a_tail_follows_a_log_that_rotates_between_the_count_and_the_read(tmp_pa
     assert "File changed during tail read" in grown["error"] and len(calls) == 3
 
 
-def test_a_directory_path_returns_a_listing_with_types_and_sizes(tmp_path):
+def test_a_directory_path_returns_a_listing_with_types_and_sizes(tmp_path, monkeypatch):
     reset_file_dedup("ls")
     root = tmp_path / "proj"
     (root / "sub").mkdir(parents=True)
@@ -83,6 +84,10 @@ def test_a_directory_path_returns_a_listing_with_types_and_sizes(tmp_path):
     sub_size = (root / "sub").lstat().st_size
     assert [(e["name"], e["type"], e["size"]) for e in entries] == [("sub", "dir", sub_size), ("data.json", "file", 3)]
     assert rows[0].split()[0] == str(sub_size)  # a dir shows its size like ls -la, never a "-"
+    if os.name == "posix":
+        (root / "two\nrows").touch()
+        odd = _model("ls", "read_file", path=str(root))
+        assert len(odd["content"].splitlines()) == odd["total_entries"] + 1  # one row per entry
 
     big = tmp_path / "big"
     big.mkdir()
@@ -91,6 +96,14 @@ def test_a_directory_path_returns_a_listing_with_types_and_sizes(tmp_path):
     capped = _cell("ls", "read_file", path=str(big))
     assert capped["truncated"] and capped["total_entries"] == DIR_LISTING_MAX_ENTRIES + 7
     assert len(capped["entries"]) == len(capped["content"].splitlines()) - 1 == DIR_LISTING_MAX_ENTRIES
+
+    monkeypatch.setattr("tools.file_tools._get_max_read_chars", lambda: 2_000)
+    budgeted = _model("ls", "read_file", path=str(big))  # the model's table keeps to the read budget
+    kept = budgeted["content"].splitlines()[1:]
+    assert len(budgeted["content"]) <= 2_000 and budgeted["truncated"]
+    assert kept and all(row.split()[-1].startswith("f") for row in kept)  # whole rows only
+    assert f"Showing {len(kept)} of {DIR_LISTING_MAX_ENTRIES + 7} entries" in budgeted["hint"]
+    assert len(_cell("ls", "read_file", path=str(big))["entries"]) == DIR_LISTING_MAX_ENTRIES  # a cell is not budgeted
 
 
 def test_cell_reads_and_searches_come_back_ready_to_use(tmp_path, monkeypatch):
@@ -110,6 +123,7 @@ def test_cell_reads_and_searches_come_back_ready_to_use(tmp_path, monkeypatch):
 
     many = _cell("cell-shape", "search_files", pattern=r"value_\d+ = 7\d?$", path=str(tmp_path))
     assert {"path": str(src), "line": 8, "content": "value_7 = 7"} in many["matches"]
-    assert len(many["matches"]) == 11 and "matches_text" not in many
+    assert len(many["matches"]) == 11
+    assert "value_7 = 7" in many["matches_text"] and many["matches_format"]  # the grouped keys cells already read stay
     assert _cell("cell-shape", "search_files", pattern="no_such_symbol", path=str(tmp_path))["matches"] == []
     assert _cell("cell-shape", "search_files", pattern="*.absent", target="files", path=str(tmp_path))["files"] == []

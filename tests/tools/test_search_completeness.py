@@ -90,6 +90,10 @@ def test_complete_says_whether_hidden_or_gitignored_files_also_match(proj):
     assert "2 more file(s) match there" in r["complete"]
     assert ".hidden.py" in r["complete"] and "build.log" in r["complete"]
 
+    (proj / ".env").write_text("hit\n")  # read_file refuses it, so the note must not name it either
+    guarded = _search(proj, "t-complete-hidden", pattern="hit")
+    assert guarded["total_count"] == 6 and ".env" not in json.dumps(guarded)
+
 
 def test_hidden_check_uses_the_backend_root_and_never_costs_the_primary_result(proj, monkeypatch):
     task = "t-complete-tilde"

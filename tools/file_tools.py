@@ -647,7 +647,9 @@ def _denied_or_directory_listing(resolved, task_id: str) -> str | None:
     if block_error:
         return tool_error(block_error)
     if _file_ops_uses_host_paths(_get_file_ops(task_id)) and os.path.isdir(resolved):
-        return json.dumps(directory_listing(str(resolved), structured=is_programmatic_read()), ensure_ascii=False)
+        cell = is_programmatic_read()  # a cell gets every entry; the model's table keeps to the read budget
+        listing = directory_listing(str(resolved), structured=cell, max_chars=None if cell else _get_max_read_chars())
+        return json.dumps(listing, ensure_ascii=False)
     return None
 
 
@@ -1162,14 +1164,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
-        # The path-grouped text block saves the model tokens; a cell wants the match dicts, always
-        # present for a content search (an empty list when nothing matched) so code can iterate them.
-        result_dict = result.to_dict(densify=not is_programmatic_read())
+        # The path-grouped text block saves the model tokens; a cell also gets the match dicts, always
+        # present for a content search (an empty list when nothing matched) so code can iterate them,
+        # beside the grouped keys existing cells already read.
+        result_dict = result.to_dict(densify=True)
         if is_programmatic_read() and not result_dict.get("error"):
             if target == "files":
                 result_dict.setdefault("files", [])
             elif target == "content" and output_mode == "content":
-                result_dict.setdefault("matches", [])
+                result_dict["matches"] = result.to_dict().get("matches", [])
 
         if omitted:
             result_dict["_omitted"] = (
@@ -1196,14 +1199,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             )
         elif target == "content" and offset == 0 and not is_programmatic_read():
             _note_search_complete(_get_file_ops(task_id), result, result_dict,
-                                  pattern=pattern, path=path, file_glob=file_glob, output_mode=output_mode)
+                                  pattern=pattern, path=path, file_glob=file_glob, output_mode=output_mode,
+                                  task_id=task_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
 
 
 def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, path: str,
-                          file_glob: str | None, output_mode: str) -> None:
+                          file_glob: str | None, output_mode: str, task_id: str) -> None:
     """State that a first-page, untruncated content search is the whole answer, and whether the
     hidden/gitignored files it skips hold more: in the live routing eval Opus re-ran every
     correct search with grep for exactly that reason. A warning means paths were skipped or
@@ -1228,6 +1232,8 @@ def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, 
     if everywhere is None:
         note += ". Hidden and gitignored files were not verified."
     else:
+        if any(get_read_block_error(_resolved_match_path(p, task_id)) for p in everywhere):
+            return  # same policy as the primary rows: an omitted match means no completeness claim
         skipped = sorted(p for p in everywhere if p not in visible)
         note += (" (hidden and gitignored files checked too, except dependency/build trees such as "
                  ".git, node_modules, .venv, build, dist, vendor): "

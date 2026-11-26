@@ -5,7 +5,8 @@
    prefix, does not end warming; real misses end it only on the second in a row.
 2. Under ``cache_ttl: auto`` a person's chat sends 5m markers until its 5m entry first expires and 1h
    from that request on, for the rest of the session; the tier never changes while the 5m entry is
-   still warm (a 1h request then re-writes the whole prompt), and idle keep-alives run on the 5m window.
+   still warm (a 1h request then re-writes the whole prompt; a keep-alive still in flight counts as a
+   touch), and idle keep-alives run on the 5m window.
 3. The route store learns a downgrade only from samples in two different sessions, never from an
    upstream switch, and never a lifetime shorter than the longest hit it ever saw.
 
@@ -190,6 +191,9 @@ def test_2_a_human_auto_chat_sends_5m_until_its_first_long_pause_then_1h_for_goo
     assert _markers(agent) == {"5m"}
     _respond(agent, _request("5m"), at=t0 + 240)
     assert not maybe_upgrade_cache_tier(agent, now=t0 + 240 + 299), "the TTL changed while the 5m entry was warm"
+    pcl.get_prompt_cache_warmer(agent).last_sent_at = t0 + 240 + 250  # a keep-alive whose reply is still due
+    assert not maybe_upgrade_cache_tier(agent, now=t0 + 240 + 301), "the TTL changed under an in-flight refresh"
+    pcl.get_prompt_cache_warmer(agent).last_sent_at = None
 
     assert maybe_upgrade_cache_tier(agent, now=t0 + 240 + 301)  # the first pause past five minutes
     assert _markers(agent) == {"1h"}

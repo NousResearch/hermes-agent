@@ -33,7 +33,6 @@ from agent.prompt_cache_lifecycle.replay import (
     replay_cap_honoured,
     replay_output_cap,
 )
-from agent.prompt_cache_lifecycle.tier import upgrade_at_compaction
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +173,9 @@ class PromptCacheWarmer:
         self._inactive_reason = "waiting for first request"
         self._logged_reason: Optional[str] = None
         self._last_decision: Optional[CacheWarmingDecision] = None
+        #: When the latest keep-alive went out, before its reply folds into the clock: a reply still in
+        #: flight renewed the entry, so the next message's tier check counts it as a touch.
+        self.last_sent_at: Optional[float] = None
         #: Set when a budget ended (keep-alives spent, or a miss) and carried to each later prompt of the
         #: same user turn; cleared by a new user message or a claim, never by a run ending. At most one
         #: compaction (``_compacted``) and one offload (``_offloaded``) per stretch.
@@ -359,7 +361,6 @@ class PromptCacheWarmer:
                 if releasing:
                     self.cancel("owner releasing the agent: compacting first")
                 self._spent, self._compacted = None, True
-                upgrade_at_compaction(self.agent)
             elif action == "offload":
                 self._offloaded = True
             return action
@@ -517,7 +518,7 @@ class PromptCacheWarmer:
         reserved = self._admit(run, decision)
         if reserved is None:
             return
-        sent_at = time.time()
+        sent_at = self.last_sent_at = time.time()
         try:
             message = self._send(run)
         except Exception as exc:  # health: allow BLE001 -- warming must never disturb the live turn; logged

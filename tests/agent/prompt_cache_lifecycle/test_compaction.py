@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import agent.prompt_cache_lifecycle as pcl
+from agent.prompt_cache_lifecycle.tier import maybe_upgrade_cache_tier
 from agent.prompt_cache_clock import record_attempt_sent, record_cache_response
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
 
@@ -84,10 +85,10 @@ def test_never_fires_on_small_contexts_or_machine_paced_sessions(monkeypatch, ca
     assert cache_expiry_compaction_due(agent, now=_SENT + 54 * 60) == (False, reason)
 
 
-def test_a_5m_window_compacts_when_its_keep_alives_end_and_an_auto_chat_moves_to_1h(tmp_path, monkeypatch):
+def test_a_5m_window_compacts_when_its_keep_alives_end_and_the_claim_keeps_the_tier(tmp_path, monkeypatch):
     """Nous Portal keeps 1h like Anthropic; a ``{nous: 5m}`` ceiling (or a 5m tier) compacts too once its
-    keep-alives stop covering the pause. The compacted prompt is written fresh, so an ``auto`` chat still
-    on 5m asks for 1h from there; a pinned 5m stays."""
+    keep-alives stop covering the pause. Claiming that compaction does not move an ``auto`` chat to 1h:
+    the next message does, once its 5m entry is gone."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     nous = {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"}
     agent = _spend_budget(_idle_chat(monkeypatch, **nous))
@@ -98,11 +99,13 @@ def test_a_5m_window_compacts_when_its_keep_alives_end_and_an_auto_chat_moves_to
     assert cache_expiry_compaction_due(agent, now=_SENT + 54 * 60) == (True, "due")
 
     five = {"ttl": "5m", "raw": {"input_tokens": 5, "output_tokens": 1, "cache_creation_input_tokens": 150_000}}
-    for adaptive, tier in ((True, "1h"), (False, "5m")):
-        agent = _spend_budget(_idle_chat(monkeypatch, **five), due_at=_SENT + 1000)
-        agent._cache_ttl_adaptive = adaptive
-        assert pcl.get_prompt_cache_warmer(agent).claim_edge(now=_SENT + 1000) == "compact"
-        assert agent._cache_ttl == tier
+    agent = _spend_budget(_idle_chat(monkeypatch, **five), due_at=_SENT + 280)
+    agent._cache_ttl_adaptive = agent._cache_ttl_auto = True
+    assert pcl.get_prompt_cache_warmer(agent).claim_edge(now=_SENT + 280) == "compact"
+    # The claim decides nothing about the tier: a compaction the owner then skips leaves the entry warm,
+    # and a return inside it must still read it on 5m.
+    assert agent._cache_ttl == "5m"
+    assert not maybe_upgrade_cache_tier(agent, now=_SENT + 290) and agent._cache_ttl == "5m"
 
 
 def test_one_hour_cache_write_is_billed_at_twice_input():

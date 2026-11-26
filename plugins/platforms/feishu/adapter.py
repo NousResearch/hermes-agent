@@ -204,6 +204,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_MERGE_FORWARD_MAX_CHILDREN = 50     # forwarded children rendered into text; the rest become "... (N more)"
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -2894,6 +2895,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
+        if raw_type == "merge_forward" and message_id:
+            text = await self._fetch_message_text(message_id) or text
         media_text_inlined: list[bool] = []
         inlined_parts: list[str] = []
         is_command = caption_is_command(_strip_edge_self_mentions(text, normalized.mentions))  # "@Hermes /goal x"
@@ -3209,6 +3212,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
             text = self._extract_text_from_raw_content(
                 msg_type=msg_type, raw_content=raw_content, mentions=parent_mentions,
             )
+            if msg_type == "merge_forward":
+                text = await self._render_merge_forward_children(message_id, items[1:]) or text
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
                 self._message_text_cache.popitem(last=False)
@@ -3216,6 +3221,30 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _render_merge_forward_children(self, message_id: str, children: Sequence[Any]) -> Optional[str]:
+        """Merge-forward events carry no children; GET im/v1/messages returns them after the container,
+        tagged upper_message_id=<container>. Expands one level (nested forwards stay a placeholder)."""
+        lines: list[str] = []
+        names: dict[str, Optional[str]] = {}  # failed lookups aren't cached upstream; ask once per sender
+        direct = [c for c in children if getattr(c, "upper_message_id", None) == message_id]
+        for child in direct[:_FEISHU_MERGE_FORWARD_MAX_CHILDREN]:
+            body = self._extract_text_from_raw_content(
+                msg_type=getattr(child, "msg_type", "") or "",
+                raw_content=getattr(getattr(child, "body", None), "content", "") or "",
+                mentions=getattr(child, "mentions", None),
+            )
+            if not body:
+                continue
+            sender = getattr(child, "sender", None)
+            sender_id = getattr(sender, "id", None) or ""
+            # An "app" sender's id is an app_id, which the bot-name API (open_id only) cannot resolve.
+            if sender_id not in names and getattr(sender, "sender_type", "") != "app":
+                names[sender_id] = await self._resolve_sender_name_from_api(sender_id)
+            lines.append(f"- {names.get(sender_id) or sender_id or 'unknown'}: {body}")
+        if len(direct) > _FEISHU_MERGE_FORWARD_MAX_CHILDREN:
+            lines.append(f"- ... ({len(direct) - _FEISHU_MERGE_FORWARD_MAX_CHILDREN} more)")
+        return "Forwarded chat history:\n" + "\n".join(lines) if lines else None
 
     def _extract_text_from_raw_content(
         self, *, msg_type: str, raw_content: str, mentions: Optional[Sequence[Any]] = None,

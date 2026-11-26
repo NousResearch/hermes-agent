@@ -396,6 +396,28 @@ export function useComposerSubmit({
     )
   }
 
+  // Submit this payload while the turn is live, under the "messages are never
+  // queued" policy. The payload rides the gateway's busy-submit path
+  // (prompt.submit on a running session): the gateway ends the live turn with
+  // its SOFT busy interrupt — one that preserves already-accepted steers and
+  // queued messages — admits this payload as the next turn, and drains it the
+  // moment the turn settles. Calling session.interrupt from here instead would
+  // HARD-stop the turn: that drops pending steers and wipes the session's
+  // queued prompts (the #86134 burst loss), so a send must never route through
+  // it. Compaction is the gateway's call: its busy path demotes the interrupt
+  // to queue under the compression lock.
+  const submitAsNextTurn = (text: string) => {
+    const submittedAttachments = cloneAttachments(attachments)
+    const retry = takeDraftRetry?.(text, submittedAttachments)
+    triggerHaptic('submit')
+    resetBrowseState(sessionId)
+    clearDraft()
+    // Keep blob: previews alive for the optimistic bubble; revoke when that
+    // consumer is discarded/replaced (not here — clear would race the clone).
+    scope.attachments.clear({ retainPreviewUrls: true })
+    dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
+  }
+
   // Returns false when the submit was refused and must not refocus the input.
   const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
     // Slash commands should execute immediately even while the agent is
@@ -427,11 +449,37 @@ export function useComposerSubmit({
       return true
     }
 
-    const retry = payloadPresent ? takeDraftRetry?.(text, cloneAttachments(attachments)) : undefined
+    // A file payload ALWAYS leaves the outbox. `submitAsNextTurn` takes the same draft retry and
+    // sends it as the same `submission_id`, so a stale retry must not park the message a second
+    // time — that is how a media follow-up ended up as "1 Queued" in the client and never reached
+    // the gateway (no inbound event, no busy interrupt, the turn ran to completion behind it).
+    // Text keeps its own routing below: a plain message steers the live turn.
+    if (attachments.length > 0) {
+      if (blockingPrompt) {
+        // A blocking card owns the turn, so a steer cannot reach the model: queue it for after.
+        const parkedRetry = takeDraftRetry?.(text, cloneAttachments(attachments))
+
+        if (parkedRetry) {
+          queueRetry(parkedRetry)
+        } else {
+          queueCurrentDraft()
+        }
+      } else {
+        submitAsNextTurn(text)
+      }
+
+      return true
+    }
+
+    const retry = takeDraftRetry?.(text, [])
 
     if (retry) {
       queueRetry(retry)
-    } else if (!blockingPrompt && !attachments.length && text.trim()) {
+    } else if (blockingPrompt && text.trim()) {
+      // A blocking card owns the turn: a steer cannot reach the model behind it. Queue as the next
+      // turn so the words are never lost and the card stays answerable.
+      queueCurrentDraft()
+    } else if (text.trim()) {
       // Busy Send follows the backend busy-input policy: interrupt redirects
       // the live turn (Cursor-style stop-and-correct), steer injects at the
       // next tool boundary, queue admits it as the next turn. If the turn
@@ -443,12 +491,6 @@ export function useComposerSubmit({
       } else if (busyInputMode !== null) {
         steerDraft(busyInputMode)
       }
-    } else if (payloadPresent) {
-      // Attachments can't ride a redirect (no tool-result image carriage) —
-      // queue the whole payload for the next turn. Same for a turn parked on
-      // an approval/sudo/secret prompt: a steer can't reach the model while
-      // the tool batch is blocked, so the message runs as the next turn.
-      queueCurrentDraft()
     } else {
       // Stop button (the only way to reach here while busy with an empty
       // composer — empty Enter is short-circuited in the keydown handler).

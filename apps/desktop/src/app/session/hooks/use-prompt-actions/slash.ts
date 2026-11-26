@@ -515,7 +515,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             storedSessionId,
             displayText,
             submission_id: submissionId,
-            destination
+            destination,
+            // The goal kickoff (and a skill dispatch) is the next turn, not a stray Enter:
+            // a busy session must not refuse it silently, or the goal never starts.
+            bypassBusyGate: true
           })
         }
 

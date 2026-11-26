@@ -137,14 +137,48 @@ def test_another_issuers_token_with_an_actor_stays_bound_to_its_login(gated, nou
     assert _gateway_socket_with(gated, token) == 4401
 
 
-def test_an_unreachable_portal_refuses_an_exchanged_token(gated, nous, portal_key, monkeypatch):
-    from hermes_cli.dashboard_auth import ProviderError
+def test_an_unreachable_portal_answers_503_not_a_logout(gated, nous, portal_key):
+    """When Portal's keys cannot be fetched the exchanged token is not let through, and the answer is
+    the outage 503 every other sign-in check gives: a 401 ``session_expired`` would send the hosted
+    page to sign in again, which cannot help."""
 
-    def unreachable(*, token, unverified_claims=None):
-        raise ProviderError("JWKS unreachable")
+    class UnreachableKeys:
+        def get_signing_key_from_jwt(self, _token):
+            raise OSError("connection refused")
 
-    monkeypatch.setattr(nous, "is_exchanged_token", unreachable)
-    _refused(gated.browser().get("/api/auth/me", headers=_bearer(_token(portal_key))))
+    nous._jwks_client = UnreachableKeys()
+    response = gated.browser().get("/api/auth/me", headers=_bearer(_token(portal_key)))
+    assert response.status_code == 503, response.text
+    assert _gateway_socket_with(gated, _token(portal_key)) is not None  # refused, not opened
+
+
+def test_a_provider_that_takes_only_the_token_is_asked_without_error(gated, portal_key):
+    """The hook is declared on the provider protocol as ``is_exchanged_token(*, token)``, saying no by
+    default. A third-party provider that implements just that signature is asked with just the token,
+    and one that does not implement it vouches for nothing."""
+    from hermes_cli.dashboard_auth import register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    asked = []
+
+    class OnlyToken(StubAuthProvider):
+        name = "only-token"
+        display_name = "Only token"
+
+        def is_exchanged_token(self, *, token):
+            asked.append(token)
+            return False
+
+    class Silent(StubAuthProvider):
+        name = "silent"
+        display_name = "Silent"
+
+    register_provider(OnlyToken())
+    register_provider(Silent())
+    token = _token(portal_key)
+    _refused(gated.browser().get("/api/auth/me", headers=_bearer(token)))
+    assert asked == [token]
+    assert Silent().is_exchanged_token(token=token) is False
 
 
 @pytest.mark.parametrize("addressed", ["another_issuer", "another_agent", "another_instance"])
@@ -184,8 +218,8 @@ def test_while_portals_keys_cannot_be_fetched_only_cached_keys_are_tried(gated, 
     monkeypatch.setattr(client, "fetch_data", unreachable)
     nous._jwks_client = client
     forged = _token(_key(), kid="unknown-kid")
-    for _ in range(3):
-        _refused(gated.browser().get("/api/auth/me", headers=_bearer(forged)))
+    for _ in range(3):  # an outage, not a refusal: 503, which never sends the page to sign in
+        assert gated.browser().get("/api/auth/me", headers=_bearer(forged)).status_code == 503
     assert len(fetches) == 1
 
     public = json.loads(RSAAlgorithm.to_jwk(portal_key.public_key()))

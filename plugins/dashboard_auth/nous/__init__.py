@@ -113,17 +113,18 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             raise InvalidCodeError(f"token does not grant {_SCOPE}")
         return claims
 
-    def is_exchanged_token(self, *, token: str, unverified_claims: Optional[dict[str, Any]] = None) -> bool:
+    def is_exchanged_token(self, *, token: str) -> bool:
         """Whether *token* is a dashboard token Portal minted for this agent by RFC 8693 token
         exchange: verified like any session token, and its claims name the client it was exchanged
         for (``act.sub``). The authorization-code grant a browser login uses never sets ``act``.
-        *unverified_claims* (the caller's decode, NOT verified) turns away a token whose issuer,
-        audience or agent instance is not this agent's before any signing key is looked up. A
-        ``ProviderError`` (JWKS unreachable) propagates."""
-        if unverified_claims is not None and not self._addressed_here(unverified_claims):
+        A token whose unverified issuer, audience or agent instance is not this agent's is turned
+        away before any signing key is looked up. A ``ProviderError`` (JWKS unreachable) propagates."""
+        if not self._addressed_here(_unverified_claims(token)):
             return False
         if time.monotonic() < self._exchange_keys_down_until and not self._key_cached(token):
-            return False
+            # Its key may be one Portal rotated in during the outage: not a refusal, but not worth
+            # another fetch that would block the listener either.
+            raise ProviderError("Portal signing keys unreachable; not fetching again yet")
         try:
             claims = self._claims_for(token)
         except InvalidCodeError:
@@ -196,6 +197,17 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         # Contract C4: no email / display_name in tokens.
         return session_from_claims(
             self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))
+
+
+def _unverified_claims(token: str) -> dict[str, Any]:
+    """*token*'s claims, decoded WITHOUT verification; ``{}`` when it is not a JWT. Only a pre-filter."""
+    import jwt  # lazy, as verify_jwt
+
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except (jwt.PyJWTError, RecursionError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 def _scopes(claims: dict[str, Any]) -> set[str]:

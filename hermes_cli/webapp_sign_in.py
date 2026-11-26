@@ -44,9 +44,10 @@ asymmetric algorithm is ever sent to a provider; a token of another shape (the p
 whose decoder skips characters it does not know) is never read as one, and the provider turns away
 a token whose unverified issuer, audience or agent instance is not its own before it looks up any
 signing key, so an anonymous caller cannot make the listener fetch keys for tokens addressed
-elsewhere. When the provider cannot be reached the token is refused, not let through, and for a
-while after it checks such tokens only against keys it already holds (the Nous provider's backoff),
-so the listener does not wait on an unreachable key endpoint once per request. The refresh route keeps :func:`token_works_alone`: an
+elsewhere. When the provider cannot be reached the request gets 503, as any other sign-in outage
+does (never let through, and never read as a logout), and for a while after it checks such tokens
+only against keys it already holds (the Nous provider's backoff), so the listener does not wait on
+an unreachable key endpoint once per request. The refresh route keeps :func:`token_works_alone`: an
 exchanged token is an access token, and the dashboard host exchanges again rather than refreshing here.
 """
 from __future__ import annotations
@@ -183,36 +184,40 @@ def reads_as_exchanged(token: str) -> bool:
 
 
 def is_exchanged_token(token: str) -> bool:
-    """Whether a registered provider that issues exchanged tokens verifies *token* as one: its
-    own token for this agent whose verified claims name an actor. Refused when no such provider
-    answers (an outage included). The provider gets the unverified claims too, to turn away a token
-    that is not addressed to it before it fetches any signing key. The hook a provider implements:
-    ``is_exchanged_token(*, token: str, unverified_claims: dict | None) -> bool``, raising
-    ``ProviderError`` when it cannot tell."""
-    claims = _unverified_exchange_claims(token)
-    if claims is None:
+    """Whether a registered provider verifies *token* as its own exchanged token for this agent
+    (``DashboardAuthProvider.is_exchanged_token``, which says no by default). Raises
+    ``ProviderError`` when no provider says yes and one could not tell (its keys cannot be
+    fetched), so the caller answers 503 rather than sending the browser to sign in again."""
+    if not reads_as_exchanged(token):
         return False
     from hermes_cli.dashboard_auth import ProviderError, list_session_providers
 
+    outage: Optional[ProviderError] = None
     for provider in list_session_providers():
         verdict = getattr(provider, "is_exchanged_token", None)
-        if not callable(verdict):
+        if not callable(verdict):  # a provider object that does not subclass the protocol
             continue
         try:
-            if verdict(token=token, unverified_claims=claims):
+            if verdict(token=token):
                 return True
         except ProviderError as exc:
             _log.warning("Could not check an exchanged token with provider %r: %s", provider.name, exc)
+            outage = outage or exc
+    if outage is not None:
+        raise outage
     return False
 
 
-def access_token_works_alone(request: Request, token: str) -> bool:
+def access_token_works_alone(request: Request, token: str, *, exchanged: bool = True) -> bool:
     """Whether *token* may be used on its own as an access token (a bearer header, a socket's
     ``?token=``): as :func:`token_works_alone` (looked up at call time, so a patch of it applies), when
     it is an exchanged token (:func:`is_exchanged_token`), which the providers then verify, or when it
-    is the deployment session token the registered session-token provider holds. The refresh route
-    keeps :func:`token_works_alone`: neither of those has a refresh."""
-    return token_works_alone(request, token) or is_exchanged_token(token) or _is_deployment_token(token)
+    is the deployment session token the registered session-token provider holds. ``exchanged=False``
+    skips the exchanged-token check, for a place only the deployment token can open. Raises
+    ``ProviderError`` when an exchanged-shaped token cannot be checked (a Portal outage). The refresh
+    route keeps :func:`token_works_alone`: neither of those has a refresh."""
+    return (token_works_alone(request, token) or (exchanged and is_exchanged_token(token))
+            or _is_deployment_token(token))
 
 
 def _is_deployment_token(token: str) -> bool:

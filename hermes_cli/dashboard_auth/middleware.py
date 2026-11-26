@@ -201,7 +201,10 @@ def peek_session(request: Request):
     decide how much to show; an expired or unverifiable session reads as signed out."""
     bearer = _extract_bearer(request)
     if bearer:
-        if not webapp_sign_in.access_token_works_alone(request, bearer):
+        try:
+            if not webapp_sign_in.access_token_works_alone(request, bearer):
+                return None
+        except ProviderError:
             return None
         access_token, provider_hint = bearer, None
     else:
@@ -266,7 +269,11 @@ async def _serve_bearer(request: Request, call_next: Callable[[Request], Awaitab
                         bearer: str, cookie_logout: bool) -> Response:
     if cookie_logout:
         return await call_next(request)
-    if not webapp_sign_in.access_token_works_alone(request, bearer):
+    try:
+        works_alone = webapp_sign_in.access_token_works_alone(request, bearer)
+    except ProviderError as e:  # Portal could not check an exchanged token: an outage, not a logout
+        return unreachable_response(str(e))
+    if not works_alone:
         return _unauth_response(request, reason="invalid_or_expired_session")
     try:
         bearer_session = _verify_access_token(request, access_token=bearer, audit=False)

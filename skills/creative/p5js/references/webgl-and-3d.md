@@ -151,7 +151,7 @@ function setupLighting() {
 ## Materials
 
 ```javascript
-// Normal material (debug — colors from surface normals)
+// Normal material (debug: colors from surface normals)
 normalMaterial();
 
 // Ambient (responds only to ambientLight)
@@ -292,7 +292,7 @@ function draw() {
 
 ### createFilterShader (Post-Processing)
 
-Simpler — only needs a fragment shader. Automatically gets the canvas as a texture.
+Simpler: only needs a fragment shader. Automatically gets the canvas as a texture.
 
 ```javascript
 let blurShader;

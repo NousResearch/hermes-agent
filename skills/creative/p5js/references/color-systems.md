@@ -262,12 +262,12 @@ const CLAY     = ['#3b2f2f', '#6b4c4c', '#9e7676', '#c9a0a0', '#e8caca'];
 ## Blend Modes
 
 ```javascript
-blendMode(BLEND);       // default — alpha compositing
-blendMode(ADD);         // additive — bright glow effects
-blendMode(MULTIPLY);    // darkening — shadows, texture overlay
-blendMode(SCREEN);      // lightening — soft glow
-blendMode(OVERLAY);     // contrast boost — high/low emphasis
-blendMode(DIFFERENCE);  // color subtraction — psychedelic
+blendMode(BLEND);       // default: alpha compositing
+blendMode(ADD);         // additive: bright glow effects
+blendMode(MULTIPLY);    // darkening: shadows, texture overlay
+blendMode(SCREEN);      // lightening: soft glow
+blendMode(OVERLAY);     // contrast boost: high/low emphasis
+blendMode(DIFFERENCE);  // color subtraction: psychedelic
 blendMode(EXCLUSION);   // softer difference
 blendMode(REPLACE);     // overwrite (no alpha blending)
 blendMode(REMOVE);      // subtract alpha

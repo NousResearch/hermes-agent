@@ -22,7 +22,7 @@ arc(x, y, w, h, start, stop, mode);  // mode: OPEN, CHORD, PIE
 rectMode(CENTER);   // x,y is center (default: CORNER)
 rectMode(CORNERS);  // x1,y1 to x2,y2
 ellipseMode(CORNER); // x,y is top-left corner
-ellipseMode(CENTER); // default — x,y is center
+ellipseMode(CENTER); // default: x,y is center
 ```
 
 ## Stroke and Fill
@@ -132,7 +132,7 @@ curve(cpx1, cpy1, x1, y1, x2, y2, cpx2, cpy2);
 // x2,y2 = end point (visible)
 // cpx2,cpy2 = control point after end
 
-curveVertex(x, y);  // in beginShape() — smooth curve through all points
+curveVertex(x, y);  // in beginShape(): smooth curve through all points
 curveTightness(0);  // 0 = Catmull-Rom, 1 = straight lines, -1 = loose
 ```
 
@@ -281,7 +281,7 @@ function blob(cx, cy, baseR, noiseScale, noiseOffset, detail = 64) {
 ## Clipping and Masking
 
 ```javascript
-// Clip shape — everything drawn after is masked by the clip shape
+// Clip shape: everything drawn after is masked by the clip shape
 beginClip();
   circle(width/2, height/2, 400);
 endClip();
@@ -293,7 +293,7 @@ clip(() => {
   circle(width/2, height/2, 400);
 });
 
-// Erase mode — cut holes
+// Erase mode: cut holes
 erase();
   circle(mouseX, mouseY, 100);  // this area becomes transparent
 noErase();

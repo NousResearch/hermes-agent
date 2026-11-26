@@ -35,7 +35,7 @@ group = Group(circle, Text("Label"))
 # RIGHT: VGroup is fine for shapes-only
 shapes = VGroup(circle, square, arrow)
 
-# RIGHT: MathTex IS a VMobject — VGroup works
+# RIGHT: MathTex IS a VMobject: VGroup works
 equations = VGroup(MathTex(r"a"), MathTex(r"b"))
 ```
 

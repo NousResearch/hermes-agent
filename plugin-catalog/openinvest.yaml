@@ -1,6 +1,6 @@
 name: openinvest
 repo: https://github.com/longsizhuo/openInvest
-sha: 95a516deb294a67ff60942eb1768edbb105020db
+sha: 8083a1d97e26c9c089fd931102a2ec2f226b5890
 subdir: plugin
 description: 'Portfolio ledger, market data and Agent-run investment research. Keep
   one openInvest entry: new users can connect to the official OAuth MCP; local deployment

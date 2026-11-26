@@ -3,9 +3,12 @@ cron lifecycle_guard) that false-positive on heredoc *bodies*. Stripping every b
 other way (a fake ``<<`` in quotes can swallow an operator; unquoted bodies expand; ``bash <<'EOF'``
 executes), so a body is masked ONLY when every delimiter is quoted, every heredoc has an exact
 terminator line, the simple command that owns the heredoc (after env assignments, bare ``env`` and
-value-only wrappers like ``timeout 600``) is an allowlisted non-shell interpreter, and every command
-its output is piped into is a known text filter (``| grep``, never ``| bash``). Otherwise the body is
-left untouched: a false positive is acceptable, hiding shell syntax from a guard is not.
+value-only wrappers like ``timeout 600``) is an allowlisted non-shell interpreter, nothing but pipes
+follows the heredoc on its line, and every command those pipes feed is a known text filter named
+bare (``| grep``, never ``| bash`` or ``| ./grep``). Any ``;``/``&&``/``||``/``&`` after the heredoc
+keeps it visible, since a later command may run what the first one wrote (``cat > f; bash "$f"``).
+Otherwise the body is left untouched: a false positive is acceptable, hiding shell syntax from a
+guard is not.
 Masked bodies keep their newline count (re.MULTILINE)."""
 
 from __future__ import annotations
@@ -36,8 +39,8 @@ _STRICT_INERT_HEREDOC_CONSUMER_RE = re.compile(_CONSUMER_PREFIX + r"cat(?=\s|$)"
 # print or count text and have no option that runs a command. Anything else downstream (``| bash``,
 # ``| xargs sh``, ``| tee run.sh``) keeps the body visible; so do ``sort --compress-program=sh``,
 # ``rg --pre CMD`` and the ``!cmd`` escapes of ``less``/``more``, which is why those are not listed.
-_PIPE_FILTER_RE = re.compile(
-    r"^\s*(?:[A-Za-z0-9_./-]+/)?(?:grep|egrep|fgrep|head|tail|uniq|wc|cut|tr|column|jq|cat)(?=\s|$)")
+# Bare names only: a path-qualified ``./grep`` is whatever that file is.
+_PIPE_FILTER_RE = re.compile(r"^\s*(?:grep|egrep|fgrep|head|tail|uniq|wc|cut|tr|column|jq|cat)(?=\s|$)")
 # The subset whose body is pure data (written out, never interpreted): `cat` only.
 _DATA_HEREDOC_CONSUMER_RE = _STRICT_INERT_HEREDOC_CONSUMER_RE
 
@@ -190,25 +193,19 @@ def _scan_heredoc_command_unit(command: str, start: int):
 
 
 def _heredoc_feeds_only_inert_owner(
-        command: str, start: int, end: int, opener_index: int,
+        command: str, start: int, end: int, first_opener: int,
         operators: list[tuple[int, str]], consumer_re: re.Pattern) -> bool:
-    """Whether the simple command owning the heredoc at ``opener_index`` is an allowlisted
-    consumer and its stdout is piped only into text filters. A heredoc is consumed by the command
-    it is attached to; ``;``/``&&``/``||``/``&`` start an unrelated command, so only a pipe can
-    carry anything derived from the body into another command."""
-    bounds = [start] + [i for i, _op in operators] + [end]
-    ends = [i + len(op) for i, op in operators]
-    segment = next(k for k in range(len(bounds) - 1) if bounds[k] <= opener_index < bounds[k + 1])
-    owner_from = start if segment == 0 else ends[segment - 1]
-    if not consumer_re.search(_mask_simple_quotes(command[owner_from:bounds[segment + 1]])):
+    """Whether the simple command owning the line's first heredoc is an allowlisted consumer and
+    everything after it on the line is ``|``-piped text filters. One pass over the operators."""
+    before = [i + len(op) for i, op in operators if i < first_opener]
+    after = [(i, op) for i, op in operators if i > first_opener]
+    if any(op not in ("|", "|&") for _i, op in after):
         return False
-    for k in range(segment, len(operators)):
-        if operators[k][1] not in ("|", "|&"):
-            break
-        downstream = _mask_simple_quotes(command[ends[k]:bounds[k + 2]])
-        if not _PIPE_FILTER_RE.search(downstream):
-            return False
-    return True
+    bounds = [i for i, _op in after] + [end]
+    if not consumer_re.search(_mask_simple_quotes(command[before[-1] if before else start:bounds[0]])):
+        return False
+    return all(_PIPE_FILTER_RE.search(_mask_simple_quotes(command[i + len(op):bounds[k + 1]]))
+               for k, (i, op) in enumerate(after))
 
 
 def _find_heredoc_close(
@@ -292,10 +289,8 @@ def _inert_heredoc_body_ranges(
         if all(quoted for _delimiter, _strip_tabs, quoted, _opener in specs) and not any(
             marker in masked_opener for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")
         ):
-            ranges.extend(
-                (body_start, body_end) for body_start, body_end, opener_index in body_ranges
-                if _heredoc_feeds_only_inert_owner(
-                    command, command_start, command_end, opener_index, operators, consumer_re))
+            if _heredoc_feeds_only_inert_owner(command, command_start, command_end, specs[0][3], operators, consumer_re):
+                ranges.extend((body_start, body_end) for body_start, body_end, _opener in body_ranges)
         command_start = body_cursor
     return ranges
 

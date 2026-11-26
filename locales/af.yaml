@@ -3337,6 +3337,7 @@ cli:
     removed: "➖ Verwyder: {names}"
     tools_available: "🔧 {tools} gereedskap beskikbaar van {servers} bediener(s)"
     agent_updated: "✅ Agent opgedateer — {count} gereedskap beskikbaar"
+    registry_updated: "✅ MCP-register opgedateer — {count} MCP-gereedskap beskikbaar; in die ry vir volgende agent-inisialisering"
   reload_skills:
     reloading: "🔄 Herlaai vaardighede..."
     total: "📚 {count} vaardigheid(e) beskikbaar"

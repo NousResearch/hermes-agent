@@ -3354,6 +3354,7 @@ cli:
     removed: "➖ Eltávolítva: {names}"
     tools_available: "🔧 {tools} eszköz érhető el {servers} szerverről"
     agent_updated: "✅ Ügynök frissítve — {count} eszköz érhető el"
+    registry_updated: "✅ MCP-nyilvántartás frissítve — {count} MCP-eszköz érhető el; várólistán a következő ügynök-inicializáláshoz"
   reload_skills:
     reloading: "🔄 Skillek újratöltése..."
     total: "📚 {count} skill érhető el"

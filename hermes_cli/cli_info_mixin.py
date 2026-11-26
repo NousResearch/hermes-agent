@@ -1022,25 +1022,25 @@ class CLIInfoMixin:
             else:
                 print(f"  {t('cli.reload_mcp.tools_available', tools=str(len(new_tools)), servers=str(len(connected_servers)))}")
 
+            # Pick up servers ENABLED in config this session: enabled_toolsets was resolved at
+            # startup, so merge now-connected names in (unless `all`/`*` is pinned) so a
+            # freshly-added server isn't filtered out — even before the first agent is built.
+            enabled_override = None
+            et = self.enabled_toolsets
+            if et and "all" not in et and "*" not in et:
+                merged = list(et)
+                for _name in sorted(connected_servers):
+                    if _name not in merged:
+                        merged.append(_name)
+                enabled_override = merged
+                self.enabled_toolsets = enabled_override
+
             # Route through the shared helper so this path stays in lockstep with the TUI RPC /
             # gateway reload / late-binding paths (name-diff, thread-safe, additive-preserving so
             # memory-provider and context-engine tools survive the rebuild).
             if self.agent is not None:
                 from tools.mcp_tool_agent import refresh_agent_mcp_tools
-                # Pick up servers ENABLED in config this session: enabled_toolsets was resolved at
-                # startup, so merge now-connected names in (unless `all`/`*` is pinned) so a
-                # freshly-added server isn't filtered out. Mirrors startup (see __init__).
-                enabled_override = None
-                et = self.enabled_toolsets
-                if et and "all" not in et and "*" not in et:
-                    merged = list(et)
-                    for _name in sorted(connected_servers):
-                        if _name not in merged:
-                            merged.append(_name)
-                    enabled_override = merged
                 refresh_agent_mcp_tools(self.agent, enabled_override=enabled_override, quiet_mode=True)
-                if enabled_override is not None:
-                    self.enabled_toolsets = enabled_override
 
             # Tell the model tools changed — appended at the END so the prefix cache survives.
             change_parts = [
@@ -1060,7 +1060,10 @@ class CLIInfoMixin:
                 except Exception:
                     pass
 
-            print(f"  {t('cli.reload_mcp.agent_updated', count=str(len(self.agent.tools if self.agent else [])))}")
+            if self.agent is not None:
+                print(f"  {t('cli.reload_mcp.agent_updated', count=str(len(self.agent.tools or [])))}")
+            else:
+                print(f"  {t('cli.reload_mcp.registry_updated', count=str(len(new_tools)))}")
         except Exception as e:
             print(f"  {t('gateway.reload_mcp.failed', error=str(e))}")
 

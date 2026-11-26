@@ -3337,6 +3337,7 @@ cli:
     removed: "➖ أُزيل: {names}"
     tools_available: "🔧 {tools} أداة متاحة من {servers} خادم"
     agent_updated: "✅ تم تحديث الوكيل — {count} أداة متاحة"
+    registry_updated: "✅ تم تحديث سجل MCP — {count} أداة MCP متاحة؛ في الانتظار للتهيئة التالية للوكيل"
   reload_skills:
     reloading: "🔄 جارٍ إعادة تحميل المهارات..."
     total: "📚 {count} مهارة متاحة"

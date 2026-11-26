@@ -3337,6 +3337,7 @@ cli:
     removed: "➖ Удалено: {names}"
     tools_available: "🔧 Доступно инструментов: {tools}, серверов: {servers}"
     agent_updated: "✅ Агент обновлён — доступно инструментов: {count}"
+    registry_updated: "✅ Реестр MCP обновлён — доступно MCP-инструментов: {count}; добавлено в очередь для следующей инициализации агента"
   reload_skills:
     reloading: "🔄 Перезагрузка навыков..."
     total: "📚 Доступно навыков: {count}"

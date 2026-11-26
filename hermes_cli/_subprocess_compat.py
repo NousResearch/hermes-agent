@@ -351,13 +351,18 @@ def _git_usable(env: Mapping[str, str] | None = None) -> bool:
     return True if resolver is None else resolver.resolve_usable_git(env) is not None
 
 
-def _git_argv0_unusable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> bool:
+def _git_argv0_unusable(
+    argv: Sequence[str],
+    env: Mapping[str, str] | None = None,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+) -> bool:
     if not argv:
         return False
     resolver = _git_resolver()
     if resolver is None:
         return False
-    return resolver.is_git_command(argv[0]) and not resolver.is_usable_git_command(argv[0], env)
+    return resolver.is_git_command(argv[0], cwd=cwd) and not resolver.is_usable_git_command(argv[0], env, cwd=cwd)
 
 
 def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
@@ -899,7 +904,7 @@ def bounded_probe_run(
     ``Get-CimInstance Win32_Process`` gateway scan hit exactly this during ``hermes update`` on slow-WMI
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
-    if _git_argv0_unusable(argv, env):
+    if _git_argv0_unusable(argv, env, cwd=cwd):
         if raise_on_spawn_failure:
             raise FileNotFoundError(errno.ENOENT, "git is unavailable", os.fspath(argv[0]))
         return None

@@ -391,6 +391,31 @@ def test_clt_stub_refuses_review_revert(tmp_path, clt_stub_env):
 
 
 @pytest.mark.platforms("posix")
+def test_relative_path_entry_is_resolved_against_child_cwd(tmp_path, clt_stub_env, monkeypatch):
+    from hermes_cli import web_git
+
+    trap_bin, _trap_git, spawn_log = clt_stub_env
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    child.mkdir()
+    _make_exe(parent / "bin" / "git", "#!/usr/bin/env bash\necho parent-ok\n")
+    monkeypatch.chdir(parent)
+    env = {"PATH": f"bin{os.pathsep}{trap_bin}"}
+
+    assert _subprocess_compat.bounded_probe_run(["git", "status"], timeout=5, env=env, cwd=child) is None
+    assert web_git._run(["git", "status"], str(child), 5, env) is None
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+    _make_exe(child / "bin" / "git", "#!/usr/bin/env bash\necho child-ok\n")
+    child_only_parent = tmp_path / "empty_parent"
+    child_only_parent.mkdir()
+    monkeypatch.chdir(child_only_parent)
+    proc = _subprocess_compat.bounded_probe_run(["git", "status"], timeout=5, env=env, cwd=child)
+    assert proc is not None and proc.returncode == 0 and proc.stdout.strip() == "child-ok"
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

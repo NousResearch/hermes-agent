@@ -40,8 +40,8 @@ from hermes_cli.plugins_manifest import (
 )
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
-    discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
-    scan_directory,
+    directory_entrypoint_precedence, discover_entrypoint_manifests, gate_manifest,
+    plugin_discovery_suppressed, resolve_manifest_winners, scan_directory,
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
@@ -528,11 +528,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         manifests: list[PluginManifest] = self._collect_directory_manifests()
         # Entry points are separate from the directory scan: the startup MCP probe must not import
         # or register them.
-        # An installed directory plugin keeps its identity when its own pip dependency also ships an
-        # entry point under the same name (the pyproject wrapper shape): the directory is what the
-        # user installed, carries catalog provenance and is what update/remove act on.
-        directory_keys = {manifest_key(m) for m in manifests}
-        ep_manifests = [m for m in self._scan_entry_points() if manifest_key(m) not in directory_keys]
+        # A directory key wins over the same entry-point key. A nested user or
+        # project manifest is keyed ``cat/name``, so its name drops that alias
+        # unless the directory plugin is disabled.
+        directory_keys, directory_names = directory_entrypoint_precedence(manifests)
+        ep_manifests = [
+            m for m in self._scan_entry_points()
+            if manifest_key(m) not in directory_keys and m.name not in directory_names
+        ]
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
         disabled = _get_disabled_plugins()

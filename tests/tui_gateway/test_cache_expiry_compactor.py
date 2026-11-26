@@ -345,3 +345,76 @@ def test_a_reaper_close_of_a_chat_queued_behind_busy_slots_waits_for_its_compact
     assert [c["trigger"] for c in agent.calls] == ["cache_expiry"]
     assert order == [("closed", 2)]  # compacted first, then closed
     assert agent._prompt_cache_warmer.claims == [False]  # the queued claim stands; no second claim
+
+
+def test_a_reap_between_the_claim_and_the_queued_job_waits_behind_it(server, monkeypatch):
+    """The tick claims a session's edge, then a reaper runs before the job is queued: the claim is
+    already in flight, so the release waits behind the job instead of closing the session under it."""
+    session = _session(_Agent())
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+    monkeypatch.setattr(server, "_cache_expiry_in_flight", set())
+    monkeypatch.setattr(server, "_cache_expiry_after", {})
+    monkeypatch.setattr(server, "_cache_expiry_releasing", set())
+    closed = []
+    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: closed.append(sid) or True)
+
+    (picked,) = server._cache_expiry_candidates()  # claimed; the tick has not queued its job yet
+    assert picked[0] == "s" and "s" in server._cache_expiry_in_flight
+    waiter = server._compact_then_close("s", session, end_reason="idle")
+    assert waiter is not None and closed == []
+    server._cache_expiry_job("s", session, picked[2])
+    waiter.result(timeout=10)
+    assert closed == ["s"] and session["agent"].calls, "the claimed compaction ran before the close"
+
+
+def test_a_reap_while_the_ticker_is_inside_its_claim_waits_behind_the_job(server, monkeypatch):
+    """Greptile: the ticker can pause inside ``claim_edge`` itself. The edge is reserved before the claim,
+    so a reaper running then waits behind the job, and its own claim is never tried."""
+    monkeypatch.setattr(server, "_cache_expiry_in_flight", set())
+    monkeypatch.setattr(server, "_cache_expiry_after", {})
+    monkeypatch.setattr(server, "_cache_expiry_releasing", set())
+    closed, waiter = [], []
+    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: closed.append(sid) or True)
+    agent = _Agent()
+    session = _session(agent)
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+    agent._prompt_cache_warmer.on_claim = lambda: waiter.append(
+        server._compact_then_close("s", session, end_reason="idle"))  # the reaper, mid-claim
+
+    (picked,) = server._cache_expiry_candidates()
+    assert closed == [] and waiter[0] is not None
+    assert agent._prompt_cache_warmer.claims == [False], "the reaper claimed too"
+    server._cache_expiry_job("s", session, picked[2])
+    waiter[0].result(timeout=10)
+    assert agent.calls and closed == ["s"] and server._cache_expiry_in_flight == set()
+
+
+def test_a_claim_that_answers_nothing_leaves_the_edge_free(server, monkeypatch):
+    monkeypatch.setattr(server, "_cache_expiry_in_flight", set())
+    agent = _Agent(action=None)
+    monkeypatch.setattr(server, "_sessions", {"s": _session(agent)})
+    assert server._cache_expiry_candidates() == []
+    assert server._cache_expiry_in_flight == set()
+    assert server._compact_then_close("s", _session(agent), end_reason="idle") is None
+    assert server._cache_expiry_in_flight == set()
+    agent._prompt_cache_warmer.action = "compact"  # the edge comes due later: the next tick still claims it
+    assert [(sid, action) for sid, _s, action in server._cache_expiry_candidates()] == [("s", "compact")]
+
+
+def test_a_tick_while_a_reaper_is_inside_its_release_claim_leaves_the_edge_to_it(server, monkeypatch):
+    """The mirror case: the reaper reserves before its own ``claim_edge(releasing=True)``, so a tick
+    running meanwhile skips the session instead of claiming the same edge twice."""
+    monkeypatch.setattr(server, "_cache_expiry_in_flight", set())
+    monkeypatch.setattr(server, "_cache_expiry_after", {})
+    monkeypatch.setattr(server, "_cache_expiry_releasing", set())
+    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: True)
+    agent = _Agent()
+    session = _session(agent)
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+    ticked = []
+    agent._prompt_cache_warmer.on_claim = lambda: ticked.extend(server._cache_expiry_candidates())
+
+    job = server._compact_then_close("s", session, end_reason="idle")
+    assert job is not None and ticked == []
+    assert agent._prompt_cache_warmer.claims == [True], "the tick claimed the reaper's edge too"
+    job.result(timeout=10)

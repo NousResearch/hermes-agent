@@ -11,6 +11,7 @@ import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
+import { $connection } from '@/store/session'
 
 /** What the Electron main process said about this target's LOCAL filesystem
  * state (#101683). `null` keeps the stock card — remote-backend targets keep
@@ -214,7 +215,14 @@ export function PreviewAttachment({ target }: { target: string }) {
       const result = await downloadGatewayMediaFile(
         target,
         ownerScope
-          ? { owner: { connectionId: ownerScope.connectionId, profile: ownerScope.profile }, sessionId }
+          ? {
+              owner: {
+                // A profile-only scope means the ambient connection, as in media playback.
+                connectionId: ownerScope.connectionId || $connection.get()?.connectionId,
+                profile: ownerScope.profile
+              },
+              sessionId
+            }
           : undefined
       )
 

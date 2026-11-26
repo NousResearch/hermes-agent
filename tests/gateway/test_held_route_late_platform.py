@@ -158,3 +158,71 @@ def test_a_route_broken_another_way_is_not_held_and_the_mirror_copy_recovers_it(
             assert restarted._entries[key].session_id == "sid-ok"
             restarted._save()
         assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["updated_at"] != "not-a-date"
+
+
+def _seed_held(tmp_path, db, *, turn_active=False):
+    """A saved yuanbao route (as a run with the plugin wrote it), plus a live telegram one, in a fresh store."""
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    Platform._add_pseudo_member("yuanbao")
+    try:
+        entry = store.get_or_create_session(_yb_source())
+        if turn_active:
+            assert store.mark_turn_active(entry.session_key)
+    finally:
+        _unregister("yuanbao")
+    store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t1"))
+    return store, entry.session_key
+
+
+def test_a_fallback_full_write_keeps_the_held_route(tmp_path, monkeypatch):
+    """A turn-marker write whose single-row upsert fails falls back to a full rewrite: held rows go with it."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store, key = _seed_held(tmp_path, db)
+        restarted = SessionStore(store.sessions_dir, GatewayConfig())
+        live = restarted.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t1"))
+
+        def _fail(*_a, **_k):
+            raise RuntimeError("disk I/O error")
+        monkeypatch.setattr(type(db.routing), "upsert_routing_entry", _fail)
+        assert restarted.mark_turn_active(live.session_key)
+        assert key in db.routing.load_routing_entries(routing_scope=restarted._routing_scope())
+
+
+def test_a_route_held_after_a_recovered_db_load_survives_the_next_save(tmp_path, monkeypatch):
+    """state.db cannot be read at startup and recovers later: its unregistered-platform rows are held then too,
+    and that newer copy wins over the mirror's older one."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store, key = _seed_held(tmp_path, db)
+        scope = store._routing_scope()
+        newer = json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])
+        mirror = store.sessions_dir / "sessions.json"
+        data = json.loads(mirror.read_text(encoding="utf-8")) if mirror.exists() else {}
+        data[key] = {**newer, "session_id": "sid-old"}  # an older mirror copy
+        mirror.write_text(json.dumps(data), encoding="utf-8")
+        real_load, calls = type(db.routing).load_routing_entries, []
+
+        def _first_fails(self, *a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("database is locked")
+            return real_load(self, *a, **k)
+        monkeypatch.setattr(type(db.routing), "load_routing_entries", _first_fails)
+        restarted = SessionStore(store.sessions_dir, GatewayConfig())
+        restarted.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="t2"))  # full save
+        monkeypatch.setattr(type(db.routing), "load_routing_entries", real_load)
+        row = db.routing.load_routing_entries(routing_scope=scope)[key]
+        assert json.loads(row)["session_id"] == newer["session_id"]
+
+
+def test_a_clean_startup_clears_a_held_route_s_turn_marker_on_disk(tmp_path):
+    """The clean-shutdown receipt is consumed right after the discard: a held row's stale marker must be gone
+    from state.db then, or a crash before the plugin registers resumes a turn that had finished."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store, key = _seed_held(tmp_path, db, turn_active=True)
+        restarted = SessionStore(store.sessions_dir, GatewayConfig())
+        assert restarted.discard_active_turn_markers() >= 1
+        row = json.loads(db.routing.load_routing_entries(routing_scope=restarted._routing_scope())[key])
+        assert (row["origin"]["platform"], row["active_turn_token"]) == ("yuanbao", None)

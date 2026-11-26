@@ -119,13 +119,17 @@ class GatewayTurnPersistenceMixin:
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
-        _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up, or a message not addressed to the bot, may go
         # silent; any other human one must not.
-        from gateway.response_filters import is_machinery_display_kind, strip_trailing_silence_marker
+        from gateway.response_filters import (
+            is_machinery_display_kind, is_silent_notification_result, strip_trailing_silence_marker,
+        )
         from gateway.run_turn import _unexpected_silence_reply
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        _is_machinery = is_machinery_display_kind(_silence_kind)
+        _intentional_silence = (is_silent_notification_result(agent_result) if _is_machinery
+                                else self._is_intentional_silence(agent_result, response))
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
         _silence_source = agent_result.get("queued_terminal_source", source)
         # A bot peer expects no reply even when it addressed us (a DM, a mention): its message may end
@@ -141,7 +145,7 @@ class GatewayTurnPersistenceMixin:
             )
             _intentional_silence = False
             response = _unexpected_silence_reply()
-        elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        elif _intentional_silence and not _is_machinery:
             logger.debug(
                 "silence marker suppressed on an unaddressed or opted-in turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",

@@ -26,7 +26,8 @@ export interface GatewayEventDeps {
     responseTransformed?: boolean,
     status?: string,
     responseReused?: boolean,
-    failureReason?: string
+    failureReason?: string,
+    silent?: boolean
   ) => void
   failAssistantMessage: (
     sessionId: string,

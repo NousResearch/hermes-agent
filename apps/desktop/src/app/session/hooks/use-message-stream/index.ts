@@ -830,7 +830,8 @@ export function useMessageStream({
       responseTransformed?: boolean,
       status?: string,
       responseReused?: boolean,
-      failureReason?: string
+      failureReason?: string,
+      silent?: boolean
     ) => {
       let shouldHydrate = false
 
@@ -1221,12 +1222,14 @@ export function useMessageStream({
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      dispatchNativeNotification({
-        body: turnDoneNotificationBody(text, translateNow('notifications.native.turnDoneBody')),
-        kind: 'turnDone',
-        sessionId,
-        title: translateNow('notifications.native.turnDoneTitle')
-      })
+      if (!silent) {
+        dispatchNativeNotification({
+          body: turnDoneNotificationBody(text, translateNow('notifications.native.turnDoneBody')),
+          kind: 'turnDone',
+          sessionId,
+          title: translateNow('notifications.native.turnDoneTitle')
+        })
+      }
     },
     [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )

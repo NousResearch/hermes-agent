@@ -44,6 +44,10 @@ MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUC
 # Loop exit the agent stamps when a machinery turn ends with the model adding nothing
 # (agent/turn_empty_response.py NOTIFICATION_NO_REPLY_EXIT mirrors this; agent/ cannot import gateway/).
 NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
+PROCESS_NOTIFICATION_SILENCE_HINT = (
+    "If nothing in this result needs the user's attention, reply with exactly [SILENT] and nothing will be shown."
+)
+PROCESS_NOTICE_TYPES = frozenset({"completion", "heartbeat", "watch_match"})
 # What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
 # receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
 # nameable; never a client-chosen presentation such as ``hidden``.
@@ -175,6 +179,11 @@ class SilenceMarkerStreamHold:
             return ""
         return self._release(len(strip_trailing_silence_marker(self._buf)))
 
+    def end_segment(self) -> str:
+        rest = self.finish()
+        self._buf, self._sent = "", 0
+        return rest
+
     def _release(self, upto: int) -> str:
         if upto <= self._sent:
             return ""
@@ -295,6 +304,14 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
     return agent_result.get("turn_exit_reason") == NOTIFICATION_NO_REPLY_EXIT and not (
         isinstance(response, str) and response.strip()
     )
+
+
+def is_silent_notification_result(result: Any) -> bool:
+    """A successful notification turn explicitly ended without a user-facing reply."""
+    return (isinstance(result, dict)
+            and not any(result.get(key) for key in ("failed", "error", "interrupted", "partial"))
+            and result.get("completed") is not False
+            and is_intentional_silence_agent_result(result, result.get("final_response")))
 
 
 def display_kind_for_event(event: Any) -> str | None:

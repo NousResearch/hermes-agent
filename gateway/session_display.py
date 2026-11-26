@@ -8,8 +8,14 @@ was admitted, and bound to that admission's own event, never to a later turn on 
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
+import logging
 
-from persistence.core.errors import AuthorityRefusal
+from agent.agent_init_session import agent_interface
+from agent.persisted_turn_receipt import committed_row_id
+from gateway.response_filters import is_intentional_silence_response
+from persistence.core.errors import STORE_FAILURES, AuthorityRefusal
+
+logger = logging.getLogger(__name__)
 
 HIDDEN = 'hidden'
 _TITLE_PREVIEW_LIMIT = 1000
@@ -89,6 +95,25 @@ def admission_display(event):
     if bound is None or event is None or getattr(event, 'message_id', None) != bound[0]:
         return {}
     return bound[1]
+
+
+def hide_silent_notification_reply(agent, result):
+    """Keep the current final assistant row for model replay, but not for presentation."""
+    rows = result.get('messages')
+    start = result.get('current_turn_user_idx', getattr(agent, '_persist_user_message_idx', None))
+    if not isinstance(rows, list) or type(start) is not int or not 0 <= start < len(rows) - 1:
+        return
+    row = rows[-1]
+    if (row.get('role') != 'assistant' or row.get('tool_calls') or row.get('display_kind')
+            or not is_intentional_silence_response(row.get('content'))):
+        return
+    if committed_row_id(row) is not None and (store := agent_interface(agent)) is not None:
+        try:
+            store.messages.set_latest_matching_message_display_kind(
+                agent.session_id, role='assistant', content=row['content'], display_kind=HIDDEN)
+        except (OSError, *STORE_FAILURES):
+            logger.warning('Could not hide the saved notification reply', exc_info=True)
+    row['display_kind'] = HIDDEN
 
 
 def worker_display_kwargs():

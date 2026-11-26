@@ -509,6 +509,8 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    notification_turn: bool = False
+    silent_reply: bool = False
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -760,19 +762,24 @@ def _invoke_agent(
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
     st.compression_count = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
-    # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the reply could still
-    # be a bare silence marker ("NO"->"NO_REPLY") or its last line a closing one
-    # ("Paris.\n\nNO"), so a marker is never shown or spoken (the client keeps streamed text
-    # when message.complete is "").
-    from gateway.response_filters import SilenceMarkerStreamHold
-    hold = SilenceMarkerStreamHold() if _is_bot_mode_session(session) else None
+    from gateway.response_filters import (
+        PROCESS_NOTIFICATION_SILENCE_HINT, SilenceMarkerStreamHold, is_intentional_silence_response,
+        is_machinery_display_kind, is_silent_notification_result,
+    )
+    from gateway.session_display import hide_silent_notification_reply
+    # A heartbeat may have a hidden prompt; hidden alone is also valid on a human submit.
+    process_notice = (display_metadata or {}).get("notification_origin") == "process_registry_synthetic"
+    st.notification_turn = process_notice or is_machinery_display_kind(display_kind)
+    hold = SilenceMarkerStreamHold() if st.notification_turn or _is_bot_mode_session(session) else None
 
     def _stream(delta):
         if getattr(agent, "_mute_notification_reply", False):
             return
-        if hold is not None and isinstance(delta, str):
-            delta = hold.feed(delta)
-            if not delta:
+        if hold is not None:
+            if delta is None:
+                if rest := hold.end_segment():
+                    _emit_delta(rest)
+            elif not (delta := hold.feed(delta)):
                 return
         _emit_delta(delta)
 
@@ -790,6 +797,8 @@ def _invoke_agent(
     # by the desktop as its own segment instead of being lost to message.complete.
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
         if getattr(agent, "_mute_notification_reply", False):
+            return
+        if st.notification_turn and is_intentional_silence_response(text):
             return
         _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
     agent.interim_assistant_callback = (
@@ -827,7 +836,12 @@ def _invoke_agent(
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
+            if process_notice:
+                run_message += "\n\n" + PROCESS_NOTIFICATION_SILENCE_HINT
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
+            st.silent_reply = st.notification_turn and is_silent_notification_result(st.result)
+            if st.silent_reply:
+                hide_silent_notification_reply(agent, st.result)
             # A held last line that never became a marker is part of the reply: deliver it.
             if hold is not None and (rest := hold.finish()) and not getattr(agent, "_mute_notification_reply", False):
                 _emit_delta(rest)
@@ -940,6 +954,17 @@ def _pause_mark(session: dict, status: str) -> dict:
     return {"paused": True} if status == "interrupted" and pause is True else {}
 
 
+def _turn_reply_presentation(session: dict, st: _TurnRun, raw: Any, status: str) -> tuple[Any, dict]:
+    from gateway.response_filters import strip_trailing_silence_marker
+    if getattr(st, "silent_reply", False):
+        return "", {"silent": True}
+    if getattr(st, "notification_turn", False):
+        return (strip_trailing_silence_marker(raw) if status == "complete" else raw), {}
+    if _is_bot_mode_session(session):
+        return _bot_mode_delivery_text(raw, successful=status == "complete"), {}
+    return raw, {}
+
+
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
@@ -967,9 +992,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # The receipt verifies the stored row's body, which keeps the model's text as written;
     # only the delivered copy drops a silence marker.
     receipt = _persisted_turn_receipt(st, raw, status)
-    if _is_bot_mode_session(session):
-        raw = _bot_mode_delivery_text(raw, successful=status == "complete")
-    payload = {"text": raw, "usage": _get_usage(agent), "status": status, **_pause_mark(session, status)}
+    raw, presentation = _turn_reply_presentation(session, st, raw, status)
+    payload = {"text": raw, "usage": _get_usage(agent), "status": status, **presentation, **_pause_mark(session, status)}
     if receipt:
         payload["persisted_turn"] = receipt
     if last_reasoning:

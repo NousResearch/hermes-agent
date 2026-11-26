@@ -32,6 +32,7 @@ async def test_wake_admits_as_the_committed_turn_when_the_origin_drifted(tmp_pat
         human, wake = rows[0].payload['native_text_v1'], rows[-1].payload['native_text_v1']
         assert wake['source'] == {k: v for k, v in human['source'].items() if k != 'message_id'}
         assert wake['provenance'] == human['provenance']
+        assert rows[-1].payload['text'].count('reply with exactly [SILENT]') == 1
     finally:
         authority.runner.session_store.close_all_db_handles()
 

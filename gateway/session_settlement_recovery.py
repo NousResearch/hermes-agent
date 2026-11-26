@@ -2,9 +2,11 @@
 import asyncio
 import logging
 
+from gateway.response_filters import is_silent_notification_result
 from gateway.session_persistence import authority_persistence
 from gateway.session_producer_lifecycle import drop_producer_turn
 from persistence.core.errors import STORE_FAILURES, AuthorityRefusal
+from session_rules.automation import automation_descriptor
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,9 @@ def completion_payload(row, settled, response, captured):
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
     captured_result = (captured or {}).get('result') or {}
+    if (complete['status'] == 'complete' and not response and automation_descriptor(row.get('payload') or {})
+            and is_silent_notification_result(captured_result)):
+        complete['silent'] = True
     # A gateway-owned refusal brings its own descriptor (``session_cron.execute``); every other failed
     # turn gets the one the TUI path builds from the same result, so the viewer shows the right card.
     surface = captured_result.get('error_surface')
@@ -67,7 +72,7 @@ def completion_payload(row, settled, response, captured):
             complete['response_transformed'] = True
             # The stream carried the raw reply and the turn counts as delivered (``response`` is
             # None): this frame is the only carrier of the rewrite the session stored.
-            if not response and (final := captured_result.get('final_response')):
+            if not response and not complete.get('silent') and (final := captured_result.get('final_response')):
                 complete['text'] = complete['content'] = final
         if isinstance(captured_result.get('warning'), str) and captured_result['warning']:
             complete['warning'] = captured_result['warning']

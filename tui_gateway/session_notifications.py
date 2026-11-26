@@ -671,6 +671,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # honour ``hidden``). Only what the agent says about the new output is visible.
         from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
         kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
+    from gateway.response_filters import PROCESS_NOTICE_TYPES
+    if evt_type in PROCESS_NOTICE_TYPES:
+        kwargs.setdefault("display_metadata", {})["notification_origin"] = "process_registry_synthetic"
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
@@ -772,7 +775,8 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
             if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                                  "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
                                  report_ownership_refusal=False,
-                                 display_metadata={"display_text": batch.display_text(registry)}):
+                                 display_metadata={"display_text": batch.display_text(registry),
+                                                   "notification_origin": "process_registry_synthetic"}):
                 for event, _text, claim in claimed:
                     _notif_defer_event(event, claim,
                         deferred.append if deferred is not None else registry.completion_queue.put)

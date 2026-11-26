@@ -58,6 +58,29 @@ def test_messaging_route_never_publishes_the_boundary():
     assert published == [('message.delta', {'text': 'hello'})]
 
 
+@pytest.mark.parametrize('automation', [True, False])
+def test_native_viewer_holds_only_a_notification_marker(automation):
+    from gateway.session_settlement_recovery import completion_payload
+
+    published = []
+    turn = _turn(Platform.LOCAL, published)
+    turn._ctx.persist_user_display_kind = 'process_complete' if automation else None
+    _consumer, delta, interim, _want = turn._setup_stream_consumer('desktop')
+    delta('[SIL')
+    delta('ENT]')
+    if automation:
+        interim('[SILENT]')
+    assert published == ([] if automation else [('message.delta', {'text': '[SIL'}),
+                                                ('message.delta', {'text': 'ENT]'})])
+
+    # The outbound gateway suppressed the response; a transform must not resurrect its text.
+    descriptor = {'local_automation_v1': {'display_kind': 'process_complete'}} if automation else {}
+    captured = {'result': {'final_response': '[SILENT]', 'local_viewer': True, 'response_transformed': True}}
+    row = {'admission_id': 'a', 'request_id': 'r', 'payload': descriptor}
+    frame = completion_payload(row, {'outcome': 'completed'}, None if automation else '[SILENT]', captured)
+    assert (frame.get('silent', False), frame['text'] or '') == (automation, '' if automation else '[SILENT]')
+
+
 def test_turn_sinks_publish_and_restore_on_the_shared_agent():
     from gateway import local_viewer_events
     published = []

@@ -82,9 +82,10 @@ _HOST_ENV_NAMES = frozenset({"API_SERVER_KEY"})
 _SHARED_NOUS_STORE = ("shared", "nous_auth.json")
 # The machine's identity: a copy would make two installs report as one.
 _HOST_ROOT_FILES = frozenset({"install_id"})
-# The Webapp's sign-in state (its browser credential, native grants, the Portal callback): the
-# host's Web Access, like the ``webapp`` config section.
-_HOST_ROOT_DIRS = frozenset({"webapp"})
+# Host-managed directories at the Hermes root: the Webapp's sign-in state (its browser credential,
+# native grants, the Portal callback), Cloud's root-owned recovery snapshots (portal-recovery/),
+# and filesystem lost+found/. Never overwritten or pruned by --keep-host.
+_HOST_ROOT_DIRS = frozenset({"webapp", "portal-recovery", "lost+found"})
 # Written by the host's running services, so a replace leaves them.
 _RUNTIME_ENTRIES = frozenset({
     "logs", "state", "runtime", ".local", "spawn-ledger.json", "channel_directory.json",

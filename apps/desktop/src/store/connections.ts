@@ -91,6 +91,9 @@ let switchRevision = 0
 // Bumped as every pick starts: one still reading its landing profile when a newer pick starts
 // steps aside, as a pick superseded in flight does.
 let pickIntent = 0
+// Picks the user started (not boot's restore): one still reading its landing profile has not
+// claimed a revision yet, and boot must not restore over it.
+let userPicks = 0
 
 export const $pendingConnectionId = atom<null | string>(null)
 
@@ -160,6 +163,7 @@ export function _resetConnectionsForTests(): void {
   restoreAttempted = false
   switchRevision = 0
   pickIntent = 0
+  userPicks = 0
   tentativeRehome = null
   $pendingConnectionId.set(null)
 }
@@ -476,6 +480,7 @@ async function restorePreferredConnection(
 function userActedDuringBoot(freshSessionRequest: number, userOpenSince: number): boolean {
   return (
     switchRevision > 0 ||
+    userPicks > 0 ||
     pendingTarget !== null ||
     $freshSessionRequest.get() !== freshSessionRequest ||
     currentUserSessionOpen() !== userOpenSince
@@ -693,6 +698,8 @@ function withLandingProfile(
 }
 
 export function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
+  userPicks += 1
+
   return withLandingProfile(connectionId, options, landing => switchConnection(connectionId, landing))
 }
 

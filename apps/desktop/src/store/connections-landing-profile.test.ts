@@ -225,6 +225,25 @@ describe('a pick that names no profile', () => {
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
   })
 
+  // Boot's last-used restore runs once the list is read; a pick the user made before that, still
+  // reading its profile, has said where the window goes.
+  it("is not overtaken by boot's restore while its profile is read", async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    list.mockResolvedValueOnce({ ...registry, lastUsed: 'work-vps', launchMode: 'last-used' })
+    const read = deferred<string | undefined>()
+    launchProfile.mockImplementationOnce(() => read.promise)
+
+    const pick = selectConnection('homelab')
+    await initializeConnectionsRegistry()
+    read.resolve('research')
+    await pick
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'research', expect.anything())
+    expect($activeConnectionId.get()).toBe('homelab')
+  })
+
   it('a newer pick made while the profile is read wins', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })

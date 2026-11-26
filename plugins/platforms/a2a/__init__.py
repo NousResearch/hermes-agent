@@ -47,6 +47,15 @@ def is_connected(config) -> bool:
     return env_is_connected("A2A_PORT")(config)
 
 
+def config_connected(config) -> bool:
+    """Status view of a merged PlatformConfig: an enabled entry is complete, since port and host default.
+
+    Kept out of ``is_connected``: the env auto-enable sweep probes that with a transient
+    ``enabled=True`` view, so reading the flag there would start a server in every profile (#122126).
+    """
+    return bool(getattr(config, "enabled", False)) or is_connected(config)
+
+
 def interactive_setup() -> None:
     """`hermes gateway setup` flow for A2A."""
     from hermes_cli.setup import prompt, prompt_yes_no, save_env_value, get_env_value, print_header, print_info, print_warning
@@ -107,6 +116,7 @@ def register(ctx) -> None:
         ctx.register_platform(
             name="a2a", label="A2A", adapter_factory=lambda cfg: A2AAdapter(cfg),
             check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
+            config_connected_fn=config_connected,
             required_env=[], install_hint="No extra packages needed (stdlib only)", setup_fn=interactive_setup,
             emoji="\U0001f9e9",  # puzzle piece
             allowed_users_env="A2A_ALLOWED_USERS", allow_all_env="A2A_ALLOW_ALL_USERS",

@@ -1392,8 +1392,8 @@ def _build_skills_system_prompt_inner(
     files |= {(str(d), rel, *sig) for _, d in extra_roots for rel, sig in _build_skills_manifest(d).items()}
     cache_key = (
         str(skills_dir), tuple((t, str(d)) for t, d in extra_roots), files,
-        tuple(sorted(str(t) for t in (available_tools or set()))),
-        tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        (available_tools is None, tuple(sorted(str(t) for t in (available_tools or set())))),
+        (available_toolsets is None, tuple(sorted(str(ts) for ts in (available_toolsets or set())))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(), tuple(plugin_rows), get_skill_desc_limit(),
     )

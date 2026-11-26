@@ -435,16 +435,20 @@ export function createBrowserSavedConnections({
     return read
   }
 
-  // A host with no agent has no test route of its own: the relay reaching the gateway's health
-  // route is the leg every request of that connection takes.
+  // A host with no agent has no test route of its own, so the test takes the leg every request of
+  // that connection takes: the relay, with the credential the host exchanged for this agent. The
+  // health route is public on the agent and answers either way, so the agent's sign-in route must
+  // accept that credential too.
   const testThroughRelay = async (connectionId: string) => {
     const baseUrl = gateway(connectionId)?.url
 
     try {
-      const health = await browserApi<null | { version?: string }>(bootstrapFor(connectionId), {
-        path: '/api/health',
-        timeoutMs: 20_000
-      })
+      const relayed = bootstrapFor(connectionId)
+
+      const [health] = await Promise.all([
+        browserApi<null | { version?: string }>(relayed, { path: '/api/health', timeoutMs: 20_000 }),
+        browserApi(relayed, { path: '/api/auth/me', timeoutMs: 20_000 })
+      ])
 
       return { baseUrl, ok: true, reachable: true, version: health?.version ?? null }
     } catch (error) {

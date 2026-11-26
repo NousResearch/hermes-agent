@@ -72,10 +72,13 @@ function dashboardHost({
   primary,
   expired = new Set<string>(),
   profiles = { alpha: ['default'], beta: ['default'] } as Record<string, string[]>,
+  refusedBy = new Set<string>(),
   runsAs = {} as Record<string, string>
 }: {
   agents?: DesktopRegistryConnection[]
   expired?: Set<string>
+  /** Agents that refuse the host's exchanged credential: the relay answers their gated routes 409. */
+  refusedBy?: Set<string>
   primary?: string
   profiles?: Record<string, string[]>
   runsAs?: Record<string, string>
@@ -100,6 +103,10 @@ function dashboardHost({
 
         if (rest === '/api/health') {
           return json({ ok: true, version: `${id}-1.0` })
+        }
+
+        if (refusedBy.has(id)) {
+          return json({ detail: 'The agent did not accept this session. Reload to reconnect.', error: 'relay_reconnect' }, 409)
         }
 
         if (rest === '/api/profiles') {
@@ -395,6 +402,16 @@ describe('a Webapp whose host runs no agent', () => {
     await install().getConnection()
 
     expect(browserLaunchProfile()).toBe('')
+  })
+
+  // `/api/health` is public on an agent, so it answers whether or not the agent takes the session.
+  it("fails a connection test when the agent refuses the host's credential", async () => {
+    dashboardHost({ refusedBy: new Set(['beta']) })
+    const connections = install().connections!
+    await connections.list()
+
+    await expect(connections.test('beta')).resolves.toMatchObject({ ok: false })
+    await expect(connections.test('alpha')).resolves.toMatchObject({ ok: true, version: 'alpha-1.0' })
   })
 
   it('refuses to add or remove an agent before sending anything, and says the account manages the list', async () => {

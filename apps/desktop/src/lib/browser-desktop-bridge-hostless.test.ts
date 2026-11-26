@@ -432,6 +432,20 @@ describe('a Webapp whose host runs no agent', () => {
     await expect(install().getProfileRoutes!(['research'])).rejects.toThrow()
   })
 
+  it('fails the route read when the account list cannot be read after boot', async () => {
+    dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] } })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    const host = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) =>
+      new URL(String(url), window.location.origin).pathname === '/api/gateway-connections'
+        ? new Response('{}', { status: 503 })
+        : host(url, init)
+    )
+
+    await expect(desktop.getProfileRoutes!(['research'])).rejects.toThrow()
+  })
+
   it("still routes the window socket's agent when another agent cannot list its profiles", async () => {
     dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] }, unreadable: new Set(['beta']) })
     const routes = await install().getProfileRoutes!(['research'])

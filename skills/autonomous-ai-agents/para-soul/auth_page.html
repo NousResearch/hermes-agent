@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ParaSoul</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: #0d1117; color: #c9d1d9; min-height: 100vh;
+       display: flex; align-items: center; justify-content: center; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+        padding: 40px; width: 440px; max-width: 95vw; text-align: center; }
+h1 { font-size: 28px; color: #58a6ff; margin-bottom: 8px; }
+h2 { font-size: 20px; color: #c9d1d9; margin-bottom: 16px; }
+.sub { font-size: 14px; color: #8b949e; margin-bottom: 24px; }
+.btn { display: block; width: 100%; padding: 14px; margin-bottom: 12px;
+       border: 1px solid #30363d; border-radius: 8px; background: #21262d;
+       color: #c9d1d9; font-size: 16px; cursor: pointer; text-decoration: none; transition: .2s; }
+.btn:hover { background: #30363d; border-color: #58a6ff; }
+.btn.primary { background: #1f3d5c; border-color: #2a4a6c; }
+.btn.primary:hover { background: #2a4a6c; }
+.btn.danger { background: #3d1f1f; border-color: #5c2a2a; }
+.btn.danger:hover { background: #5c2a2a; }
+.submit-btn { background: #238636; border-color: #238636; color: white; font-weight: 600; }
+.submit-btn:hover { background: #2ea043; }
+.input-group { margin-bottom: 16px; text-align: left; }
+.input-group label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }
+.input-row { display: flex; align-items: center; }
+.input-row input { flex: 1; padding: 12px; border: 1px solid #30363d; border-radius: 8px;
+        background: #0d1117; color: #c9d1d9; font-size: 16px; }
+.input-row input:focus { outline: none; border-color: #58a6ff; }
+.toggle-pw { margin-left: -40px; z-index: 1; background: none; border: none; color: #8b949e;
+             font-size: 14px; cursor: pointer; padding: 4px 8px; }
+.back-link { display: block; margin-top: 12px; color: #8b949e; font-size: 13px; cursor: pointer; text-decoration: none; }
+.error { color: #f85149; font-size: 13px; margin-top: 8px; display: none; }
+.success { color: #3fb950; font-size: 13px; margin-top: 8px; display: none; }
+.warning-box { background: #1a1a0a; border: 1px solid #5c5c2a; border-radius: 8px; padding: 16px;
+               margin: 20px 0; text-align: left; font-size: 13px; color: #c9b95d; }
+.warning-box strong { color: #f0d050; }
+.stats { margin: 20px 0; text-align: left; background: #0d1117; border: 1px solid #30363d;
+         border-radius: 8px; padding: 16px; }
+.stat-row { display: flex; justify-content: space-between; padding: 8px 0;
+            border-bottom: 1px solid #21262d; font-size: 14px; }
+.stat-row:last-child { border-bottom: none; }
+.stat-label { color: #8b949e; }
+.stat-value { color: #c9d1d9; font-weight: 600; }
+.page { display: none; }
+.page.active { display: block; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>✦ ParaSoul</h1>
+
+  <!-- PAGE 0: Landing — Sign Up / Sign In -->
+  <div id="page-landing" class="page active">
+    <p class="sub">Encrypted identity for your AI agents</p>
+    <a class="btn submit-btn" onclick="startFlow('register')" style="text-align:center">Create Account</a>
+    <a class="btn" onclick="startFlow('login')" style="text-align:center">Sign In</a>
+  </div>
+
+  <!-- PAGE 1: Choose Provider -->
+  <div id="page-provider" class="page">
+    <h2 id="provider-title">Create your account</h2>
+    <p class="sub">Choose how to sign in</p>
+    <a class="btn" href="/auth/google/login" onclick="setProvider('google')">Continue with Google</a>
+    <a class="btn" href="/auth/github/login" onclick="setProvider('github')">Continue with GitHub</a>
+    <a class="btn" href="/auth/microsoft/login" onclick="setProvider('microsoft')">Continue with Microsoft</a>
+    <a class="back-link" onclick="showPage('page-landing')">← Back</a>
+  </div>
+
+  <!-- PAGE 2: Set Password (Register) -->
+  <div id="page-register" class="page">
+    <h2>Set your recovery password</h2>
+    <p class="sub" id="reg-email"></p>
+    <div class="warning-box">
+      <strong>⚠️  This password encrypts your private key.</strong><br>
+      If you forget it, sign in again to create a new key —<br>your old encrypted data will be replaced.<br>
+      <strong>Write it down. Store it somewhere safe.</strong>
+    </div>
+    <div class="input-group">
+      <label>Password</label>
+      <div class="input-row">
+        <input type="password" id="reg-pw" placeholder="At least 8 characters" minlength="8">
+        <button class="toggle-pw" onclick="togglePw('reg-pw')">👁</button>
+      </div>
+    </div>
+    <div class="input-group">
+      <label>Confirm password</label>
+      <div class="input-row">
+        <input type="password" id="reg-pw2" placeholder="Re-enter your password">
+        <button class="toggle-pw" onclick="togglePw('reg-pw2')">👁</button>
+      </div>
+    </div>
+    <button class="btn submit-btn" onclick="doRegister()">Create Account</button>
+    <a class="back-link" onclick="showPage('page-provider')">← Back</a>
+    <div class="error" id="reg-error"></div>
+  </div>
+
+  <!-- PAGE 3: Enter Password (Sign In) -->
+  <div id="page-login" class="page">
+    <h2>Enter your recovery password</h2>
+    <p class="sub" id="login-email"></p>
+    <div class="input-group">
+      <label>Password</label>
+      <div class="input-row">
+        <input type="password" id="login-pw" placeholder="Your recovery password">
+        <button class="toggle-pw" onclick="togglePw('login-pw')">👁</button>
+      </div>
+    </div>
+    <button class="btn submit-btn" onclick="doLogin()">Sign In</button>
+    <a class="back-link" onclick="showPage('page-provider')">← Back</a>
+    <div class="error" id="login-error"></div>
+  </div>
+
+  <!-- PAGE 4: Dashboard -->
+  <div id="page-dashboard" class="page">
+    <h2>Your ParaSoul Identity</h2>
+    <div class="stats">
+      <div class="stat-row"><span class="stat-label">Email</span><span class="stat-value" id="ds-email">—</span></div>
+      <div class="stat-row"><span class="stat-label">Provider</span><span class="stat-value" id="ds-provider">—</span></div>
+      <div class="stat-row"><span class="stat-label">DID</span><span class="stat-value" id="ds-did" style="font-size:12px;word-break:break-all">—</span></div>
+      <div class="stat-row"><span class="stat-label">Key stored</span><span class="stat-value" id="ds-key">—</span></div>
+    </div>
+    <button class="btn primary" onclick="downloadKeys()">📥 Download Key File</button>
+    <button class="btn" onclick="showChangePassword()">🔒 Change Recovery Password</button>
+    <button class="btn" onclick="showPage('page-recover')">🔄 Recover on New Machine</button>
+    <a class="btn danger" href="/auth">Sign Out</a>
+    <div class="success" id="ds-success"></div>
+  </div>
+
+  <!-- Recovery (new machine) -->
+  <div id="page-recover" class="page">
+    <h2>Recover on New Machine</h2>
+    <p class="sub">Enter your password to decrypt your private key for this machine.</p>
+    <div class="warning-box">
+      <strong>You only need this when switching to a new computer.</strong><br>
+      Download the key file and place it at <code>~/.config/paragate/keys/private.pem</code>
+    </div>
+    <div class="input-group"><label>Recovery password</label><input type="password" id="rec-pw" placeholder="Your password"></div>
+    <button class="btn submit-btn" onclick="doRecover()">Decrypt & Download</button>
+    <a class="back-link" onclick="showDashboard()">← Back to dashboard</a>
+    <div class="error" id="rec-error"></div>
+  </div>
+
+  <!-- Change Password -->
+  <div id="page-changepw" class="page">
+    <h2>Change Recovery Password</h2>
+    <div class="warning-box">Enter your current password first. The new password will re-encrypt your key.</div>
+    <div class="input-group"><label>Current password</label><input type="password" id="cpw-old" placeholder="Current password"></div>
+    <div class="input-group"><label>New password</label><input type="password" id="cpw-new" placeholder="At least 8 characters"></div>
+    <div class="input-group"><label>Confirm new password</label><input type="password" id="cpw-new2" placeholder="Re-enter"></div>
+    <button class="btn submit-btn" onclick="doChangePassword()">Update Password</button>
+    <a class="back-link" onclick="showDashboard()">← Back</a>
+    <div class="error" id="cpw-error"></div>
+    <div class="success" id="cpw-success"></div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+let mode = '', provider = '', token = '', email = '', did = '', skPem = '';
+
+// ── Initialize on DOM ready ───────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search);
+  const urlMode = params.get('mode');
+  const cbToken = params.get('token');
+
+  if (cbToken) {
+    // OAuth callback
+    token = cbToken;
+    email = params.get('email') || '';
+    provider = sessionStorage.getItem('ps_provider') || '';
+    mode = sessionStorage.getItem('ps_mode') || 'login';
+    window.history.replaceState({}, '', '/auth');
+
+    if (mode === 'register') {
+      document.getElementById('reg-email').textContent = 'Signed in as ' + (email || provider);
+      showPage('page-register');
+    } else {
+      // Sign In: no password needed — go straight to dashboard
+      fetch(API + '/auth/me?provider=' + provider + '&oauth_token=' + token)
+        .then(r => r.json()).then(data => {
+          if (data.success) {
+            did = data.did;
+            showDashboard();
+          }
+        }).catch(() => showPage('page-login'));
+    }
+    return;
+  }
+
+  if (urlMode === 'register' || urlMode === 'login') {
+    // Direct mode from URL
+    mode = urlMode;
+    sessionStorage.setItem('ps_mode', mode);
+    document.getElementById('provider-title').textContent = mode === 'register' ? 'Create your account' : 'Sign in to your account';
+    showPage('page-provider');
+    return;
+  }
+
+  // Default: landing page
+  showPage('page-landing');
+});
+
+// ── Navigation ───────────────────────────────────
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function startFlow(m) {
+  mode = m;
+  document.getElementById('provider-title').textContent = m === 'register' ? 'Create your account' : 'Sign in to your account';
+  showPage('page-provider');
+}
+
+function setProvider(p) {
+  provider = p;
+  sessionStorage.setItem('ps_provider', p);
+  sessionStorage.setItem('ps_mode', mode);
+}
+
+// ── OAuth callback ───────────────────────────────
+
+// ── Register ─────────────────────────────────────
+async function doRegister() {
+  const pw = document.getElementById('reg-pw').value;
+  const pw2 = document.getElementById('reg-pw2').value;
+  if (pw.length < 8) { showErr('Password must be at least 8 characters', 'reg-error'); return; }
+  if (pw !== pw2) { showErr('Passwords do not match', 'reg-error'); return; }
+
+  try {
+    const {did: newDid, privateKey, encryptedKey, salt} = await generateEncryptedKeypair(pw);
+    const resp = await fetch(API + '/auth/register', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider, oauth_token: token, encrypted_private_key: encryptedKey, salt})
+    });
+    const data = await resp.json();
+    if (data.success) {
+      did = data.did || newDid;
+      skPem = privateKey;
+      sessionStorage.setItem('ps_sk', skPem);
+      downloadKeyData(did, skPem);
+      showDashboard();
+    } else { showErr(data.message || 'Registration failed', 'reg-error'); }
+  } catch(e) { showErr(e.message, 'reg-error'); }
+}
+
+// ── Sign In ──────────────────────────────────────
+async function doLogin() {
+  const pw = document.getElementById('login-pw').value;
+  if (!pw) { showErr('Enter your password', 'login-error'); return; }
+
+  try {
+    const resp = await fetch(API + '/auth/recover', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider, oauth_token: token})
+    });
+    const data = await resp.json();
+    if (!data.success || !data.encrypted_private_key) {
+      showErr('Account not found. Create one first.', 'login-error'); return;
+    }
+
+    try {
+      skPem = await decryptWithPassword(data.encrypted_private_key, pw, data.pbkdf2_salt);
+      did = data.did;
+      sessionStorage.setItem('ps_sk', skPem);
+      showDashboard();
+    } catch(e) { showErr('Wrong password. Try again.', 'login-error'); }
+  } catch(e) { showErr(e.message, 'login-error'); }
+}
+
+// ── Dashboard ─────────────────────────────────────
+function showDashboard() {
+  const user = { email, provider, did, has_encrypted_key: true };
+  document.getElementById('ds-email').textContent = user.email || '—';
+  document.getElementById('ds-provider').textContent = provider;
+  document.getElementById('ds-did').textContent = user.did || '—';
+  document.getElementById('ds-key').textContent = '✅ Secured';
+  showPage('page-dashboard');
+}
+
+function downloadKeys() {
+  if (!skPem) skPem = sessionStorage.getItem('ps_sk');
+  if (!skPem) return;
+  const blob = new Blob([JSON.stringify({did, private_key: skPem}, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'para-soul-keys.json'; a.click();
+  document.getElementById('ds-success').textContent = 'Key file downloaded.';
+}
+
+function showChangePassword() { showPage('page-changepw'); }
+
+async function doRecover() {
+  const pw = document.getElementById('rec-pw').value;
+  if (!pw) { showErr('Enter your password', 'rec-error'); return; }
+  try {
+    const resp = await fetch(API + '/auth/recover', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider, oauth_token: token})
+    });
+    const data = await resp.json();
+    if (!data.success || !data.encrypted_private_key) {
+      showErr('Recovery failed. Try again.', 'rec-error'); return;
+    }
+    try {
+      const sk = await decryptWithPassword(data.encrypted_private_key, pw, data.pbkdf2_salt);
+      did = data.did;
+      skPem = sk;
+      sessionStorage.setItem('ps_sk', sk);
+      downloadKeyData(did, sk);
+      showSuccess('Key decrypted! Save this file to ~/.config/paragate/keys/private.pem', 'rec-error');
+    } catch(e) { showErr('Wrong password.', 'rec-error'); }
+  } catch(e) { showErr(e.message, 'rec-error'); }
+}
+
+async function doChangePassword() {
+  const oldPw = document.getElementById('cpw-old').value;
+  const newPw = document.getElementById('cpw-new').value;
+  const newPw2 = document.getElementById('cpw-new2').value;
+  if (newPw.length < 8) { showErr('At least 8 characters', 'cpw-error'); return; }
+  if (newPw !== newPw2) { showErr('Passwords do not match', 'cpw-error'); return; }
+  if (!skPem) skPem = sessionStorage.getItem('ps_sk');
+  if (!skPem) { showErr('Session expired. Sign in again.', 'cpw-error'); return; }
+
+  try {
+    const salt = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+    const encKey = await deriveKey(newPw, atob(salt));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encData = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, encKey, new TextEncoder().encode(skPem));
+    const newEncKey = btoa(String.fromCharCode(...iv) + '|' + btoa(String.fromCharCode(...new Uint8Array(encData))));
+    const resp = await fetch(API + '/auth/change-password', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider, oauth_token: token, encrypted_private_key: newEncKey, salt})
+    });
+    const data = await resp.json();
+    if (data.success) { showSuccess('Password updated!', 'cpw-success'); }
+    else { showErr(data.message || 'Failed', 'cpw-error'); }
+  } catch(e) { showErr(e.message, 'cpw-error'); }
+}
+
+// ── Helpers ───────────────────────────────────────
+function togglePw(id) { const el = document.getElementById(id); el.type = el.type === 'password' ? 'text' : 'password'; }
+function showErr(msg, id) { const el = document.getElementById(id); el.textContent = msg; el.style.display = 'block'; }
+function showSuccess(msg, id) { const el = document.getElementById(id); el.textContent = msg; el.style.display = 'block'; }
+
+async function generateEncryptedKeypair(password) {
+  const salt = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+  const keypair = await crypto.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
+  const skRaw = await crypto.subtle.exportKey('pkcs8', keypair.privateKey);
+  const pkRaw = await crypto.subtle.exportKey('raw', keypair.publicKey);
+  const did = 'did:key:z' + btoa(String.fromCharCode(...new Uint8Array(pkRaw))).replace(/=+$/, '');
+  const skB64 = btoa(String.fromCharCode(...new Uint8Array(skRaw)));
+  const skPem = '-----BEGIN PRIVATE KEY-----\n' + skB64.match(/.{1,64}/g).join('\n') + '\n-----END PRIVATE KEY-----\n';
+  const encKey = await deriveKey(password, atob(salt));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encData = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, encKey, new TextEncoder().encode(skPem));
+  return {did, privateKey: skPem, encryptedKey: btoa(String.fromCharCode(...iv) + '|' + btoa(String.fromCharCode(...new Uint8Array(encData)))), salt};
+}
+
+async function decryptWithPassword(encB64, password, serverSalt) {
+  const parts = atob(encB64).split('|');
+  const iv = new Uint8Array(parts[0].split('').map(c => c.charCodeAt(0)));
+  const ct = new Uint8Array(atob(parts[1]).split('').map(c => c.charCodeAt(0)));
+  const salt = serverSalt ? atob(serverSalt) : new TextEncoder().encode('para-soul-auth-v1');
+  const encKey = await deriveKey(password, salt);
+  return new TextDecoder().decode(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, encKey, ct));
+}
+
+async function deriveKey(password, salt) {
+  const enc = new TextEncoder();
+  const km = await crypto.subtle.importKey('raw', typeof salt === 'string' ? enc.encode(salt) : salt, 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name: 'PBKDF2', salt: typeof salt === 'string' ? enc.encode(salt) : salt, iterations: 100000, hash: 'SHA-256'}, km, {name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
+}
+
+function downloadKeyData(did, skPem) {
+  const blob = new Blob([JSON.stringify({did, private_key: skPem}, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'para-soul-keys.json'; a.click();
+}
+</script>
+</body>
+</html>

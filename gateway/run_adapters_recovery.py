@@ -27,6 +27,10 @@ from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 
 logger = logging.getLogger("gateway.run")
+# One adapter of each of these platforms per connect wave, in profile order, as the serial sweep connected
+# them. A WhatsApp secondary allocates its bridge port by probing which ports are bound, so a sibling's
+# configured port it has not bound yet would read as free and be recorded for this profile too.
+_ONE_PER_WAVE_PLATFORMS = frozenset({Platform.WHATSAPP})
 _MAX_PLUGIN_LOAD_REARMS = 3  # per queued platform: transient load failures heal, a broken plugin stops re-importing
 
 
@@ -91,6 +95,12 @@ class _StagedProfileAdapter:
     def non_none_claims(self) -> tuple[tuple, ...]:
         return tuple(c for c in self.claims if c is not None)
 
+    @property
+    def wave_keys(self) -> tuple[tuple, ...]:
+        """Claims plus a wave-only key: a pending match defers the adapter to a later wave, never refuses it."""
+        one_per_wave = (("wave", self.platform),) if self.platform in _ONE_PER_WAVE_PLATFORMS else ()
+        return self.non_none_claims + one_per_wave
+
 
 @dataclass
 class _SecondaryConnectBatch:
@@ -100,7 +110,6 @@ class _SecondaryConnectBatch:
     deferred: list[_StagedProfileAdapter] = field(default_factory=list)
     staged_owners: set[int] = field(default_factory=set)
     pending_claims: set[tuple] = field(default_factory=set)
-    prep_renewed_at: Optional[float] = None
 
     def checkpoint(self) -> tuple[int, int]:
         return len(self.staged), len(self.deferred)
@@ -114,11 +123,11 @@ class _SecondaryConnectBatch:
     def stage(self, item: _StagedProfileAdapter) -> None:
         self.staged.append(item)
         self.staged_owners.add(id(item.adapter))
-        self.pending_claims.update(item.non_none_claims)
+        self.pending_claims.update(item.wave_keys)
 
     def defer(self, item: _StagedProfileAdapter) -> None:
         self.deferred.append(item)
-        self.pending_claims.update(item.non_none_claims)
+        self.pending_claims.update(item.wave_keys)
 
     def staged_platforms(self) -> list[Platform]:
         return [item.platform for item in self.staged]
@@ -149,9 +158,9 @@ class _SecondaryConnectBatch:
         del self.deferred[deferred_start:]
         self.pending_claims.clear()
         for item in self.staged:
-            self.pending_claims.update(item.non_none_claims)
+            self.pending_claims.update(item.wave_keys)
         for item in self.deferred:
-            self.pending_claims.update(item.non_none_claims)
+            self.pending_claims.update(item.wave_keys)
 
 
 class GatewaySecondaryReconnectMixin:
@@ -329,7 +338,7 @@ class GatewaySecondaryReconnectMixin:
                 candidate.profile_name, candidate.profile_home, candidate.platform, candidate.adapter, external,
             )
             return False
-        if batch.has_pending_conflict(raw_claims):
+        if batch.has_pending_conflict(candidate.wave_keys):
             batch.defer(candidate)
             return True
         claims = self._claim_secondary_platform(

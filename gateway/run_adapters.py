@@ -47,7 +47,7 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
-# Slack on top of one connect budget per EXTEND_TIMEOUT_USEC step: covers the next profile's config load.
+# Slack on top of one connect budget per EXTEND_TIMEOUT_USEC step: covers the next preparation step.
 _SYSTEMD_BOOT_STEP_MARGIN_SECS = 30.0
 
 
@@ -206,11 +206,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         raise TimeoutError(f"{platform.value} connect timed out after {timeout:g}s")
 
     def _extend_systemd_boot_for(self, platform) -> None:
-        """Before one serial secondary connect, push systemd's Type=notify start deadline past it (#137995).
+        """Push systemd's Type=notify start deadline past the next secondary-profile step (#137995).
 
-        READY=1 waits for every secondary profile's adapters, connected one after another; without this the
-        unit's default 90s TimeoutStartSec kills a still-progressing multi-profile boot. Each step buys
-        one connect budget + margin, so only a boot that stops making progress is killed."""
+        READY=1 waits for every secondary profile's adapters, prepared in order and then connected in
+        conflict-free waves; without this the unit's default 90s TimeoutStartSec kills a still-progressing
+        multi-profile boot. Each step buys one connect budget + margin, so only a boot that stops making
+        progress is killed."""
         timeout = self._platform_connect_timeout_secs(platform, initial=True)
         if getattr(self, "_running", False) or self.config.systemd_watchdog_seconds <= 0 or timeout <= 0:
             return
@@ -983,12 +984,6 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 )
         pending.clear()
 
-    def _uses_default_profile_starter(self) -> bool:
-        """True when ``_start_one_profile_adapters`` is the unpatched mixin method."""
-        if "_start_one_profile_adapters" in getattr(self, "__dict__", ()):
-            return False
-        return getattr(type(self), "_start_one_profile_adapters", None) is _DEFAULT_START_ONE_PROFILE_ADAPTERS
-
     def _max_boot_timeout_platform(self, platforms) -> Optional[Platform]:
         """Return the platform in ``platforms`` with the largest initial connect timeout, or None."""
         batch = list(platforms)
@@ -996,34 +991,27 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             return None
         return max(batch, key=lambda plat: self._platform_connect_timeout_secs(plat, initial=True))
 
-    def _maybe_renew_systemd_boot_during_prep(
-        self, batch: _SecondaryConnectBatch, platform: Optional[Platform] = None, *, force: bool = False,
+    def _renew_systemd_boot_during_prep(
+        self, batch: _SecondaryConnectBatch, platform: Optional[Platform] = None,
     ) -> None:
-        """Renew systemd's start deadline when preparation spans >= margin seconds (or forced)."""
-        now = time.monotonic()
-        if batch.prep_renewed_at is None:
-            batch.prep_renewed_at = now
-        if not force and now - batch.prep_renewed_at < _SYSTEMD_BOOT_STEP_MARGIN_SECS:
-            return
+        """Before each preparation step (a profile's load, a platform's build), renew systemd's start deadline,
+        sized for the largest connect budget staged so far, as the serial sweep did before each connect."""
         platforms = batch.staged_platforms()
         if platform is not None:
             platforms.append(platform)
         self._extend_systemd_boot_for(self._max_boot_timeout_platform(platforms))
-        batch.prep_renewed_at = now
 
     async def _start_secondary_profiles_parallel(
         self, active: str, profile_homes, claimed: dict[tuple, str],
         transient_failed: set[str], profile_serve_signature, config_error_cls,
     ) -> int:
         """Prepare all secondary profiles sequentially, then connect staged adapters in conflict-free waves."""
-        batch = _SecondaryConnectBatch(prep_renewed_at=time.monotonic())
-        prepared_profiles = 0
+        batch = _SecondaryConnectBatch()
         try:
             for profile_name, profile_home in profile_homes:
                 if profile_name == active:
                     continue  # handled by the primary startup loop
-                if prepared_profiles > 0:
-                    self._maybe_renew_systemd_boot_during_prep(batch, force=prepared_profiles >= 2)
+                self._renew_systemd_boot_during_prep(batch)
                 # Preserve changes made while the initial connection is awaiting I/O.
                 scan_signature = profile_serve_signature(profile_home)
                 try:
@@ -1036,8 +1024,6 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                     transient_failed.add(profile_name)
                 else:
                     self._served_profile_signatures[profile_name] = scan_signature
-                finally:
-                    prepared_profiles += 1
         except BaseException:
             batch.rollback(self._release_secondary_claims)
             raise
@@ -1070,31 +1056,13 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         for name, home in profiles_to_serve(True, include_parked=True):
             if name != "default" and profile_is_parked(home):
                 logger.info("profile '%s' is parked (gateway.parked); not served by this gateway", name)
-        connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
         self._served_profile_signatures = {}
         transient_failed: set[str] = set()
-        if self._uses_default_profile_starter():
-            connected = await self._start_secondary_profiles_parallel(
-                active, profile_homes, claimed, transient_failed, profile_serve_signature, MultiplexConfigError,
-            )
-        else:
-            for profile_name, profile_home in profile_homes:
-                if profile_name == active:
-                    continue  # handled by the primary startup loop
-                # Preserve changes made while the initial connection is awaiting I/O.
-                scan_signature = profile_serve_signature(profile_home)
-                try:
-                    connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
-                except MultiplexConfigError:
-                    raise
-                except Exception as e:
-                    logger.error("Failed to start adapters for profile '%s': %s", profile_name, e, exc_info=True)
-                    # Not acknowledged: the reconcile watcher retries a transiently-failed profile.
-                    transient_failed.add(profile_name)
-                else:
-                    self._served_profile_signatures[profile_name] = scan_signature
+        connected = await self._start_secondary_profiles_parallel(
+            active, profile_homes, claimed, transient_failed, profile_serve_signature, MultiplexConfigError,
+        )
         self._record_served_profiles(active, profile_homes)
         # ``_note_served_profiles`` fills a missing signature with the current one; that refill
         # would park a transiently-failed profile before the first watcher tick can retry it.
@@ -1406,7 +1374,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         try:
             for platform, platform_config in profile_cfg.platforms.items():
                 if platform_config.enabled:
-                    self._maybe_renew_systemd_boot_during_prep(batch, platform)
+                    self._renew_systemd_boot_during_prep(batch, platform)
                 adapter = await self._prepare_one_profile_platform(
                     profile_name, profile_home, platform, platform_config, multiplex, profile_map,
                 )
@@ -1467,7 +1435,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
-        batch = _SecondaryConnectBatch(prep_renewed_at=time.monotonic())
+        batch = _SecondaryConnectBatch()
         await self._prepare_one_profile_adapters(profile_name, profile_home, claimed, batch)
         return await self._connect_staged_profile_adapters(batch, claimed)
 
@@ -1947,6 +1915,3 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 return False  # fail-closed, like the ``_handle_message`` ingress gate
             return self._is_user_authorized_for_source(source)
         return check
-
-
-_DEFAULT_START_ONE_PROFILE_ADAPTERS = GatewayAdapterLifecycleMixin._start_one_profile_adapters

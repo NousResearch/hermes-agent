@@ -1824,16 +1824,18 @@ class TestOwnEchoRetryEdges:
         result = json.loads(session_search(query="xrneedle", db=db, persistence=persistence))
         assert result["success"] is True, result
 
-    def test_comma_separated_terms_relax_after_own_echo(self, db, persistence):
-        # The store turns ',' into whitespace (implicit AND), so the retry must see two units.
+    @pytest.mark.parametrize("separator", [",", "%"])
+    def test_comma_separated_terms_relax_after_own_echo(self, db, persistence, separator):
+        # The store turns ',' and '%' into whitespace (implicit AND), so the retry must see two
+        # units: it is the store's own rewrite (any_term_query), not a second parser in the tool.
         seed_session(db, "s_past", "cli")
         seed_messages(db, "s_past", {"role": "assistant", "content": "xrneoforge"})
         db.sessions.end("s_past", "user_exit")
         seed_session(db, "s_live", "cli")
         seed_messages(db, "s_live", {"role": "user", "content": "xrneoforge xrspawning"})
-        result = json.loads(session_search(query="xrneoforge,xrspawning", db=db, persistence=persistence,
-                                           current_session_id="s_live"))
-        assert result.get("relaxed_from") == "xrneoforge,xrspawning", result
+        query = f"xrneoforge{separator}xrspawning"
+        result = json.loads(session_search(query=query, db=db, persistence=persistence, current_session_id="s_live"))
+        assert result.get("relaxed_from") == query, result
         assert [r["session_id"] for r in result["results"]] == ["s_past"], result
 
     def test_hidden_predecessor_recall_only_row_does_not_block_retry(self, db, persistence):

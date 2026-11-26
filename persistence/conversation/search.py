@@ -110,6 +110,10 @@ class SessionSearch(Protocol):
         """The hits of ``query`` under the filters, ordered by ``sort`` and paged by ``limit`` / ``offset`` (module docstring). ``fields`` given as a string raises ``TypeError`` and naming an unknown field ``ValueError``, both before the query is read; a query matching nothing returns ``()``."""
         ...
 
+    def any_term_query(self, query: str) -> Optional[str]:
+        """``query`` as this store's any-term retry (its sanitizer, then every unit ORed), or ``None`` when relaxation does not apply: fewer than two units, or an explicit ``OR`` / ``NOT``. Pure: reads no rows."""
+        ...
+
     def search_index_rebuild_status(self) -> Optional[SearchIndexRebuildStatus]:
         """Progress of the deferred rebuild, or ``None`` when none is pending; read without waiting on writers, and served by a read-only store."""
         ...

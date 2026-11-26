@@ -531,6 +531,9 @@ class InMemorySessionSearch:
         self._tables(scope)
         return False
 
+    def any_term_query(self, query: str) -> Optional[str]:
+        return _or_relaxed(sanitize_query(query or ""))
+
     def search_index_rebuild_status(self) -> Optional[SearchIndexRebuildStatus]:
         scope = self._backend.scope
         marker = self._tables(scope).get("deferred_rebuild")

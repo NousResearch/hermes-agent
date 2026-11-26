@@ -14,6 +14,20 @@ UNLOAD_PROBE = (
     "    ctx.on_unload(lambda: Path(os.environ['UNLOADPROBE_OUT']).write_text(str(get_hermes_home())))\n")
 
 
+def _hosted_provider_behind_a_launcher(tmp_path, home):
+    """Install the hosted model provider ``hostmodel`` under *home*, whose config runs the plugin host and
+    extractions under a stand-in launcher; return the file that launcher appends to each time it runs."""
+    from tests.hermes_cli.test_plugin_host import _hosted_model_provider
+
+    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
+    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
+    runner.chmod(0o755)
+    _hosted_model_provider(home)
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    return ran
+
+
 @pytest.mark.platforms("posix")  # a directory symlink; the stand-in launcher is a shell script
 def test_a_marked_profile_link_repointed_after_its_key_was_remembered_runs_no_plugin_code(tmp_path, monkeypatch):
     """A process remembers the key each home spelling resolved to. After a marked profile's link is repointed at
@@ -263,19 +277,10 @@ def test_a_provider_extraction_for_a_home_whose_link_was_repointed_runs_no_launc
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
     from hermes_cli.plugin_host_wire import PluginHostUnavailable
     from hermes_constants import hermes_home_key
-    from tests.hermes_cli.test_plugin_host import MODEL_PROVIDER_PLUGIN
 
-    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
-    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
-    runner.chmod(0o755)
     old = _home_with_plugins(tmp_path / "old", monkeypatch, {})
     new = _home_with_plugins(tmp_path / "new", monkeypatch, {})
-    plugin = new / "plugins" / "model-providers" / "hostmodel"
-    plugin.mkdir(parents=True)
-    (plugin / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
-    (new / "config.yaml").write_text(yaml.safe_dump({"plugins": {
-        "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    ran = _hosted_provider_behind_a_launcher(tmp_path, new)
     link = tmp_path / "root" / "profiles" / "ops"
     link.parent.mkdir(parents=True)
     link.symlink_to(old, target_is_directory=True)
@@ -296,19 +301,10 @@ def test_a_provider_extraction_whose_link_is_repointed_while_it_picks_its_launch
     from hermes_cli.plugin_host_profiles import load_hosted_profiles
     from hermes_cli.plugin_host_wire import PluginHostUnavailable
     from hermes_constants import hermes_home_key
-    from tests.hermes_cli.test_plugin_host import MODEL_PROVIDER_PLUGIN
 
-    ran, runner = tmp_path / "launcher.ran", tmp_path / "runner"
-    runner.write_text(f'#!/bin/sh\necho ran >> "{ran}"\nexec "$@"\n', encoding="utf-8")
-    runner.chmod(0o755)
     home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
     other = _home_with_plugins(tmp_path / "other", monkeypatch, {})
-    plugin = home / "plugins" / "model-providers" / "hostmodel"
-    plugin.mkdir(parents=True)
-    (plugin / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
-    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
-        "isolation": "host", "host": {"launcher": [str(runner)]}}}), encoding="utf-8")
+    ran = _hosted_provider_behind_a_launcher(tmp_path, home)
     link = tmp_path / "root" / "profiles" / "ops"
     link.parent.mkdir(parents=True)
     link.symlink_to(home, target_is_directory=True)

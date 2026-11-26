@@ -92,6 +92,13 @@ function dashboardHost({
 } = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
+  const profilesOf = (id: string) =>
+    hung.has(id)
+      ? new Promise<Response>(() => undefined)
+      : unreadable.has(id)
+        ? json({ detail: 'unavailable' }, 500)
+        : json({ profiles: (profiles[id] ?? []).map(name => ({ name })) })
+
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: URL, init?: RequestInit) => {
@@ -116,16 +123,8 @@ function dashboardHost({
           return json({ detail: 'The agent did not accept this session. Reload to reconnect.', error: 'relay_reconnect' }, 409)
         }
 
-        if (rest === '/api/profiles' && hung.has(id)) {
-          return new Promise<Response>(() => undefined)
-        }
-
-        if (rest === '/api/profiles' && unreadable.has(id)) {
-          return json({ detail: 'unavailable' }, 500)
-        }
-
         if (rest === '/api/profiles') {
-          return json({ profiles: (profiles[id] ?? []).map(name => ({ name })) })
+          return profilesOf(id)
         }
 
         if (rest === '/api/profiles/active') {

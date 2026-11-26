@@ -32,6 +32,10 @@ from gateway.kanban_watchers_dispatcher import (
 )
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# A worker that lists every file it produced (hundreds of per-step logs, CSVs,
+# action dumps) must not flood the human's chat with one upload per file. Keep
+# only the smallest documents -- normally the summary report -- and log the rest.
+_MAX_DOC_ARTIFACTS = 5
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
@@ -191,6 +195,17 @@ class GatewayKanbanWatchersMixin:
         # Images ride one send_multiple_images call (batch uploads on Signal/Slack).
         image_paths = [p for p in candidates if Path(p).suffix.lower() in _IMAGE_EXTS]
         other_paths = [p for p in candidates if Path(p).suffix.lower() not in _IMAGE_EXTS]
+        if len(other_paths) > _MAX_DOC_ARTIFACTS:
+            _ordered = sorted(
+                other_paths,
+                key=lambda p: os.path.getsize(p) if os.path.isfile(p) else 0,
+            )
+            _kept = _ordered[:_MAX_DOC_ARTIFACTS]
+            logger.info(
+                "kanban notifier: capped document artifacts for %s to %d (dropped %d)",
+                chat_id, _MAX_DOC_ARTIFACTS, len(other_paths) - len(_kept),
+            )
+            other_paths = _kept
         if image_paths:
             try:
                 batch = [(f"file://{_quote(p)}", "") for p in image_paths]

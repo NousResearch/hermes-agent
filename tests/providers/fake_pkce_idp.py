@@ -3,6 +3,8 @@
 /authorize  → 302 to redirect_uri?code=…&state=…  (records code_challenge)
 /token      → grant_type=authorization_code: verifies S256(code_verifier) == challenge, issues tokens
               grant_type=refresh_token: rotates (old refresh token becomes invalid → 400)
+              grant_type=device_code: authorization_pending until ``approve_device()``, then tokens (RFC 8628)
+/device     → a device code, user code and verification page (RFC 8628 device authorization)
 """
 from __future__ import annotations
 
@@ -21,6 +23,8 @@ class FakeIdP:
         self.refresh_tokens: set[str] = set()
         self.token_requests: list[dict] = []
         self.issued = 0
+        self.device_codes: dict[str, str] = {}   # device_code -> "pending" | "approved" | "denied"
+        self.device_requests: list[dict] = []
         idp = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -41,10 +45,22 @@ class FakeIdP:
                 self.end_headers()
 
             def do_POST(self):
-                if urlparse(self.path).path != "/token":
+                path = urlparse(self.path).path
+                if path not in ("/token", "/device"):
                     self.send_response(404); self.end_headers(); return
                 body = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
                 form = {k: v[0] for k, v in body.items()}
+                if path == "/device":
+                    idp.device_requests.append(form)
+                    if idp.device_answer is not None:
+                        return self._json(*idp.device_answer)
+                    device_code = secrets.token_urlsafe(16)
+                    idp.device_codes[device_code] = "pending"
+                    page = idp.verification_uri or f"{idp.base}/activate"
+                    return self._json(200, {
+                        "device_code": device_code, "user_code": "WDJB-MJHT", "verification_uri": page,
+                        "verification_uri_complete": f"{page}?user_code=WDJB-MJHT", "expires_in": 600,
+                        "interval": 1})
                 idp.token_requests.append(form)
                 if idp.token_answer is not None:
                     return self._json(*idp.token_answer)
@@ -54,6 +70,14 @@ class FakeIdP:
                     digest = hashlib.sha256(form.get("code_verifier", "").encode()).digest()
                     if challenge is None or base64.urlsafe_b64encode(digest).decode().rstrip("=") != challenge:
                         return self._json(400, {"error": "invalid_grant"})
+                elif grant == "urn:ietf:params:oauth:grant-type:device_code":
+                    status = idp.device_codes.get(form.get("device_code", ""))
+                    if status is None:
+                        return self._json(400, {"error": "invalid_grant"})
+                    if status != "approved":
+                        return self._json(400, {"error": "access_denied" if status == "denied"
+                                                else "authorization_pending"})
+                    idp.device_codes.pop(form["device_code"])
                 elif grant == "refresh_token":
                     if form.get("refresh_token") not in idp.refresh_tokens:
                         return self._json(400, {"error": "invalid_grant"})
@@ -80,6 +104,8 @@ class FakeIdP:
         self.override_state: str | None = None
         self.granted_scope: str | None = None  # ``scope`` echoed in token responses (None = omitted)
         self.token_answer: tuple[int, dict] | None = None  # (status, JSON) answered to every token POST instead
+        self.device_answer: tuple[int, dict] | None = None  # (status, JSON) answered to every /device POST instead
+        self.verification_uri: str | None = None  # the verification page /device names (None = <base>/activate)
         self.server = HTTPServer((host, port), Handler)
         self.base = f"http://{host}:{self.server.server_address[1]}"
         self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -102,6 +128,11 @@ class FakeIdP:
             self.ca_pem = ca.ca_pem
         self._thread.start()
         return self
+
+    def approve_device(self, status: str = "approved") -> None:
+        """The person approves (or, with ``"denied"``, refuses) every pending device code."""
+        for code in self.device_codes:
+            self.device_codes[code] = status
 
     def stop(self) -> None:
         self.server.shutdown()

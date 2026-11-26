@@ -245,10 +245,13 @@ def test_a_provider_extraction_whose_link_is_repointed_while_it_picks_its_launch
 
 
 @pytest.mark.platforms("posix")  # directory symlinks
-def test_a_host_start_refused_after_its_context_read_another_directory_reads_its_own_again_next_time(
-        tmp_path, monkeypatch):
-    """A start refused because the profile's link was repointed while it rebuilt the host's context does not keep
-    that context: once the link leads back, the next start's context holds the profile's own secrets."""
+@pytest.mark.parametrize("failure", ["refused", "launcher_unreadable", "built_with_the_host"])
+def test_a_host_context_built_while_its_link_led_elsewhere_reads_the_profiles_own_secrets_once_it_leads_back(
+        failure, tmp_path, monkeypatch):
+    """A host context built through the profile's link while it led to another directory holds that directory's
+    secrets, and is not kept: when the start then refuses, when it fails before its last check (that directory's
+    launcher does not parse), and when the context was built with the host. Once the link leads back, the next
+    start's context holds the profile's own secrets."""
     from agent import secret_scope as ss
     from hermes_cli.plugin_host import PluginHost
     from hermes_cli.plugins_loader import PluginHomeMoved
@@ -257,28 +260,35 @@ def test_a_host_start_refused_after_its_context_read_another_directory_reads_its
     other = _home_with_plugins(tmp_path / "other", monkeypatch, {})
     (home / ".env").write_text("MOVED_PROBE=own\n", encoding="utf-8")
     (other / ".env").write_text("MOVED_PROBE=other\n", encoding="utf-8")
+    if failure == "launcher_unreadable":
+        (other / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+            "isolation": "host", "host": {"launcher": "runner 'unclosed"}}}), encoding="utf-8")
     profiles = tmp_path / "root" / "profiles"
     profiles.mkdir(parents=True)
-    (profiles / "ops").symlink_to(home, target_is_directory=True)
-    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    link = profiles / "ops"
+    link.symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
     ss.set_multiplex_active(True)
     plugins_mod._reset_plugin_managers_for_tests()
-    host = plugins_mod.get_plugin_manager()._plugin_host()
-    (profiles / "ops").rename(profiles / "ops2")  # the next start rebuilds the context for the new name
+    if failure != "built_with_the_host":
+        host = plugins_mod.get_plugin_manager()._plugin_host()
+        link = link.rename(profiles / "ops2")  # the next start rebuilds the context for the new name
     build = PluginHost._build_base_context
 
     def repointed_while_building(self):
-        (profiles / "ops2").unlink()
-        (profiles / "ops2").symlink_to(other, target_is_directory=True)
+        link.unlink()
+        link.symlink_to(other, target_is_directory=True)
         return build(self)
 
     monkeypatch.setattr(PluginHost, "_build_base_context", repointed_while_building)
+    if failure == "built_with_the_host":
+        host = plugins_mod.get_plugin_manager()._plugin_host()
     try:
-        with pytest.raises(PluginHomeMoved):
+        with pytest.raises(ValueError if failure == "launcher_unreadable" else PluginHomeMoved):
             host.ensure_started()
         monkeypatch.setattr(PluginHost, "_build_base_context", build)
-        (profiles / "ops2").unlink()
-        (profiles / "ops2").symlink_to(home, target_is_directory=True)
+        link.unlink()
+        link.symlink_to(home, target_is_directory=True)
         host.ensure_started()
         assert host._base_context.run(ss.get_secret, "MOVED_PROBE") == "own"
     finally:

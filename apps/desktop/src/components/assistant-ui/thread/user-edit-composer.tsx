@@ -106,6 +106,24 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const touchPointer = useStore($touchPointer)
+
+  // Same contract as the main composer: on a coarse pointer the keyboard's action
+  // key is relabelled Return, because Enter opens a line here too (the edit saves
+  // from its button). An attribute rather than a prop — React 19 drops an
+  // unmapped `enterKeyHint` on the client.
+  useEffect(() => {
+    const editor = editorRef.current
+
+    if (!editor) {
+      return
+    }
+
+    if (touchPointer) {
+      editor.setAttribute('enterkeyhint', 'enter')
+    } else {
+      editor.removeAttribute('enterkeyhint')
+    }
+  }, [touchPointer])
   const tapFocus = useMemo(() => (touchPointer ? touchTapFocusHandlers() : undefined), [touchPointer])
   // Capture the original draft immediately before the first edit. The runtime
   // may hydrate composer.text after this component's first render, so taking a

@@ -320,6 +320,25 @@ export function ChatBar({
     takeDraftRetry
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
 
+  // A coarse-pointer keyboard takes its action key from the field, and the default
+  // there reads as "send" — the opposite of this composer's contract, where Enter
+  // opens a line and only the button sends. `enterkeyhint` labels that key Return.
+  // Set as an attribute rather than a JSX prop: React 19 has no `enterKeyHint` DOM
+  // mapping, so the prop is dropped on the client without a warning.
+  useEffect(() => {
+    const editor = editorRef.current
+
+    if (!editor) {
+      return
+    }
+
+    if (touchPointer) {
+      editor.setAttribute('enterkeyhint', 'enter')
+    } else {
+      editor.removeAttribute('enterkeyhint')
+    }
+  }, [editorRef, touchPointer])
+
   useComposerScreenshot({ sessionKey: activeQueueSessionKey, focusKey, onAttachImageBlob })
 
   // Undo/redo. The rich editor bypasses Chromium's editing pipeline for speed,

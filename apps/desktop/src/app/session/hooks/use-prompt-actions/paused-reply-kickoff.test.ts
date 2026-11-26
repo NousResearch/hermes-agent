@@ -38,6 +38,7 @@ function renderSlash(answer: unknown) {
       busyRef: { current: false },
       copy: en.desktop,
       createBackendSessionForSend: async () => null,
+      getRouteToken: () => 'token',
       getRoutedStoredSessionId: () => STORED,
       getRuntimeIdForStoredSession: () => RUNTIME,
       requestGateway: requestGateway as GatewayRequest,

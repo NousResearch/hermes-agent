@@ -13,6 +13,7 @@ import run_agent
 from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 from persistence.conversation.messages import NewMessage
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from datetime import UTC
 
 
 @pytest.fixture(autouse=True)
@@ -1501,7 +1502,7 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
 def test_try_refresh_codex_singleton_rechecks_usage_admission(monkeypatch):
     from datetime import datetime, timedelta, timezone
 
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
     from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
     from agent.credential_pool import (
         AUTH_TYPE_OAUTH,
@@ -1554,13 +1555,13 @@ def test_try_refresh_codex_singleton_rechecks_usage_admission(monkeypatch):
         return AccountUsageSnapshot(
             provider="openai-codex",
             source="usage_api",
-            fetched_at=datetime.now(timezone.utc),
+            fetched_at=datetime.now(UTC),
             windows=(
                 AccountUsageWindow(
                     label="Weekly",
                     used_percent=80,
                     limit_window_seconds=604_800,
-                    reset_at=datetime.now(timezone.utc) + timedelta(days=7),
+                    reset_at=datetime.now(UTC) + timedelta(days=7),
                 ),
             ),
         )

@@ -56,8 +56,8 @@ from hermes_cli.auth import (
 )
 
 logger = logging.getLogger(__name__)
-_WARNED_INVALID_USAGE_LIMITS: Set[Tuple[str, str]] = set()
-_WARNED_UNMATCHED_USAGE_LIMITS: Set[Tuple[str, str]] = set()
+_WARNED_INVALID_USAGE_LIMITS: set[tuple[str, str]] = set()
+_WARNED_UNMATCHED_USAGE_LIMITS: set[tuple[str, str]] = set()
 
 
 def _load_config_safe() -> Optional[dict]:
@@ -616,7 +616,7 @@ def credential_pool_entry_serves_endpoint(entry: Any, base_url: Any) -> bool:
     return normalize_route_base_url(entry_url) == normalize_route_base_url(base_url)
 
 
-def get_pool_usage_limits(provider: str) -> Dict[str, float]:
+def get_pool_usage_limits(provider: str) -> dict[str, float]:
     """Return configured soft usage ceilings keyed by credential ID."""
     if provider != "openai-codex":
         return {}
@@ -629,7 +629,7 @@ def get_pool_usage_limits(provider: str) -> Dict[str, float]:
     provider_limits = all_limits.get(provider)
     if not isinstance(provider_limits, dict):
         return {}
-    valid: Dict[str, float] = {}
+    valid: dict[str, float] = {}
     for credential_id, raw_threshold in provider_limits.items():
         normalized_id = str(credential_id or "").strip()
         try:
@@ -752,8 +752,8 @@ _USAGE_ADMISSION_PROBE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=16,
     thread_name_prefix="hermes-codex-usage",
 )
-_USAGE_ADMISSION_INFLIGHT: Dict[
-    Tuple[str, str, str, str], concurrent.futures.Future[None]
+_USAGE_ADMISSION_INFLIGHT: dict[
+    tuple[str, str, str, str], concurrent.futures.Future[None]
 ] = {}
 
 
@@ -765,15 +765,15 @@ class _UsageAdmissionDecision:
     reset_at: Optional[float]
 
 
-_USAGE_ADMISSION_CACHE: Dict[
-    Tuple[str, str, str, str], _UsageAdmissionDecision
+_USAGE_ADMISSION_CACHE: dict[
+    tuple[str, str, str, str], _UsageAdmissionDecision
 ] = {}
 _USAGE_ADMISSION_CACHE_LOCK = threading.Lock()
 
 
 def _usage_admission_cache_key(
     entry: PooledCredential,
-) -> Tuple[str, str, str, str]:
+) -> tuple[str, str, str, str]:
     token_fingerprint = hashlib.sha256(
         entry.runtime_api_key.encode("utf-8")
     ).hexdigest()
@@ -1242,7 +1242,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         self._lock = threading.RLock()
         self._active_leases: dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
-        self._usage_limits: Dict[str, float] = {}
+        self._usage_limits: dict[str, float] = {}
         # Monotonic timestamp of the last "no available entries" log (see
         # NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS). Re-armed to None on every
         # successful selection so a recover->re-exhaust transition logs promptly.
@@ -1257,7 +1257,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     def _probe_usage_admission_entry(
         self,
         entry: PooledCredential,
-        cache_key: Tuple[str, str, str, str],
+        cache_key: tuple[str, str, str, str],
     ) -> None:
         """Probe and cache one entry. Network I/O never holds a pool lock."""
         snapshot = None
@@ -1320,7 +1320,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
 
     def _refresh_usage_admission_cache(
         self,
-        candidate_entries: Optional[List[PooledCredential]] = None,
+        candidate_entries: Optional[list[PooledCredential]] = None,
     ) -> None:
         """Refresh configured Codex decisions with one bounded parallel wait."""
         limits = get_pool_usage_limits(self.provider)
@@ -1379,7 +1379,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 def clear_inflight(
                     completed: concurrent.futures.Future[None],
                     *,
-                    key: Tuple[str, str, str, str] = registered_key,
+                    key: tuple[str, str, str, str] = registered_key,
                 ) -> None:
                     with _USAGE_ADMISSION_CACHE_LOCK:
                         if _USAGE_ADMISSION_INFLIGHT.get(key) is completed:
@@ -2760,7 +2760,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     def _apply_admission_after_forced_refresh(
         self,
         refreshed: Optional[PooledCredential],
-    ) -> Tuple[Optional[PooledCredential], Optional[str]]:
+    ) -> tuple[Optional[PooledCredential], Optional[str]]:
         """Admit a freshly minted token before it can be assigned.
 
         Forced OAuth refresh changes the token fingerprint for the same stable
@@ -2784,7 +2784,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
 
     def try_refresh_current_with_admission_status(
         self,
-    ) -> Tuple[Optional[PooledCredential], Optional[str]]:
+    ) -> tuple[Optional[PooledCredential], Optional[str]]:
         with self._lock:
             refreshed = self._try_refresh_current_unlocked()
         return self._apply_admission_after_forced_refresh(refreshed)
@@ -2808,7 +2808,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         self,
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
-    ) -> Tuple[Optional[PooledCredential], Optional[str]]:
+    ) -> tuple[Optional[PooledCredential], Optional[str]]:
         """Force-refresh the entry that supplied the failed request.
 
         Direct integrations may reload the pool after a request failed, so

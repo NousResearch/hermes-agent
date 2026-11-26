@@ -1,6 +1,6 @@
 import concurrent.futures
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +18,7 @@ def _snapshot(*windows: AccountUsageWindow) -> AccountUsageSnapshot:
     return AccountUsageSnapshot(
         provider="openai-codex",
         source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         windows=tuple(windows),
     )
 
@@ -49,7 +49,7 @@ def _select_id(pool: CredentialPool) -> str:
 
 @pytest.fixture(autouse=True)
 def _clear_usage_admission_cache():
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
         credential_pool._USAGE_ADMISSION_CACHE.clear()
@@ -84,7 +84,7 @@ def test_policy_window_uses_longest_duration_not_primary_secondary_label():
 def test_policy_window_falls_back_to_farthest_reset():
     from agent.credential_pool import _select_codex_policy_window
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     earlier = AccountUsageWindow(
         label="Primary",
         used_percent=95,
@@ -112,7 +112,7 @@ def test_policy_window_without_duration_or_reset_fails_open():
 def test_policy_window_mixed_durations_fail_open():
     from agent.credential_pool import _select_codex_policy_window
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     shorter_with_duration = AccountUsageWindow(
         label="Short",
         used_percent=95,
@@ -139,7 +139,7 @@ def test_policy_window_malformed_duration_with_complete_resets_fails_open(
 ):
     from agent.credential_pool import _select_codex_policy_window
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     valid = AccountUsageWindow(
         label="Valid",
         used_percent=79,
@@ -163,7 +163,7 @@ def test_policy_window_mixed_durations_without_complete_resets_fails_open():
         label="Short",
         used_percent=95,
         limit_window_seconds=18_000,
-        reset_at=datetime(2026, 8, 15, tzinfo=timezone.utc),
+        reset_at=datetime(2026, 8, 15, tzinfo=UTC),
     )
     unknown_longer = AccountUsageWindow(label="Unknown", used_percent=79)
 
@@ -196,7 +196,7 @@ def test_policy_window_past_reset_fallback_fails_open():
     stale = AccountUsageWindow(
         label="Stale",
         used_percent=90,
-        reset_at=datetime(1970, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+        reset_at=datetime(1970, 1, 1, 0, 0, 1, tzinfo=UTC),
     )
 
     assert _select_codex_policy_window(_snapshot(stale)) is None
@@ -209,7 +209,7 @@ def test_policy_window_duration_with_past_reset_fails_open():
         label="Stale weekly window",
         used_percent=90,
         limit_window_seconds=604_800,
-        reset_at=datetime(1970, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+        reset_at=datetime(1970, 1, 1, 0, 0, 1, tzinfo=UTC),
     )
 
     assert _select_codex_policy_window(_snapshot(stale)) is None
@@ -241,8 +241,8 @@ def test_policy_window_rejects_string_percentages(used_percent):
 
 
 def test_select_denies_credential_at_exact_threshold(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     calls = []
     monkeypatch.setattr(
@@ -281,8 +281,8 @@ def test_select_denies_credential_at_exact_threshold(monkeypatch):
 
 
 def test_specific_lease_refuses_credential_at_threshold(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -306,8 +306,8 @@ def test_specific_lease_refuses_credential_at_threshold(monkeypatch):
 
 
 def test_failure_rotation_refreshes_limit_before_choosing_replacement(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -347,8 +347,8 @@ def test_auxiliary_fresh_pool_refresh_targets_failed_token_and_applies_admission
 ):
     from dataclasses import replace
 
-    import agent.auxiliary_client as auxiliary_client
-    import agent.credential_pool as credential_pool
+    from agent import auxiliary_client
+    from agent import credential_pool
 
     failed = PooledCredential(
         provider="openai-codex",
@@ -386,7 +386,7 @@ def test_auxiliary_fresh_pool_refresh_targets_failed_token_and_applies_admission
                 label="Weekly",
                 used_percent=used,
                 limit_window_seconds=604_800,
-                reset_at=datetime.now(timezone.utc) + timedelta(days=7),
+                reset_at=datetime.now(UTC) + timedelta(days=7),
             )
         )
 
@@ -414,8 +414,8 @@ def test_auxiliary_fresh_pool_refresh_targets_failed_token_and_applies_admission
 
 
 def test_forced_refresh_rechecks_admission_for_new_token(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -498,8 +498,8 @@ def test_primary_auth_recovery_rotates_without_exhausting_policy_denied_refresh(
 
 
 def test_successful_usage_probe_is_cached_for_five_minutes(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     calls = []
     monkeypatch.setattr(
@@ -529,8 +529,8 @@ def test_successful_usage_probe_is_cached_for_five_minutes(monkeypatch):
 
 
 def test_failed_probe_fails_open_then_retries_after_thirty_seconds(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     clock = [0.0]
     calls = []
@@ -566,8 +566,8 @@ def test_failed_probe_fails_open_then_retries_after_thirty_seconds(monkeypatch):
 
 
 def test_cache_expiry_rechecks_and_readmits_after_reset(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     clock = [0.0]
     used_values = iter((80, 0))
@@ -596,8 +596,8 @@ def test_cache_expiry_rechecks_and_readmits_after_reset(monkeypatch):
 
 
 def test_token_change_invalidates_cached_decision(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     calls = []
     monkeypatch.setattr(
@@ -627,8 +627,8 @@ def test_token_change_invalidates_cached_decision(monkeypatch):
 
 
 def test_stale_token_probe_does_not_delete_fresh_token_cache(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -658,8 +658,8 @@ def test_stale_token_probe_does_not_delete_fresh_token_cache(monkeypatch):
 
 
 def test_usage_probe_runs_outside_pool_lock(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -669,7 +669,7 @@ def test_usage_probe_runs_outside_pool_lock(monkeypatch):
     pool = CredentialPool("openai-codex", [_entry()])
 
     def fake_fetch(provider, **kwargs):
-        assert not getattr(pool._lock, "_is_owned")()
+        assert not pool._lock._is_owned()
         return _snapshot(
             AccountUsageWindow(
                 label="Weekly",
@@ -684,8 +684,8 @@ def test_usage_probe_runs_outside_pool_lock(monkeypatch):
 
 
 def test_usage_cache_never_contains_raw_access_token(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     secret_token = "secret-vicky-access-token"
     monkeypatch.setattr(
@@ -712,8 +712,8 @@ def test_usage_cache_never_contains_raw_access_token(monkeypatch):
 
 
 def test_automatic_lease_skips_denied_credential(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -743,8 +743,8 @@ def test_automatic_lease_skips_denied_credential(monkeypatch):
 
 
 def test_select_rechecks_usage_after_oauth_token_refresh(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     calls = []
     entry = _entry(token="old-token")
@@ -785,8 +785,8 @@ def test_select_rechecks_usage_after_oauth_token_refresh(monkeypatch):
 
 
 def test_lease_rechecks_usage_after_oauth_token_refresh(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     calls = []
     entry = _entry(token="old-token")
@@ -827,7 +827,7 @@ def test_lease_rechecks_usage_after_oauth_token_refresh(monkeypatch):
 
 
 def test_unmatched_configured_credential_warns_once(monkeypatch, caplog):
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     credential_pool._WARNED_UNMATCHED_USAGE_LIMITS.clear()
     monkeypatch.setattr(
@@ -849,8 +849,8 @@ def test_unmatched_configured_credential_warns_once(monkeypatch, caplog):
 
 
 def test_threshold_change_reuses_fresh_usage_but_recomputes_admission(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     threshold = [80.0]
     calls = []
@@ -882,8 +882,8 @@ def test_threshold_change_reuses_fresh_usage_but_recomputes_admission(monkeypatc
 
 
 def test_explicit_token_recomputes_cached_telemetry_after_threshold_change(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     threshold = [80.0]
     calls = []
@@ -926,8 +926,8 @@ def test_explicit_token_recomputes_cached_telemetry_after_threshold_change(monke
 
 
 def test_inflight_waiter_applies_its_current_threshold(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     threshold = [90.0]
     probe_started = threading.Event()
@@ -977,7 +977,7 @@ def test_inflight_waiter_applies_its_current_threshold(monkeypatch):
 def test_completed_probe_callback_clears_inflight_without_reentrant_lock(
     monkeypatch,
 ):
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     class RejectReentrantLock:
         def __init__(self):
@@ -1026,8 +1026,8 @@ def test_completed_probe_callback_clears_inflight_without_reentrant_lock(
 
 
 def test_selection_reads_usage_limit_config_once_outside_entry_filter(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     config_calls = []
     monkeypatch.setattr(
@@ -1054,9 +1054,9 @@ def test_selection_reads_usage_limit_config_once_outside_entry_filter(monkeypatc
 def test_runtime_resolver_does_not_fall_back_to_singleton_after_pool_denial(
     monkeypatch,
 ):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
-    import hermes_cli.runtime_provider as runtime_provider
+    from agent import account_usage
+    from agent import credential_pool
+    from hermes_cli import runtime_provider
     from hermes_cli.auth import AuthError
 
     singleton_calls = []
@@ -1082,7 +1082,7 @@ def test_runtime_resolver_does_not_fall_back_to_singleton_after_pool_denial(
         "resolve_provider",
         lambda *args, **kwargs: "openai-codex",
     )
-    monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+    monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
     monkeypatch.setattr(
         runtime_provider,
         "_resolve_explicit_runtime",
@@ -1107,7 +1107,7 @@ def test_runtime_resolver_does_not_fall_back_to_singleton_after_pool_denial(
 
 
 def test_auxiliary_codex_does_not_fall_back_after_pool_denial(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     singleton_calls = []
     monkeypatch.setattr(
@@ -1142,7 +1142,7 @@ def test_auxiliary_codex_does_not_fall_back_after_pool_denial(monkeypatch):
 def test_runtime_resolver_keeps_legacy_singleton_fallback_without_policy_denial(
     monkeypatch,
 ):
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     class EmptyPool:
         def has_credentials(self):
@@ -1157,7 +1157,7 @@ def test_runtime_resolver_keeps_legacy_singleton_fallback_without_policy_denial(
         "resolve_provider",
         lambda *args, **kwargs: "openai-codex",
     )
-    monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+    monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
     monkeypatch.setattr(
         runtime_provider,
         "_resolve_explicit_runtime",
@@ -1191,7 +1191,7 @@ def test_runtime_resolver_keeps_legacy_singleton_fallback_without_policy_denial(
 def test_auxiliary_codex_keeps_legacy_singleton_fallback_without_policy_denial(
     monkeypatch,
 ):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     singleton_calls = []
     fake_client = SimpleNamespace(
@@ -1229,8 +1229,8 @@ def test_auxiliary_codex_keeps_legacy_singleton_fallback_without_policy_denial(
 
 
 def test_raw_codex_token_does_not_fall_back_after_pool_denial(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
-    import hermes_cli.auth as auth
+    from agent import auxiliary_client
+    from hermes_cli import auth
 
     singleton_calls = []
     monkeypatch.setattr(
@@ -1259,7 +1259,7 @@ def test_raw_codex_token_does_not_fall_back_after_pool_denial(monkeypatch):
 
 
 def test_cached_auxiliary_codex_client_is_rechecked_after_policy_denial(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     cache_key = ("openai-codex", "codex-policy-test")
     cached_client = SimpleNamespace(close=lambda: None)
@@ -1305,7 +1305,7 @@ def test_cached_auxiliary_codex_client_is_rechecked_after_policy_denial(monkeypa
 
 
 def test_cached_auxiliary_explicit_codex_client_rejects_denied_token(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     cache_key = ("openai-codex", "explicit-policy-test")
     cached_client = SimpleNamespace(close=lambda: None)
@@ -1346,7 +1346,7 @@ def test_cached_auxiliary_explicit_codex_client_rejects_denied_token(monkeypatch
 
 
 def test_cached_auxiliary_codex_uses_freshly_selected_eligible_entry(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     denied_key = ("openai-codex", "A")
     eligible_key = ("openai-codex", "B")
@@ -1403,7 +1403,7 @@ def test_cached_auxiliary_codex_uses_freshly_selected_eligible_entry(monkeypatch
 
 
 def test_auxiliary_codex_build_uses_same_freshly_selected_entry(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     selected = SimpleNamespace(
         id="B",
@@ -1450,7 +1450,7 @@ def test_auxiliary_codex_build_uses_same_freshly_selected_entry(monkeypatch):
 
 
 def test_auto_auxiliary_uses_freshly_selected_codex_entry(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     selected = SimpleNamespace(
         id="B",
@@ -1508,7 +1508,7 @@ def test_auto_auxiliary_uses_freshly_selected_codex_entry(monkeypatch):
 
 
 def test_auxiliary_cache_rebinds_after_same_id_codex_token_refresh(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     current = [
         SimpleNamespace(
@@ -1568,7 +1568,7 @@ def test_auxiliary_cache_rebinds_after_same_id_codex_token_refresh(monkeypatch):
 
 
 def test_policy_denial_evicts_auto_clients_tagged_as_codex():
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     # Main scopes cache keys by profile home (key[0]) and evicts only the calling profile's entries.
     auto_key = (auxiliary_client.hermes_home_key(), "auto", "cached-codex")
@@ -1594,7 +1594,7 @@ def test_policy_denial_evicts_auto_clients_tagged_as_codex():
 def test_auto_auxiliary_continues_to_fallback_after_codex_policy_denial(
     monkeypatch,
 ):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     fallback_client = SimpleNamespace(
         _hermes_aux_effective_provider="openrouter",
@@ -1646,7 +1646,7 @@ def test_auto_auxiliary_continues_to_fallback_after_codex_policy_denial(
 
 
 def test_non_codex_auxiliary_pool_entry_never_inherits_codex_base_url(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     selected = SimpleNamespace(
         id="deepseek-entry",
@@ -1657,7 +1657,7 @@ def test_non_codex_auxiliary_pool_entry_never_inherits_codex_base_url(monkeypatc
     )
     calls = []
     monkeypatch.setattr(auxiliary_client, "get_pool_usage_limits", lambda provider: {})
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     monkeypatch.setattr(auxiliary_client, "pool_for_aux_provider", lambda *args, **kwargs: object())
     monkeypatch.setattr(
@@ -1686,8 +1686,8 @@ def test_non_codex_auxiliary_pool_entry_never_inherits_codex_base_url(monkeypatc
 def test_multiple_cold_admission_probes_run_concurrently(monkeypatch):
     import threading
 
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     barrier = threading.Barrier(2)
     monkeypatch.setattr(
@@ -1724,9 +1724,9 @@ def test_multiple_cold_admission_probes_run_concurrently(monkeypatch):
 
 @pytest.mark.parametrize("raw_codex", [False, True])
 def test_resolver_rejects_explicit_policy_denied_codex_token(monkeypatch, raw_codex):
-    import agent.account_usage as account_usage
-    import agent.auxiliary_client as auxiliary_client
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import auxiliary_client
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -1773,8 +1773,8 @@ def test_resolver_rejects_explicit_policy_denied_codex_token(monkeypatch, raw_co
 
 
 def test_cold_explicit_matching_pool_token_is_probed_before_admission(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
+    from agent import account_usage
+    from agent import credential_pool
 
     pool = CredentialPool("openai-codex", [_entry()])
     calls = []
@@ -1815,7 +1815,7 @@ def test_cold_explicit_matching_pool_token_is_probed_before_admission(monkeypatc
 
 
 def test_denied_cache_decision_expires_at_quota_reset(monkeypatch):
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     now = [1_800_000_000.0]
     monkeypatch.setattr(credential_pool.time, "time", lambda: now[0])
@@ -1832,9 +1832,9 @@ def test_denied_cache_decision_expires_at_quota_reset(monkeypatch):
 
 
 def test_main_runtime_rejects_explicit_policy_denied_codex_token(monkeypatch):
-    import agent.account_usage as account_usage
-    import agent.credential_pool as credential_pool
-    import hermes_cli.runtime_provider as runtime_provider
+    from agent import account_usage
+    from agent import credential_pool
+    from hermes_cli import runtime_provider
     from hermes_cli.auth import AuthError
 
     monkeypatch.setattr(
@@ -1877,7 +1877,7 @@ def test_main_runtime_rejects_explicit_policy_denied_codex_token(monkeypatch):
 def test_auxiliary_cache_hit_rejects_explicit_policy_denied_codex_token(
     monkeypatch,
 ):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     cached_client = SimpleNamespace(
         _hermes_aux_effective_provider="openai-codex",
@@ -1926,7 +1926,7 @@ def test_auxiliary_cache_hit_rejects_explicit_policy_denied_codex_token(
 
 
 def test_auto_runtime_falls_through_after_codex_pool_policy_denial(monkeypatch):
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     class DeniedPool:
         def has_credentials(self):
@@ -1941,7 +1941,7 @@ def test_auto_runtime_falls_through_after_codex_pool_policy_denial(monkeypatch):
         "resolve_provider",
         lambda *args, **kwargs: "openai-codex",
     )
-    monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+    monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
     monkeypatch.setattr(
         runtime_provider,
         "_resolve_explicit_runtime",
@@ -1983,7 +1983,7 @@ def test_auto_runtime_falls_through_after_codex_pool_policy_denial(monkeypatch):
 
 
 def test_explicit_unrelated_codex_token_does_not_relabel_as_pool_entry(monkeypatch):
-    import agent.auxiliary_client as auxiliary_client
+    from agent import auxiliary_client
 
     selected_calls = []
     cache_hints = []

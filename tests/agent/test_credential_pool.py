@@ -1281,7 +1281,7 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
 
 
 def test_codex_pool_usage_limit_is_read_by_credential_id(monkeypatch):
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,
@@ -1299,7 +1299,7 @@ def test_codex_pool_usage_limit_is_read_by_credential_id(monkeypatch):
 
 
 def test_codex_pool_usage_limits_ignore_invalid_rows(monkeypatch):
-    import agent.credential_pool as credential_pool
+    from agent import credential_pool
 
     monkeypatch.setattr(
         credential_pool,

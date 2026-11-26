@@ -5,13 +5,13 @@
 cold cache (first use in a process, or after the 300 s TTL) they used to skip the probe and hand out a
 credential that was over its configured ceiling.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 
 import pytest
 
-import agent.account_usage as account_usage
-import agent.credential_pool as credential_pool
+from agent import account_usage
+from agent import credential_pool
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from agent.credential_pool import AUTH_TYPE_API_KEY, CredentialPool, PooledCredential
 
@@ -29,7 +29,7 @@ def _entry(credential_id, token, priority):
 
 def _snapshot(used):
     return AccountUsageSnapshot(
-        provider="openai-codex", source="usage_api", fetched_at=datetime.now(timezone.utc),
+        provider="openai-codex", source="usage_api", fetched_at=datetime.now(UTC),
         windows=(AccountUsageWindow(label="Weekly", used_percent=used, limit_window_seconds=604_800),),
     )
 

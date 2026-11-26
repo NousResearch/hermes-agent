@@ -28,7 +28,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 
-from hermes_cli.session_listing import subagent_listing_scope
+from hermes_cli.session_listing import (
+    session_listing_scope, show_oneshot_sessions, show_subagent_sessions,
+)
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
 from hermes_cli.isolated_scope import scope_to_launch_profile
@@ -333,12 +335,27 @@ def _sidebar_singleflight_cache(func):
     scans in AnyIO worker threads, starving the uvicorn loop for the GIL. The TTL bounds UI
     staleness; the single-flight lock guarantees one expensive scan at a time. Cached values
     are copied on store and hit so serialization or a caller cannot mutate shared state.
+
+    ``func._sidebar_cache_state()`` (optional) contributes profile CONFIG to the key: the same
+    request answered under ``sessions.show_oneshot`` on and off must never share an entry,
+    or flipping the key would keep the old scope in front of the user for the whole TTL.
     """
     signature = inspect.signature(func)
     cache = OrderedDict()
     cache_lock = threading.Lock()
     refresh_lock = threading.Lock()
     miss = object()
+
+    def _state_key():
+        # The hook is registered on the DECORATED symbol (``wrapped``), not on the closure's
+        # ``func``: call sites attach ``_sidebar_cache_state`` after decoration, so reading it
+        # off ``func`` would silently always miss.
+        hook = getattr(wrapped, "_sidebar_cache_state", None)
+        try:
+            return (hook() if hook else ())
+        except Exception:
+            # An unreadable home must not pin one key forever: fall back to an uncacheable key.
+            return (object(),)
 
     def _lookup(key):
         now = time.monotonic()
@@ -358,7 +375,7 @@ def _sidebar_singleflight_cache(func):
 
         bound = signature.bind(*args, **kwargs)
         bound.apply_defaults()
-        key = tuple(bound.arguments.items())
+        key = (tuple(bound.arguments.items()), _state_key())
         cached = _lookup(key)
         if cached is not miss:
             return cached
@@ -433,9 +450,10 @@ def get_profiles_sessions(
     now = time.time()
     for name, home in targets:
         def _read(store, name=name, home=home):
-            include_subagents, exclude = subagent_listing_scope(
+            include_subagents, _include_oneshot, exclude = session_listing_scope(
                 home, source=filters["source"], sources=filters["sources"],
                 exclude_sources=filters["exclude_sources"])
+            # ``show_oneshot`` acts through ``exclude`` alone: no child-session rule to pass.
             scoped = {**filters, "exclude_sources": exclude, "include_subagents": include_subagents}
             rows = _session_rows(
                 store, limit=per_profile, offset=0, order_by_last_active=order == "recent",
@@ -498,10 +516,12 @@ def get_profiles_sessions_sidebar(
     errors: list[dict[str, str]] = []
     now = time.time()
 
-    def _slice(store, key, recents_subagents=(False, None)):
+    def _slice(store, key, recents_flags=(False, False, None)):
         source, exclude = slice_scope[key]
-        # Only recents takes subagent runs (sessions.show_subagents); cron/messaging keep shape.
-        include_subagents, exclude = recents_subagents if key == "recents" else (False, exclude)
+        # Only recents takes subagent/one-shot runs (sessions.show_subagents, sessions.show_oneshot);
+        # cron/messaging keep shape.
+        include_subagents, include_oneshot, exclude = (
+            recents_flags if key == "recents" else (False, False, exclude))
         # include_pinned: a pinned conversation must reach the sidebar even when it has aged
         # past the window, or its Pinned row renders empty.
         return _session_rows(
@@ -510,10 +530,10 @@ def get_profiles_sessions_sidebar(
             order_by_last_active=True, compact_rows=True, include_pinned=True,
             include_subagents=include_subagents)
 
-    def _build_slices(store, cache_key, recents_subagents):
+    def _build_slices(store, cache_key, recents_flags):
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
         # page, and a total that shrank when you scrolled would be worse than no total at all.
-        recents = _slice(store, "recents", recents_subagents)
+        recents = _slice(store, "recents", recents_flags)
         usage = store.usage.usage_totals()
         slices = {"recents": recents, "usage": {"tokens": usage.tokens, "cost_usd": usage.cost_usd},
                   "cron": _slice(store, "cron"), "messaging": _slice(store, "messaging")}
@@ -532,15 +552,18 @@ def get_profiles_sessions_sidebar(
             continue
         if not db_path.exists():
             continue
-        recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
+        recents_flags = session_listing_scope(home, exclude_sources=recents_exclude_list or None)
+        include_subagents, include_oneshot, _recents_excluded = recents_flags
+        # The cache key carries the flags (not just the request): flipping sessions.show_oneshot
+        # in the profile's config must never resurface a slice built under the old scope.
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
-                             tuple(messaging_exclude_list), recents_subagents[0])
+                             tuple(messaging_exclude_list), include_subagents, include_oneshot)
         slices = _sidebar_profile_cache_get(profile_cache_key)
         if slices is None:
             slices = _read_profile_db(
                 name, home, errors,
-                lambda store: _build_slices(store, profile_cache_key, recents_subagents))
+                lambda store: _build_slices(store, profile_cache_key, recents_flags))
             if slices is None:
                 continue
         if _slice_has_rows(slices):
@@ -601,6 +624,21 @@ def get_profiles_sessions_sidebar(
             body[key]["profiles_failed"] = failed
             body[key]["errors"] = [dict(err) for err in retryable]
     return body
+
+
+def _sidebar_optin_state() -> tuple:
+    """The ``sessions`` opt-ins of every scoped profile, as the sidebar's outer cache key fragment.
+
+    The handler reads these per request when it builds each profile's slice, so the TTL entry
+    must follow them too: toggling ``sessions.show_oneshot`` (or ``show_subagents``) has to take
+    effect on the next refresh, not after the cache expires.
+    """
+    targets = _profile_targets("GET /api/profiles/sessions/sidebar")
+    return tuple((name, show_subagent_sessions(home), show_oneshot_sessions(home))
+                 for name, home in targets)
+
+
+get_profiles_sessions_sidebar._sidebar_cache_state = _sidebar_optin_state
 
 
 def _merge_by_id(into: dict[str, dict[str, Any]], entries: list[dict[str, Any]], child_key: str) -> None:

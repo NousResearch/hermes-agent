@@ -316,3 +316,74 @@ class TestSidebarShowSubagents:
         assert _slice_ids(payload, "recents") == {"default-parent", "worker-parent", "worker-sub"}
         # The messaging slice keeps its shape: a subagent run is not a platform thread.
         assert _slice_ids(payload, "messaging") == set()
+
+
+class TestSidebarShowOneshot:
+    """``sessions.show_oneshot`` re-admits finite one-shot runs into recents, per profile."""
+
+    @staticmethod
+    def _seed_oneshot(home, session_id):
+        _seed_session(home, session_id, source="oneshot")
+
+    def test_recents_list_oneshot_runs_only_for_the_profile_that_opted_in(self, client, profiles_on_disk):
+        (profiles_on_disk["worker"] / "config.yaml").write_text("sessions:\n  show_oneshot: true\n")
+        self._seed_oneshot(profiles_on_disk["default"], "default-oneshot")
+        self._seed_oneshot(profiles_on_disk["worker"], "worker-oneshot")
+        _seed_session(profiles_on_disk["default"], "default-chat", source="cli")
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "all", "recents_exclude": "cron,oneshot",
+                    "messaging_exclude": "cli,cron,desktop"},
+        ).json()
+
+        assert payload["errors"] == []
+        # The opted-in profile lists its run; the profile that did not opt in stays hidden.
+        # (``default-oneshot`` also shows in ``messaging``: that slice's exclusion list never
+        # names one-shot runs, and the test below pins that it is unchanged by the flag.)
+        assert _slice_ids(payload, "recents") == {"default-chat", "worker-oneshot"}
+
+    def test_the_messaging_shape_is_identical_with_and_without_the_flag(self, client, profiles_on_disk):
+        """``sessions.show_oneshot`` touches recents only: the messaging slice answers the same."""
+        home = profiles_on_disk["default"]
+        self._seed_oneshot(home, "default-oneshot")
+        params = {"recents_profile": "default", "recents_exclude": "cron,oneshot",
+                  "messaging_exclude": "cli,cron,desktop"}
+
+        without = client.get("/api/profiles/sessions/sidebar", params=params).json()
+        (home / "config.yaml").write_text("sessions:\n  show_oneshot: true\n")
+        with_flag = client.get("/api/profiles/sessions/sidebar", params=params).json()
+
+        assert _slice_ids(without, "recents") == set()
+        assert _slice_ids(with_flag, "recents") == {"default-oneshot"}
+        assert _slice_ids(with_flag, "messaging") == _slice_ids(without, "messaging")
+
+    def test_the_cron_slice_never_takes_oneshot_runs(self, client, profiles_on_disk):
+        """The opt-in widens recents only; ``source=cron`` stays a scoped slice."""
+        (profiles_on_disk["default"] / "config.yaml").write_text("sessions:\n  show_oneshot: true\n")
+        self._seed_oneshot(profiles_on_disk["default"], "default-oneshot")
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "all", "recents_exclude": "cron,oneshot"},
+        ).json()
+
+        assert _slice_ids(payload, "recents") == {"default-oneshot"}
+        assert _slice_ids(payload, "cron") == set()
+
+    def test_flipping_the_flag_takes_effect_with_a_warm_cache(self, client, profiles_on_disk, monkeypatch):
+        """The 5s response cache must key on the config, not just the request: a flip is immediate."""
+        from hermes_cli.web_routers import profiles as profiles_routes
+
+        # Real TTL on purpose: the point is that a warm entry cannot outlive the config change.
+        monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 5.0)
+        home = profiles_on_disk["default"]
+        self._seed_oneshot(home, "default-oneshot")
+        params = {"recents_profile": "default", "recents_exclude": "cron,oneshot"}
+
+        assert _slice_ids(client.get("/api/profiles/sessions/sidebar", params=params).json(), "recents") == set()
+
+        (home / "config.yaml").write_text("sessions:\n  show_oneshot: true\n")
+        # Same request, warm cache from the line above: the flipped flag must still be honored.
+        assert _slice_ids(client.get("/api/profiles/sessions/sidebar", params=params).json(), "recents") == {
+            "default-oneshot"}

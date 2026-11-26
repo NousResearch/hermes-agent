@@ -2233,6 +2233,9 @@ DEFAULT_CONFIG = {
         # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
         # nested under their parent. Off by default: they are machinery, not conversations.
         "show_subagents": False,
+        # List finite one-shot runs (`hermes -z`, `chat -q`) in those same session lists. Off by
+        # default: they are hidden as machinery; turn on to get them back.
+        "show_oneshot": False,
         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE, #54189). It blocks
         # writes (~seconds per 100MB): only at startup, only when ≥1 session went AND freelist/page_count > 25%.
         "vacuum_after_prune": True,

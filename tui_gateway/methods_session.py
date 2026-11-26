@@ -116,6 +116,7 @@ def _row_of(record) -> dict | None:
     return None if record is None else record.as_session_row()
 
 
+from hermes_cli.session_listing import ONESHOT_SOURCE
 from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
 
 
@@ -137,12 +138,18 @@ def _auto_resume_denied_source(row: dict) -> bool:
     return source in _LISTING_DENY_SOURCES or source == "unknown"
 
 
-def _listing_rows(persistence, limit: int, **kwargs) -> list:
-    """Human-facing listing rows (most recent first), deny-list applied."""
+def _listing_rows(persistence, limit: int, admit_sources=None, **kwargs) -> list:
+    """Human-facing listing rows (most recent first), deny-list applied.
+
+    ``admit_sources`` names internal sources an opt-in re-admitted (``sessions.show_oneshot``);
+    they survive the deny-list for this listing only. It is not forwarded to ``SessionQuery``.
+    """
     from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+    admitted = frozenset(s.lower() for s in (admit_sources or ()))
     entries = persistence.sessions.list_sessions(SessionQuery(order=SessionOrder.LAST_ACTIVE, **kwargs),
                                                  SessionWindow(limit=limit), compact_rows=True)
-    return [row for row in (entry.as_list_row() for entry in entries) if not _denied_source(row)]
+    return [row for row in (entry.as_list_row() for entry in entries)
+            if not _denied_source(row) or (row.get("source") or "").strip().lower() in admitted]
 
 
 def _snapshot_sessions(rid):
@@ -446,12 +453,17 @@ def _(rid, params: dict, persistence) -> dict:
         limit = int(params.get("limit", 200) or 200)
         # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
         # surfaces that OWN hidden sessions (Bots pane, pickers).
-        from hermes_cli.session_listing import show_subagent_sessions
+        from hermes_cli.session_listing import show_oneshot_sessions, show_subagent_sessions
 
-        # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
-        include_subagents = show_subagent_sessions(persistence.scope.profile_dir)
+        # ``sessions.show_subagents`` / ``sessions.show_oneshot`` (the store's own profile config)
+        # re-admit delegate runs (#97202) and finite one-shot runs respectively. This listing filters
+        # after the SQL read, so the opt-ins arrive as deny-list exemptions.
+        home = persistence.scope.profile_dir
+        include_subagents = show_subagent_sessions(home)
+        include_oneshot = show_oneshot_sessions(home)
         rows = _listing_rows(persistence, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
-                             include_subagents=include_subagents)[:limit]
+                             include_subagents=include_subagents,
+                             admit_sources={ONESHOT_SOURCE} if include_oneshot else None)[:limit]
         # No live_message_count here on purpose: the bulk listing serves rows whose open
         # paths never demand history (expectHistory defaults false); the count is a
         # per-session scan and would turn one listing call into hundreds of them.

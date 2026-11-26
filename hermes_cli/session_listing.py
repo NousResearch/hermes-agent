@@ -11,12 +11,24 @@ from utils import is_truthy_value
 _LIST_WORDS = {"list", "ls", "browse"}
 _SEARCH_WORDS = {"search", "find"}
 SUBAGENT_SOURCE = "subagent"
+ONESHOT_SOURCE = "oneshot"
 
 
 def show_subagent_sessions(hermes_home: str | Path) -> bool:
     """``sessions.show_subagents`` from *hermes_home*'s own config.yaml. One ``serve`` lists many
     profiles' stores, so the store's home decides, never the process ``HERMES_HOME``. False when
     the config cannot be read (the listing keeps its default shape)."""
+    return _session_listing_flag(hermes_home, "show_subagents")
+
+
+def show_oneshot_sessions(hermes_home: str | Path) -> bool:
+    """``sessions.show_oneshot`` from *hermes_home*'s own config.yaml, same store-home rule and
+    same fail-to-False as :func:`show_subagent_sessions`. Off by default: finite runs are hidden
+    as machinery."""
+    return _session_listing_flag(hermes_home, "show_oneshot")
+
+
+def _session_listing_flag(hermes_home: str | Path, key: str) -> bool:
     from hermes_cli.config import load_config_readonly
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -27,7 +39,7 @@ def show_subagent_sessions(hermes_home: str | Path) -> bool:
         return False
     finally:
         reset_hermes_home_override(token)
-    return isinstance(sessions_cfg, dict) and is_truthy_value(sessions_cfg.get("show_subagents"))
+    return isinstance(sessions_cfg, dict) and is_truthy_value(sessions_cfg.get(key))
 
 
 def subagent_listing_scope(
@@ -41,12 +53,47 @@ def subagent_listing_scope(
     recents shape); that exclusion is dropped so the runs actually land. A slice that excludes
     other sources without ``subagent`` (the per-platform messaging lists) keeps its shape.
     """
-    excluded = list(exclude_sources or [])
-    if source or sources or (excluded and SUBAGENT_SOURCE not in excluded):
+    if source or sources:
         return False, exclude_sources
-    if not show_subagent_sessions(hermes_home):
+    excluded = list(exclude_sources or [])
+    if (excluded and SUBAGENT_SOURCE not in excluded) or not show_subagent_sessions(hermes_home):
         return False, exclude_sources
     return True, [s for s in excluded if s != SUBAGENT_SOURCE] or None
+
+
+def session_listing_scope(
+    hermes_home: str | Path, *, source: str | None = None, sources: list[str] | None = None,
+    exclude_sources: list[str] | None = None,
+) -> tuple[bool, bool, list[str] | None]:
+    """``(include_subagents, include_oneshot, exclude_sources)`` for one human-facing list.
+
+    The opt-in pair, one flag per internal source: ``sessions.show_subagents`` (#97202) and
+    ``sessions.show_oneshot``. Each flag drops its own source from ``exclude_sources``, under the
+    shape rules of :func:`subagent_listing_scope` — no named ``source``/``sources`` scope, and
+    either no exclusions or one that names the source being re-admitted.
+    """
+    return _internal_listing_scope(
+        hermes_home, source=source, sources=sources, exclude_sources=exclude_sources)
+
+
+def _internal_listing_scope(
+    hermes_home: str | Path, *, source: str | None = None, sources: list[str] | None = None,
+    exclude_sources: list[str] | None = None,
+) -> tuple[bool, bool, list[str] | None]:
+    excluded = list(exclude_sources or [])
+    # A source-scoped slice (the cron section, one platform's threads) is never widened.
+    if source or sources:
+        return False, False, exclude_sources
+    include_subagents, include_oneshot = False, False
+    if not excluded or SUBAGENT_SOURCE in excluded:
+        if show_subagent_sessions(hermes_home):
+            include_subagents, excluded = True, [s for s in excluded if s != SUBAGENT_SOURCE]
+    if not excluded or ONESHOT_SOURCE in excluded:
+        if show_oneshot_sessions(hermes_home):
+            include_oneshot, excluded = True, [s for s in excluded if s != ONESHOT_SOURCE]
+    if not (include_subagents or include_oneshot):
+        return False, False, exclude_sources
+    return include_subagents, include_oneshot, excluded or None
 
 
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:

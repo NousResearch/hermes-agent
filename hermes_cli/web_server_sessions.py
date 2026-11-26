@@ -423,7 +423,12 @@ def _listing_filters(*, source=None, sources=None, exclude_sources=None, cwd_pre
                      include_archived: bool = False, archived_only: bool = False,
                      include_subagents: bool = False) -> dict:
     """The filter fields ``SessionQuery`` and ``SessionCountQuery`` share for the dashboard's listing filters;
-    ``source`` wins over ``sources``."""
+    ``source`` wins over ``sources``.
+
+    There is no ``include_oneshot`` field: one-shot runs are admitted by their absence from
+    ``exclude_sources`` (the ``sessions.show_oneshot`` scope), not by a query field — unlike
+    subagent runs they carry no child-session rule.
+    """
     return dict(
         sources=(source,) if source else (tuple(sources) if sources else None),
         exclude_sources=tuple(exclude_sources or ()), cwd_prefix=cwd_prefix, min_message_count=min_message_count,

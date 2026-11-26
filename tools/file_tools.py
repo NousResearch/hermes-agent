@@ -744,10 +744,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                                         end_line=end_line, total_lines=total_lines,
                                         version_before=version_before,
                                         snapshot=getattr(result, "_snapshot", None))
-        record_remote_read(file_ops, remote_before, task_id, resolved_str, start=offset,
-                           end=end_line, total_lines=total_lines,
-                           redacted=redacted or bool(result_dict.get("truncated_lines")))
         if count >= 4:
+            # A refused read delivers no content, so it records no remote baseline.
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
                 "The content has NOT changed. You already have this information. "
@@ -755,6 +753,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 path=path,
                 already_read=count,
                 **{GUARDRAIL_REFUSAL_KEY: True})
+        record_remote_read(file_ops, remote_before, task_id, resolved_str, start=offset,
+                           end=end_line, total_lines=total_lines,
+                           redacted=redacted or bool(result_dict.get("truncated_lines")))
         if count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "

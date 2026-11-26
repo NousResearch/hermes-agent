@@ -252,3 +252,41 @@ def test_remote_read_baseline_is_bound_to_the_backend(remote_target):
     refused = _write_file(view, task)
     assert "error" in refused, refused
     assert target.read_text(encoding="utf-8") == "accepted\n"
+
+
+def test_refused_repeated_read_does_not_authorize_overwrite(remote_target):
+    """A BLOCKED repeat read must not record a whole-file baseline it never served.
+
+    The fourth consecutive read of one region is refused without content. The
+    backend digest of the current bytes must not become the write baseline:
+    an overwrite the task never saw would then verify as read.
+    """
+    target = remote_target.target / "notes.txt"
+    view = remote_target.view / "notes.txt"
+    seen = "first\nsecond\nthird\n"
+    target.write_text(seen, encoding="utf-8")
+    task = remote_target.task_id
+
+    for _ in range(3):
+        served = _dispatch("read_file", {"path": str(view)}, task)
+        assert "error" not in served, served
+
+    unseen = "external\nbytes\nhere\n"
+    stamp = target.stat()
+    target.write_text(unseen, encoding="utf-8")
+    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    refused_read = _dispatch("read_file", {"path": str(view)}, task)
+    assert "BLOCKED" in refused_read.get("error", ""), refused_read
+
+    refused = _write_file(view, task, seen.upper())
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == unseen
+
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 1, "limit": 1}, task)
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 2, "limit": 1}, task)
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 3, "limit": 1}, task)
+    assert "error" not in _write_file(view, task, "accepted after full reread\n")
+    assert target.read_text(encoding="utf-8") == "accepted after full reread\n"

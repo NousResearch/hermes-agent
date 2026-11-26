@@ -13,9 +13,8 @@ from the session's stored clock after a restart (its last request asked for 1h).
 
 Idle keep-alives run on 5m like on any tier, so a pause their reads cover keeps the cheap 5m entry
 (the backtest on the owner's calls: 4% cheaper than no idle keep-alives before the upgrade). A pause
-they do not cover ends at the cache edge: a compaction there rewrites the prompt anyway, so it upgrades
-the tier too (:func:`upgrade_at_compaction`); otherwise the next message finds the entry expired and
-upgrades. Explicit pins (``cache_ttl: 5m`` / ``1h``) and machine-paced sessions never take this path.
+they do not cover ends at the cache edge (compaction or offload), and the next message finds the entry
+expired, or the prompt rewritten by a committed compaction, and upgrades. Explicit pins (``cache_ttl: 5m`` / ``1h``) and machine-paced sessions never take this path.
 """
 
 from __future__ import annotations
@@ -78,14 +77,18 @@ def carry_cache_tier(old_session_id: Optional[str], new_session_id: Optional[str
 
 def _paused_past_start_window(agent: Any, now: float) -> bool:
     """The clock says the 5m entry is gone: no guarantee is left and the cache was last touched more
-    than :data:`UPGRADE_AFTER_SECONDS` ago. A chat that never touched a cache has not paused."""
+    than :data:`UPGRADE_AFTER_SECONDS` ago, a keep-alive whose reply is still in flight included. A
+    compaction leaves the clock naming the rewritten prompt's last touch, so a return after a committed
+    cache-edge compaction upgrades here and a skipped one still sees the warm entry. A chat that never
+    touched a cache has not paused."""
     from agent.prompt_cache_clock import cache_certainly_warm, cache_window
 
     window = cache_window(agent)
     refreshed = getattr(window, "refreshed_at", None)
     if window is None or refreshed is None or cache_certainly_warm(window, now=now):
         return False
-    return now - float(refreshed) >= UPGRADE_AFTER_SECONDS
+    in_flight = getattr(getattr(agent, "_prompt_cache_warmer", None), "last_sent_at", None)
+    return now - max(float(refreshed), in_flight or 0.0) >= UPGRADE_AFTER_SECONDS
 
 
 def maybe_upgrade_cache_tier(agent: Any, *, now: Optional[float] = None) -> bool:
@@ -101,17 +104,6 @@ def maybe_upgrade_cache_tier(agent: Any, *, now: Optional[float] = None) -> bool
     if not human_paced(agent):
         return False
     if not _session_upgraded(agent) and not _paused_past_start_window(agent, time.time() if now is None else now):
-        return False
-    agent._cache_ttl = UPGRADED_TIER
-    _remember(getattr(agent, "session_id", None))
-    return True
-
-
-def upgrade_at_compaction(agent: Any) -> bool:
-    """The cache edge compacts an adaptive chat still on 5m: the compacted prompt is written fresh
-    anyway and its 5m keep-alives did not cover the pause, so it asks for 1h from here on (carried to
-    the compaction's child session by :func:`carry_cache_tier`). Returns whether it upgraded."""
-    if not getattr(agent, "_cache_ttl_adaptive", False) or getattr(agent, "_cache_ttl", None) != START_TIER:
         return False
     agent._cache_ttl = UPGRADED_TIER
     _remember(getattr(agent, "session_id", None))

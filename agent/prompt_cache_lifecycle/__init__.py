@@ -18,8 +18,8 @@ When a chat's cache is about to expire the controller makes ONE decision, in thi
 2. COMPACT: once the budget is spent, an idle human chat compacts IF its window is proven or
    declared (any tier: on 5m that is once its keep-alives stop covering the pause), its context is at
    least half of the compaction threshold, and it grew since its last compaction; at most one
-   compaction per idle stretch. An ``auto`` chat still on 5m moves to 1h there
-   (``tier.upgrade_at_compaction``): the compacted prompt is written fresh anyway. The summary is a fresh auxiliary request, so whether the old prefix is still warm
+   compaction per idle stretch. An ``auto`` chat still on 5m moves to 1h on the next message: its
+   5m entry is gone by then. The summary is a fresh auxiliary request, so whether the old prefix is still warm
    does not change its cost and is not checked. Nothing is sent after it until the next user message.
    The surface that owns the chat (TUI ticker, gateway watcher: the CLI's turns run in the gateway) polls
    ``PromptCacheWarmer.claim_edge`` and runs the action it returns through the normal pipeline. A

@@ -1,4 +1,5 @@
 """Exact execution results commit with settlement, before delivery/publication."""
+import re
 from contextvars import ContextVar
 
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
@@ -29,11 +30,19 @@ def record_terminal_failure(result):
     return result
 
 
+# Inline media (a tool result's image): masking a token-shaped run inside the base64 corrupts
+# the payload the next turn replays to the provider (#160176). Anything else after ``data:``
+# is still scrubbed.
+_INLINE_MEDIA = re.compile(r"data:[\w.+-]+/[\w.+-]+;base64,[A-Za-z0-9+/=\s]*")
+
+
 def _redacted(value):
     """The stored result is a state.db copy of the model's answer and history: redacted at this
-    storage boundary like every transcript row (``security.redact_secrets``). The live viewer
-    prints the completion event, never this copy."""
+    storage boundary like every transcript row (``security.redact_secrets``), except base64
+    inline media. The live viewer prints the completion event, never this copy."""
     if isinstance(value, str):
+        if _INLINE_MEDIA.fullmatch(value):
+            return value
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(value)
     if isinstance(value, dict):

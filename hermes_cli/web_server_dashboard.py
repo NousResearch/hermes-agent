@@ -1215,10 +1215,6 @@ def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
     from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
     from hermes_cli.web_server import _get_dashboard_plugins
 
-    # The copy is read through the process's own home name. Once that name leads elsewhere (the launch profile
-    # renamed, its old name reused), it is another directory's plugin, whichever name this request came through.
-    refuse_moved_home(get_process_hermes_home())
-
     def hosted_copy(plugins: list) -> Optional[dict]:
         return next((p for p in plugins if p.get("name") == name and p.get("_api_file")
                      and p.get("source") == "user"), None)
@@ -1229,6 +1225,10 @@ def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
             plugin = hosted_copy(_get_dashboard_plugins(force_rescan=True))
     if plugin is None or _plugin_api_mount_skip_reason(plugin, _get_enabled_set(), _get_disabled_set()):
         return None
+    # The copy was read through the process's own home name. Once that name leads elsewhere (the launch profile
+    # renamed and its old name reused, or repointed while this lookup read through it), it is another directory's
+    # plugin, whichever name the request came through: checked after the lookup's last read.
+    refuse_moved_home(get_process_hermes_home())
     return requested_plugin_host(), str(plugin["_dir"]), str(plugin["_api_file"])
 
 

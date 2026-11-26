@@ -613,7 +613,7 @@ class ClientLifecycleMixin:
             return False
         if self.provider == "openai-codex":
             try:
-                from agent.credential_pool import usage_admission_credential_denied
+                from agent.usage_admission.policy import usage_admission_credential_denied
 
                 singleton_denied = usage_admission_credential_denied("openai-codex", api_key)
             except Exception:

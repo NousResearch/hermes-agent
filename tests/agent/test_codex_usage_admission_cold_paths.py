@@ -5,15 +5,15 @@
 cold cache (first use in a process, or after the 300 s TTL) they used to skip the probe and hand out a
 credential that was over its configured ceiling.
 """
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
 from agent import account_usage
-from agent import credential_pool
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from agent.credential_pool import AUTH_TYPE_API_KEY, CredentialPool, PooledCredential
+from agent.usage_admission import policy
 
 LIMITED = "limited1"
 FREE = "free0001"
@@ -37,9 +37,9 @@ def _snapshot(used):
 @pytest.fixture(autouse=True)
 def _cold_cache():
     def clear():
-        with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
-            credential_pool._USAGE_ADMISSION_CACHE.clear()
-            credential_pool._USAGE_ADMISSION_INFLIGHT.clear()
+        with policy._USAGE_ADMISSION_CACHE_LOCK:
+            policy._USAGE_ADMISSION_CACHE.clear()
+            policy._USAGE_ADMISSION_INFLIGHT.clear()
     clear()
     yield
     clear()
@@ -53,7 +53,7 @@ def probes(monkeypatch):
 
     calls = Calls()
     used = {"limited-token": 95}
-    monkeypatch.setattr(credential_pool, "get_pool_usage_limits", lambda provider: {LIMITED: 80.0})
+    monkeypatch.setattr(policy, "get_pool_usage_limits", lambda provider: {LIMITED: 80.0})
 
     def fetch(provider, **kwargs):
         calls.append(kwargs["api_key"])
@@ -119,8 +119,8 @@ def test_commit_refuses_entry_that_crossed_its_ceiling_after_choose(probes):
     probes.used["limited-token"] = 10  # under the cap when chosen
     pool = _only_limited()
     assert pool.choose().id == LIMITED
-    with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
-        credential_pool._USAGE_ADMISSION_CACHE.clear()  # TTL lapsed before the key was used
+    with policy._USAGE_ADMISSION_CACHE_LOCK:
+        policy._USAGE_ADMISSION_CACHE.clear()  # TTL lapsed before the key was used
     probes.used["limited-token"] = 95
     assert pool.commit(LIMITED) is None
     assert pool.entries()[0].request_count == 0
@@ -135,8 +135,8 @@ def test_peek_current_entry_shortcut_does_not_return_an_over_ceiling_entry(probe
     probes.used["limited-token"] = 10
     pool = _with_sibling()
     assert pool.select().id == LIMITED  # becomes the pool's current entry
-    with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
-        credential_pool._USAGE_ADMISSION_CACHE.clear()
+    with policy._USAGE_ADMISSION_CACHE_LOCK:
+        policy._USAGE_ADMISSION_CACHE.clear()
     probes.used["limited-token"] = 95
     assert pool.peek().id == FREE
 
@@ -149,7 +149,7 @@ def test_reclaim_admits_an_entry_under_its_ceiling(probes):
 def test_unlimited_account_is_never_probed_or_filtered_on_the_new_paths(monkeypatch):
     """No ceiling configured for the pool's entries: legacy behavior, zero probes."""
     calls = []
-    monkeypatch.setattr(credential_pool, "get_pool_usage_limits", lambda provider: {})
+    monkeypatch.setattr(policy, "get_pool_usage_limits", lambda provider: {})
     monkeypatch.setattr(account_usage, "fetch_account_usage", lambda *a, **k: calls.append(k) or _snapshot(100))
     pool = _with_sibling()
     assert pool.choose().id == LIMITED

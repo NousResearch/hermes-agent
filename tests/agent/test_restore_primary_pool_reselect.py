@@ -153,6 +153,7 @@ class TestRestorePrimaryPoolReselect:
         self, monkeypatch
     ):
         from agent import account_usage, credential_pool
+        from agent.usage_admission import policy
 
         pool = _build_mock_pool([_make_entry("entry-1", "key-1", priority=0)])
         agent = self._make_agent(pool)
@@ -165,7 +166,7 @@ class TestRestorePrimaryPoolReselect:
             "base_url": "https://openrouter.ai/api/v1",
         }
         monkeypatch.setattr(
-            credential_pool,
+            policy,
             "get_pool_usage_limits",
             lambda provider: {"entry-1": 80.0},
         )
@@ -196,6 +197,7 @@ class TestRestorePrimaryPoolReselect:
         self, monkeypatch
     ):
         from agent import account_usage, credential_pool
+        from agent.usage_admission import policy
 
         primary_pool = _build_mock_pool(
             [_make_entry("entry-1", "original-key-entry-1", priority=0)]
@@ -220,7 +222,7 @@ class TestRestorePrimaryPoolReselect:
             lambda provider: load_calls.append(provider) or primary_pool,
         )
         monkeypatch.setattr(
-            credential_pool,
+            policy,
             "get_pool_usage_limits",
             lambda provider: {"entry-1": 80.0},
         )

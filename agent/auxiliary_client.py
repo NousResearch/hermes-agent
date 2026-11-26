@@ -127,9 +127,9 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 
-from agent.credential_pool import (
+from agent.credential_pool import load_pool
+from agent.usage_admission.policy import (
     get_pool_usage_limits,
-    load_pool,
     usage_admission_credential_denied,
     usage_admission_policy_denied,
 )

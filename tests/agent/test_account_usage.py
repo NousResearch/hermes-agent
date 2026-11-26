@@ -184,7 +184,7 @@ def test_codex_usage_marks_mixed_valid_and_invalid_windows_incomplete(
     assert [window.label for window in snapshot.windows] == ["Weekly"]
     assert snapshot.usage_windows_complete is False
 
-    from agent.credential_pool import _select_codex_policy_window
+    from agent.usage_admission.policy import _select_codex_policy_window
 
     assert _select_codex_policy_window(snapshot) is None
 
@@ -318,7 +318,7 @@ def test_codex_usage_marks_invalid_reset_metadata_incomplete(
     assert snapshot is not None
     assert snapshot.usage_windows_complete is False
 
-    from agent.credential_pool import _select_codex_policy_window
+    from agent.usage_admission.policy import _select_codex_policy_window
 
     assert _select_codex_policy_window(snapshot) is None
 

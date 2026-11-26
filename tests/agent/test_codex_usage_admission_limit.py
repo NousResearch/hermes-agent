@@ -1,6 +1,6 @@
 import concurrent.futures
 import threading
-from datetime import datetime, timedelta, timezone, UTC
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +12,7 @@ from agent.credential_pool import (
     CredentialPool,
     PooledCredential,
 )
+from agent.usage_admission import policy
 
 
 def _snapshot(*windows: AccountUsageWindow) -> AccountUsageSnapshot:
@@ -49,204 +50,22 @@ def _select_id(pool: CredentialPool) -> str:
 
 @pytest.fixture(autouse=True)
 def _clear_usage_admission_cache():
-    from agent import credential_pool
 
-    with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
-        credential_pool._USAGE_ADMISSION_CACHE.clear()
-        credential_pool._USAGE_ADMISSION_INFLIGHT.clear()
+    with policy._USAGE_ADMISSION_CACHE_LOCK:
+        policy._USAGE_ADMISSION_CACHE.clear()
+        policy._USAGE_ADMISSION_INFLIGHT.clear()
     yield
-    with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
-        credential_pool._USAGE_ADMISSION_CACHE.clear()
-        credential_pool._USAGE_ADMISSION_INFLIGHT.clear()
-
-
-def test_policy_window_uses_longest_duration_not_primary_secondary_label():
-    from agent.credential_pool import _select_codex_policy_window
-
-    seven_day_primary = AccountUsageWindow(
-        label="Session",
-        used_percent=79,
-        limit_window_seconds=604_800,
-    )
-    five_hour_secondary = AccountUsageWindow(
-        label="Weekly",
-        used_percent=95,
-        limit_window_seconds=18_000,
-    )
-
-    selected = _select_codex_policy_window(
-        _snapshot(seven_day_primary, five_hour_secondary)
-    )
-
-    assert selected is seven_day_primary
-
-
-def test_policy_window_falls_back_to_farthest_reset():
-    from agent.credential_pool import _select_codex_policy_window
-
-    now = datetime.now(UTC)
-    earlier = AccountUsageWindow(
-        label="Primary",
-        used_percent=95,
-        reset_at=now + timedelta(hours=2),
-    )
-    later = AccountUsageWindow(
-        label="Secondary",
-        used_percent=79,
-        reset_at=now + timedelta(days=5),
-    )
-
-    selected = _select_codex_policy_window(_snapshot(earlier, later))
-
-    assert selected is later
-
-
-def test_policy_window_without_duration_or_reset_fails_open():
-    from agent.credential_pool import _select_codex_policy_window
-
-    unknown = AccountUsageWindow(label="Unknown", used_percent=95)
-
-    assert _select_codex_policy_window(_snapshot(unknown)) is None
-
-
-def test_policy_window_mixed_durations_fail_open():
-    from agent.credential_pool import _select_codex_policy_window
-
-    now = datetime.now(UTC)
-    shorter_with_duration = AccountUsageWindow(
-        label="Short",
-        used_percent=95,
-        limit_window_seconds=18_000,
-        reset_at=now + timedelta(hours=2),
-    )
-    longer_without_duration = AccountUsageWindow(
-        label="Long",
-        used_percent=79,
-        reset_at=now + timedelta(days=5),
-    )
-
-    assert (
-        _select_codex_policy_window(
-            _snapshot(shorter_with_duration, longer_without_duration)
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize("malformed_duration", ["604800", 0, -1, float("nan")])
-def test_policy_window_malformed_duration_with_complete_resets_fails_open(
-    malformed_duration,
-):
-    from agent.credential_pool import _select_codex_policy_window
-
-    now = datetime.now(UTC)
-    valid = AccountUsageWindow(
-        label="Valid",
-        used_percent=79,
-        limit_window_seconds=18_000,
-        reset_at=now + timedelta(hours=2),
-    )
-    malformed = AccountUsageWindow(
-        label="Malformed",
-        used_percent=95,
-        limit_window_seconds=malformed_duration,
-        reset_at=now + timedelta(days=5),
-    )
-
-    assert _select_codex_policy_window(_snapshot(valid, malformed)) is None
-
-
-def test_policy_window_mixed_durations_without_complete_resets_fails_open():
-    from agent.credential_pool import _select_codex_policy_window
-
-    shorter_with_duration = AccountUsageWindow(
-        label="Short",
-        used_percent=95,
-        limit_window_seconds=18_000,
-        reset_at=datetime(2026, 8, 15, tzinfo=UTC),
-    )
-    unknown_longer = AccountUsageWindow(label="Unknown", used_percent=79)
-
-    assert (
-        _select_codex_policy_window(_snapshot(shorter_with_duration, unknown_longer))
-        is None
-    )
-
-
-def test_policy_window_equal_longest_duration_tie_fails_open():
-    from agent.credential_pool import _select_codex_policy_window
-
-    first = AccountUsageWindow(
-        label="First",
-        used_percent=90,
-        limit_window_seconds=604_800,
-    )
-    second = AccountUsageWindow(
-        label="Second",
-        used_percent=10,
-        limit_window_seconds=604_800,
-    )
-
-    assert _select_codex_policy_window(_snapshot(first, second)) is None
-
-
-def test_policy_window_past_reset_fallback_fails_open():
-    from agent.credential_pool import _select_codex_policy_window
-
-    stale = AccountUsageWindow(
-        label="Stale",
-        used_percent=90,
-        reset_at=datetime(1970, 1, 1, 0, 0, 1, tzinfo=UTC),
-    )
-
-    assert _select_codex_policy_window(_snapshot(stale)) is None
-
-
-def test_policy_window_duration_with_past_reset_fails_open():
-    from agent.credential_pool import _select_codex_policy_window
-
-    stale = AccountUsageWindow(
-        label="Stale weekly window",
-        used_percent=90,
-        limit_window_seconds=604_800,
-        reset_at=datetime(1970, 1, 1, 0, 0, 1, tzinfo=UTC),
-    )
-
-    assert _select_codex_policy_window(_snapshot(stale)) is None
-
-
-def test_policy_window_huge_duration_fails_open_without_raising():
-    from agent.credential_pool import _select_codex_policy_window
-
-    malformed = AccountUsageWindow(
-        label="Malformed",
-        used_percent=90,
-        limit_window_seconds=10**400,
-    )
-
-    assert _select_codex_policy_window(_snapshot(malformed)) is None
-
-
-@pytest.mark.parametrize("used_percent", ["80", " 80 ", "8e1"])
-def test_policy_window_rejects_string_percentages(used_percent):
-    from agent.credential_pool import _select_codex_policy_window
-
-    malformed = AccountUsageWindow(
-        label="Weekly",
-        used_percent=used_percent,
-        limit_window_seconds=604_800,
-    )
-
-    assert _select_codex_policy_window(_snapshot(malformed)) is None
+    with policy._USAGE_ADMISSION_CACHE_LOCK:
+        policy._USAGE_ADMISSION_CACHE.clear()
+        policy._USAGE_ADMISSION_INFLIGHT.clear()
 
 
 def test_select_denies_credential_at_exact_threshold(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     calls = []
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -282,10 +101,9 @@ def test_select_denies_credential_at_exact_threshold(monkeypatch):
 
 def test_specific_lease_refuses_credential_at_threshold(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -307,10 +125,9 @@ def test_specific_lease_refuses_credential_at_threshold(monkeypatch):
 
 def test_failure_rotation_refreshes_limit_before_choosing_replacement(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -348,7 +165,6 @@ def test_auxiliary_fresh_pool_refresh_targets_failed_token_and_applies_admission
     from dataclasses import replace
 
     from agent import auxiliary_client
-    from agent import credential_pool
 
     failed = PooledCredential(
         provider="openai-codex",
@@ -374,7 +190,7 @@ def test_auxiliary_fresh_pool_refresh_targets_failed_token_and_applies_admission
 
     pool._refresh_entry = _refresh_entry
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda _provider: {"configured-entry": 80.0},
     )
@@ -415,10 +231,9 @@ def test_auxiliary_fresh_pool_refresh_targets_failed_token_and_applies_admission
 
 def test_forced_refresh_rechecks_admission_for_new_token(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -499,11 +314,10 @@ def test_primary_auth_recovery_rotates_without_exhausting_policy_denied_refresh(
 
 def test_successful_usage_probe_is_cached_for_five_minutes(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     calls = []
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -529,14 +343,13 @@ def test_successful_usage_probe_is_cached_for_five_minutes(monkeypatch):
 
 
 def test_failed_probe_fails_open_then_retries_after_thirty_seconds(monkeypatch):
-    from agent import account_usage
-    from agent import credential_pool
+    from agent import account_usage, credential_pool
 
     clock = [0.0]
     calls = []
     monkeypatch.setattr(credential_pool.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -566,14 +379,13 @@ def test_failed_probe_fails_open_then_retries_after_thirty_seconds(monkeypatch):
 
 
 def test_cache_expiry_rechecks_and_readmits_after_reset(monkeypatch):
-    from agent import account_usage
-    from agent import credential_pool
+    from agent import account_usage, credential_pool
 
     clock = [0.0]
     used_values = iter((80, 0))
     monkeypatch.setattr(credential_pool.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -597,11 +409,10 @@ def test_cache_expiry_rechecks_and_readmits_after_reset(monkeypatch):
 
 def test_token_change_invalidates_cached_decision(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     calls = []
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -628,10 +439,9 @@ def test_token_change_invalidates_cached_decision(monkeypatch):
 
 def test_stale_token_probe_does_not_delete_fresh_token_cache(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -648,21 +458,20 @@ def test_stale_token_probe_does_not_delete_fresh_token_cache(monkeypatch):
     )
     fresh_entry = _entry(token="token-after-refresh")
     stale_entry = _entry(token="token-before-refresh")
-    fresh_key = credential_pool._usage_admission_cache_key(fresh_entry)
+    fresh_key = policy._usage_admission_cache_key(fresh_entry)
 
     assert CredentialPool("openai-codex", [fresh_entry]).select() is not None
     assert CredentialPool("openai-codex", [stale_entry]).select() is not None
 
-    with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
-        assert fresh_key in credential_pool._USAGE_ADMISSION_CACHE
+    with policy._USAGE_ADMISSION_CACHE_LOCK:
+        assert fresh_key in policy._USAGE_ADMISSION_CACHE
 
 
 def test_usage_probe_runs_outside_pool_lock(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -685,11 +494,10 @@ def test_usage_probe_runs_outside_pool_lock(monkeypatch):
 
 def test_usage_cache_never_contains_raw_access_token(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     secret_token = "secret-vicky-access-token"
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -707,16 +515,15 @@ def test_usage_cache_never_contains_raw_access_token(monkeypatch):
 
     CredentialPool("openai-codex", [_entry(token=secret_token)]).select()
 
-    with credential_pool._USAGE_ADMISSION_CACHE_LOCK:
-        assert secret_token not in repr(credential_pool._USAGE_ADMISSION_CACHE)
+    with policy._USAGE_ADMISSION_CACHE_LOCK:
+        assert secret_token not in repr(policy._USAGE_ADMISSION_CACHE)
 
 
 def test_automatic_lease_skips_denied_credential(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -744,14 +551,13 @@ def test_automatic_lease_skips_denied_credential(monkeypatch):
 
 def test_select_rechecks_usage_after_oauth_token_refresh(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     calls = []
     entry = _entry(token="old-token")
     entry.auth_type = AUTH_TYPE_OAUTH
     pool = CredentialPool("openai-codex", [entry])
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -786,14 +592,13 @@ def test_select_rechecks_usage_after_oauth_token_refresh(monkeypatch):
 
 def test_lease_rechecks_usage_after_oauth_token_refresh(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     calls = []
     entry = _entry(token="old-token")
     entry.auth_type = AUTH_TYPE_OAUTH
     pool = CredentialPool("openai-codex", [entry])
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -827,11 +632,10 @@ def test_lease_rechecks_usage_after_oauth_token_refresh(monkeypatch):
 
 
 def test_unmatched_configured_credential_warns_once(monkeypatch, caplog):
-    from agent import credential_pool
 
-    credential_pool._WARNED_UNMATCHED_USAGE_LIMITS.clear()
+    policy._WARNED_UNMATCHED_USAGE_LIMITS.clear()
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"missing-id": 80.0},
     )
@@ -850,12 +654,11 @@ def test_unmatched_configured_credential_warns_once(monkeypatch, caplog):
 
 def test_threshold_change_reuses_fresh_usage_but_recomputes_admission(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     threshold = [80.0]
     calls = []
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": threshold[0]},
     )
@@ -882,13 +685,12 @@ def test_threshold_change_reuses_fresh_usage_but_recomputes_admission(monkeypatc
 
 
 def test_explicit_token_recomputes_cached_telemetry_after_threshold_change(monkeypatch):
-    from agent import account_usage
-    from agent import credential_pool
+    from agent import account_usage, credential_pool
 
     threshold = [80.0]
     calls = []
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": threshold[0]},
     )
@@ -915,9 +717,9 @@ def test_explicit_token_recomputes_cached_telemetry_after_threshold_change(monke
 
     assert pool.select() is None
     threshold[0] = 90.0
-    assert credential_pool.usage_admission_policy_denied("openai-codex") is False
+    assert policy.usage_admission_policy_denied("openai-codex") is False
     assert (
-        credential_pool.usage_admission_credential_denied(
+        policy.usage_admission_credential_denied(
             "openai-codex", "reserved-token"
         )
         is False
@@ -927,13 +729,12 @@ def test_explicit_token_recomputes_cached_telemetry_after_threshold_change(monke
 
 def test_inflight_waiter_applies_its_current_threshold(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     threshold = [90.0]
     probe_started = threading.Event()
     release_probe = threading.Event()
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": threshold[0]},
     )
@@ -1003,10 +804,10 @@ def test_completed_probe_callback_clears_inflight_without_reentrant_lock(
             return future
 
     pool = CredentialPool("openai-codex", [_entry()])
-    cache_key = credential_pool._usage_admission_cache_key(pool.entries()[0])
+    cache_key = policy._usage_admission_cache_key(pool.entries()[0])
     with monkeypatch.context() as patcher:
         patcher.setattr(
-            credential_pool,
+            policy,
             "get_pool_usage_limits",
             lambda provider: {"a1b2c3": 80.0},
         )
@@ -1022,16 +823,15 @@ def test_completed_probe_callback_clears_inflight_without_reentrant_lock(
         )
         pool._refresh_usage_admission_cache()
 
-    assert cache_key not in credential_pool._USAGE_ADMISSION_INFLIGHT
+    assert cache_key not in policy._USAGE_ADMISSION_INFLIGHT
 
 
 def test_selection_reads_usage_limit_config_once_outside_entry_filter(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
 
     config_calls = []
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: config_calls.append(provider) or {"a1b2c3": 80.0},
     )
@@ -1055,14 +855,13 @@ def test_runtime_resolver_does_not_fall_back_to_singleton_after_pool_denial(
     monkeypatch,
 ):
     from agent import account_usage
-    from agent import credential_pool
     from hermes_cli import runtime_provider
     from hermes_cli.auth import AuthError
 
     singleton_calls = []
     pool = CredentialPool("openai-codex", [_entry()])
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -1687,11 +1486,10 @@ def test_multiple_cold_admission_probes_run_concurrently(monkeypatch):
     import threading
 
     from agent import account_usage
-    from agent import credential_pool
 
     barrier = threading.Barrier(2)
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"A": 80.0, "B": 80.0},
     )
@@ -1724,12 +1522,10 @@ def test_multiple_cold_admission_probes_run_concurrently(monkeypatch):
 
 @pytest.mark.parametrize("raw_codex", [False, True])
 def test_resolver_rejects_explicit_policy_denied_codex_token(monkeypatch, raw_codex):
-    from agent import account_usage
-    from agent import auxiliary_client
-    from agent import credential_pool
+    from agent import account_usage, auxiliary_client
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -1746,7 +1542,7 @@ def test_resolver_rejects_explicit_policy_denied_codex_token(monkeypatch, raw_co
     )
     assert CredentialPool("openai-codex", [_entry()]).select() is None
     assert (
-        credential_pool.usage_admission_credential_denied(
+        policy.usage_admission_credential_denied(
             "openai-codex", "other-eligible-token"
         )
         is False
@@ -1773,13 +1569,12 @@ def test_resolver_rejects_explicit_policy_denied_codex_token(monkeypatch, raw_co
 
 
 def test_cold_explicit_matching_pool_token_is_probed_before_admission(monkeypatch):
-    from agent import account_usage
-    from agent import credential_pool
+    from agent import account_usage, credential_pool
 
     pool = CredentialPool("openai-codex", [_entry()])
     calls = []
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -1800,13 +1595,13 @@ def test_cold_explicit_matching_pool_token_is_probed_before_admission(monkeypatc
     )
 
     assert (
-        credential_pool.usage_admission_credential_denied(
+        policy.usage_admission_credential_denied(
             "openai-codex", "reserved-token"
         )
         is True
     )
     assert (
-        credential_pool.usage_admission_credential_denied(
+        policy.usage_admission_credential_denied(
             "openai-codex", "unrelated-explicit-token"
         )
         is False
@@ -1819,26 +1614,25 @@ def test_denied_cache_decision_expires_at_quota_reset(monkeypatch):
 
     now = [1_800_000_000.0]
     monkeypatch.setattr(credential_pool.time, "time", lambda: now[0])
-    decision = credential_pool._UsageAdmissionDecision(
+    decision = policy._UsageAdmissionDecision(
         checked_at=10.0,
         probe_succeeded=True,
         used_percent=80.0,
         reset_at=now[0] + 5.0,
     )
 
-    assert credential_pool._usage_admission_decision_is_fresh(decision, 10.0)
+    assert policy._usage_admission_decision_is_fresh(decision, 10.0)
     now[0] += 5.0
-    assert not credential_pool._usage_admission_decision_is_fresh(decision, 10.0)
+    assert not policy._usage_admission_decision_is_fresh(decision, 10.0)
 
 
 def test_main_runtime_rejects_explicit_policy_denied_codex_token(monkeypatch):
     from agent import account_usage
-    from agent import credential_pool
     from hermes_cli import runtime_provider
     from hermes_cli.auth import AuthError
 
     monkeypatch.setattr(
-        credential_pool,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )

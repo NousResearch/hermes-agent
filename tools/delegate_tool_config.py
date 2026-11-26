@@ -303,7 +303,7 @@ def _resolve_child_credential_pool(
         # from that provider's pool. A pooled Codex token still honors its stable-ID usage policy; an unrelated
         # explicit token stays usable and never acquires a lease.
         if str(effective_provider or "").strip().lower() == "openai-codex":
-            from agent.credential_pool import usage_admission_credential_denied
+            from agent.usage_admission.policy import usage_admission_credential_denied
             if usage_admission_credential_denied("openai-codex", explicit_api_key):
                 raise ValueError("Explicit delegation credential is excluded by the configured usage policy")
         return None

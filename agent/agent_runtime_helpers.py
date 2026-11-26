@@ -829,7 +829,7 @@ def drop_thinking_only_and_merge_users(
 def _primary_excluded_by_usage_policy(pool, primary_provider: str, primary_model: str) -> bool:
     """True when ``primary_provider`` has configured usage ceilings, every pool entry is
     unavailable, and at least one is unavailable because of policy (not cooldown alone)."""
-    from agent.credential_pool import get_pool_usage_limits, usage_admission_policy_denied
+    from agent.usage_admission.policy import get_pool_usage_limits, usage_admission_policy_denied
     if not get_pool_usage_limits(primary_provider):
         return False
     refresh = getattr(pool, "_refresh_usage_admission_cache", None)

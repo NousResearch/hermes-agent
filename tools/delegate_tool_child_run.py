@@ -516,7 +516,7 @@ class ChildCredentialUnavailable(RuntimeError):
 
 def _policy_denied(pool: Any) -> bool:
     try:
-        from agent.credential_pool import usage_admission_policy_denied
+        from agent.usage_admission.policy import usage_admission_policy_denied
         provider = str(getattr(pool, "provider", "") or "")
         return bool(provider and usage_admission_policy_denied(provider))
     except Exception as exc:
@@ -526,7 +526,7 @@ def _policy_denied(pool: Any) -> bool:
 
 def _usage_limited(pool: Any) -> bool:
     try:
-        from agent.credential_pool import get_pool_usage_limits
+        from agent.usage_admission.policy import get_pool_usage_limits
         return bool(get_pool_usage_limits(str(getattr(pool, "provider", "") or "")))
     except Exception:
         return False

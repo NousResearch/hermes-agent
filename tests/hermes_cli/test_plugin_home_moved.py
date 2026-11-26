@@ -111,6 +111,34 @@ def test_a_profile_directory_replaced_by_a_link_while_the_process_runs_is_refuse
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # directory symlinks
+def test_a_sibling_name_the_process_served_elsewhere_is_not_taken_over_when_repointed_here(tmp_path, monkeypatch):
+    """A renamed profile's manager takes the name beside its old one that leads to its directory, but not a name the
+    process already serves another directory under: that name keys the other directory, so plugin code bound to it
+    would register there. With no other name, the manager refuses."""
+    from hermes_cli.plugins_loader import PluginHomeMoved
+    from hermes_constants import hermes_home_key
+
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {}, isolation="in_process")
+    elsewhere = _home_with_plugins(tmp_path / "elsewhere", monkeypatch, {}, isolation="in_process")
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    (profiles / "ops").symlink_to(home, target_is_directory=True)
+    (profiles / "ops2").symlink_to(elsewhere, target_is_directory=True)
+    hermes_home_key(profiles / "ops2")  # the process serves elsewhere under ops2
+    monkeypatch.setenv("HERMES_HOME", str(profiles / "ops"))
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        manager = plugins_mod.get_plugin_manager()
+        (profiles / "ops").unlink()
+        (profiles / "ops2").unlink()
+        (profiles / "ops2").symlink_to(home, target_is_directory=True)
+        with pytest.raises(PluginHomeMoved):
+            manager.owner_home
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 def test_a_relative_home_looked_up_from_another_working_directory_gets_the_directory_it_names_there(
         tmp_path, monkeypatch):
     """A symbolic profile id bound as a home is a relative path. A lookup from another working directory gets the

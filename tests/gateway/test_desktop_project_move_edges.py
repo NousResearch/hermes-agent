@@ -328,3 +328,33 @@ async def test_a_delegated_childs_switch_never_moves_the_parent(tmp_path, monkey
         assert chat.authority.sessions[chat.sid].pending_workspace is None
     finally:
         await _closed(chat)
+
+
+@pytest.mark.asyncio
+async def test_a_messaging_chat_viewed_in_desktop_is_told_it_did_not_move(tmp_path, monkeypatch):
+    """Only a local chat's drain commits a move: a messaging chat gets ``moved: false``, never a
+    ``pending`` that cannot land, and switches the active project as on main."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_authority import LiveSession
+    from hermes_cli import projects_db as pdb
+    from tools import project_tools
+    chat = await _chat(tmp_path, monkeypatch)
+    authority = chat.authority
+    authority.sessions['telegram-row'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='42'), 'tg:42')
+    try:
+        with chat.connect_closing(db_path=chat.db_path) as conn:
+            pid = pdb.create_project(conn, name='Worktree', folders=[str(chat.worktree)], primary_path=str(chat.worktree))
+        turn = SimpleNamespace(_approval_owner=(authority, 'telegram-row', 1), _publish_execution=lambda *a: True,
+                               _ctx=SimpleNamespace(session_id='telegram-row', session_key='tg:42'))
+        token = local_desktop_ui.wire(turn, SimpleNamespace())
+        try:
+            result = json.loads(project_tools.project_switch(pid, task_id='telegram-row'))
+        finally:
+            local_desktop_ui.release(token)
+        assert result['moved'] is False and result['not_moved_reason'], result
+        assert authority.sessions['telegram-row'].pending_workspace is None
+        with chat.connect_closing(db_path=chat.db_path) as conn:
+            assert pdb.get_active_id(conn) == pid
+    finally:
+        await _closed(chat)

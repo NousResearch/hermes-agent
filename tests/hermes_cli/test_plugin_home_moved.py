@@ -111,6 +111,35 @@ def test_a_profile_directory_replaced_by_a_link_while_the_process_runs_is_refuse
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+def test_a_relative_home_looked_up_from_another_working_directory_gets_the_directory_it_names_there(
+        tmp_path, monkeypatch):
+    """A symbolic profile id bound as a home is a relative path. A lookup from another working directory gets the
+    manager of the directory the name means there, not the one opened from the first."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    first = _home_with_plugins(tmp_path / "first", monkeypatch, {"one": "def register(ctx):\n    pass\n"},
+                               isolation="in_process")
+    second = _home_with_plugins(tmp_path / "second", monkeypatch, {"two": "def register(ctx):\n    pass\n"},
+                                isolation="in_process")
+    plugins_mod._reset_plugin_managers_for_tests()
+
+    def manager_from(cwd):
+        monkeypatch.chdir(cwd)
+        token = set_hermes_home_override(".hermes")
+        try:
+            manager = plugins_mod.get_plugin_manager()
+            manager.discover_and_load()
+            return manager
+        finally:
+            reset_hermes_home_override(token)
+
+    try:
+        assert "one" in manager_from(first.parent)._plugins
+        assert "two" in manager_from(second.parent)._plugins
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # a directory symlink
 @pytest.mark.parametrize("link", ["kept", "removed"])
 def test_unloading_runs_under_the_profile_name_or_under_the_directory_once_no_name_leads_there(

@@ -443,6 +443,14 @@ class TestCompactionRecoveryPointersRecover:
         db.messages.compact(sid, [NewMessage.from_live({"role": "user", "content": "[CONTEXT COMPACTION] again"})])
         result = json.loads(session_search(**kwargs, persistence=persistence, current_session_id=sid))
         assert self._recovered(result, sid, "fatal: TAILMARK_3141"), result
+        # The full text is not tied to the caller: another session, and a compression continuation
+        # searching its lineage, reach the same superseded original.
+        db.sessions.end(sid, "compression")
+        seed_session(db, "s_tail_tip", "cli", parent_session_id=sid)
+        for caller, target in ((None, sid), ("s_unrelated", sid), ("s_tail_tip", "s_tail_tip")):
+            result = json.loads(session_search(**{**kwargs, "session_id": target}, persistence=persistence,
+                                               current_session_id=caller))
+            assert self._recovered(result, sid, "fatal: TAILMARK_3141"), (caller, result)
 
     def test_the_footer_call_recovers_an_archived_image_turn_caption(self, db, persistence):
         from agent.context_compressor import _build_recovery_footer
@@ -585,15 +593,20 @@ class TestScrollShape:
                 "id": f"c{i}", "type": "function",
                 "function": {"name": "terminal", "arguments": json.dumps({"command": "y" * 20000})}}]},
                 {"role": "tool", "content": "z" * 30000, "tool_call_id": f"c{i}"})
-        anchor = seed_messages(db, "s1", {"role": "assistant", "content": "The answer is TEAL-HERON-4417. " + "a" * 3000})[0]
+        anchor = seed_messages(db, "s1", {"role": "assistant", "content": "The answer is TEAL-HERON-4417. " + "a" * 9000
+                                          + " TAIL-DETAIL-88", "tool_calls": [{"id": "ca", "type": "function", "function": {
+                                              "name": "terminal", "arguments": json.dumps({"command": "b" * 5000 + "ARGS-END"})}}]})[0]
         seed_messages(db, "s1", *({"role": "tool", "content": "w" * 30000, "tool_call_id": "c9"} for _ in range(10)))
         out = session_search(session_id="s1", around_message_id=anchor, window=20, persistence=persistence)
         disc = session_search(query="TEAL-HERON-4417 OR terminal", role_filter="user,assistant", limit=5,
                               detail="full", persistence=persistence)
         assert len(out) < 60_000 and len(disc) < 60_000, (len(out), len(disc))
+        # The requested message comes back whole (scroll is the full-retrieval shape); only neighbours are cut.
         anchor_row = next(m for m in json.loads(out)["messages"] if m.get("anchor"))
-        assert "TEAL-HERON-4417" in anchor_row["content"] and not anchor_row.get("content_truncated")
-        rows = json.loads(out)["messages"] + [m for r in json.loads(disc)["results"] for m in r["messages"]]
+        assert anchor_row["content"].endswith("TAIL-DETAIL-88") and not anchor_row.get("content_truncated")
+        assert anchor_row["tool_calls"][0]["function"]["arguments"].endswith('ARGS-END"}')
+        rows = [m for m in json.loads(out)["messages"] if not m.get("anchor")]
+        rows += [m for r in json.loads(disc)["results"] for m in r["messages"]]
         assert all(len(c["function"]["arguments"]) <= 2001 for m in rows for c in m.get("tool_calls") or [])
 
     def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db, persistence):

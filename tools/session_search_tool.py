@@ -350,7 +350,8 @@ def _slim_tool_calls(tool_calls: Any, cap: int) -> Any:
 
 
 def _shape_message(m: TranscriptRow | MessageRecord, anchor_id: Optional[int] = None,
-                   max_content_len: Optional[int] = None, derived: bool = False) -> dict[str, Any]:
+                   max_content_len: Optional[int] = None, derived: bool = False,
+                   anchor_args_max: Optional[int] = _ANCHOR_TOOL_ARGS_MAX) -> dict[str, Any]:
     """Slim a stored row; keeps ``content`` even when empty (tool-call-only turns).
 
     ``derived`` marks rows surfaced by a discovery query rather than an explicit
@@ -368,7 +369,9 @@ def _shape_message(m: TranscriptRow | MessageRecord, anchor_id: Optional[int] = 
         entry["tool_calls"] = _redact_tool_calls(entry["tool_calls"])
     is_anchor = anchor_id is not None and m.id == anchor_id
     if entry.get("tool_calls"):
-        entry["tool_calls"] = _slim_tool_calls(entry["tool_calls"], _ANCHOR_TOOL_ARGS_MAX if is_anchor else _TOOL_ARGS_PREVIEW)
+        cap = anchor_args_max if is_anchor else _TOOL_ARGS_PREVIEW
+        if cap is not None:
+            entry["tool_calls"] = _slim_tool_calls(entry["tool_calls"], cap)
     if is_anchor:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:
@@ -695,6 +698,14 @@ def _search_session(persistence, session_id: str, query: str, role_filter: Optio
                               "Search failed") if others and len(own) < limit else ((), None))
     if err:
         return err
+    # The default visibility hides a demoted tool result's superseded original (its full text), so a
+    # compression continuation or another caller would lose it: add each other session's left-live rows.
+    seen_ids = {r.message_id for r in (*own, *raw_results)}
+    for sid in others if len(own) < limit else ():
+        archived = _quiet(lambda sid=sid: _search(limit, compacted_in_session=sid), (),
+                          "left-live search failed for %s", sid)
+        raw_results = (*raw_results, *(r for r in archived if r.message_id not in seen_ids))
+        seen_ids.update(r.message_id for r in archived)
     hits, live_skipped = list(own), 0
     for r in raw_results:
         if len(hits) >= limit:
@@ -917,11 +928,14 @@ def _scroll(persistence, session_id: str, around_message_id: int, window: int = 
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
-        # Tool output is most of a window and rarely the answer: cut it at 1,500 chars; user and
-        # assistant text keep 8,000 (that held every answer keyword on a real recall set, #147548).
-        messages=[_shape_message(m, anchor_id=around_message_id,
-                                 max_content_len=_SCROLL_TOOL_ROW_MAX if m.role == "tool" and m.id != around_message_id
-                                 else _SCROLL_TEXT_MAX) for m in messages],
+        # Neighbours are bounded: tool output is most of a window and rarely the answer (1,500 chars),
+        # user/assistant text keeps 8,000 (that held every answer keyword on a real recall set, #147548).
+        # The anchor itself comes back whole, content and tool-call arguments: scroll is the one shape
+        # that retrieves a full message, and an oversized one spills to a file the model can read.
+        messages=[_shape_message(m, anchor_id=around_message_id, anchor_args_max=None,
+                                 max_content_len=None if m.id == around_message_id
+                                 else _SCROLL_TOOL_ROW_MAX if m.role == "tool" else _SCROLL_TEXT_MAX)
+                  for m in messages],
         messages_before=view.before, messages_after=view.after,
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "
               "id; backward: the FIRST message's id (the boundary message repeats "

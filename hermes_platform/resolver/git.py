@@ -3,6 +3,9 @@
 On macOS without Xcode Command Line Tools, ``/usr/bin/git`` exists and is executable, but
 spawning it pops Apple's modal "The git command requires the command line developer tools"
 dialog. Custom/Homebrew/Nix/PM git binaries live elsewhere and remain usable without CLT.
+
+Deciding that runs ``/usr/bin/xcode-select -p``, the one spawn ``hermes_platform/AGENTS.md``
+allows a lookup.
 """
 
 from __future__ import annotations

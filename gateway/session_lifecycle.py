@@ -176,6 +176,8 @@ class SessionLifecycleMixin:
         with self._lock:
             self._ensure_loaded_locked()
             changed = sum(1 for entry in self._entries.values() if mutate(entry))
+            if getattr(self, "_unparsed_routes", None):  # a held row gets the same verdict when it joins
+                self._lazy("_held_route_verdicts", list).append(mutate)
             if changed:
                 self._save()
         return changed

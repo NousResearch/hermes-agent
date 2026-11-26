@@ -1256,10 +1256,12 @@ class SessionStore(
             return 0
         old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
         with self._lock:
+            held = getattr(self, "_unparsed_routes", None) or {}
             moving = [key for key in self._entries if key.startswith(old_ns)]
+            moving_held = [key for key in held if key.startswith(old_ns)]
             collisions = [
-                new_ns + key[len(old_ns):] for key in moving
-                if new_ns + key[len(old_ns):] in self._entries]
+                new_ns + key[len(old_ns):] for key in (*moving, *moving_held)
+                if new_ns + key[len(old_ns):] in self._entries or new_ns + key[len(old_ns):] in held]
             if collisions:
                 raise ValueError(
                     f"profile routing collision while renaming {old!r} to {new!r}: "
@@ -1271,9 +1273,15 @@ class SessionStore(
                 if origin is not None and getattr(origin, "profile", None) == old:
                     origin = _dc_replace(origin, profile=new)
                 self._entries[new_key] = _dc_replace(entry, session_key=new_key, origin=origin)
-            if moving:
+            for key in moving_held:  # a held row (platform not registered yet) moves with its profile too
+                new_key = new_ns + key[len(old_ns):]
+                data = held.pop(key)
+                origin = data["origin"]
+                held[new_key] = {**data, "session_key": new_key,
+                                 "origin": {**origin, "profile": new} if origin.get("profile") == old else origin}
+            if moving or moving_held:
                 self._save()
-        return len(moving)
+        return len(moving) + len(moving_held)
 
     def purge_profile_routing(self, profile: str) -> int:
         """Drop a deleted profile's live routing entries and persist the drop (#111926, delete side).
@@ -1288,9 +1296,12 @@ class SessionStore(
             return 0
         ns = f"agent:{name}:"
         with self._lock:
+            held = getattr(self, "_unparsed_routes", None) or {}
             dropped = [key for key in self._entries if key.startswith(ns)]
+            dropped += [key for key in held if key.startswith(ns)]  # else the save below writes them back
             for key in dropped:
                 self._entries.pop(key, None)
+                held.pop(key, None)
             if dropped:
                 self._save()
         return len(dropped)

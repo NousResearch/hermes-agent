@@ -403,6 +403,27 @@ class SessionPersistenceMixin:
             if isinstance(data, dict) and data.get("session_id") and _fails_only_on_platform(data):
                 self._lazy("_unparsed_routes", dict)[key] = data
 
+    def _promote_held_routes_locked(self) -> None:
+        """Move a held row into the live index once its platform resolves (a multiplexed profile's plugin
+        registers after the index loaded), so its own state (/stop's ``suspended``, ``resume_pending``) applies
+        on the next lookup instead of a recovered entry replacing it; drop a held copy whose key the live
+        index already owns, so a later prune or delete of that entry cannot restore it. A promoted row gets
+        every whole-index verdict it missed while held (the boot's turn-marker recovery or discard), so a
+        crash-left marker becomes ``resume_pending`` or is cleared as the live rows' were. Lock held."""
+        from gateway.config import Platform
+        held = getattr(self, "_unparsed_routes", None) or {}
+        for key, data in list(held.items()):
+            if key not in self._entries:
+                if data["origin"].get("platform") not in Platform._value2member_map_:
+                    continue  # still unregistered: no registry lookup per call
+                entry = self._routing_entry_from_json(key, json.dumps(data))
+                if entry is None:
+                    continue
+                for verdict in getattr(self, "_held_route_verdicts", ()):
+                    verdict(entry)
+                self._entries[key] = entry
+            del held[key]
+
     @staticmethod
     def _routing_entry_from_json(key: str, entry_json: str) -> Optional[SessionEntry]:
         """Parse one gateway_routing row; None (with a warning) when invalid."""
@@ -425,6 +446,7 @@ class SessionPersistenceMixin:
         """
         if self._loaded:
             self._reconcile_recovered_routing_locked()
+            self._promote_held_routes_locked()
             return
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         db_load_succeeded = self._load_routing_rows_locked()

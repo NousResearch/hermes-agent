@@ -251,3 +251,39 @@ def test_a_recovered_db_load_keeps_the_boot_s_marker_discard_on_a_held_mirror_ro
         restarted.discard_active_turn_markers()
         monkeypatch.setattr(type(db.routing), "load_routing_entries", real_load)
         assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["active_turn_token"] is None
+
+
+def test_a_plugin_registering_before_the_db_recovers_keeps_the_newer_db_route(tmp_path, monkeypatch):
+    """Mirror copy held at a failed DB load, the plugin registers, then the DB recovers: the newer DB row wins."""
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope()) as db:
+        store, key = _seed_held(tmp_path, db)
+        scope = store._routing_scope()
+        older = json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])
+        newer = {**older, "resume_pending": True, "resume_reason": "restart_interrupted"}
+        db.routing.upsert_routing_entry(key, json.dumps(newer), routing_scope=scope)
+        mirror = store.sessions_dir / "sessions.json"
+        data = json.loads(mirror.read_text(encoding="utf-8")) if mirror.exists() else {}
+        data[key] = older
+        mirror.write_text(json.dumps(data), encoding="utf-8")
+        real_load, calls = type(db.routing).load_routing_entries, []
+
+        def _first_fails(self, *a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("database is locked")
+            return real_load(self, *a, **k)
+        monkeypatch.setattr(type(db.routing), "load_routing_entries", _first_fails)
+        restarted = SessionStore(store.sessions_dir, GatewayConfig())
+        with restarted._lock:
+            restarted._ensure_loaded_locked()  # DB unreadable: the mirror's older copy is held
+        Platform._add_pseudo_member("yuanbao")  # the plugin registers before the DB recovers
+        try:
+            with restarted._lock:
+                restarted._ensure_loaded_locked()
+                assert restarted._entries[key].resume_pending is True
+                restarted._save()
+        finally:
+            _unregister("yuanbao")
+        monkeypatch.setattr(type(db.routing), "load_routing_entries", real_load)
+        assert json.loads(db.routing.load_routing_entries(routing_scope=scope)[key])["resume_pending"] is True

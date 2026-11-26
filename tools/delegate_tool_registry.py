@@ -359,7 +359,7 @@ _CONTROL_OUTCOMES = {
     ),
     "steer": (
         "queued",
-        "Steering text queued. The subagent sees it appended to its next tool result — the current tool call is "
+        "Steering text queued. The subagent sees it as a user message after its current tool calls, which are "
         "never cut. If the child finishes before a delivery boundary remains, the text is reported back as "
         "missed_steer in its completion entry.", "Subagent '{sid}' is no longer accepting steering (finishing or "
         "already finished). Its result arrives as a normal completion "

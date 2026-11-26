@@ -147,48 +147,59 @@ class _CursesBrowser:
                 footer += "   d delete"
         self._put(stdscr, max_y - 1, 0, footer, max_x - 1, footer_attr)
 
-    def _handle_key(self, key) -> bool:
+    def _handle_confirm_delete(self, key) -> bool:
+        """Apply y/n confirmation keypress; return True when the picker should exit."""
+        target, self.confirm_delete = self.confirm_delete, None
+        if key not in {ord("y"), ord("Y")}:
+            return False
+        try:
+            ok = self.delete_fn(target["id"])
+        except SessionWriteGuarded:
+            self.flash = "Session is active (a live turn owns it); try again when it finishes."
+            return False
+        if not ok:
+            self.flash = "Delete failed."
+            return False
+        self.sessions[:] = [s for s in self.sessions if s["id"] != target["id"]]
+        self._refilter(reset_cursor=False)
+        self.flash = "Deleted."
+        return not self.sessions
+
+    def _handle_key(self, stdscr, key) -> bool:
         """Apply one keypress; return True when the picker should exit."""
+        from hermes_cli.curses_ui import NAV_CANCEL, NAV_DOWN, NAV_SELECT, NAV_UP, _decode_menu_key
+
         c = self.curses
         if self.confirm_delete is not None:  # y/n confirmation mode — only an explicit 'y' deletes
-            target, self.confirm_delete = self.confirm_delete, None
-            if key not in {ord("y"), ord("Y")}:
-                return False
-            try:
-                ok = self.delete_fn(target["id"])
-            except SessionWriteGuarded:
-                self.flash = "Session is active (a live turn owns it); try again when it finishes."
-                return False
-            if not ok:
-                self.flash = "Delete failed."
-                return False
-            self.sessions[:] = [s for s in self.sessions if s["id"] != target["id"]]
-            self._refilter(reset_cursor=False)
-            self.flash = "Deleted."
-            return not self.sessions
-        if key in (c.KEY_UP, c.KEY_DOWN):
-            if self.filtered:
-                self.cursor = (self.cursor + (1 if key == c.KEY_DOWN else -1)) % len(self.filtered)
-        elif key in {c.KEY_ENTER, 10, 13}:
-            if self.filtered:
-                self.result = self.filtered[self.cursor]["id"]
-            return True
-        elif key == 27 and not self.search:  # Esc: first clears the search, second exits
-            return True
-        elif key == 27:
-            self.search = ""
-            self._refilter()
-        elif key in {c.KEY_BACKSPACE, 127, 8}:
+            return self._handle_confirm_delete(key)
+        if key in {c.KEY_BACKSPACE, 127, 8}:
             if self.search:
                 self.search = self.search[:-1]
                 self._refilter()
-        elif key == ord("q") and not self.search:
-            return True
-        elif key == ord("d") and not self.search and self.delete_fn is not None and self.filtered:
-            # 'd' deletes only when the filter is empty; mid-search it types into the query.
-            self.confirm_delete = self.filtered[self.cursor]
-        elif 32 <= key <= 126:
+            return False
+        if 32 <= key <= 126:
+            if key == ord("q") and not self.search:
+                return True
+            if key == ord("d") and not self.search and self.delete_fn is not None and self.filtered:
+                # 'd' deletes only when the filter is empty; mid-search it types into the query.
+                self.confirm_delete = self.filtered[self.cursor]
+                return False
             self.search += chr(key)
+            self._refilter()
+            return False
+
+        action = _decode_menu_key(stdscr, key)
+        if action in (NAV_UP, NAV_DOWN):
+            if self.filtered:
+                self.cursor = (self.cursor + (1 if action == NAV_DOWN else -1)) % len(self.filtered)
+        elif action == NAV_SELECT:
+            if self.filtered:
+                self.result = self.filtered[self.cursor]["id"]
+            return True
+        elif action == NAV_CANCEL:
+            if not self.search:  # Esc: first clears the search, second exits
+                return True
+            self.search = ""
             self._refilter()
         return False
 
@@ -215,7 +226,7 @@ class _CursesBrowser:
                 return
             self._draw(stdscr, max_y, max_x)
             stdscr.refresh()
-            if self._handle_key(stdscr.getch()):
+            if self._handle_key(stdscr, stdscr.getch()):
                 return
 
 

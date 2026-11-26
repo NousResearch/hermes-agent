@@ -131,13 +131,32 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
 
 class FooteredReply(str):
     """A final reply whose text ends with ``\n\n<runtime_footer>``. Plain text everywhere; any
-    rewrite yields a plain ``str`` again, so the footer then simply stays in the text."""
+    gateway rewrite yields a plain ``str`` again, so the footer then simply stays in the text."""
     runtime_footer: str
 
     def __new__(cls, text: str, footer: str):
-        instance = super().__new__(cls, f"{text}\n\n{footer}")
+        # An empty footer must not append the separator: ``__reduce__`` round-trips through
+        # here, so a stray "\n\n" would accumulate two newlines on every pickle.
+        instance = super().__new__(cls, f"{text}\n\n{footer}" if footer else text)
         instance.runtime_footer = footer
         return instance
+
+    # ``__new__`` takes ``footer`` positionally, so str's default reduce cannot rebuild an
+    # instance. Any ``copy.deepcopy`` of a reply (publishing it on a session's event stream)
+    # therefore raised "FooteredReply.__new__() missing 1 required positional argument: 'footer'"
+    # and the finished reply was never delivered. The text is immutable once built, so a copy is
+    # the instance itself.
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __reduce__(self):
+        text, footer = str(self), self.runtime_footer
+        if footer and text.endswith("\n\n" + footer):
+            text = text[: -len(footer) - 2]
+        return (self.__class__, (text, footer))
 
 
 class _FooterCaption(str):

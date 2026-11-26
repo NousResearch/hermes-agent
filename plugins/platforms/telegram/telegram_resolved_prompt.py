@@ -1,4 +1,4 @@
-"""Resolved-prompt edits that keep the request visible, kept out of the adapter facade.
+"""Telegram approval card delivery and edits that keep resolved prompts visible.
 
 Replacing an approval or slash-confirm prompt with only the decision ("✅ Approved once by Ana")
 erases what was approved, so a shared chat loses its record. The edit keeps the prompt's own
@@ -8,11 +8,52 @@ rendering (``Message.text_html`` rebuilds it from the entities, code block inclu
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 from typing import Any
 
+from gateway.platforms.base import ExecApprovalPrompt, SendResult
+from plugins.platforms.telegram.telegram_media_flood import flood_wait_seconds
+from plugins.platforms.telegram.telegram_send_errors import FLOOD, may_have_delivered, send_error_kind
+
 logger = logging.getLogger(__name__)
+
+
+async def send_approval_card(
+    adapter: Any, prompt: ExecApprovalPrompt, approval_id: int, keyboard: Any, *,
+    parse_mode: Any, inline_wait_cap: float,
+) -> SendResult:
+    """Retry a short, explicit flood refusal once and keep a possibly delivered card usable."""
+    from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+
+    async def send():
+        return await adapter._send_control_message(
+            prompt.chat_id, prompt.text, parse_mode=parse_mode, reply_markup=keyboard,
+            thread_id=adapter._metadata_thread_id(prompt.metadata), metadata=prompt.metadata,
+            reply_to_mode=adapter._reply_to_mode)
+
+    try:
+        try:
+            msg = await send()
+        except Exception as exc:  # health: allow BLE001 -- only an explicit flood refusal is retried
+            delay = flood_wait_seconds(exc) if send_error_kind(exc) == FLOOD else None
+            if delay is None or not 0 <= delay <= inline_wait_cap:
+                raise
+            await asyncio.sleep(delay)
+            msg = await send()
+    except Exception as exc:  # health: allow BLE001 -- classify the transport outcome and redact the error
+        error = _redact_telegram_error_text(exc)
+        logger.warning("[%s] send_exec_approval failed: %s", adapter.name, error)
+        if not may_have_delivered(exc):
+            return SendResult(success=False, error=error)
+        result = SendResult(success=False, error=error, raw_response={"delivery_uncertain": True})
+    else:
+        result = SendResult(success=True, message_id=str(msg.message_id))
+    adapter._approval_state[approval_id] = prompt.session_key
+    if prompt.request_id:
+        adapter._approval_request_ids[approval_id] = prompt.request_id
+    return result
 
 
 async def edit_keeping_prompt(adapter: Any, query: Any, decision: str) -> None:

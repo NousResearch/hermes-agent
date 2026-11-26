@@ -750,7 +750,7 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
-def _approval_send_outcome(future, timeout: float) -> str:
+def _approval_send_outcome(future, timeout: float, *, honor_delivery_uncertainty: bool = False) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
     ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
@@ -784,7 +784,7 @@ def _approval_send_outcome(future, timeout: float) -> str:
     from gateway.relay.egress import declined_send
 
     _raw = getattr(result, "raw_response", None)
-    if isinstance(_raw, dict) and _raw.get("ambiguous"):
+    if isinstance(_raw, dict) and (_raw.get("ambiguous") or (honor_delivery_uncertainty and _raw.get("delivery_uncertain"))):
         # The frame may have been applied. Same physics as a scheduling
         # timeout: possibly-delivered, so never re-send. Checked BEFORE the
         # decline classification because an ambiguous result is a transport

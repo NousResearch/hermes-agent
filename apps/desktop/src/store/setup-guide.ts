@@ -64,24 +64,30 @@ function show(state: OnboardingRunStateResult, request: OnboardingRequest, scope
   $setupGuidePhase.set('shown')
 }
 
-function pinRequest(request: OnboardingRequest, scope: OnboardingScope): OnboardingRequest {
+function pinRequest(request: OnboardingRequest, scope: OnboardingScope, sessionless = true): OnboardingRequest {
   // During initial socket boot the caller may own a connection before registry publication.
   const registered = Boolean(activeGateway())
 
   return (method, params, timeoutMs, signal) => {
-    const optedIn = { ...params, sessionless: true }
+    const routed = sessionless ? { ...params, sessionless: true } : params
 
     return registered
       ? requestGatewayForAgent(
           scope.connectionId ?? null,
           scope.profile || 'default',
           method,
-          optedIn,
+          routed,
           timeoutMs,
           signal
         )
-      : request(method, optedIn, timeoutMs, signal)
+      : request(method, routed, timeoutMs, signal)
   }
+}
+
+const sessionlessRejected = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /sessionless/i.test(message) && /extra_forbidden|extra inputs are not permitted|unexpected/i.test(message)
 }
 
 function offerRecovery(error: unknown, scope: OnboardingScope, retry: () => Promise<unknown>): void {
@@ -90,12 +96,52 @@ function offerRecovery(error: unknown, scope: OnboardingScope, retry: () => Prom
   $guideRecovery.set({
     message,
     upgradeRequired:
-      isMissingRpcMethod(error) ||
-      isOutOfSyncRpcParams(message) ||
-      (/sessionless/i.test(message) && /extra_forbidden|extra inputs are not permitted|unexpected/i.test(message)),
+      isMissingRpcMethod(error) || isOutOfSyncRpcParams(message) || sessionlessRejected(error),
     scope,
     retry
   })
+}
+
+/** An older backend rejects `sessionless` itself: read its classic setup state so a finished install
+ *  never shows the standing upgrade card, and one that is still due gets it. */
+async function classicSetupState(request: OnboardingRequest): Promise<OnboardingRunStateResult | null> {
+  try {
+    return await request<OnboardingRunStateResult>(
+      'onboarding.state',
+      window.hermesDesktop?.assumeFreshInstall ? { assume_fresh: true } : {}
+    )
+  } catch {
+    return null
+  }
+}
+
+async function handleReadFailure(
+  error: unknown,
+  request: OnboardingRequest,
+  scope: OnboardingScope,
+  live: () => boolean
+): Promise<void> {
+  if (sessionlessRejected(error)) {
+    const classic = await classicSetupState(pinRequest(request, scope, false))
+
+    if (!live()) {
+      return
+    }
+
+    if (classic && !classic.run) {
+      $guideRecovery.set(null)
+
+      if (classic.started || $setupGuidePhase.get() === 'shown') {
+        settleGuide('done')
+      }
+
+      return
+    }
+  }
+
+  if (live()) {
+    offerRecovery(error, scope, () => readAndStart(request, scope))
+  }
 }
 
 export async function startOnboarding(request: OnboardingRequest, scope = captureOnboardingScope()): Promise<boolean> {
@@ -284,8 +330,10 @@ async function readAndStart(request: OnboardingRequest, scope = captureOnboardin
       show(saved, pinned, scope)
     }
   } catch (error) {
-    if (!released && current === generation && $setupGuideOnboarding.get()) {
-      offerRecovery(error, scope, () => readAndStart(request, scope))
+    const live = () => !released && current === generation && $setupGuideOnboarding.get()
+
+    if (live()) {
+      await handleReadFailure(error, request, scope, live)
     }
   } finally {
     unlisten()

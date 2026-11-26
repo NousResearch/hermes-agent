@@ -183,6 +183,8 @@ def test_only_the_page_stage_contract_lays_the_page_column(tmp_path):
         "margin: calc(0px - var(--portal-page-top)) 0 0;",
         "margin-block-start: calc(var(--portal-settings-top) * -1);",
         "translate: 0 calc(-1 * var(--portal-page-top));",
+        "margin-top: calc(-var(--portal-page-top));",
+        "margin-top: -var(--portal-page-top);",
     ],
 )
 def test_a_row_pulled_into_the_page_top_inset_is_flagged(decl):
@@ -194,6 +196,8 @@ def test_a_row_pulled_into_the_page_top_inset_is_flagged(decl):
     [
         "padding-block: var(--portal-page-top) var(--portal-page-end-space);",
         "margin-top: var(--portal-page-top);",
+        # A positive value minus the inset leaves the row below the page top: not a pull.
+        "margin-top: calc(100% - var(--portal-page-top));",
         # The settings cards' documented bleed over the column's inline inset.
         "margin-inline: calc(-1 * var(--portal-settings-inset));",
     ],

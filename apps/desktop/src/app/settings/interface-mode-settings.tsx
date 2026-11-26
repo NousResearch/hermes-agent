@@ -24,7 +24,7 @@ export function InterfaceModeSettings() {
   const preferred = useStore($portalPreferred)
   const ids = SETTING_IDS.appearance
   const metricsGate = useStore($desktopMetricsGate)
-  const { setShowFeedback } = useContext(InterfaceModeFeedbackContext)!
+  const feedback = useContext(InterfaceModeFeedbackContext)
 
   return (
     <>
@@ -35,7 +35,7 @@ export function InterfaceModeSettings() {
         label={t.simplifiedAgents.title}
         onChange={enabled => {
           setPortalPreferred(enabled)
-          setShowFeedback(preferred && !enabled && metricsGate === 'on')
+          feedback?.setShowFeedback(preferred && !enabled && metricsGate === 'on')
         }}
       />
       <ListRow

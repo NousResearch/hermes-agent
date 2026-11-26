@@ -253,11 +253,14 @@ _INK_MIX = re.compile(r"color-mix\([^;]*?var\(\s*--(?:ui-base|portal-brand-fill|
 _LENGTH = re.compile(r"(?<![\w.#-])(-?\d*\.?\d+)(px|rem|em)\b")
 _TIME = re.compile(r"(?<![\w.#-])(\d*\.?\d+)(ms|s)\b")
 _VAR_NAME = re.compile(r"--[\w-]+")
-# The page's top inset negated (``calc(-1 * var(--portal-page-top))``, ``calc(0px - …)``): a row pulled
-# up into the space above a page's first row, which leaves it on the stage's edge.
+# The page's top inset genuinely negated: a unary ``-`` (``calc(-1 * var(--portal-page-top))``,
+# ``calc(-var(…))``), a zero subtrahend (``calc(0px - …)``), or a trailing ``* -1``. A positive value
+# minus the inset (``calc(100% - …)``) leaves the row below the top and is not a pull.
 _PAGE_TOP_TOKENS = r"--portal-(?:page|settings)-top\b"
 _PAGE_TOP_PULL = re.compile(
-    rf"-\s*(?:1\s*\*\s*)?var\(\s*{_PAGE_TOP_TOKENS}|var\(\s*{_PAGE_TOP_TOKENS}\s*\)\s*\*\s*-1"
+    rf"(?:(?<=[(,])|^)\s*-\s*(?:1\s*\*\s*)?var\(\s*{_PAGE_TOP_TOKENS}"
+    rf"|(?<![\w.%])0(?:\.0+)?(?:px|rem|em)?\s*-\s*var\(\s*{_PAGE_TOP_TOKENS}"
+    rf"|var\(\s*{_PAGE_TOP_TOKENS}\s*\)\s*\*\s*-1"
 )
 _BLOCK_START_PROPS = frozenset({
     "margin", "margin-top", "margin-block", "margin-block-start", "top", "inset", "inset-block", "inset-block-start",

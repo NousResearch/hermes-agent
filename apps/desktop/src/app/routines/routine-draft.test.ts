@@ -140,4 +140,16 @@ describe('editing a routine', () => {
       '0 7 * * *'
     )
   })
+
+  it('keeps a one-shot’s stored instant verbatim when only its name changed', () => {
+    const once = {
+      ...stored,
+      name: 'Launch reminder',
+      schedule: { kind: 'once', run_at: '2026-11-14T09:30:45+09:00' }
+    } as CronJob
+
+    const renamed = updatePayload({ ...draftFromJob(once, NOW), name: 'Launch reminder renamed' }, once)
+
+    expect(renamed).toMatchObject({ name: 'Launch reminder renamed', schedule: '2026-11-14T09:30:45+09:00' })
+  })
 })

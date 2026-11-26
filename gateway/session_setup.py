@@ -49,7 +49,8 @@ async def state(connection, ref, params):
     if not params.get('sessionless'):
         from tui_gateway.server import _run_state
         return await asyncio.to_thread(_run_state, assume_fresh=bool(params.get('assume_fresh')))
-    await _retire(connection)
+    # Read-only: a live classic run is retired when sessionless setup actually starts (set_run), so
+    # polling state can neither withdraw its card nor rewrite its metadata.
     return await asyncio.to_thread(_state, connection, bool(params.get('assume_fresh')))
 
 
@@ -66,6 +67,8 @@ async def set_run(connection, ref, params):
         from tui_gateway.server import _run_state
         await asyncio.to_thread(persist, request.run, mark_profile_offered=request.mark_profile_offered)
         return await asyncio.to_thread(_run_state)
+    # Retire live classic setup only when sessionless setup actually starts, never on a read.
+    await _retire(connection)
     await asyncio.to_thread(persist, request.run, step=request.step, restart=request.restart,
                             mark_profile_offered=request.mark_profile_offered, sessionless=True)
     return await asyncio.to_thread(_state, connection)

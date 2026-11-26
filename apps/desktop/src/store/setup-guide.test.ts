@@ -130,10 +130,10 @@ it('never writes a stale automatic-resume snapshot over a peer window', async ()
 })
 
 it.each([
-  ['old schema', 'Invalid params: sessionless Extra inputs are not permitted [type=extra_forbidden]', true],
-  ['version skew', 'App and backend out of sync (different versions)', true],
-  ['network failure', 'Gateway disconnected', false]
-])('offers explicit recovery for %s without falling back to a setup chat', async (_name, message, upgradeRequired) => {
+  ['old schema', 'Invalid params: sessionless Extra inputs are not permitted [type=extra_forbidden]', true, 2],
+  ['version skew', 'App and backend out of sync (different versions)', true, 1],
+  ['network failure', 'Gateway disconnected', false, 1]
+])('offers explicit recovery for %s without falling back to a setup chat', async (_name, message, upgradeRequired, calls) => {
   const run = await import('./setup-guide')
   const { $setupGuidePhase } = await import('./onboarding-phase')
   const request = vi.fn().mockRejectedValue(new Error(message))
@@ -141,7 +141,7 @@ it.each([
   await run.decideOnboarding(request as never)
   expect(run.$guideRecovery.get()).toMatchObject({ message, upgradeRequired })
   expect($setupGuidePhase.get()).toBe('idle')
-  expect(request).toHaveBeenCalledOnce()
+  expect(request).toHaveBeenCalledTimes(calls)
   expect(request).toHaveBeenCalledWith('onboarding.state', { sessionless: true }, 0, undefined)
 
   request.mockResolvedValue({ run: true, eligible: false, started: true, step: 'model' })
@@ -162,6 +162,37 @@ it('offers recovery for Run again and keeps classic mode free of guide recovery'
   $shellChoice.set(false)
   await run.decideOnboarding(request as never)
   expect(run.$guideRecovery.get()).toBeNull()
+})
+
+it('reads classic state without the upgrade card when an older backend rejects sessionless but setup is done', async () => {
+  const run = await import('./setup-guide')
+  const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'onboarding.state' && params?.sessionless) {
+      throw new Error('Invalid params: sessionless Extra inputs are not permitted [type=extra_forbidden]')
+    }
+
+    return { run: false, eligible: false, started: false, step: 'preferences' }
+  })
+
+  await run.decideOnboarding(request as never)
+
+  expect(request).toHaveBeenCalledWith('onboarding.state', {}, undefined, undefined)
+  expect(run.$guideRecovery.get()).toBeNull()
+})
+
+it('shows the upgrade card when an older backend rejects sessionless and setup is still due', async () => {
+  const run = await import('./setup-guide')
+  const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'onboarding.state' && params?.sessionless) {
+      throw new Error('Invalid params: sessionless Extra inputs are not permitted [type=extra_forbidden]')
+    }
+
+    return { run: true, eligible: true, started: false, step: 'preferences' }
+  })
+
+  await run.decideOnboarding(request as never)
+
+  expect(run.$guideRecovery.get()?.upgradeRequired).toBe(true)
 })
 
 it('uses the atomic fresh latch and displays progress advanced by a peer since the snapshot', async () => {
@@ -198,6 +229,7 @@ it('pins recovery retries to the failed gateway and profile, not the new foregro
     api.setApiRequestProfile('default')
     await run.$guideRecovery.get()!.retry()
     expect(routed.mock.calls.map(call => call.slice(0, 3))).toEqual([
+      ['alpha', 'research', 'onboarding.state'],
       ['alpha', 'research', 'onboarding.state'],
       ['alpha', 'research', 'onboarding.state']
     ])

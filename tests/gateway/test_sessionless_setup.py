@@ -162,6 +162,25 @@ async def test_retirement_preserves_history_and_late_old_tool_cannot_finish_new_
 
 
 @pytest.mark.asyncio
+async def test_reading_sessionless_state_leaves_a_live_classic_run_intact(tmp_path, monkeypatch):
+    from agent import onboarding_record
+    desktop = await _desktop(tmp_path, monkeypatch, [])
+    try:
+        db = desktop.db
+        db.sessions.create(NewSession(session_id="live-setup", source="desktop"))
+        onboarding_record.start(db, "live-setup", FACTS, persistence=db)
+
+        reply = await _request(desktop, 0, "onboarding.state", {})
+        assert reply["result"]["run"] is True
+        assert onboarding_record.open_session_ids(db, persistence=db) == ["live-setup"]
+
+        await _request(desktop, 1, "onboarding.set_run", {"run": True, "step": "model"})
+        assert onboarding_record.open_session_ids(db, persistence=db) == []
+    finally:
+        await desktop.connection.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sessionless", [None, False, True], ids=["classic-omitted", "classic", "sessionless"])
 async def test_setup_dispatch_requires_operator_and_preserves_root_scope(tmp_path, monkeypatch, sessionless):
     from agent import onboarding_record

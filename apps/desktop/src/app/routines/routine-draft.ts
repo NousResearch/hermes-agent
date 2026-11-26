@@ -138,8 +138,14 @@ export function updatePayload(draft: RoutineDraft, job: CronJob): CronJobUpdates
       deliver: draft.deliver || 'local',
       name: draft.name.trim(),
       prompt: draft.prompt,
-      // An untouched schedule is sent back as stored, so a natural phrase is never re-parsed.
-      schedule: schedule === stored ? (job.schedule?.expr ?? schedule) : schedule
+      // An untouched schedule is sent back as stored, so a natural phrase is never re-parsed. A
+      // one-shot keeps its instant verbatim: recomposing YYYY-MM-DDTHH:MM would drop seconds/offset.
+      schedule:
+        schedule === stored
+          ? job.schedule?.kind === 'once'
+            ? (job.schedule.run_at ?? schedule)
+            : (job.schedule?.expr ?? schedule)
+          : schedule
     },
     { scriptOnlyJob: jobIsScriptOnly(job) }
   )

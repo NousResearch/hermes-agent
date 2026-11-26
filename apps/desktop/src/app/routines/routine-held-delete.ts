@@ -12,7 +12,8 @@ import { readJson, writeJson } from '@/lib/storage'
 // A held delete is also written down, so a window that closes or crashes mid-hold is finished on the
 // next launch. Every step is ordered to fail toward NOT deleting the wrong thing:
 // - hold writes the marker before pausing: a crash after it can only complete what was asked;
-// - undo drops the marker before resuming: an undone routine is never deleted later;
+// - undo drops the marker before resuming, and waits out an in-flight pause: an undone routine is
+//   never deleted later, and resume never overtakes the pause to leave it "restored" but paused;
 // - a delete that fails drops the marker and shows the routine again, paused, never hidden and alive.
 
 /** A routine whose delete is being held. */
@@ -96,6 +97,9 @@ function stampMarker(routine: HeldRoutine, nowMs: number) {
 /** The routine this window holds a delete for: hidden from every list while it is set. */
 export const $heldRoutine = atom<HeldRoutine | null>(null)
 
+/** The pause an active hold is still waiting on; Undo must never resume before it lands. */
+let pendingPause: null | { promise: Promise<unknown>; routine: HeldRoutine } = null
+
 let beat: null | ReturnType<typeof setInterval> = null
 
 function stopBeat() {
@@ -121,13 +125,21 @@ export async function holdRoutineDelete(routine: HeldRoutine, backend: HeldDelet
   $heldRoutine.set(routine)
 
   if (routine.resume) {
+    let pause: null | Promise<unknown> = null
+
     try {
-      await backend.pause(routine.id, routine.scope)
+      pause = backend.pause(routine.id, routine.scope)
+      pendingPause = { promise: pause, routine }
+      await pause
     } catch (error) {
       $heldRoutine.set(null)
       dropMarker(routine)
 
       throw error
+    } finally {
+      if (pause && pendingPause?.promise === pause) {
+        pendingPause = null
+      }
     }
   }
 
@@ -146,9 +158,21 @@ export async function undoHeldRoutine(backend: HeldDeleteBackend): Promise<HeldR
     return null
   }
 
+  const pause = pendingPause?.routine === held ? pendingPause.promise : null
+
   $heldRoutine.set(null)
   stopBeat()
   dropMarker(held)
+
+  // A pause still in flight must land before resume: otherwise resume could reach the owner first
+  // and leave the "restored" routine paused. A failed pause is not Undo's to report.
+  if (pause) {
+    await pause.catch(() => undefined)
+
+    if (pendingPause?.promise === pause) {
+      pendingPause = null
+    }
+  }
 
   if (held.resume) {
     await backend.resume(held.id, held.scope)

@@ -152,8 +152,11 @@ export function RootErrorBoundary({ children }: { children: ReactNode }) {
   return <ErrorBoundary label="root">{children}</ErrorBoundary>
 }
 
+const SHELL_STORAGE_KEY = 'hermes.desktop.agentShell.v1'
+
 function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
   const { t } = useI18n()
+  const portalShell = typeof document !== 'undefined' && document.documentElement.getAttribute('data-shell') === 'portal'
 
   return (
     <div
@@ -182,6 +185,22 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
         <Button className="font-semibold" onClick={reset} size="lg">
           {t.common.retry}
         </Button>
+        {portalShell && (
+          <Button
+            onClick={() => {
+              try {
+                window.localStorage.setItem(SHELL_STORAGE_KEY, 'false')
+              } catch {
+                // Best effort when storage is blocked.
+              }
+              document.documentElement.removeAttribute('data-shell')
+              window.location.reload()
+            }}
+            variant="outline"
+          >
+            Switch back to classic
+          </Button>
+        )}
         <Button onClick={() => window.location.reload()} variant="text">
           {t.errors.reloadWindow}
         </Button>

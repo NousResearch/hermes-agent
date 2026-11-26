@@ -98,6 +98,35 @@ describe('holding a routine’s delete', () => {
     expect(owner.calls.filter(call => call.startsWith('delete'))).toEqual([])
   })
 
+  it('undo waits for an in-flight pause before resuming, so the restored routine is never paused', async () => {
+    const owner = fakeOwner()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const order: string[] = []
+
+    owner.backend.pause = vi.fn(async (id: string) => {
+      entered.resolve()
+      await release.promise
+      order.push('pause resolved')
+      owner.state.set(id, 'paused')
+    })
+    owner.backend.resume = vi.fn(async (id: string) => {
+      order.push('resume')
+      owner.state.set(id, 'on')
+    })
+
+    const holding = holdRoutineDelete(brief, owner.backend)
+    await entered.promise
+    const undoing = undoHeldRoutine(owner.backend)
+    expect(order).toEqual([])
+
+    release.resolve()
+    await Promise.all([holding, undoing])
+
+    expect(order).toEqual(['pause resolved', 'resume'])
+    expect(owner.state.get('brief')).toBe('on')
+  })
+
   it('dismissing makes it final on its own owner', async () => {
     const owner = fakeOwner()
 

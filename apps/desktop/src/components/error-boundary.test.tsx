@@ -318,3 +318,45 @@ describe('ErrorBoundary portal teardown recovery', () => {
     expect(portalRecoveryWarningCount(warnSpy.mock.calls)).toBe(1)
   })
 })
+
+describe('RootErrorFallback classic recovery', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    document.documentElement.removeAttribute('data-shell')
+    window.localStorage.removeItem('hermes.desktop.agentShell.v1')
+  })
+
+  it('offers switching back to classic only in the portal shell, and reloads into it', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...window.location, reload } })
+    const Bomb = makeBomb({ error: new Error('an unrelated application error') })
+    const SWITCH = { name: 'Switch back to classic', role: 'button' } as const
+
+    try {
+      document.documentElement.setAttribute('data-shell', 'portal')
+      const view = render(
+        <RootErrorBoundary>
+          <Bomb />
+        </RootErrorBoundary>
+      )
+
+      fireEvent.click(screen.getByRole(SWITCH.role, { name: SWITCH.name }))
+      expect(window.localStorage.getItem('hermes.desktop.agentShell.v1')).toBe('false')
+      expect(document.documentElement.getAttribute('data-shell')).toBeNull()
+      expect(reload).toHaveBeenCalledTimes(1)
+      view.unmount()
+    } finally {
+      Object.defineProperty(window, 'location', originalLocation)
+    }
+
+    render(
+      <RootErrorBoundary>
+        <Bomb />
+      </RootErrorBoundary>
+    )
+    expect(screen.queryByRole(SWITCH.role, { name: SWITCH.name })).toBeNull()
+  })
+})

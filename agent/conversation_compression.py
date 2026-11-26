@@ -3335,7 +3335,7 @@ def _finish_compaction_boundary(
     agent: Any, compressed: list, *, new_system_prompt: str, old_session_id: Optional[str], in_place: bool,
     compacted_in_place: bool, session_commit_succeeded: bool, defer_context_engine_notification: bool,
     compression_made_progress: bool, compression_used_fallback: bool, compression_feasibility_skip: bool,
-    task_id: str,
+    task_id: str, transcript_rolled_back: bool = False,
 ) -> int:
     """Post-commit bookkeeping: notify engines/providers/hooks, re-arm usage tracking.
     Returns the rough post-compression token estimate (diagnostics only)."""
@@ -3423,7 +3423,11 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    note_context_boundary(agent, task_id)
+    if transcript_rolled_back:
+        # Keep the legacy dedup reset without forgetting evidence for results still in context.
+        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
+    else:
+        note_context_boundary(agent, task_id)
     return _compressed_est
 
 
@@ -3517,6 +3521,7 @@ class _CommitOutcome:
     session_commit_succeeded: bool = False
     compacted_in_place: bool = False
     made_progress: bool = False
+    transcript_rolled_back: bool = False
 
 
 def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
@@ -3557,6 +3562,7 @@ def _commit_compaction(
     re-inserted after the compacted head by either commit and stamped once durable.
     """
     session_commit_succeeded = False
+    transcript_rolled_back = False
     compacted_in_place = False
     commit_started_at = time.monotonic()
     split_status = "not_applicable"
@@ -3711,6 +3717,7 @@ def _commit_compaction(
                 # needed).
                 messages[:] = copy.deepcopy(messages_before_compression)
                 compressed = messages
+                transcript_rolled_back = True
                 made_progress = False
                 _restore_prune_rearm_tokens(agent.context_compressor, attempt.snapshot)
             split_status = "aborted" if old_session_id is None and not in_place else "failed_not_indexed"
@@ -3734,6 +3741,7 @@ def _commit_compaction(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
         split_status=split_status, session_commit_succeeded=session_commit_succeeded,
         compacted_in_place=compacted_in_place, made_progress=made_progress,
+        transcript_rolled_back=transcript_rolled_back,
     )
 
 
@@ -4191,6 +4199,7 @@ def compress_context(
             defer_context_engine_notification=defer_context_engine_notification,
             compression_made_progress=commit.made_progress, compression_used_fallback=_compression_used_fallback,
             compression_feasibility_skip=_compression_feasibility_skip, task_id=task_id,
+            transcript_rolled_back=commit.transcript_rolled_back,
         )
         logger.info(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",

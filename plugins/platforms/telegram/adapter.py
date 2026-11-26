@@ -5966,6 +5966,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if event is not None:
                 self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
             raise
+        except Exception:
+            if event is not None and getattr(event, "_gateway_accepted", None) is not True:
+                self._hold_inbound_event(event, where=f"{where}-flush-failed")
+            raise
         finally:
             if committed.get((where, key)) is current_task:
                 committed.pop((where, key), None)

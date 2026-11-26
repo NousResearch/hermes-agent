@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from agent.prompt_cache_lifecycle.warmer import PromptCacheWarmer
 
-#: Shortest cache window a chat is compacted before: below it, ordinary pauses outlast the window.
-MIN_COMPACT_WINDOW_SECONDS = 30 * 60
 #: A chat is compacted only once its context is at least this share of the compaction threshold.
 COMPACT_CONTEXT_FRACTION = 0.5
 #: How often the surface owners poll ``PromptCacheWarmer.claim_edge``.
@@ -126,8 +124,6 @@ def _window_gate(agent: Any, spent: _Spent, now: float) -> Optional[str]:
     """Why the spent budget's window does not compact now, or None."""
     from agent.prompt_cache_clock import DECLARED, PROVEN, cache_window, context_witness
 
-    if spent.tier_s < MIN_COMPACT_WINDOW_SECONDS:
-        return f"short_window:{int(spent.tier_s)}s"
     if now < spent.due_at:
         return "not_yet"
     window = cache_window(agent)
@@ -144,8 +140,9 @@ def _compaction_reason(agent: Any, warmer: PromptCacheWarmer, releasing: bool, n
     """Why step 2 does not run now (``"due"`` when it does). Caller holds ``warmer._lock``.
 
     Due only when this chat's warm budget is over (spent or missed; at a release, a live budget ends
-    now) on a proven/declared window of at least 30 minutes, its context is at least half the
-    compaction threshold and grew since the last compaction, and no compaction ran this stretch."""
+    now) on a proven/declared window of any tier (a 5m chat compacts once its keep-alives stop covering
+    the pause, never before), its context is at least half the compaction threshold and grew since the
+    last compaction, and no compaction ran this stretch."""
     spent, run = warmer._spent, warmer._run
     if spent is None and releasing and run is not None:
         spent = _Spent(now, run.ttl_s, run.witness)

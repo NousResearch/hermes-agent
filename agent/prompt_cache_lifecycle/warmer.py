@@ -33,6 +33,7 @@ from agent.prompt_cache_lifecycle.replay import (
     replay_cap_honoured,
     replay_output_cap,
 )
+from agent.prompt_cache_lifecycle.tier import upgrade_at_compaction
 
 logger = logging.getLogger(__name__)
 
@@ -280,7 +281,6 @@ class PromptCacheWarmer:
         if decision.action != "warm":
             return self._stop(decision.stop_reason)
         from agent.prompt_cache_clock import context_witness, response_upstream
-        from agent.prompt_cache_lifecycle.tier import idle_warming_allowed
 
         api_calls = getattr(agent, "session_api_calls", 0)
         model = getattr(agent, "model", "")
@@ -303,7 +303,7 @@ class PromptCacheWarmer:
             cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
             deadline_at=window[0], is_current=_is_current, api_mode=api_mode,
             witness=context_witness(agent), billing=self._billing_snapshot(),
-            idle_ok=human_paced(agent) and idle_warming_allowed(agent), budget=budget,
+            idle_ok=human_paced(agent), budget=budget,
             upstream=response_upstream(response), stable_prefix_tokens=_stable_prefix_tokens(api_kwargs, api_mode),
         )
         with self._lock:
@@ -359,6 +359,7 @@ class PromptCacheWarmer:
                 if releasing:
                     self.cancel("owner releasing the agent: compacting first")
                 self._spent, self._compacted = None, True
+                upgrade_at_compaction(self.agent)
             elif action == "offload":
                 self._offloaded = True
             return action

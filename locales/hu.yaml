@@ -446,7 +446,7 @@ gateway:
     cache_unknown_runtime: "Prompt-gyorsítótár: ismeretlen (ez a futtatókörnyezet saját gyorsítótár-beállításokat használ, amelyeket a Hermes nem lát)."
     cache_unknown_storage: "Prompt-gyorsítótár: ismeretlen (a munkamenet-tároló nem olvasható)."
     cache_warming_off: "Életben tartás: ki (kétszer elmaradt)."
-    cache_tier_pending: "Szint: 5m az első 5 percnél hosszabb szünetig, utána 1h."
+    cache_tier_pending: "Szint: 5m, amíg az 5 perces gyorsítótár először le nem jár, utána 1h."
     cache_learned: "Tanult: {rule}."
     cache_confidence:
       proven: "igazolt"

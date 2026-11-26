@@ -443,7 +443,7 @@ gateway:
     cache_unknown_runtime: "İstem önbelleği: bilinmiyor (bu çalışma ortamı kendi önbellek seçeneklerini belirliyor ve Hermes bunları göremiyor)."
     cache_unknown_storage: "İstem önbelleği: bilinmiyor (oturum deposu okunamadı)."
     cache_warming_off: "Canlı tutma: kapalı (iki kez kaçtı)."
-    cache_tier_pending: "Seviye: 5 dakikayı aşan ilk molaya kadar 5m, sonra 1h."
+    cache_tier_pending: "Seviye: 5 dakikalık önbellek ilk kez sona erene kadar 5m, sonra 1h."
     cache_learned: "Öğrenildi: {rule}."
     cache_confidence:
       proven: "kanıtlandı"

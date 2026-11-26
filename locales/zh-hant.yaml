@@ -443,7 +443,7 @@ gateway:
     cache_unknown_runtime: "提示詞快取：未知（此執行環境自行設定快取選項，Hermes 無法觀察）。"
     cache_unknown_storage: "提示詞快取：未知（無法讀取工作階段儲存）。"
     cache_warming_off: "保活：已關閉（兩次未命中）。"
-    cache_tier_pending: "層級：首次停頓超過 5 分鐘前為 5m，之後為 1h。"
+    cache_tier_pending: "層級：5 分鐘快取首次過期前為 5m，之後為 1h。"
     cache_learned: "已學習：{rule}。"
     cache_confidence:
       proven: "已證實"

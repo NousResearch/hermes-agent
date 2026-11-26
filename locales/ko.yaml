@@ -443,7 +443,7 @@ gateway:
     cache_unknown_runtime: "프롬프트 캐시: 알 수 없음 (이 런타임은 자체 캐시 옵션을 사용하며 Hermes가 관찰할 수 없습니다)."
     cache_unknown_storage: "프롬프트 캐시: 알 수 없음 (세션 저장소를 읽을 수 없습니다)."
     cache_warming_off: "킵얼라이브: 꺼짐 (두 번 실패)."
-    cache_tier_pending: "단계: 5분이 넘는 첫 휴식까지 5m, 이후 1h."
+    cache_tier_pending: "단계: 5분 캐시가 처음 만료될 때까지 5m, 이후 1h."
     cache_learned: "학습됨: {rule}."
     cache_confidence:
       proven: "입증됨"

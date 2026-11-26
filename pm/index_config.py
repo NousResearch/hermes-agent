@@ -27,6 +27,7 @@ FORWARDED_UV_SETTINGS = frozenset({
     "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX", "UV_NO_INDEX",
     "UV_FIND_LINKS", "UV_INDEX_STRATEGY", "UV_KEYRING_PROVIDER",
     "UV_NATIVE_TLS", "UV_INSECURE_HOST", "UV_HTTP_TIMEOUT",
+    "UV_CONCURRENT_DOWNLOADS", "UV_HTTP_RETRIES",
 })
 
 _UV_INDEX_KNOBS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")
@@ -38,8 +39,8 @@ _PIP_TO_UV = (
 )
 
 TIMEOUT_HINT = ("uv timed out. If your network needs a package mirror, set index-url in "
-                "pip.conf (bridged to uv automatically) or UV_INDEX_URL; raise UV_HTTP_TIMEOUT "
-                "for slow links.")
+                "pip.conf (bridged to uv automatically) or UV_INDEX_URL. On a slow link, lower "
+                "UV_CONCURRENT_DOWNLOADS (e.g. 1) or raise UV_HTTP_TIMEOUT.")
 
 
 def is_forwarded(key: str) -> bool:
@@ -50,8 +51,8 @@ def is_forwarded(key: str) -> bool:
 # resolution strategy, index credentials). These are what no_config isolation
 # must strip from the child: re-resolving the official-index runtime lockfile
 # against a mirror is exactly what trips `uv sync --locked` (#124418/#125071).
-# Transport knobs (UV_NATIVE_TLS, UV_INSECURE_HOST, UV_HTTP_TIMEOUT) are NOT
-# index redirects — corporate networks need them to reach the pinned URLs at
+# Transport knobs (UV_NATIVE_TLS, UV_INSECURE_HOST, UV_HTTP_TIMEOUT,
+# UV_CONCURRENT_DOWNLOADS, UV_HTTP_RETRIES) are NOT index redirects — corporate networks need them to reach the pinned URLs at
 # all, so they survive no_config isolation.
 INDEX_REDIRECT_SETTINGS = frozenset({
     "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX", "UV_NO_INDEX",

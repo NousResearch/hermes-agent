@@ -479,6 +479,37 @@ describe('AppContextMenu', () => {
     expect(document.activeElement).toBe(textarea)
   })
 
+  it.each([
+    ['Cut', 6, 10, 'alpha  gamma'],
+    ['Paste', 6, 6, 'alpha new beta gamma']
+  ] as const)('runs %s at the original rich-text selection', async (label, start, end, expected) => {
+    const selection = window.getSelection()!
+    installBridge({
+      contextMenuEdit: async command => {
+        const range = selection.getRangeAt(0)
+        range.deleteContents()
+
+        if (command === 'paste') {
+          range.insertNode(window.document.createTextNode('new '))
+        }
+      }
+    })
+    mountMenu()
+    const host = attach('<div contenteditable="true" data-slot="composer-rich-input">alpha beta gamma</div>')
+    const editor = host.firstElementChild as HTMLElement
+    Object.defineProperty(editor, 'isContentEditable', { value: true })
+    editor.focus()
+    selection.setBaseAndExtent(editor.firstChild!, start, editor.firstChild!, end)
+
+    fireEvent.contextMenu(editor)
+    const item = await screen.findByText(label)
+    // Menu focus displaces the document selection in Chromium.
+    selection.collapse(editor, 0)
+    fireEvent.click(item)
+
+    await waitFor(() => expect(editor.textContent).toBe(expected))
+  })
+
   it('keeps a modal textarea paste menu inside its dialog and restores focus', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 

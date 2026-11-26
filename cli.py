@@ -1250,6 +1250,10 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         if not exec_cmd:
             self._console_print(f"[bold red]{_t('cli.quick.no_command', command=base_cmd)}[/]")
             return True
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if refused := run_elsewhere_refusal():  # asked per command: this chat may predate the marker
+            self._console_print(f"[bold red]{refused}[/]")
+            return True
         try:
             # shell=True is intentional (user-authored config snippets, never LLM controlled);
             # the env is sanitized because this process holds every API key.

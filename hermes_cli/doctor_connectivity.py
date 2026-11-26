@@ -249,7 +249,7 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     # ACCESS_TOKEN_TYPE_UNSUPPORTED (reserved for OAuth 2 tokens); plain keys use ``x-goog-api-key``.
     if url and (base_url_host_matches(url, "generativelanguage.googleapis.com")
                 or base_url_host_matches(url, "aiplatform.googleapis.com")):
-        from agent.gemini_native_adapter import is_vertex_express_base_url, normalize_gemini_base_url
+        from agent.gemini_urls import is_vertex_express_base_url, normalize_gemini_base_url
         root = url.rsplit("/models", 1)[0]
         if base_url_host_matches(url, "generativelanguage.googleapis.com") or is_vertex_express_base_url(root):
             # Normalize guarantees the version segment and completes an explicitly configured express

@@ -44,32 +44,83 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
-def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
-    """Best-effort parse of a dashboard/server cmdline into mode, host, and port.
+def _extract_dashboard_bind(tokens: list[str], *, exact: bool) -> tuple[str, int] | None:
+    """Read ``--host`` and ``--port`` from *tokens*; None on invalid port.
+
+    *exact* (argv sequence or unwrapped inline bootstrap) uses last-value CLI semantics and
+    rejects invalid/negative ports even after a prior valid one; flattened text keeps the first
+    explicit valid bind so trailing path fragments cannot overwrite or erase it.
+    """
+    port = 9119
+    explicit_port = False
+    host = "127.0.0.1"
+    explicit_host = False
+    i = 0
+    while i < len(tokens):
+        raw = tokens[i].strip("\"'")
+        flag, eq, inline_value = raw.partition("=")
+        if flag == "--port" and (exact or not explicit_port):
+            if eq:
+                value, step = inline_value.strip("\"'"), 1
+            elif i + 1 < len(tokens):
+                value, step = tokens[i + 1].strip("\"'"), 2
+            else:
+                return None if exact else (host, port)
+            try:
+                parsed_port = int(value)
+            except ValueError:
+                return None
+            if parsed_port < 0:
+                return None
+            port, explicit_port = parsed_port, True
+        elif flag == "--host" and (exact or not explicit_host):
+            if eq:
+                value, step = inline_value.strip("\"'"), 1
+            elif i + 1 < len(tokens):
+                value, step = tokens[i + 1].strip("\"'"), 2
+            else:
+                break
+            host, explicit_host = value or "127.0.0.1", True
+        else:
+            step = 1
+        i += step
+    return host, port
+
+
+def _parse_dashboard_runtime(command: str | list[str] | tuple[str, ...]) -> tuple[str, str, int] | None:
+    """Best-effort parse of a dashboard/server cmdline or argv into mode, host, and port.
 
     The mode is the canonical holder subcommand, never an argv substring: this gates the launchd
     backend inventory (a kill + kickstart path) and ``--status`` (#121156).
     """
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
-    mode = _hermes_holder_subcommand(command)
+    if isinstance(command, str):
+        exact = False
+        cmdline = command
+        try:
+            tokens = shlex.split(command, posix=False)
+        except ValueError:
+            tokens = command.split()
+    else:
+        exact = True
+        tokens = [str(part) for part in command]
+        cmdline = shlex.join(tokens)
+
+    mode = _hermes_holder_subcommand(cmdline)
     if mode not in ("dashboard", "serve"):
         return None
 
-    port = 9119
-    host = "127.0.0.1"
+    from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
+    normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
+    if command_line_runs_inline_source(normalized):
+        unwrapped = inline_bootstrap_argv(normalized)
+        if unwrapped:
+            tokens, exact = unwrapped, True
 
-    port_match = re.search(r"(?:^|\s)--port(?:=|\s+)(\d+)", command)
-    if port_match:
-        try:
-            port = int(port_match.group(1))
-        except ValueError:
-            return None
-
-    host_match = re.search(r"(?:^|\s)--host(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)", command)
-    if host_match:
-        host = host_match.group(1).strip("\"'") or "127.0.0.1"
-
-    return mode, host, port
+    bind = _extract_dashboard_bind(tokens, exact=exact)
+    if bind is None:
+        return None
+    return mode, bind[0], bind[1]
 
 
 def _dashboard_probe_host(host: str | None) -> str:
@@ -136,6 +187,14 @@ def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTE
         "enabled", "enabled-runtime", "linked", "linked-runtime", "static", "generated",
     }:
         return False
+    if active_state != "active":
+        from hermes_cli.backend_migration_marker import backend_retired_by_migration
+        if backend_retired_by_migration():
+            # Moved to the gateway: a stopped old backend stays stopped (a `static` unit is never
+            # `disabled`, so the enabled check above cannot tell).
+            print(f"\n  • {unit} stays stopped: this profile's backend was moved to the gateway "
+                  "(backend_migration.json).")
+            return True
 
     print(f"\n⟲ Restarting managed dashboard service ({reason})")
 
@@ -321,7 +380,7 @@ def _loaded_launchd_backend_jobs(
             if not label or not isinstance(args, list) or not args:
                 continue
             argv = [str(a) for a in args]
-            if _parse_dashboard_runtime(shlex.join(argv)) is None:
+            if _parse_dashboard_runtime(argv) is None:
                 continue
             domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:
@@ -577,7 +636,39 @@ def _finalize_update_output(state):
             log_file.close()
 
 
-def _report_dashboard_status() -> int:
+def _pid_argv(pid: int) -> list[str] | None:
+    """Exact argv for *pid* from psutil or ``/proc/<pid>/cmdline`` (no subprocesses)."""
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        with contextlib.suppress(psutil.Error, OSError):
+            argv = psutil.Process(pid).cmdline()
+            if argv:
+                return [str(part) for part in argv]
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
+            if argv:
+                return argv
+    return None
+
+
+def _status_runtime_source(pid: int, command: str) -> list[str] | str:
+    """Prefer *pid*'s exact OS argv when it matches the scanned *command*, else *command*."""
+    normalized_cmd = " ".join(command.split())
+    if not normalized_cmd:
+        return command
+    exact_argv = _pid_argv(pid)
+    # ps prints a multi-line -c source (the published launcher's) with its newlines as spaces.
+    if exact_argv and " ".join(" ".join(exact_argv).split()).startswith(normalized_cmd):
+        return exact_argv
+    return command
+
+
+def _report_dashboard_status(status_host: str = "127.0.0.1", status_port: int = 0) -> int:
     """Print live listening dashboard/serve processes and return the count.
 
     Serve-mode backends are INCLUDED: ``--stop`` kills them, so hiding them from
@@ -587,40 +678,99 @@ def _report_dashboard_status() -> int:
     augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
     ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids, _ledger_serve_binds, _process_listens_on, _scan_dashboard_processes,
+    )
     from gateway.status import _pid_exists
     binds = _ledger_serve_binds()
-    live: list[tuple[int, str, str]] = []
+    # A launcher that runs this CLI as its child (the Windows one) has this same `dashboard --status` argv
+    # (a dashboard on 9119 or the --port it names), so the probe below answered for whatever held that
+    # port and the launcher was listed as a backend. An ancestor is listed only while it holds the
+    # listener itself. The installed POSIX launcher execs instead, so the address this --status names
+    # is probed here too, when this machine can listen there (no lookup, no foreign connect). The only
+    # address this home's gateway is asked about is the peer that probe connected to, unless a listed
+    # backend holds a listener covering that peer
+    # (a listed process with no covering listener there is listed, not credited).
+    ancestors: set[int] | None = None
+    own = None
+    if status_port > 0 and _status_host_is_local(status_host):
+        with contextlib.suppress(OSError, UnicodeError, ValueError):
+            own = _dashboard_listening(status_host, status_port)
+    unclaimed: list[tuple[str, int]] = [(own, status_port)] if own else []
+    candidates: list[tuple[int, str, str, tuple[str, int]]] = []
     for pid, command in _scan_dashboard_processes():
-        runtime = _parse_dashboard_runtime(command)
+        runtime = _parse_dashboard_runtime(_status_runtime_source(pid, command))
         if runtime is None:
             continue
         mode, host, port = runtime
         if pid in binds:
             ledger_host, port = binds[pid]
             host = ledger_host or host
-        if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
+        if port <= 0 or not _pid_exists(pid) or not (peer := _dashboard_listening(host, port)):
             continue
-        live.append((pid, command, mode))
+        if ancestors is None:
+            ancestors = _caller_ancestor_pids()
+        if pid in ancestors and _process_listens_on(pid, port) is False:
+            unclaimed.append((peer, port))
+            continue
+        candidates.append((pid, command, mode, (peer, port)))
+    live = [(pid, command, mode) for pid, command, mode, _ in candidates]
+    gateway_note = None
+    if unclaimed:
+        from hermes_cli.web_server_port_holder import _binds_overlap, _listening_addresses, gateway_webapp_summary
+        held = {
+            (peer, port) for pid, _, _, (peer, port) in candidates
+            if (peer, port) in unclaimed and any(
+                _binds_overlap(bound, peer, port) for bound in _listening_addresses(pid, port)
+            )
+        }
+        asked = [peer for peer in dict.fromkeys(unclaimed) if peer not in held]
+        gateway_note = next(filter(None, (gateway_webapp_summary(*peer) for peer in asked)), None)
 
     if not live:
         print("No hermes dashboard or serve processes running.")
+        if gateway_note:
+            print(gateway_note)
         return 0
 
     print(f"{len(live)} hermes dashboard/serve process(es) running:")
     for pid, command, mode in live:
         print(f"    PID {pid} [{mode}]: {command}")
+    if gateway_note:
+        print(gateway_note)
     return len(live)
 
 
-def _dashboard_listening(host: str, port: int) -> bool:
-    """True when something accepts TCP connections at host:port (even a 401 proves a dashboard is up)."""
+def _status_host_is_local(host: str) -> bool:
+    """Whether this machine can listen on *host* with no name lookup: ``localhost``, a loopback or
+    wildcard IP literal, or an address one of its interfaces holds. Any other host (a DNS name, another
+    machine's address) is never probed by --status itself, so no resolver or foreign connect can stall it."""
+    import ipaddress
+    name = (host or "").strip().strip("[]")
+    if name == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    if address.is_loopback or address.is_unspecified:
+        return True
+    from hermes_platform.host.facts import has_interface_address
+    try:
+        return has_interface_address(name)
+    except (OSError, ValueError):
+        return False
+
+
+def _dashboard_listening(host: str, port: int) -> str | None:
+    """The numeric address that accepted a TCP connection at host:port (even a 401 proves a dashboard
+    is up), or None when nothing answered."""
     import socket
     try:
-        with socket.create_connection((_dashboard_probe_host(host), port), timeout=1.5):
-            return True
+        with socket.create_connection((_dashboard_probe_host(host), port), timeout=1.5) as client:
+            return client.getpeername()[0]
     except OSError:
-        return False
+        return None
 
 
 def _cancel(message: str = "  Cancelled.") -> NoReturn:
@@ -687,7 +837,6 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         _cancel()
 
     import getpass
-    import secrets
     print()
     try:
         username = line_input("  Username [admin]: ").strip() or "admin"
@@ -701,33 +850,14 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     if password != confirm:
         _cancel("  ✗ Passwords don't match — aborting.")
 
+    # The storage `hermes dashboard password` shares. An operator who deliberately disabled the bundled
+    # basic plugin is told it was unblocked (so discover_plugins below registers it).
+    from hermes_cli.dashboard_password import DashboardPasswordError, store_basic_auth
     try:
-        from plugins.dashboard_auth.basic import hash_password
-    except Exception as exc:
-        _cancel(f"  ✗ Could not load the password provider: {exc}")
-
-    password_hash = hash_password(password)
-    # A stable token-signing secret so sessions survive a dashboard restart.
-    secret = secrets.token_urlsafe(32)
-
-    try:
-        from hermes_cli.config import load_config, save_config
-        from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
-        cfg = load_config()
-        basic = cfg.setdefault("dashboard", {}).setdefault("basic_auth", {})
-        basic["username"] = username
-        basic["password_hash"] = password_hash
-        basic["password"] = ""  # never persist plaintext
-        if not str(basic.get("secret", "") or "").strip():
-            basic["secret"] = secret
-        # The bundled basic provider is a backend plugin that honours
-        # plugins.disabled; unblock it so discover_plugins below registers it,
-        # and tell an operator who deliberately disabled it.
-        if ensure_basic_auth_plugin_enabled_in_config(cfg):
-            print("  ✓ Re-enabled the bundled 'basic' auth plugin (was in plugins.disabled)")
-        save_config(cfg)
-    except Exception as exc:
-        _cancel(f"  ✗ Failed to write config.yaml: {exc}")
+        store_basic_auth(username, password, on_reenabled=lambda: print(
+            "  ✓ Re-enabled the bundled 'basic' auth plugin (was in plugins.disabled)"))
+    except DashboardPasswordError as exc:
+        _cancel(f"  ✗ {exc}")
 
     # Re-run plugin discovery so the provider registers before start_server's gate.
     try:
@@ -913,8 +1043,13 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
       restart loop with nothing listening on the ingress port (#119824);
     * a `hermes dashboard` user is never handed a headless backend's URL (no SPA behind it).
 
-    Returns normally — leaving the caller to BIND — when no owner answers.
+    Returns normally — leaving the caller to BIND — when no owner answers. A profile a plugin runs
+    elsewhere (``hermes_cli.profiles_run_elsewhere``) is refused first, with exit 78: this host
+    neither attaches it nor binds for it.
     """
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+    exit_if_profile_runs_elsewhere("serve", exit_code=GATEWAY_FATAL_CONFIG_EXIT_CODE)
     if getattr(args, "isolated", False) or _is_desktop_owned_backend():
         return
     record = _host_backend_attachment()
@@ -922,7 +1057,6 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         return
 
     from gateway import host_rendezvous as hr
-    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 
     identity = hr.probe_owner(record)
     if identity is None:

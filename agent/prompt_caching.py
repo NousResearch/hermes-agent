@@ -7,6 +7,7 @@ breakpoint plus the last 3 messages). All markers share one TTL (5m or 1h).
 
 import copy
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -268,7 +269,11 @@ def catalog_cache_markers(provider: str, base_url: str = "", model: str = "", ap
     row = fetch_endpoint_model_metadata(base_url or profile.base_url, api_key=api_key or "").get(model)
     if not isinstance(row, dict) or not isinstance(row.get("pricing"), dict):
         return None
-    return row["pricing"].get("cache_write") not in (None, "", "0")
+    try:
+        rate = float(row["pricing"].get("cache_write") or 0)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(rate) and rate > 0  # the catalog lists free / automatic caching as "0.0000000000"
 
 
 def learned_or_catalog_markers(provider: str, base_url: str = "", model: str = "", api_key: str = "") -> bool | None:

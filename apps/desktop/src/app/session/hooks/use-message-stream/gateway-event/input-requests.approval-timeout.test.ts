@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $notifications, clearNotifications } from '@/store/notifications'
-import { $approvalRequests, clearApprovalRequest, setApprovalRequest } from '@/store/prompts'
+import { $approvalRequests, approvalKindFields, clearApprovalRequest, setApprovalRequest } from '@/store/prompts'
 import { $routeRequest } from '@/store/recovery-requests'
 
 import { handleInputRequestEvent } from './input-requests'
@@ -65,6 +65,89 @@ describe('approval request.cancel', () => {
     const toast = $notifications.get()[0]
     toast?.action?.onClick()
     expect($routeRequest.get()?.path).toBe('/settings?tab=config:safety')
+  })
+
+  it('timeout of a folder card: the line says access to the folder was not granted', () => {
+    setApprovalRequest({
+      sessionId: 's1',
+      command: '',
+      description: 'Allow read access to C:\\ref',
+      kind: 'access',
+      requestId: 'req-1',
+      serverRequestId: 'srv-1',
+      target: { access: 'read', path: 'C:\\ref' }
+    })
+
+    const updateSessionState = vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) =>
+      updater({ messages: [] })
+    )
+
+    expect(handleInputRequestEvent(context('timeout', updateSessionState))).toBe(true)
+
+    const next = updateSessionState.mock.results[0]?.value as { messages: { parts: { text: string }[] }[] }
+    const line = next.messages[0].parts[0].text
+
+    expect(line).toContain('access to the folder C:\\ref was not granted')
+    expect(line).not.toMatch(/command|Settings/i)
+
+    // The card's sender owns the wait, so the toast does not offer the approval timeout setting.
+    expect($notifications.get()[0]?.message).toBe(line)
+    expect($notifications.get()[0]?.action).toBeUndefined()
+  })
+
+  it('timeout of a site card: the line names the site as the card did', () => {
+    setApprovalRequest({
+      sessionId: 's1',
+      command: '',
+      description: 'Allow the sandbox to reach Web search (api.keenable.ai)',
+      kind: 'network',
+      requestId: 'req-1',
+      serverRequestId: 'srv-1',
+      target: { host: 'api.keenable.ai', label: 'Web search (api.keenable.ai)' }
+    })
+
+    const updateSessionState = vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) =>
+      updater({ messages: [] })
+    )
+
+    expect(handleInputRequestEvent(context('timeout', updateSessionState))).toBe(true)
+
+    const next = updateSessionState.mock.results[0]?.value as { messages: { parts: { text: string }[] }[] }
+
+    expect(next.messages[0].parts[0].text).toContain('access to Web search (api.keenable.ai) was not granted')
+    expect(next.messages[0].parts[0].text).not.toMatch(/command/i)
+  })
+
+  it('timeout of two folders or sites that differ only in spacing: the toasts do not read the same', () => {
+    // A toast joins a run of spaces into one blank.
+    const drawn = (text: string) => text.replace(/[ \t\n]+/g, ' ').trim()
+
+    const toastFor = (fields: Record<string, unknown>) => {
+      clearNotifications()
+      setApprovalRequest({
+        sessionId: 's1',
+        command: '',
+        description: '',
+        requestId: 'req-1',
+        serverRequestId: 'srv-1',
+        ...approvalKindFields(fields)
+      })
+      handleInputRequestEvent(
+        context(
+          'timeout',
+          vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) => updater({ messages: [] }))
+        )
+      )
+
+      return drawn($notifications.get()[0]?.message ?? '')
+    }
+
+    const folder = (path: string) => toastFor({ kind: 'access', path })
+    const site = (label: string) => toastFor({ host: 'example.com', kind: 'network', label })
+
+    expect(folder('/srv/Project  Files')).not.toBe(folder('/srv/Project Files'))
+    expect(folder('/srv/data ')).not.toBe(folder('/srv/data'))
+    expect(site('Web  search')).not.toBe(site('Web search'))
   })
 
   it('withdraws a queued request without dropping the front approval', () => {

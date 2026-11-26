@@ -20,6 +20,7 @@ Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERME
 - ``probe_bind_host``: also ask ``/api/status`` at the Webapp's own (non-loopback) ``webapp.host`` address;
 - ``report_listening``: addresses to report, once the gateway started, whether anything accepts a
   connection on the Webapp's port there;
+- ``address_wait``: seconds to wait for a ``webapp.host`` no interface holds yet (default: the runtime's);
 - ``credential``: the stored browser credential this gateway finds: ``"folder-is-a-file"`` (a plain
   file where the ``webapp/`` folder goes), ``"token-is-a-folder"`` (a folder where
   ``webapp/session-token`` goes), ``"not-utf8"`` (the token saved as UTF-16), or null for a
@@ -219,7 +220,7 @@ async def probe(spec):
     from gateway.control_socket import GatewayControlServer
     from gateway.run import GatewayRunner
     from gateway.run_api import stop_gateway_api
-    from gateway.run_runtime import start_gateway_runtime_api
+    from gateway.run_runtime_listener import WEBAPP_ADDRESS_WAIT_SECONDS, start_gateway_runtime_api
     from gateway.session_authority import initialize_session_authority
     import hermes_cli.webapp
 
@@ -285,15 +286,21 @@ async def probe(spec):
 
     report = {"start_error": None}
     try:
-        await start_gateway_runtime_api(runner)
+        await start_gateway_runtime_api(runner, address_wait=spec.get("address_wait", WEBAPP_ADDRESS_WAIT_SECONDS))
     except BaseException as exc:  # what would take the whole gateway down
         report["start_error"] = f"{type(exc).__name__}: {exc}"
         report["start_traceback"] = traceback.format_exc()
         return report
-    api = runner.session_api
-    origin = api.api_origin
-    report.update(api_origin=origin, status=ask("webapp-status"), launch=ask("webapp-launch"))
+    api = getattr(runner, "session_api", None)
+    report.update(api_origin=None if api is None else api.api_origin,
+                  status=ask("webapp-status"), launch=ask("webapp-launch"))
     report["listening"] = {address: _accepts(address, port) for address in spec.get("report_listening", ())}
+    if api is None:
+        report["native_session_list"] = False
+        if rival is not None:
+            rival.close()
+        return report
+    origin = api.api_origin
     try:
         async with httpx.AsyncClient(base_url=origin, timeout=20) as client:
             loopback = await client.get("/api/status")  # mounts the dashboard on the private listener

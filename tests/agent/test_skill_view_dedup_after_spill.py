@@ -9,13 +9,16 @@ stub: the model never held that result.
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import json
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.skills_tool_dedup import reset_skill_view_dedup
+from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
 from tools.tool_result_storage import PERSISTED_OUTPUT_TAG, extract_persisted_path
 
 TASK = "skill-spill-task"
@@ -90,7 +93,7 @@ def _run(home, monkeypatch, *batches, dedup_reset_before: tuple[int, ...] = ()) 
         patch.object(agent, "_cleanup_task_resources"),
     ):
         result = agent.run_conversation("load the skills", task_id=TASK)
-    assert result["completed"] is True
+    assert result["completed"] is True, result.get("error") or result
     return {m["tool_call_id"]: m["content"] for m in result["messages"] if m.get("role") == "tool"}
 
 
@@ -143,3 +146,57 @@ def test_dedup_stub_row_does_not_release_the_entry_it_points_at(home, monkeypatc
     assert "Step for small-skill" in rows["first_small-skill"]
     for view in ("again_small-skill", "third_small-skill"):
         assert STUB_MARKER in rows[view] and "Step for small-skill" not in rows[view]
+
+
+@contextlib.contextmanager
+def _without_tool_executor():
+    import agent
+
+    saved_mod = sys.modules.pop("agent.tool_executor", None)
+    had_attr = hasattr(agent, "tool_executor")
+    saved_attr = getattr(agent, "tool_executor", None)
+    if had_attr:
+        del agent.tool_executor
+    try:
+        yield
+    finally:
+        if saved_mod is not None:
+            sys.modules["agent.tool_executor"] = saved_mod
+        else:
+            sys.modules.pop("agent.tool_executor", None)
+        if had_attr:
+            agent.tool_executor = saved_attr
+        elif hasattr(agent, "tool_executor"):
+            del agent.tool_executor
+
+
+def test_tool_executor_loads_and_runs_against_n1_skills_tool_dedup(home, monkeypatch):
+    import tools
+
+    legacy_dedup = ModuleType("tools.skills_tool_dedup")
+    legacy_dedup.dedup_skill_view = dedup_skill_view
+    legacy_dedup.reset_skill_view_dedup = reset_skill_view_dedup
+    monkeypatch.setitem(sys.modules, "tools.skills_tool_dedup", legacy_dedup)
+    monkeypatch.setattr(tools, "skills_tool_dedup", legacy_dedup, raising=False)
+
+    _write_skill(home, "big-skill", 150_000)
+    for name, chars in (("skill-a", 70_000), ("skill-b", 70_000), ("skill-c", 80_000)):
+        _write_skill(home, name, chars)
+
+    with _without_tool_executor():
+        rows = _run(
+            home,
+            monkeypatch,
+            _views("seq", "big-skill"),
+            _views("par", "skill-a", "skill-b", "skill-c"),
+        )
+
+    assert PERSISTED_OUTPUT_TAG in rows["seq_big-skill"]
+    assert PERSISTED_OUTPUT_TAG in rows["par_skill-c"]
+    assert "Step for skill-a" in rows["par_skill-a"]
+
+
+def test_tool_executor_does_not_swallow_missing_skills_tool_dedup_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "tools.skills_tool_dedup", None)
+    with _without_tool_executor(), pytest.raises(ModuleNotFoundError):
+        importlib.import_module("agent.tool_executor")

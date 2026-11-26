@@ -50,7 +50,8 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_MODELS,
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
-    _xai_finalize_catalog)
+    _xai_finalize_catalog,
+    static_catalog_providers)
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -575,13 +576,6 @@ def static_catalog(provider: str) -> list[str]:
     return list(profile.static_models) if profile is not None else []
 
 
-def static_catalog_providers() -> list[str]:
-    """Every provider with a static catalog row in the bound home: built-ins, then plugin profiles."""
-    from providers import list_providers
-    plugin_rows = [p.name for p in list_providers() if p.static_models and p.name not in _PROVIDER_MODELS]
-    return [*_PROVIDER_MODELS, *dict.fromkeys(plugin_rows)]
-
-
 def get_default_model_for_provider(provider: str) -> str:
     """Cost-safe default model for a provider, or "" — the NON-INTERACTIVE fallback when a provider
     is configured but no model was ever selected."""
@@ -610,8 +604,7 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params if isinstance(params, list) else True
 
 
-# Reasoning-capability cache slots, one set per catalog (OpenRouter, Nous Portal). The logic
-# lives in models_reasoning_caps and reads/writes these by name so tests can reset them here.
+# Catalog cache slots are owned by models_reasoning_caps; tests reset them on this facade.
 # ``*_cache``: model id → parsed caps for the process lifetime; ``*_failed_at``: monotonic time
 # of the last failed fetch (60s re-fetch suppression); the flags are once-per-process guards.
 _openrouter_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
@@ -622,6 +615,7 @@ _nous_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
 _nous_reasoning_caps_failed_at: float | None = None
 _nous_caps_disk_checked = False
 _nous_caps_warm_started = False
+_nous_caps_vision_refreshed = False
 
 
 from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, clamp_effort as _clamp_effort, is_astra_model

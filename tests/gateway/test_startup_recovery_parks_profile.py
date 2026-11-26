@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
+from gateway import run_runtime, run_runtime_listener
 from gateway.config import Platform
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.fixtures.storage_holder import raw_holder
@@ -65,7 +65,7 @@ def test_a_secondary_whose_recovery_fails_is_parked_and_the_rest_start(tmp_path,
     runner, launch, homes, recovered, parked = _runtime(tmp_path, monkeypatch, failing=tmp_path / "profiles" / "beta")
     process_ownership.reserve([homes["beta"]])
     try:
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
         assert runner.session_runtime_descriptor["api_origin"] == "http://127.0.0.1:1"
         assert recovered == [str(launch), str(homes["beta"]), str(homes["gamma"])]
         assert "beta" in parked and "leftover receipt" in parked["beta"]
@@ -96,7 +96,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
     monkeypatch.setattr("gateway.session_runtime_workers.join_authority_work", writer_outlives_stop)
     process_ownership.reserve([homes["beta"]])
     try:
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
         assert "ownership retained" in parked["beta"] and "rescan" in parked["beta"]
         assert process_ownership.owns(homes["beta"]), "the live writer's home lost its lock"
         assert runner.session_authorities.for_home(homes["beta"]) is beta and beta.retiring
@@ -200,5 +200,5 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
 def test_the_launch_profile_recovery_failure_still_stops_the_start(tmp_path, monkeypatch):
     runner, _launch, _homes, _recovered, parked = _runtime(tmp_path, monkeypatch, failing=tmp_path / "root")
     with pytest.raises(RuntimeError, match="leftover receipt"):
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     assert parked == {}

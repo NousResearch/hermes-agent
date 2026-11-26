@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from gateway import run_api, run_runtime
+from gateway import run_api, run_runtime_listener
 from gateway.control_socket import GatewayControlServer
 
 
@@ -32,13 +32,13 @@ def _api(failures):
 
 
 def _start(api, *, webapp="mount", host="100.64.0.5", port=9119):
-    return asyncio.run(run_runtime._start_gateway_api_waiting_for_address(
+    return asyncio.run(run_runtime_listener._start_gateway_api_waiting_for_address(
         api, object(), host=host, port=port, webapp=webapp))
 
 
 @pytest.fixture
 def fast(monkeypatch):
-    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
     return monkeypatch
 
@@ -62,7 +62,7 @@ def test_a_gateway_without_the_webapp_does_not_wait_on_eaddrnotavail(fast, caplo
     async def record_sleep(delay):
         sleeps.append(delay)
 
-    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    fast.setattr(run_runtime_listener.asyncio, "sleep", record_sleep)
     api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
         with pytest.raises(OSError) as caught:
@@ -80,7 +80,7 @@ def test_loopback_and_wildcard_webapp_hosts_do_not_wait_on_eaddrnotavail(fast, c
     async def record_sleep(delay):
         sleeps.append(delay)
 
-    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    fast.setattr(run_runtime_listener.asyncio, "sleep", record_sleep)
     api, calls = _api([OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")])
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
         with pytest.raises(OSError) as caught:
@@ -99,7 +99,7 @@ def test_ipv6_loopback_eaddrnotavail_falls_back_immediately_without_retrying(mon
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
-    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
 
     calls = []
 
@@ -115,7 +115,7 @@ def test_ipv6_loopback_eaddrnotavail_falls_back_immediately_without_retrying(mon
         session_authorities=[],
         session_control_server=GatewayControlServer(home),
     )
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     assert calls == ["::1", "127.0.0.1"]
     assert runner.webapp_status["state"] == "unavailable"
 
@@ -156,12 +156,12 @@ def test_the_loopback_companion_failure_is_not_waited_for(fast):
 
 def test_a_garbage_override_falls_back_to_the_default(monkeypatch):
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "soon")
-    assert run_runtime._webapp_address_wait_seconds() == run_runtime.WEBAPP_ADDRESS_WAIT_SECONDS
+    assert run_runtime_listener._webapp_address_wait_seconds() == run_runtime_listener.WEBAPP_ADDRESS_WAIT_SECONDS
 
 
 def test_no_override_uses_the_default(monkeypatch):
     monkeypatch.delenv("HERMES_WEBAPP_ADDRESS_WAIT", raising=False)
-    assert run_runtime._webapp_address_wait_seconds() == run_runtime.WEBAPP_ADDRESS_WAIT_SECONDS
+    assert run_runtime_listener._webapp_address_wait_seconds() == run_runtime_listener.WEBAPP_ADDRESS_WAIT_SECONDS
 
 
 def test_start_gateway_runtime_api_waits_for_late_webapp_host_and_warns_once(monkeypatch, tmp_path, caplog):
@@ -172,7 +172,7 @@ def test_start_gateway_runtime_api_waits_for_late_webapp_host_and_warns_once(mon
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
-    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
 
     webapp_calls = []
     remaining_failures = [OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")] * 3
@@ -193,7 +193,7 @@ def test_start_gateway_runtime_api_waits_for_late_webapp_host_and_warns_once(mon
     )
 
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
 
     assert runner.webapp_status == {
         "state": "serving",
@@ -219,7 +219,7 @@ def test_non_eaddrnotavail_oserrors_fail_immediately_without_sleeping(fast, capl
     async def record_sleep(delay):
         sleeps.append(delay)
 
-    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    fast.setattr(run_runtime_listener.asyncio, "sleep", record_sleep)
     api, calls = _api([OSError(err_no, msg)])
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
         with pytest.raises(OSError) as caught:
@@ -237,7 +237,7 @@ def test_zero_wait_does_not_sleep_or_warn(fast, caplog):
     async def record_sleep(delay):
         sleeps.append(delay)
 
-    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    fast.setattr(run_runtime_listener.asyncio, "sleep", record_sleep)
     api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
         with pytest.raises(OSError) as caught:
@@ -252,7 +252,7 @@ def test_zero_wait_does_not_sleep_or_warn(fast, caplog):
 def test_non_finite_override_falls_back_to_default(monkeypatch, caplog, raw):
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", raw)
     with caplog.at_level(logging.WARNING, logger="gateway.run_runtime"):
-        assert run_runtime._webapp_address_wait_seconds() == run_runtime.WEBAPP_ADDRESS_WAIT_SECONDS
+        assert run_runtime_listener._webapp_address_wait_seconds() == run_runtime_listener.WEBAPP_ADDRESS_WAIT_SECONDS
     assert any("HERMES_WEBAPP_ADDRESS_WAIT" in r.getMessage() for r in caplog.records)
 
 
@@ -263,8 +263,8 @@ def test_negative_override_clamps_to_zero_without_waiting(fast):
     async def record_sleep(delay):
         sleeps.append(delay)
 
-    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
-    assert run_runtime._webapp_address_wait_seconds() == 0.0
+    fast.setattr(run_runtime_listener.asyncio, "sleep", record_sleep)
+    assert run_runtime_listener._webapp_address_wait_seconds() == 0.0
     api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")])
     with pytest.raises(OSError) as caught:
         _start(api)
@@ -275,7 +275,7 @@ def test_negative_override_clamps_to_zero_without_waiting(fast):
 
 def test_cancellation_during_wait_sleep_propagates(monkeypatch):
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
-    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 10.0)
+    monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 10.0)
     real_sleep = asyncio.sleep
 
     async def run_and_cancel():
@@ -285,9 +285,9 @@ def test_cancellation_during_wait_sleep_propagates(monkeypatch):
             entered_sleep.set()
             await real_sleep(delay)
 
-        monkeypatch.setattr(run_runtime.asyncio, "sleep", tracked_sleep)
+        monkeypatch.setattr(run_runtime_listener.asyncio, "sleep", tracked_sleep)
         api, calls = _api([OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")] * 5)
-        task = asyncio.create_task(run_runtime._start_gateway_api_waiting_for_address(
+        task = asyncio.create_task(run_runtime_listener._start_gateway_api_waiting_for_address(
             api, object(), host="100.64.0.5", port=9119, webapp="mount"))
         await asyncio.wait_for(entered_sleep.wait(), timeout=2.0)
         task.cancel()
@@ -304,7 +304,7 @@ def test_cancellation_during_bind_propagates_without_retrying(fast):
     async def record_sleep(delay):
         sleeps.append(delay)
 
-    fast.setattr(run_runtime.asyncio, "sleep", record_sleep)
+    fast.setattr(run_runtime_listener.asyncio, "sleep", record_sleep)
     api, calls = _api([asyncio.CancelledError()])
     with pytest.raises(asyncio.CancelledError):
         _start(api)
@@ -325,7 +325,7 @@ def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
-    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 5.0, raising=False)
+    monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 5.0)
     monkeypatch.setattr(status, "consume_takeover_marker_for_self", lambda: False)
     monkeypatch.setattr(shutdown_forensics, "snapshot_shutdown_context", lambda sig: None)
 
@@ -363,7 +363,7 @@ def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(
             return types.SimpleNamespace(api_origin="http://127.0.0.1:50001")
 
         monkeypatch.setattr(run_api, "start_gateway_api", start)
-        await asyncio.wait_for(run_runtime.start_gateway_runtime_api(runner), timeout=2.0)
+        await asyncio.wait_for(run_runtime_listener.start_gateway_runtime_api(runner), timeout=2.0)
         assert completed.is_set(), "operator stop ran while the address wait was active"
         assert calls == [("192.0.2.77", False)], "no retry and no private fallback after operator stop"
         assert runner.session_api is None
@@ -375,7 +375,7 @@ def test_operator_stop_during_wait_aborts_without_rebinding_or_private_fallback(
 
 def test_restart_requested_during_wait_aborts_without_binding(monkeypatch):
     monkeypatch.setenv("HERMES_WEBAPP_ADDRESS_WAIT", "5")
-    monkeypatch.setattr(run_runtime, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(run_runtime_listener, "_WEBAPP_ADDRESS_POLL_SECONDS", 0.01)
 
     async def run_scenario():
         runner = types.SimpleNamespace(_restart_requested=False)
@@ -387,7 +387,7 @@ def test_restart_requested_during_wait_aborts_without_binding(monkeypatch):
             raise OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")
 
         api = types.SimpleNamespace(start_gateway_api=start, ListenerAddressError=run_api.ListenerAddressError)
-        result = await run_runtime._start_gateway_api_waiting_for_address(
+        result = await run_runtime_listener._start_gateway_api_waiting_for_address(
             api, runner, host="100.64.0.5", port=9119, webapp="mount"
         )
         assert result is None
@@ -420,20 +420,23 @@ def test_unified_startup_abort_handles_restart_flags_and_minimal_test_doubles():
         assert stop_calls == [(True, False, True)]
         assert shutdown_event.is_set()
 
-        # Minimal test double without _shutdown_event and with 0-arg stop() (test_startup_restart_race).
+        # Runner double without optional attributes (_shutdown_event, _restart_detached) still
+        # receives the three restart flags through the real GatewayRunner.stop signature.
         minimal_stops = []
 
         class MinimalRunner:
             _restart_requested = True
             _restart_via_service = True
 
-            async def stop(self):
-                minimal_stops.append(True)
+            async def stop(
+                self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False
+            ):
+                minimal_stops.append((restart, detached_restart, service_restart))
 
         minimal = MinimalRunner()
         assert startup_should_abort(minimal) is True
         assert await abort_startup_if_shutdown_requested(minimal) is True
-        assert minimal_stops == [True]
+        assert minimal_stops == [(True, False, True)]
 
     asyncio.run(run_scenario())
 
@@ -460,7 +463,7 @@ def test_bootstrap_listener_and_runner_aborts_before_keepalive_and_runner_start(
             stop_calls.append((restart, detached_restart, service_restart))
             shutdown_event.set()
 
-        monkeypatch.setattr(run_runtime, "start_gateway_runtime_api", fake_start_api)
+        monkeypatch.setattr(run_runtime_listener, "start_gateway_runtime_api", fake_start_api)
         monkeypatch.setattr(run_bootstrap, "_start_gateway_run_runner", fake_run_runner)
         runner = types.SimpleNamespace(
             _stop_task=None,

@@ -208,7 +208,7 @@ def _specific_webapp(monkeypatch, tmp_path, *, registered=None, public_url=""):
     import json
     from types import SimpleNamespace
 
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     from gateway.control_socket import GatewayControlServer
     from hermes_cli import webapp_access
 
@@ -221,7 +221,7 @@ def _specific_webapp(monkeypatch, tmp_path, *, registered=None, public_url=""):
     monkeypatch.setattr(run_api, "start_gateway_api", start)
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     if registered is not None:
         record = home / "webapp" / "sign-in-registration.json"
         record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -279,7 +279,7 @@ def test_a_loopback_socket_that_cannot_bind_is_named_with_the_oss_reason(monkeyp
     import errno
     from types import SimpleNamespace
 
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     from gateway.control_socket import GatewayControlServer
 
     home = _home(tmp_path, "webapp:\n  enabled: true\n  host: 'fd7a:115c:a1e0::5'\n  port: 9555\n")
@@ -294,7 +294,7 @@ def test_a_loopback_socket_that_cannot_bind_is_named_with_the_oss_reason(monkeyp
     monkeypatch.setattr(run_api, "start_gateway_api", start)
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     assert runner.webapp_status["reason"] == "could not listen on ::1:9555 (Cannot assign requested address)"
 
 

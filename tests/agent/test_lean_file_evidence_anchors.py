@@ -214,3 +214,107 @@ def test_compress_rescues_head_pruned_read_file_into_lean_evidence_ledger():
     joined = "\n".join(str(m.get("content") or "") for m in compressed)
     assert "`accounting/freight.csv`" in joined
     assert "DRAFT_SUPERSEDED" in joined
+
+
+def test_head_pruned_rescue_excludes_system_prompt_and_unpruned_head_siblings():
+    """Regression test for PR #160445 review: when a head tool output is pruned in Phase 1,
+    only the pruned tool exchange may feed `_augment_summary_lean` — identifiers in the
+    protected `system` prompt, head `user` prompt, or unpruned sibling head tool calls must
+    never appear in the summary's Anchor Index or File Evidence Extracts."""
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        c = ContextCompressor(
+            model="test/model",
+            threshold_percent=0.50,
+            protect_first_n=4,
+            protect_last_n=3,
+            quiet_mode=True,
+            tail_mode="lean",
+        )
+        _ = c.context_length
+    c._session_id = "sess-head-isolation"
+
+    msgs = [
+        {
+            "role": "system",
+            "content": "Runbook https://internal.example/runbook at ops/private_runbook.md (#99999 @ops-oncall).",
+        },
+        {"role": "user", "content": "Check docs/unrelated_head_note.md and audit freight."},
+        {
+            "role": "assistant",
+            "content": "Checking files (see docs/assistant_head_prose.md)",
+            "tool_calls": [
+                {
+                    "id": "head_pruned_tc",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": json.dumps({"path": "accounting/freight.csv"})},
+                },
+                {
+                    "id": "head_kept_tc",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": json.dumps({"path": "notes/tiny_keep.txt"})},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "head_pruned_tc",
+            "content": "invoice_id,status\nINV-8841,DRAFT_SUPERSEDED\n" + ("[Archive Boilerplate Row] " * 400),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "head_kept_tc",
+            "content": "TINY-1234 short",
+        },
+    ]
+    for i in range(12):
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": f"Step {i}",
+                "tool_calls": [
+                    {
+                        "id": f"m_{i}",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": json.dumps({"command": f"echo {i}"})},
+                    }
+                ],
+            }
+        )
+        msgs.append({"role": "tool", "tool_call_id": f"m_{i}", "content": ("output line " * 400)})
+    msgs.append({"role": "user", "content": "Continue."})
+    msgs.append({"role": "assistant", "content": "Done."})
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message = MagicMock()
+    resp.choices[0].message.content = "## Historical Task Snapshot\nAudit.\n\n## Goal\nAudit."
+
+    with patch("agent.context_compressor.call_llm", return_value=resp):
+        compressed = c.compress(msgs, current_tokens=60_000, force=True)
+
+    summary_rows = [
+        str(m.get("content") or "")
+        for m in compressed
+        if m.get("role") != "system" and _LEAN_ANCHOR_HEADING in str(m.get("content") or "")
+    ]
+    assert len(summary_rows) == 1
+    handoff = summary_rows[0]
+
+    # Rescued pruned head read IS preserved:
+    assert "accounting/freight.csv" in handoff
+    assert "INV-8841" in handoff
+    assert "DRAFT_SUPERSEDED" in handoff
+
+    # Protected system prompt, head user/assistant prose, and unpruned sibling head tool call MUST NOT leak:
+    for forbidden in (
+        "https://internal.example/runbook",
+        "ops/private_runbook.md",
+        "#99999",
+        "@ops-oncall",
+        "docs/unrelated_head_note.md",
+        "docs/assistant_head_prose.md",
+        "notes/tiny_keep.txt",
+        "TINY-1234",
+    ):
+        assert forbidden not in handoff, f"Unpruned head content {forbidden!r} leaked into handoff summary"
+

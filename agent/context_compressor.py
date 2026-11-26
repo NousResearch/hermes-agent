@@ -53,6 +53,7 @@ from agent.context_compressor_tail import (
     _distill_file_body,
     _synthetic_user_row,
     _typed_user_text,
+    collect_head_pruned_exchanges,
     demote_stale_tail_tools,
     elide_keeping_skill_safety_rule,
     is_demoted_stub,
@@ -4969,15 +4970,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         compress_end = prepared.compress_end if prepared is not None else compress_end
         # Summarize first, archive after: the summarizer reads the ORIGINAL rows; _commit_window writes later.
         plan, messages = messages, summary_view(messages, canonical_messages, compress_start, compress_end)
-        # Rescue head tool outputs pruned in Phase 1 (`0..compress_start`) that would otherwise neither remain
-        # unpruned in the head nor enter `turns_to_summarize`.
-        head_was_pruned = any(
-            i < len(plan) and i < len(canonical_messages)
-            and plan[i].get("role") == "tool"
-            and plan[i].get("content") != canonical_messages[i].get("content")
-            for i in range(compress_start)
+        # Rescue ONLY head tool outputs pruned in Phase 1 (`0..compress_start`) and their matching
+        # tool_call stubs (never protected system/user rows or unpruned sibling head tool results).
+        self._active_head_pruned_turns = collect_head_pruned_exchanges(
+            plan, canonical_messages, compress_start,
         )
-        self._active_head_pruned_turns = canonical_messages[:compress_start] if head_was_pruned else []
         turns_to_summarize = messages[compress_start:compress_end]
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize

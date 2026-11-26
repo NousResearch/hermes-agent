@@ -260,6 +260,43 @@ def _build_file_evidence_ledger(turns: list[dict[str, Any]]) -> str:
     return "\n\n" + _LEAN_FILE_EVIDENCE_HEADING + "\n" + "\n".join(selected_rev)
 
 
+def collect_head_pruned_exchanges(
+    plan: list[dict[str, Any]], canonical_messages: list[dict[str, Any]], compress_start: int,
+) -> list[dict[str, Any]]:
+    """Return ONLY the Phase-1-pruned head ``tool`` rows (``0..compress_start``) and synthetic
+    ``assistant`` stubs carrying their matching ``tool_calls`` (``content=""``).
+
+    Protected ``system`` / ``user`` rows and unpruned sibling head tool calls stay intact in the
+    head and are excluded so their identifiers never leak into the summary's Anchor Index or
+    File Evidence Extracts.
+    """
+    from agent.context_compressor import _tc_get
+
+    bound = min(max(compress_start, 0), len(plan), len(canonical_messages))
+    pruned_indices = {
+        i for i in range(bound)
+        if plan[i].get("role") == "tool" and plan[i].get("content") != canonical_messages[i].get("content")
+    }
+    if not pruned_indices:
+        return []
+    pruned_call_ids = {
+        str(canonical_messages[i].get("tool_call_id") or "") for i in pruned_indices
+    } - {""}
+    rescued: list[dict[str, Any]] = []
+    for i in range(bound):
+        msg = canonical_messages[i]
+        if i in pruned_indices:
+            rescued.append(msg)
+        elif msg.get("role") == "assistant" and pruned_call_ids:
+            matched_tcs = [
+                tc for tc in (msg.get("tool_calls") or [])
+                if str(_tc_get(tc, "id") or "") in pruned_call_ids
+            ]
+            if matched_tcs:
+                rescued.append({"role": "assistant", "content": "", "tool_calls": matched_tcs})
+    return rescued
+
+
 # Demote tool results older than the newest N rounds so the tail budget binds
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
 _LEAN_TAIL_KEEP_TOOL_ROUNDS = 6

@@ -340,6 +340,22 @@ class Facts:
             _write(self.path, {"schema": SCHEMA, "packages": packages})
         self._packages = packages
 
+    def dead_pin_entries(self, live) -> set[str]:
+        """Read-only projection of ``drop_dead_pins``: the entries that would leave
+        ``entries_in_use`` if the dead pins were dropped. gc's dry-run plan subtracts
+        them from its keep-set instead of rewriting facts.json."""
+        dead: set[str] = set()
+        for name, fact in _read(self.path, strict=True)["packages"].items():
+            rows = _tool_rows(fact)
+            if not rows:
+                continue
+            comparable = [{k: v for k, v in row.items() if k != "previous"} for row in rows]
+            kept = [row for row in comparable if live(name, row)]
+            if kept == comparable:
+                continue
+            dead |= {row["entry"] for row in comparable} - {row["entry"] for row in kept}
+        return dead
+
     def entries_in_use(self) -> set[str]:
         return {fact["entry"] for name in self._packages
                 for fact in self.variants(name)}

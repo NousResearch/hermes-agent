@@ -19,7 +19,7 @@ import tempfile
 import time
 from typing import TextIO
 
-from pm.filesystem import native
+from pm.filesystem import long_root, native
 from pm.index_config import TIMEOUT_HINT, bridged_index_settings, is_forwarded, is_index_redirect
 from pm.package import InstallError
 from pm.progress import LiveTail, TextSink, verbose_output
@@ -321,7 +321,7 @@ def _fresh_build(environment: PythonEnvironment, *, sealed: bool, lock: Path | N
         if sealed:
             prune_site_pth(out)
     except BaseException:
-        shutil.rmtree(out, ignore_errors=True)
+        shutil.rmtree(long_root(out), ignore_errors=True)
         raise
 
 

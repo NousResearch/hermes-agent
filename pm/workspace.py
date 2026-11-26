@@ -53,11 +53,12 @@ def members_stamp(plugin_dirs) -> str:
             h.update(source.read_bytes())
             h.update(b"\0")
         if (entry / "pyproject.toml").is_file():
-            for directory, dirs, files in os.walk(entry):
+            walk_root = long_root(entry)
+            for directory, dirs, files in os.walk(walk_root):
                 dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
                 for name in sorted(set(files) - set(_member_ignored(directory, files))):
                     path = Path(directory) / name
-                    h.update(path.relative_to(entry).as_posix().encode())
+                    h.update(path.relative_to(walk_root).as_posix().encode())
                     h.update(b"\0")
                     h.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
                     h.update(b"\0")

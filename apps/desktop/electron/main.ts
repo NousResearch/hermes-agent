@@ -364,6 +364,7 @@ import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { guardMacApplicationsLaunch, type MacApplicationsGuardResult } from './mac-applications-guard'
 import { resolveMacAppBundle } from './mac-bundle-location'
+import { resolvePosixGitBinary, runOptionalGit } from './mac-clt-git'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -3203,23 +3204,19 @@ function findPathCandidates(command) {
   return candidates
 }
 
-function resolveGitBinary() {
+function resolveGitBinary(): string | null {
   if (_gitBinaryCache) {
     return _gitBinaryCache
   }
 
   if (!IS_WINDOWS) {
-    // Every PATH hit, probed — the first entry that merely exists can be
-    // unlaunchable while a working system git sits later on the same PATH.
-    const selected = selectRunnableBinary({
-      candidates: findPathCandidates('git'),
-      fileExists,
-      binaryRuns
-    })
+    const selected = resolvePosixGitBinary({ candidates: findPathCandidates('git'), fileExists, binaryRuns })
 
-    _gitBinaryCache = selected || 'git'
+    if (selected) {
+      _gitBinaryCache = selected
+    }
 
-    return _gitBinaryCache
+    return selected
   }
 
   const localAppData = process.env.LOCALAPPDATA || ''
@@ -16690,7 +16687,7 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 // report in-sync rather than risk a false "your install is torn" warning.
 const checkRendererSkew = createBundleSkewChecker(
   INSTALL_STAMP,
-  (args, options) => execGit(resolveGitBinary(), args, options),
+  (args, options) => runOptionalGit(resolveGitBinary(), args, options, execGit),
   // Only a LIVE marker defers the warning: Desktop never deletes a dead one,
   // so a leftover file would otherwise suppress it indefinitely.
   { isUpdating: async () => updateInFlight || isQuittingForHandoff || Boolean(await readLiveUpdateMarker(HERMES_HOME)) }

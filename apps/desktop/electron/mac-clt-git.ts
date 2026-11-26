@@ -220,3 +220,14 @@ export function resolvePosixGitBinary(opts: PosixGitResolveOptions): string | nu
 
   return 'git'
 }
+
+export function runOptionalGit<TResult extends { code: number | null; stdout: string; stderr: string }, TOptions>(
+  gitBin: string | null,
+  args: string[],
+  options: TOptions,
+  runGit: (git: string, args: string[], options: TOptions) => Promise<TResult>
+): Promise<TResult | { code: number; stdout: string; stderr: string }> {
+  return gitBin
+    ? runGit(gitBin, args, options)
+    : Promise.resolve({ code: 1, stdout: '', stderr: 'git is not available' })
+}

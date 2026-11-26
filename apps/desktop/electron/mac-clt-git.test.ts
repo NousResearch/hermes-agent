@@ -9,7 +9,8 @@ import {
   createCltGitCache,
   isUsableMacGitCandidate,
   probeXcodeSelectDeveloperDir,
-  resolvePosixGitBinary
+  resolvePosixGitBinary,
+  runOptionalGit
 } from './mac-clt-git'
 
 const tempDirs: string[] = []
@@ -296,4 +297,17 @@ test.skipIf(process.platform === 'win32')('xcode-select probe enforces its timeo
   })
 
   assert.equal(slow, '')
+})
+
+test('runOptionalGit short-circuits without spawning when gitBin is null', async () => {
+  let called = 0
+
+  const result = await runOptionalGit(null, ['rev-parse', 'HEAD'], {}, async () => {
+    called += 1
+
+    return { code: 0, stdout: 'ok', stderr: '' }
+  })
+
+  assert.equal(called, 0)
+  assert.deepEqual(result, { code: 1, stdout: '', stderr: 'git is not available' })
 })

@@ -11,7 +11,9 @@ import {
   ensureGitRepo,
   listBaseBranches,
   listBranches,
+  listWorktrees,
   parseWorktrees,
+  removeWorktree,
   sanitizeBranch,
   switchBranch
 } from './git-worktree-ops'
@@ -625,6 +627,26 @@ test('switchBranch: repo dir still validates the branch name and switches', asyn
     // And switching to a real branch still works.
     const result = await switchBranch(dir, 'main', 'git')
     assert.deepEqual(result, { branch: 'main' })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('gitBin=null degrades worktree reads and refuses mutations without spawning git', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-wt-null-'))
+
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: dir })
+    execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir })
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir })
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'root'], { cwd: dir })
+
+    assert.deepEqual(await listWorktrees(dir, null), [])
+    assert.deepEqual(await listBranches(dir, null), [])
+    assert.deepEqual(await listBaseBranches(dir, null), [])
+    assert.deepEqual(await switchBranch(dir, 'main', null), { branch: null })
+    await assert.rejects(() => addWorktree(dir, { name: 'wt' }, null), /git is not available/)
+    await assert.rejects(() => removeWorktree(dir, dir, {}, null), /git is not available/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

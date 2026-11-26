@@ -66,6 +66,10 @@ function parseWorktrees(out) {
 }
 
 async function listWorktrees(repoPath, gitBin) {
+  if (gitBin === null) {
+    return []
+  }
+
   let resolved
 
   try {
@@ -316,6 +320,10 @@ async function addExistingBranchWorktree(gitBin, root, name) {
 }
 
 async function addWorktree(repoPath, options, gitBin) {
+  if (gitBin === null) {
+    throw new Error('git is not available')
+  }
+
   const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Worktree add' })
   // A new project's folder may not be a git repo yet — init it (with a root
   // commit) so the worktree has something to branch from.
@@ -378,6 +386,10 @@ async function addWorktree(repoPath, options, gitBin) {
 }
 
 async function removeWorktree(repoPath, worktreePath, options, gitBin) {
+  if (gitBin === null) {
+    throw new Error('git is not available')
+  }
+
   const resolvedRepo = resolveRequestedPathForIpc(repoPath, { purpose: 'Worktree remove (repo)' })
   const resolvedTree = resolveRequestedPathForIpc(worktreePath, { purpose: 'Worktree remove (tree)' })
   const root = await mainRoot(gitBin, resolvedRepo)
@@ -402,6 +414,10 @@ async function removeWorktree(repoPath, worktreePath, options, gitBin) {
 // worktree. Empty on a non-repo or a remote backend, where the probe cannot
 // run.
 async function listBranches(repoPath, gitBin) {
+  if (gitBin === null) {
+    return []
+  }
+
   let resolved
 
   try {
@@ -476,6 +492,10 @@ async function listBranches(repoPath, gitBin) {
 }
 
 async function switchBranch(repoPath, branch, gitBin) {
+  if (gitBin === null) {
+    return { branch: null }
+  }
+
   const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Branch switch' })
 
   // Sidebar lanes exist for plain folders too (non-repo explicit projects),
@@ -512,6 +532,10 @@ async function switchBranch(repoPath, branch, gitBin) {
 // (origin/HEAD) is flagged so the UI can preselect it. Empty on a non-repo /
 // remote backend where the probe can't run.
 async function listBaseBranches(repoPath, gitBin) {
+  if (gitBin === null) {
+    return []
+  }
+
   let resolved
 
   try {

@@ -363,8 +363,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }, [changeEventsAvailable, refreshAll])
 
   const selectedCatalog = useMemo(
-    () =>
-      catalogRowsWithKept(available, keptCatalog).find(row => catalogRowId(row) === selectedId) ?? null,
+    () => catalogRowsWithKept(available, keptCatalog).find(row => catalogRowId(row) === selectedId) ?? null,
     [available, keptCatalog, selectedId]
   )
 
@@ -713,11 +712,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   </Alert>
                 )}
                 {selectedCatalog && (
-                  <CatalogPlatformDetail
-                    {...catalogInstall}
-                    row={selectedCatalog}
-                    scopeProfile={scopeProfile}
-                  />
+                  <CatalogPlatformDetail {...catalogInstall} row={selectedCatalog} scopeProfile={scopeProfile} />
                 )}
                 {selected && (
                   <PlatformDetail

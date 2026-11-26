@@ -96,8 +96,21 @@ export function PageSearchShell({
       */}
       <div className="shrink-0">
         {(hasTabs || !searchHidden) && (
-          <div className={cn('grid items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]', tabsAlign === 'start' ? 'grid-cols-[minmax(0,1fr)_auto_auto] px-6 pt-[calc(var(--titlebar-height)+1.5rem)]' : 'grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]')}>
-            <div className={cn('flex min-w-0 items-center justify-start', tabsAlign === 'start' ? 'col-start-2 row-start-1 justify-end' : '', searchHidden && tabsAlign === 'start' && 'hidden')}>
+          <div
+            className={cn(
+              'grid items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]',
+              tabsAlign === 'start'
+                ? 'grid-cols-[minmax(0,1fr)_auto_auto] px-6 pt-[calc(var(--titlebar-height)+1.5rem)]'
+                : 'grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]'
+            )}
+          >
+            <div
+              className={cn(
+                'flex min-w-0 items-center justify-start',
+                tabsAlign === 'start' ? 'col-start-2 row-start-1 justify-end' : '',
+                searchHidden && tabsAlign === 'start' && 'hidden'
+              )}
+            >
               {!searchHidden && onSearchChange && (
                 <SearchField
                   containerClassName="max-w-[45vw]"
@@ -109,13 +122,26 @@ export function PageSearchShell({
               )}
             </div>
             {hasTabs ? (
-              <div className={cn('flex min-w-0 items-center', tabsAlign === 'start' ? 'col-start-1 row-start-1 justify-start' : 'justify-center')} data-tour="page-tabs">
+              <div
+                className={cn(
+                  'flex min-w-0 items-center',
+                  tabsAlign === 'start' ? 'col-start-1 row-start-1 justify-start' : 'justify-center'
+                )}
+                data-tour="page-tabs"
+              >
                 <ShellTabs activeTab={activeTab} align={tabsAlign} onTabChange={onTabChange} tabs={tabs!} />
               </div>
             ) : (
               <span />
             )}
-            <div className={cn('flex min-w-0 items-center justify-end', tabsAlign === 'start' && 'col-start-3 row-start-1')}>{searchTrailingAction}</div>
+            <div
+              className={cn(
+                'flex min-w-0 items-center justify-end',
+                tabsAlign === 'start' && 'col-start-3 row-start-1'
+              )}
+            >
+              {searchTrailingAction}
+            </div>
           </div>
         )}
         {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}

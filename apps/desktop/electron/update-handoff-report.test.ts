@@ -131,7 +131,9 @@ test('a failed run the receipt explains names its stop instead of the bare exit 
   assert.match(dialogs[0].detail, /Details: Update failed \(exit 1\)/, 'the raw message stays visible')
   assert.deepEqual(dialogs[0].buttons, ['Update settings', 'Open log', 'Close'], 'a refusal is not retried')
   assert.ok(
-    lines.some(line => line.includes('detached update FAILED (exit 1)') && line.includes('stop_class downgrade_refused')),
+    lines.some(
+      line => line.includes('detached update FAILED (exit 1)') && line.includes('stop_class downgrade_refused')
+    ),
     lines.join('\n')
   )
 })

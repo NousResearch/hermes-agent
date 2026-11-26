@@ -29,25 +29,36 @@ function windows() {
   const hop = () => new Promise(resolve => setImmediate(resolve))
   let held: Promise<void> | undefined
 
-  const ipc = (channel: string) => async (...args: unknown[]) => {
-    await hop()
-    const handler = main.handlers.get(`hermes:prepared-submissions:${channel}`)!
+  const ipc =
+    (channel: string) =>
+    async (...args: unknown[]) => {
+      await hop()
+      const handler = main.handlers.get(`hermes:prepared-submissions:${channel}`)!
 
-    if (channel !== 'read' && held) { const gate = held; held = undefined; await gate }
-    const result = handler(event, ...args)
-    await hop()
+      if (channel !== 'read' && held) {
+        const gate = held
+        held = undefined
+        await gate
+      }
+      const result = handler(event, ...args)
+      await hop()
 
-    return result
-  }
+      return result
+    }
 
   const preparedSubmissions = { read: ipc('read'), update: ipc('update'), compareAndSet: ipc('compare-and-set') }
   vi.stubGlobal('window', { hermesDesktop: { preparedSubmissions } })
 
   return {
     durable: () => preparedJournal(main.userData, origin).read() as Record<string, { params: { event_id: string } }>,
-    holdNextMutation: () => { let release!: () => void; held = new Promise<void>(r => { release = r });
+    holdNextMutation: () => {
+      let release!: () => void
+      held = new Promise<void>(r => {
+        release = r
+      })
 
- return release },
+      return release
+    },
     cleanup: () => fs.rmSync(main.userData, { recursive: true, force: true })
   }
 }
@@ -67,7 +78,9 @@ test('two windows preparing one room slot at once acknowledge the single durable
     expect(a.params.event_id).toBe(stored[0].params.event_id)
     expect(b.params.event_id).toBe(stored[0].params.event_id)
     expect(await readCanonicalGroupSend(binding)).toEqual(a)
-  } finally { rig.cleanup() }
+  } finally {
+    rig.cleanup()
+  }
 })
 
 test('a delayed ACK for a retired intent cannot delete the newer intent another window prepared', async () => {
@@ -86,5 +99,7 @@ test('a delayed ACK for a retired intent cannot delete the newer intent another 
     await delayed
     expect(Object.values(rig.durable()).map(entry => entry.params.event_id)).toEqual([b.params.event_id])
     expect(await readCanonicalGroupSend(binding)).toEqual(b)
-  } finally { rig.cleanup() }
+  } finally {
+    rig.cleanup()
+  }
 })

@@ -48,7 +48,7 @@ function readLegacySpent(): Record<string, string> {
   const raw = window.localStorage.getItem(LEGACY_SPENT_KEY)
   const parsed: unknown = raw ? JSON.parse(raw) : {}
 
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {}
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {}
 }
 
 const PREFIXES = [SPENT_PREFIX, ENTRY_PREFIX] as const
@@ -63,7 +63,9 @@ function listPrefixed(): Listed {
     const key = window.localStorage.key(index)
     const prefix = PREFIXES.find(candidate => key?.startsWith(candidate))
 
-    if (key && prefix) { listed[prefix].push(key.slice(prefix.length)) }
+    if (key && prefix) {
+      listed[prefix].push(key.slice(prefix.length))
+    }
   }
 
   return listed
@@ -76,7 +78,9 @@ function readPrefixed(prefix: string, keys: Iterable<string>): Record<string, st
   for (const key of keys) {
     const value = window.localStorage.getItem(prefix + key)
 
-    if (value) { values[key] = value }
+    if (value) {
+      values[key] = value
+    }
   }
 
   return values
@@ -101,11 +105,16 @@ function writeSpent(key: string, id: string | undefined): void {
   window.localStorage.removeItem(SPENT_PREFIX + key)
   const legacy = readLegacySpent()
 
-  if (!(key in legacy)) { return }
+  if (!(key in legacy)) {
+    return
+  }
   delete legacy[key]
 
-  if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_SPENT_KEY, JSON.stringify(legacy)) }
-  else { window.localStorage.removeItem(LEGACY_SPENT_KEY) }
+  if (Object.keys(legacy).length) {
+    window.localStorage.setItem(LEGACY_SPENT_KEY, JSON.stringify(legacy))
+  } else {
+    window.localStorage.removeItem(LEGACY_SPENT_KEY)
+  }
 }
 
 // A journal, not an automatic outbox. Only an explicit retry may reuse an
@@ -113,9 +122,7 @@ function writeSpent(key: string, id: string | undefined): void {
 async function readJournal(): Promise<Record<string, PreparedSubmission>> {
   const native = window.hermesDesktop?.preparedSubmissions
 
-  const parsed: unknown = JSON.parse(native
-    ? await native.read()
-    : window.localStorage.getItem(STORAGE_KEY) || '{}')
+  const parsed: unknown = JSON.parse(native ? await native.read() : window.localStorage.getItem(STORAGE_KEY) || '{}')
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Invalid prepared submission journal')
@@ -131,7 +138,10 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
     if (journal[key]?.id === id) {
       delete journal[key]
       // Storage may have recovered since: finish the retirement so the stale entry stops lingering.
-      await retireJournalEntry(key, id).then(() => clearSpent(key), error => console.warn('[prepared-submission-retire]', error))
+      await retireJournalEntry(key, id).then(
+        () => clearSpent(key),
+        error => console.warn('[prepared-submission-retire]', error)
+      )
     } else {
       // No entry read under this key carries the spent id: it is gone, or what reads there now is a
       // different send (under its own key, or the earlier build's blob). Nothing is left to hide.
@@ -143,10 +153,15 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
 }
 
 // The entries under their own keys, over the legacy blob's entries not yet retired.
-function readBrowserJournal(legacy: Record<string, PreparedSubmission>, listed: string[]): Record<string, PreparedSubmission> {
+function readBrowserJournal(
+  legacy: Record<string, PreparedSubmission>,
+  listed: string[]
+): Record<string, PreparedSubmission> {
   // Only a key the blob holds can carry a marker that matters, so each is read by name, not listed.
   for (const [key, id] of Object.entries(readPrefixed(LEGACY_RETIRED_PREFIX, Object.keys(legacy)))) {
-    if (legacy[key]?.id === id) { delete legacy[key] }
+    if (legacy[key]?.id === id) {
+      delete legacy[key]
+    }
   }
 
   const entries = Object.entries(readPrefixed(ENTRY_PREFIX, listed)).map(([key, entry]) => [key, JSON.parse(entry)])
@@ -173,7 +188,9 @@ async function retireJournalEntry(key: string, id: string): Promise<void> {
   const legacy: Record<string, PreparedSubmission> = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
 
   // Only the entry carrying this id: the blob may hold a different send an earlier-build tab wrote.
-  if (legacy[key]?.id === id) { window.localStorage.setItem(LEGACY_RETIRED_PREFIX + key, id) }
+  if (legacy[key]?.id === id) {
+    window.localStorage.setItem(LEGACY_RETIRED_PREFIX + key, id)
+  }
 }
 
 export function preparedSubmissionKey(
@@ -203,9 +220,14 @@ export async function listPreparedImageDrafts(target: string, scopeKey: string) 
     // An ordinary draft restores with its own identity, so sending it again is the
     // explicit retry of that entry. Queue and slash submissions own their recovery
     // (historical slash keys omit submissionId; the retained invocation is excluded).
-    return scope === scopeKey && session === target && !displayKind && !fromQueue &&
-      (!submissionId || submissionId === entry.id) && !String(text).trimStart().startsWith('/') &&
-      !entry.legacyAttempted && entry.attachments.some(attachment => attachment.kind === 'image')
+    return scope === scopeKey &&
+      session === target &&
+      !displayKind &&
+      !fromQueue &&
+      (!submissionId || submissionId === entry.id) &&
+      !String(text).trimStart().startsWith('/') &&
+      !entry.legacyAttempted &&
+      entry.attachments.some(attachment => attachment.kind === 'image')
       ? [{ key, id: entry.id, text: String(text), attachments: entry.attachments }]
       : []
   })
@@ -232,7 +254,9 @@ const webLocks = () => (typeof navigator === 'undefined' ? undefined : navigator
 function holdPreparedSubmission(key: string): Promise<boolean> {
   const locks = webLocks()
 
-  if (owned.has(key)) { return Promise.resolve(true) }
+  if (owned.has(key)) {
+    return Promise.resolve(true)
+  }
 
   if (!locks) {
     owned.set(key, () => undefined)
@@ -278,23 +302,30 @@ export async function adoptPreparedSubmission(
     .sort()
 
   for (const key of keys) {
-    if (await holdPreparedSubmission(key)) { return { key, entry: journal[key] } }
+    if (await holdPreparedSubmission(key)) {
+      return { key, entry: journal[key] }
+    }
   }
 
   return undefined
 }
 
 // `crypto.randomUUID` exists only in secure contexts; `getRandomValues` exists in every context.
-const sendNonce = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+const sendNonce = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
 
 /** A journal key for a NEW send of `intent`, held by this window. Never another live window's
  *  entry, so a separate send from another window cannot overwrite or share its identity. Without
  *  Web Locks no window can tell which keys a live one holds, so every send gets a fresh key: a
  *  slash command's intent carries no submission id, and two tabs would otherwise share it. */
 export async function preparedSubmissionSlot(intent: string): Promise<string> {
-  if (!webLocks()) { return JSON.stringify([...JSON.parse(intent), sendNonce()]) }
+  if (!webLocks()) {
+    return JSON.stringify([...JSON.parse(intent), sendNonce()])
+  }
 
-  if (!(await readJournal())[intent] && (await holdPreparedSubmission(intent))) { return intent }
+  if (!(await readJournal())[intent] && (await holdPreparedSubmission(intent))) {
+    return intent
+  }
   const key = JSON.stringify([...JSON.parse(intent), randomUuid()])
   await holdPreparedSubmission(key)
 
@@ -324,7 +355,11 @@ export async function removePreparedSubmission(key: string, id: string): Promise
   retired.set(key, id)
 
   // The tombstone store failing too (quota) leaves the in-memory mark; the removal still runs.
-  try { writeSpent(key, id) } catch (error) { console.warn('[prepared-submission-tombstone]', error) }
+  try {
+    writeSpent(key, id)
+  } catch (error) {
+    console.warn('[prepared-submission-tombstone]', error)
+  }
   await retireJournalEntry(key, id)
   clearSpent(key)
   owned.get(key)?.()

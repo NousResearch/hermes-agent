@@ -182,8 +182,12 @@ it('a Settings re-home publishes (box, default) as one pair while the new ticket
 
     expect($apiRequestScope.get()).toEqual({ connectionId: 'box', profile: 'default' })
     expect(seen).not.toContain('box|alpha')
-    expect(desktop.getVersion).not.toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'box', profile: 'alpha' }))
-    expect(desktop.getVersion).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'box', profile: 'default' }))
+    expect(desktop.getVersion).not.toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'box', profile: 'alpha' })
+    )
+    expect(desktop.getVersion).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'box', profile: 'default' })
+    )
   } finally {
     unlisten()
   }

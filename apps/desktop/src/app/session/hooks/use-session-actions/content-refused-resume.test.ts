@@ -51,9 +51,7 @@ describe('warm-resume merge of a content-refused turn', () => {
     expect(merged[0].contentRefused).toEqual({ notice: NOTICE })
 
     // No leftover blue user bubble carrying the same prompt text.
-    const promptBubbles = merged.filter(
-      message => message.role === 'user' && chatMessageText(message) === PROMPT
-    )
+    const promptBubbles = merged.filter(message => message.role === 'user' && chatMessageText(message) === PROMPT)
 
     expect(promptBubbles).toHaveLength(0)
   })

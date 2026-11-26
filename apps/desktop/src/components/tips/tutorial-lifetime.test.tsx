@@ -77,7 +77,11 @@ it('retires both tutorial features after 30 days across launches, then keeps a m
   expect(tours.$toursEnabled.get()).toBe(false)
   expect(tips.$activeTip.get()).toBeNull()
   expect(request).toHaveBeenCalledWith('config.set', { key: 'display.in_app_tips', profile: 'default', value: 'false' })
-  expect(request).toHaveBeenCalledWith('config.set', { key: 'display.in_app_tours', profile: 'default', value: 'false' })
+  expect(request).toHaveBeenCalledWith('config.set', {
+    key: 'display.in_app_tours',
+    profile: 'default',
+    value: 'false'
+  })
 
   act(() => {
     tips.setTipsEnabled(true)

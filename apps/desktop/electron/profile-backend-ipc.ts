@@ -87,7 +87,9 @@ export function registerProfileBackendIpc(ipcMain: IpcMain, deps: ProfileBackend
     }
 
     const { response } =
-      parent && !parent.isDestroyed() ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+      parent && !parent.isDestroyed()
+        ? await dialog.showMessageBox(parent, options)
+        : await dialog.showMessageBox(options)
 
     return response === 0
   }

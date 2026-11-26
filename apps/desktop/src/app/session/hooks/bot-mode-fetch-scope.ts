@@ -103,9 +103,7 @@ export function watchSidebarFetchProfile(currentScope: () => string, onChange: (
  *  the scope its server-side search reads: the selected bot's backend profile
  *  in Bot Mode (rows carry `targetProfile`) and its logical fetch profile,
  *  else `profileScope` unchanged for all three. */
-export function useSidebarDisplayScope(
-  profileScope: string
-): [scope: string, profile: string, searchScope: string] {
+export function useSidebarDisplayScope(profileScope: string): [scope: string, profile: string, searchScope: string] {
   // The subscribed values feed the computation (not re-read inside it), so a
   // bot or connection switch recomputes under the React compiler's memo.
   const botScope = scopeFor(

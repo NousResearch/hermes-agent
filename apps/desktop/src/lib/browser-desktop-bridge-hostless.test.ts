@@ -78,7 +78,8 @@ function dashboardHost({
   refusedBy = new Set<string>(),
   runsAs = {} as Record<string, string>,
   unreadable = new Set<string>(),
-  hung = new Set<string>()
+  hung = new Set<string>(),
+  serves = {} as Record<string, string[]>
 }: {
   agents?: DesktopRegistryConnection[]
   expired?: Set<string>
@@ -91,6 +92,8 @@ function dashboardHost({
   unreadable?: Set<string>
   /** Agents whose profile list never answers. */
   hung?: Set<string>
+  /** The profiles an agent's gateway serves beside its own (`/api/status` `gateway_shared_with`). */
+  serves?: Record<string, string[]>
 } = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
@@ -131,6 +134,10 @@ function dashboardHost({
 
         if (rest === '/api/profiles/active') {
           return json({ current: runsAs[id] ?? 'default' })
+        }
+
+        if (rest === '/api/status' && serves[id]) {
+          return json({ gateway_shared_with: serves[id] })
         }
 
         if (rest === '/api/portal') {
@@ -273,6 +280,19 @@ describe('a Webapp whose host runs no agent', () => {
     // The agent's own profile is the socket itself, not a profile riding it.
     expect((await desktop.getConnection('default')).sharedPrimary).toBe(false)
     expect((await desktop.getConnection()).sharedPrimary).toBe(false)
+  })
+
+  it("does not mark a profile the window socket's agent has but does not serve as riding that socket", async () => {
+    dashboardHost({
+      profiles: { alpha: ['default', 'research', 'parked'], beta: ['default'] },
+      runsAs: { alpha: 'default' },
+      serves: { alpha: ['research'] }
+    })
+    const desktop = install()
+    await desktop.getAgentRoster!()
+
+    expect((await desktop.getConnection('research')).sharedPrimary).toBe(true)
+    expect((await desktop.getConnection('parked')).sharedPrimary).toBe(false)
   })
 
   it('opens on the first agent when the list names no primary it holds', async () => {
@@ -596,6 +616,26 @@ describe('a Webapp whose host runs no agent', () => {
     }
 
     expect(browserLaunchProfile()).toBe(adopted ?? '')
+  })
+
+  // A failed read is not kept: once the agent answers again, the next open adopts its profile.
+  it("opens and adopts the agent's profile after an open that failed its reads", async () => {
+    dashboardHost({ runsAs: { alpha: 'research' } })
+    const host = vi.mocked(fetch).getMockImplementation()!
+    let down = true
+
+    vi.mocked(fetch).mockImplementation(async (url, init) =>
+      down && new URL(String(url), window.location.origin).pathname === '/api/relay/alpha/api/profiles/active'
+        ? json({ detail: 'timed out' }, 504)
+        : host(url, init)
+    )
+    const desktop = install()
+    await expect(desktop.getConnection()).rejects.toThrow()
+
+    down = false
+
+    await expect(desktop.getConnection()).resolves.toMatchObject({ connectionId: 'alpha' })
+    expect(browserLaunchProfile()).toBe('research')
   })
 
   // `/api/profiles/active` answers `custom` for an agent run from its own HERMES_HOME: a description

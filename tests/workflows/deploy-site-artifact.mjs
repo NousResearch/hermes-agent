@@ -45,10 +45,11 @@ await Promise.all((requested.length ? requested : Object.keys(cases)).map(async 
     const elapsed = performance.now() - start;
     console.log(JSON.stringify({ name, calls, elapsedMs: Math.round(elapsed), callMs: times.map(Math.round), lastInfo: infos.at(-1), firstInfo: infos[0], warnings }));
     if (['never','hanging'].includes(name)) {
-      assert.match(warnings[0], /still not listed/);
+      assert.match(warnings[0], /Timed out/);
       assert.ok(elapsed <= 120500, '120 s budget plus 500 ms scheduler tolerance');
     } else if (name === 'duplicate') {
       assert.equal(calls, 2, 'must wait until exactly one Pages artifact is listed');
+      assert.match(infos[0], /found 2 github-pages artifacts/);
     } else if (name === 'permanent') {
       assert.equal(calls, 1);
       assert.match(warnings[0], /HTTP 404/);

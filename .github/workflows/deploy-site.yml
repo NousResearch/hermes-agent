@@ -318,11 +318,15 @@ jobs:
                   core.warning(`artifact listing answered HTTP ${res.status}; deploying without waiting`);
                   return;
                 }
-                if (res.ok && ((await res.json()).artifacts || []).filter(a => a.name === 'github-pages').length === 1) {
-                  core.info('github-pages artifact is listed');
-                  return;
+                note = `HTTP ${res.status}`;
+                if (res.ok) {
+                  const count = ((await res.json()).artifacts || []).filter(a => a.name === 'github-pages').length;
+                  if (count === 1) {
+                    core.info('github-pages artifact is listed');
+                    return;
+                  }
+                  note = `found ${count} github-pages artifacts; expected one`;
                 }
-                note = `HTTP ${res.status}, not listed yet`;
               } catch (err) {
                 note = `listing failed: ${err.message}`;
               }
@@ -331,7 +335,7 @@ jobs:
               core.info(`${note}; checking again in ${delay} ms`);
               await new Promise(r => setTimeout(r, delay));
             }
-            core.warning('github-pages artifact still not listed after 120 s; deploying anyway');
+            core.warning('Timed out waiting for exactly one github-pages artifact after 120 s; deploying anyway');
 
       - name: Deploy to GitHub Pages
         id: deploy

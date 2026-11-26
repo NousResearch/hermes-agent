@@ -7,21 +7,21 @@ again). A pending receipt whose session row is gone with no deletion marker is s
 import asyncio
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tools.bot_live_delivery import _locked, _read, _write
 
 
 def _recover_one(tmp_path, record):
     from gateway.session_bot import recover_bot_deliveries
-    db = SessionDB(tmp_path / 'state.db')
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        begin_runtime_epoch(db, instance_id='owner')
+        db.runtime.begin_epoch(instance_id='owner')
         if record['session_id'] == 'live':
-            db.create_session('live', source='cli')
+            seed_session(db, 'live', 'cli')
         with _locked(tmp_path) as root:
             _write(root / f"{record['delivery_id']}.json", record)
-        asyncio.run(recover_bot_deliveries(SimpleNamespace(db=db, waiters={})))
+        asyncio.run(recover_bot_deliveries(SimpleNamespace(db=db, persistence=db, waiters={})))
         with _locked(tmp_path) as root:
             return _read(root / f"{record['delivery_id']}.json")
     finally:

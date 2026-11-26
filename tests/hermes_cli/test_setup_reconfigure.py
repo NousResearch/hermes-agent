@@ -176,6 +176,8 @@ class TestFreshInstall:
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
+                rows=("hermes_cli.setup_quick.first_run_power_rows",
+                      {"return_value": [("portal", "Sign in"), ("own", "Own key")]}),
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
                 first="hermes_cli.setup_quick._run_first_time_quick_setup",
             )
@@ -198,7 +200,9 @@ class TestFreshInstall:
         with ExitStack() as stack:
             m = _enter_fresh_install_patches(
                 stack,
-                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
+                rows=("hermes_cli.setup_quick.first_run_power_rows",
+                      {"return_value": [("portal", "Sign in"), ("own", "Own key")]}),
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 3}),  # Blank Slate, after Full
                 blank="hermes_cli.setup_quick._run_blank_slate_setup",
             )
             from hermes_cli import setup as setup_mod

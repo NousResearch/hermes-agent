@@ -55,6 +55,7 @@ vi.mock('@/store/session', async () => {
     setMessagingSessions: vi.fn(),
     setMessagingTruncated: vi.fn(),
     setSelectedStoredSessionId: vi.fn(),
+    setSessionProfilesFailed: vi.fn(),
     setSessionProfilesTruncated: vi.fn(),
     setSessionProfilesUsage: vi.fn(),
     setSessions: vi.fn(),

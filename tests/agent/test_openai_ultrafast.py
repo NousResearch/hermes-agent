@@ -17,6 +17,7 @@ from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overri
 
 ASTRA_SPELLINGS = ("gpt-6-astra", "openai/gpt-6-astra", "gpt-6-astra-900k", "openai/gpt-6-astra-900k")
 SOL_SPELLINGS = ("gpt-6.1-sol", "openai/gpt-6.1-sol", "gpt-6.1-sol-900k", "openai/gpt-6.1-sol-900k")
+GPT62_SPELLINGS = ("gpt-6.2-sol", "openai/gpt-6.2-sol", "gpt-6.2-astra", "openai/gpt-6.2-astra")
 
 
 def test_every_config_loader_parses_tiers_through_the_same_table(monkeypatch):
@@ -38,7 +39,7 @@ def test_every_config_loader_parses_tiers_through_the_same_table(monkeypatch):
                                                ("openai-api", "https://api.openai.com/v1"),
                                                ("openai-codex", "https://chatgpt.com/backend-api/codex")])
 def test_ultrafast_is_requested_only_for_ultrafast_models_on_first_party_routes(provider, base_url):
-    for model in (*ASTRA_SPELLINGS, *SOL_SPELLINGS):
+    for model in (*ASTRA_SPELLINGS, *SOL_SPELLINGS, *GPT62_SPELLINGS):
         assert model_supports_ultrafast(model), model
         assert resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier="ultrafast") == {
             "service_tier": "ultrafast"}
@@ -48,7 +49,7 @@ def test_ultrafast_is_requested_only_for_ultrafast_models_on_first_party_routes(
         assert not model_supports_ultrafast(model), model
         assert resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier="ultrafast") is None
     # Proxies never see the tier, even under a first-party provider name.
-    for model in (*ASTRA_SPELLINGS, *SOL_SPELLINGS):
+    for model in (*ASTRA_SPELLINGS, *SOL_SPELLINGS, *GPT62_SPELLINGS):
         assert resolve_fast_mode_overrides(model, provider="openrouter",
                                            base_url="https://openrouter.ai/api/v1", tier="ultrafast") is None
         assert resolve_fast_mode_overrides(model, provider="openai-api",
@@ -59,12 +60,13 @@ def test_desktop_surfaces_carry_the_exact_tier_ultrafast_is_never_plain_fast():
     from hermes_cli.inventory import _apply_capabilities
     from tui_gateway.methods_session_model_guard import create_overrides
 
-    rows = [{"slug": "openai-codex", "models": ["gpt-6-astra-900k", *SOL_SPELLINGS[::2], "gpt-6-sol", "gpt-daybreak-blue-latest-900k"]},
+    rows = [{"slug": "openai-codex", "models": ["gpt-6-astra-900k", *SOL_SPELLINGS[::2], *GPT62_SPELLINGS[::2], "gpt-6-sol",
+                                                "gpt-daybreak-blue-latest-900k"]},
             {"slug": "openrouter", "models": ["openai/gpt-6-astra", "openai/gpt-6.1-sol"]}]
     _apply_capabilities(rows)
     caps = {m: c for row in rows for m, c in row["capabilities"].items()}
     assert caps["gpt-6-astra-900k"]["fast"] and caps["gpt-6-astra-900k"].get("ultrafast")
-    for model in SOL_SPELLINGS[::2]:
+    for model in (*SOL_SPELLINGS[::2], *GPT62_SPELLINGS[::2]):
         assert caps[model]["fast"] and caps[model].get("ultrafast"), model
     assert caps["gpt-6-sol"]["fast"] and not caps["gpt-6-sol"].get("ultrafast")
     assert caps["gpt-daybreak-blue-latest-900k"]["fast"] and not caps["gpt-daybreak-blue-latest-900k"].get("ultrafast")
@@ -150,8 +152,8 @@ def test_context_alias_pricing_preserves_custom_endpoint_rates(monkeypatch, prov
     assert (cost.amount_usd, cost.source) == (Decimal(amount), source)
 
 
-@pytest.mark.parametrize("model", SOL_SPELLINGS)
-def test_sol_ultrafast_codex_request_uses_the_wire_slug_and_keeps_subscription_accounting(model):
+@pytest.mark.parametrize("model", [*SOL_SPELLINGS, *GPT62_SPELLINGS])
+def test_codex_ultrafast_request_uses_the_wire_slug_and_keeps_subscription_accounting(model):
     from agent.fast_mode import effective_request_overrides
     from agent.transports.codex import ResponsesApiTransport
     from hermes_cli.model_normalize import normalize_model_for_provider
@@ -167,7 +169,7 @@ def test_sol_ultrafast_codex_request_uses_the_wire_slug_and_keeps_subscription_a
     )
     wire = transport.preflight_kwargs(kwargs, sanitize_harmony_tokens=True)
     assert wire["service_tier"] == "ultrafast"
-    assert wire["model"] == "gpt-6.1-sol"
+    assert wire["model"] == model.removeprefix("openai/").removesuffix("-900k")
     cost = estimate_usage_cost(model, _usage(1_000, "ultrafast"), provider="openai-codex", base_url=base_url)
     assert cost.status == "included" and cost.pricing_version == "included-route"
 

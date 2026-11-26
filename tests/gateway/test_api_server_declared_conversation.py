@@ -28,7 +28,8 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 KEY = "agent:main:api_server:room-42:member-7"
 OTHER_KEY = "agent:main:api_server:room-42:member-8"
@@ -36,23 +37,31 @@ SOURCE = "api_server"
 
 
 @pytest.fixture
-def adapter(tmp_path):
-    """An adapter whose lazy SessionDB is pinned to a scratch state.db."""
+def adapter(tmp_path, monkeypatch):
+    """An adapter whose lazy store opens a scratch state.db (the profile home is ``tmp_path``)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     a = APIServerAdapter(
         PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0, "key": "k"})
     )
-    db = SessionDB(tmp_path / "state.db")
-    a._session_db = db
     try:
-        yield a, db
+        yield a, a._ensure_store()
     finally:
-        db.close()
+        a._close_cached_session_dbs()
+
+
+def _failing_store(monkeypatch, **verbs):
+    """Answer every storage interface lookup with a handle whose ``verbs`` raise."""
+    store = MagicMock()
+    store.sessions.get.return_value = None
+    for name in verbs:
+        getattr(store.routing, name).side_effect = RuntimeError("db down")
+    monkeypatch.setattr("gateway.platforms.api_server_store.adapter_persistence", lambda *_a, **_kw: store)
 
 
 def _seed(db, session_id, *, key=KEY, source=SOURCE):
-    db.create_session(session_id=session_id, source=source, model="m")
+    seed_session(db, session_id, source, model="m")
     if key:
-        db.record_gateway_session_peer(session_id, source=source, session_key=key)
+        db.routing.record_session_peer(session_id, source=source, session_key=key)
 
 
 class TestDeclaredConversationResolution:
@@ -88,19 +97,14 @@ class TestDeclaredConversationResolution:
         _seed(db, "sess-telegram", key=KEY, source="telegram")
         assert a._declared_conversation_session(KEY) is None
 
-    def test_db_failure_degrades_to_a_fresh_id(self, adapter):
+    def test_db_failure_degrades_to_a_fresh_id(self, adapter, monkeypatch):
         a, _ = adapter
-
-        class _Boom:
-            def find_latest_gateway_session_for_peer(self, **_kw):
-                raise RuntimeError("db down")
-
-        a._session_db = _Boom()
+        _failing_store(monkeypatch, latest_session_for_peer=True)
         assert a._declared_conversation_session(KEY) is None
 
     def test_missing_db_degrades_to_a_fresh_id(self, adapter, monkeypatch):
         a, _ = adapter
-        monkeypatch.setattr(a, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(a, "_ensure_store", lambda: None)
         assert a._declared_conversation_session(KEY) is None
 
 
@@ -122,24 +126,24 @@ class TestConversationBoundariesRotate:
     def test_boundary_rotates_the_conversation(self, adapter, reason):
         a, db = adapter
         _seed(db, "sess-old")
-        db.end_session("sess-old", reason)
+        db.sessions.end("sess-old", reason)
         assert a._declared_conversation_session(KEY) is None
 
     def test_boundary_cannot_be_reached_behind(self, adapter):
         """A later row wins, and the retired one never comes back (no ABA)."""
         a, db = adapter
         _seed(db, "sess-gen1")
-        db.end_session("sess-gen1", "session_reset")
+        db.sessions.end("sess-gen1", "session_reset")
         _seed(db, "sess-gen2")
         assert a._declared_conversation_session(KEY) == "sess-gen2"
-        db.end_session("sess-gen2", "session_reset")
+        db.sessions.end("sess-gen2", "session_reset")
         assert a._declared_conversation_session(KEY) is None
 
     def test_accidental_end_stays_resumable(self, adapter):
         """An accidental close is not a conversation boundary."""
         a, db = adapter
         _seed(db, "sess-live")
-        db.end_session("sess-live", "agent_close")
+        db.sessions.end("sess-live", "agent_close")
         assert a._declared_conversation_session(KEY) == "sess-live"
 
 
@@ -147,7 +151,7 @@ class TestBindDeclaredConversation:
     def test_bind_makes_the_row_resolvable(self, adapter):
         """Without the bind the row is written unkeyed and is invisible."""
         a, db = adapter
-        db.create_session(session_id="sess-new", source=SOURCE, model="m")
+        seed_session(db, "sess-new", SOURCE, model="m")
         assert a._declared_conversation_session(KEY) is None
 
         a._bind_declared_conversation("sess-new", KEY)
@@ -155,10 +159,10 @@ class TestBindDeclaredConversation:
 
     def test_bind_is_a_noop_without_a_key(self, adapter):
         a, db = adapter
-        db.create_session(session_id="sess-new", source=SOURCE, model="m")
+        seed_session(db, "sess-new", SOURCE, model="m")
         a._bind_declared_conversation("sess-new", None)
         a._bind_declared_conversation("sess-new", "  ")
-        assert db.get_session("sess-new").get("session_key") in (None, "")
+        assert session_row(db, "sess-new").get("session_key") in (None, "")
 
     def test_bind_is_a_noop_without_a_session(self, adapter):
         a, _ = adapter
@@ -166,14 +170,9 @@ class TestBindDeclaredConversation:
         a._bind_declared_conversation("", KEY)
         assert a._declared_conversation_session(KEY) is None
 
-    def test_bind_survives_a_db_failure(self, adapter):
+    def test_bind_survives_a_db_failure(self, adapter, monkeypatch):
         a, _ = adapter
-
-        class _Boom:
-            def record_gateway_session_peer(self, *_a, **_kw):
-                raise RuntimeError("db down")
-
-        a._session_db = _Boom()
+        _failing_store(monkeypatch, record_session_peer=True)
         a._bind_declared_conversation("sess-new", KEY)  # must not raise
 
     def test_bind_follows_a_compression_rotation(self, adapter):
@@ -183,11 +182,12 @@ class TestBindDeclaredConversation:
         so the next reply resolves the live child rather than its parent.
         """
         a, db = adapter
-        db.create_session(session_id="sess-parent", source=SOURCE, model="m")
-        db.end_session("sess-parent", "compression")
-        db.create_session(
-            session_id="sess-child",
-            source=SOURCE,
+        seed_session(db, "sess-parent", SOURCE, model="m")
+        db.sessions.end("sess-parent", "compression")
+        seed_session(
+            db,
+            "sess-child",
+            SOURCE,
             model="m",
             parent_session_id="sess-parent",
         )
@@ -208,7 +208,7 @@ class TestOtherStructuresUnaffected:
 
         _a, db = adapter
         _seed(db, "sess-live")
-        row = db.get_session("sess-live")
+        row = session_row(db, "sess-live")
         origin = {
             "chat_id": row.get("chat_id"),
             "thread_id": row.get("thread_id"),
@@ -220,13 +220,13 @@ class TestOtherStructuresUnaffected:
         """SessionStore loads from gateway_routing, not from sessions.session_key."""
         _a, db = adapter
         _seed(db, "sess-live")
-        assert db.load_gateway_routing_entries() == {}
+        assert db.routing.load_routing_entries() == {}
 
 
 class TestBindFollowsPrecedence:
     """Recording is gated on the declared key actually selecting the session.
 
-    `record_gateway_session_peer` performs `SET session_key = ?`, so binding a
+    `routing.record_session_peer` performs `SET session_key = ?`, so binding a
     session that the response chain or an explicit body id selected would
     rewrite THAT conversation's routing key to this request's header: the
     original conversation could no longer be recovered by its own key, and the
@@ -240,7 +240,7 @@ class TestBindFollowsPrecedence:
 
         a._bind_declared_conversation("sess-A", OTHER_KEY)
 
-        assert db.get_session("sess-A")["session_key"] == KEY
+        assert session_row(db, "sess-A")["session_key"] == KEY
         assert a._declared_conversation_session(KEY) == "sess-A"
         assert a._declared_conversation_session(OTHER_KEY) is None
 
@@ -248,7 +248,7 @@ class TestBindFollowsPrecedence:
         a, db = adapter
         _seed(db, "sess-A", key=KEY)
         a._bind_declared_conversation("sess-A", KEY)
-        assert db.get_session("sess-A")["session_key"] == KEY
+        assert session_row(db, "sess-A")["session_key"] == KEY
         assert a._declared_conversation_session(KEY) == "sess-A"
 
 
@@ -256,13 +256,13 @@ API_KEY = "test-api-key"
 
 
 @pytest.fixture
-def live(tmp_path):
-    """A real adapter behind real routes, with a scratch state.db attached."""
+def live(tmp_path, monkeypatch):
+    """A real adapter behind real routes, its lazy store on a scratch state.db."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = APIServerAdapter(
         PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0, "key": API_KEY})
     )
-    db = SessionDB(tmp_path / "state.db")
-    adapter._session_db = db
+    db = adapter._ensure_store()
 
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
     app = web.Application(middlewares=mws)
@@ -272,7 +272,7 @@ def live(tmp_path):
     try:
         yield adapter, db, app
     finally:
-        db.close()
+        adapter._close_cached_session_dbs()
 
 
 def _spy_run_agent(adapter, seen):
@@ -288,9 +288,9 @@ def _spy_run_agent(adapter, seen):
         seen.append(kwargs)
         # AIAgent._ensure_db_session() creates the row during the turn.
         sid = kwargs.get("session_id")
-        db = adapter._ensure_session_db()
-        if sid and db is not None and db.get_session(sid) is None:
-            db.create_session(session_id=sid, source=SOURCE, model="m")
+        db = adapter._ensure_store()
+        if sid and db is not None and session_row(db, sid) is None:
+            seed_session(db, sid, SOURCE, model="m")
         if kwargs.get("bind_declared_conversation"):
             adapter._bind_declared_conversation(
                 kwargs.get("session_id"), kwargs.get("gateway_session_key")
@@ -425,10 +425,10 @@ def _stub_agent(adapter, session_id, seen):
 
     def _run(**kwargs):
         seen.append(kwargs)
-        db = adapter._ensure_session_db()
+        db = adapter._ensure_store()
         # AIAgent._ensure_db_session() creates the row during the turn.
-        if db is not None and db.get_session(session_id) is None:
-            db.create_session(session_id=session_id, source=SOURCE, model="m")
+        if db is not None and session_row(db, session_id) is None:
+            seed_session(db, session_id, SOURCE, model="m")
         return {"final_response": "ok", "messages": [], "api_calls": 1}
 
     agent.run_conversation.side_effect = _run
@@ -462,7 +462,7 @@ class TestRealRunAgentSettlement:
         assert body["status"] == "completed"
         sid = created["session_id"]
         # Settlement ran for real: the row is bound and recoverable.
-        assert db.get_session(sid)["session_key"] == KEY
+        assert session_row(db, sid)["session_key"] == KEY
         assert adapter._declared_conversation_session(KEY) == sid
 
     @pytest.mark.asyncio
@@ -513,7 +513,7 @@ class TestRealRunAgentSettlement:
             )
             assert resp.status == 200
 
-        assert db.get_session("sess-A")["session_key"] == KEY
+        assert session_row(db, "sess-A")["session_key"] == KEY
         assert adapter._declared_conversation_session(OTHER_KEY) is None
 
     @pytest.mark.asyncio
@@ -533,7 +533,7 @@ class TestRealRunAgentSettlement:
         adapter._create_agent = _create
 
         # Explicit session exists and carries NO routing key.
-        db.create_session(session_id="explicit-session", source=SOURCE, model="m")
+        seed_session(db, "explicit-session", SOURCE, model="m")
         _seed(db, "sess-live", key=KEY)
 
         async with TestClient(TestServer(app)) as cli:
@@ -551,6 +551,6 @@ class TestRealRunAgentSettlement:
             # passes on timing rather than on the precedence gate.
             assert await _await_run(adapter, run_id), "run never settled"
 
-        row = db.get_session("explicit-session")
+        row = session_row(db, "explicit-session")
         assert not (row.get("session_key") or "")
         assert adapter._declared_conversation_session(KEY) == "sess-live"

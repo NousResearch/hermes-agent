@@ -16,8 +16,8 @@ We strive to never break installations and updates for these. Issues & regressio
 
 | OS / Architecture                                                             | Installation methods                                                                                                           | Notes                                                                                                                                                     |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **macOS** (Apple Silicon)                                                     | [Hermes Desktop](https://hermes-agent.nousresearch.com/), [`install.sh`](./installation.md) |
-| [**Windows 10 / 11**](../user-guide/windows-native.md) (x86_64, aarch64) | [`install.ps1`](./installation.md), [MSIX desktop](../user-guide/windows-native.md) | The MSIX package requires Windows 11 22H2 or later. Optional dependencies have [architecture limits](../user-guide/windows-native.md). |
+| **macOS** (Apple Silicon)                                                     | [Hermes Desktop](https://hermes-agent.nousresearch.com/), [`install.sh`](./installation.md) | The macOS desktop bundle (`Hermes Agent.app`) requires **macOS 13 Ventura or later** on Apple Silicon (`arm64`). Intel Macs and macOS 12 or earlier use [`install.sh`](./installation.md#linux--macos--wsl2). |
+| [**Windows 10 / 11**](../user-guide/windows-native.md) (x86_64, aarch64) | [Microsoft Store / MSIX desktop](../user-guide/windows-native.md), [`install.ps1`](./installation.md) | Desktop bundles (Microsoft Store and `.appinstaller` MSIX, x64 or ARM64) require **Windows 11 22H2 or later (`10.0.22621.0`)**. Windows 10 and Windows 11 earlier than 22H2 use [`install.ps1`](./installation.md#windows-native) or [WSL2](../user-guide/windows-wsl-quickstart.md). Optional dependencies have [architecture limits](../user-guide/windows-native.md). |
 | **Linux / [WSL2](../user-guide/windows-wsl-quickstart.md)** (x86_64, aarch64) | [`install.sh`](./installation.md)                                                           | We test on the latest Ubuntu and WSL2. If your distro has glibc, systemd, and follows the Filesystem Hierarchy Standard, it's likely to work pretty well. |
 | [**Docker Container**](../user-guide/docker.md) (x86_64, aarch64) | [`docker pull`](../user-guide/docker.md)                                                                           | Docker installs do not support `hermes update`. Updating is done by running a new image.                                                                  |
 
@@ -37,20 +37,27 @@ PRs will be accepted to fix issues with them, but they will take precedence belo
 
 ### Build targets and support priority
 
-Stable releases build the macOS desktop bundle for Apple Silicon (`arm64`) only.
-The Intel macOS (`x64`) bundle and the Termux APT package are **not built by
-default**: a release includes them only when it is cut with
-`release.py release --with macos-intel` or `--with termux`. A release
-without macOS Intel replaces the one shared macOS stable update feed with an
-arm64-only feed, so Intel Macs installed from a desktop bundle get no update
-until a release is cut with `--with macos-intel`. A release without Termux
+Releases build the macOS desktop bundle (`Hermes Agent.app`) for **Apple Silicon
+(`arm64`) on macOS 13 Ventura or later** (`LSMinimumSystemVersion`
+`13.0`, matching Electron 44's OS floor); no release or CI workflow builds or
+tests an Intel macOS (`x64`) bundle. The macOS update feed is arm64-only, so
+Intel Macs installed from an older desktop bundle get no update. Intel Macs and
+macOS 12 Monterey or earlier should use the
+[CLI / source installer (`install.sh`)](./installation.md#linux--macos--wsl2).
+
+Windows desktop bundles (both the Microsoft Store package and the signed
+`.appinstaller` MSIX bundle, x64 and ARM64) require **Windows 11 22H2 or later
+(`10.0.22621.0`)**. Windows 10 and Windows 11 earlier than 22H2 are supported
+through the [Windows source installer (`install.ps1`)](./installation.md#windows-native)
+or [WSL2](../user-guide/windows-wsl-quickstart.md).
+
+The Termux APT package is **not built by default**: a release includes it only
+when it is cut with `release.py release --with termux`. A release without Termux
 leaves the Termux APT channel on its previous release.
-The `Hermes-Setup.dmg` bootstrap installer is built for Apple Silicon only, so
-on an Intel Mac it reports "not supported on this Mac". Intel Macs can install
-the [CLI](./installation.md#linux--macos--wsl2) and run
-`hermes desktop`, or use a `darwin-x64` bundle from a release that included it.
-Linux desktop packaging is disabled in the release workflow, although local
-AppImage builds and native Linux PM bundle checks exist.
+The legacy `Hermes-Setup.dmg` bootstrap installer is built for Apple Silicon
+only, so on an Intel Mac it reports "not supported on this Mac".
+Linux desktop AppImages are built on canary tags as diagnostic artifacts that no
+release offers yet; local AppImage builds and native Linux PM bundle checks exist.
 
 ## Unsupported
 
@@ -61,7 +68,8 @@ PRs to fix them will _not_ be accepted, and any code that keeps compatibility wi
 
 - Android / Termux on non-aarch64 devices (aarch64 is [supported](./termux.md) via our APT package)
 - installs via the AUR (we might upstream patches if it helps out &lt;3)
-- 32-bit x86 macOS. Intel x86_64 desktop bundles are built only for releases cut with `--with macos-intel`.
+- 32-bit x86 macOS, Intel x86_64 macOS desktop bundles (none are built), and desktop bundles on macOS 12 Monterey or earlier (use [`install.sh`](./installation.md#linux--macos--wsl2) instead)
+- Windows desktop bundles (Microsoft Store or `.appinstaller` MSIX) on Windows 10 or Windows 11 earlier than 22H2 (use [`install.ps1`](./installation.md#windows-native) or [WSL2](../user-guide/windows-wsl-quickstart.md) instead)
 - installs via `pypi` (e.g. `uv tool install hermes-agent`, `pip install hermes-agent`, etc.)
 - installs via `brew` (`brew install hermes-agent`)
 

@@ -55,7 +55,7 @@ function channelApp() {
 
 test('store, release, canary and channel MSIX manifests keep write virtualisation disabled', () => {
   const store = taggedApp('v0.27.1')
-  const canary = taggedApp('v0.27.1+canary.20260907T001800Z')
+  const canary = taggedApp('canary.20260907T001800Z-v0.27.1')
   fs.mkdirSync(path.join(canary, 'build'), { recursive: true })
   fs.copyFileSync(path.join(canary, 'assets/msix-manifest.xml'), path.join(canary, 'build/msix-manifest.xml'))
   const channel = channelApp()
@@ -65,7 +65,7 @@ test('store, release, canary and channel MSIX manifests keep write virtualisatio
   const manifests = {
     store: stageStoreManifest(store, 'v0.27.1'),
     release: stageReleaseManifest(taggedApp('v0.27.1'), 'v0.27.1'),
-    canary: stageReleaseManifest(canary, 'v0.27.1+canary.20260907T001800Z'),
+    canary: stageReleaseManifest(canary, 'canary.20260907T001800Z-v0.27.1'),
     channel: path.join(channel, 'build/msix-manifest.xml')
   }
   for (const [kind, file] of Object.entries(manifests)) {

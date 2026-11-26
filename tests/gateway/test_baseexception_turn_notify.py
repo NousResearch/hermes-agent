@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.i18n import t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
@@ -96,9 +97,6 @@ async def test_system_exit_from_turn_notifies_user_and_is_reraised():
         await adapter._process_message_background(event, build_session_key(event.source))
 
     assert adapter.sent, "platform send must be called on SystemExit"
-    assert "error" in adapter.sent[0].lower(), (
-        f"notification should mention the error, got: {adapter.sent[0]!r}"
-    )
 
 
 @pytest.mark.asyncio
@@ -122,4 +120,26 @@ async def test_plain_exception_still_notifies_without_propagating():
     await adapter._process_message_background(event, build_session_key(event.source))
 
     assert adapter.sent, "platform send must be called on a plain Exception"
-    assert "error" in adapter.sent[0].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suppressed", [False, True])
+async def test_turn_exception_text_stays_in_log_not_chat(tmp_path, monkeypatch, caplog, suppressed):
+    """Exception text can carry provider credentials (#38012): the traceback stays
+    server-side and chat gets only a generic notice, whatever the warning policy."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        f"display: {{suppress_warning_notifications: {str(suppressed).lower()}}}")
+    secret = "sk-proj-" + "A1b2C3d4E5f6G7h8I9j0" * 2
+    adapter = _make_adapter(_raising_handler(
+        PermissionError(f"Incorrect API key provided: {secret}")))
+    event = _event()
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert len(adapter.sent) == 1
+    reply = adapter.sent[0]
+    assert reply == t("gateway.notify.turn_error" if suppressed else "gateway.errors.generic_failed")
+    assert secret not in reply
+    assert "Incorrect API key" not in reply and "PermissionError" not in reply
+    assert "Incorrect API key provided" in caplog.text

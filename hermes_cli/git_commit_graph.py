@@ -33,6 +33,7 @@ from hermes_cli._subprocess_compat import (
     windows_detach_flags_without_breakaway,
     windows_detach_popen_kwargs,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -113,18 +114,21 @@ def run_bounded_git(repo_root: str, args: Sequence[str], timeout: float, env: Op
     Returns the exit code, or None when the timeout killed it; a failure is logged with git's last
     stderr line. ``repack`` forks ``pack-objects``; ``subprocess.run(timeout=)`` killed only the
     parent and left the grandchild packing for days, and a daemon thread's child outlived the CLI the
-    same way. A new session/process group + ``atexit`` reaps both cases, SIGTERM first so git can
-    delete its own lock and tmp files.
+    same way. An owned process group (``spawn_owned``) + ``atexit`` reaps both cases, SIGTERM first so
+    git can delete its own lock and tmp files, and the owner-death supervisor kills the group when we
+    are SIGKILLed or OOM-killed mid-repack.
     """
+    from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+
     cmd = ["git", *args]
     if os.name == "posix":
         cmd = ["nice", "-n", "19", *cmd]
-        group_kw: dict = {"process_group": 0}
+        group_kw: dict = {}
     else:
         group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=err, env=env, **group_kw)
+        proc = spawn_owned(cmd, purpose=f"git {args[0]}", cwd=repo_root, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=err, env=env, **group_kw)
 
         def _reap() -> None:
             if proc.poll() is None:
@@ -139,6 +143,7 @@ def run_bounded_git(repo_root: str, args: Sequence[str], timeout: float, env: Op
             return None
         finally:
             atexit.unregister(_reap)
+            release_process_group_once_empty(proc.pid, proc=proc)
         if rc:
             err.seek(0)
             lines = err.read()[-4096:].decode("utf-8", "replace").strip().splitlines()
@@ -245,7 +250,8 @@ def refresh_in_child(repo_root: str, git_dir: str, log_file: str) -> None:
     side effects a git maintenance child has no business having in a profile mid-update.
     """
     handler = _LogDirOnFailureHandler(log_file, encoding="utf-8", delay=True)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    from hermes_logging import DisplayNameFormatter
+    handler.setFormatter(DisplayNameFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
     try:
         refresh_commit_graph(repo_root, Path(git_dir))
@@ -266,13 +272,14 @@ def spawn_commit_graph_refresh(repo_root: Path) -> bool:
     git_dir = common_git_dir(repo_root)
     if git_dir is None or not (git_dir / "objects").is_dir() or not claim_commit_graph_refresh(git_dir):
         return False
-    code_root = Path(__file__).resolve().parents[1]
+    code_root = Path(project_root_str())
     argv = [sys.executable, "-c", _CHILD, str(code_root), str(repo_root), str(git_dir),
             str(get_hermes_home() / "logs" / "agent.log")]
     kwargs: dict = dict(cwd=str(repo_root), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL, close_fds=True)
     try:
         try:
+            # detached-spawn: ok — the refresh must neither delay the update nor die with it; slot-locked, bounded
             subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
         except OSError:
             if not IS_WINDOWS:

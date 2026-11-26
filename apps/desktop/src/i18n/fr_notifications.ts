@@ -35,6 +35,28 @@ export const frNotifications = {
       description: 'Un plugin desktop a envoyé une notification pendant que Hermes était en arrière-plan.'
     }
   },
+  browserPermission: {
+    title: 'Notifications du navigateur',
+    allow: 'Autoriser',
+    states: {
+      default:
+        "Affiche des alertes de ce navigateur quand l'onglet est en arrière-plan. Tant que vous ne l'autorisez pas, seul le titre de l'onglet clignote.",
+      granted:
+        "Autorisé. Les alertes s'affichent quand cet onglet est en arrière-plan ; le titre de l'onglet clignote aussi.",
+      denied: "Bloqué dans les paramètres du site de ce navigateur. Le titre de l'onglet clignote quand même.",
+      insecure: "Nécessite HTTPS, par exemple Tailscale serve. En HTTP simple, seul le titre de l'onglet clignote.",
+      unsupported: "Ce navigateur ne peut pas afficher de notifications. Le titre de l'onglet clignote quand même."
+    }
+  },
+  phonePresence: {
+    title: 'Cet ordinateur pour les notifications du téléphone',
+    description: 'Ce que cette fenêtre indique à Hermes sur votre présence. Un plugin de notifications sur téléphone décide quoi en faire.',
+    unsupported: 'Sur ce backend, les notifications du téléphone ne dépendent pas de votre activité.',
+    disconnected: 'Non connecté.',
+    watchingComputer: (time: string) => `Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cet ordinateur pour la dernière fois. Dernière saisie il y a ${time}.`,
+    watchingWindow: (time: string) => `Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cette fenêtre pour la dernière fois. Dernière saisie il y a ${time}.`,
+    watchingWindowNoInput: 'Tant qu’une conversation est ouverte dans cette fenêtre, Hermes sait quand vous avez utilisé cette fenêtre pour la dernière fois. Aucune saisie détectée pour l’instant.'
+  },
   test: 'Envoyer une notification de test',
   testTitle: 'Hermes',
   testBody: 'Les notifications fonctionnent.',

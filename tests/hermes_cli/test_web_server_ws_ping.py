@@ -119,6 +119,8 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
 
     assert captured["ws_ping_interval"] is None
     assert captured["ws_ping_timeout"] is None
+    # Per-frame zlib on the loop buys nothing on loopback and was the largest loop cost under load.
+    assert captured["ws_per_message_deflate"] is False
 
 
 def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(monkeypatch):
@@ -158,6 +160,7 @@ def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
     assert captured["ws_ping_interval"] and captured["ws_ping_interval"] > 0
     assert captured["ws_ping_timeout"] and captured["ws_ping_timeout"] > 0
     assert captured["ws_ping_timeout"] >= captured["ws_ping_interval"]
+    assert captured.get("ws_per_message_deflate", True) is True  # a remote peer keeps compression (uvicorn default)
 
 
 @pytest.mark.platforms("windows")
@@ -380,3 +383,19 @@ def test_shutdown_returns_when_lingering_task_never_completes(monkeypatch):
         assert lingerer.cancelled(), "the lingering task must be cancelled, not leaked"
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("host, auth_required, deflate", [
+    ("127.0.0.1", False, False),  # local gateway session listener: no compression
+    ("0.0.0.0", True, True),      # LAN bind keeps it
+    ("127.0.0.1", True, True),    # loopback behind a public URL / tunnel: remote clients keep it
+])
+def test_gateway_listener_compresses_only_for_remote_peers(host, auth_required, deflate):
+    """``build_listener_server`` (the gateway's session WebSocket) compresses frames only when the
+    client is remote. uvicorn runs permessage-deflate on the event loop for every frame, and the
+    gateway sends one frame per streamed token of every running session."""
+    from hermes_cli.web_server_lifecycle import build_listener_server
+
+    config, _server = build_listener_server(lambda scope, receive, send: None, host, 0,
+                                            auth_required=auth_required)
+    assert config.ws_per_message_deflate is deflate

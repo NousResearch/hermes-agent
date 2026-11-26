@@ -3,8 +3,8 @@
 Providers come from the registry; an OAuth provider renders an anchor to
 ``/auth/login?provider=<name>``, a ``supports_password`` provider renders a
 credential form wired by :data:`_PASSWORD_FORM_SCRIPT`. Styling mirrors the
-``@nous-research/ui`` design system; fonts load from the SPA's ``/fonts/``
-mount, which the gate allowlists pre-auth.
+``@nous-research/ui`` design system; Oswald and Mona Sans load from Google
+Fonts and fall back to the system sans when it is unreachable.
 
 The ``class="provider-btn"`` anchor is test-stable: the suite extracts its
 href to walk the OAuth flow.
@@ -14,7 +14,7 @@ from __future__ import annotations
 import html
 from urllib.parse import quote, urlencode
 
-from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth import list_interactive_providers, list_session_providers
 
 # Single curly braces are ``str.format`` placeholders; CSS curlies are doubled.
 _LOGIN_HTML_TEMPLATE = """\
@@ -24,37 +24,10 @@ _LOGIN_HTML_TEMPLATE = """\
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in — Hermes Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mona+Sans:wght@200..900&amp;family=Oswald:wght@200..700&amp;display=swap">
 <style>
-  /* Brand fonts shipped by @nous-research/ui — same files the SPA loads. */
-  @font-face {{
-    font-family: 'Collapse';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
-  }}
-  @font-face {{
-    font-family: 'Collapse';
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
-  }}
-  @font-face {{
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
-  }}
-  @font-face {{
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 600;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
-  }}
-
   :root {{
     --background-base: #170d02;
     --background: #170d02;
@@ -72,7 +45,7 @@ _LOGIN_HTML_TEMPLATE = """\
     min-height: 100%;
     background: var(--background-base);
     color: var(--foreground);
-    font-family: 'Collapse', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: 'Mona Sans', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     font-size: 16px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
@@ -123,7 +96,7 @@ _LOGIN_HTML_TEMPLATE = """\
   .brand {{
     text-align: center;
     margin-bottom: 1.75rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-family: 'Oswald', system-ui, sans-serif;
     font-weight: 600;
     font-size: 1.05rem;
     letter-spacing: 0.32em;
@@ -155,7 +128,7 @@ _LOGIN_HTML_TEMPLATE = """\
 
   h1 {{
     margin: 0 0 0.4rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-family: 'Oswald', system-ui, sans-serif;
     font-weight: 600;
     font-size: 1.85rem;
     letter-spacing: 0.05em;
@@ -184,7 +157,7 @@ _LOGIN_HTML_TEMPLATE = """\
     text-align: center;
     background: var(--midground);
     color: var(--background-base);
-    font-family: 'Collapse', sans-serif;
+    font-family: 'Mona Sans', system-ui, sans-serif;
     font-weight: 700;
     font-size: 0.78rem;
     letter-spacing: 0.2em;
@@ -218,7 +191,7 @@ _LOGIN_HTML_TEMPLATE = """\
     text-align: left;
   }}
   .form-title {{
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-family: 'Oswald', system-ui, sans-serif;
     font-weight: 600;
     font-size: 0.72rem;
     letter-spacing: 0.18em;
@@ -243,7 +216,7 @@ _LOGIN_HTML_TEMPLATE = """\
     color: var(--foreground);
     border: 1px solid var(--hairline-strong);
     border-radius: 0;
-    font-family: 'Collapse', sans-serif;
+    font-family: 'Mona Sans', system-ui, sans-serif;
     font-size: 0.95rem;
   }}
   .field-input:focus-visible {{
@@ -304,28 +277,17 @@ _LOGIN_HTML_TEMPLATE = """\
 </html>
 """
 
-_EMPTY_HTML = """\
+_NOTICE_HTML_TEMPLATE = """\
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign-in unavailable — Hermes Agent</title>
+<title>{title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mona+Sans:wght@200..900&amp;family=Oswald:wght@200..700&amp;display=swap">
 <style>
-  @font-face {
-    font-family: 'Collapse';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
-  }
-  @font-face {
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 600;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
-  }
   :root {
     --background-base: #170d02;
     --midground: #ffac02;
@@ -337,7 +299,7 @@ _EMPTY_HTML = """\
     margin: 0; padding: 0; min-height: 100%;
     background: var(--background-base);
     color: var(--foreground);
-    font-family: 'Collapse', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: 'Mona Sans', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     font-size: 16px; line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
@@ -357,7 +319,7 @@ _EMPTY_HTML = """\
   }
   h1 {
     margin: 0 0 1rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-family: 'Oswald', system-ui, sans-serif;
     font-weight: 600; font-size: 1.5rem;
     letter-spacing: 0.05em; text-transform: uppercase;
     color: var(--midground);
@@ -375,18 +337,71 @@ _EMPTY_HTML = """\
 </head>
 <body>
 <main>
-<h1>Sign-in unavailable</h1>
-<p>This dashboard is bound to a non-loopback host but no authentication
-providers are available.</p>
-<p>Configure the bundled username/password provider or an OAuth provider.
-See the <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard
-authentication documentation</a> for setup instructions.</p>
-<p>For auth-free local use, bind to <code>127.0.0.1</code> and connect through
-an SSH tunnel or Tailscale.</p>
+<h1>{heading}</h1>
+{body}
 </main>
 </body>
 </html>
 """
+
+
+def _render_notice_html(*, title: str, heading: str, body: str) -> str:
+    """Render a notice-only page in the login design system (literal CSS braces, no ``str.format``)."""
+    return (
+        _NOTICE_HTML_TEMPLATE
+        .replace("{title}", title)
+        .replace("{heading}", heading)
+        .replace("{body}", body)
+    )
+
+
+_EMPTY_HTML = _render_notice_html(
+    title="Sign-in unavailable — Hermes Agent",
+    heading="Sign-in unavailable",
+    body=(
+        "<p>This dashboard is bound to a non-loopback host but no authentication\n"
+        "providers are available.</p>\n"
+        "<p>Configure the bundled username/password provider or an OAuth provider.\n"
+        'See the <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#authentication-gated-mode">dashboard\n'
+        "authentication documentation</a> for setup instructions.</p>\n"
+        "<p>For auth-free local use, bind to <code>127.0.0.1</code> and connect through\n"
+        "an SSH tunnel or Tailscale.</p>"
+    ),
+)
+
+# Token-gated deployment (every registered provider is provisioned-credential-only):
+# there is nothing to click, so the page explains the credential channel instead of
+# rendering an empty options list. {provider_names} / {note} are pre-escaped HTML.
+_TOKEN_MODE_HTML = _render_notice_html(
+    title="Token-gated dashboard — Hermes Agent",
+    heading="Token-gated dashboard",
+    body=(
+        "<p>This deployment authenticates with a provisioned credential\n"
+        "({provider_names}), not a browser sign-in.</p>\n"
+        "<p>{note}</p>"
+    ),
+)
+
+# Loopback gateway-hosted Webapp (``private_launch(app.state)``): browser login cookies on
+# 127.0.0.1 are shared across ports (RFC 6265 §8.5), so the loopback Webapp opens strictly
+# via a ``hermes webapp`` private launch link rather than browser sign-in cookies.
+_PRIVATE_LAUNCH_HTML = _render_notice_html(
+    title="Launch-link sign-in — Hermes Agent",
+    heading="Open with hermes webapp",
+    body=(
+        "<p>This local loopback Webapp opens through a private launch link,\n"
+        "not browser sign-in cookies.</p>\n"
+        "<p>Run <code>hermes webapp</code> on this computer to open and sign\n"
+        "this browser in.</p>\n"
+        "<p>To use browser sign-in over the network, bind the Webapp to a\n"
+        "non-loopback address or set <code>webapp.public_url</code>.</p>"
+    ),
+)
+
+
+def render_private_launch_html() -> str:
+    """Return the notice-only HTML for ``GET /login`` on a loopback Webapp."""
+    return _PRIVATE_LAUNCH_HTML
 
 
 # Emitted ONLY when a ``supports_password`` provider is listed, so OAuth-only
@@ -465,22 +480,36 @@ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
+    interactive = list_interactive_providers()
+    if not interactive:
+        # A deployment authenticated by a provisioned credential (e.g. the
+        # session-token provider): there is nothing to click. Say so instead of
+        # rendering a page with no sign-in options.
+        names = ", ".join(html.escape(p.display_name) for p in providers)
+        # str.replace, not str.format: the template's CSS braces are literal.
+        return (_TOKEN_MODE_HTML
+                .replace("{provider_names}", names)
+                .replace("{note}",
+                         "Clients authenticate with the deployment&rsquo;s provisioned "
+                         "credential (<code>Authorization: Bearer</code>, or "
+                         "<code>?token=</code> on the /api/ws upgrade) &mdash; e.g. Hermes "
+                         "Desktop&rsquo;s &ldquo;Session token&rdquo; remote-gateway field. "
+                         "There is no browser sign-in flow."))
     buttons = [
         _render_password_form(p, next_path, prefix=prefix)
         if getattr(p, "supports_password", False) else
         f'      <a class="provider-btn" '
         f'href="{prefix}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
         f'Sign in with {html.escape(p.display_name)}</a>'
-        for p in providers
+        for p in interactive
     ]
-    needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
+    needs_password_script = any(getattr(p, "supports_password", False) for p in interactive)
     html_out = _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
     )
     # Inject the reverse-proxy prefix so the password-login JS can read
-    # it from the <main> element's data attribute, and rewrite the font
-    # URLs to stay inside the mount.  ``str.replace`` after ``str.format``
+    # it from the <main> element's data attribute.  ``str.replace`` after ``str.format``
     # avoids interfering with the CSS ``{{ }}`` doubling in the template.
     return _apply_proxy_prefix(html_out, prefix)
 
@@ -488,21 +517,15 @@ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
 def _apply_proxy_prefix(html_out: str, prefix: str) -> str:
     """Rewrite a rendered login-family page for a reverse-proxy sub-path.
 
-    Two rewrites, both no-ops when *prefix* is empty (bare-root deploys are
-    byte-for-byte unaffected):
-
-    * ``<main>`` gains ``data-prefix`` so the password-login JS (a plain
-      string, never ``str.format``-aware) can prepend the prefix to its
-      fetch target and post-login landing.
-    * ``@font-face`` ``url('/fonts/...')`` becomes ``url('<prefix>/fonts/...')``
-      so the fonts load from the mount instead of the origin root (404
-      behind a prefix-stripping proxy).
+    A no-op when *prefix* is empty (bare-root deploys are byte-for-byte
+    unaffected): ``<main>`` gains ``data-prefix`` so the password-login JS (a
+    plain string, never ``str.format``-aware) can prepend the prefix to its
+    fetch target and post-login landing. The fonts are absolute Google Fonts
+    URLs and need no rewrite.
     """
     if not prefix:
         return html_out
-    html_out = html_out.replace("<main>", f'<main data-prefix="{prefix}">', 1)
-    html_out = html_out.replace("url('/fonts/", f"url('{prefix}/fonts/")
-    return html_out
+    return html_out.replace("<main>", f'<main data-prefix="{prefix}">', 1)
 
 
 def render_native_provider_choice_html(
@@ -513,7 +536,7 @@ def render_native_provider_choice_html(
 
     Every link re-enters ``/auth/native/authorize`` with the SAME desktop PKCE inputs plus an
     explicit ``provider``, so the choice never leaves the validated native flow. ``prefix``
-    (from ``X-Forwarded-Prefix``) rewrites the template's font URLs so the page works behind
+    (from ``X-Forwarded-Prefix``) marks the page so it works behind
     a reverse-proxy sub-path; the buttons' ``authorize_path`` is already prefixed by the caller.
     """
     common = {"code_challenge": code_challenge, "code_challenge_method": code_challenge_method,

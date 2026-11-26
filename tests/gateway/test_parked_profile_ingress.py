@@ -18,6 +18,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.runtime_ownership import process_ownership
+from persistence_assembly import close_stores_under
 from tests.waiting import async_wait_until
 
 
@@ -26,8 +27,6 @@ def _homes(tmp_path, monkeypatch):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     beta = root / 'profiles' / 'beta'
     beta.mkdir(parents=True, mode=0o700)
     (beta / 'config.yaml').write_text('{}')
@@ -43,7 +42,8 @@ async def _runner_with_beta_parked(tmp_path, monkeypatch, homes, **config_fields
     """Multiplexed runner whose secondary ``beta`` fails startup Bot recovery once and is parked."""
     from gateway import run
     from gateway import session_bot
-    from gateway.run_runtime import initialize_gateway_runtime, parked_profile_map, start_gateway_runtime_api
+    from gateway.run_runtime import initialize_gateway_runtime, parked_profile_map
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {'platform_toolsets': {'cli': []}})
     config = GatewayConfig(sessions_dir=tmp_path / 'sessions')
     config.multiplex_profiles = True
@@ -81,7 +81,7 @@ async def _serve_beta_again(runner, beta):
 def _close(runner, homes):
     for authority in list(getattr(runner, 'session_authorities', None) or []):
         if authority is not None:
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
     for _, home in homes:
         process_ownership.release(home)
 

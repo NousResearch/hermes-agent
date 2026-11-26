@@ -17,21 +17,20 @@ from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
+from gateway.session_authority import admission_row, initialize_session_authority
 from gateway.session_ingress_burst import holds_busy_burst
 from gateway.session_results import execution_result
-from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
 
 def _rows(authority):
-    return [row for sid in list(authority.sessions)
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+    return [admission_row(row) for sid in list(authority.sessions)
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
-async def _busy_owner(monkeypatch, adapter, source, **wiring):
+async def _busy_owner(monkeypatch, adapter, source, config=None, **wiring):
     """Wire ``adapter`` to a real runner and authority, then start turn 'A' and hold it running."""
-    runner = GatewayRunner(GatewayConfig())
+    runner = GatewayRunner(config or GatewayConfig())
 
     async def send(chat_id, content, reply_to=None, metadata=None):
         return SendResult(success=True, message_id='sent')
@@ -59,7 +58,7 @@ async def _busy_owner(monkeypatch, adapter, source, **wiring):
         finish.set()
         await async_wait_until(lambda: not holds_busy_burst(adapter, key) and len(executed) >= turns and all(
             row['status'] == 'terminal' for row in _rows(authority)), timeout=15, what='the follow-ups to settle')
-        await asyncio.to_thread(authority.db.close)
+        await asyncio.to_thread(runner.session_store.close_all_db_handles)
         return executed[1:]
     return SimpleNamespace(runner=runner, authority=authority, key=key, settle=settle)
 
@@ -157,6 +156,27 @@ async def test_new_waits_for_a_burst_still_committing(monkeypatch, tmp_path):
     assert await owner.settle(1) == []
 
 
+@pytest.mark.parametrize('sender, runs', [('+155****0002', [('B', 0)]), ('+155****0001', [])])
+@pytest.mark.asyncio
+async def test_held_burst_survives_a_refused_stop_in_a_shared_group(monkeypatch, sender, runs):
+    """A shared Signal group: the owner's held follow-up B, then /stop. A stranger's /stop is refused
+    by the runner and must not drop B (#136759); the owner's /stop still cancels it."""
+    from plugins.platforms.signal.adapter import SignalAdapter
+    monkeypatch.setenv('SIGNAL_ALLOWED_USERS', '+155****0001')
+    monkeypatch.setenv('SIGNAL_GROUP_ALLOWED_USERS', '*')
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={'account': '+155****9999',
+                                                                'group_sessions_per_user': False}))
+
+    def member(user_id):
+        return adapter.build_source(chat_id='group:g1', chat_type='group', user_id=user_id)
+    owner = await _busy_owner(monkeypatch, adapter, member('+155****0001'),
+                              GatewayConfig(group_sessions_per_user=False), busy_text_mode='queue')
+    await adapter.handle_message(MessageEvent(text='B', source=member('+155****0001'), message_id='B'))
+    assert owner.key in adapter._shared_bursts
+    await adapter.handle_message(MessageEvent(text='/stop', source=member(sender), message_id='S'))
+    assert await owner.settle(1 + len(runs)) == runs
+
+
 @pytest.mark.asyncio
 async def test_next_burst_waits_while_the_chats_last_one_commits(monkeypatch, tmp_path):
     """The chat's first burst is still committing: the reader waits before holding another one,
@@ -229,7 +249,7 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
     assert set((await recover_profile_native_sessions(runner, authority)).values()) <= {'ready'}
     await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
                            what='both turns to run')
-    await asyncio.to_thread(authority.db.close)
+    await asyncio.to_thread(runner.session_store.close_all_db_handles)
 
 
 @pytest.mark.asyncio

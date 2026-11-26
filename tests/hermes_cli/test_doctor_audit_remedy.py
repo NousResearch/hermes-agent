@@ -1,9 +1,9 @@
 """Doctor npm-audit remedy guidance — the fix must persist across `hermes update`.
 
 Regression for #116774: `npm audit fix` on a managed install is reverted by the
-next `hermes update`, because `_run_npm_install_deterministic` runs `npm ci`
-against the COMMITTED root `package-lock.json` and restores the pinned
-(vulnerable) versions. The doctor's root-row remedy used to prescribe exactly
+next `hermes update`, because the update's frozen install reifies the COMMITTED
+root lockfile (then `package-lock.json`, now `pnpm-lock.yaml`) and restores the
+pinned (vulnerable) versions. The doctor's root-row remedy used to prescribe exactly
 that doomed local command (`run: cd <root> && npm audit fix --workspaces=false`),
 sending users into a fix→reintroduce loop. The durable remedy is an upstream
 lockfile bump; the doctor must never prescribe a local mutating fix command, and
@@ -33,7 +33,7 @@ def _run_audit_one(capsys, audit_extra, audit_stdout):
     issues: list[str] = []
     completed = subprocess.CompletedProcess([], 0, stdout=audit_stdout, stderr="")
     with patch.object(doctor_tools.subprocess, "run", return_value=completed):
-        doctor_tools._audit_one("npm", "C:/fake/root", "Root npm package",
+        doctor_tools._audit_one("pnpm", "C:/fake/root", "Root npm package",
                                 audit_extra, issues)
     return capsys.readouterr().out, issues
 
@@ -42,9 +42,10 @@ def test_root_remedy_never_prescribes_local_audit_fix(capsys):
     """The root row must not tell users to run a mutating `npm audit fix`: the
     next `hermes update` reinstalls from the committed lockfile and reverts it
     (#116774)."""
-    out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json(high=1, moderate=1))
+    out, issues = _run_audit_one(capsys, ["--filter", "."], _audit_json(high=1, moderate=1))
     assert "run: cd" not in out
-    assert "npm audit fix" not in out
+    assert "audit fix" not in out
+    assert "--fix" not in out
     assert "lockfile bump" in out
     assert issues == [
         "Root npm package has 2 npm vulnerabilities; wait for an upstream lockfile fix, then update "
@@ -66,7 +67,7 @@ def test_npm_audit_only_finding_does_not_offer_doctor_fix(capsys):
 
 
 def test_clean_tree_reports_no_known_vulnerabilities(capsys):
-    out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json())
+    out, issues = _run_audit_one(capsys, ["--filter", "."], _audit_json())
     assert "no known vulnerabilities" in out
     assert "✓" in out
     assert issues == []
@@ -86,7 +87,7 @@ def test_clean_tree_reports_no_known_vulnerabilities(capsys):
 ])
 def test_incomplete_npm_audit_warns_without_issue(capsys, stdout, reason):
     out, issues = _run_audit_one(capsys, ["--workspaces=false"], stdout)
-    assert f"npm audit did not complete: {reason}" in out
+    assert f"dependency audit did not complete: {reason}" in out
     assert "⚠" in out
     assert "✓" not in out
     assert issues == []
@@ -94,7 +95,7 @@ def test_incomplete_npm_audit_warns_without_issue(capsys, stdout, reason):
 
 @pytest.mark.parametrize("error,reason", [
     (subprocess.TimeoutExpired("npm audit", 30), "timed out after 30s"),
-    (OSError("fixture launch failure"), "npm could not be started"),
+    (OSError("fixture launch failure"), "audit tool could not be started"),
     (ValueError("fixture failure"), "unexpected error"),
 ])
 def test_npm_audit_subprocess_failure_warns_without_issue(capsys, error, reason):
@@ -103,10 +104,20 @@ def test_npm_audit_subprocess_failure_warns_without_issue(capsys, error, reason)
         doctor_tools._audit_one("npm", "C:/fake/root", "Root npm package",
                                 ["--workspaces=false"], issues)
     out = capsys.readouterr().out
-    assert f"npm audit did not complete: {reason}" in out
+    assert f"dependency audit did not complete: {reason}" in out
     assert "⚠" in out
     assert "✓" not in out
     assert issues == []
+
+
+def test_failed_audit_is_never_reported_as_clean(capsys):
+    """pnpm prints a failed audit (no lockfile, a registry without the audit endpoint) to stderr with
+    an empty stdout; npm prints ``{"error": ...}`` (ENOLOCK). Neither carries counts."""
+    for stdout in ("", json.dumps({"error": {"code": "ENOLOCK"}})):
+        out, issues = _run_audit_one(capsys, ["--filter", "."], stdout)
+        assert "dependency audit did not complete" in out
+        assert "✓" not in out
+        assert issues == []
 
 
 def test_root_audit_row_is_not_mislabeled_as_agent_browser(monkeypatch, tmp_path, capsys):
@@ -118,7 +129,7 @@ def test_root_audit_row_is_not_mislabeled_as_agent_browser(monkeypatch, tmp_path
     project = tmp_path / "project"
     (project / "node_modules").mkdir(parents=True)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
-    monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(doctor_tools, "_pm_tool_path", lambda name: f"/usr/bin/{name}" if name == "pnpm" else None)
     monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: tmp_path / "no-whatsapp-bridge")
 
     completed = subprocess.CompletedProcess([], 0, stdout=_audit_json(), stderr="")

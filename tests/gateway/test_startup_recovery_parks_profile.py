@@ -10,8 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import run_runtime
+from gateway import run_runtime, run_runtime_listener
 from gateway.config import Platform
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _runtime(tmp_path, monkeypatch, failing):
@@ -23,7 +25,8 @@ def _runtime(tmp_path, monkeypatch, failing):
     registry = SessionAuthorities(launch, multiplexed=True)
     runner = SimpleNamespace(
         session_authorities=registry, session_control_server=None, _running_agents={},
-        config=SimpleNamespace(multiplex_profiles=True, _runtime_profile_homes=tuple(homes.items())),
+        config=SimpleNamespace(multiplex_profiles=True, _runtime_profile_homes=tuple(homes.items()),
+                               systemd_watchdog_seconds=0),
         session_runtime_descriptor={"served_profiles": []},
         session_ticket_store=SimpleNamespace(profile_ids=frozenset()),
         session_store=SimpleNamespace(list_sessions=list))
@@ -36,6 +39,8 @@ def _runtime(tmp_path, monkeypatch, failing):
                                            adopted={}, retiring=False, hosted_room_service=None,
                                            waiters={}, native_waiters=set(),
                                            db=SimpleNamespace(_read_all=lambda *_a: []),
+                                           persistence=SimpleNamespace(admissions=SimpleNamespace(
+                                               pending_targets=lambda **_kw: frozenset())),
                                            logical_owner=lambda sid: sid,
                                            recover_native_sessions=no_native_sessions), name=name)
     recovered, parked = [], {}
@@ -60,7 +65,7 @@ def test_a_secondary_whose_recovery_fails_is_parked_and_the_rest_start(tmp_path,
     runner, launch, homes, recovered, parked = _runtime(tmp_path, monkeypatch, failing=tmp_path / "profiles" / "beta")
     process_ownership.reserve([homes["beta"]])
     try:
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
         assert runner.session_runtime_descriptor["api_origin"] == "http://127.0.0.1:1"
         assert recovered == [str(launch), str(homes["beta"]), str(homes["gamma"])]
         assert "beta" in parked and "leftover receipt" in parked["beta"]
@@ -91,7 +96,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
     monkeypatch.setattr("gateway.session_runtime_workers.join_authority_work", writer_outlives_stop)
     process_ownership.reserve([homes["beta"]])
     try:
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
         assert "ownership retained" in parked["beta"] and "rescan" in parked["beta"]
         assert process_ownership.owns(homes["beta"]), "the live writer's home lost its lock"
         assert runner.session_authorities.for_home(homes["beta"]) is beta and beta.retiring
@@ -105,11 +110,10 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         host.pairing_store, host.pairing_stores, host._served_profile_signatures = None, {}, {}
         host._primary_profile_name = "default"
 
-        async def start_one(name, home, claimed):
+        async def start_one(name, home, claimed, batch):
             started.append(name)
-            return 0
 
-        host._start_one_profile_adapters = start_one
+        host._prepare_one_profile_adapters = start_one
         host._restore_secondary_completion_ledgers = lambda profile_homes: None
         monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: [])
         monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: published.update(kw))
@@ -129,8 +133,9 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
             return None
 
         monkeypatch.setattr("gateway.session_hosted_service._ensure_hosted_service", ensure_hosted)
-        monkeypatch.setattr("gateway.session_local_recovery.recover_local_sessions",
-                            lambda authority, schedule=False: local.append(authority.profile_id))
+        async def recover_local(authority, schedule=False):
+            local.append(authority.profile_id)
+        monkeypatch.setattr("gateway.session_local_startup.recover_local_sessions_async", recover_local)
         monkeypatch.setattr("gateway.platforms.webhook_ingress.recover_webhook_finalizations", no_webhooks)
         asyncio.run(run_runtime.recover_gateway_native_sessions(runner))
         assert str(homes["beta"]) not in local
@@ -152,12 +157,15 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         for authority in all_authorities(runner):
             authority.db._read_ctx = unreadable if authority is beta else no_admissions
             authority.db._read_one = unreadable if authority is beta else (lambda *_a: None)
+            authority.persistence = storage_handle(authority.profile_id)
+        for read in ("_read_ctx", "_read_all"):  # the retained store's own reads fail the same way
+            monkeypatch.setattr(raw_holder(beta.persistence), read, unreadable)
         api_read = []
 
-        def collect(db):
-            if db is beta.db:
+        def collect(store):
+            if store is beta.persistence:
                 unreadable()
-            api_read.append(db)
+            api_read.append(store)
 
         monkeypatch.setattr("gateway.session_ingress_media.collect_unheld_api_images", collect)
         monkeypatch.setattr("gateway.session_api_media.compact_settled_api_payloads", lambda db: None)
@@ -168,7 +176,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         except sqlite3.OperationalError as exc:
             pytest.fail(f"the retained store's read error stopped API adapter publication: {exc}")
         assert host.adapters[Platform.API_SERVER] is api_adapter
-        assert api_read == [a.db for a in all_authorities(runner) if a is not beta]
+        assert api_read == [a.persistence for a in all_authorities(runner) if a is not beta]
 
         # Auto-resume fails closed on the retained store: the entry is held back, never resumed.
         fresh_checks = []
@@ -192,5 +200,5 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
 def test_the_launch_profile_recovery_failure_still_stops_the_start(tmp_path, monkeypatch):
     runner, _launch, _homes, _recovered, parked = _runtime(tmp_path, monkeypatch, failing=tmp_path / "root")
     with pytest.raises(RuntimeError, match="leftover receipt"):
-        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     assert parked == {}

@@ -39,9 +39,7 @@ def _runner(monkeypatch, tmp_path):
     runner = gateway_run.GatewayRunner(GatewayConfig())
     runner.adapters = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
@@ -240,6 +238,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     assert followup["persist_user_display_metadata"]["reply_expected"] is True
     assert merged["queued_terminal_display_kind"] == "internal_notification"
     assert merged["queued_terminal_reply_expected"] is True
+    assert merged["queued_terminal_source"] is pending_event.source
 
     def _result(terminal_kind, terminal_reply_expected=None):
         return {

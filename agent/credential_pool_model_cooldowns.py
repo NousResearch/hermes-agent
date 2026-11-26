@@ -5,14 +5,56 @@ model, so a generic 429 for one Claude model says nothing about the same
 credential's standing for its sibling models. Such a 429 is recorded as a
 cooldown on the requested model only, beside the credential-wide status that
 auth, billing and payment failures keep benching the whole credential with.
+
+A Claude subscription 429 that names a spent account-wide plan window is the
+exception: every model on that account is refused until the window resets, so
+the credential is benched as a whole (#149112).
 """
 from __future__ import annotations
 
 import time
 from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
+from agent.credential_pool_timestamps import _parse_absolute_timestamp
+
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
+
+# Claude subscription plan windows. A plan 429 carries ``anthropic-ratelimit-unified-status: rejected``
+# and names the refusing window in ``anthropic-ratelimit-unified-representative-claim``. ``five_hour``
+# and ``seven_day`` cap the whole account; a family claim (``seven_day_opus``) caps one model family.
+ACCOUNT_WIDE_PLAN_WINDOWS = frozenset({"five_hour", "seven_day"})
+# Reason codes and messages that say the account's usage allowance is spent.
+_USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
+_USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
+
+
+def record_plan_window(context: dict[str, Any], headers: Any) -> None:
+    """Record the Claude plan window a rejected 429 names as ``subscription_window``, and the
+    window's ``anthropic-ratelimit-unified-reset`` as ``reset_at`` when no earlier header set one."""
+    if str(headers.get("anthropic-ratelimit-unified-status") or "").strip().lower() != "rejected":
+        return
+    claim = str(headers.get("anthropic-ratelimit-unified-representative-claim") or "").strip().lower()
+    if claim:
+        context["subscription_window"] = claim
+    reset_at = _parse_absolute_timestamp(headers.get("anthropic-ratelimit-unified-reset"))
+    if reset_at is not None and "reset_at" not in context:
+        context["reset_at"] = reset_at
+
+
+def account_window_spent(error_context: Optional[dict[str, Any]]) -> bool:
+    """The 429 names a spent account-wide plan window: no model on the credential is served."""
+    return str((error_context or {}).get("subscription_window") or "") in ACCOUNT_WIDE_PLAN_WINDOWS
+
+
+def usage_allowance_spent(error_context: Optional[dict[str, Any]]) -> bool:
+    """The 429 says the account's allowance is spent, so retrying the same credential cannot succeed
+    before the reset: rotate on the first one."""
+    reason = str((error_context or {}).get("reason") or "").lower()
+    message = str((error_context or {}).get("message") or "").lower()
+    return account_window_spent(error_context) or any(t in reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
+        t in message for t in _USAGE_LIMIT_MESSAGE_TOKENS)
+
 
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
@@ -75,12 +117,14 @@ class CredentialPoolModelCooldownMixin:
 
     def _is_model_scoped_failure(
         self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str],
+        error_context: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Anthropic per-model 429s, and a Codex ChatGPT-account model entitlement 400: the
-        account cannot use *model*, but the credential stays valid for every other model (#71970)."""
+        account cannot use *model*, but the credential stays valid for every other model (#71970).
+        A spent account-wide plan window is not: it refuses every model (#149112)."""
         from agent.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
 
-        if not model:
+        if not model or account_window_spent(error_context):
             return False
         if failure_reason in ("model_entitlement", FAILURE_REASON_USAGE_WINDOW):
             return True

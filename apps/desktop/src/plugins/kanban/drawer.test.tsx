@@ -20,6 +20,21 @@ import type { KanbanTaskDetail } from './types'
 
 vi.mock('@/hermes', () => ({ setApiRequestProfile: vi.fn() }))
 
+// The mic itself is the host's recorder; here only its seam into the field matters.
+const dictation = vi.hoisted(() => ({
+  onTranscript: null as null | ((text: string) => void),
+  status: 'idle' as 'idle' | 'recording' | 'transcribing',
+  toggle: vi.fn()
+}))
+
+vi.mock('@/sdk/dictation', () => ({
+  useDictation: (options: { onTranscript: (text: string) => void }) => {
+    dictation.onTranscript = options.onTranscript
+
+    return { status: dictation.status, toggle: dictation.toggle }
+  }
+}))
+
 const legacyDetail: Omit<KanbanTaskDetail, 'attachments'> = {
   task: { id: 't_example', title: 'Example task', body: 'Keep this description readable.', status: 'todo' },
   comments: [{ id: 1, author: 'test', body: 'Keep this comment readable.', created_at: 0 }],
@@ -270,6 +285,44 @@ describe('task modal dialog', () => {
         expect.objectContaining({ method: 'POST', body: expect.objectContaining({ body: 'looks good' }) })
       )
     )
+  })
+
+  it('dictates into the comment field and posts the transcript', async () => {
+    detail = { ...legacyDetail, attachments: [] }
+    openDrawer()
+
+    fireEvent.click(await screen.findByRole('button', { name: en.dictate }))
+    expect(dictation.toggle).toHaveBeenCalledTimes(1)
+
+    const field = screen.getByPlaceholderText(en.addComment) as HTMLTextAreaElement
+    fireEvent.change(field, { target: { value: 'Blat:' } })
+    act(() => dictation.onTranscript!('czarny granit'))
+    expect(field.value).toBe('Blat: czarny granit')
+
+    fireEvent.click(screen.getByRole('button', { name: en.comment }))
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/tasks\/t_example\/comments/),
+        expect.objectContaining({ body: expect.objectContaining({ body: 'Blat: czarny granit' }) })
+      )
+    )
+  })
+
+  it('names the mic by its state while recording and blocks it while transcribing', async () => {
+    detail = { ...legacyDetail, attachments: [] }
+    dictation.status = 'recording'
+    const view = openDrawer()
+    const stop = await screen.findByRole('button', { name: en.stopDictation })
+    expect(stop.getAttribute('aria-pressed')).toBe('true')
+
+    dictation.status = 'transcribing'
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+      </QueryClientProvider>
+    )
+    expect((screen.getByRole('button', { name: en.transcribingDictation }) as HTMLButtonElement).disabled).toBe(true)
+    dictation.status = 'idle'
   })
 
   it('shows the workspace path as its own value, not prefixed with the raw kind', async () => {

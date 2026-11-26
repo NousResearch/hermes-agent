@@ -151,6 +151,9 @@ type KanbanMessages = {
   comment: string
   messageWorker: string
   addComment: string
+  dictate: string
+  stopDictation: string
+  transcribingDictation: string
   deliveredLive: string
   requeueWithNote: string
   notePosted: string
@@ -391,6 +394,9 @@ export const en: KanbanMessages = {
   comment: 'Comment',
   messageWorker: 'Message the running worker…',
   addComment: 'Add a comment…',
+  dictate: 'Voice dictation',
+  stopDictation: 'Stop dictation',
+  transcribingDictation: 'Transcribing dictation',
   deliveredLive: 'Delivered to the running worker within a few seconds.',
   requeueWithNote: 'Requeue with note',
   notePosted: 'Note posted — worker requeued',
@@ -622,6 +628,9 @@ const ja: KanbanMessages = {
   comment: 'コメント',
   messageWorker: '実行中のワーカーにメッセージ…',
   addComment: 'コメントを追加…',
+  dictate: '音声口述',
+  stopDictation: '口述を停止',
+  transcribingDictation: '口述を文字起こし中',
   deliveredLive: '数秒以内に実行中のワーカーへ届きます。',
   requeueWithNote: 'メモを付けて再キュー',
   notePosted: 'メモを投稿しました — ワーカーを再キューしました',
@@ -851,6 +860,9 @@ const zh: KanbanMessages = {
   comment: '评论',
   messageWorker: '给运行中的工作单元发消息…',
   addComment: '添加评论…',
+  dictate: '语音听写',
+  stopDictation: '停止听写',
+  transcribingDictation: '正在转写听写',
   deliveredLive: '几秒内送达运行中的工作单元。',
   requeueWithNote: '附带备注重新入队',
   notePosted: '备注已发布 — 工作单元已重新入队',
@@ -1079,6 +1091,9 @@ const zhHant: KanbanMessages = {
   comment: '留言',
   messageWorker: '傳訊給執行中的工作單元…',
   addComment: '新增留言…',
+  dictate: '語音聽寫',
+  stopDictation: '停止聽寫',
+  transcribingDictation: '正在轉寫聽寫',
   deliveredLive: '幾秒內送達執行中的工作單元。',
   requeueWithNote: '附上備註重新排入佇列',
   notePosted: '備註已發布 — 工作單元已重新排入佇列',

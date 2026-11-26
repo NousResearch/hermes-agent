@@ -325,6 +325,8 @@ def restore_native(payload, runner=None):
         from gateway.session_automation import automation_display_metadata, automation_notification_metadata
         event.metadata.update(automation_notification_metadata(envelope['automation']))
         event.metadata.update(automation_display_metadata(envelope['automation']))
+        from gateway.session_automation import restore_origin
+        restore_origin(event, envelope['automation'])
     return event
 
 

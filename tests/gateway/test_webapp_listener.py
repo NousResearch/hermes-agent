@@ -101,7 +101,7 @@ def test_a_credential_the_browser_would_refuse_is_replaced(tmp_path, stored):
 def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None, while_starting=None):
     """Start the runtime's listener for *config* with the listener itself stood in; *while_starting*
     (a list) records what each Webapp verb answers while the Webapp's listener starts."""
-    from gateway import run_api, run_runtime
+    from gateway import run_api, run_runtime_listener
     home = _home(tmp_path, config)
     monkeypatch.setenv("HERMES_HOME", str(home))
     calls = []
@@ -120,7 +120,7 @@ def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None
     from gateway.control_socket import GatewayControlServer
     runner = SimpleNamespace(session_runtime_descriptor={}, session_authorities=[],
                              session_control_server=GatewayControlServer(home))
-    asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    asyncio.run(run_runtime_listener.start_gateway_runtime_api(runner))
     return runner, calls, home
 
 

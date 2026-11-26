@@ -9,6 +9,7 @@ all auto-transitions; the fork uses the auxiliary client and never touches the m
 from __future__ import annotations
 
 import contextlib
+import importlib
 import json
 import logging
 import os
@@ -21,9 +22,20 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import get_disabled_skill_names, get_skill_desc_limit
+from agent.skill_utils import get_disabled_skill_names
 from tools import skill_usage
 from utils import atomic_json_write
+
+
+# v0.23.3 and earlier gateways cache agent.skill_utils at boot without get_skill_desc_limit.
+_skill_utils = importlib.import_module("agent.skill_utils")
+
+
+def _default_skill_desc_limit() -> int:
+    return getattr(_skill_utils, "SKILL_PROMPT_DESC_LIMIT", 60)
+
+
+get_skill_desc_limit = getattr(_skill_utils, "get_skill_desc_limit", _default_skill_desc_limit)
 
 logger = logging.getLogger(__name__)
 

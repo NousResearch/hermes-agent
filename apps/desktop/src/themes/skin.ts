@@ -44,7 +44,7 @@ const titleCase = (name: string): string => name.charAt(0).toUpperCase() + name.
 // Catalog presentation for the shipped One Dark Pro skin; upstream still labels
 // it "One-dark / Hermes skin", so only this skin gets the display strings.
 const ONE_DARK_LABEL = 'One Dark Pro'
-const ONE_DARK_DESCRIPTION = 'Atom One Dark Pro theme for Hermes Desktop / Web App'
+const ONE_DARK_DESCRIPTION = 'The classic Atom dark'
 
 /**
  * Convert a resolved skin into a `DesktopTheme`, or null when it carries no

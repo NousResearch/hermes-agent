@@ -66,7 +66,19 @@ export function oneDarkTheme(theme: DesktopTheme): DesktopTheme {
   const colors = { ...COLORS }
   const terminal = { ...TERMINAL }
 
-  return { ...theme, [ONE_DARK]: true, colors, darkColors: colors, terminal, darkTerminal: terminal } as OneDarkTheme
+  // Catalog mini-preview: the theme tells the appearance page how it actually
+  // looks in the app — syntax lines plus the live salmon tab underline.
+  return {
+    ...theme,
+    [ONE_DARK]: true,
+    colors,
+    darkColors: colors,
+    terminal,
+    darkTerminal: terminal,
+    previewSyntax: ['#61afef', '#98c379', '#5c6370'],
+    previewSidebar: '#21252b',
+    previewAccentUnderline: '#e06c75'
+  } as OneDarkTheme
 }
 
 /** Closed renderer policy, not an extensible or persisted CSS-variable bag. */

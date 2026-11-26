@@ -35,7 +35,18 @@ describe('skinToDesktopTheme', () => {
     const theme = withColors('one-dark', { background: '#282c34' })!
 
     expect(theme.label).toBe('One Dark Pro')
-    expect(theme.description).toBe('Atom One Dark Pro theme for Hermes Desktop / Web App')
+    expect(theme.description).toBe('The classic Atom dark')
+    expect(theme.previewSyntax).toEqual(['#61afef', '#98c379', '#5c6370'])
+    expect(theme.previewSidebar).toBe('#21252b')
+    expect(theme.previewAccentUnderline).toBe('#e06c75')
+  })
+
+  it('keeps other skins on the generic catalog presentation', () => {
+    const theme = withColors('solarized', { background: '#002b36' })!
+
+    expect(theme.label).toBe('Solarized')
+    expect(theme.description).toBe('Hermes skin')
+    expect(theme.previewSyntax).toBeUndefined()
   })
 
   it('returns null without a name or colors', () => {

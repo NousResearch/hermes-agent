@@ -112,6 +112,12 @@ export interface DesktopTheme {
   customCSS?: string
   /** On a saved accent retint (`<base>-accent-<hex>`): the theme it was retinted from. */
   accentOf?: string
+  /** Optional catalog mini-preview override (visual layer only; see ADR
+   *  docs/adr/0001-one-dark-pro-visual-only-boundary.md). Themes without these
+   *  fields render the standard mini-chat preview unchanged. */
+  previewSyntax?: string[]
+  previewSidebar?: string
+  previewAccentUnderline?: string
 }
 
 // The minimal set of color keys a stored theme must carry to be usable. We keep

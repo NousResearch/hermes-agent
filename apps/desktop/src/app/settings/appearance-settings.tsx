@@ -72,7 +72,7 @@ import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
-import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
+import { $marketplaceInstalls, isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
@@ -133,11 +133,42 @@ function ResumeLastSessionSetting() {
   )
 }
 
-function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
+function ThemePreview({ theme, mode }: { theme: { name: string; label: string; description: string }; mode: 'light' | 'dark' }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
   // palette in Light — synthesizing one for dark-only themes — so every card
   // tracks the Light/Dark toggle, exactly like the app itself does.
-  const c = getBaseColors(name, mode)
+  const c = getBaseColors(theme.name, mode)
+  // Visual-only preview override (ADR: docs/adr/0001-…): themes carrying
+  // previewSyntax render a themed mini-editor + live tab underline instead
+  // of the generic mini-chat — same frame, same anatomy, no global change.
+  const full = resolveTheme(theme.name)
+  if (full?.previewSyntax) {
+    const syntax = full.previewSyntax
+    return (
+      <div
+        className="h-20 overflow-hidden rounded-xl border shadow-xs"
+        style={{ backgroundColor: c.background, borderColor: c.border }}
+      >
+        <div className="flex h-full">
+          <div
+            className="w-[26%] min-w-10 border-r p-2"
+            style={{ backgroundColor: full.previewSidebar, borderColor: c.sidebarBorder ?? c.border }}
+          >
+            <div className="h-1 w-3/4 rounded-[2px]" style={{ backgroundColor: c.mutedForeground }} />
+            <div className="mt-1.5 h-1 w-1/2 rounded-[2px]" style={{ backgroundColor: c.mutedForeground }} />
+          </div>
+          <div className="flex flex-1 flex-col gap-1.5 p-2">
+            <div className="h-2.5 w-[36%] rounded-t-[3px] border-x border-t" style={{ borderColor: c.border }}>
+              <div className="h-[2px] w-full rounded-b-[2px]" style={{ backgroundColor: full.previewAccentUnderline }} />
+            </div>
+            <div className="mt-1 h-1.5 w-[72%] rounded-[3px]" style={{ backgroundColor: syntax[0] }} />
+            <div className="h-1.5 w-[55%] rounded-[3px]" style={{ backgroundColor: syntax[1] }} />
+            <div className="h-1.5 w-[38%] rounded-[3px]" style={{ backgroundColor: syntax[2] }} />
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -619,12 +650,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                                 }}
                                 type="button"
                               >
-                                <ThemePreview mode={resolvedMode} name={theme.name} />
+                                <ThemePreview mode={resolvedMode} theme={theme} />
                                 <div className="mt-3 px-1">
                                   <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
                                     {theme.label}
                                   </div>
-                                  <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                                  <div className="mt-0.5 line-clamp-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
                                     {theme.description}
                                   </div>
                                 </div>

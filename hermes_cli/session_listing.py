@@ -84,7 +84,7 @@ def query_session_listing(
     include_all_sources: bool = False,
     include_unnamed: bool = False,
     search_query: str | None = None,
-    limit: int = 10,
+    limit: int | None = 10,
     exclude_sources: list[str] | None = None,
     persistence: Any = None,
 ) -> list[dict[str, Any]]:
@@ -95,7 +95,8 @@ def query_session_listing(
     restricts gateway callers to one lane before the DB limit applies. With ``search_query`` rows
     are filtered by title/id in SQL, ordered by recent activity, and unnamed sessions stay visible
     since an id match may be the only handle. Rows are read through ``persistence`` (a storage
-    interface handle) when given, else through ``session_db``.
+    interface handle) when given, else through ``session_db``. ``limit=None`` lists every eligible row
+    (an unbounded window; ``session_db`` takes SQLite's negative LIMIT for it).
     """
     search = (search_query or "").strip()
     if persistence is not None:
@@ -107,14 +108,14 @@ def query_session_listing(
             exclude_sources=tuple(exclude_sources or ()),
             search_text=search or None,
             order=SessionOrder.LAST_ACTIVE if search else SessionOrder.STARTED_AT,
-        ), SessionWindow(limit=max(limit * 4, limit)))
+        ), SessionWindow(limit=None if limit is None else max(limit * 4, limit)))
         rows = [entry.as_list_row() for entry in entries]
     else:
         rows = session_db.list_sessions_rich(
             source=None if include_all_sources else source,
             session_key=session_key,
             exclude_sources=exclude_sources,
-            limit=max(limit * 4, limit),
+            limit=-1 if limit is None else max(limit * 4, limit),
             search_query=search or None,
             order_by_last_active=bool(search),
         )
@@ -126,7 +127,7 @@ def query_session_listing(
         ):
             continue
         result.append({**row, "is_current_session": True} if is_current else row)
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 

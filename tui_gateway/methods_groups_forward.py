@@ -28,11 +28,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-#: The Desktop's room calls this wire serves; the gateway route serves each (GROUP_METHODS).
-FORWARDED = frozenset({
-    "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.log",
-    "groups.send", "groups.rename", "groups.disband", "groups.stop", "groups.retry",
-    "groups.approve"})
+
+def forwarded() -> frozenset[str]:
+    """Every room method the gateway route serves (its ``GROUP_METHODS``), so a room the gateway
+    owns answers the same calls on this wire; a hand list here fell behind each new verb (#145960)."""
+    from gateway.session_group_controls import GROUP_METHODS
+    return frozenset(GROUP_METHODS)
+
 #: The owner was found but did not answer: a verdict for this call, never a local write instead.
 OWNER_LOST_CODE = 5124
 #: Gateway states with no owner that will import rooms written here later: run the call locally.
@@ -96,26 +98,26 @@ def _standalone_holder(room_id: str) -> str | None:
     """Where the standalone store says ``room_id`` lives: ``"gateway"`` (handed to the root
     gateway's store), ``"local"`` (any other room it holds: only this backend drives or mirrors
     it) or ``None`` (not a standalone room)."""
-    from contextlib import closing
-    from gateway.hosted_rooms import _read_connection, default_db_path
+    from gateway.hosted_rooms import default_db_path, room_state
     from gateway.hosted_rooms_gateway_import import handoff_gateway_id
-    source = default_db_path()
-    if not source.is_file():
+    from persistence.gateway.hosted_rooms import HostedRoomError
+    from tui_gateway.methods_groups import _active_store
+    if not default_db_path().is_file():
         return None
-    with closing(_read_connection(source)) as conn:
-        row = conn.execute("SELECT authority_gateway_id FROM hosted_rooms WHERE room_id=?",
-                           (room_id,)).fetchone()
-    if row is None:
+    try:
+        room = room_state(_active_store(), placement="shared", room_id=room_id, include_disbanded=True)
+    except HostedRoomError:  # no row for this id (or not an id a row can hold)
         return None
-    return "gateway" if str(row[0]) == handoff_gateway_id() else "local"
+    return "gateway" if str(room["authority_gateway_id"]) == handoff_gateway_id() else "local"
 
 
 def _standalone_rooms(params: dict | None = None) -> list[dict]:
     """The standalone store's rooms that were not handed to the gateway (the gateway-less list)."""
     from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path, list_rooms
+    from tui_gateway.methods_groups import _active_store
     if not default_db_path().is_file():
         return []
-    return local_rooms(list_rooms(default_db_path(), limit=MAX_ROOM_LIST_LIMIT,
+    return local_rooms(list_rooms(_active_store(), placement="shared", limit=MAX_ROOM_LIST_LIMIT,
                                   include_disbanded=bool(params and params.get("include_disbanded") is True)))
 
 
@@ -130,22 +132,29 @@ def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
         logger.warning("Group Chat %s: the gateway that owns it did not answer: %s", method, exc)
         return server._err(rid, OWNER_LOST_CODE, "The Hermes gateway did not answer. Try again.")
     result = result if isinstance(result, dict) else {}
+    if method == "groups.state":
+        # This backend's change watcher cannot see the owning gateway's live status (approvals, tools),
+        # so a view reached through it keeps its full-rate poll instead of trusting groups.changed.
+        result = {key: value for key, value in result.items() if key != "change_events"}
     if method == "groups.capabilities" and isinstance(result.get("methods"), list):
-        # Advertise only what this wire can carry (attachments and Discard have no contract here).
-        result = {**result, "methods": [name for name in result["methods"] if name in FORWARDED]}
+        # Advertise only what this wire can carry: the room methods it forwards.
+        carried = forwarded()
+        result = {**result, "methods": [name for name in result["methods"] if name in carried]}
     return server._ok(rid, result)
 
 
-def _busy(server, rid, why) -> dict:
+def _busy(server, rid, why, data=None) -> dict:
     return server._err(rid, OWNER_LOST_CODE,
-                       f"The Hermes gateway is not ready yet ({why}). Try again in a moment.")
+                       f"The Hermes gateway is not ready yet ({why}). Try again in a moment.", data)
 
 
 def forward(server, rid, method: str, params: dict) -> dict | None:
     """The owning gateway's answer to ``method`` as this wire's envelope, or ``None`` when the call
     runs locally: no gateway serves the profile, or the room lives only in the standalone store."""
-    if method not in FORWARDED:
+    if method not in forwarded():
         return None
+    # These refusals happen before forwarding; the owner cannot have admitted this Send.
+    not_admitted = {"admitted": False} if method == "groups.send" else None
     try:
         home = _home(server, params)
         room_id = str(params.get("room_id") or "")
@@ -161,15 +170,15 @@ def forward(server, rid, method: str, params: dict) -> dict | None:
             return _list(server, rid, home, params)
         endpoint = owner_endpoint(home)
     except _OwnerBusy as exc:
-        return _busy(server, rid, exc)
+        return _busy(server, rid, exc, not_admitted)
     except ValueError as exc:
-        return server._err(rid, 4000, str(exc))
+        return server._err(rid, 4000, str(exc), not_admitted)
     if endpoint is None:
         if holder == "gateway":
             # Only the gateway's store holds this room; the standalone copy is frozen and never
             # imported again, so a local call would acknowledge a change the owner never sees.
             return server._err(rid, OWNER_LOST_CODE, "The Hermes gateway that holds this Group Chat "
-                               "is not running. Start it and try again.")
+                               "is not running. Start it and try again.", not_admitted)
         return None
     return _call(server, rid, home, endpoint, method, params)
 

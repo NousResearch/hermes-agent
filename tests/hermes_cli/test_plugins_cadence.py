@@ -112,7 +112,7 @@ def test_auto_apply_selects_only_updateable_git_and_persists_receipt(homed, enab
 @pytest.mark.parametrize('failed', [False, True])
 def test_housekeeping_runs_real_cadence_and_backs_off(homed, monkeypatch, caplog, failed):
     import gateway.run as gateway
-    from hermes_cli import plugins_updates, plugins_cmd
+    from hermes_cli import plugins_auto_update, plugins_updates, plugins_cmd
     from pm import receipt
 
     calls, applied = [], []
@@ -123,15 +123,28 @@ def test_housekeeping_runs_real_cadence_and_backs_off(homed, monkeypatch, caplog
         return [_Result('plug', update_available=True)]
     monkeypatch.setattr(plugins_updates, 'run_checks', checks)
     monkeypatch.setattr(plugins_cmd, '_plugins_dir', lambda: homed / 'plugins')
-    monkeypatch.setattr(plugins_cmd, 'cmd_update', lambda name, **kwargs: applied.append((name, kwargs)))
+    monkeypatch.setattr(plugins_auto_update, 'apply_unattended', lambda name, **kwargs: applied.append((name, kwargs)))
     monkeypatch.setattr(cad, 'auto_apply_enabled', lambda *_: True)
     for _ in range(2):
         gateway._housekeeping_chore('Plugin update check', gateway._housekeeping_plugin_update_check)
     assert calls == [homed / 'plugins']
-    assert applied == ([] if failed else [('plug', {'interactive': False})])
+    assert applied == ([] if failed else [('plug', {})])
     saved = receipt.latest()
     assert saved['outcome'] == ('failed' if failed else 'updates-available')
     assert saved['exit_code'] == int(failed)
     assert (homed / 'plugin-update-checks/last-run').is_file()
     if failed:
         assert saved['warnings'][0]['message'] in caplog.text
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_marker_write_skips_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        cad._markers_dir()
+    cad.record_check_results([], {})  # its writer catches OSError: the write is skipped, not raised
+    assert not home.exists()

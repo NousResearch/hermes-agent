@@ -29,10 +29,31 @@ There is nothing to set up.
 a masked password field. *Save & sign in* stores it and continues; *Don't save*
 tells the agent to stop asking for this turn.
 
-From then on the agent lists your saved logins, types the identifier itself and
-fills the password through Hermes. The tool result it sees is
-`{filled_fields: 1, origin: "https://github.com"}`; the password is also
+From then on the agent lists your saved logins and fills the identifier and the
+password through Hermes: the identifier is typed as trusted browser input so
+framework-controlled forms keep it, and the password is written straight into
+its field, never as keystrokes another frame on the page could catch. A fill counts only once the page has held every value for a
+moment; a page that reverts it, moves focus while it is being typed, or leaves
+the login's site before the fill is checked gets a refusal instead. The tool result it sees is
+`{filled_fields: 2, identifier_filled: true, origin: "https://github.com"}`
+(when the form has no single box for the identifier, the fill skips it and
+tells the agent to type it before submitting); the password is also
 registered with the redactor so a later page read cannot echo it back.
+
+### Desktop preview or managed browser
+
+The Desktop preview and the managed automation browser are separate pages.
+For a login open in the preview, the agent calls `browser_vault` (`fill`,
+`save_login`, `enter_code`) with `target: "preview"`; in a Desktop session
+with the in-app browser available an omitted target means the preview. This
+uses the preview already open beside the chat and does not require a separate
+browser runtime. `target: "browser"` uses the managed browser.
+
+Keep the chat and its preview page selected while filling. Hermes binds each
+operation to that window and page, and refuses if the target changes or navigates.
+Vault requests are live-only and are not replayed after a reconnect. A failed
+preview fill never switches to a different browser. Filling does not submit
+the login form.
 
 ## Two-factor codes
 
@@ -68,6 +89,25 @@ origins; nothing is inferred beyond the URLs saved on the item.
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
+## Logins saved in your real browser
+
+If you turn on [real-profile browsing](browser.md#real-profile-browsing-use-your-own-logins)
+(`browser.use_real_profile: true`), the passwords your everyday Chrome / Brave /
+Edge has saved become a login source too, shown in the Browser bar's key-button
+picker as **Browser profile — `your browser`** beside the Hermes vault and any
+1Password / Bitwarden entries. Pick one and Hermes fills it into the in-app
+browser just like a vault login.
+
+It is **read-only** and needs no master password: Hermes reads only the site and
+username from your profile's saved logins, and the password is filled by your own
+browser (which decrypts its own store) and read back over the debugging protocol
+at the moment of the fill — the agent never sees it, and it is scrubbed from every
+tool result and log. Nothing is decrypted or copied out by Hermes, and there is no
+separate switch: the source appears exactly while real-profile browsing is on, and
+disappears (along with the profile snapshot) when you turn it off. This is the
+saved-passwords companion to the real-profile **cookies** that the in-app browser
+already carries.
+
 ## Paying and filling addresses
 
 Cards and addresses work the same way as logins: saved once (**Settings →
@@ -76,7 +116,9 @@ and filled by the agent on that site only. **Every card fill asks you first**,
 with the same approval prompt as a dangerous command; declining writes nothing.
 Headless sessions (cron, webhooks, the API server) cannot confirm and are
 refused, so a prompt injection that reaches a checkout page can ask, but it
-cannot spend. Address fills need no confirmation.
+cannot spend. Address fills need no confirmation. Card and address values are
+written straight into their fields like the password; only a login's identifier
+is ever typed as browser input.
 
 ## Managing what's saved
 
@@ -164,7 +206,12 @@ vault:
 tool results, logs, the session database, or the CLI arguments of any process.
 Fills happen over the supervised browser session's direct CDP socket and are
 refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write.
+inside the page immediately before the write. With the Camofox browser plugin,
+which has no CDP endpoint, the same checks run and the fill goes to the Camofox
+tab through its REST evaluate endpoint, only when `CAMOFOX_URL` is loopback or
+HTTPS. In the Hermes Desktop in-app Browser the fill goes to that exact tab
+through the Desktop's authenticated preview request channel, with the same
+origin checks; saved authenticator codes are bound to the login's origins too.
 
 **Does not:** protect against the page itself. Once a password is typed into a
 site, that site (and any script it runs) has it, exactly as when you type it

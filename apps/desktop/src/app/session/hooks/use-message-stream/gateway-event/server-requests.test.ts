@@ -7,14 +7,15 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { runTour } from '@/lib/tour'
 import { $previewTabs, closeRightRail, openPreview, setPreviewTabPinned } from '@/store/preview'
+import { clearAllPrompts, sessionApprovalRequests } from '@/store/prompts'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
+import type { ServerRequestContext } from './server-request-context'
 import { handleServerRequest, previewSessionRoute, requestNamesActiveSession } from './server-requests'
-import type { ServerRequestContext } from './server-requests'
 
 vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 
@@ -28,10 +29,15 @@ const requestPopoutPreviewRead = vi.hoisted(() =>
   vi.fn(async (_payload: unknown, _owner?: unknown): Promise<unknown> => null)
 )
 
+const requestPopoutPreviewVault = vi.hoisted(() =>
+  vi.fn(async (_payload: unknown, _owner?: unknown): Promise<unknown> => null)
+)
+
 vi.mock('@/app/chat/right-rail/preview-popout-bridge', () => ({
   hasLivePreviewSurface: (owner?: unknown) => hasLivePreviewSurface(owner),
   requestPopoutPreviewAct: (payload: unknown, owner?: unknown) => requestPopoutPreviewAct(payload, owner),
-  requestPopoutPreviewRead: (payload: unknown, owner?: unknown) => requestPopoutPreviewRead(payload, owner)
+  requestPopoutPreviewRead: (payload: unknown, owner?: unknown) => requestPopoutPreviewRead(payload, owner),
+  requestPopoutPreviewVault: (payload: unknown, owner?: unknown) => requestPopoutPreviewVault(payload, owner)
 }))
 
 const deps = {
@@ -89,6 +95,7 @@ describe('approval request routing', () => {
 
   afterEach(() => {
     delete desktopWindow.hermesDesktop
+    clearAllPrompts()
     setSessions([])
     setActiveSessionId(null)
   })
@@ -102,6 +109,173 @@ describe('approval request routing', () => {
 
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'approval', title: expect.stringContaining('Fix the flaky test') })
+    )
+  })
+
+  it('parks a folder card with its target and risk, and notifies with folder copy', () => {
+    deliver(
+      'approval',
+      {
+        access: 'read_write',
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow read and write access to C:\\docs',
+        kind: 'access',
+        path: 'C:\\docs',
+        request_id: 'sandbox-card-1',
+        risk: 'The agent can change and delete files in this folder.',
+        session_id: 'session-c'
+      },
+      'session-b'
+    )
+
+    expect(sessionApprovalRequests('session-c').get()).toEqual([
+      expect.objectContaining({
+        kind: 'access',
+        requestId: 'sandbox-card-1',
+        risk: 'The agent can change and delete files in this folder.',
+        serverRequestId: 'srq-1',
+        target: { access: 'read_write', path: 'C:\\docs' }
+      })
+    ])
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actions: [
+          { id: 'approve:sandbox-card-1', text: 'Allow' },
+          { id: 'reject:sandbox-card-1', text: 'Deny' }
+        ],
+        body: 'Read and write: C:\\docs',
+        kind: 'approval',
+        title: expect.stringMatching(/^Folder access needed — /)
+      })
+    )
+  })
+
+  it('says in the folder notification that the request is to read and write the folder', () => {
+    // The notification's Allow button answers the card, so it says what the card says.
+    deliver(
+      'approval',
+      {
+        access: 'read_write',
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow read and write access to C:\\docs',
+        kind: 'access',
+        path: 'C:\\docs',
+        request_id: 'sandbox-card-7',
+        session_id: 'session-rw'
+      },
+      'session-b'
+    )
+
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'Read and write: C:\\docs' }))
+  })
+
+  it('says "Read only" for a read-only folder, and names the folder alone when the request gives no level', () => {
+    const folder = { choices: ['once', 'deny'], command: '', kind: 'access', path: 'C:\\ref' }
+
+    deliver(
+      'approval',
+      { ...folder, access: 'read', request_id: 'sandbox-card-8', session_id: 'session-ro' },
+      'session-b'
+    )
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'Read only: C:\\ref' }))
+
+    deliver('approval', { ...folder, request_id: 'sandbox-card-9', session_id: 'session-bare' }, 'session-b')
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'C:\\ref' }))
+  })
+
+  it.each([
+    ['a folder request that names no folder', { kind: 'access' }],
+    ['a folder request that names a site', { host: 'example.com', kind: 'access' }],
+    ['a site request that names no site', { kind: 'network' }]
+  ])('refuses %s: the sender gets an error, no card is parked and nothing is notified', (_name, fields) => {
+    const { fail, respond } = deliver(
+      'approval',
+      {
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        request_id: 'sandbox-card-5',
+        session_id: 'session-n',
+        ...fields
+      },
+      'session-b'
+    )
+
+    expect(fail).toHaveBeenCalledWith(-32602, expect.stringMatching(/path.*host/))
+    expect(respond).not.toHaveBeenCalled()
+    expect(sessionApprovalRequests('session-n').get()).toEqual([])
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'folders',
+      'a run of spaces inside',
+      { kind: 'access', path: 'C:\\Project  Files' },
+      { kind: 'access', path: 'C:\\Project Files' }
+    ],
+    ['folders', 'a space at the end', { kind: 'access', path: 'C:\\docs ' }, { kind: 'access', path: 'C:\\docs' }],
+    [
+      'sites',
+      'a run of spaces inside',
+      { host: 'example.com', kind: 'network', label: 'Web  search' },
+      { host: 'example.com', kind: 'network', label: 'Web search' }
+    ]
+  ])('names two %s that differ only by %s differently in the notification', (what, how, first, second) => {
+    // The operating system draws the notification, and its Allow button answers the card. Where a
+    // run of spaces is drawn as one blank, the two names must still not read the same.
+    const drawn = (text: string) => text.replace(/[ \t\n]+/g, ' ').trim()
+    const id = `${what}-${how.length}`
+
+    deliver(
+      'approval',
+      { ...first, command: '', request_id: `card-${id}-1`, session_id: `session-${id}-1` },
+      'session-b'
+    )
+    deliver(
+      'approval',
+      { ...second, command: '', request_id: `card-${id}-2`, session_id: `session-${id}-2` },
+      'session-b'
+    )
+
+    const [one, two] = notify.mock.calls.map(([notice]) => drawn(String(notice.body)))
+
+    expect(notify).toHaveBeenCalledTimes(2)
+    expect(one).not.toBe(two)
+  })
+
+  it('parks a site card with its label and names the site in the notification', () => {
+    deliver(
+      'approval',
+      {
+        choices: ['once', 'always', 'deny'],
+        command: '',
+        description: 'Allow the sandbox to reach Web search (api.keenable.ai)',
+        host: 'api.keenable.ai',
+        kind: 'network',
+        label: 'Web search (api.keenable.ai)',
+        request_id: 'sandbox-card-3',
+        risk: 'The web search tool uses this site.',
+        session_id: 'session-e'
+      },
+      'session-b'
+    )
+
+    expect(sessionApprovalRequests('session-e').get()[0]).toMatchObject({
+      choices: ['once', 'always', 'deny'],
+      kind: 'network',
+      target: { host: 'api.keenable.ai', label: 'Web search (api.keenable.ai)' }
+    })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actions: [
+          { id: 'approve:sandbox-card-3', text: 'Allow' },
+          { id: 'reject:sandbox-card-3', text: 'Deny' }
+        ],
+        body: 'Web search (api.keenable.ai)',
+        title: expect.stringMatching(/^Website access needed — /)
+      })
     )
   })
 })
@@ -170,6 +344,25 @@ describe('preview action request routing', () => {
     expect(handled).toBe(true)
     expect(decline).toHaveBeenCalledTimes(1)
     expect(respond).not.toHaveBeenCalled()
+  })
+
+  it('refuses window.read in a browser tab with an error the tool relays', async () => {
+    // A browser tab cannot enumerate OS windows: answer {error, platform} at
+    // once rather than an empty value the tool reports as "did not answer".
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const { respond } = deliver('window.read', {}, null)
+
+      await Promise.resolve()
+
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
+        error: expect.stringContaining('desktop app') as string,
+        platform: 'browser'
+      })
+    } finally {
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
   })
 
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {
@@ -354,6 +547,8 @@ describe('preview pop-out forwarding', () => {
     requestPopoutPreviewAct.mockResolvedValue(null)
     requestPopoutPreviewRead.mockClear()
     requestPopoutPreviewRead.mockResolvedValue(null)
+    requestPopoutPreviewVault.mockClear()
+    requestPopoutPreviewVault.mockResolvedValue(null)
     publishSessionState('session-a', createClientSessionState('stored-a'))
   })
 
@@ -396,6 +591,56 @@ describe('preview pop-out forwarding', () => {
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
     expect(requestPopoutPreviewRead).toHaveBeenCalledWith({}, sessionAOwner)
     expect(respond.mock.calls[0][0].value).toBe('')
+  })
+
+  // #150283 pop-out vault forwarding: the vault binding ops used to run only in
+  // the chat window's local binding map and never reached the popped-out
+  // Browser renderer, so a fill could not reach the live runner after pop-out.
+  it('forwards a vault binding op to the pop-out when this window has no live surface', async () => {
+    requestPopoutPreviewVault.mockResolvedValue({ success: true, target: 'bind-xyz' })
+    deps.activeSessionIdRef.current = 'session-a'
+
+    const { respond } = deliver(
+      'preview.act',
+      { action: 'vault', session_id: 'session-a', vault: { operation: 'open' } },
+      'session-a'
+    )
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    deps.activeSessionIdRef.current = null
+    expect(requestPopoutPreviewVault).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'open' }),
+      sessionAOwner
+    )
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: true, target: 'bind-xyz' })
+  })
+
+  it('does not forward the vault op when this window has a live surface', async () => {
+    hasLivePreviewSurface.mockReturnValue(true)
+    deps.activeSessionIdRef.current = 'session-a'
+
+    const { respond } = deliver(
+      'preview.act',
+      { action: 'vault', session_id: 'session-a', vault: { operation: 'open' } },
+      'session-a'
+    )
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    deps.activeSessionIdRef.current = null
+    expect(requestPopoutPreviewVault).not.toHaveBeenCalled()
+  })
+
+  it('reads locally in a browser tab, which has no pop-out to wait on', async () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const { respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-a')
+
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      expect(requestPopoutPreviewRead).not.toHaveBeenCalled()
+    } finally {
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
   })
 })
 

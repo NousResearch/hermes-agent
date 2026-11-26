@@ -30,6 +30,9 @@ class FakeSshWorkspace:
         data = self.files[path]
         return data[:read_limit] if read_limit else data, len(data), path
 
+    def normalize(self, path):
+        return path
+
     def write_text(self, path, text, max_bytes=None):
         self.writes.append((path, text))
         return path, len(text.encode("utf-8"))
@@ -120,6 +123,16 @@ def test_ssh_stream_answers_a_range_with_206(client, ssh, header, first, last):
     assert partial.headers["content-length"] == str(last - first + 1)
     assert partial.headers["accept-ranges"] == "bytes"
     assert workspace.reads == [(CLIP, first, last - first + 1)]
+
+
+def test_ssh_stream_plays_a_clip_over_the_whole_file_read_cap(client, ssh, monkeypatch):
+    """A player source is served one Range at a time, so the cap guarding whole-file reads never
+    applies (a 2-minute 1080p recording is over 100 MiB)."""
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
+
+    partial = _stream(client, headers={"Range": "bytes=2-5"})
+
+    assert (partial.status_code, partial.content) == (206, BYTES[2:6])
 
 
 @pytest.mark.parametrize("header", ["bytes=16-", "bytes=99-120", "bytes=-0"])

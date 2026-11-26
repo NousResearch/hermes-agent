@@ -60,7 +60,7 @@ let
 
   # node-pty ships no Electron-tagged prebuild we can trust to match this
   # exact nixpkgs electron version, so it's always compiled from source
-  # against Electron's own headers (not whatever Node ran `npm`).
+  # against Electron's own headers (not whatever Node ran `pnpm`).
   targetPlatform =
     if stdenv.hostPlatform.isDarwin then
       "darwin"
@@ -78,7 +78,7 @@ let
       throw "hermes-desktop: unsupported host arch for node-pty staging";
 
   # Build the renderer (dist/ + electron/ + package.json).
-  renderer = hermesNpmLib.buildNpmPackage {
+  renderer = hermesNpmLib.buildPnpmPackage {
     dirs = [
       "apps/desktop"
       "apps/shared"
@@ -91,6 +91,9 @@ let
       "scripts/release-content-types.json"
     ];
     pname = "hermes-desktop-renderer";
+
+    # node-gyp's build interpreter.
+    nativeBuildInputs = [ python3 ];
 
     doCheck = true;
 
@@ -108,7 +111,7 @@ let
       # the --nodedir layout. Same pattern as signal-desktop / github-desktop /
       # session-desktop / rstudio in nixpkgs.
       ${lib.getExe hermesNpmLib.node-gyp} rebuild \
-        --directory=node_modules/node-pty \
+        --directory=apps/desktop/node_modules/node-pty \
         --build-from-source \
         --runtime=electron \
         --target=${electron.version} \

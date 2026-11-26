@@ -130,13 +130,8 @@ def _launch_turn_policy(launch_home):
             return tt._get_env_config()
     finally:
         from tools.approval_context import reset_current_session_key
-        from tools.terminal_scope import reset_terminal_scope
-        if st.scopes.terminal is not None:
-            reset_terminal_scope(st.scopes.terminal)
-        if st.scopes.secret is not None:
-            server.reset_secret_scope(st.scopes.secret)
-        if st.scopes.home is not None:
-            server.reset_hermes_home_override(st.scopes.home)
+        if st.scopes.profile is not None:
+            st.scopes.profile.reset()
         if st.scopes.approval is not None:
             reset_current_session_key(st.scopes.approval)
         server._clear_session_context(st.scopes.session_tokens)

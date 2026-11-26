@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
+
 
 # Import the module under test via an import-time side-effect check path.
 # We need to be able to reset its state between tests, so we import it
@@ -180,10 +182,10 @@ class TestStdioReconfigureErrorHandling:
 
 
 
-@pytest.mark.parametrize("path", [
+@pytest.mark.parametrize("path", [current_path(entry) for entry in (
     "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
     "gateway/run.py", "batch_runner.py", "cli.py",
-])
+)])
 def test_entrypoint_executes_bootstrap_before_application_imports(tmp_path, path):
     import subprocess
     from pathlib import Path
@@ -290,10 +292,11 @@ print('reached-pm')
     assert result.stdout.strip() == "reached-pm"
 
 
-@pytest.mark.parametrize("path", [
+@pytest.mark.parametrize("path", [current_path(entry) for entry in (
     "hermes_cli/main.py", "run_agent.py", "acp_adapter/entry.py",
     "gateway/run.py", "batch_runner.py", "cli.py",
-])
+    "agent/managed_worker.py", "hermes_cli/kanban_worker_client.py",
+)])
 @pytest.mark.parametrize("bootstrap,expected", [
     (None, "proceeded"),
     ("import hermes_missing_dependency_probe\n", "raised hermes_missing_dependency_probe"),
@@ -382,7 +385,9 @@ class TestHardenImportPath:
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
 
-    def test_env_var_used_when_no_arg(self):
+    def test_inherited_src_root_never_redirects_imports(self):
+        """A checkout's dev shell exports HERMES_PYTHON_SRC_ROOT; an install started from it
+        must still put its own tree first."""
         hb = _fresh_import()
         original = sys.path[:]
         original_env = os.environ.get("HERMES_PYTHON_SRC_ROOT")
@@ -390,7 +395,8 @@ class TestHardenImportPath:
             sys.path[:] = ["", "/cwd/proj", "/usr/lib"]
             os.environ["HERMES_PYTHON_SRC_ROOT"] = "/env/hermes"
             hb.harden_import_path()
-            assert sys.path[0] == "/env/hermes"
+            assert sys.path[0] == os.path.dirname(os.path.abspath(hb.__file__))
+            assert "/env/hermes" not in sys.path
         finally:
             sys.path[:] = original
             if original_env is None:

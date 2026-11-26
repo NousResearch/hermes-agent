@@ -1,0 +1,41 @@
+name: hermes-windows-firewall
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: c1068129808a6945879bc07a83b999220e3c5158
+subdir: windows-firewall
+description: >-
+  Answer "what does the Windows firewall let through, and for whom" on Windows: every rule
+  from the registry store the firewall service itself keeps, each row in plain words --
+  allow or block, inbound or outbound, TCP/UDP/ICMP or a protocol number, local and remote
+  ports, the program or service the rule is scoped to, which profile it belongs to (Domain,
+  Private, Public or any) and whether it is switched on -- plus the three profiles' firewall
+  switches and default actions, with values the registry did not write reported as null and
+  attributed to Windows' builtin defaults rather than invented. Built-in rules name
+  themselves indirectly (@FirewallAPI.dll,-32765); the words are resolved from the resource
+  in the machine's own language, and references that will not resolve stay as written.
+  Details one rule in full: addresses with scope words (the local subnet, any address), edge
+  traversal, the embedding group, the description, and fields the parser does not model
+  (TTK2_22 is on real machines) passed through verbatim rather than dropped. netsh labels
+  localize with the display language, the registry does not -- which is why the plugin goes
+  there: no netsh, no PowerShell, no WMI. Use it for "is port X open", "what may this exe
+  do", and "is the firewall actually on". Read-only: registry values are enumerated and
+  resource strings resolved, nothing is enabled, disabled, added or removed; no network
+  calls of its own, no file writes, no elevation. The whole store answers in hundredths of
+  a second (795 rules in 0.07 s on the writing machine); the plugin declares no Python
+  dependencies. Windows only. Disclosure - the tools report every rule's action, direction,
+  protocol, ports, addresses, program, service and name, and the profile switches, to the
+  model; treat the output like the firewall page of Windows Security.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-firewall
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_firewall_table
+  - win_firewall_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

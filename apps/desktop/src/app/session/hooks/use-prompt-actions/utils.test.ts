@@ -3,7 +3,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { errorRecoveryPlan } from '@/lib/error-surface'
+import { errorCardActions } from '@/lib/error-surface'
 
 import {
   acquireSubmitInFlight,
@@ -148,7 +148,7 @@ describe('ownershipErrorSurface', () => {
     const { errorSurface } = ownershipErrorSurface(err)
 
     expect(errorSurface).toEqual({ layer: 'gateway', code: 'session_read_only', retryable: false })
-    expect(errorRecoveryPlan(errorSurface)).toMatchObject({ retry: false, startNewSession: true })
+    expect(errorCardActions(errorSurface)).toEqual({ primary: 'start_new_session' })
   })
 })
 

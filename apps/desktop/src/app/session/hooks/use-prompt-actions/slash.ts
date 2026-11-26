@@ -33,10 +33,12 @@ import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import {
   $activeGatewayProfile,
-  $newChatProfile,
   captureNewChatSource,
+  currentNewChatIntent,
   ensureGatewayProfile,
-  normalizeProfileKey
+  invalidateNewChatIntent,
+  normalizeProfileKey,
+  pinNewChatProfile
 } from '@/store/profile'
 import {
   $connection,
@@ -1185,8 +1187,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
+          invalidateNewChatIntent()
+          let intent = currentNewChatIntent()
+
           try {
             const { profiles } = await getProfiles()
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             const match = profiles.find(profile => profile.name === target)
 
             if (!match) {
@@ -1199,16 +1209,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
               return
             }
 
-            const key = normalizeProfileKey(match.name)
-
-            $newChatProfile.set(key)
+            const key = pinNewChatProfile(match.name)
+            intent = currentNewChatIntent()
             await ensureGatewayProfile(key)
+
+            if (intent !== currentNewChatIntent()) {
+              return
+            }
+
             // Capture the source the swap landed on (null on the v1 profile path)
             // so the draft's owner matches the socket that will mint it.
             captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
-            notifyError(err, copy.setProfileFailed)
+            if (intent === currentNewChatIntent()) {
+              notifyError(err, copy.setProfileFailed)
+            }
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {

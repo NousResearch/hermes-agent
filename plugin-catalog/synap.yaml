@@ -1,0 +1,17 @@
+name: synap
+repo: https://github.com/jimmyplup/hermes-synap-provider
+sha: a0d29b658853760fc21e87f48b48cbe44ef58ee9
+subdir: synap
+description: "Synap — OpenAI-compatible hosted inference. Sends prompts and SYNAP_API_KEY to synap402.com; usage is billed against the user's Synap balance."
+maintainer: Linkrra
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/jimmyplup/hermes-synap-provider#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SYNAP_API_KEY

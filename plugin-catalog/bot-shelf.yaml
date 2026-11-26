@@ -1,0 +1,18 @@
+name: bot-shelf
+title: Bot Shelf
+repo: https://github.com/cradrrat/bot-shelf-mcp
+sha: 52547d531bb393bce1de541f9e4510a9f62ed428
+version: "1.0.0"
+description: "Search Bot Shelf (botshelf.dev), a directory of 9,000+ community Grok Bots, by the job in plain words, with each creator credited, through Bot Shelf's hosted MCP server (Streamable HTTP at https://mcp.botshelf.dev/mcp, no account or key). Bundles the bot-shelf skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Bot Shelf's hosted server (mcp.botshelf.dev, on Cloudflare); the tool set is served by that server at runtime and is not covered by the pinned sha. find_bots, get_bot, latest and list_categories only read the public directory; suggest_bot sends the link, note and name the user gives to a review queue kept up to 30 days. Searches are not stored."
+maintainer: cradrrat
+tier: community
+category: web
+docs_url: https://github.com/cradrrat/bot-shelf-mcp#add-it-to-hermes-agent
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

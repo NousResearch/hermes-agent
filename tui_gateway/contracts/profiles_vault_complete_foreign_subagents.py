@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import Field
 
+from hermes_cli.profile_provision import ProfileCreateReceipt
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
 from .config_free_tier_control import ModelOptionProvider
@@ -186,8 +188,9 @@ method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
 
 
 class ProfilesCreateParams(ProfileParams):
-    """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on
-    so a headless bot has a provider."""
+    """``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the
+    active profile, no bundled skills); ``mirror_credentials`` and
+    ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider."""
 
     name: str
     description: str | None = None
@@ -201,10 +204,16 @@ class ProfilesCreateParams(ProfileParams):
     provider: str | None = None
     share_auth: bool | str | None = None
     mirror_credentials: bool | str | None = None
+    # ``hermes profile create`` through the gateway: ``--clone`` (copy the caller's profile),
+    # ``--sync-imports``, and ``report`` (return the receipt the CLI prints).
+    clone_config: bool | str | None = None
+    sync_imports: bool | str | None = None
+    report: bool | str | None = None
 
 
 class ProfileMirrored(Result):
-    """What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``."""
+    """What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no
+    auth.json of its own and reads the default root's."""
 
     env: bool = False
     auth: bool | Literal["shared"] = False
@@ -219,6 +228,9 @@ class ProfilesCreateResult(Result):
     soul_written: bool = False
     model_set: bool = False
     mirrored: ProfileMirrored
+    warnings: list[str] = []  # best-effort steps that did not fully apply (create still succeeded)
+    # With ``report``: what ``hermes profile create`` prints. One definition, shared with the CLI that reads it.
+    receipt: ProfileCreateReceipt | None = None
 
 
 method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResult,
@@ -460,6 +472,7 @@ class VaultItem(Result):
     identifier: str | None = None
     identifier_type: str | None = None
     has_otp: bool | None = None
+    allowed_origins: list[str] | None = None
     backend: str
 
 
@@ -516,6 +529,27 @@ class VaultUnlockResult(Result):
 
 method("vault.unlock", params=VaultUnlockParams, result=VaultUnlockResult,
        doc="Unlock a password manager for this session with its master password.")
+
+
+class VaultPreviewFillParams(ProfileParams):
+    """``target`` is the opaque binding the renderer minted for one in-app browser tab."""
+
+    handle: str
+    target: str
+
+
+class VaultPreviewFillResult(Result):
+    """Counts and the page origin only: never a secret."""
+
+    success: bool
+    filled_fields: int | None = None
+    origin: str | None = None
+    error: str | None = None
+    error_type: str | None = None
+
+
+method("vault.preview.fill", params=VaultPreviewFillParams, result=VaultPreviewFillResult,
+       doc="Fill a saved login into the in-app browser tab the renderer pinned (never submits).")
 
 
 class VaultLockParams(ProfileParams):
@@ -649,6 +683,8 @@ class SubagentSnapshot(Result):
     tool_count: int | None = None
     last_tool: str | None = None
     accepting_steer: bool | None = None
+    #: The child's own stored session (``session.transcript`` reads it by ``subagent_id``); None until it has one.
+    child_session_id: str | None = None
 
 
 class FailedDelegation(Result):
@@ -672,6 +708,21 @@ class SubagentListResult(Result):
 
 method("subagent.list", params=SessionParams, result=SubagentListResult,
        doc="Live children owned by this session (other sessions' children never leak).")
+
+
+class SubagentRosterEntry(Result):
+    session_id: str
+    subagents: int = 0
+    background: int = 0
+
+
+class SubagentRosterResult(Result):
+    sessions: list[SubagentRosterEntry] = Field(default_factory=list)
+
+
+method("subagent.roster", params=ProfileParams, result=SubagentRosterResult,
+       doc="Per-conversation counts of live delegated children and running background processes, limited to "
+           "conversations stored in the named profile (launch profile when omitted). Needs no attached session.")
 
 
 class SubagentIdParams(SessionParams):

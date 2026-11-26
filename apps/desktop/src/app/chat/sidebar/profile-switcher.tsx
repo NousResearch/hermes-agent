@@ -39,10 +39,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { ErrorIcon } from '@/components/ui/error-state'
 import { edgeMask, scrollEdges } from '@/components/ui/fade-scroll'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { $pluginRecords } from '@/contrib/plugins-store'
 import type { DesktopRegistryConnection } from '@/global'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -61,6 +63,7 @@ import {
 } from '@/lib/reorder'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { clearProfileBackend } from '@/sdk/profile-backend'
 import {
   $activeConnectionId,
   $connectionsRegistry,
@@ -94,6 +97,7 @@ import {
   refreshProfileRemoteOverrides
 } from '@/store/profile-remote-override'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { $profileSwitchFailure, $profileSwitchPending } from '@/store/profile-switch-state'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -206,13 +210,12 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 //
 // With one registered gateway this is the whole story. With several, the rail
 // becomes the FLEET rail: the active gateway's profiles stay exactly as they
-// are, and every other registered gateway follows on the same strip as an
-// at-rest group — a hairline, that gateway's kind glyph, its default home
-// square and its named squares, dimmed. Clicking an at-rest square performs
-// the same re-home the statusbar switcher does, landing on that exact
-// (gateway, profile); the workspace still lives on one gateway at a time, only
-// the picker spans the fleet. Groups keep registry order regardless of which
-// one is active, so a square never moves under the pointer that clicked it.
+// are, and every other registered gateway follows on the same strip as its own
+// group — a hairline, that gateway's kind glyph, its default home square and
+// its named squares. Every gateway is connected all the time, so clicking one
+// of those squares is a profile pick on that gateway, landing on that exact
+// (gateway, profile) with no dial. Groups keep registry order regardless of
+// which one is active, so a square never moves under the pointer that clicked it.
 export function ProfileRail() {
   const { t, locale } = useI18n()
   const p = t.profiles
@@ -222,6 +225,8 @@ export function ProfileRail() {
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const remoteOverrides = useStore($profileRemoteOverrides)
+  // A desktop plugin runs this profile's backend in a sandbox on this computer.
+  const isSandboxed = (name: string) => Boolean(remoteOverrides[normalizeProfileKey(name)]?.launcher)
   const multipleConnections = useStore($hasMultipleConnections)
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
@@ -239,6 +244,10 @@ export function ProfileRail() {
   // Route key of the at-rest square whose switch is dialing (spinner on that
   // square, not in the statusbar — the previous source stays painted).
   const [pendingRoute, setPendingRoute] = useState<null | string>(null)
+  // A local named pick (selectProfile) rides the shared multiplexer, so its
+  // pending/failed state lives with the action, not in this component.
+  const switchPending = useStore($profileSwitchPending)
+  const switchFailure = useStore($profileSwitchFailure)
   const scrollRef = useRef<HTMLDivElement>(null)
   const scrollContentRef = useRef<HTMLDivElement>(null)
   const [scrollMask, setScrollMask] = useState<string | undefined>()
@@ -349,16 +358,14 @@ export function ProfileRail() {
       return
     }
 
-    // Probe spinner only. The dialog — install confirm or fresh-session cue —
-    // must be on screen before selectConnection replaces the center.
+    // Probe spinner only: This device prompts only when picking it would
+    // start the installer.
     const key = fleetRouteKey(agent.connectionId, agent.profile)
     setPendingRoute(key)
 
     void requestLocalDevice({
       connectionId: agent.connectionId,
-      label: agent.connectionLabel,
-      profile: agent.profile,
-      replaceCenter: agent.profile === 'default'
+      label: agent.connectionLabel
     }).then(accepted => {
       setPendingRoute(current => (current === key ? null : current))
 
@@ -466,7 +473,12 @@ export function ProfileRail() {
   const profileNamesKey = profileNames.join('\u0000')
 
   useEffect(() => {
-    void refreshProfileRemoteOverrides(profileNamesKey ? profileNamesKey.split('\u0000') : [])
+    const names = profileNamesKey ? profileNamesKey.split('\u0000') : []
+
+    void refreshProfileRemoteOverrides(names)
+
+    // A plugin (or Settings) can move a profile's backend without changing the list.
+    return window.hermesDesktop?.onConnectionApplied?.(() => void refreshProfileRemoteOverrides(names))
   }, [profileNamesKey])
 
   // Open the create dialog when the `profile.create` hotkey fires (the dialog
@@ -507,20 +519,18 @@ export function ProfileRail() {
                   active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                   color={resolveProfileColor(profile.name, colors)}
                   connectionId={namedProfileConnectionId}
+                  failed={switchFailure?.profile === normalizeProfileKey(profile.name)}
                   key={profile.name}
                   label={profileLabel(profile)}
                   name={profile.name}
-                  // The legacy per-profile remote override predates the
-                  // gateway registry; once the rail shows machines directly
-                  // it only confuses, so it is offered on single-gateway
-                  // setups only.
-                  onConnectRemote={multipleConnections ? undefined : () => openRemoteOverrideDialog(profile.name)}
                   onDelete={() => setPendingDelete(profile)}
                   onEditSoul={() => setPendingSoul(profile.name)}
                   onRecolor={color => setProfileColor(profile.name, color)}
                   onRename={() => setPendingRename(profile)}
                   onSelect={() => selectProfile(profile.name)}
+                  pending={switchPending === normalizeProfileKey(profile.name)}
                   remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
+                  sandboxed={isSandboxed(profile.name)}
                 />
               ))}
             </div>
@@ -568,6 +578,7 @@ export function ProfileRail() {
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(homeProfile))}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(homeProfile.name))}
+            pending={switchPending === normalizeProfileKey(homeProfile.name)}
             profile={homeProfile.name}
           />
         ) : (
@@ -1094,7 +1105,7 @@ interface ProfilePillProps {
   glyph: string
   label: string
   onSelect: () => void
-  // Fleet at-rest: dimmed until hovered, like the at-rest squares beside it.
+  // Another gateway's pill: the same unselected weight as the squares beside it.
   muted?: boolean
   pending?: boolean
   slot?: string
@@ -1131,7 +1142,7 @@ function ProfilePill({
         className={cn(
           'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
           active && 'bg-(--ui-control-active-background) text-foreground',
-          muted && 'opacity-40 hover:opacity-100',
+          muted && 'opacity-55 hover:opacity-100',
           summary && !active && 'relative'
         )}
         data-connection-id={connectionId}
@@ -1231,8 +1242,8 @@ function FleetRestGroup({
     : `${group.needsSignIn ? `${p.fleet.gateway(group.label)} · ${t.settings.toolsets.needsSignIn}` : p.fleet.gatewayUnreachable(group.label)}${group.error ? `\n${group.error}` : ''}`
 
   const defaultKey = fleetRouteKey(group.connectionId, group.defaultAgent.profile)
-  // At rest, This device is a backend switch, not Home. The house glyph stays
-  // on the active gateway's default profile.
+  // Off the active gateway, This device wears its device glyph, not Home. The
+  // house glyph stays on the active gateway's default profile.
   const localDefault = group.kind === 'local'
 
   return (
@@ -1329,7 +1340,7 @@ function RestSquare({
                   <button
                     aria-busy={pending || undefined}
                     aria-label={statusText ? `${label}, ${statusText}` : label}
-                    className="relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-35 transition-opacity hover:opacity-100 aria-busy:opacity-100"
+                    className="relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-55 transition-opacity hover:opacity-100 aria-busy:opacity-100"
                     data-connection-id={agent.connectionId}
                     data-profile={agent.profile}
                     data-slot="profile-rail-rest-square"
@@ -1412,19 +1423,116 @@ interface ProfileSquareProps {
   active: boolean
   color: null | string
   connectionId: null | string
+  // The last rail pick of this profile was rejected (#81094): marked until the
+  // next switch or a dismiss, mirroring the chat's failure strip.
+  failed: boolean
   label: string
   name: string
   onSelect: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
-  // Absent on multi-gateway setups: the legacy per-profile remote override
-  // is superseded by the fleet rail there.
-  onConnectRemote?: () => void
   onDelete: () => void
+  // A rail pick of this profile is activating — same spinner as a rest square.
+  pending: boolean
   // hostname[:port] of this profile's remote override, or null when the
   // profile runs locally. Drives the "remote" badge on the square.
   remoteHost: null | string
+  // A desktop plugin runs this profile in a sandbox on this computer: badged
+  // as sandboxed, not as a remote host.
+  sandboxed?: boolean
+}
+
+// The menu entry that changes where a profile runs. A profile a plugin runs
+// has none while that plugin is loaded: the plugin's own page is the way to
+// switch. While the plugin is not loaded (removed, switched off, failed to
+// load) the entry gives the profile back to this computer; the main process
+// asks before it does. Any other profile gets the remote-host dialog.
+function useProfileRouteEntry(
+  p: Translations['profiles'],
+  profile: string
+): undefined | { label: string; run: () => void } {
+  const override = useStore($profileRemoteOverrides)[normalizeProfileKey(profile)]
+  const plugins = useStore($pluginRecords)
+  const multipleConnections = useStore($hasMultipleConnections)
+  const plugin = override?.launcher?.plugin
+  const label = p.remoteOverride.runHere
+
+  if (plugin) {
+    const run = () => void clearProfileBackend({ plugin, profile }).catch((error: unknown) => notifyError(error, label))
+
+    return plugins[plugin]?.status === 'loaded' ? undefined : { label, run }
+  }
+
+  // The legacy per-profile remote override predates the gateway registry:
+  // it is offered on single-gateway setups only.
+  if (multipleConnections) {
+    return undefined
+  }
+
+  return {
+    label: override?.host ? p.remoteOverride.badge(override.host) : p.remoteOverride.menuItem,
+    run: () => openRemoteOverrideDialog(profile)
+  }
+}
+
+// Where a profile runs when not on this computer's own backend, or null.
+function profileRunsWhere(p: Translations['profiles'], remoteHost: null | string, sandboxed: boolean): null | string {
+  if (sandboxed) {
+    return p.remoteOverride.sandboxed
+  }
+
+  return remoteHost ? p.remoteOverride.badge(remoteHost) : null
+}
+
+// The corner badge of a profile that does not run on this computer's own
+// backend, so which profiles run elsewhere is visible at a glance (#91349).
+function RunsElsewhereBadge({ sandboxed }: { sandboxed: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
+      data-slot={sandboxed ? 'profile-sandboxed-badge' : 'profile-remote-badge'}
+    >
+      <Codicon name={sandboxed ? 'shield' : 'globe'} size="0.5rem" />
+    </span>
+  )
+}
+
+interface ProfileSquareContentProps extends Pick<ProfileSquareProps, 'active' | 'failed' | 'label' | 'pending'> {
+  // The profile runs on a remote host or in a plugin's sandbox.
+  runsElsewhere: boolean
+  sandboxed: boolean
+  summary: ProfileDotSummary | null
+}
+
+function ProfileSquareContent({
+  active,
+  failed,
+  label,
+  pending,
+  runsElsewhere,
+  sandboxed,
+  summary
+}: ProfileSquareContentProps) {
+  return (
+    <>
+      {pending ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : profileShortLabel(label)}
+      {/* The globe or shield stays at the top, separate from switch/session status. */}
+      {runsElsewhere && <RunsElsewhereBadge sandboxed={sandboxed} />}
+      {/* Failed picks take precedence over the inactive profile's session rollup. */}
+      {failed && (
+        <span aria-hidden="true" className="absolute -bottom-0.5 -right-0.5 grid place-items-center">
+          <ErrorIcon size="0.5rem" />
+        </span>
+      )}
+      {!failed && !active && summary && (
+        <span className="absolute -bottom-0.5 -right-0.5">
+          <ProfileStatusDot summary={summary} />
+        </span>
+      )}
+    </>
+  )
 }
 
 // Hold this long without moving (a drag would have started first) to open the
@@ -1442,18 +1550,22 @@ function ProfileSquare({
   active,
   color,
   connectionId,
+  failed,
   label,
   name,
-  onConnectRemote,
   onDelete,
   onEditSoul,
   onRecolor,
   onRename,
   onSelect,
-  remoteHost
+  pending,
+  remoteHost,
+  sandboxed = false
 }: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
+  const runsWhere = profileRunsWhere(p, remoteHost, sandboxed)
+  const routeEntry = useProfileRouteEntry(p, name)
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
@@ -1467,6 +1579,7 @@ function ProfileSquare({
   // profile's own row dots (#91710).
   const summary = useProfileStatus(name, connectionId)
   const statusText = !active && summary ? profileStatusLabel(p, summary) : null
+  const failedText = failed ? t.composer.switchProfileFailed(label) : null
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: name,
@@ -1508,11 +1621,13 @@ function ProfileSquare({
               <ContextMenuTrigger asChild>
                 <TooltipTrigger asChild>
                   <button
+                    aria-busy={pending || undefined}
                     className={cn(
-                      'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100 aria-busy:opacity-100',
                       active ? 'opacity-100' : 'opacity-55',
                       isDragging && 'z-10 cursor-grabbing opacity-100'
                     )}
+                    data-switch-failed={failed ? '' : undefined}
                     ref={setNodeRef}
                     style={{
                       backgroundColor: profileColorSoft(hue, active ? 30 : 22),
@@ -1527,7 +1642,7 @@ function ProfileSquare({
                     {...attributes}
                     {...listeners}
                     aria-label={
-                      [remoteHost ? `${label} — ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
+                      [runsWhere ? `${label} — ${runsWhere}` : label, statusText, failedText]
                         .filter(Boolean)
                         .join(', ') || label
                     }
@@ -1568,32 +1683,21 @@ function ProfileSquare({
                     onPointerMove={notePointerMove}
                     onPointerUp={clearPress}
                   >
-                    {profileShortLabel(label)}
-                    {/* The "remote" badge: a tiny globe pinned to the corner of an
-                        overridden profile's square, so which profiles leave this
-                        machine is visible at a glance (#91349). */}
-                    {remoteHost && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
-                        data-slot="profile-remote-badge"
-                      >
-                        <Codicon name="globe" size="0.5rem" />
-                      </span>
-                    )}
-                    {/* The profile's session rollup (#91710): bottom-right so it
-                        never fights the remote globe. */}
-                    {!active && summary && (
-                      <span className="absolute -bottom-0.5 -right-0.5">
-                        <ProfileStatusDot summary={summary} />
-                      </span>
-                    )}
+                    <ProfileSquareContent
+                      active={active}
+                      failed={failed}
+                      label={label}
+                      pending={pending}
+                      runsElsewhere={Boolean(runsWhere)}
+                      sandboxed={sandboxed}
+                      summary={summary}
+                    />
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
             </PopoverAnchor>
             <TooltipContent>
-              {[remoteHost ? `${label} · ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
+              {[runsWhere ? `${label} · ${runsWhere}` : label, statusText, failedText]
                 .filter(Boolean)
                 .join(' · ')}
             </TooltipContent>
@@ -1628,10 +1732,10 @@ function ProfileSquare({
             <Codicon name="package" size="0.875rem" />
             <span>{p.exportMenu}</span>
           </ContextMenuItem>
-          {onConnectRemote && (
-            <ContextMenuItem onSelect={onConnectRemote}>
+          {routeEntry && (
+            <ContextMenuItem onSelect={routeEntry.run}>
               <Codicon name="globe" size="0.875rem" />
-              <span>{remoteHost ? p.remoteOverride.badge(remoteHost) : p.remoteOverride.menuItem}</span>
+              <span>{routeEntry.label}</span>
             </ContextMenuItem>
           )}
           <ContextMenuItem

@@ -1,6 +1,6 @@
 name: hermes-soniox
 repo: https://github.com/XimilalaXiang/hermes-soniox
-sha: 99c747918d3049bca3c6744ba92b176b3f6bef6c
+sha: 79f8d1dec5fcdc75e22ec34e857e5b4e2b8828bf
 description: >-
   Native BYOK Soniox text-to-speech and asynchronous speech-to-text providers with configurable
   languages and voices, automatic STT language detection, and Hermes voice-bubble support.
@@ -10,13 +10,13 @@ description: >-
   secret scope. No telemetry, shell commands, background processes, or stored credentials.
 maintainer: XimilalaXiang
 tier: community
-version: "0.2.0"
+version: "0.2.1"
 category: voice
 requires_hermes: ">=0.22.4"
 docs_url: https://github.com/XimilalaXiang/hermes-soniox#readme
 platforms: []
 known_issues:
-  - Realtime WebSocket TTS/STT is not implemented; v0.2.0 uses file-based synthesis and asynchronous transcription.
+  - Realtime WebSocket TTS/STT is not implemented; v0.2.1 uses file-based synthesis and asynchronous transcription.
 capabilities:
   provides_tools: []
   provides_hooks: []

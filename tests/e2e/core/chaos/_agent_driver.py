@@ -1,4 +1,4 @@
-"""Child-process driver: one real AIAgent + real SessionDB, several turns, stdin control.
+"""Child-process driver: one real AIAgent + its real store, several turns, stdin control.
 
 Run as ``python -m tests.e2e.core.chaos._agent_driver <spec.json>`` with a hermetic
 env (see ``_helpers.hermetic_env``). The agent is built the way the CLI builds it:
@@ -32,7 +32,7 @@ def main(spec_path: str) -> None:
     spec = json.loads(open(spec_path, encoding="utf-8").read())
 
     from hermes_cli.config import load_config
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
 
     cfg = load_config()
@@ -43,7 +43,7 @@ def main(spec_path: str) -> None:
         api_key="sk-fake-chaos",
         model=model_cfg.get("default"),
         max_iterations=int((cfg.get("agent") or {}).get("max_turns") or 90),
-        session_db=SessionDB(),
+        persistence=open_persistence(profile_scope()),
         session_id=spec["session_id"],
         quiet_mode=True,
         platform="cli",

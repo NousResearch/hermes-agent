@@ -36,30 +36,54 @@ def _pc():
     return plugins_cmd
 
 
-def _manifest_name(path: Path, loads) -> Optional[str]:
-    """The manifest's ``name`` when the file is a small regular file that parses, else None."""
+def _read_manifest(path: Optional[Path], loads) -> dict[str, Any]:
+    """The manifest as a dict when the file is a small regular file that parses, else ``{}``."""
+    if path is None:
+        return {}
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MANIFEST_MAX_BYTES:
-            return None
+            return {}
         data = loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
-        return None
-    name = data.get("name") if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _manifest_name(data: dict[str, Any]) -> Optional[str]:
+    name = data.get("name")
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
+#: Files beside a ``plugin.yaml`` that the agent side loads: a ``register(ctx)`` package, or a dashboard
+#: tab/backend (``dashboard/manifest.json``, often with a ``plugin_api.py``) the gateway mounts.
+_AGENT_PAYLOAD_FILES = ("__init__.py", "dashboard/manifest.json")
+
+
+def _yaml_ships_agent_payload(root: Path, manifest: dict[str, Any]) -> bool:
+    """Whether a ``plugin.yaml`` folder has something for the agent side to load. A manifest alone is not
+    enough: desktop-only plugins ship one beside ``desktop/plugin.js`` for metadata, and installing those
+    into the backend's ``plugins/`` puts down a package that loads nothing."""
+    if any((root / rel).is_file() for rel in _AGENT_PAYLOAD_FILES):
+        return True
+    # The loader's manifest-only language pack (``_is_manifest_only_language_pack``), judged the way
+    # ``hermes plugins validate`` does: declared locales plus the folder that holds them.
+    return bool(manifest.get("provides_locales")) and (root / "locales").is_dir()
+
+
 def detect_components(root: Path, fallback_name: str) -> dict[str, Any]:
-    """Electron's ``detectPluginComponents``: an agent half is ``plugin.yaml``/``plugin.yml`` with
-    ``__init__.py``, or a portable ``plugin.json``; a desktop half is ``plugin.js`` at the root or in
-    ``desktop/``."""
+    """Electron's ``detectPluginComponents``: an agent half is a portable ``plugin.json``, or a
+    ``plugin.yaml``/``plugin.yml`` with an agent payload beside it (:func:`_yaml_ships_agent_payload`);
+    a desktop half is ``plugin.js`` at the root or in ``desktop/``. ``__init__.py`` is one payload, not
+    a requirement: a manifest-only package with a ``dashboard/plugin_api.py`` backend is installable."""
     yaml_path = next((root / n for n in ("plugin.yaml", "plugin.yml") if (root / n).is_file()), None)
+    yaml_manifest = _read_manifest(yaml_path, yaml.safe_load)
     portable = root / "plugin.json"
-    agent = (yaml_path is not None and (root / "__init__.py").is_file()) or portable.is_file()
+    agent = (yaml_path is not None and _yaml_ships_agent_payload(root, yaml_manifest)) or portable.is_file()
     desktop = (root / "plugin.js").is_file() or (root / "desktop" / "plugin.js").is_file()
     agent_name = None
     if agent:
-        agent_name = (_manifest_name(yaml_path, yaml.safe_load) if yaml_path is not None else None) or (
-            _manifest_name(portable, json.loads) if portable.is_file() else None) or fallback_name
+        agent_name = (_manifest_name(yaml_manifest) or _manifest_name(_read_manifest(portable, json.loads))
+                      or fallback_name)
     return {"agent": agent, "desktop": desktop, "agent_name": agent_name}
 
 
@@ -119,6 +143,17 @@ def inspect_plugin_source(identifier: str, *, catalog_name: Optional[str] = None
 def _copy(result: dict[str, Any]) -> dict[str, Any]:
     """Each caller gets its own answer: one shared by joined requests must not be edited through another."""
     return {**result, "warnings": list(result["warnings"])}
+
+
+def forget_inspection(identifier: str, *, catalog_name: Optional[str] = None) -> None:
+    """Drop the kept answer for this source in the current profile home once an install consumed it: a
+    source that moved since must be read afresh when the dialog re-opens, not served for the rest of
+    :data:`_RESULT_TTL_SECONDS`. A read still running is left for the requests joined to it."""
+    from hermes_constants import get_hermes_home
+    key = (str(get_hermes_home()), catalog_name or "", identifier)
+    with _inspections_lock:
+        if _inspections.get(key, [None, None])[1] is not None:
+            del _inspections[key]
 
 
 def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:

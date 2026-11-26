@@ -39,6 +39,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { RelayLinkPanel } from "./ChannelsRelayLink";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -58,6 +59,28 @@ const STATE_BADGE: Record<
 
 function stateBadge(state: string) {
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
+}
+
+function platformBadge(platform: MessagingPlatform) {
+  if (platform.relay_exclusive) return { tone: "secondary" as const, label: "Via Team Gateway" };
+  if (platform.disabled_by_relay) return { tone: "secondary" as const, label: "Managed by Team Gateway" };
+  return stateBadge(platform.state);
+}
+
+// The relay-exclusive rule turns this platform off on every gateway start (#141175):
+// a plain "Disabled" plus a live toggle reads as a setting that will not save.
+export function RelayManagedNote({ platform }: { platform: MessagingPlatform }) {
+  // A platform the shared bot carries gets the link panel instead of this dead end.
+  if (!platform.disabled_by_relay || platform.relay_exclusive) return null;
+  return (
+    <span id={`relay-note-${platform.id}`} className="text-xs text-muted-foreground">
+      Team Gateway carries messaging on this deployment, so the gateway turns the direct{" "}
+      {platform.name} connection off at every start. To run it alongside the relay, set{" "}
+      <code className="font-mono">GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true</code> in the
+      gateway's environment (a direct connection keeps the instance from scaling to zero and
+      can deliver messages twice).
+    </span>
+  );
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
@@ -157,6 +180,16 @@ export default function ChannelsPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [restartNeeded, setRestartNeeded] = useState(false);
+  // Channels whose latest save the running gateway could not apply; a later save it applied for the
+  // same channel takes it off, so the banner never outlives the reason for it.
+  const [restartFor, setRestartFor] = useState<ReadonlySet<string>>(() => new Set());
+  const settleRestart = (id: string, live: boolean) =>
+    setRestartFor((prev) => {
+      const next = new Set(prev);
+      if (live) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const [restarting, setRestarting] = useState(false);
 
   const gatewayRunning = platforms.length > 0 && platforms[0].gateway_running;
@@ -233,16 +266,22 @@ export default function ChannelsPage() {
         ...(clearEnv.length ? { clear_env: clearEnv } : {}),
       };
       const result = await api.updateMessagingPlatform(editing.id, body);
+      const live = result.live ? result.live.applied : Boolean(result.hot_served);
+      const reason = result.live?.applied === false ? result.live.detail : undefined;
+      // Enabled without its credentials: the gateway's verdict is "needs setup", never "restart".
+      const needsSetup = result.live?.state === "not_configured";
       showToast(
-        result.hot_served
-          ? `${editing.name} saved; the running gateway is connecting`
-          : `${editing.name} saved`,
+        needsSetup
+          ? `${editing.name} saved; it still needs setup${result.live?.detail ? ` (${result.live.detail})` : ""}`
+          : live
+            ? `${editing.name} saved; the running gateway is connecting`
+            : `${editing.name} saved${reason ? ` (${reason})` : ""}`,
         "success",
       );
+      settleRestart(editing.id, live);
       setEditing(null);
-      if (!result.hot_served) setRestartNeeded(true);
       await load();
-      if (result.hot_served) setTimeout(() => void load(), 4000);
+      if (live) setTimeout(() => void load(), 4000);
     } catch (e) {
       showToast(`Failed to save: ${errorMessage(e)}`, "error");
     } finally {
@@ -255,15 +294,26 @@ export default function ChannelsPage() {
     setTogglingId(platform.id);
     try {
       const result = await api.updateMessagingPlatform(platform.id, { enabled: next });
+      const live = result.live ? result.live.applied : Boolean(result.hot_served);
       setPlatforms((prev) =>
         prev.map((p) =>
           p.id === platform.id
-            ? { ...p, enabled: next, state: next ? "pending_restart" : "disabled" }
+            ? {
+                ...p,
+                enabled: next,
+                state: !next
+                  ? "disabled"
+                  : result.live?.state === "not_configured"
+                    ? "not_configured"
+                    : live
+                      ? "connecting"
+                      : "pending_restart",
+              }
             : p,
         ),
       );
-      if (result.hot_served) setTimeout(() => void load(), 4000);
-      else setRestartNeeded(true);
+      settleRestart(platform.id, live);
+      if (live) setTimeout(() => void load(), 4000);
     } catch (e) {
       showToast(`Could not update the channel: ${errorMessage(e)}`, "error");
     } finally {
@@ -289,6 +339,7 @@ export default function ChannelsPage() {
       await api.restartGateway();
       showToast("Gateway restarting…", "success");
       setRestartNeeded(false);
+      setRestartFor(new Set());
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
@@ -332,7 +383,7 @@ export default function ChannelsPage() {
       <Toast toast={toast} />
 
       {/* Restart banner */}
-      {restartNeeded && (
+      {(restartNeeded || restartFor.size > 0) && (
         <Card className="border-warning/50">
           <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2 text-sm">
@@ -354,7 +405,7 @@ export default function ChannelsPage() {
         </Card>
       )}
 
-      {!gatewayRunning && !restartNeeded && (
+      {!gatewayRunning && !restartNeeded && restartFor.size === 0 && (
         <Card className="border-border">
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
@@ -369,8 +420,8 @@ export default function ChannelsPage() {
 
       <p className="text-xs text-muted-foreground">
         {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; the
-        gateway connects each enabled channel on its next restart.
+        written to <code className="font-courier">{envPath}</code>; a running
+        gateway connects each enabled channel as soon as it is saved.
       </p>
 
       {/* Config modal */}
@@ -570,7 +621,9 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          // Under an exclusive relay the direct bot never runs: setup is the shared-bot link below.
+          const viaRelay = Boolean(platform.relay_exclusive);
+          const badge = platformBadge(platform);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -604,6 +657,7 @@ export default function ChannelsPage() {
                       <span className="text-xs text-muted-foreground">
                         {platform.description}
                       </span>
+                      <RelayManagedNote platform={platform} />
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
                           {platform.error_message}
@@ -618,6 +672,7 @@ export default function ChannelsPage() {
                     </div>
                   </div>
 
+                  {!viaRelay && (
                   <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
                     <div className="flex items-center gap-1.5">
                       {busy ? (
@@ -627,6 +682,10 @@ export default function ChannelsPage() {
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
                           aria-label={`Enable ${platform.name}`}
+                          disabled={platform.disabled_by_relay}
+                          aria-describedby={
+                            platform.disabled_by_relay ? `relay-note-${platform.id}` : undefined
+                          }
                         />
                       )}
                     </div>
@@ -656,8 +715,12 @@ export default function ChannelsPage() {
                       </Button>
                     )}
                   </div>
+                  )}
                 </div>
-                {platform.id === "telegram" && (
+                {platform.relay_fronted && (
+                  <RelayLinkPanel platform={platform} showToast={showToast} />
+                )}
+                {platform.id === "telegram" && !viaRelay && (
                   <TelegramOnboardingPanel
                     onManualSetup={() => openConfig(platform)}
                     onChanged={load}
@@ -667,7 +730,7 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
-                {platform.id === "whatsapp" && (
+                {platform.id === "whatsapp" && !viaRelay && (
                   <WhatsAppOnboardingPanel
                     onChanged={load}
                     onRestartNeeded={() => setRestartNeeded(true)}

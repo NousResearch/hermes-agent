@@ -15,12 +15,15 @@ process that already imported it mount it before the listener starts, exactly as
 
 import asyncio
 from dataclasses import dataclass
+import errno
 import logging
 import os
 import socket
 import sys
 import types
 from typing import Any
+
+from gateway.windows_proactor_accept import install_proactor_accept_guard
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,16 @@ class GatewayAPIHandle:
     task: asyncio.Task
     app: Any
     socket: socket.socket
+    #: A specific-address Webapp bind's loopback socket on the same port (``loopback_companion``).
+    companion: socket.socket | None = None
+
+
+class ListenerAddressError(OSError):
+    """A listener address could not be bound; ``address`` is the ``host:port`` it tried."""
+
+    def __init__(self, address: str, cause: OSError):
+        super().__init__(cause.errno, cause.strerror or str(cause))
+        self.address = address
 
 
 class GatewayDashboardMount:
@@ -97,6 +110,7 @@ class GatewayDashboardMount:
         web.app.state.session_authority = getattr(self.runner, "session_authority", None)
         web.app.state.bound_host = self._state.bound_host
         web.app.state.bound_port = self._state.bound_port
+        web.app.state.loopback_companion = getattr(self._state, "loopback_companion", None)
         if webapp is not None:
             # The browser-hosted Desktop: its bundle at /, its routes (launch handoff, socket tickets,
             # host terminal) on, and the browser credential kept in the home so tabs survive a restart.
@@ -115,6 +129,7 @@ class GatewayDashboardMount:
             self.web.app.state.gateway_runner = None
             self.web.app.state.session_authority = None
             self.web.app.state.withhold_session_token = False
+            self.web.app.state.loopback_companion = None  # a listener mounted next has no loopback socket
             if hasattr(self.web.app.state, "listener_public_url"):
                 delattr(self.web.app.state, "listener_public_url")
             if self._replaced_session_token is not None:
@@ -137,8 +152,10 @@ class GatewayDashboardMount:
             if self._closed:
                 raise RuntimeError("gateway API stopped")
             import importlib
-            web = sys.modules.get("hermes_cli.web_server") or await asyncio.to_thread(
-                importlib.import_module, "hermes_cli.web_server")
+            # import_module, not a sys.modules lookup: the module is listed there while another
+            # thread still runs its body. It returns a loaded module at once and waits for one
+            # that is still importing.
+            web = await asyncio.to_thread(importlib.import_module, "hermes_cli.web_server")
             if self._closed:  # the listener stopped while the import ran
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):
@@ -203,6 +220,28 @@ def _listener_socket(family, kind, proto, port: int, *, dual_stack: bool = False
     return listener
 
 
+def _bind_primary(listener, address, companion) -> None:
+    if companion:
+        from hermes_platform.host.facts import has_interface_address
+        if not has_interface_address(address[0]):
+            raise OSError(errno.EADDRNOTAVAIL, "address not assigned to an interface")
+    listener.bind(address)
+
+
+def _companion_socket(host: str, port: int, backlog: int) -> socket.socket:
+    """The listening loopback socket on *port* beside a specific-address bind; a failure names it."""
+    family, kind, proto, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+    companion = _listener_socket(family, kind, proto, port)
+    try:
+        companion.bind(address)
+        companion.listen(backlog)
+        companion.setblocking(False)
+    except OSError as exc:
+        companion.close()
+        raise ListenerAddressError(f"{host}:{port}", exc) from exc
+    return companion
+
+
 def _listener_public_url(webapp) -> str | None:
     """The public URL the listener answers to: the Webapp's own ``webapp.public_url`` ("" for none),
     never ``dashboard.public_url``, which describes ``hermes dashboard``. None leaves main's listener
@@ -212,7 +251,7 @@ def _listener_public_url(webapp) -> str | None:
 
 async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
     global _ACTIVE_RUNNER
-    from gateway.webapp_listener import dial_origin
+    from gateway.webapp_listener import dial_origin, loopback_companion
     from hermes_cli.web_server_boundary import (
         _dashboard_public_hosts, listener_auth_required, public_hosts_engage_gate, public_url_hosts,
         should_require_auth,
@@ -222,8 +261,10 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     # Existing routers/auth helpers share one process-local app. Never rebind it
     # underneath another listener. Each authority is bound to its own profile DB.
     loaded_web = sys.modules.get("hermes_cli.web_server")
+    # Another thread may still be importing this module, before its app has been assigned.
+    loaded_app = getattr(loaded_web, "app", None)
     if _ACTIVE_RUNNER is not None or (
-            loaded_web is not None and getattr(loaded_web.app.state, "gateway_runner", None) is not None):
+            loaded_app is not None and getattr(loaded_app.state, "gateway_runner", None) is not None):
         raise RuntimeError("gateway API already started")
     public_url = _listener_public_url(webapp)
     if public_url is None:
@@ -235,6 +276,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         auth_required = should_require_auth(host) or public_hosts_engage_gate(trusted)
     state = types.SimpleNamespace(
         bound_host=host, bound_port=None, auth_required=auth_required,
+        loopback_companion=loopback_companion(host) if webapp is not None else None,
         trusted_public_hosts=trusted, gateway_runner=runner,
         session_authority=getattr(runner, "session_authority", None), webapp=webapp)
     mount = GatewayDashboardMount(runner, state)
@@ -247,8 +289,9 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     listener = _listener_socket(family, kind, proto, port,
                                 dual_stack=family == socket.AF_INET6 and address[0] == "::")
     _ACTIVE_RUNNER = runner
+    companion = None
     try:
-        listener.bind(address)
+        _bind_primary(listener, address, state.loopback_companion)
         if port:
             # Under SO_REUSEADDR another socket may bind a fixed port too, and the first to listen
             # owns it. Listening now settles that before the dashboard mounts, so a lost race falls
@@ -256,6 +299,8 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
             listener.listen(config.backlog)
         listener.setblocking(False)
         state.bound_port = listener.getsockname()[1]
+        if state.loopback_companion:
+            companion = _companion_socket(state.loopback_companion, state.bound_port, config.backlog)
         # Loading the ASGI graph may fail too; it owns the same bound socket.
         if not config.loaded:
             config.load()
@@ -266,11 +311,15 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         if state.auth_required or loaded_web is not None or webapp is not None:
             await mount.ensure()
         server.lifespan = config.lifespan_class(config)
-        await server.startup(sockets=[listener])
+        install_proactor_accept_guard(asyncio.get_running_loop())
+        sockets = [listener] if companion is None else [listener, companion]
+        await server.startup(sockets=sockets)
         if not server.started or server.should_exit:
             raise RuntimeError("gateway API lifespan startup failed")
     except BaseException:
         listener.close()
+        if companion is not None:
+            companion.close()
         _ACTIVE_RUNNER = None
         await mount.close()
         raise
@@ -281,9 +330,11 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
             await server.main_loop()
         finally:
             try:
-                await server.shutdown(sockets=[listener])
+                await server.shutdown(sockets=sockets)
             finally:
                 listener.close()
+                if companion is not None:
+                    companion.close()
                 try:
                     await mount.close()
                 finally:
@@ -294,7 +345,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
         # The address the socket bound, never a name: native clients accept only a numeric loopback
         # origin, and ``localhost`` may resolve to either family.
         api_origin=dial_origin(listener.getsockname()[0], state.bound_port),
-        server=server, task=task, app=mount, socket=listener,
+        server=server, task=task, app=mount, socket=listener, companion=companion,
     )
 
 
@@ -315,6 +366,47 @@ def warm_gateway_dashboard(runner) -> None:
 
     runner._gateway_dashboard_warmup = asyncio.get_running_loop().create_task(
         _warm(), name="gateway-dashboard-warmup")
+
+
+_SESSION_SOCKET_MODULE = "tui_gateway.ws"
+
+
+def preload_session_socket() -> "asyncio.Task | None":
+    """Start importing the ``/api/ws`` handler (``tui_gateway.ws``, ~0.7 s of CPU) off the loop.
+
+    Unloaded, the first upgrade imports it on the event loop while the client's 10 s open timeout
+    runs, and a CPU-starved host turns that into a failed attach right after READY. Only a client's
+    own idle-exit gateway preloads: a supervised one may never get a native client, and the module
+    swaps ``sys.stdout``/excepthooks and starts an update check at import."""
+    if _SESSION_SOCKET_MODULE in sys.modules:
+        return None
+    import importlib
+    task = asyncio.create_task(asyncio.to_thread(importlib.import_module, _SESSION_SOCKET_MODULE),
+                               name="gateway-ws-preload")
+    # A startup that raises before awaiting it must not add "Task exception was never retrieved".
+    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+    return task
+
+
+async def await_session_socket_preload(task: "asyncio.Task | None", *, timeout: float = 30.0) -> None:
+    """Let the preload finish before READY, for at most ``timeout`` seconds. Never raises: a failed or
+    still-running import is finished (or retried) by the first attach (:func:`session_socket_handler`)."""
+    if task is None:
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout)
+    except TimeoutError:
+        logger.warning("Session WebSocket handler preload still running after %.0fs; publishing READY", timeout)
+    except Exception:
+        logger.warning("Session WebSocket handler preload failed; it loads on first attach", exc_info=True)
+
+
+async def session_socket_handler():
+    """``tui_gateway.ws.handle_ws``, fetched on a worker thread: an attach that arrives while the
+    module is still loading (a preload that outlived its READY bound) would otherwise block the
+    event loop, and every connection on it, on the import lock the preload thread holds."""
+    import importlib
+    return (await asyncio.to_thread(importlib.import_module, _SESSION_SOCKET_MODULE)).handle_ws
 
 
 async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
@@ -426,7 +518,10 @@ class GatewayRuntimeAPI:
         scope['app'] = self.web_app
         ws = WebSocket(scope, receive, send)
         ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
-        if reason == 'none' or ws.headers.get('origin'):
+        # Native grants are loopback-only, so a remote ticket is the Webapp's (the mobile app sends no
+        # Origin, #147361). Origin is client-controlled, so this reaches no gate an Origin could not.
+        native_peer = bool(ws.client) and ws.client.host in {'127.0.0.1', '::1'}
+        if reason == 'none' or ws.headers.get('origin') or (reason == 'ok' and not native_peer):
             if draining_socket:
                 # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
                 # surface that mints browser tickets redeems one there (elsewhere the loopback gate
@@ -441,8 +536,7 @@ class GatewayRuntimeAPI:
             return await self.app(scope, receive, send)
         if (reason != 'ok' or not _embedded_chat_enabled()
                 or ws_host_origin_reason(ws, state) is not None or ws_client_reason(ws, state) is not None
-                or ws.headers.get('origin')
-                or not ws.client or ws.client.host not in {'127.0.0.1', '::1'}):
+                or ws.headers.get('origin') or not native_peer):
             await ws.close(code=4403)
             return
         operator = True
@@ -459,11 +553,16 @@ class GatewayRuntimeAPI:
                     return
                 return await self.app(scope, receive, send)
         allow_draining = not operator
-        admitted_in_wait = restart_wait_open(self.runner)
+        # Decided here, at admission, not at the mint: a restart wait that opened after the client's
+        # discovery still refuses the machine poller that asked to stay out of it (a Kanban worker),
+        # which would otherwise hold the turn the wait is waiting on.
+        admitted_in_wait = restart_wait_open(self.runner) and not grant.get('refuse_restart_wait')
         # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
         # a parked approval/clarify (#139041); stop() closes this window.
-        if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
-                and not admitted_in_wait):
+        def refused() -> bool:
+            return ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
+                    and not admitted_in_wait)
+        if refused():
             await ws.close(code=1013)
             return
         from gateway.session_authorities import authority_for_profile_id
@@ -474,12 +573,18 @@ class GatewayRuntimeAPI:
         # The ticket names the served profile; this connection binds to that home's authority.
         scope['hermes.session_authority'] = authority
         from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
-        from tui_gateway.ws import handle_ws
         from gateway.session_authorities import owner_scope
-        with owner_scope(authority), attached_client(self.runner):
-            await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
-                                              'profile_id': grant['profile_id'],
-                                              'instance_id': grant['instance_id'],
-                                              'capabilities': grant['capabilities'], 'native_bootstrap': True,
-                                              'profile_scope': grant.get('scope', 'profile')},
-                            subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)
+        # Counted before the handler fetch yields: the ticket is already redeemed, so an idle check
+        # in between would otherwise see no client and exit under this first connection.
+        with attached_client(self.runner):
+            handle_ws = await session_socket_handler()
+            if refused():  # a drain or stop that began while the handler loaded
+                await ws.close(code=1013)
+                return
+            with owner_scope(authority):
+                await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
+                                                  'profile_id': grant['profile_id'],
+                                                  'instance_id': grant['instance_id'],
+                                                  'capabilities': grant['capabilities'], 'native_bootstrap': True,
+                                                  'profile_scope': grant.get('scope', 'profile')},
+                                subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)

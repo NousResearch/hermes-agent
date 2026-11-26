@@ -1,0 +1,17 @@
+name: sentinel-security
+title: Sentinel Security
+description: "Scans scripts before the agent runs them and blocks, asks for approval, or allows them; also hashes files. Disclosure — reads script files referenced in terminal/execute_code tool calls and any path given to its tools (hash and pattern scan only, never executed or returned); appends an audit line (path, SHA-256, verdict) to plugin-data/sentinel-security/sentinel-audit.jsonl in your Hermes home; when a VT_API_KEY is configured, sends each scanned file's SHA-256 (never its contents) to www.virustotal.com, including from the pre-run guard before every flagged command."
+docs_url: https://github.com/Cogkreates/Sentinel-Security#readme
+repo: https://github.com/Cogkreates/Sentinel-Security
+sha: 75bb23ab1b7a3d35f4e175926964e9568ef8a59c
+version: "1.1.1"
+requires_hermes: ">=0.23.0"
+tier: community
+category: tools
+maintainer: Cogkreates
+capabilities:
+  provides_tools:
+    - analyze_file
+    - scan_script
+  provides_hooks:
+    - pre_tool_call

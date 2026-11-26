@@ -194,6 +194,31 @@ describe('persistent browser terminals', () => {
     expect(Socket.instances[0].url.searchParams.get('profile')).toBe('default')
   })
 
+  // A tab opened before boot had a profile recorded its agent alone: that agent's own profile. Enter
+  // on it once expired starts the new shell there, not on the profile the window has moved to.
+  it("starts a fresh hosted shell on its agent's own profile when the tab recorded none", async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: 'relay-ticket' }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    $connection.set(null)
+    const api = install()
+
+    await expect(api.start({ cwd: '/original', restoreKey: 'tab-early' })).resolves.toMatchObject({
+      connectionId: 'alpha',
+      profile: null
+    })
+
+    $connection.set({ connectionId: 'beta', profile: 'research' } as never)
+    await api.start({ connectionId: 'alpha', cwd: '/original', restoreKey: 'tab-expired' })
+
+    expect(Socket.instances.map(socket => socket.url.pathname)).toEqual([
+      '/one/api/relay/alpha/api/host-terminal',
+      '/one/api/relay/alpha/api/host-terminal'
+    ])
+    expect(Socket.instances[1].url.searchParams.has('profile')).toBe(false)
+  })
+
   // A tab opened before the renderer had the list names no agent: the session says which one it started on.
   it('says which agent and profile a hosted shell started on', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(

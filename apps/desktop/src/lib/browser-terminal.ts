@@ -587,7 +587,9 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
         if (options.pinConnection) {
           const named = !saved && startOptions?.connectionId ? startOptions : null
           state.connectionId = await options.pinConnection(named?.connectionId || state.connectionId)
-          state.profile = named?.profile || state.profile
+          // A tab that names its agent but no profile started on that agent's own profile (it opened
+          // before boot had one), so the new shell does too, not the profile now in view.
+          state.profile = named ? named.profile || null : state.profile
         }
 
         if (!state.cwd && !saved) {

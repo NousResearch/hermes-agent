@@ -384,10 +384,17 @@ def _apply_steps(run: Run, plan: BackendPlan, *, force_interrupt: bool) -> float
                          f"the checks never saw. The old backend has not been stopped; run this command again.")
     if not force_interrupt and (late := _late_activity(host, rec)) is not None:
         raise StepFailed(f"{late} The old backend has not been stopped.")
+    m["old_backend_stopped"] = False
+    m["old_backend_disabled"] = False
     run.step("stop_old_backend")
     stopped_at = host.now()
     host.old_stop(rec)
+    m["old_backend_stopped"] = True
+    m["old_backend_disabled"] = "disabling"
+    run.save()
     host.old_disable(rec)
+    m["old_backend_disabled"] = True
+    run.save()
     if (dropin := host.old_unit_dropin_path(rec)) is not None:
         m["old_unit_dropin"] = dropin  # recorded first: rollback and restore remove it
         run.save()
@@ -877,10 +884,21 @@ def _undo(run: Run, errors: list[str]) -> None:
         errors.append(f"did not start the old backend again: {missing}")
         print(f"  ✗ the old backend was not started again: {missing}")
         return
-    if m.get("old_backend_enabled"):
-        attempt("re-enabled the old backend", lambda: host.old_enable(rec))
+    _restore_old_backend(run, attempt)
+
+
+def _restore_old_backend(run: Run, attempt) -> None:
+    """Re-enable and start the old backend during rollback/restore, recording progress for manual steps."""
+    host, m = run.host, run.data
+    rec = m["old_backend"]
+    if m.get("old_backend_enabled") and m.get("old_backend_disabled") is not False:
+        if attempt("re-enabled the old backend", lambda: host.old_enable(rec)):
+            m["old_backend_disabled"] = False
+            run.save()
     if rec.get("was_active") or rec.get("was_loaded"):  # a loaded launchd job was unloaded by the stop step
-        attempt("started the old backend", lambda: _start_old(host, run))
+        if attempt("started the old backend", lambda: _start_old(host, run)):
+            m["old_backend_stopped"] = False
+            run.save()
 
 
 def _migrated_listener_up(host, m: dict) -> Optional[str]:
@@ -973,6 +991,62 @@ def _old_never_stopped(m: dict) -> bool:
     return m.get("kind") == "apply" and not _entered(m, "stop_old_backend")
 
 
+def _launchd_stop_progress(m: dict, unit_path: str) -> tuple[bool, bool, bool]:
+    """``(stopped, disabled, renamed)`` for a launchd manual rollback step.
+
+    Uses the manifest's recorded progress when present; for manifests written before those fields
+    existed, falls back to whether ``stop_old_backend`` finished (or the run is a restore) and whether
+    ``<unit_path>.disabled`` exists on disk.
+    """
+    stop_state = next((s.get("state") for s in m.get("steps") or [] if s.get("name") == "stop_old_backend"), None)
+    completed = m.get("kind") == "restore" or m.get("state") == "done" or stop_state == "done"
+    stopped = m["old_backend_stopped"] if "old_backend_stopped" in m else completed
+    if "old_backend_disabled" in m:
+        raw_disabled = m["old_backend_disabled"]
+        disabled = bool(raw_disabled)
+        if raw_disabled is True:
+            renamed = bool(unit_path)
+        elif raw_disabled == "disabling":
+            renamed = bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
+        else:
+            renamed = False
+    else:
+        disabled = completed or bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
+        renamed = bool(unit_path) and (completed or os.path.lexists(f"{unit_path}.disabled"))
+    return bool(stopped), disabled, renamed
+
+
+def _launchd_manual_rollback_step(m: dict, rec: dict) -> str:
+    """Privilege- and stage-aware manual recovery command for a launchd old backend."""
+    from hermes_cli.gateway_migrate_backends_plan import _SYSTEM_LAUNCHD_DIRS, _is_user_launchd_scope
+    unit_path = (rec.get("unit_path") or "").strip()
+    scope = (rec.get("scope") or "").strip()
+    unit = (rec.get("unit") or "").strip()
+    is_system = not _is_user_launchd_scope(scope) or unit_path.startswith(_SYSTEM_LAUNCHD_DIRS)
+    sudo = "sudo " if is_system else ""
+    if not scope and is_system:
+        scope = "system"
+    stopped, disabled, renamed = _launchd_stop_progress(m, unit_path)
+    parts: list[str] = []
+    if renamed and unit_path:
+        parts.append(f"{sudo}mv {unit_path}.disabled {unit_path}")
+    if disabled and scope and unit:
+        parts.append(f"{sudo}launchctl enable {scope}/{unit}")
+    if stopped:
+        if scope and unit_path:
+            parts.append(f"{sudo}launchctl bootstrap {scope} {unit_path}")
+        elif scope and unit:
+            parts.append(f"{sudo}launchctl kickstart {scope}/{unit}")
+    elif scope and unit:
+        load = f" || {sudo}launchctl bootstrap {scope} {unit_path}" if unit_path else ""
+        parts.append(f"{sudo}launchctl kickstart {scope}/{unit}{load}")
+    elif scope and unit_path:
+        parts.append(f"{sudo}launchctl bootstrap {scope} {unit_path}")
+    return "; ".join(parts) or (
+        f"start the old launchd backend again so it serves {m.get('old_address') or 'its address'} again"
+    )
+
+
 def _manual_rollback_steps(m: dict) -> list[str]:
     """The numbered-by-the-caller steps that finish a rollback by hand, from the recorded state. Every
     ``hermes`` command names this run's profile (``hermes -p NAME``), so it acts on this home."""
@@ -997,8 +1071,7 @@ def _manual_rollback_steps(m: dict) -> list[str]:
         steps += [line for line in (enable, f"{systemctl} start {rec['unit']}" if rec.get("was_active") else None)
                   if line]
     elif rec["supervisor"] == "launchd":
-        steps.append(f"mv {rec['unit_path']}.disabled {rec['unit_path']}; launchctl enable {rec['scope']}/{rec['unit']}; "
-                     f"launchctl bootstrap {rec['scope']} {rec['unit_path']}")
+        steps.append(_launchd_manual_rollback_step(m, rec))
     else:  # its command line may carry a credential (env NAME=value, a token argument): never printed
         pid = f" (it was pid {rec['pid']})" if rec.get("pid") else ""
         steps.append(f"start the old backend again the way you started it before{pid}, so it serves "

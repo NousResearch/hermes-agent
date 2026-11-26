@@ -187,3 +187,233 @@ def test_a_loaded_idle_launch_agent_for_this_home_is_a_second_owner(home, plist,
     assert host.calls == [] and "Another old backend also serves this home: launchd local.hermes-serve" in \
         capsys.readouterr().out
 
+
+_SYSTEM_LABEL = "com.example.hermes-dashboard"
+_SYSTEM_PLIST = f"/Library/LaunchDaemons/{_SYSTEM_LABEL}.plist"
+
+
+class SystemLaunchDaemonHost(LaunchdHost):
+    """A macOS system-domain LaunchDaemon (/Library/LaunchDaemons, scope='system')."""
+
+    def __init__(self, home, plist_path=_SYSTEM_PLIST, *, scope="system", running=True, unreadable_proc_env=False):
+        super().__init__(home, plist_path, running=running)
+        self.scope = scope
+        self.unreadable_proc_env = unreadable_proc_env
+
+    def backends(self):
+        if not self.old["enabled"]:
+            return []
+        return [BackendItem(supervisor="launchd", running=self.old["active"],
+                            pid=_BACKEND_PID if self.old["active"] else None, argv=list(self.argv),
+                            unit=_SYSTEM_LABEL, scope=self.scope, unit_path=str(self.plist) if self.plist else None,
+                            hermes_home=str(self.home), this_home=True)]
+
+    def process_env(self, pid):
+        return None if self.unreadable_proc_env else super().process_env(pid)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_a_system_launchdaemon_is_exit_6_with_user_steps_and_one_sudo_line(home, capsys, dry_run):
+    host = SystemLaunchDaemonHost(home)
+    before = _files(home)
+
+    code = engine.cmd_apply(host, _args(dry_run=dry_run))
+
+    assert code == engine.EXIT_UNSUPPORTED and host.calls == []
+    assert _files(home) == before and not (home / "backend_migration.json").exists()
+    out = capsys.readouterr().out
+    lines = [line.strip() for line in out.splitlines()]
+    steps = lines[lines.index("Steps, in this order (one command per line):") + 1:]
+    sudo = [line for line in steps if line.startswith("sudo ")]
+    assert sudo == [f"sudo launchctl bootout system/{_SYSTEM_LABEL}; sudo launchctl disable system/{_SYSTEM_LABEL}"]
+    before_stop = steps[:steps.index(sudo[0])]
+    after_stop = steps[steps.index(sudo[0]) + 1:]
+    assert not any(" gateway " in s for s in before_stop)
+    assert after_stop[0] == "hermes -p default gateway status"
+    assert after_stop[-1] == "hermes -p default webapp --status"
+    assert not any("sudo hermes" in line or "sudo -E" in line for line in lines)
+    assert any("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in s and _PASSWORD not in s for s in steps)
+    assert _PASSWORD not in out
+
+
+def test_a_system_launchdaemon_reads_plist_env_keys_when_root_process_env_is_unreadable(home, tmp_path, capsys):
+    daemon_plist = tmp_path / "LaunchDaemons" / f"{_SYSTEM_LABEL}.plist"
+    daemon_plist.parent.mkdir()
+    daemon_plist.write_bytes(plistlib.dumps({
+        "Label": _SYSTEM_LABEL, "RunAtLoad": True, "KeepAlive": True,
+        "ProgramArguments": ["/Users/u/.local/bin/hermes", "dashboard", "--no-open", "--host", "0.0.0.0"],
+        "EnvironmentVariables": {"HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "spike",
+                                 "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": _PASSWORD}}))
+    host = SystemLaunchDaemonHost(home, daemon_plist, unreadable_proc_env=True)
+
+    assert engine.cmd_apply(host, _args(dry_run=True)) == engine.EXIT_UNSUPPORTED
+
+    out = capsys.readouterr().out
+    assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in out and _PASSWORD not in out
+    assert f"sudo launchctl bootout system/{_SYSTEM_LABEL}; sudo launchctl disable system/{_SYSTEM_LABEL}" in out
+
+
+def test_a_system_launchdaemon_detach_exits_6_without_spawning(home, capsys):
+    host = SystemLaunchDaemonHost(home)
+
+    assert engine.cmd_apply(host, _args(detach=True)) == engine.EXIT_UNSUPPORTED
+
+    assert host.calls == [] and host.spawned == [] and not (home / "backend_migration.json").exists()
+    assert f"sudo launchctl bootout system/{_SYSTEM_LABEL}; sudo launchctl disable system/{_SYSTEM_LABEL}" in \
+        capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("scope", "unit_path"), [
+    ("system", None),
+    (None, f"/Library/LaunchDaemons/{_SYSTEM_LABEL}.plist"),
+    ("gui/0", f"/System/Library/LaunchDaemons/{_SYSTEM_LABEL}.plist"),
+])
+def test_launchdaemon_detection_catches_system_scope_and_daemon_paths(home, capsys, scope, unit_path):
+    host = SystemLaunchDaemonHost(home, unit_path, scope=scope)
+
+    assert engine.cmd_apply(host, _args(dry_run=True)) == engine.EXIT_UNSUPPORTED
+    assert host.calls == []
+    domain = scope or "system"
+    assert f"sudo launchctl bootout {domain}/{_SYSTEM_LABEL}; sudo launchctl disable {domain}/{_SYSTEM_LABEL}" in \
+        capsys.readouterr().out
+
+
+def test_user_domain_launchagent_still_migrates_automatically(home, plist):
+    class UserDomainLaunchdHost(LaunchdHost):
+        def __init__(self, h, p):
+            super().__init__(h, p)
+            self.scope = "user/501"
+
+        def backends(self):
+            return [BackendItem(**{**item.__dict__, "scope": "user/501"}) for item in super().backends()]
+
+    host = UserDomainLaunchdHost(home, plist)
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_OK
+    steps = manual_steps("0.0.0.0", 9119, BackendItem(supervisor="launchd", running=True, unit=_LABEL,
+                                                      scope="user/501", unit_path=str(plist)))
+    assert f"launchctl bootout user/501/{_LABEL}; launchctl disable user/501/{_LABEL}" in steps
+    assert not any("sudo " in s for s in steps)
+
+
+def test_printed_steps_use_sudo_for_system_launchdaemon():
+    item = BackendItem(supervisor="launchd", running=True, unit=_SYSTEM_LABEL, scope="system",
+                       unit_path=_SYSTEM_PLIST)
+
+    steps = manual_steps("0.0.0.0", 9119, item)
+
+    assert f"sudo launchctl bootout system/{_SYSTEM_LABEL}; sudo launchctl disable system/{_SYSTEM_LABEL}" in steps
+
+
+def _system_manifest(home, *, stopped, disabled, stop_state="failed", legacy=False):
+    m = {
+        "version": 1, "kind": "apply", "state": "failed", "step": "stop_old_backend",
+        "home": str(home), "old_address": "0.0.0.0:9119", "new_address": "0.0.0.0:9119",
+        "entered": ["manifest", "write_config", "gateway_service", "stop_old_backend"],
+        "steps": [{"name": "stop_old_backend", "state": stop_state}],
+        "backups": {"config": str(home / "backend_migration" / "config.yaml.bak"),
+                    "env": str(home / "backend_migration" / "env.bak")},
+        "gateway": {"installed": False, "enabled": False, "active": False, "kind": "launchd"},
+        "old_backend": {"supervisor": "launchd", "unit": _SYSTEM_LABEL, "scope": "system",
+                        "unit_path": _SYSTEM_PLIST, "was_active": True, "was_loaded": True},
+    }
+    if not legacy:
+        m["old_backend_stopped"] = stopped
+        m["old_backend_disabled"] = disabled
+    return m
+
+
+def test_manual_rollback_steps_use_sudo_for_system_launchdaemon_when_disabled(home):
+    m = _system_manifest(home, stopped=True, disabled=True, stop_state="done")
+
+    steps = engine._manual_rollback_steps(m)
+
+    assert steps[-1] == (f"sudo mv {_SYSTEM_PLIST}.disabled {_SYSTEM_PLIST}; "
+                         f"sudo launchctl enable system/{_SYSTEM_LABEL}; "
+                         f"sudo launchctl bootstrap system {_SYSTEM_PLIST}")
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_manual_rollback_steps_for_system_launchdaemon_failed_at_stop_omit_mv_and_use_sudo(home, legacy):
+    m = _system_manifest(home, stopped=False, disabled=False, stop_state="failed", legacy=legacy)
+
+    steps = engine._manual_rollback_steps(m)
+
+    assert steps[-1] == (f"sudo launchctl kickstart system/{_SYSTEM_LABEL} || "
+                         f"sudo launchctl bootstrap system {_SYSTEM_PLIST}")
+    assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1]
+
+
+def test_manual_rollback_steps_when_old_stop_fails_omit_mv_and_skip_old_enable(home, plist):
+    host = LaunchdHost(home, plist)
+    host.fail_at["old_stop"] = RuntimeError("Operation not permitted")
+    host.fail_at["uninstall_gateway"] = RuntimeError("gateway uninstall blocked")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    assert "old_enable" not in host.calls
+    steps = engine.status_payload(host)["manual_steps"]
+    assert steps[-1] == f"launchctl kickstart {_DOMAIN}/{_LABEL} || launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1] and "sudo " not in steps[-1]
+
+
+def test_manual_rollback_steps_when_old_disable_fails_before_rename_omit_mv(home, plist):
+    host = LaunchdHost(home, plist)
+    host.fail_at["old_disable"] = RuntimeError("disable failed")
+    host.fail_at["old_enable"] = RuntimeError("enable failed")
+    host.fail_at["old_start"] = RuntimeError("cannot bootstrap disabled job")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    steps = engine.status_payload(host)["manual_steps"]
+    assert steps[-1] == f"launchctl enable {_DOMAIN}/{_LABEL}; launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-1]
+
+
+def test_manual_rollback_steps_when_old_disable_fails_after_rename_keep_mv(home, plist):
+    host = LaunchdHost(home, plist)
+
+    def rename_then_fail(rec):
+        host._change("old_disable")
+        plist.rename(plist.with_name(plist.name + ".disabled"))
+        raise RuntimeError("post-rename failure")
+
+    host.old_disable = rename_then_fail
+    host.fail_at["old_enable"] = RuntimeError("enable failed")
+    host.fail_at["old_start"] = RuntimeError("plist missing")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    steps = engine.status_payload(host)["manual_steps"]
+    assert steps[-1] == (f"mv {plist}.disabled {plist}; launchctl enable {_DOMAIN}/{_LABEL}; "
+                         f"launchctl bootstrap {_DOMAIN} {plist}")
+
+
+def test_manual_rollback_steps_when_old_enable_succeeded_and_old_start_failed_omit_mv_and_enable(home, plist):
+    host = LaunchdHost(home, plist)
+    host.fail_at["gateway_start"] = RuntimeError("gateway start failed")
+    host.fail_at["old_start"] = RuntimeError("bootstrap failed")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    steps = engine.status_payload(host)["manual_steps"]
+    assert steps[-1] == f"launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1]
+
+
+def test_manual_rollback_steps_before_stop_old_backend_emit_no_launchctl_step(home, plist):
+    host = LaunchdHost(home, plist)
+
+    def partial_install():
+        host._change("install_gateway")
+        host.gw["installed"] = True
+        raise RuntimeError("install failed partway")
+
+    host.install_gateway = partial_install
+    host.fail_at["uninstall_gateway"] = RuntimeError("uninstall failed")
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    steps = engine.status_payload(host)["manual_steps"]
+    assert not any("launchctl" in s or ".disabled" in s for s in steps)
+

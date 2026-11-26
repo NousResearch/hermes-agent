@@ -241,6 +241,82 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 
 ---
 
+## Ad-Hoc Paper List Workflow
+
+When you already have a list of arXiv IDs (e.g., from a recommendation feed, a colleague, or a saved reading list), batch-fetch them together and optionally enrich with theme classification and jargon detection.
+
+### Batch fetch by ID list
+
+```bash
+# Fetch multiple papers in a single API call (comma-separated IDs)
+curl -s "https://export.arxiv.org/api/query?id_list=2402.03300,2401.12345,2403.00001,2305.12345,2306.00001" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+ns = {'a': 'http://www.w3.org/2005/Atom'}
+root = ET.parse(sys.stdin).getroot()
+for entry in root.findall('a:entry', ns):
+    title = entry.find('a:title', ns).text.strip().replace('\n', ' ')
+    arxiv_id = entry.find('a:id', ns).text.strip().split('/abs/')[-1]
+    published = entry.find('a:published', ns).text[:10]
+    summary = entry.find('a:summary', ns).text.strip()[:200]
+    cats = ', '.join(c.get('term') for c in entry.findall('a:category', ns))
+    print(f'[{arxiv_id}] {title}')
+    print(f'   Published: {published} | Categories: {cats}')
+    print(f'   Abstract: {summary}...')
+    print()
+"
+```
+
+The `id_list` parameter accepts up to **several hundred** comma-separated arXiv IDs in a single request. The API returns results in the same order as the input list, with missing/deleted IDs silently skipped.
+
+### Enrich each paper with citation data
+
+Pipe the IDs from your list through Semantic Scholar to get citation counts and related work:
+
+```bash
+for id in 2402.03300 2401.12345 2403.00001; do
+  echo "=== arXiv:$id ==="
+  curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:$id?fields=title,citationCount,influentialCitationCount,referenceCount" | python3 -m json.tool
+  echo
+done
+```
+
+### Optional: classify by theme
+
+If the **unified-digest-themes** skill is loaded, classify each paper using its taxonomy:
+
+```python
+# Pseudocode — adapt to your pipeline:
+# 1. Collect abstracts from the batch fetch above
+# 2. For each abstract, map to a theme from unified-digest-themes
+# 3. Tag papers that don't match any known theme as "uncategorized"
+```
+
+When the skill is not loaded, skip classification entirely — the raw arXiv data is still fully usable.
+
+### Optional: detect jargon
+
+If the **jargon** skill is loaded, scan abstracts for domain-specific terms:
+
+```python
+# Pseudocode — adapt to your pipeline:
+# 1. Extract abstract text from each paper
+# 2. Compare against the jargon registry to flag known terms
+# 3. Note any new or emerging terms for possible registry addition
+```
+
+When the skill is not available, skip jargon detection — the paper list remains complete without it.
+
+### Graceful degradation summary
+
+| Component | If loaded | If not loaded |
+|-----------|-----------|---------------|
+| Theme classification | Classify papers using unified-digest-themes taxonomy | Skip; no effect on paper data |
+| Jargon detection | Flag domain terms from jargon registry | Skip; no effect on paper data |
+| Citation enrichment | Use Semantic Scholar API | Papers still have arXiv metadata |
+| Batch fetch | One API call for all IDs | N/A — this is the core operation |
+
+---
+
 ## Complete Research Workflow
 
 1. **Discover**: `python scripts/search_arxiv.py "your topic" --sort date --max 10`

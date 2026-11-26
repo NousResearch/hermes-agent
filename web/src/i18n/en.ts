@@ -586,14 +586,6 @@ export const en: Translations = {
     in: "in",
     config: "Config",
     setMainModel: "Set Main Model",
-    providerPlaceholder: "(provider)",
-    modelPlaceholder: "(model)",
-    tokenAnalyticsHiddenBefore:
-      "Token & cost analytics are hidden because the local counts exclude auxiliary calls (compression, vision, web extract, …) and provider retries, so they diverge from your provider bill. Enable",
-    tokenAnalyticsHiddenAfter:
-      "to show the local debug estimate anyway.",
-    in: "in",
-    config: "Config",
   },
 
   mcpUi: {

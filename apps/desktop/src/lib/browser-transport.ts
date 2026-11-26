@@ -31,10 +31,12 @@ export function browserBootstrap(): BrowserBootstrap | null {
   if (!hasBrowserHostBootstrap()) {return null}
 
   const win = window as Window & BrowserHostGlobals
-  const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
   const basePath = normalizeBasePath(win.__HERMES_BASE_PATH__)
-  const privateSession = !authRequired && win.__HERMES_UI_SURFACE__ === 'webapp'
-  const token = privateSession ? readWebappSession(basePath) : ''
+  const isWebapp = win.__HERMES_UI_SURFACE__ === 'webapp'
+  const serverAuthRequired = win.__HERMES_AUTH_REQUIRED__ === true
+  const token = !serverAuthRequired && isWebapp ? readWebappSession(basePath) : ''
+  const authRequired = serverAuthRequired || (!token && win.__HERMES_LOGIN_AVAILABLE__ === true)
+  const privateSession = !authRequired && isWebapp
 
   return {
     authRequired,

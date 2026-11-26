@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL
+from agent.gemini_urls import VERTEX_EXPRESS_BASE_URL
 
 _STUDIO_MODELS = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -90,7 +90,9 @@ def test_dashboard_gemini_probe_uses_each_profiles_base(tmp_path, monkeypatch, l
     named = root / "profiles" / "studio"
     named.mkdir(parents=True)
     (named / "config.yaml").write_text("model: {}\n", encoding="utf-8")
-    (named / ".env").write_text("", encoding="utf-8")
+    # An explicitly empty profile base must use the Studio default instead of
+    # inheriting the launch profile's Vertex Express base.
+    (named / ".env").write_text("GEMINI_BASE_URL=\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     express = "https://aiplatform.googleapis.com"
     if launch_source == "env":

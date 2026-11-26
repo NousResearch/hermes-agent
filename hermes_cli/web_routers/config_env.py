@@ -1167,7 +1167,7 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 
     url, auth = probe
     if key == "GEMINI_API_KEY":
-        from agent.gemini_native_adapter import normalize_gemini_base_url
+        from agent.gemini_urls import normalize_gemini_base_url
         from agent.secret_scope import get_secret
 
         # The selected profile's base decides the surface, never the key prefix or another

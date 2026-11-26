@@ -206,7 +206,7 @@
     },
     {
       "name": "bot_relay.deliver",
-      "summary": "Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).",
+      "summary": "Forward an identified DM to the target profile's authority and return its delivery receipt.",
       "params": [
         {
           "name": "params",
@@ -7658,6 +7658,10 @@
         "additionalProperties": false,
         "description": "``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds).",
         "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
           "profile": {
             "title": "Profile",
             "type": "string"
@@ -7704,6 +7708,7 @@
           }
         },
         "required": [
+          "id",
           "profile",
           "message"
         ],
@@ -7712,14 +7717,127 @@
       },
       "BotRelayDeliverResult": {
         "additionalProperties": false,
+        "description": "A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same\non the canonical door and across this relay bridge. It names its admission, unless ``refused``: a\nterminal ``failed`` receipt for a delivery that was never admitted (refused by the FIFO, or settled\nas not sent), which the relay settles as the sender's answer.",
         "properties": {
-          "reply": {
-            "title": "Reply",
+          "status": {
+            "title": "Status",
             "type": "string"
+          },
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "profile_home": {
+            "title": "Profile Home",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refused"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply"
+          },
+          "retry_admission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry Admission Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "target_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "working",
+                  "waiting_approval",
+                  "waiting_clarify",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target State"
           }
         },
         "required": [
-          "reply"
+          "status",
+          "delivery_id",
+          "profile_home",
+          "session_id",
+          "message"
         ],
         "title": "BotRelayDeliverResult",
         "type": "object"
@@ -8320,133 +8438,6 @@
           "id"
         ],
         "title": "CanonicalBotDeliverParams",
-        "type": "object"
-      },
-      "CanonicalBotDeliverResult": {
-        "additionalProperties": false,
-        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
-        "properties": {
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "delivery_id": {
-            "title": "Delivery Id",
-            "type": "string"
-          },
-          "profile_home": {
-            "title": "Profile Home",
-            "type": "string"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "admission_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Admission Id"
-          },
-          "refused": {
-            "anyOf": [
-              {
-                "const": true,
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Refused"
-          },
-          "message": {
-            "title": "Message",
-            "type": "string"
-          },
-          "reply": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reply"
-          },
-          "retry_admission_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry Admission Id"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          },
-          "target_state": {
-            "anyOf": [
-              {
-                "enum": [
-                  "idle",
-                  "working",
-                  "waiting_approval",
-                  "waiting_clarify",
-                  "paused"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Target State"
-          }
-        },
-        "required": [
-          "status",
-          "delivery_id",
-          "profile_home",
-          "session_id",
-          "message"
-        ],
-        "title": "CanonicalBotDeliverResult",
         "type": "object"
       },
       "CanonicalClientIdentity": {
@@ -50813,7 +50804,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+          "$ref": "#/components/schemas/BotRelayDeliverResult"
         }
       }
     },
@@ -50831,7 +50822,7 @@
       "result": {
         "name": "result",
         "schema": {
-          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+          "$ref": "#/components/schemas/BotRelayDeliverResult"
         }
       }
     },

@@ -6,13 +6,17 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
+from functools import partial
 from pathlib import Path
+from shlex import quote
 
 import pytest
 
 from hermes_platform.resolver.git import (
     GitResolution,
     _CltGitCache,
+    _probe_xcode_select_developer_dir,
     clear_git_usability_cache,
     inspect_git,
     is_git_command,
@@ -26,6 +30,43 @@ def _make_exe(path: Path, body: str = "#!/usr/bin/env bash\nexit 0\n") -> Path:
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
+
+
+@pytest.mark.platforms("posix")
+def test_xcode_select_timeout_discards_late_developer_dir(tmp_path):
+    stub = _make_exe(tmp_path / "usr_bin" / "git")
+    bash = shutil.which("bash")
+    assert bash is not None, "bash is required to execute fake xcode-select scripts"
+    (stub.parent / "bash").symlink_to(bash)
+    developer = tmp_path / "developer"
+    _make_exe(developer / "usr" / "bin" / "git")
+
+    def _make_select(name: str, delay: float) -> Path:
+        code = f"import time; time.sleep({delay}); print({str(developer)!r})"
+        return _make_exe(
+            tmp_path / name,
+            f"#!/usr/bin/env bash\nexec {quote(sys.executable)} -c {quote(code)}\n",
+        )
+
+    fast_select = _make_select("xcode-select-fast", 0)
+    fast = inspect_git(
+        {"PATH": str(stub.parent)},
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=partial(_probe_xcode_select_developer_dir, xcode_select=str(fast_select)),
+        cache=_CltGitCache(),
+    )
+    assert fast.status == "usable"
+
+    slow_select = _make_select("xcode-select-slow", 3)
+    slow = inspect_git(
+        {"PATH": str(stub.parent)},
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=partial(_probe_xcode_select_developer_dir, xcode_select=str(slow_select)),
+        cache=_CltGitCache(),
+    )
+    assert slow.status == "clt_stub"
 
 
 @pytest.mark.platforms("posix")

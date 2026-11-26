@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -150,8 +149,38 @@ def test_secret_source_blocker_uses_kept_webapp_port_with_keep_webapp_address(ho
     assert "http://127.0.0.1:9119" not in plan.blockers[0]
 
 
+def test_secret_source_blocker_names_no_port_while_the_webapp_is_enabled_elsewhere(home):
+    """The Webapp already on 9200 blocks a move onto the old backend's 9119 until --keep-webapp-address keeps
+    it on 9200, so an example on 9119 would leave webapp.public_url on the port that re-run retires. With no
+    port known it prints no command either: saved as is, the placeholder would keep the Webapp off."""
+    _write_config(
+        home,
+        "secrets:\n  vault:\n    enabled: true\nwebapp:\n  enabled: true\n  host: 127.0.0.1\n  port: 9200\n",
+    )
+    plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119))
+
+    blocker = next(b for b in plan.blockers if "external secret source" in b)
+    assert "http://127.0.0.1:<port>" in blocker
+    assert "9119" not in blocker
+    assert "config set" not in blocker
+
+
+def test_secret_source_blocker_ignores_keep_webapp_address_on_a_by_hand_move(home):
+    """A by-hand move refuses --keep-webapp-address, so its example never names the kept Webapp's port."""
+    _write_config(
+        home,
+        "secrets:\n  vault:\n    enabled: true\nwebapp:\n  enabled: true\n  host: 127.0.0.1\n  port: 9200\n",
+    )
+    plan = plan_mod.build_plan(_host_on(home, bind="0.0.0.0", port=9119, supervisor="nix-systemd"), keep_webapp=True)
+
+    blocker = next(b for b in plan.blockers if "external secret source" in b)
+    assert "http://127.0.0.1:<port>" in blocker
+    assert "9200" not in blocker
+    assert "9119" not in blocker
+
+
 def test_secret_source_blocker_direct_call_without_address_uses_port_placeholder(home):
-    """Direct 1-arg callers stay compatible and never guess port 9119 when no address is supplied."""
+    """Direct 1-arg callers stay compatible and never guess port 9119 or print a placeholder command."""
     _write_config(home, "secrets:\n  vault:\n    enabled: true\n")
     blocker = plan_mod.secret_source_blocker(FakeHost(home))
 
@@ -159,6 +188,7 @@ def test_secret_source_blocker_direct_call_without_address_uses_port_placeholder
     assert "external secret source is enabled" in blocker
     assert "http://127.0.0.1:<port>" in blocker
     assert "http://127.0.0.1:9119" not in blocker
+    assert "config set" not in blocker
 
 
 def test_secret_source_blocker_keeps_fail_closed_and_url_validation_invariants(home):
@@ -179,19 +209,8 @@ def test_secret_source_blocker_keeps_fail_closed_and_url_validation_invariants(h
         assert ok.blockers == [], valid_url
 
 
-def test_secret_source_blocker_minimal_stub_host_does_not_crash():
-    """A minimal host double providing only effective_config() still works without home/os_family."""
-    stub = SimpleNamespace(effective_config=lambda: {"secrets": {"bitwarden": {"enabled": True}}})
-    blocker = plan_mod.secret_source_blocker(stub)
-
-    assert blocker is not None
-    assert "external secret source is enabled" in blocker
-    assert "hermes -p default config set webapp.public_url" in blocker
-
-
 def test_migration_docs_explain_secret_source_public_url_guidance():
     text = " ".join(_GUIDE.read_text(encoding="utf-8-sig").split())
-    assert "HERMES_DASHBOARD_PUBLIC_URL" in text
-    assert "secrets:" in text
-    assert "browser-facing" in text
-    assert "http://127.0.0.1:9119" in text
+    assert "when an external secret source is enabled under `secrets:`" in text
+    assert "the planner never reads vault values" in text
+    assert "without exposing anything to the internet" in text

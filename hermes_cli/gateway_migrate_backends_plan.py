@@ -817,18 +817,15 @@ def _loopback_public_url(address: Optional[tuple[str, int]]) -> str:
     """A valid loopback ``webapp.public_url`` matching *address*'s host/IP family and port, or a placeholder."""
     if address is None:
         return "http://127.0.0.1:<port>"
-    bind_host, port = address
-    canonical = _canonical(bind_host.strip())
-    host = "localhost" if canonical == "localhost" else ("::1" if ":" in canonical else "127.0.0.1")
-    return f"http://{format_address(host, port)}"
+    from gateway.webapp_listener import dial_origin
+    return dial_origin(_canonical(address[0].strip()), address[1])
 
 
 def _secret_source_address(item: Optional[BackendItem], host, keep_webapp: bool) -> Optional[tuple[str, int]]:
-    if keep_webapp:
-        settings = host.webapp_settings()
-        if settings.enabled:
-            return settings.host, settings.port
-    return _address_of(item, host) if item is not None else None
+    """Where the Webapp would serve after the move (:func:`_target`); None while that is unknown or blocked,
+    since the old backend's port is wrong once the Webapp is already enabled on another address."""
+    old = _address_of(item, host) if item is not None else None
+    return _target(host, old, keep_webapp)[0] if old is not None else None
 
 
 def secret_source_blocker(host, *, address: Optional[tuple[str, int]] = None, nix: bool = False) -> Optional[str]:
@@ -845,8 +842,7 @@ def secret_source_blocker(host, *, address: Optional[tuple[str, int]] = None, ni
     from hermes_constants import get_managed_system
 
     local_url = _loopback_public_url(address)
-    home = getattr(host, "home", None)
-    managed = get_managed_system(home) if home is not None else None
+    managed = get_managed_system(host.home)
     if nix or managed in ("nix", "nixos", "home-manager"):
         where = (f"Set webapp.public_url in your Nix configuration to the URL you open in a browser, "
                  f"or {local_url} for local/Desktop-only use")
@@ -854,10 +850,10 @@ def secret_source_blocker(host, *, address: Optional[tuple[str, int]] = None, ni
         where = (f"Set webapp.public_url in your {managed} configuration to the URL you open in a browser, "
                  f"or {local_url} for local/Desktop-only use")
     else:
-        powershell = getattr(host, "os_family", lambda: "linux")() == "win32"
-        hermes = hermes_command(str(home) if home is not None else None, powershell=powershell)
-        where = (f"Set webapp.public_url to the URL you open in a browser, or {local_url} for local/Desktop-only "
-                 f"use (e.g. `{hermes} config set webapp.public_url {shlex.quote(local_url)}`)")
+        where = f"Set webapp.public_url to the URL you open in a browser, or {local_url} for local/Desktop-only use"
+        if address is not None:  # saved as is, the <port> placeholder would keep the Webapp off
+            hermes = hermes_command(str(host.home), powershell=host.os_family() == "win32")
+            where += f" (e.g. `{hermes} config set webapp.public_url {shlex.quote(local_url)}`)"
     return ("An external secret source is enabled (secrets: in config.yaml), and it may set or override the old "
             "backend's HERMES_DASHBOARD_PUBLIC_URL; Hermes never reads vault values to guess it. "
             "webapp.public_url is simply the browser-facing http:// or https:// address the Webapp uses for "
@@ -1219,7 +1215,7 @@ def _build_plan(host, *, address=None, keep_webapp=False, force_interrupt=False)
         selected = plan.candidates[0] if plan.candidates else plan.unsupported[0][0]
         if problem := secret_source_blocker(
             host,
-            address=_secret_source_address(selected, host, keep_webapp),
+            address=_secret_source_address(selected, host, keep_webapp and bool(plan.candidates)),
             nix=selected is not None and selected.supervisor in ("nix-systemd", "nix-launchd"),
         ):
             plan.blockers.append(problem)

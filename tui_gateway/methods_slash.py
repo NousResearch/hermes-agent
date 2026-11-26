@@ -433,7 +433,9 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         tools = getattr(agent, "tools", None) or None
 
         def estimate(messages, prompt, tool_defs) -> int:
-            return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tool_defs) if messages else 0
+            from agent.turn_context import _agent_stale_thinking_on_wire
+            return estimate_request_tokens_rough(
+                messages, system_prompt=prompt, tools=tool_defs, charge_stale_thinking=_agent_stale_thinking_on_wire(agent)) if messages else 0
         before_tokens = estimate(before_messages, sys_prompt, tools)
         snapshot = {"approx_tokens": before_tokens, "before_messages": before_messages, "history_version": history_version}
         try:

@@ -3389,9 +3389,9 @@ def _finish_compaction_boundary(
 
     # Diagnostics only, not provider usage: schema-heavy rough estimates can stay
     # above threshold even after the next real request fits.
-    _compressed_est = estimate_request_tokens_rough(
-        compressed, system_prompt=new_system_prompt or "", tools=agent.tools or None
-    )
+    from agent.turn_context import _agent_stale_thinking_on_wire
+    _compressed_est = estimate_request_tokens_rough(compressed, system_prompt=new_system_prompt or "", tools=agent.tools or None,
+                                                    charge_stale_thinking=_agent_stale_thinking_on_wire(agent))
     compressor.last_compression_rough_tokens = _compressed_est
     compressor.last_prompt_tokens = -1
     compressor.last_completion_tokens = 0

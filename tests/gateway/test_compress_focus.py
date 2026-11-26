@@ -65,7 +65,7 @@ async def test_compress_focus_topic_passed_to_agent():
     agent_instance._compress_context.return_value = (compressed, "")
     agent_instance._compression_skipped_due_to_lock = False
 
-    def _estimate(messages):
+    def _estimate(messages, **_kwargs):
         return 100
 
     with (

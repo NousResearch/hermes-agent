@@ -18,7 +18,7 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
 2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in a directory; a running process picks it up on its next provider lookup (no restart)
-3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager
+3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager. `model-providers` is the folder from step 2, so `hermes plugins install` refuses a plugin whose own name is `model-providers` (in any letter case), except a re-install of an existing install of that name from its recorded source
 4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
 
 Steps 2 and 3 are **per profile home**: one process that serves several profiles (the multiplex gateway a local Desktop attaches to, a `hermes serve` backend) resolves the plugins of whichever profile's `$HERMES_HOME` is bound at lookup time, and a plugin installed in one profile is not visible from another. Install the plugin in every profile that should use it (`hermes -p <profile> plugins install ...`).
@@ -350,6 +350,18 @@ A provider's own `hermes model` step calls these instead of re-implementing core
 | `hermes_cli.model_setup.note_setup_failure(failure_class)` | Records why the flow ended without a pick (`"auth"`, `"no_models"`, ...) for the opt-in provider-setup metric; a no-op outside a tracked flow. |
 | `agent.secret_scope.secret_source_label(name)` | `" (from Bitwarden)"`-style suffix naming the secret-source plugin that supplied env var `name`; `""` for `.env` / shell values. |
 
+### Public helpers for native Gemini reasoning
+
+A provider on the native Gemini wire (`generateContent`) maps the reasoning config with these, so its efforts follow
+the same per-model rules as the built-in `gemini` provider. The profile still chooses the request field and its own
+output budget.
+
+| Helper | What it does |
+|---|---|
+| `agent.reasoning_effort.gemini_thinking_config(model, reasoning_config)` | Native camelCase `thinkingConfig` for a Hermes reasoning config (`{"enabled": False}` gives the lowest level the model allows, with thoughts hidden; `xhigh` and above reach `xhigh` on the models that take it), or `None` for a non-Gemini model or no reasoning config. |
+| `agent.reasoning_effort.clamp_effort(effort, supported, overrides=None)` | Clamps an effort onto a declared level tuple: unchanged when supported, else the nearest weaker level (the weakest one when nothing is weaker). |
+| `agent.reasoning_effort.bare_gemini_model_id(model)` | The model id the native Gemini client sends (`gemini/` and `google/` prefixes stripped). `gemini_thinking_config` already applies it; it imports no HTTP stack. |
+
 ## Account usage
 
 Model-provider plugins can provide account or plan usage to `/usage` by
@@ -465,7 +477,7 @@ Look at these bundled plugins for idioms:
 | Plugin | Why look |
 |---|---|
 | `plugins/model-providers/openrouter/` | Aggregator with provider preferences, public model catalog |
-| `plugins/model-providers/gemini/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
+| `plugins/model-providers/google/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
 | `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`, `extra_body.thinking`, top-level `reasoning_effort` |
 | `plugins/model-providers/qwen-oauth/` | Message normalization, `cache_control` injection, VL high-res |
 | `plugins/model-providers/nous/` | Attribution tags, "omit reasoning when disabled" |

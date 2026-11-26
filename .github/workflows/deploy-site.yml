@@ -284,6 +284,53 @@ jobs:
         with:
           path: _site
 
+      # deploy-pages lists this run's artifacts once, ~300 ms after the upload
+      # finalizes, and the artifact service often has not listed it yet
+      # ("Found 0 artifact(s)"; actions/deploy-pages#451 measured 0.5-46 s).
+      # Poll that same listing until the artifact shows up, then deploy once.
+      # Re-running deploy-pages on failure is not safe: it can fail after the
+      # Pages deployment exists. Re-running the job is not either: its second
+      # upload makes two "github-pages" artifacts and the lookup refuses both.
+      # This step only ever delays: on a timeout, or a listing it cannot read,
+      # it warns and deploy-pages runs exactly as it would without it.
+      - name: Wait for the artifact to be listed
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const scope = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
+              .scp.split(' ').find(s => s.startsWith('Actions.Results:'));
+            const [, runId, jobId] = scope.split(':');
+            const url = new URL('/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts',
+              process.env.ACTIONS_RESULTS_URL).href;
+            const deadline = Date.now() + 120_000;
+            while (Date.now() < deadline) {
+              let note;
+              try {
+                const res = await fetch(url, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ workflow_run_backend_id: runId, workflow_job_run_backend_id: jobId }),
+                  signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
+                });
+                if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+                  core.warning(`artifact listing answered HTTP ${res.status}; deploying without waiting`);
+                  return;
+                }
+                if (res.ok && ((await res.json()).artifacts || []).some(a => a.name === 'github-pages')) {
+                  core.info('github-pages artifact is listed');
+                  return;
+                }
+                note = `HTTP ${res.status}, not listed yet`;
+              } catch (err) {
+                note = `listing failed: ${err.message}`;
+              }
+              core.info(`${note}; checking again in 3 s`);
+              await new Promise(r => setTimeout(r, 3000));
+            }
+            core.warning('github-pages artifact still not listed after 120 s; deploying anyway');
+
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

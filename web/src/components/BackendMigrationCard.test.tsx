@@ -24,6 +24,7 @@ import {
   unknownStateStatus,
 } from "./BackendMigrationCard.engine.fixture";
 import {
+  UNREACHABLE_AFTER_SECONDS,
   applyOutcome,
   blockerAdvice,
   isFileNote,
@@ -143,27 +144,50 @@ describe("BackendMigrationCard", () => {
     expect(moveButton()?.disabled).toBe(false);
   });
 
-  it("holds the move while a blocker stands and says what to do", async () => {
-    await render(planWith({
-      blockers: ["1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted)."],
-    }));
-    expect(moveButton()?.disabled).toBe(true);
-    expect(container.textContent).toContain("Wait for them to finish. Or move anyway");
+  it("lets a running chat not hold Move: the confirmation says it is cut off, and the move is sent forced", async () => {
+    const running = "1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted).";
+    const cut = "Cuts off the 1 reply(ies) being written on the old backend.";
+    await render(planWith({ blockers: [running], forceable_blockers: [running], takes_over: [cut] }));
+    expect(moveButton()?.disabled).toBe(false);
+    expect(container.querySelector('[data-slot="backend-migration-blocker"]')).toBeNull();
+    expect(container.querySelector('[data-slot="backend-migration-takes-over"]')?.textContent).toBe(cut);
     expect(container.textContent).not.toContain("--force-interrupt");
-    expect(button("Move anyway")).toBeDefined();
+    expect(button("Move anyway")).toBeUndefined();
+    const bodies: unknown[] = [];
+    server(async (init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return json(409, { error: "blocked", message: "x" });
+    }, [none]);
+    await act(async () => moveButton()!.click());
+    expect(document.body.textContent).toContain("Running chats are stopped, and messaging and the gateway are unavailable");
+    expect(document.body.textContent).toContain(cut);
+    await act(async () => button("Move now")!.click());
+    expect(bodies).toEqual([expect.objectContaining({ force_interrupt: true })]);
   });
 
-  it("shows unknown turn activity as the engine's blocker, and Move anyway with the engine's warning", async () => {
-    // The plan route's blocker for an unreadable turn-marker file: it names the file.
-    const marker = unknownActivityBlocker.split("checked: ")[1].split(". To move it")[0];
-    await render(planWith({ running_turns: null, blockers: [unknownActivityBlocker] }));
+  it("lets a gateway running outside its service not hold Move (the engine's text, without forceable_blockers)", async () => {
+    const stray = "A gateway for this home runs outside its service (pid 6041, started by a chat window; it ends by "
+      + "itself when idle). The move stops it and runs the gateway as a service in its place; re-run with "
+      + "--force-interrupt to allow that (or stop it first: hermes -p work gateway stop).";
+    await render(planWith({ blockers: [stray] }));
+    expect(moveButton()?.disabled).toBe(false);
+    expect(container.textContent).not.toContain("pid 6041");
+  });
+
+  it("keeps Move held by a blocker consent does not clear, next to one it does", async () => {
+    const running = "1 turn(s) are running on the old backend. Wait for them to finish, or re-run with --force-interrupt (they are interrupted).";
+    const other = "A legacy system-wide gateway unit is installed (/etc/systemd/system/hermes.service), and this command changes no system unit.";
+    await render(planWith({ blockers: [running, other], forceable_blockers: [running] }));
     expect(moveButton()?.disabled).toBe(true);
-    expect(container.textContent).toContain(`${marker}. To move it, confirm it is idle, then move anyway (any reply `
-      + "being written is cut off).");
+    expect(container.querySelector('[data-slot="backend-migration-blocker"]')?.textContent).toBe(`• ${other}`);
+  });
+
+  it("shows unknown turn activity in the confirmation, never as a blocker", async () => {
+    await render(planWith({ running_turns: null, blockers: [unknownActivityBlocker] }));
+    expect(moveButton()?.disabled).toBe(false);
     expect(container.textContent).not.toContain("--force-interrupt");
-    await act(async () => button("Move anyway")!.click());
-    expect(document.body.textContent).toContain(
-      "The old backend's turn activity could not be read: the move goes ahead and any turn running on it is interrupted.");
+    await act(async () => moveButton()!.click());
+    expect(document.body.textContent).toContain("Running chats are stopped");
   });
 
   it("shows what an incomplete rollback could not do, in the engine's words, next to the steps", async () => {
@@ -253,9 +277,9 @@ describe("BackendMigrationCard", () => {
       expect(container.textContent).toContain("1 turn(s) are running on it now: stopping it interrupts them");
     });
 
-    it("leaves a movable plan's Move anyway as it is", async () => {
+    it("leaves a movable plan's Move enabled past its running turns", async () => {
       await render(planWith({ blockers: asPlan(containerPlans.running.held).plan.blockers }));
-      expect(button("Move anyway")).toBeDefined();
+      expect(moveButton()?.disabled).toBe(false);
       expect(button("Show the steps anyway")).toBeUndefined();
     });
   });
@@ -540,6 +564,63 @@ describe("BackendMigrationCard", () => {
     expect(container.textContent).toContain("Hermes itself takes over its address.");
     expect(container.textContent).not.toContain("null");
   });
+
+  it("keeps polling across a 685 s slow restart + failed verify + rollback and reports the recovered rollback", async () => {
+    const startMs = Date.now();
+    const rolledBack: BackendMigrationStatus = {
+      ...none,
+      state: "rolled_back",
+      step: "verify",
+      started_at: 100,
+      finished_at: 785,
+      reason: "verify failed: verification failed after 300s: no HTTP 200",
+      message: "verify failed: verification failed after 300s: no HTTP 200; rolled back, old backend verified on 0.0.0.0:9119",
+    };
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/apply")) {
+        return json(200, { ok: true, confirmed: true, requested_at: 100, old_address: "0.0.0.0:9119", new_address: "0.0.0.0:9119" });
+      }
+      // Simulates slow restart (225 s) + failed verify (300 s) + rollback stop (160 s) = 685 s outage.
+      if (Date.now() - startMs < 685_000) {
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }
+      return json(200, rolledBack);
+    }));
+
+    await render(planWith({}));
+    await confirmMove();
+
+    // Past the old 660 s cutoff, the mounted card must still be polling in switching (never unreachable).
+    await wait(665_000);
+    expect(container.querySelector('[data-slot="backend-migration-unknown"]')).toBeNull();
+    expect(container.querySelector('[data-slot="backend-migration-progress"]')?.textContent).toContain("Switching over");
+    expect(moveButton()).toBeUndefined();
+
+    // Once the old backend comes back at 685 s, the card reports the recovered rollback outcome.
+    await wait(25_000);
+    const shown = container.querySelector('[data-slot="backend-migration-rolled-back"]')?.textContent ?? "";
+    expect(shown).toContain("Reason: verify failed: verification failed after 300s: no HTTP 200");
+    expect(button("Try again")).toBeDefined();
+  });
+
+  it("names the status command while the address stays dark past the old 150 s cutoff", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input) => {
+      if (String(input).includes("/apply")) {
+        return json(200, { ok: true, confirmed: true, requested_at: 100, old_address: "0.0.0.0:9119", new_address: "0.0.0.0:9119" });
+      }
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }));
+
+    await render(planWith({}));
+    await confirmMove();
+    await wait(200_000);
+
+    const progress = container.querySelector('[data-slot="backend-migration-progress"]')?.textContent ?? "";
+    expect(progress).toContain("Switching over");
+    expect(progress).not.toContain("for a few seconds");
+    expect(container.textContent).toContain("hermes -p work gateway migrate --backends --status");
+  });
 });
 
 describe("readPoll", () => {
@@ -638,9 +719,16 @@ describe("readPoll", () => {
   });
 
   it("reads the swap's gap as switching and a refused sign-in as sign in again, never as failure", () => {
+    expect(UNREACHABLE_AFTER_SECONDS).toBeGreaterThanOrEqual(1830);
     expect(readPoll({ kind: "unreachable" }, asked, at(5)).kind).toBe("switching");
     expect(readPoll({ kind: "auth" }, asked, at(5)).kind).toBe("signInAgain");
-    expect(readPoll({ kind: "unreachable" }, asked, at(200)).kind).toBe("unreachable");
+    // Stay in switching across restart, handoff, verify, and slow rollback recovery windows.
+    expect(readPoll({ kind: "unreachable" }, asked, at(200)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(540)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(685)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(1380)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(UNREACHABLE_AFTER_SECONDS)).kind).toBe("switching");
+    expect(readPoll({ kind: "unreachable" }, asked, at(UNREACHABLE_AFTER_SECONDS + 1)).kind).toBe("unreachable");
   });
 
   it("reads a running record whose process is gone as stalled, from alive or the engine's note", () => {

@@ -14,6 +14,15 @@ export interface NotificationSettingsTranslations {
     allow: string
     states: Record<'default' | 'denied' | 'granted' | 'insecure' | 'unsupported', string>
   }
+  phonePresence: {
+    title: string
+    description: string
+    unsupported: string
+    disconnected: string
+    watchingComputer: (time: string) => string
+    watchingWindow: (time: string) => string
+    watchingWindowNoInput: string
+  }
   test: string
   testTitle: string
   testBody: string

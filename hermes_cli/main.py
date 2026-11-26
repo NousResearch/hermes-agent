@@ -1118,16 +1118,11 @@ def _resolve_workspace_key() -> Optional[str]:
     subdirs/worktrees group together), else the CWD itself. Returns None when
     neither can be determined — callers fall back to the global MRU then.
     """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return os.path.abspath(result.stdout.strip())
-    except Exception:
-        pass
+    from hermes_cli._subprocess_compat import bounded_git_probe
+    # The user's own environment: a GIT_DIR/GIT_WORK_TREE pair names the workspace they resume in.
+    top = bounded_git_probe(["git", "rev-parse", "--show-toplevel"], timeout=5, env=os.environ)
+    if top:
+        return os.path.abspath(top)
     try:
         return os.getcwd()
     except Exception:
@@ -2667,6 +2662,15 @@ def _prepare_agent_startup(args) -> None:
 
     if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
         return
+    # Before any banner, TUI, discovery or gateway contact. `gateway run` gets the gateway's own refusal here (exit 78,
+    # EX_CONFIG, and the verdict in the profile's logs): in gateway.run_bootstrap it only comes after the discovery
+    # below and run_gateway's host-gateway guards.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere, run_elsewhere_for_home
+    if args.command == "gateway" and (_elsewhere := run_elsewhere_for_home(get_hermes_home())) is not None:
+        logger.error("Refusing to start the gateway: %s", _elsewhere.message())
+        print(_elsewhere.message(), file=sys.stderr)
+        raise SystemExit(78)
+    exit_if_profile_runs_elsewhere(args.command)  # returns for `gateway`, handled above
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     if not (_is_tui_chat_launch(args) or _chat_runs_at_gateway(args)):
@@ -2679,10 +2683,7 @@ def _prepare_agent_startup(args) -> None:
             # which joins this thread first (incl. model_tools at import time).
             start_background_plugin_discovery()
         except Exception:
-            logger.warning(
-                "plugin discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.warning("plugin discovery failed at CLI startup", exc_info=True)
     # -t/--toolsets narrows which configured MCP servers get spawned, on
     # every discovery path (background thread, TUI/desktop
     # deferred start). Built-in toolset names never match a server key, so
@@ -2708,10 +2709,7 @@ def _prepare_agent_startup(args) -> None:
                 thread_name="cli-mcp-discovery",
             )
         except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.debug("Background MCP tool discovery failed at CLI startup", exc_info=True)
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
@@ -2724,10 +2722,7 @@ def _prepare_agent_startup(args) -> None:
             accept_for_process()
         register_outbound_webhooks(_hooks_cfg)
     except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
-        )
+        logger.debug("shell-hook registration failed at CLI startup", exc_info=True)
 
 
 def _apply_safe_mode(args) -> None:
@@ -2838,9 +2833,9 @@ def _try_fast_serve_launch() -> bool:
 
     # Container routing is top-level policy and must run before host dispatch.
     try:
-        from hermes_cli.config import get_container_exec_info
+        from hermes_cli.main_container import container_exec_info
 
-        if get_container_exec_info():
+        if container_exec_info():
             return False
     except Exception:
         return False
@@ -2877,8 +2872,8 @@ def _try_fast_chat_launch() -> bool:
         return False
     # Container routing must win: NixOS container mode forwards EVERY invocation.
     try:
-        from hermes_cli.config import get_container_exec_info
-        if get_container_exec_info():
+        from hermes_cli.main_container import container_exec_info
+        if container_exec_info():
             return False
     except Exception:
         return False
@@ -3293,9 +3288,9 @@ def main():
     # NixOS container mode routes ALL invocations into the managed container.
     # MUST run before parse_args() so --help, unrecognised flags and every
     # subcommand are forwarded instead of intercepted by argparse on the host.
-    from hermes_cli.config import get_container_exec_info
+    from hermes_cli.main_container import container_exec_info
 
-    container_info = get_container_exec_info()
+    container_info = container_exec_info()  # None for a profile a plugin runs elsewhere
     if container_info:
         from hermes_cli.main_container import exec_in_container
 

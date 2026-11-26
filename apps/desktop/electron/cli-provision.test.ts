@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { test, type TestContext } from 'vitest'
 
-import { provisionCliLinks, removeBundleCliLinks } from './cli-provision'
+import { provisionCliLinks, removeBundleCliLinks, shouldProvisionBundledCliLinks } from './cli-provision'
 
 function fixture(): { root: string; binDir: string; source: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-cli-links-'))
@@ -198,4 +198,64 @@ test('a failed link swap preserves its source and target, then provisions later 
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+const readOnly = (): never => {
+  throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+}
+
+const writable = (): void => undefined
+
+test('skips CLI links into a translocated or read-only macOS payload', (): void => {
+  for (const [payloadRoot, access, location] of [
+    ['/Volumes/Hermes Agent/Hermes Agent.app/Contents/Resources/agent-payload', readOnly, 'read-only-volume'],
+    [
+      '/private/var/folders/aa/bb/T/AppTranslocation/1111/d/Hermes Agent.app/Contents/Resources/agent-payload',
+      writable,
+      'app-translocation'
+    ]
+  ] as const) {
+    const logs: string[] = []
+
+    assert.equal(
+      shouldProvisionBundledCliLinks(payloadRoot, line => logs.push(line), 'darwin', access),
+      false
+    )
+    assert.deepEqual(logs, [`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`])
+  }
+})
+
+test('links a payload the move prompt flags or a root-owned one, keeps Linux as it was, and never links on Windows', (): void => {
+  const permissionDenied = (): never => {
+    throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+  }
+
+  const logs: string[] = []
+  const log = (line: string): void => void logs.push(line)
+
+  // The prompt offers a move from Downloads, but links into it stay valid until the user moves the app.
+  assert.equal(
+    shouldProvisionBundledCliLinks(
+      '/Users/alice/Downloads/Hermes Agent.app/Contents/Resources/agent-payload',
+      log,
+      'darwin',
+      writable
+    ),
+    true
+  )
+  assert.equal(
+    shouldProvisionBundledCliLinks(
+      '/Applications/Hermes Agent.app/Contents/Resources/agent-payload',
+      log,
+      'darwin',
+      permissionDenied
+    ),
+    true
+  )
+  assert.equal(
+    shouldProvisionBundledCliLinks('/tmp/.mount_hermes/resources/agent-payload', log, 'linux', readOnly),
+    true
+  )
+  assert.equal(shouldProvisionBundledCliLinks('C:\\Hermes\\resources\\agent-payload', log, 'win32', writable), false)
+  assert.deepEqual(logs, [])
 })

@@ -25,7 +25,7 @@ For the full feature reference, see [Subagent Delegation](../user-guide/features
 - Mechanical multi-step work with logic between steps → `execute_code`
 - Tasks needing user interaction → subagents can't use `clarify`
 - Quick file edits → do them directly
-- Durable long-running work that must survive session closure or process restart → `cronjob_manage` or `terminal(background=True, notify_on_complete=True)`. Top-level delegation is asynchronous but still process-local.
+- Durable long-running work that must survive session closure or process restart → `cronjob_manage` (survives both), or `terminal(background=true, persist_on_release=true)` (survives session closure; a gateway or host shutdown ends it). Top-level delegation is asynchronous but still process-local.
 
 ---
 
@@ -201,7 +201,7 @@ Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept
 ## Constraints
 
 - **Default 10 parallel tasks**: batches default to 10 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
-- **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_task`, `clarify`, `memory`, or `execute_code`. Orchestrator subagents (`role="orchestrator"`) retain `delegate_task` for further delegation, but only when `delegation.max_spawn_depth` is raised above the default of 1 (floor 1, no ceiling); the other three remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
+- **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_task`, `clarify`, `memory`, `send_message`, or `cronjob_manage`. When `delegation.max_spawn_depth` is raised above the default of 1 (floor 1, no ceiling), children above the leaf depth keep `delegate_task` for further delegation; the other four remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
 
 ### Tuning Concurrency and Depth
 
@@ -218,10 +218,10 @@ delegation:
   max_spawn_depth: 2
 ```
 
-- **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
+- **Separate terminals** — each subagent gets its own terminal session, which starts in the parent's working directory and tracks its own `cd`s (a separate checkout needs `delegation.worktree_isolation`)
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_task`
 - **Default 250 iterations** — set `delegation.max_iterations` lower in `config.yaml` for fleets of simple tasks to save cost
-- **Not durable** — top-level delegation runs in the background and posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob_manage` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
+- **Not durable** — top-level delegation runs in the background and posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob_manage` for work that must survive those boundaries; `terminal(background=true, persist_on_release=true)` survives session closure, and a gateway or host shutdown ends it.
 
 ---
 

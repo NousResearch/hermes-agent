@@ -1,12 +1,17 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { $backendTransitions, backendTransitionLabel, transitionProfileKey } from '@/store/backend-transition'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { pickPlaceholderIndex } from '../composer-utils'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
+  /** The composer's profile; the active gateway profile when absent. */
+  profile?: null | string
   reconnecting: boolean
   sessionId: null | string | undefined
 }
@@ -24,8 +29,15 @@ interface UseComposerPlaceholderOptions {
  * The slot remembers which pool it was picked from, so a session id arriving
  * does not flip the starter to the follow-up wording under the same slot.
  */
-export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
+export function useComposerPlaceholder({
+  disabled,
+  profile,
+  reconnecting,
+  sessionId
+}: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
+  const activeProfile = useStore($activeGatewayProfile)
+  const transition = useStore($backendTransitions)[transitionProfileKey(profile || activeProfile)] ?? null
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
@@ -65,10 +77,14 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   // Distinguish a cold start ("Starting Hermes...") from a dropped connection
   // we're trying to restore. During reconnect, keep the textbox editable so a
   // flaky network doesn't block drafting; only submit/backend actions stay
-  // disabled until the gateway is open again.
-  return disabled
-    ? reconnecting
-      ? t.composer.placeholderReconnecting
-      : t.composer.placeholderStarting
-    : restingPlaceholder
+  // disabled until the gateway is open again. A plugin-run profile's planned
+  // start, restart or stop names itself instead, also while the connection is
+  // still open (a start: this computer's backend serves the profile meanwhile).
+  return transition
+    ? backendTransitionLabel(transition, t.sandbox)
+    : disabled
+      ? reconnecting
+        ? t.composer.placeholderReconnecting
+        : t.composer.placeholderStarting
+      : restingPlaceholder
 }

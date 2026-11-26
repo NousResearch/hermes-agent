@@ -68,6 +68,12 @@ LINE_ALLOWED_USERS=U1234567890abcdef...           # comma-separated U-prefixed I
 LINE_ALLOWED_GROUPS=C1234567890abcdef...          # optional group IDs
 LINE_ALLOWED_ROOMS=R1234567890abcdef...           # optional room IDs
 
+# Optional group/room filters (DMs are never affected). Empty = off.
+# LINE_REQUIRE_MENTION_CHATS=C123...,R456...      # reply only when @mentioned
+# LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES=image,video
+# LINE_IGNORE_GROUP_MESSAGE_TYPES=sticker,emoji
+# LINE_OBSERVED_UNMENTIONED_MESSAGES=50          # unmentioned backlog (0=off, max 500)
+
 # Required for image / audio / video sends — the public HTTPS base URL
 # the tunnel resolves to.  Without it, send_image/voice/video will refuse.
 LINE_PUBLIC_URL=https://my-tunnel.example.com
@@ -168,6 +174,10 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 | `LINE_ALLOWED_USERS` | one of | — | Comma-separated user IDs (U-prefixed) |
 | `LINE_ALLOWED_GROUPS` | one of | — | Comma-separated group IDs (C-prefixed) |
 | `LINE_ALLOWED_ROOMS` | one of | — | Comma-separated room IDs (R-prefixed) |
+| `LINE_REQUIRE_MENTION_CHATS` | no | empty | Comma-separated group/room IDs (`C…`/`R…`) that reply only when the bot is @mentioned. Other allowlisted chats respond normally. DMs are never mention-gated. Known slash commands (for example `/help`) and `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` bypass the gate. |
+| `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` | no | empty | Comma-separated LINE message types that still get a reply in a mention-required group or room (`image`, `video`, `audio`, `file`, `sticker`, `location`). Empty means no media bypasses the mention. |
+| `LINE_IGNORE_GROUP_MESSAGE_TYPES` | no | empty | Comma-separated types silently dropped in groups and rooms before the mention gate (`sticker`, `emoji`, `image`, `video`, `audio`, `file`, `location`). `emoji` is a text message made only of LINE emoji placeholders; mixed text + emoji is not ignored. DMs are never filtered. |
+| `LINE_OBSERVED_UNMENTIONED_MESSAGES` | no | `50` | In allowlisted groups and rooms listed in `LINE_REQUIRE_MENTION_CHATS`, how many recent unmentioned messages to keep as background. The next @mention or `LINE_REPLY_WITHOUT_MENTION_MEDIA_TYPES` trigger (for example an image sent without @) receives only that session's unread messages, then marks them read so they are not repeated. `0` disables this. Values above `500` are capped at `500`, and one injection is limited to about 8,000 characters. Ignored types and unmentioned media are stored as lightweight markers (for example `[sticker]`, `[image]`) without downloading media or calling an LLM. DMs and slash commands are unaffected; `/new` and `/reset` advance the cursor without replaying old messages. Shown in the Dashboard as plain text (placeholder `Ex: 50`). |
 | `LINE_ALLOW_ALL_USERS` | dev only | `false` | Skip allowlist entirely |
 | `LINE_HOME_CHANNEL` | no | — | Default cron / notification delivery target |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | no | `45` | Seconds before the postback button fires (`0` = disabled) |

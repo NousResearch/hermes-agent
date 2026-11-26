@@ -143,9 +143,13 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
         "help": info.get("help", ""),
+        "placeholder": info.get("placeholder", ""),
         "url": info.get("url"),
         "is_password": is_password,
-        "is_list": not is_password and bool(_ALLOWLIST_KEY_RE.search(key)),
+        # ``*_ALLOWED*`` stays the default chip editor. A manifest may also set
+        # ``is_list: true`` for other comma-separated ID fields (LINE mention chats).
+        "is_list": not is_password and (
+            bool(info.get("is_list")) or bool(_ALLOWLIST_KEY_RE.search(key))),
         "advanced": info.get("advanced", False),
     }
 
@@ -260,7 +264,10 @@ def _messaging_platform_payload(
         env_vars.append({
             "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
-            "value": value if info["is_list"] else None, **info,
+            # Secrets stay masked (value is None; clients show redacted_value).
+            # password:false settings, including allowlists and the LINE group
+            # filters, round-trip as plain text so a saved value is editable.
+            "value": None if info["is_password"] else value, **info,
         })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped, source_keys)

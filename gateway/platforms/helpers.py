@@ -117,6 +117,16 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
+def is_gateway_known_command(name: str) -> bool:
+    """True when *name* is a gateway slash command (no leading ``/``).
+
+    Platform plugins should call this public helper instead of importing
+    ``hermes_cli.commands`` directly (that module is not on the plugin API).
+    """
+    from hermes_cli.commands import is_gateway_known_command as _known
+    return _known(name)
+
+
 def tag_safe_display_name(value: Any) -> str:
     """A sender display name made safe to sit inside a gateway-built ``[name]`` / ``[name|id]`` tag.
 

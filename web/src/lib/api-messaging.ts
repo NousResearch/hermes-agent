@@ -6,6 +6,8 @@ export interface MessagingPlatformEnvVar {
   description: string;
   prompt: string;
   help: string;
+  /** Input hint from the platform manifest (empty on older backends). */
+  placeholder?: string;
   url: string | null;
   is_password: boolean;
   /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */

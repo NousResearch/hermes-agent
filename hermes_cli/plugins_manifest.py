@@ -32,6 +32,7 @@ _VALID_PLUGIN_KINDS: set[str] = {"standalone", "backend", "exclusive", "platform
 _KNOWN_MANIFEST_FIELDS: set[str] = {
     "name", "version", "description", "author", "requires_env", "provides_tools", "provides_hooks",
     "kind", "hooks", "label", "optional_env", "platforms", "external_dependencies",
+    "dashboard_env_vars",
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
@@ -189,6 +190,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     schema = _config_schema_entries(key, _manifest_field_of_type(data, key, "config_schema", Mapping, "a mapping"))
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
     config_keys = manifest_config_keys(data, key)
+    dashboard_env_vars = _dashboard_env_var_names(data, key)
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
     if unknown:
@@ -200,7 +202,32 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
         "homepage": str(data.get("homepage") or ""), "tags": tags, "config_keys": config_keys,
+        "dashboard_env_vars": dashboard_env_vars,
     }
+
+
+def _dashboard_env_var_names(data: Mapping, key: str) -> tuple[str, ...]:
+    """``dashboard_env_vars`` → ordered env-var names for the Channels card.
+
+    A missing key is "not declared" (discovery order). A wrong type warns and
+    yields nothing so a typo cannot hide the rest of the card's fields.
+    """
+    if "dashboard_env_vars" not in data:
+        return ()
+    raw = data.get("dashboard_env_vars")
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    if not isinstance(raw, list):
+        logger.warning("Plugin %s: dashboard_env_vars must be a list of env var names", key)
+        return ()
+    names: list[str] = []
+    for item in raw:
+        name = item.get("name") if isinstance(item, Mapping) else item
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+        else:
+            logger.warning("Plugin %s: ignoring dashboard_env_vars entry %r", key, item)
+    return tuple(names)
 
 
 def validate_config_schema(plugin_id: str, schema: Mapping, settings: Mapping) -> list[str]:
@@ -417,6 +444,9 @@ class PluginManifest:
     # Dotted paths in Hermes' own config sections the plugin reads (``memory.retaindb``), so
     # ``hermes config get/set`` recognizes them while the plugin is active (hermes_cli/config_runtime_keys.py).
     config_keys: list[str] = field(default_factory=list)
+    # Channels-page field order (env var names). Empty → the card uses prefix discovery.
+    # Applied by ``PluginContext.register_platform`` when the plugin doesn't pass its own.
+    dashboard_env_vars: tuple[str, ...] = ()
 
 
 def parse_provides_locales(raw: Any, key: str = "") -> tuple[list[str], dict[str, dict[str, Any]]]:

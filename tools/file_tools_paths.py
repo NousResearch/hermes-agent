@@ -375,7 +375,8 @@ def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | P
 
 
 
-def _path_resolution_warning(filepath: str, resolved: Path | PurePosixPath, task_id: str = "default") -> str | None:
+def _path_resolution_warning(filepath: str, resolved: Path | PurePosixPath, task_id: str = "default",
+                             *, confined: bool = False) -> str | None:
     """Warn when a RELATIVE path resolved OUTSIDE the task's workspace root (the
     edit is about to land in a different checkout than the terminal's cwd).
     ``None`` for absolute paths, an unknown root, or a path under the root.
@@ -391,7 +392,9 @@ def _path_resolution_warning(filepath: str, resolved: Path | PurePosixPath, task
             workspace_root = _authoritative_workspace_root(task_id)
             if not workspace_root:
                 return None
-            if _uses_container_paths(task_id):
+            if confined:
+                root = Path(os.path.normpath(_host_text(workspace_root, False, task_id)))
+            elif _uses_container_paths(task_id):
                 root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root, task_id)))
             else:
                 root = Path(_expand_tilde(workspace_root)).resolve()

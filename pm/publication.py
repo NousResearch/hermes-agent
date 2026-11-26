@@ -41,6 +41,20 @@ def candidate_members(extra_dirs=(), **selection):
         directory = Path(directory)
         if directory not in members and _is_member_candidate(directory):
             members.append(directory)
+    if len(members) > 1:
+        # uv refuses a workspace holding two buildable members of one [project].name,
+        # so such a selection can never be built. Refuse it here with the reconcile
+        # instruction instead of the resolver's hash-named member paths.
+        from pm.package import InstallError
+        from pm.plugin_eviction import _colliding_members
+
+        collisions = _colliding_members([(path.parent, path.name, path) for path in members])
+        if collisions:
+            detail = "; ".join(f"{path.name}: {reason}" for path, reason in collisions.items())
+            raise InstallError(
+                "venv", detail,
+                remedy="disable or remove the duplicate plugin copy so one build name "
+                       "resolves to one path, then retry")
     return members
 
 

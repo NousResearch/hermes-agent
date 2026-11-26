@@ -46,12 +46,8 @@ class OAuthPKCEConfig:
     authorize_url: str
     token_url: str
     scopes: tuple[str, ...] = ()
-    scope_separator: str = " "  # RFC 6749 says space; a few IdPs (Linear) require a comma-joined list
     redirect_port: int = 0  # 0 = OS-assigned; pin it when the IdP allowlists an exact redirect URI
     redirect_path: str = "/callback"
-    # Host written into the redirect URI. The listener always binds 127.0.0.1; "localhost" is for IdPs
-    # that refuse IP-address redirect URIs (QuickBooks).
-    redirect_host: str = "127.0.0.1"
     audience: Optional[str] = None
     extra_authorize_params: Mapping[str, str] = field(default_factory=dict)
     extra_token_params: Mapping[str, str] = field(default_factory=dict)
@@ -64,6 +60,11 @@ class OAuthPKCEConfig:
     # the token-endpoint JSON or raises ``AuthError``. The broker holds the client secret, so the
     # plugin owns that transport and ``token_url`` is unused.
     token_request: Optional[Callable[[dict[str, str]], Mapping[str, Any]]] = None
+    # Fields added later go last so positional construction of the earlier fields keeps its meaning.
+    scope_separator: str = " "  # RFC 6749 says space; a few IdPs (Linear) require a comma-joined list
+    # Host written into the redirect URI. The listener always binds 127.0.0.1; "localhost" is for IdPs
+    # that refuse IP-address redirect URIs (QuickBooks).
+    redirect_host: str = "127.0.0.1"
 
 
 def _err(provider: str, message: str, code: str):

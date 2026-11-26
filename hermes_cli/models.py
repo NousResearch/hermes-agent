@@ -1773,6 +1773,36 @@ _PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
 # serve it through the stale window.
 _PROVIDER_MODELS_FALLBACK_TTL = 60
 
+# The catalog TTL above is a config knob (``model_catalog.provider_models_ttl_minutes``) because the
+# right value depends on WHO owns the list: a cloud vendor's catalog changes on release timescales,
+# while a local relay (magpie, LiteLLM, an in-house gateway) rewrites the exposed set whenever its
+# owner edits it — an hour of a picker listing models the relay no longer serves is a bug there.
+# Absent key = the historical 1h, so nothing changes for accounts that never set it.
+_PROVIDER_MODELS_TTL_CONFIG_KEY = "provider_models_ttl_minutes"
+_PROVIDER_MODELS_TTL_DEFAULT_MINUTES = 60
+
+
+def provider_models_cache_ttl_seconds() -> float:
+    """TTL for provider / custom-endpoint catalog rows, in seconds.
+
+    Read from ``model_catalog.provider_models_ttl_minutes``, clamped to [1 minute, the stale-serve
+    bound]. An unreadable config, a non-numeric value or a non-positive one falls back to the
+    default instead of to zero: a bad setting must not turn every picker open into a synchronous
+    probe of every endpoint.
+    """
+    minutes: Optional[float] = None
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("model_catalog") or {}).get(_PROVIDER_MODELS_TTL_CONFIG_KEY)
+        if raw not in (None, ""):
+            minutes = float(raw)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        minutes = None
+    if minutes is None or minutes != minutes or minutes <= 0:  # None / NaN / non-positive
+        return float(_PROVIDER_MODELS_TTL_DEFAULT_MINUTES) * 60.0
+    return min(minutes * 60.0, float(_PROVIDER_MODELS_STALE_SERVE_MAX))
+
 # Cache keys with a background SWR refresh in flight — dedupes concurrent refreshes.
 _swr_refresh_inflight: set = set()
 _swr_refresh_lock = threading.Lock()
@@ -1990,9 +2020,12 @@ def _model_requires_account_discovery(provider: Optional[str], model: str) -> bo
 
 def cached_provider_model_ids(
     provider: Optional[str], *, force_refresh: bool = False,
-    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL, non_blocking: bool = False) -> list[str]:
+    ttl_seconds: Optional[float] = None, non_blocking: bool = False) -> list[str]:
     """Disk-cached :func:`provider_model_ids`: fresh cache hit, else live fetch persisting a non-empty
     result. Always returns a list.
+
+    ``ttl_seconds`` defaults to :func:`provider_models_cache_ttl_seconds`
+    (``model_catalog.provider_models_ttl_minutes``); callers that pin their own TTL still win.
 
     ``non_blocking`` never waits for a provider probe (#114215). Only fresh verified rows can
     advertise account-gated models; stale rows may be served while a daemon refreshes them."""
@@ -2000,6 +2033,8 @@ def cached_provider_model_ids(
     if not normalized:
         return []
     is_ollama = normalized == "ollama"
+    if ttl_seconds is None:
+        ttl_seconds = provider_models_cache_ttl_seconds()
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)
@@ -2523,16 +2558,109 @@ def fetch_api_models(
     return result.get("models")
 
 
+_DECLARED_MODEL_MARKERS = frozenset({"__explicit_model_allowlist__", "__discovered_model_catalog__"})
+
+
+def _declared_model_ids(models: Any) -> list[str]:
+    """Model ids a ``providers.<name>.models`` / ``custom_providers[].models`` value declares.
+
+    Marker keys are config bookkeeping, not models: they must never salt a fingerprint.
+    """
+    out: list[str] = []
+    if isinstance(models, dict):
+        for key in models:
+            text = str(key).strip()
+            if text and text not in _DECLARED_MODEL_MARKERS:
+                out.append(text)
+    elif isinstance(models, list):
+        for entry in models:
+            if isinstance(entry, dict):
+                text = str(entry.get("id") or entry.get("model") or "").strip()
+            else:
+                text = str(entry).strip() if entry is not None else ""
+            if text:
+                out.append(text)
+    return out
+
+
+def _declared_models_for_endpoint(base_url: str) -> list[str]:
+    """Sorted model ids config.yaml declares for this exact endpoint URL.
+
+    Salts the custom-endpoint cache fingerprint: when a relay (magpie & co.) owns the exposed set
+    and rewrites ``providers.<name>.models`` after its owner hides a model there, the catalog row on
+    disk still describes the OLD set. Keying the fingerprint on the declaration turns that rewrite
+    into a cache miss (one live probe) instead of up to a full TTL of a picker offering models the
+    relay no longer serves. A config read failure yields ``[]`` — no salt, never an exception.
+    """
+    target = str(base_url or "").strip().rstrip("/").lower()
+    if not target:
+        return []
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return []
+
+    declared: list[str] = []
+
+    def _matches(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        for key in ("base_url", "api_url", "api", "url"):
+            value = str(entry.get(key) or "").strip().rstrip("/").lower()
+            if value and value == target:
+                return True
+        return False
+
+    def _entry_declaration(entry: dict) -> list[str]:
+        """Models this entry declares, minus catalogs Hermes itself discovered.
+
+        A persisted discovery (``models_discovered: true`` or the legacy
+        ``__discovered_model_catalog__`` sentinel) is Hermes's own snapshot, not an owner's
+        allowlist: salting on it would invalidate the very cache row that discovery just wrote,
+        every save. Only foreign-written declarations (a relay's ``providers.<name>.models``, a
+        user's curated mapping) are stable enough to mean "this set is the truth now".
+        """
+        models = entry.get("models")
+        if isinstance(models, dict):
+            if "__discovered_model_catalog__" in models or entry.get("models_discovered") is True:
+                return []
+        elif entry.get("models_discovered") is True:
+            return []
+        return _declared_model_ids(models)
+
+    providers = cfg.get("providers")
+    if isinstance(providers, dict):
+        for entry in providers.values():
+            if _matches(entry):
+                declared.extend(_entry_declaration(entry))
+    custom = cfg.get("custom_providers")
+    if isinstance(custom, list):
+        for entry in custom:
+            if _matches(entry):
+                declared.extend(_entry_declaration(entry))
+    return sorted(dict.fromkeys(declared))
+
+
 def _custom_endpoint_fingerprint(
-    api_key: Any, api_mode: Optional[str], headers: Optional[dict[str, str]]) -> str:
+    api_key: Any, api_mode: Optional[str], headers: Optional[dict[str, str]],
+    declared_models: Optional[list[str]] = None) -> str:
     """Custom endpoints have no ``PROVIDER_REGISTRY`` slug, so hash exactly what callers pass to
     :func:`fetch_api_models`: a rotated ``api_key``, changed ``api_mode`` or edited ``extra_headers``
-    each bust the cache entry. blake2b for the same CodeQL rationale as ``_credential_fingerprint``."""
+    each bust the cache entry. ``declared_models`` carries the config-owned allowlist so a relay that
+    rewrites ``providers.<name>.models`` invalidates its own catalog row. blake2b for the same
+    CodeQL rationale as ``_credential_fingerprint``."""
     import hashlib
 
     from agent.command_token_source import CommandTokenSource
     identity = api_key.cache_identity if isinstance(api_key, CommandTokenSource) else api_key
-    blob = "|".join((identity or "", api_mode or "", json.dumps(headers or {}, sort_keys=True)))
+    parts = [identity or "", api_mode or "", json.dumps(headers or {}, sort_keys=True)]
+    if declared_models:
+        # Only salt when there IS a declaration: endpoints without one keep the exact pre-existing
+        # hash, so this change does not invalidate every custom endpoint's cache row once.
+        parts.append(json.dumps(sorted(declared_models), sort_keys=True))
+    blob = "|".join(parts)
     return hashlib.blake2b(blob.encode("utf-8", errors="replace"), digest_size=8).hexdigest()
 
 
@@ -2551,7 +2679,7 @@ def _cache_entry_valid(
 
 
 def _disk_serve_tier(entry: Any, fp: str, now: float, *, is_ollama: bool,
-                     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> Optional[str]:
+                     ttl_seconds: Optional[float] = None) -> Optional[str]:
     """How :func:`cached_provider_model_ids` serves *entry* without the network.
 
     ``"fresh"`` inside the row's TTL (a curated fallback row only for
@@ -2559,6 +2687,8 @@ def _disk_serve_tier(entry: Any, fp: str, now: float, *, is_ollama: bool,
     ``_PROVIDER_MODELS_STALE_SERVE_MAX`` (served while an SWR thread revalidates), else ``None``:
     the call would block on a live fetch. Empty native catalogs are authoritative only inside the
     short native TTL, never through the stale window."""
+    if ttl_seconds is None:
+        ttl_seconds = provider_models_cache_ttl_seconds()
     if is_ollama:
         ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
     if not _cache_entry_valid(entry, fp, allow_empty=is_ollama):
@@ -2576,12 +2706,16 @@ def cached_fetch_api_models(
     api_mode: Optional[str] = None, headers: Optional[dict[str, str]] = None,
     force_refresh: bool = False, cache_only: bool = False,
     fetch_models=None,
-    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> Optional[list[str]]:
+    ttl_seconds: Optional[float] = None) -> Optional[list[str]]:
     """Disk-cached :func:`fetch_api_models` for custom endpoints. ``cache_only`` callers (GUI picker
     opens that must not block on a stopped local endpoint) still get a warm catalog instead of
     collapsing to the config-declared subset. ``fetch_models`` supplies native-aware discovery
-    without minting a command token before cache admission."""
+    without minting a command token before cache admission. ``ttl_seconds`` defaults to
+    :func:`provider_models_cache_ttl_seconds` (``model_catalog.provider_models_ttl_minutes``)."""
     from hermes_cli.model_switch_providers import _NativePickerModelList
+
+    if ttl_seconds is None:
+        ttl_seconds = provider_models_cache_ttl_seconds()
 
     def _catalog(entry):
         rows = (_NativePickerModelList if entry.get("native_catalog") else list)(entry["models"])
@@ -2604,7 +2738,7 @@ def cached_fetch_api_models(
     # with distinct keys (#106184). A URL-only key let the last probe overwrite its siblings'
     # slot, so every other same-URL row failed the fingerprint check, got an empty catalog and
     # vanished from the no-probe pickers.
-    fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    fp = _custom_endpoint_fingerprint(api_key, api_mode, headers, _declared_models_for_endpoint(normalized_url))
     cache_key = f"custom:{normalized_url}#{fp}"
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)

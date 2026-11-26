@@ -455,3 +455,94 @@ class TestProbeApiModelsNegativeCache:
         ok = mod.probe_api_models("", "https://blackhole.invalid/v1", timeout=1.0)
         assert ok["models"] == ["m1"]
         assert key not in mod._probe_neg_cache  # recovery is not masked by the stale entry
+
+
+class TestConfigOwnedCatalogTTL:
+    """A relay that owns the exposed model set (magpie, LiteLLM, in-house gateway) rewrites
+    ``providers.<name>.models`` on its own schedule, so two knobs keep the picker honest:
+    a configurable TTL and a fingerprint salted with the declared list."""
+
+    def test_ttl_comes_from_model_catalog_config(self, monkeypatch):
+        import hermes_cli.config as config_mod
+        import hermes_cli.models as mod
+
+        monkeypatch.setattr(
+            config_mod, "load_config", lambda *a, **k: {"model_catalog": {"provider_models_ttl_minutes": 1}}
+        )
+        assert mod.provider_models_cache_ttl_seconds() == 60
+
+    def test_ttl_is_clamped_and_bad_values_fall_back_to_one_hour(self, monkeypatch):
+        import hermes_cli.config as config_mod
+        import hermes_cli.models as mod
+
+        for raw, expected in ((0, 3600), ("nope", 3600), (999999, mod._PROVIDER_MODELS_STALE_SERVE_MAX)):
+            monkeypatch.setattr(
+                config_mod, "load_config", lambda *a, **k: {"model_catalog": {"provider_models_ttl_minutes": raw}}
+            )
+            assert mod.provider_models_cache_ttl_seconds() == expected
+
+    def test_short_ttl_turns_a_twelve_minute_entry_into_stale_serve(self, monkeypatch):
+        import hermes_cli.config as config_mod
+        import hermes_cli.models as mod
+
+        monkeypatch.setattr(
+            config_mod, "load_config", lambda *a, **k: {"model_catalog": {"provider_models_ttl_minutes": 1}}
+        )
+        cache = {
+            "custom:https://gw.example.com/v1#fp": {
+                "fp": "fp", "at": time.time() - 720, "models": ["m1"],
+            }
+        }
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
+             patch.object(mod, "_spawn_swr_refresh") as spawn, \
+             patch.object(mod, "fetch_api_models") as live:
+            out = mod.cached_fetch_api_models("sk-key", "https://gw.example.com/v1")
+        assert out == ["m1"]
+        live.assert_not_called()
+        spawn.assert_called_once()
+
+    def test_rewritten_declared_models_bust_the_cached_catalog(self, monkeypatch):
+        """The relay hides a model and rewrites config.yaml: the next picker open must probe
+        instead of serving the pre-edit list."""
+        import hermes_cli.models as mod
+
+        stale = {"fp": "old-fp", "at": time.time() - 10, "models": ["old-list"]}
+        cache = {"custom:https://gw.example.com/v1#old-fp": stale}
+        monkeypatch.setattr(mod, "_declared_models_for_endpoint", lambda _url: ["new-list"])
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache), \
+             patch.object(mod, "_save_provider_models_cache"), \
+             patch.object(mod, "fetch_api_models", return_value=["new-list"]) as live:
+            out = mod.cached_fetch_api_models("sk-key", "https://gw.example.com/v1")
+        assert out == ["new-list"]
+        live.assert_called_once()
+
+    def test_declared_marker_keys_never_salt_the_fingerprint(self):
+        import hermes_cli.models as mod
+
+        assert mod._declared_model_ids({"m1": {}, "__explicit_model_allowlist__": True}) == ["m1"]
+        assert mod._declared_model_ids([{"id": "m2"}, "m3", None]) == ["m2", "m3"]
+        plain = mod._custom_endpoint_fingerprint("sk-key", None, None)
+        same = mod._custom_endpoint_fingerprint("sk-key", None, None, [])
+        assert plain == same
+        assert mod._custom_endpoint_fingerprint("sk-key", None, None, ["m1"]) != plain
+
+    def test_discovered_catalogs_are_not_salted_only_foreign_declarations_are(self, monkeypatch):
+        """Hermes's own persisted discovery must not salt: it would invalidate the cache row the
+        probe just wrote on every save. A relay-written ``providers.<name>.models`` must."""
+        import hermes_cli.config as config_mod
+        import hermes_cli.models as mod
+
+        cfg = {
+            "providers": {"magpie": {"base_url": "https://gw.example.com/v1", "models": ["auto/a", "auto/b"]}},
+            "custom_providers": [
+                {
+                    "name": "Local",
+                    "base_url": "https://gw.example.com/v1/",
+                    "models": {"m1": {}, "m2": {}},
+                    "models_discovered": True,
+                }
+            ],
+        }
+        monkeypatch.setattr(config_mod, "load_config", lambda *a, **k: cfg)
+        assert mod._declared_models_for_endpoint("https://gw.example.com/v1") == ["auto/a", "auto/b"]

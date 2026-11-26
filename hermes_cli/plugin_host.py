@@ -171,15 +171,18 @@ class PluginHost:
                 except BaseException:
                     self._home = previous  # so the next start builds the context for the new home again
                     raise
-            from hermes_cli.plugin_isolation import is_launch_home
+            from hermes_cli.plugin_isolation import home_moved_refusal, is_launch_home
             own = is_launch_home(self._home)  # one answer for the launcher and the child's env
             launcher, templates = self._launcher(own)  # the launcher's .env, resolved once for the child's env too
             # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
             # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
             argv = [*launcher, sys.executable, "-P", "-m", _HOST_MODULE]
+            env = self._env(own, templates, launcher)
+            # Every read above went through the name: if it was repointed meanwhile, they read another directory.
+            if (moved := home_moved_refusal(self._home)) is not None:
+                raise PluginHomeMoved(moved)
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    env=self._env(own, templates, launcher), cwd=str(self._home),
-                                    bufsize=0)
+                                    env=env, cwd=str(self._home), bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()
             self._generation += 1

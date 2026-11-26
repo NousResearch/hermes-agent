@@ -908,8 +908,13 @@ def moved_plugin_hint(name: str) -> str:
 _attempted: set[str] = set()
 # The :func:`settings_fingerprint` each home in ``_attempted`` was last tried with.
 _attempted_with: dict[str, str] = {}
-# A start waits this long for another installer (the detached default-plugin child) to finish.
+# An agent start waits this long for another installer (the detached default-plugin child) to finish.
 _STARTUP_LOCK_WAIT = 300.0
+# A gateway start waits at most this long IN ALL (every row, every home) for another installer: past it,
+# the gateway serves the platforms that are ready, and a plugin that installer still fetches arrives once
+# it lands (where the running gateway applies it) or at the next start. Never minutes of nothing served.
+_GATEWAY_START_LOCK_WAIT = 30.0
+_lock_deadline: ContextVar[Optional[float]] = ContextVar("left_core_lock_deadline", default=None)
 _installs_held: ContextVar[bool] = ContextVar("left_core_installs_held", default=False)
 
 
@@ -922,6 +927,28 @@ def installs_held():
         yield
     finally:
         _installs_held.reset(token)
+
+
+@contextmanager
+def gateway_start_lock_budget():
+    """One :data:`_GATEWAY_START_LOCK_WAIT` for every installer-lock wait inside (a gateway start's homes and
+    rows share it, so two homes or two rows never add up to minutes)."""
+    import time
+    token = _lock_deadline.set(time.monotonic() + _GATEWAY_START_LOCK_WAIT)
+    try:
+        yield
+    finally:
+        _lock_deadline.reset(token)
+
+
+def startup_lock_wait(*, gateway_start: bool) -> float:
+    """Seconds a start may still wait for another installer's lock: an agent start the long wait, a gateway
+    start what is left of its :func:`gateway_start_lock_budget` (or one :data:`_GATEWAY_START_LOCK_WAIT`)."""
+    import time
+    if not gateway_start:
+        return _STARTUP_LOCK_WAIT
+    deadline = _lock_deadline.get()
+    return _GATEWAY_START_LOCK_WAIT if deadline is None else max(0.0, deadline - time.monotonic())
 
 
 def defer_startup_notice(message: str, *, log: bool = True) -> None:
@@ -1521,7 +1548,7 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
         # already accepted its dependencies (as memory_provider_migration.recover_at_startup does).
         for feature in features:
             if _install_one(home, feature, install=_install_into(home, consent=True), say=report, process_env=True,
-                            wait=_STARTUP_LOCK_WAIT):
+                            wait=startup_lock_wait(gateway_start=gateway_start)):
                 installed.append(feature.plugin)
                 if not gateway_start and feature.platform and _gateway_serves(home) \
                         and not _running_gateway_serves(home, feature.platform):

@@ -96,7 +96,7 @@ def recover_in(home: Path, *, report: Callable[[str], None]) -> list[str]:
 def _recover(home: Path, *, report: Callable[[str], None], seen: set[str]) -> list[str]:
     """One pass over the pending entries not in *seen* (which it extends): a re-pass never repeats one."""
     from hermes_cli.default_plugins import fetch_allowed, install_defaults, installer_lock
-    from hermes_cli.left_core_migration import _STARTUP_LOCK_WAIT
+    from hermes_cli.left_core_migration import startup_lock_wait
     from hermes_cli.memory_provider_migration import _install_command
     try:
         entries = [entry for entry in pending_entries(home) if entry.name not in seen]
@@ -119,7 +119,7 @@ def _recover(home: Path, *, report: Callable[[str], None], seen: set[str]) -> li
         if not unattended:
             return []
         try:
-            with installer_lock(_STARTUP_LOCK_WAIT):
+            with installer_lock(startup_lock_wait(gateway_start=True)):
                 outcome = install_defaults(home, say=lambda message: report(message.strip()), entries=unattended)
         except TimeoutError:
             report(f"⚠ Another Hermes process is still installing plugins, so "

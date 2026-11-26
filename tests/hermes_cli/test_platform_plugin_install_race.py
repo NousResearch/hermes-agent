@@ -284,3 +284,48 @@ def test_a_tree_a_refused_enable_left_is_owed_and_the_next_start_enables_it(stan
     outcome["ok"] = True  # the next start: the enable goes through, on the tree already there
     assert lcm.recover_at_startup(gateway_start=True) == ["standin"]
     assert calls == ["standin", "standin"]
+
+
+_HOLDER = textwrap.dedent("""
+    import sys, time
+    from pathlib import Path
+    from hermes_cli import default_plugins
+    with default_plugins.installer_lock(5):
+        Path(sys.argv[1]).touch()
+        time.sleep(120)
+""")
+
+
+def test_a_gateway_start_waits_one_bounded_budget_for_another_installer(standin, monkeypatch, tmp_path):
+    """The detached default-plugin pass holds the installer lock for its whole pass. A gateway start whose
+    profile has credentials for two platforms it owes waited up to five minutes per row for it, serving
+    nothing meanwhile (Docker: ~70 s before api_server answered). It now waits one budget, then starts."""
+    import threading
+    import time
+    from gateway.run_startup import recover_left_core_at_gateway_start
+    home, calls, _ = standin
+    rows = tuple(lcm.LeftCoreFeature(plugin=name, label=name.title(), unchanged="nothing changes", platform=name,
+                                     in_use=lambda h, **_: True) for name in ("standin", "other"))
+    monkeypatch.setattr(lcm, "LEFT_CORE", rows)
+    monkeypatch.setattr(lcm, "_GATEWAY_START_LOCK_WAIT", 4.0, raising=False)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda *a, **k: home)
+    held = tmp_path / "held"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "PYTHONPATH"))}
+    env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(lcm.__file__).parents[1]))
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(held)], env=env)
+    try:
+        from tests.waiting import wait_until
+        wait_until(held.exists, timeout=60, what="the other installer to hold the lock")
+        started, result = time.monotonic(), []
+        worker = threading.Thread(target=lambda: result.append(recover_left_core_at_gateway_start()), daemon=True)
+        worker.start()
+        worker.join(timeout=30)
+        elapsed = time.monotonic() - started
+        assert not worker.is_alive(), "the gateway start still waits for the other installer"
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+    assert elapsed < 7.0, f"each row waited its own budget: {elapsed:.1f} s"
+    assert result == [False] and calls == []
+    notices = lcm.claim_kept_notices()
+    assert any("another Hermes process is still installing plugins" in n for n in notices), notices

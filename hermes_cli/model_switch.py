@@ -1935,8 +1935,9 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only: a cross-process
     config lock, once one exists, must wrap the same section."""
     from pathlib import Path
+    from hermes_cli import managed_scope
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
-    from hermes_cli.config_backend import supports_file_tooling, write_config_keys
+    from hermes_cli.config_backend import supports_file_tooling
     path = Path(config_path) if config_path else get_config_path()
     planned_from = read_user_config_raw(path).get("model")
     updates = model_selection_config_updates(result, planned_from)
@@ -1959,6 +1960,7 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         model_cfg = config.get("model")
         if model_cfg != planned_from:
             updates = model_selection_config_updates(result, model_cfg)
+        managed_scope.refuse_managed_model_write(updates)
         merged = _merge_selection_updates(model_cfg, updates)
         if isinstance(model_cfg, dict):
             # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared

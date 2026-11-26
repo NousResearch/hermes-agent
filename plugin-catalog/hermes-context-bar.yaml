@@ -1,0 +1,21 @@
+name: hermes-context-bar
+title: Context Bar
+version: "1.0.0"
+repo: https://github.com/tone-leh/hermes-context-bar
+sha: eb4a86de7779a23be1118ecbf5d32c177863b1d9
+maintainer: tone-leh
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/tone-leh/hermes-context-bar#readme
+readme: true
+image: https://raw.githubusercontent.com/tone-leh/hermes-context-bar/eb4a86de7779a23be1118ecbf5d32c177863b1d9/assets/hero-mono.png
+screenshots:
+  - https://raw.githubusercontent.com/tone-leh/hermes-context-bar/eb4a86de7779a23be1118ecbf5d32c177863b1d9/assets/skin-mono.png
+  - https://raw.githubusercontent.com/tone-leh/hermes-context-bar/eb4a86de7779a23be1118ecbf5d32c177863b1d9/assets/skin-prism-policy.png
+description: "Always-on context runway, live token generation speed (tok/s), Claude Code /context-style category breakdown, DIY status bar, multi-bot and multi-currency spend tracking, and in-place auto-compaction and memory budget controls for Hermes Desktop (EN / 中文). Desktop-only (desktop/plugin.js); no agent tools, hooks, middleware, or env vars. Disclosure — the Policy tab reads and updates only the active profile's compression.*, context.engine, and memory.* keys via window.hermesDesktop.api (/api/config and /api/config/schema) upon explicit user interaction (the plugin SDK has no route to those endpoints); preferences stay in plugin storage and nothing is sent to external hosts or reads credentials."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

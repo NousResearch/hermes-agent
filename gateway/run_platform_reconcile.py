@@ -153,6 +153,15 @@ def _receipt(profile: str, started, restarted, stopped, states: dict, reasons: d
             "installed": list(installed)}
 
 
+def _unserved_receipt(profile: str, stopped) -> dict:
+    """The answer for a profile its own apply parked (a config the multiplexer refuses) or dropped:
+    nothing of it runs any more; ``stopped`` is what ran before."""
+    return {"applied": False, "profile": profile, "changed": bool(stopped), "started": [], "restarted": [],
+            "stopped": sorted(p.value for p in stopped), "platforms": {}, "reasons": {}, "installed": [],
+            "reason": "not_served",
+            "error": f"profile '{profile}' is no longer served by this gateway (parked or removed); see its log"}
+
+
 class PlatformConfigUnreadable(Exception):
     """A served profile's ``config.yaml`` cannot be loaded: the reconcile keeps the last good
     configuration (adapters, runner settings, ``os.environ``) and acknowledges nothing, so the next
@@ -407,9 +416,7 @@ class GatewayPlatformReconcileMixin:
     async def _reconcile_secondary_locked(self, profile_name: str, reason: str) -> dict:
         _result, receipts = await self._apply_profile_diff(
             dict(self._served_profile_homes or {}), [], [], [profile_name], reason=reason)
-        # None: this apply parked or dropped it (nothing of it is served now).
-        return receipts.get(profile_name) or _receipt(
-            profile_name, (), (), (), self._secondary_platform_states(profile_name), {})
+        return receipts[profile_name]
 
     # ── named-profile receipts (``_apply_profile_diff`` brackets every named-profile apply) ──────────
 
@@ -436,8 +443,9 @@ class GatewayPlatformReconcileMixin:
         return {name: self._secondary_running_platforms(name) for name in (*added, *changed)}
 
     def _close_profile_receipts(self, before: dict, unreadable: dict) -> dict:
-        """After the apply, still under its lock: each still-served profile's receipt, recorded in the
-        ledger. ``{profile: receipt}``."""
+        """After the apply, still under its lock: each applied profile's receipt, recorded in the ledger.
+        One the apply parked or dropped records that it is no longer served (its newest state), never
+        the states an earlier apply left. ``{profile: receipt}``."""
         plans = getattr(self, "_profile_platform_plans", None) or {}
         served = self._served_profile_homes or {}
         receipts = {}
@@ -445,6 +453,7 @@ class GatewayPlatformReconcileMixin:
             plan = plans.pop(name, PlatformPlan((), (), ()))
             installed = self._profile_installs.pop(name, [])
             if name not in served:
+                receipts[name] = self._recorded(_unserved_receipt(name, was))
                 continue
             states = self._secondary_platform_states(name)
             if name in unreadable:

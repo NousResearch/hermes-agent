@@ -432,6 +432,9 @@ class _FileDrivenPrimary:
         runner._record_served_profiles = lambda active, items: runner._note_served_profiles(items)
         runner._secondary_platform_states = lambda name: dict(self.named_states)
         runner._start_one_profile_adapters = self._start_named
+        runner._unserve_profile = self._unserve_named
+        monkeypatch.setattr("gateway.run_runtime.park_profile", lambda runner_, name, why: self.parked.append(name))
+        self.parked = []
         runner._note_served_profiles(homes)
 
     def edit(self, line, profile=None):  # whole-file replace, as config writers do: a racing read sees before or after
@@ -485,10 +488,18 @@ class _FileDrivenPrimary:
             self.states[platform.value] = "retrying"
             self.started.append(platform.value)
 
+    async def _unserve_named(self, name, home):
+        self.runner._profile_adapters.pop(name, None)
+        self.named_states.clear()
+
     async def _start_named(self, name, home, claimed):
         """Stand-in for the named profile's adapter build (its recovery, retire, rebuild), keeping the
-        contract the real one keeps: the recovery's installs are noted, the plan is published."""
+        contract the real one keeps: the recovery's installs are noted, the plan is published, and a
+        config the multiplexer refuses (``OPEN_POLICY=1``) raises before anything is built."""
+        from gateway.run import MultiplexConfigError
         from gateway.run_platform_reconcile import BuildPrint, plan_platform_changes
+        if self._lines(".env", "OPEN_POLICY", "b"):
+            raise MultiplexConfigError("open dm policy")
         runner, live = self.runner, self.runner._profile_adapters.setdefault(name, {})
         installed = self._new_installs("b")
         if installed:
@@ -744,6 +755,20 @@ def test_racing_named_and_launch_reconciles_report_each_change_once(tmp_path, mo
     _assert_reported_once(gw, answers)
     again = gw.settled_ask(gw.ask_named)
     assert again["started"] == again["restarted"] == again["installed"] == []  # taken: nothing is new
+
+
+def test_a_named_profile_its_apply_parks_answers_that_its_platforms_stopped(tmp_path, monkeypatch, reconcile_loop):
+    """A save the multiplexer refuses parks the profile and stops its bots: the answer says so, never the
+    ``connected`` an earlier ask's apply left in the ledger."""
+    gw = _FileDrivenPrimary(tmp_path, reconcile_loop, monkeypatch=monkeypatch)
+    gw.edit("START_FEISHU=1", "b")
+    first = gw.settled_ask(gw.ask_named)
+    assert first["started"] == ["feishu"] and first["platforms"] == {"feishu": "connected"}, first
+    gw.edit("OPEN_POLICY=1", "b")
+    answer = gw.settled_ask(gw.ask_named)
+    assert gw.parked == ["b"] and "b" not in gw.runner._served_profile_homes
+    assert answer["applied"] is False and answer["reason"] == "not_served", answer
+    assert answer["platforms"] == {} and answer["stopped"] == ["feishu"], answer
 
 
 def test_a_drained_change_comes_with_the_state_after_it(tmp_path, reconcile_loop):

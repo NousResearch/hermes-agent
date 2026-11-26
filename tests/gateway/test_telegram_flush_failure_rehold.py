@@ -1,4 +1,5 @@
-"""Telegram: a buffered event failing before acceptance is re-held, not silently lost (#160276)."""
+"""Telegram: a buffered event failing before acceptance is re-held, not silently lost (#160276),
+and an event the gateway already accepted is never re-held (that would deliver it twice)."""
 
 import asyncio
 
@@ -9,10 +10,20 @@ from gateway.platforms.base import SessionSource
 from gateway.platforms.event import MessageEvent, MessageType
 
 
-def _adapter():
+def _adapter(accepted_texts):
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
-    return TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    held, dispatched = [], []
+    adapter._hold_inbound_event = lambda ev, *, where, schedule=True: held.append((ev.text, where))
+
+    async def handle(ev):  # fails like a thread-exhausted host: "can't start new thread"
+        dispatched.append(ev.text)
+        ev._gateway_accepted = ev.text in accepted_texts
+        raise RuntimeError("can't start new thread")
+
+    adapter.handle_message = handle
+    return adapter, held, dispatched
 
 
 def _event(text):
@@ -21,45 +32,29 @@ def _event(text):
         source=SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="1"))
 
 
-async def _flush_with_failure(adapter, event, accepted):
-    """Run the real shared flush body; record holds instead of scheduling a redispatch loop."""
-    held = []
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accepted, expected_held", [
+    (False, [("msg", "text-flush-failed")]),
+    (True, []),
+])
+async def test_flush_failure_reholds_only_unaccepted_events(accepted, expected_held):
+    adapter, held, dispatched = _adapter({"msg"} if accepted else set())
+    pending = {"k": _event("msg")}
 
-    adapter._hold_inbound_event = lambda ev, *, where, schedule=True: held.append((ev, where))
-
-    dispatched = []
-
-    async def handle(ev):
-        dispatched.append(ev)
-        ev._gateway_accepted = accepted
-        raise RuntimeError("can't start new thread")
-
-    adapter.handle_message = handle
-    pending, tasks = {"k": event}, {}
     with pytest.raises(RuntimeError, match="can't start new thread"):
-        await adapter._flush_buffered(pending, tasks, "k", 0, "text", pause=lambda _: asyncio.sleep(0))
-    return dispatched, pending, held
+        await adapter._flush_buffered(pending, {}, "k", 0, "text", pause=lambda _: asyncio.sleep(0))
+
+    assert dispatched == ["msg"]
+    assert pending == {}
+    assert held == expected_held
 
 
 @pytest.mark.asyncio
-async def test_flush_failure_before_accept_reholds_the_event():
-    adapter = _adapter()
-    event = _event("a message")
+async def test_failed_redispatch_does_not_rehold_an_accepted_event():
+    adapter, held, dispatched = _adapter({"accepted"})
+    adapter._held_inbound_events = [_event("accepted"), _event("next")]
 
-    dispatched, pending, held = await _flush_with_failure(adapter, event, accepted=False)
+    await adapter._redispatch_held_inbound()
 
-    assert dispatched == [event]
-    assert pending == {}
-    assert held == [(event, "text-flush-failed")]
-
-
-@pytest.mark.asyncio
-async def test_flush_failure_after_accept_does_not_rehold_the_event():
-    adapter = _adapter()
-    event = _event("already accepted")
-
-    dispatched, pending, held = await _flush_with_failure(adapter, event, accepted=True)
-
-    assert dispatched == [event]
-    assert pending == {}
-    assert held == []  # re-holding an accepted event would deliver it twice
+    assert dispatched == ["accepted"]
+    assert held == [("next", "redispatch-failed")]

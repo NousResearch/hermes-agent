@@ -183,10 +183,12 @@ class TelegramHeldInboundMixin:
                     raise
                 except Exception:
                     # Retryable failure: re-hold but do NOT reschedule now (a poison event would
-                    # tight-loop); the next mark_connected/live hold drains.
+                    # tight-loop); the next mark_connected/live hold drains. An event the gateway
+                    # already accepted is not re-held: replaying it would deliver it twice.
                     logger.exception(
                         "[Telegram] Failed to redispatch held inbound (%d chars); re-holding", len(getattr(event, "text", None) or ""))
-                    self._rehold_from(events, idx, "redispatch-failed")
+                    accepted = getattr(event, "_gateway_accepted", None) is True
+                    self._rehold_from(events, idx + 1 if accepted else idx, "redispatch-failed")
                     allow_followup_schedule = False
                     return
         finally:

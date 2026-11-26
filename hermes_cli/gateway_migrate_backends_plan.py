@@ -206,7 +206,7 @@ def backend_address(argv: list[str]) -> Optional[tuple[str, int]]:
     """``(host, port)`` a ``hermes dashboard`` / ``serve`` argv listens on (its defaults when it names
     none), or None when *argv* is empty or not such a command."""
     from hermes_cli.main_dashboard import _parse_dashboard_runtime
-    parsed = _parse_dashboard_runtime(shlex.join(argv)) if argv else None
+    parsed = _parse_dashboard_runtime(argv) if argv else None
     # --port 0 asks for a free port: the command line does not say which one it got.
     return (parsed[1], parsed[2]) if parsed and parsed[2] else None
 

@@ -192,15 +192,98 @@ def test_backend_address_ignores_path_decoys_and_invalid_ports():
     )
     assert backend_address(relaunched) == ("127.0.0.1", 9142)
 
+    # Exact argv lists keep path arguments containing quotes and flag fragments intact.
+    assert backend_address(
+        [
+            "/usr/bin/hermes",
+            "serve",
+            "--ssh-session-token-file",
+            "/home/o'brien/keys --host 10.0.0.9 --port 8111 notes/token",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9120",
+        ]
+    ) == ("0.0.0.0", 9120)
+
     # Non-numeric or negative ports are rejected rather than defaulting silently.
     assert _parse_dashboard_runtime("/usr/bin/hermes dashboard --port notaport") is None
     assert _parse_dashboard_runtime("/usr/bin/hermes dashboard --port=-1") is None
 
 
-def test_parse_dashboard_runtime_keeps_valid_port_before_flattened_path_fragment():
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # Malformed --port fragment in flattened path text.
+        "hermes serve --host 0.0.0.0 --port 9120 --ssh-session-token-file /home/user/keys --port 8111/token",
+        # Numeric --port fragment in flattened path text must not overwrite the real port.
+        "hermes serve --host 0.0.0.0 --port 9120 --ssh-session-token-file /home/user/keys --port 8111 notes/token",
+        # --host fragment in flattened path text must not overwrite the real host.
+        "hermes serve --host 0.0.0.0 --port 9120 --ssh-session-token-file /home/user/keys --host 10.0.0.9 notes/token",
+    ],
+    ids=["malformed-port-fragment", "numeric-port-fragment", "host-fragment"],
+)
+def test_parse_dashboard_runtime_keeps_valid_port_before_flattened_path_fragment(cmd):
     from hermes_cli.main_dashboard import _parse_dashboard_runtime
 
-    # Flattened ps output strips quotes from paths containing "--port ..."; once a valid --port
-    # has been parsed, a later malformed fragment must not drop the process from status discovery.
-    cmd = "hermes serve --host 0.0.0.0 --port 9120 --ssh-session-token-file /home/user/keys --port 8111/token"
+    # Flattened ps output strips quotes from paths containing flag fragments; keep the first
+    # valid explicit --host/--port instead of dropping or overwriting the real bind.
     assert _parse_dashboard_runtime(cmd) == ("serve", "0.0.0.0", 9120)
+
+
+@pytest.mark.parametrize(
+    "exact_argv,expected_bind",
+    [
+        (
+            [
+                "/usr/bin/hermes",
+                "serve",
+                "--ssh-session-token-file",
+                "/home/user/keys --host 10.0.0.9 --port 8111 notes/token",
+            ],
+            ("127.0.0.1", 9119),
+        ),
+        (
+            [
+                "/usr/bin/hermes",
+                "serve",
+                "--ssh-session-token-file",
+                "/home/user/keys --host 10.0.0.9 --port 8111 notes/token",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "9120",
+            ],
+            ("0.0.0.0", 9120),
+        ),
+    ],
+    ids=["default-bind-with-path-fragments", "explicit-bind-after-path-fragments"],
+)
+def test_report_dashboard_status_preserves_argv_boundaries_from_psutil(monkeypatch, exact_argv, expected_bind):
+    import psutil
+    from hermes_cli import dashboard_procs, main_dashboard
+
+    pid = 424242
+    flattened = " ".join(exact_argv)
+
+    class _FakeProcess:
+        def __init__(self, target_pid):
+            assert target_pid == pid
+
+        def cmdline(self):
+            return list(exact_argv)
+
+    probed: list[tuple[str, int]] = []
+    monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda **_: [(pid, flattened)])
+    monkeypatch.setattr(dashboard_procs, "_ledger_serve_binds", dict)
+    monkeypatch.setattr(dashboard_procs, "_caller_ancestor_pids", set)
+    monkeypatch.setattr("gateway.status._pid_exists", lambda p: p == pid)
+    monkeypatch.setattr(psutil, "Process", _FakeProcess)
+    monkeypatch.setattr(
+        main_dashboard,
+        "_dashboard_listening",
+        lambda host, port: probed.append((host, port)) or ("127.0.0.1" if (host, port) == expected_bind else None),
+    )
+
+    assert main_dashboard._report_dashboard_status() == 1
+    assert probed == [expected_bind]

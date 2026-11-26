@@ -34,4 +34,9 @@ class BrowserPageBackend(ProviderBase):
 
         Never open a tab. With ``secret=True`` the expression embeds a credential: send it only over a
         transport that keeps it out of argv and off the network in clear text (loopback or HTTPS), never
-        follow a redirect with it, and never log it. Exception text on that path is discarded by core."""
+        follow a redirect with it, and never log it. Exception text on that path is discarded by core.
+
+        Return the expression's own value: do not resolve it as a promise or thenable. Every vault script
+        answers synchronously with a null-prototype object, so a transport that awaits still gets the
+        script's verdict, but a non-null-prototype value it awaited would be resolved through the page's
+        ``Object.prototype.then``, i.e. answered by the page."""

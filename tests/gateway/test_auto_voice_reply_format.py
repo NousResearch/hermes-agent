@@ -184,6 +184,7 @@ def _make_runner() -> GatewayRunner:
 def _make_adapter(platform: Platform) -> MagicMock:
     adapter = MagicMock()
     adapter.platform = platform
+    adapter._auto_tts_mode = "all"
     adapter.send_voice = AsyncMock()
     return adapter
 

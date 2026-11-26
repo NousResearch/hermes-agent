@@ -18,10 +18,12 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
 2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in a directory; a running process picks it up on its next provider lookup (no restart)
-3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager
+3. **Installed plugins** — `$HERMES_HOME/plugins/<name>/` (where `hermes plugins install owner/repo` clones) — imported only when `plugin.yaml` declares `kind: model-provider`; every other kind there belongs to the general PluginManager. `model-providers` is the folder from step 2, so `hermes plugins install` refuses a plugin whose own name is `model-providers` (in any letter case), except a re-install of an existing install of that name from its recorded source
 4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
 
 Steps 2 and 3 are **per profile home**: one process that serves several profiles (the multiplex gateway a local Desktop attaches to, a `hermes serve` backend) resolves the plugins of whichever profile's `$HERMES_HOME` is bound at lookup time, and a plugin installed in one profile is not visible from another. Install the plugin in every profile that should use it (`hermes -p <profile> plugins install ...`).
+
+Updates reach a running process too. `hermes plugins update`, the dashboard and Desktop update, and the gateway's auto-apply tick all end in a forced plugin sweep, which re-scans the profile's provider plugins. A plugin whose tree changed (its catalog pin in `.hermes-catalog.json`, else the mtimes of its Python files and manifest) is dropped whole, package and submodules, then imported again, so its profiles re-register from the new version. New requests use it; a client already built keeps its objects, and anything it imports afterwards comes from the new package, never a mix of the two versions.
 
 **User plugins override bundled plugins of the same name** because `register_provider()` is last-writer-wins. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in GMI profile without touching the repo.
 
@@ -249,11 +251,13 @@ meaning says otherwise.
 | `supports_vision` | API accepts images inside tool-result messages | `False` |
 | `supports_vision_tool_messages` | API accepts list-type (multipart) tool message content | `True` |
 | `supports_prompt_cache_key` | Chat Completions endpoint documents `prompt_cache_key` | `False` |
+| `prompt_cache_max_ttl` | Longest prompt-cache tier the route really keeps (`"5m"`/`"1h"`); Hermes never asks for, or believes, more, and the cache clock declares the tier sent up to it (`None` leaves a `1h` ask on an Anthropic-wire gateway unproven, so it is never warmed or compacted on). Config `prompt_caching.route_ttl_ceilings` overrides it | `None` |
 | `native_reasoning_details_type` | Namespaced `<provider>.native_assistant` reasoning carrier only this profile receives | `None` |
 | `process_command` | External-process default binary | `""` |
 | `process_args` | External-process default argv tail | `()` |
 | `process_command_env_vars` | Env vars overriding the binary, in priority order | `()` |
 | `process_args_env_var` | Env var overriding argv (shlex-split) | `""` |
+| `login_args` | External-process CLI's own sign-in, as an argv tail after the resolved binary; sign-in hints show it | `()` |
 | `fallback_models` | Curated picker list when the live fetch fails | `()` |
 | `model_aliases` | Short name → model id; `/model <alias>` resolves here first | `{}` |
 | `hostname` | Base hostname for URL → provider reverse mapping (derived from `base_url` when empty) | `""` |
@@ -346,6 +350,18 @@ A provider's own `hermes model` step calls these instead of re-implementing core
 | `hermes_cli.model_setup.note_setup_failure(failure_class)` | Records why the flow ended without a pick (`"auth"`, `"no_models"`, ...) for the opt-in provider-setup metric; a no-op outside a tracked flow. |
 | `agent.secret_scope.secret_source_label(name)` | `" (from Bitwarden)"`-style suffix naming the secret-source plugin that supplied env var `name`; `""` for `.env` / shell values. |
 
+### Public helpers for native Gemini reasoning
+
+A provider on the native Gemini wire (`generateContent`) maps the reasoning config with these, so its efforts follow
+the same per-model rules as the built-in `gemini` provider. The profile still chooses the request field and its own
+output budget.
+
+| Helper | What it does |
+|---|---|
+| `agent.reasoning_effort.gemini_thinking_config(model, reasoning_config)` | Native camelCase `thinkingConfig` for a Hermes reasoning config (`{"enabled": False}` gives the lowest level the model allows, with thoughts hidden; `xhigh` and above reach `xhigh` on the models that take it), or `None` for a non-Gemini model or no reasoning config. |
+| `agent.reasoning_effort.clamp_effort(effort, supported, overrides=None)` | Clamps an effort onto a declared level tuple: unchanged when supported, else the nearest weaker level (the weakest one when nothing is weaker). |
+| `agent.reasoning_effort.bare_gemini_model_id(model)` | The model id the native Gemini client sends (`gemini/` and `google/` prefixes stripped). `gemini_thinking_config` already applies it; it imports no HTTP stack. |
+
 ## Account usage
 
 Model-provider plugins can provide account or plan usage to `/usage` by
@@ -387,6 +403,7 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 | `process_args` | Default argv tail, e.g. `("--mode", "acp")` |
 | `process_command_env_vars` | Env vars that override the binary, checked in order |
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
+| `login_args` | The CLI's own sign-in after the binary, e.g. `("auth", "login")`. Error replies, cron notices and the Desktop sign-in card show the binary plus these; empty keeps `hermes model`. Read from the declaration only, never by running the CLI |
 
 The `process_command_env_vars` and `process_args_env_var` names are executable authority: Hermes' generic env writers (dashboard, MCP and connector installs, `save_env_value`) refuse them, so set them in `.env` or the shell.
 
@@ -460,7 +477,7 @@ Look at these bundled plugins for idioms:
 | Plugin | Why look |
 |---|---|
 | `plugins/model-providers/openrouter/` | Aggregator with provider preferences, public model catalog |
-| `plugins/model-providers/gemini/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
+| `plugins/model-providers/google/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
 | `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`, `extra_body.thinking`, top-level `reasoning_effort` |
 | `plugins/model-providers/qwen-oauth/` | Message normalization, `cache_control` injection, VL high-res |
 | `plugins/model-providers/nous/` | Attribution tags, "omit reasoning when disabled" |
@@ -699,12 +716,21 @@ for p in list_providers():
 
 ## Testing your plugin
 
-Point `HERMES_HOME` at a temp directory so you don't pollute your real config:
+Point `HERMES_HOME` at a throwaway directory so you don't pollute your real config, then
+write `$HERMES_HOME/plugins/model-providers/my-provider/__init__.py` (an agent uses
+`write_file`, which creates the directory):
 
 ```bash
-export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-plugin-test
-mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
-cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
+export HERMES_HOME=$HOME/hermes-plugin-test
+```
+
+Keep that directory out of `~/.hermes/cache/scratch` and other temp directories that are
+cleaned by age: a running Hermes imports your plugin from a copy under the Hermes root's
+`runtime/provider-plugins/` (`$HERMES_HOME` itself, or the root above `profiles/` for a named
+profile), and a cleaner that deletes it makes the plugin's later imports fail until the
+process restarts.
+
+```python
 from providers import register_provider
 from providers.base import ProviderProfile
 register_provider(ProviderProfile(
@@ -713,8 +739,9 @@ register_provider(ProviderProfile(
     base_url="https://api.my-provider.example.com/v1",
     auth_type="api_key",
 ))
-EOF
+```
 
+```bash
 export MY_API_KEY=your-test-key
 hermes -z "hello" --provider my-provider -m some-model
 ```

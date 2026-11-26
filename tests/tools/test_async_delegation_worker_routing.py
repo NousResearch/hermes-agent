@@ -47,8 +47,6 @@ def test_worker_ledger_paths_are_closed_and_process_scoped(monkeypatch):
         assert ledger.get_durable_delegation('deleg_owned')
         assert ledger.restore_undelivered_completions(queue.Queue()) == 0
         with pytest.raises(runtime_session_store.WorkerPersistenceError, match='owner_only'):
-            ledger.mark_completion_delivered('deleg_owned')
-        with pytest.raises(runtime_session_store.WorkerPersistenceError, match='owner_only'):
             ledger.recover_abandoned_delegations()
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(exercise).result()

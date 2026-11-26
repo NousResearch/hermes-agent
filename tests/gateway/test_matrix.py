@@ -1890,7 +1890,7 @@ class TestMatrixImageOnlyMediaNormalization:
     def setup_method(self):
         self.adapter = _make_adapter()
         self.adapter._client = MagicMock()
-        self.adapter._client.download_media = AsyncMock(return_value=None)
+        self.adapter._client.versions = AsyncMock(side_effect=RuntimeError("no homeserver"))  # first mxc-read step
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
@@ -1929,7 +1929,7 @@ class TestMatrixImageOnlyMediaNormalization:
             "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
         ]
         assert captured_event.message_type == MessageType.PHOTO
-
+        self.adapter._client.versions.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_inbound_oversized_media_is_rejected(self):
@@ -1958,7 +1958,7 @@ class TestMatrixImageOnlyMediaNormalization:
         )
 
         assert captured_event is None
-        self.adapter._client.download_media.assert_not_called()
+        self.adapter._client.versions.assert_not_called()
 
 
     @pytest.mark.asyncio

@@ -73,7 +73,8 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
     existing.absorb_reply_expected(event)
     existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
     existing.extend_media(event)
-    captions = merged_text(caption_text(existing), event, caption_text(event), merge_caption) or ""
+    captions = command_first(caption_text(existing), caption_text(event), merge_caption) \
+        or merged_text(caption_text(existing), event, caption_text(event), merge_caption) or ""
     existing.text = merged_text(existing.text, event, event.text, merge_caption)
     if CAPTION_TEXT_ATTR in existing.__dict__ or CAPTION_TEXT_ATTR in event.__dict__:  # an item inlined file text
         existing.__dict__[CAPTION_TEXT_ATTR] = captions  # refreshed on every merge, so it never lags the text
@@ -84,6 +85,14 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
             existing.text = captions
             existing.media_text_inlined = [False if flag else flag for flag in pad_inline_flags(existing)]
     return key
+
+
+def command_first(captions: str, incoming: str, merge_caption) -> Optional[str]:
+    """The album's captions when a later item carries its command caption and an earlier one holds text
+    (the comment absorbed by the first file): the command leads so it still parses. Else ``None``."""
+    if captions and caption_is_command(incoming) and not caption_is_command(captions):
+        return merge_caption(incoming, captions)
+    return None
 
 
 def merged_text(text: Optional[str], event: MessageEvent, incoming: Optional[str], merge_caption) -> Optional[str]:

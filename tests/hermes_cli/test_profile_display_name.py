@@ -35,6 +35,17 @@ def profile_env(tmp_path, monkeypatch):
     return default_home
 
 
+def _get_api_profiles(profile_env, monkeypatch) -> list:
+    """Rows of a real ``GET /api/profiles`` against the isolated home."""
+    import hermes_state
+    from starlette.testclient import TestClient
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", profile_env / "state.db")
+    resp = TestClient(app).get("/api/profiles", headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["profiles"]
+
+
 class TestMetaAndValidation:
     def test_round_trip_preserves_other_fields(self, profile_env):
         write_profile_meta(profile_env, description="ops agent")
@@ -66,6 +77,30 @@ class TestMetaAndValidation:
         (profile_env / "profile.yaml").write_text(
             "ui_meta:\n  hermes-bots: 7\n", encoding="utf-8")  # not a mapping
         assert read_profile_meta(profile_env)["bot_title"] == ""
+
+    def test_roster_rows_carry_only_bot_mode_ui_meta(self, profile_env, monkeypatch):
+        # A secondary Desktop connection seats bots in sections from /api/profiles (#154536);
+        # other plugins' ui_meta (group-chat logs, images) stays off that 5s poll.
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots:\n    title: Builder\n    sectionId: jm\n    sectionName: JM\n"
+            "    created: 2026-11-12\n  hermes-bots-groups:\n    rooms: {r1: {log: [hi]}}\n", encoding="utf-8")
+        from hermes_cli import profiles
+        from hermes_cli.web_server_profiles import _fallback_profile_dicts
+        expected = {"hermes-bots": {"title": "Builder", "sectionId": "jm", "sectionName": "JM",
+                                    "created": "2026-11-12"}}
+        import hermes_cli.web_routers.profiles as router  # the normal path, not the fallback
+        monkeypatch.setattr(router, "_fallback_profile_dicts", lambda _mod: pytest.fail("fallback served"))
+        assert _get_api_profiles(profile_env, monkeypatch)[0]["ui_meta"] == expected
+        assert _fallback_profile_dicts(profiles)[0]["ui_meta"] == expected
+        # Each caller gets its own copy of the cached value.
+        read_profile_meta(profile_env)["ui_meta"]["hermes-bots"]["sectionId"] = "poisoned"
+        assert read_profile_meta(profile_env)["ui_meta"] == expected
+
+    def test_non_json_bot_mode_ui_meta_never_fails_the_list(self, profile_env, monkeypatch):
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots:\n    title: NaN Bot\n    score: .nan\n", encoding="utf-8")
+        row = _get_api_profiles(profile_env, monkeypatch)[0]
+        assert row["ui_meta"] == {} and row["bot_title"] == "NaN Bot"
 
     def test_empty_clears_key_from_file(self, profile_env):
         write_profile_meta(profile_env, display_name="Harumesu")

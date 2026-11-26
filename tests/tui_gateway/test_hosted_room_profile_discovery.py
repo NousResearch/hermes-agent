@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.tui_gateway.test_hosted_room_service import _server
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -21,6 +22,6 @@ def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
     assert (profiles / ".deleted").is_dir()
     (profiles / "shell" / "cron").mkdir(parents=True)
 
-    service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
+    service = HostedRoomService(_server(), store=storage_handle(tmp_path), placement="shared")
 
     assert service.local_profiles() == ("default", "ops")

@@ -13,6 +13,7 @@ from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import is_termux as _is_termux
+from hermes_platform.resolver.git import inspect_git
 from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
@@ -59,18 +60,25 @@ def _pm_package_for_command(command: str) -> str | None:
     return None
 
 
+def _pm_staged_command(name: str) -> Path | None:
+    for package_name in (name, _pm_package_for_command(name)):
+        if not package_name:
+            continue
+        staged = _pm_tool_path(package_name)
+        if staged:
+            return staged
+    return None
+
+
 def _doctor_tool(name: str) -> tuple[str | None, str]:
     """Resolve the tool Hermes would actually run: the pm store first
     (pinned installs run tools out of the store, which nothing puts on
     PATH), then PATH. *name* is the command ("rg"); its pm package
     ("ripgrep") is resolved from pm's own definitions. Returns
     ``(path, ok-row detail)``."""
-    for package_name in (name, _pm_package_for_command(name)):
-        if not package_name:
-            continue
-        staged = _pm_tool_path(package_name)
-        if staged:
-            return str(staged), "(pm store)"
+    staged = _pm_staged_command(name)
+    if staged:
+        return str(staged), "(pm store)"
     return _safe_which(name), ""
 
 
@@ -176,9 +184,18 @@ def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]
 
 @doctor_check()
 def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
-    git, git_detail = _doctor_tool("git")
+    staged_git = _pm_staged_command("git")
+    if staged_git:
+        git, git_detail, git_clt_stub = str(staged_git), "(pm store)", False
+    else:
+        git_res = inspect_git(cached=False)
+        git, git_detail, git_clt_stub = git_res.executable, "", git_res.status == "clt_stub"
     rg, rg_detail = _doctor_tool("rg")
-    check_bool(git, ("git", git_detail), ("git not found", "(optional)"))
+    if git_clt_stub:
+        check_warn("git not found", "(optional — macOS /usr/bin/git stub requires Command Line Tools)")
+        check_info("Install git: run `xcode-select --install` or `brew install git`")
+    else:
+        check_bool(git, ("git", git_detail), ("git not found", "(optional)"))
     if not check_bool(rg, ("ripgrep (rg)", f"{rg_detail} (faster file search)".strip()),
                       ("ripgrep (rg) not found", "(file search uses grep fallback)")):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
@@ -479,7 +496,7 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import PROJECT_ROOT
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from model_tools import check_tool_availability
     available, unavailable = _apply_doctor_tool_availability_overrides(*check_tool_availability())
     # Web is split into search/extract readiness rows so an explicitly
     # selected but unconfigured backend cannot look healthy.
@@ -491,7 +508,7 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
             available = [tid for tid in available if tid != "web"]
             unavailable = [item for item in unavailable if item.get("name") != "web"]
     for tid in available:
-        check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
+        check_ok(tid, _doctor_tool_availability_detail(tid))
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:

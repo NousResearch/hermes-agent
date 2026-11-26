@@ -74,7 +74,7 @@ token). Other sessions do not see it.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `delegate_task` | Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its final summary returns to you. Provide 'goal' for a single task or 'tasks' for a parallel batch (limits and nesting rules… | — |
+| `delegate_task` | Spawn isolated subagents. Each gets its own conversation, terminal session, and toolset, and only its final summary returns to you. `tasks` takes one entry per subagent; `action` lists, steers, stops or continues children. | — |
 
 ## `feishu_doc` toolset
 
@@ -156,7 +156,7 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `desktop_project` | One action enum for the three Project verbs: `create` makes a desktop Project (a named workspace) and switches this chat into it — pass `path` to anchor it to a repo/folder; `list` shows the desktop Projects and which one is active; `switch` moves this chat into an existing Project (by name, slug, or id), moving the session workspace to the project's primary folder. | — |
+| `desktop_project` | One action enum for the three Project verbs: `create` makes a desktop Project (a named workspace); pass `path` to anchor it to a repo/folder. The chat stays where it is and the active project is unchanged. `list` shows the desktop Projects and which one this chat is in (the active project, for CLI and messaging callers). `switch` moves this chat into an existing Project (by name, slug, or id), moving the session workspace to the project's primary folder; in a Desktop or TUI chat the move lands when the turn ends (`moved: "pending"`), and a chat that cannot move gets `moved: false` with the reason while the active project changes instead. | — |
 
 ## `memory` toolset
 

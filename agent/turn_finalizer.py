@@ -17,9 +17,10 @@ from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+from agent.review_signals import build_review_signals, skill_review_due
 from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
@@ -442,9 +443,13 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             and _stripped[-1:] not in _SENTENCE_END
         )
         if _is_empty_terminal or _is_partial_fragment or str(_turn_exit_reason) == "partial_stream_recovery":
+            from agent.agent_init_session import agent_interface
+            from persistence_assembly import store_location
+            _store = agent_interface(agent)
             _explanation = agent._format_turn_completion_explanation(
                 _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
-                db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
+                db_path=(store_location(_store.scope) if _store is not None
+                         else getattr(getattr(agent, "_session_db", None), "db_path", None)),
                 model=str(getattr(agent, "model", "") or ""),
             )
             if _explanation:
@@ -469,10 +474,12 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
 
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
-    messages,
+    messages, memory_review_due=False, skill_review_due=False,
 ) -> tuple[Any, bool, Optional[Any]]:
     """Resolve the turn's ``transform_llm_output`` outcome, then fire ``post_llm_call`` once per
     turn after the tool loop. Returns ``(final_response, transformed, pre_transform_response)``.
+    ``review_signals`` carries the review decision the caller makes after the hook
+    (``agent/review_signals.py``).
 
     The transform itself normally already ran before the assistant row was first persisted
     (``apply_llm_output_transform`` from ``finish_text_response`` / ``_persist_step``); this
@@ -491,6 +498,10 @@ def _apply_output_hooks(
         except Exception:
             side_question_token = None
             logger.warning("side question lease failed", exc_info=True)
+        from hermes_cli.lifecycle import has_hook
+        review_signals = build_review_signals(
+            agent, memory_review_due=memory_review_due, skill_review_due=skill_review_due,
+        ) if has_hook("post_llm_call") else None
         _invoke_hook_safely(
             "post_llm_call", logger,
             session_id=agent.session_id,
@@ -502,6 +513,7 @@ def _apply_output_hooks(
             model=agent.model,
             platform=platform,
             side_question_token=side_question_token,
+            review_signals=review_signals,
         )
     return final_response, transformed, pre_transform
 
@@ -769,6 +781,9 @@ def finalize_turn(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
 
+    # Skill trigger: decided ONCE, from the tool iterations THIS turn used, before post_llm_call so
+    # the hook's review_signals and the review spawn below agree.
+    _should_review_skills = skill_review_due(agent)
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
     _pre_transform_response = None
@@ -776,6 +791,7 @@ def finalize_turn(
         final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+            memory_review_due=_should_review_memory, skill_review_due=_should_review_skills,
         )
 
     # Context engine observation hook: the turn finished with the finalized transcript.
@@ -878,12 +894,6 @@ def finalize_turn(
     from agent.voice_turn_route import end_voice_turn_route
     end_voice_turn_route(agent)
 
-    # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
-    _should_review_skills = (
-        agent._skill_nudge_interval > 0
-        and agent._iters_since_skill >= agent._skill_nudge_interval
-        and "skill_manage" in agent.valid_tool_names
-    )
     if _should_review_skills:
         agent._iters_since_skill = 0
 

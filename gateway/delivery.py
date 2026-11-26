@@ -83,6 +83,16 @@ def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
     return None
 
 
+def prime_revived_egress(adapter: Any, event: Any) -> None:
+    """Warm *adapter*'s per-chat egress routing (Relay) before an event revived from durable state
+    reaches it. Those caches fill only on live inbound, so after a restart the revived turn's replies
+    would leave without the tenant discriminators the connector requires and be declined."""
+    # Relay priming is fill-only, so a restored source with verified relay provenance is safe too.
+    prime = getattr(adapter, "prime_routing_cache", None)
+    if callable(prime):
+        prime(event)
+
+
 def looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
     """True when ``chat_id`` is a positive int — Telegram's private-chat shape (groups/channels are negative).
     Single source of truth, reused by the handoff seed path in ``gateway/run.py`` so handoff-created DM
@@ -318,8 +328,8 @@ class DeliveryRouter:
         # See #77763.
         is_cron_artifact = "job_id" in (metadata or {})
         if self._filter_silence_narration_enabled() and not is_cron_artifact and _is_silence_narration(content):
-            logger.warning("Dropped silence-narration outbound to %s (chat=%s): %r",
-                           target.platform.value, target.chat_id, content[:40])
+            logger.warning("Dropped silence-narration outbound to %s (chat=%s, %d chars)",
+                           target.platform.value, target.chat_id, len(content))
             return {"success": True, "filtered": "silence_narration", "delivered": False}
 
         send_metadata = dict(metadata or {})

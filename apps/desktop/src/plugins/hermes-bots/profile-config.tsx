@@ -26,7 +26,6 @@ import { botsText, useBots } from './i18n'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import { botBackendProfileScope, requestForBot, resolveBotConnectionRoute } from './routing'
-import { HubSkillsSection } from './skills-hub'
 import { ensureMessagingProtocol } from './soul'
 import type { RosterRow } from './types'
 
@@ -371,25 +370,6 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           >
             <CheckList columns={2} items={visibleSkills} onToggle={toggleSkill} />
           </div>
-          <HubSkillsSection
-            bot={bot}
-            onInstalled={name =>
-              setState(prev =>
-                prev.skills.some(s => s.name === name)
-                  ? prev
-                  : {
-                      ...prev,
-                      skills: [
-                        ...prev.skills,
-                        {
-                          name,
-                          enabled: true
-                        }
-                      ]
-                    }
-              )
-            }
-          />
         </div>
       )}
       {labeled(

@@ -8,6 +8,7 @@ that ``GIT_TERMINAL_PROMPT=0`` blocks with "could not read Username ... terminal
 """
 
 import base64
+import shlex
 import subprocess
 import sys
 
@@ -226,13 +227,140 @@ def test_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypa
     helper.write_text("#!/bin/sh\n[ \"$1\" = get ] && printf 'username=bob\\npassword=pw-from-helper\\n'\n", encoding="utf-8")
     helper.chmod(0o755)
     gitconfig = tmp_path / "gitconfig"
-    gitconfig.write_text(f'[credential "https://git.example.test"]\n\thelper = !{helper}\n', encoding="utf-8")
+    gitconfig.write_text(f'[credential "https://git.example.test"]\n\thelper = !{shlex.quote(str(helper))}\n', encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_ASKPASS", "/nonexistent/askpass-must-not-run")
 
     assert git_credentials.resolve_git_basic_auth("https://git.example.test/acme/x.git") == ("bob", "pw-from-helper")
+    # Host-only lookup still works when no path is present.
+    assert git_credentials._credential_fill("https://git.example.test") == ("bob", "pw-from-helper")
     # Unknown host: no helper answers → None quickly, no prompt attempt escaped.
     assert git_credentials.resolve_git_basic_auth("https://nothing.example.test/x.git") is None
+
+
+@pytest.mark.platforms("posix")  # POSIX shell stub credential helper
+def test_credential_fill_passes_path_and_sanitizes_url_for_use_http_path(tmp_path, monkeypatch):
+    """Path-scoped credential helpers (e.g. Azure DevOps with ``credential.useHttpPath = true``)
+    must receive the decoded repository path and optional username, while embedded passwords,
+    queries, fragments, and control characters never leak into ``git credential fill`` (#160408)."""
+    capture = tmp_path / "helper-input.txt"
+    helper = tmp_path / "azure-helper.sh"
+    helper.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = get ]; then\n"
+        f"  cat > {shlex.quote(str(capture))}\n"
+        "  printf 'username=az-user\\npassword=az-pat\\n'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    quoted_helper = shlex.quote(str(helper))
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(
+        f'[credential "https://dev.azure.com/myorg"]\n'
+        f"\tuseHttpPath = true\n"
+        f"\thelper = !{quoted_helper}\n"
+        f'[credential "https://[::1]:8443/team"]\n'
+        f"\tuseHttpPath = true\n"
+        f"\thelper = !{quoted_helper}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_ASKPASS", "/nonexistent/askpass-must-not-run")
+
+    # Azure DevOps URL with org@ userinfo, percent-encoded space, query, and #subdir fragment.
+    url_with_user = "https://myorg@dev.azure.com/myorg/My%20Project/_git/repo?foo=1#plugins/sub"
+    assert git_credentials.resolve_git_basic_auth(url_with_user) == ("az-user", "az-pat")
+    seen = dict(line.split("=", 1) for line in capture.read_text(encoding="utf-8").splitlines() if "=" in line)
+    assert seen == {
+        "protocol": "https",
+        "host": "dev.azure.com",
+        "username": "myorg",
+        "path": "myorg/My Project/_git/repo",
+    }
+
+    # Scrubbed remote URL (no org@ userinfo, as saved after plugin clone) must also match via path.
+    capture.unlink()
+    url_without_user = "https://dev.azure.com/myorg/My%20Project/_git/repo"
+    assert git_credentials.resolve_git_basic_auth(url_without_user) == ("az-user", "az-pat")
+    seen_no_user = dict(line.split("=", 1) for line in capture.read_text(encoding="utf-8").splitlines() if "=" in line)
+    assert seen_no_user == {
+        "protocol": "https",
+        "host": "dev.azure.com",
+        "path": "myorg/My Project/_git/repo",
+    }
+
+    # Embedded password must be stripped so git still queries the helper instead of echoing it.
+    capture.unlink()
+    url_with_pass = "https://myorg:inline-pass@dev.azure.com/myorg/proj/_git/repo"
+    assert git_credentials.resolve_git_basic_auth(url_with_pass) == ("az-user", "az-pat")
+    seen_pass = dict(line.split("=", 1) for line in capture.read_text(encoding="utf-8").splitlines() if "=" in line)
+    assert seen_pass == {
+        "protocol": "https",
+        "host": "dev.azure.com",
+        "username": "myorg",
+        "path": "myorg/proj/_git/repo",
+    }
+
+    # IPv6 literal with explicit port retains brackets and port.
+    capture.unlink()
+    assert git_credentials.resolve_git_basic_auth("https://[::1]:8443/team/repo.git") == ("az-user", "az-pat")
+    seen_ipv6 = dict(line.split("=", 1) for line in capture.read_text(encoding="utf-8").splitlines() if "=" in line)
+    assert seen_ipv6 == {
+        "protocol": "https",
+        "host": "[::1]:8443",
+        "path": "team/repo.git",
+    }
+
+    # A different org path on the same host does not match the /myorg helper.
+    capture.unlink()
+    assert git_credentials.resolve_git_basic_auth("https://dev.azure.com/other/proj/_git/repo") is None
+    assert not capture.exists()
+
+
+def test_credential_fill_rejects_malformed_and_unsafe_urls_without_spawning_git(monkeypatch):
+    """Non-HTTPS URLs, malformed authorities, literal CR/LF/NUL/TAB, and percent-encoded
+    CR/LF/NUL in username/host/path must be rejected before resolving any credential source."""
+    monkeypatch.setattr(git_credentials, "resolve_usable_git", lambda: "/usr/bin/git")
+    monkeypatch.setattr(
+        git_credentials,
+        "_env_github_token",
+        lambda: pytest.fail("env token must not be read for rejected URL"),
+    )
+    monkeypatch.setattr(
+        git_credentials.subprocess,
+        "run",
+        lambda *a, **kw: pytest.fail(f"subprocess must not be invoked for rejected URL: {a} {kw}"),
+    )
+    base_env = noninteractive_git_env()
+
+    for bad_url in (
+        "http://dev.azure.com/myorg/proj/_git/repo",
+        "ssh://git@dev.azure.com/myorg/proj/_git/repo",
+        "https://dev.azure.com/myorg/proj\nhost=evil.test",
+        "https://dev.azure.com/myorg/proj\rhost=evil.test",
+        "https://dev.azure.com/myorg/proj\x00/_git/repo",
+        "https://dev.azure.com/my\tproject/_git/repo",
+        "https://git\thub.com/myorg/repo",
+        "https://dev.azure.com/myorg/proj%0ahost=evil.test",
+        "https://dev.azure.com/myorg/proj%0dhost=evil.test",
+        "https://dev.azure.com/myorg/proj%00/_git/repo",
+        "https://myorg%0a@dev.azure.com/myorg/proj/_git/repo",
+        "https://dev.azure.com%0a/myorg/proj/_git/repo",
+        "https://dev.azure.com%0d/myorg/proj/_git/repo",
+        "https://dev.azure.com%00/myorg/proj/_git/repo",
+        "https://github.com/myorg/repo%0a",
+        "https://user%0a@github.com/myorg/repo",
+        "https://a@b@dev.azure.com/myorg/proj/_git/repo",
+        "https://dev.azure.com:abc/myorg/proj/_git/repo",
+        "https://dev.azure.com:65536/myorg/proj/_git/repo",
+        "https://[::1/myorg/proj/_git/repo",
+    ):
+        assert git_credentials._credential_fill(bad_url) is None
+        assert git_credentials.resolve_git_basic_auth(bad_url) is None
+        assert git_credentials.with_git_auth(base_env, bad_url) == dict(base_env)
 
 
 def _refused(argv):

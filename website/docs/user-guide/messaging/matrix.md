@@ -370,25 +370,28 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
+E2EE runs on [vodozemac](https://github.com/matrix-org/vodozemac), the Matrix.org Foundation's audited Rust implementation of Olm/Megolm, through its pre-built Python wheels. No C compiler, CMake or system `libolm` is needed:
 
 ```bash
 # Request the declared Matrix dependencies
 python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
-You also need `libolm` installed on your system:
+`MATRIX_E2EE_BACKEND` selects the Olm/Megolm implementation:
 
-```bash
-# Debian/Ubuntu
-sudo apt install libolm-dev
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | vodozemac. Falls back to the legacy python-olm/libolm package only when vodozemac is missing (an environment not re-synced since this change), with a deprecation warning. |
+| `vodozemac` | vodozemac only; never falls back to libolm. |
+| `libolm` | The deprecated python-olm/libolm backend, as a temporary fallback for a vodozemac regression. Linux only: install it with `pm.sync_venv(['matrix-libolm'], explicit=True)`. libolm is unmaintained and has unfixed advisories (CVE-2024-45191, CVE-2024-45192, CVE-2024-45193). |
 
-# macOS
-brew install libolm
+Any other value selects no backend, so `MATRIX_E2EE_MODE=required` refuses to connect.
 
-# Fedora
-sudo dnf install libolm-devel
-```
+:::info Upgrading an existing E2EE bot from libolm
+The first start on vodozemac migrates `crypto.db` in place: the Olm account (same identity keys and device), Olm sessions and every inbound Megolm session are kept, so existing rooms keep decrypting. Outbound Megolm sessions written by libolm cannot be imported and are rotated: the bot simply shares a fresh room key on its next encrypted message. Before migrating, Hermes copies the store to `crypto.db.libolm-backup-<timestamp>` (mode `0600`; it holds the bot's private keys). If that copy cannot be written, E2EE setup stops and the store is left untouched.
+
+The migration is one-way. To go back to libolm, stop the gateway, restore the backup as `crypto.db`, and start with `MATRIX_E2EE_BACKEND=libolm`. Starting `libolm` on a migrated store without restoring refuses to connect and names the backup to restore. Messages received after the migration are only in the migrated store, so a rollback loses their keys.
+:::
 
 ### Enable E2EE
 
@@ -500,7 +503,7 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 :::
 
 :::info
-If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
+If the Matrix E2EE dependencies (`mautrix`, `vodozemac`, `asyncpg`, `aiosqlite`) are not installed and `MATRIX_E2EE_MODE=optional`, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs. With `MATRIX_E2EE_MODE=required` it refuses to connect instead.
 :::
 
 ## Home Room
@@ -631,10 +634,10 @@ cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], expl
 
 ### Encryption errors / "could not decrypt event"
 
-**Cause**: Missing encryption keys, `libolm` not installed, or the bot's device isn't trusted.
+**Cause**: Missing encryption keys, the E2EE dependencies are not installed, or the bot's device isn't trusted.
 
 **Fix**:
-1. Verify `libolm` is installed on your system (see the E2EE section above).
+1. Verify the Matrix dependencies are installed (see the E2EE section above); the gateway log names the active backend.
 2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
 3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
@@ -723,12 +726,13 @@ security breach). A new access token gets a new device ID with no stale key
 history, so other clients trust it immediately.
 :::
 
-## Proxy Mode (E2EE on macOS)
+## Proxy Mode (Matrix adapter in a separate environment)
 
-The `matrix` extra is gated to Linux. On macOS or Windows, run the Matrix
-adapter and encryption dependencies in a Linux container and forward requests
-to the native agent. The example below uses a macOS host; the same separation
-applies to Windows with the corresponding host address and authentication.
+E2EE works natively on Linux, macOS and Windows (vodozemac wheels), so proxy
+mode is no longer required for encryption. It remains useful when the Matrix
+adapter must run somewhere else than the agent (network isolation, a hardened
+container). The example below uses a macOS host; the same separation applies
+to Windows with the corresponding host address and authentication.
 
 ### How It Works
 

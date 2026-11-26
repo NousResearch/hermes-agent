@@ -78,7 +78,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # user cannot apt-get it later (no root, and the root fs resets on restart).
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils tmux \
+    ca-certificates curl iputils-ping python3 python-is-python3 gcc g++ make cmake python3-dev python3-venv libffi-dev libatomic1 procps git openssh-client docker-cli xz-utils tmux \
     libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -263,12 +263,10 @@ FROM runtime_base AS python_deps
 # Health export is enabled. Collector and observability-backend dependencies
 # remain external and are not part of the Hermes production image.
 #
-# The Matrix gateway's deps ([matrix] extra) are baked in because
-# python-olm (transitive via mautrix[encryption]) builds from source on
-# Python/image combinations without usable wheels.  The Docker image is
-# Linux-only, so keeping the native libolm/build-toolchain packages here
-# avoids the cross-platform failures that kept [matrix] out of [all]
-# while still making Matrix work in the published container. Fixes #30399.
+# The Matrix gateway's deps ([matrix] extra) are baked in so hosted and
+# immutable images can enable Matrix without writing the sealed venv. E2EE
+# runs on vodozemac wheels, so no libolm or native build is needed for it
+# (the former python-olm source build is why libolm-dev was here; #30399).
 #
 # Google Chat's [google-chat] extra (google-cloud-pubsub + Chat API clients)
 # is baked so hosted/immutable images can enable the adapter without writing
@@ -298,7 +296,7 @@ RUN touch ./README.md
 # pm.packages.uv_cache_dir() merges into $HERMES_HOME/cache/uv on first use.
 # Do not leave the cache at its default: HERMES_HOME is not set yet in this
 # stage, so the default is /root/.hermes/cache/uv, which nothing reads. A plugin
-# install then runs with an empty cache and builds python-olm from source.
+# install then runs with an empty cache and re-downloads or rebuilds everything.
 RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
     --cache /opt/hermes/uv-cache \
     --out /opt/hermes/.venv --no-install-project --sealed --record-selection \

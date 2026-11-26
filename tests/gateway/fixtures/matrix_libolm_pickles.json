@@ -1,0 +1,42 @@
+{
+  "_comment": "Generated with python-olm 3.2.16 / libolm 3.2.16. Pickled with the passphrase below. Used to test the libolm -> vodozemac migration without python-olm installed.",
+  "passphrase": "@hermes:example.org:HERMESDEV",
+  "account": {
+    "pickle": "EUrQX5i/UYaxZo9IWJl+voprjg6DHVvChiGoHhboYNoZIiCOXbJhOf5eULloKIKLUyrzOkU1p4jXKxaUkOEQLAZAdWL3N2fhhrPcJlkSnmkNdBLHe8p2fgmBWeCqh46uAnTM0iE0WZdOiSGqzkd/1nQnsQAcHK9wIs5oUsWSwYbhaDUb4eKyQrlC2gkVVVbO2shq+uzsknTwYMeTaEPLZbf9M9bkShJvRQxE0Eva45j/lvyvU/U1DA",
+    "identity_keys": {
+      "curve25519": "br8KekNM8jrqf2gw5ZvmzBUxfa3x3/y05BPUCZcqsiY",
+      "ed25519": "uEv9Ah4oZgGoyUULSoE2gVa0X2ZKsE7ofz3PzBzVriM"
+    },
+    "signature_of_hello": "mBt4m2TXgVoFpPoXSZ11d0/JyWuBMLg2eJGxsGrzDABtD13YQfvM/tEUXgDJT5kff8cTGlrYQdwhV3w/vZZtBg"
+  },
+  "olm_session": {
+    "pickle": "/ujNSNBUOVEe2YRoX2L0Sjs18IAyS7TuFQuOdrp+XE9MATsUSpkOjpGVVeJP+FpZAU9EuePwevJczviMBQZgYOyMVk89mtrBFFUPydKgUb6cAWih5KX360LQQbQl8gNGCxbobyjw2ljYAbBr8KJCmhvnI5j5xZsjZ1yC7ZYWaNXWLLRJ/3LCb8D2pBdrOJeUrXxI4WEnWVQHlnfZgimEhF0q0xJSdTSoGCq+J0tPU8i2aey1LgIM+Y68hTolTTjmk78gAE+s2CB5TD5NrTvalDARCnNU/lFHu2LfVhO+WI91DQKaBZklUQakwv/d30EIx86X3IclRoxgKjykZ5gNon6FD2kDae0lHtnXSgTje2S32i62p3IZKiUbfAlBFq/c3dzKzMFm5A6ztsmvqQUCwS+bqr9k0mysuPQbRwJMo1m41/vC2/W3/Q",
+    "session_id": "HfrzXxFC63DIDwDkYZHbH/RcxxBKF14dckS7pJGvilU",
+    "peer_curve25519": "zwPWFmWW1/IblLLHvzqI1HfQKNysbfa+IGBqtUUE7Go",
+    "next_message": {
+      "type": 1,
+      "body": "Awogy3neaJWTGGn272vvlhDGC88pGfRC7YmF7aOxa3VtZGcQACIgHxzUfKx64wmiehJxi1HPB8JDJGGkjkz/s8ek5/wOLWwYD1WjmIkKUQ"
+    },
+    "next_plaintext": "sent after bob's upgrade"
+  },
+  "megolm_inbound": {
+    "pickle": "0RUVGX2N38JR/51NFHvQ1uU/Ct9qz9HrVJjC+lIh+JZqTn4M4aXnlRKP3HigE6VXPBcDrFy2/AwWtJfScRJozSopLf4h0Hzrk3DD+1H2eyI56d2z6j25FOxDH07Vkzlj6JFXPRSC/w1AqzaJDYjk0p0HbiT/m3mNHzdMpT3sNqX7pg7CBqa9oQYbhYRwZj8g/jh/0XSyyFkgk6QSzN8bKZbNqSSz0yxdsT/WyjsGfSTd5WK3PBj+29yEkvpwAWH0zFcEC8ZRb5vm2dOU+H7KX2NL1xnGHjv5k8+T7fS233P/0OCAXV04L3T7uL+nlidw8q5vCPgk1kg5WbKeyCKq3OGXcx/SKNSSS3ajhcE6LNdhmVVqjrYi6nQDFGGD5nPsdlzXT8zjbLfIcsrShbrD0rcIeD2fJj5m",
+    "session_id": "23Lq3XRNPagsZyT7EuTFBcnBVKkgA+4MES7UBUu9k0A",
+    "sender_curve25519": "zwPWFmWW1/IblLLHvzqI1HfQKNysbfa+IGBqtUUE7Go",
+    "sender_ed25519": "fxa0U7uFhVB1mL/FFWyRmm4LGVl2TItfszuweztrQbQ",
+    "before": {
+      "ciphertext": "AwgAEiAHaMqnKQNmTQ/AFczmfKchvTUSoRk1S83CmNwYGBoVfFzUf6ORFL5Ir52tyqxFq32Dyfutk+veq1N9+ozEQLO0IqmylrmwSOq75lSF4H00K6yrEra2xQuTuZczaDEUJrZecEimw3BDCQ",
+      "plaintext": "history before upgrade",
+      "index": 0
+    },
+    "after": {
+      "ciphertext": "AwgBEiDt+dbULV8n3vKRnf+l113IQDh6bDhhlDiv63MnqVeM8MPktoKGbg9fB23I6/dD9S2JlmizU5yGo9jyKjMa+lOBa3FaBI+7Wq95lEXk445l+6EQD37S16Q52fLSyQThnjwP8auMoL+5Bg",
+      "plaintext": "room message after upgrade",
+      "index": 1
+    }
+  },
+  "megolm_outbound": {
+    "pickle": "+qdSa1vxJk7kWNVRVSxDANU6BCclpKtBQecBnJhkJ1gKiQuqgtbmz3z98NhKXnXTaV/QK0IEIi4Kc7ieQssifXDYY2I+pbX89mkV3Hel3ImQS5RsRBAZC9c4DdhMR/DD7xFTCOnHsQq6KkyNH+zd6LgjHF9jkK3Adg1bC5k0gnSD0eIZWb1VqAW5FBEqrbpsSVgPJG3vF+JATwx4ZHpIZntIIkAEy8s7Vfhh0G2G69HUOWV9tD+tzxJ4C24DHZcUNuyXK02aNN+9S2NOe6xjhcpn7oI6dtA3km7ey+ZdLOwLhJGXv/uBfV562xzVchMx7X5tS32fmCc",
+    "session_id": "23Lq3XRNPagsZyT7EuTFBcnBVKkgA+4MES7UBUu9k0A"
+  }
+}

@@ -89,7 +89,7 @@ def lost_admission(snapshot, admission_id):
 
 
 class GatewayChatView:
-    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
+    def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None, resumed=False):
         self.usage_file = usage_file
         self.client = client
         self.session_id = snapshot["stored_session_id"]
@@ -123,6 +123,10 @@ class GatewayChatView:
         self._composer = None
         # `/undo` puts the removed message back in the composer for the next prompt.
         self.prefill = ""
+        info = snapshot.get("info") or {}
+        self._session_durable = bool(resumed or snapshot.get("messages") or info.get("lazy") is False or info.get("title"))
+        self._program_resume_last_argv = None
+        self._program_resume_reported = False
 
     def unknown_admissions(self):
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
@@ -361,6 +365,8 @@ class GatewayChatView:
                 async with self._attaching:
                     if admission not in self.cut and not self.failure:
                         await self._recover(admission, sid)
+        self._session_durable = True
+        self._sync_program_resume()
         return receipt
 
     async def command(self, text):
@@ -428,18 +434,60 @@ class GatewayChatView:
             return True
         return await gateway_chat_commands.run_command(self, command, rest)
 
+    def _sync_program_resume(self, *, force: bool = False) -> None:
+        if self.finite or self.emitter is not None or not sys.stdout.isatty():
+            return
+        from hermes_cli.terminal_notify import (
+            build_hermes_resume_argv, osc7577_token,
+            program_resume_clear_sequence, program_resume_sequence, write_tty,
+        )
+        token = osc7577_token()
+        if token is None:
+            return
+        sid = self.session_id if self._session_durable and self.session_id else None
+        target_argv = tuple(build_hermes_resume_argv(sid, surface="cli"))
+        if not force and target_argv == self._program_resume_last_argv:
+            return
+        try:
+            seq = program_resume_sequence(target_argv, token=token)
+        except (TypeError, ValueError, UnicodeError):
+            if self._program_resume_reported:
+                self._program_resume_reported = False
+                self._program_resume_last_argv = None
+                with suppress(TypeError, ValueError, UnicodeError):
+                    write_tty(program_resume_clear_sequence(token=token))
+            return
+        write_tty(seq)
+        self._program_resume_last_argv = target_argv
+        self._program_resume_reported = True
+
+    def _clear_program_resume(self) -> None:
+        if not self._program_resume_reported:
+            return
+        self._program_resume_reported = False
+        self._program_resume_last_argv = None
+        from hermes_cli.terminal_notify import osc7577_token, program_resume_clear_sequence, write_tty
+        token = osc7577_token()
+        if token is None:
+            return
+        with suppress(TypeError, ValueError, UnicodeError):
+            write_tty(program_resume_clear_sequence(token=token))
+
     async def adopt(self, snapshot):
         """Attach this view to another session's snapshot (a branch, /new)."""
         self.session_id = snapshot['stored_session_id']
         self.generation = snapshot['execution_generation']
         self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
         self.pending = snapshot.get('pending', [])
-        self.model = str((snapshot.get('info') or {}).get('model') or self.model).split('/')[-1]
+        info = snapshot.get('info') or {}
+        self.model = str(info.get('model') or self.model).split('/')[-1]
+        self._session_durable = bool(snapshot.get('messages') or info.get('lazy') is False or info.get('title'))
         if not self.finite:
             # Bare `hermes -c` in this terminal continues the session it is now on, as the
             # in-process CLI re-wrote its breadcrumb on every session switch.
             from hermes_cli.terminal_breadcrumbs import write_breadcrumb
             await asyncio.to_thread(write_breadcrumb, self.session_id)
+            self._sync_program_resume()
 
     async def _confirm_model_switch(self, refusal):
         """The owner refused a guarded model target (cost / data policy / large context): ask as
@@ -604,6 +652,7 @@ class GatewayChatView:
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None
+            self._sync_program_resume()
             with patch_stdout():
                 while not self.failure:
                     try:
@@ -613,6 +662,7 @@ class GatewayChatView:
                             continue
                         if text.startswith("/"):
                             if not await self.command(text):
+                                self._clear_program_resume()
                                 return 0
                         else:
                             # Same scrollback shape as the in-process CLI: the typed prompt line is
@@ -622,6 +672,7 @@ class GatewayChatView:
                     except KeyboardInterrupt:
                         print("Use /stop to interrupt execution, /quit to detach.")
                     except EOFError:
+                        self._clear_program_resume()
                         return 0
                     except GatewayClientError as exc:
                         print(f"Error: {exc}", file=sys.stderr)

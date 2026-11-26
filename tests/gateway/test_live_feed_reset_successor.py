@@ -11,7 +11,7 @@ continuation itself and a row nobody continued stay live.
 """
 import pytest
 
-from tests.gateway.test_authority_cold_route_recovery import _compressed_lane, _cold, _source, _superseded
+from tests.gateway.test_authority_cold_route_recovery import _compressed_lane, _cold, _source
 from tests.fixtures.storage_seed import seed_session
 
 ROUTE = 'agent:main:telegram:dm:4242'

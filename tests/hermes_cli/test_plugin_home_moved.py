@@ -111,6 +111,59 @@ def test_a_profile_directory_replaced_by_a_link_while_the_process_runs_is_refuse
         plugins_mod._reset_plugin_managers_for_tests()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink in one case
+@pytest.mark.parametrize("gone", ["removed", "renamed", "link_target_removed"])
+def test_a_profile_directory_removed_or_renamed_after_its_plugins_loaded_refuses_plugin_work(gone, tmp_path, monkeypatch):
+    """A plain profile directory's name still resolves to itself once the directory is removed or renamed away, and
+    a link to a removed directory still resolves to it, so the name read as leading to the manager's directory and
+    discovery ran there with no profile left. Once the manager has seen its directory, a name that leads to no
+    directory is refused like a moved link."""
+    import shutil
+
+    from hermes_cli.plugin_isolation import ISOLATION_IN_PROCESS
+    from hermes_cli.plugins_loader import PluginHomeMoved
+
+    seeded = _home_with_plugins(tmp_path, monkeypatch, {"tiny": "def register(ctx):\n    pass\n"},
+                                isolation=ISOLATION_IN_PROCESS)
+    profiles = tmp_path / "root" / "profiles"
+    profiles.mkdir(parents=True)
+    if gone == "link_target_removed":
+        home, name = seeded.rename(tmp_path / "outside"), profiles / "ops"
+        name.symlink_to(home, target_is_directory=True)
+    else:
+        home = name = seeded.rename(profiles / "ops")
+    monkeypatch.setenv("HERMES_HOME", str(name))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    try:
+        manager.discover_and_load()
+        assert manager._plugins
+        if gone == "renamed":
+            home.rename(profiles / "ops2")
+        else:
+            shutil.rmtree(home)
+        with pytest.raises(PluginHomeMoved):
+            manager.discover_and_load(force=True)
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
+def test_a_home_not_created_yet_is_not_refused(tmp_path, monkeypatch):
+    """A home that has never existed (a first run, or a profile about to be created) still discovers plugins."""
+    _home_with_plugins(tmp_path, monkeypatch, {})
+    home = tmp_path / "root" / "profiles" / "fresh"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod._reset_plugin_managers_for_tests()
+    manager = plugins_mod.get_plugin_manager()
+    try:
+        manager.discover_and_load()
+        assert manager.owner_home == home
+    finally:
+        manager.unload()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # directory symlinks
 def test_a_sibling_name_the_process_served_elsewhere_is_not_taken_over_when_repointed_here(tmp_path, monkeypatch):
     """A renamed profile's manager takes the name beside its old one that leads to its directory, but not a name the

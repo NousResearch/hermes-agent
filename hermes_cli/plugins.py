@@ -278,6 +278,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # The home as the profile was named (see ``owner_home``). Made absolute now, links kept: a relative
         # home (a symbolic profile id) must keep naming the directory ``home_path`` keys.
         self._named_home = Path(owner_home).expanduser().absolute() if owner_home is not None else self.home_path
+        self._saw_home = False  # whether a name has led to the directory while it existed (``_leads_here``)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
@@ -386,7 +387,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # repointed here from another directory still keys that one, so plugin code bound to it would run there.
         # The directory's key, not scope_key: a transient hook manager's scope_key carries a suffix.
         here = os.fspath(self.home_path)
-        return os.path.normcase(os.path.realpath(path)) == here and hermes_home_key(path) == here
+        if os.path.normcase(os.path.realpath(path)) != here or hermes_home_key(path) != here:
+            return False
+        # A plain directory's name resolves to itself even once it is removed or renamed away: after the directory
+        # was seen, a name that leads to no directory leads nowhere. A home not created yet still counts.
+        if os.path.isdir(path):
+            self._saw_home = True
+            return True
+        return not self._saw_home
 
     @staticmethod
     def _profile_names_beside(named: Path) -> list[Path]:

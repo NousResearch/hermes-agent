@@ -49,6 +49,12 @@ def _observed(authority):
     return observed
 
 
+def observed_by_busy_sender(authority, admission_id):
+    """Whether a busy follow-up's observer (``dispatch_shared_busy``) awaits this admission: it sends
+    the reply, but no adapter task drains the chat's pending slot after its turn."""
+    return admission_id in _observed(authority)
+
+
 class _Bracket:
     def __init__(self, adapter, event, hooks):
         from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_event

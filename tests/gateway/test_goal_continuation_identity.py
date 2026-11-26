@@ -1,4 +1,4 @@
-"""A queued /goal continuation belongs to the goal that judged it.
+"""A queued /goal continuation belongs to the goal that judged it, and always has a drainer.
 
 A continuation the judge queued for goal A must never start once A is gone: cleared, replaced by
 goal B (with or without a /goal clear first), or set again with the same text, even when the row
@@ -9,6 +9,10 @@ with the same text is not mistaken for it, and a criterion added to A (/subgoal)
 A continuation drained from the adapter slot, and the one /goal resume queues, join the FIFO as the
 same identified wake, so they are still checked when they wait behind a follow-up; one whose wake
 is refused is not run as a plain row.
+
+A follow-up sent while a turn runs (``dispatch_shared_busy``) is answered by its observer, which
+delivers the reply but never drains the adapter's pending slot: a continuation parked there after
+that turn would wait for an unrelated message (#145865).
 """
 
 from __future__ import annotations
@@ -198,6 +202,50 @@ async def test_real_new_still_cancels_a_queued_continuation(tmp_path, monkeypatc
         assert reset and fresh != sid
         assert [m for _, m in calls if m.startswith(MARKER)] == [], calls
         assert (fresh, "fresh question") in calls
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_busy_follow_up_turn_continues_the_goal_after_the_first_task_ended(tmp_path, monkeypatch):
+    """#145865's busy path: a second message, sent while the first turn runs, goes through
+    ``dispatch_shared_busy``. Its turn ends after the first message's adapter task is gone, the judge
+    says continue: a third turn must run without another message."""
+    from hermes_cli import goals
+    from tests.waiting import async_wait_until
+
+    runner, _authority, adapter, db, sent = await _telegram_gateway(tmp_path, monkeypatch, "goal-busy")
+    calls, gates = [], {"first": asyncio.Event(), "second": asyncio.Event()}
+
+    async def respond(**kw):
+        message = kw["message"]
+        calls.append(message)
+        if message in gates:
+            await gates[message].wait()
+        return _reply("continued" if message.startswith(MARKER) else f"answered {message}")
+
+    monkeypatch.setattr(runner, "_run_agent", respond)
+    verdicts = iter([("continue", "one step remains", False, None, False), ("done", "all done", False, None, False)])
+    monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: next(verdicts))
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    route = runner._session_key_for_source(source)
+    try:
+        await adapter.handle_message(MessageEvent(text="first", source=source, message_id="1"))
+        await async_wait_until(lambda: calls == ["first"], what="the first turn started")
+        await adapter.handle_message(MessageEvent(text="second", source=source, message_id="2"))
+        gates["first"].set()
+        await async_wait_until(lambda: calls == ["first", "second"] and route not in adapter._active_sessions,
+                               what="the second turn started after the first task ended")
+        sid = runner.session_store.peek_session_id(route)
+        goals.GoalManager(sid).set("finish the report")
+        gates["second"].set()
+        await async_wait_until(lambda: len(calls) == 3 and ("42", "continued") in sent,
+                               what="the continuation ran and was answered without another message")
+        await async_wait_until(lambda: goals.GoalManager(sid).state.status == "done", what="the goal was judged done")
+
+        assert calls[2].startswith(MARKER) and "finish the report" in calls[2], calls
+        assert len(calls) == 3
+        assert route not in adapter._pending_messages
     finally:
         db.close()
 

@@ -126,12 +126,13 @@ export function createHostedRoute({
     agentFor: async connectionId => {
       const id = named(connectionId)
 
+      // Read the list once, so every rung is checked against it, and a request naming an agent finds
+      // that agent's route (an early one would otherwise look in a list not read yet).
+      await relays.windowConnection()
+
       if (id) {
         return id
       }
-
-      // Read the list once, so every rung is checked against it.
-      await relays.windowConnection()
 
       return listed(windowAgent()) ?? home()
     },

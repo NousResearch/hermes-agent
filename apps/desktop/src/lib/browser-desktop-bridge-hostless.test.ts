@@ -295,6 +295,15 @@ describe('a Webapp whose host runs no agent', () => {
     expect((await desktop.getConnection('parked')).sharedPrimary).toBe(false)
   })
 
+  it('sends a request naming an agent, made before the list is read, to that agent', async () => {
+    dashboardHost()
+
+    await expect(install().api({ connectionId: 'beta', path: '/api/config' })).resolves.toEqual({
+      from: 'beta',
+      path: '/api/config'
+    })
+  })
+
   it('opens on the first agent when the list names no primary it holds', async () => {
     dashboardHost({ primary: 'gone' })
 

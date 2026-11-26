@@ -119,6 +119,47 @@ async def test_the_move_lands_when_the_turn_ends(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('queued', [False, True], ids=['next-message', 'queued-mid-turn'])
+async def test_the_drain_runs_the_next_turn_in_the_project(tmp_path, monkeypatch, queued):
+    """The drain's own boundary commits the move: the turn after the switch runs in the project folder,
+    whether its message arrived after the chat went idle or was queued while the switch's turn ran."""
+    from gateway.session_contract import SessionRef, Submission
+    from gateway.session_policy import policy_for_source
+    from tests.waiting import async_wait_until
+    chat = await _chat(tmp_path, monkeypatch)
+    authority, seen, turns = chat.authority, [], []
+
+    async def submit(text):
+        ref = SessionRef(authority.profile_id, chat.sid)
+        turns.append(await authority.submit(chat.owner.actor, Submission(text, ref, {'text': text}, 'queue')))
+
+    async def handle(event):
+        seen.append(policy_for_source(authority.runner, event.source).cwd)
+        if len(seen) == 1:
+            _move(chat, chat.worktree)
+            if queued:
+                await submit('two')
+        return 'ok'
+
+    def ran(count):
+        return len(turns) == count and all(
+            authority.persistence.admissions.get(admission_id=t.admission_id).status == 'terminal' for t in turns)
+    authority.runner._handle_message = handle
+    try:
+        await submit('one')
+        await async_wait_until(lambda: ran(2 if queued else 1), what='the switch turn to run')
+        if not queued:
+            # Nothing queued: the drain lands the move as it goes idle, before any next prompt arrives.
+            await async_wait_until(authority.sessions[chat.sid].task.done, what='the drain to go idle')
+            assert _policy(authority, chat.sid).cwd == str(chat.worktree)
+            await submit('two')
+        await async_wait_until(lambda: ran(2), what='the next turn to run')
+        assert seen == [str(chat.start), str(chat.worktree)]
+    finally:
+        await _closed(chat)
+
+
+@pytest.mark.asyncio
 async def test_a_refused_move_leaves_the_chat_where_it_was(tmp_path, monkeypatch):
     from tools import terminal_tool
     chat = await _chat(tmp_path, monkeypatch)

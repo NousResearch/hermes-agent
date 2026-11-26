@@ -87,12 +87,17 @@ def _with_platform(data: dict, name: str) -> dict:
     return {**data, "platform": name, "origin": {**data["origin"], "platform": name}}
 
 
+def _held_row_entry(data: dict):
+    """A held row as a ``SessionEntry`` under a stand-in platform, for platform-independent checks."""
+    from gateway.session import SessionEntry
+    return SessionEntry.from_dict(_with_platform(data, "local"))
+
+
 def _apply_to_held_row(data: dict, mutate) -> Optional[dict]:
     """Run a platform-independent whole-index verdict (turn-marker recovery or discard) on a held row now,
     through a stand-in platform, so it reaches the row on disk even if the process exits before the
     plugin registers. The new row, or None when *mutate* left it unchanged."""
-    from gateway.session import SessionEntry
-    entry = SessionEntry.from_dict(_with_platform(data, "local"))
+    entry = _held_row_entry(data)
     if not mutate(entry):
         return None
     return _with_platform({**data, **entry.to_dict()}, data["origin"]["platform"])
@@ -105,11 +110,24 @@ class SessionPersistenceMixin:
         """Publish committed retirement; durable fences reject delayed saves."""
         with self._lock:
             targets = set(session_ids)
-            for key, entry in list(self._entries.items()):
-                if entry.session_id in targets:
-                    del self._entries[key]
+            self._drop_routes_locked(self._route_keys_for_sessions_locked(targets))
             for sid in targets:
                 self._session_owner_hints.pop(sid, None)
+
+    def _route_keys_for_sessions_locked(self, session_ids) -> list[str]:
+        """Every key routing to one of *session_ids*, live or held (platform not registered yet), once
+        each. Lock held."""
+        held = getattr(self, "_unparsed_routes", None) or {}
+        live = [key for key, entry in self._entries.items() if entry.session_id in session_ids]
+        return list(dict.fromkeys(live + [key for key, data in held.items() if data["session_id"] in session_ids]))
+
+    def _drop_routes_locked(self, keys) -> None:
+        """Drop *keys* from the live index AND the held rows: a held copy left behind is written back by
+        the next full save, so the route outlives its removal. Lock held."""
+        held = getattr(self, "_unparsed_routes", None) or {}
+        for key in keys:
+            self._entries.pop(key, None)
+            held.pop(key, None)
 
     def fence_retired_routes(self, session_ids, *, namespace, expiring=()) -> None:
         """Durably retire *session_ids* in the routing index's own database (fences + route
@@ -578,8 +596,7 @@ class SessionPersistenceMixin:
         except Exception as exc:
             logger.warning("gateway.session: stale-entry pruning skipped due to DB error: %s", exc)
             return
-        for key in stale_keys:
-            del self._entries[key]
+        self._drop_routes_locked(stale_keys)
         if stale_keys or recovered_keys:
             self._save()
 

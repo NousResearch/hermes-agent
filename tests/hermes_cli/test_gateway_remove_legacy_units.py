@@ -49,6 +49,22 @@ def test_remove_legacy_units_retains_unit_on_nonzero_systemctl(tmp_path, monkeyp
     assert ["daemon-reload"] in calls
     out = capsys.readouterr().out
     assert f"systemctl {failed_action} hermes.service exited with status 1" in out
+    assert ("start it again with: systemctl --user start hermes.service" in out) == (failed_action == "disable")
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("is_system", [False, True])
+def test_remove_legacy_units_names_the_start_command_after_a_stop(tmp_path, monkeypatch, capsys, is_system):
+    unit_dir = tmp_path / "units"
+    unit_dir.mkdir()
+    (unit_dir / "hermes.service").write_bytes(_LEGACY_UNIT.encode("utf-8"))
+    monkeypatch.setattr(gw, "_legacy_unit_search_paths", lambda: [(is_system, unit_dir)])
+    monkeypatch.setattr(gw.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: CompletedProcess(args, 1 if args[0] == "disable" else 0))
+
+    gw.remove_legacy_hermes_units(interactive=False)
+    scope = "" if is_system else "--user "
+    assert f"start it again with: systemctl {scope}start hermes.service" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -75,7 +91,7 @@ def test_remove_legacy_units_retains_unit_when_systemctl_raises(tmp_path, monkey
 
 
 @pytest.mark.platforms("linux")
-def test_system_host_remove_legacy_units_succeeds_and_refuses_on_timeout(tmp_path, monkeypatch):
+def test_system_host_remove_legacy_units_succeeds_and_refuses_on_timeout(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
     home.mkdir()
     unit_path = _seed_legacy_unit(tmp_path, monkeypatch)
@@ -100,6 +116,7 @@ def test_system_host_remove_legacy_units_succeeds_and_refuses_on_timeout(tmp_pat
         host.remove_legacy_units()
     assert unit_path.exists()
     assert host_calls == []
+    assert "timed out after 90 seconds" in capsys.readouterr().out  # the Move shows why, not only which unit
 
     # Preserved-behavior control: succeeding stop + disable deletes unit and resets failed state.
     monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: CompletedProcess(args, 0))
@@ -179,6 +196,34 @@ def test_systemd_install_and_setup_abort_when_legacy_removal_fails(
 
 
 @pytest.mark.platforms("linux")
+@pytest.mark.parametrize("euid", [1000, 0])
+def test_systemd_install_aborts_on_an_eligible_failure_beside_another_scope(tmp_path, monkeypatch, euid):
+    """Non-root: a failed user unit aborts although the skipped system unit may stay. Root: a failed system unit aborts."""
+    dirs = {scope: tmp_path / scope for scope in ("user", "system")}
+    for unit_dir in dirs.values():
+        unit_dir.mkdir()
+        (unit_dir / "hermes.service").write_bytes(_LEGACY_UNIT.encode("utf-8"))
+    new_unit = tmp_path / "hermes-gateway.service"
+    failing_system = euid == 0  # root also removes system scope; fail the scope it is answerable for
+
+    def fake_systemctl(args, system=False, **kw):
+        return CompletedProcess(args, 1 if args[0] == "stop" and system == failing_system else 0)
+
+    monkeypatch.setattr(gw, "_legacy_unit_search_paths", lambda: [(False, dirs["user"]), (True, dirs["system"])])
+    monkeypatch.setattr(gw.os, "geteuid", lambda: euid)
+    monkeypatch.setattr(gw, "_run_systemctl", fake_systemctl)
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: new_unit)
+    monkeypatch.setattr(gw, "generate_systemd_unit", lambda **kw: "[Service]\n")
+    monkeypatch.setattr(gw, "_prepare_service_launcher", lambda **kw: None)
+    monkeypatch.setattr(gw, "_ensure_linger_enabled", lambda: None)
+    monkeypatch.setattr(gw, "print_systemd_scope_conflict_warning", lambda: None)
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw.systemd_install(system=False, non_interactive=True)
+    assert (excinfo.value.code, new_unit.exists()) == (1, False)
+
+
+@pytest.mark.platforms("linux")
 def test_systemd_install_continues_when_non_root_system_legacy_unit_is_skipped(tmp_path, monkeypatch):
     system_dir = tmp_path / "system"
     system_dir.mkdir()
@@ -198,21 +243,3 @@ def test_systemd_install_continues_when_non_root_system_legacy_unit_is_skipped(t
     gw.systemd_install(system=False, non_interactive=True)
     assert sys_unit.exists()
     assert new_unit.exists()
-
-
-@pytest.mark.platforms("linux")
-def test_systemd_install_rejects_malformed_legacy_removal_result(tmp_path, monkeypatch):
-    new_unit = tmp_path / "hermes-gateway.service"
-    monkeypatch.setattr(gw, "has_legacy_hermes_units", lambda: True)
-    monkeypatch.setattr(gw, "print_legacy_unit_warning", lambda: None)
-    monkeypatch.setattr(gw, "remove_legacy_hermes_units", lambda interactive=False: None)
-    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: new_unit)
-    monkeypatch.setattr(gw, "generate_systemd_unit", lambda **kw: "[Service]\n")
-    monkeypatch.setattr(gw, "_prepare_service_launcher", lambda **kw: None)
-    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: CompletedProcess(args, 0))
-    monkeypatch.setattr(gw, "_ensure_linger_enabled", lambda: None)
-    monkeypatch.setattr(gw, "print_systemd_scope_conflict_warning", lambda: None)
-
-    with pytest.raises(TypeError):
-        gw.systemd_install(system=False, non_interactive=True)
-    assert not new_unit.exists()

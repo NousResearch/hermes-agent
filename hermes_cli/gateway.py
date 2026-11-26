@@ -2551,17 +2551,21 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
     def _remove_units(units: list[tuple[str, Path]], *, system: bool) -> None:
         nonlocal removed
         for name, path in units:
+            stopped = False
             try:
                 for action, timeout in (("stop", 90), ("disable", 30)):
                     result = _run_systemctl([action, name], system=system, check=False, timeout=timeout)
                     if result.returncode:
                         raise RuntimeError(f"systemctl {action} {name} exited with status {result.returncode}")
+                    stopped = True
                 path.unlink(missing_ok=True)
                 print(f"  ✓ Removed {path}")
                 removed += 1
             except (OSError, RuntimeError, subprocess.SubprocessError) as e:
                 print(f"  ⚠ Could not remove {path}: {e}")
                 remaining.append(path)
+                if stopped:  # the failure came after the stop: say how to bring the gateway back
+                    print(f"    It was stopped; if no other gateway runs, start it again with: systemctl {'' if system else '--user '}start {name}")
         with contextlib.suppress(RuntimeError, subprocess.SubprocessError):
             _run_systemctl(["daemon-reload"], system=system, check=False, timeout=30)
 

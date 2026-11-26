@@ -4596,6 +4596,8 @@ export const frOverrides = {
       messagingPlatforms: 'Plateformes de messagerie'
     },
     approvalMode: {
+      perProfile: 'Par profil',
+      perProfileDescription: 'Le mode d’approbation est défini par profil. Ouvrez un bot ou un profil pour modifier son mode.',
       title: "Mode d'approbation",
       ariaLabel: mode => `Mode d'approbation : ${mode}`,
       manual: 'Manuel',

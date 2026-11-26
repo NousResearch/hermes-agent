@@ -29,6 +29,8 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inbound
 from gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
+    _SecondaryConnectBatch,
+    _StagedProfileAdapter,
     _adapter_unavailable_message,
     discount_suspended_wait,
 )
@@ -45,7 +47,7 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
-# Slack on top of one connect budget per EXTEND_TIMEOUT_USEC step: covers the next profile's config load.
+# Slack on top of one connect budget per EXTEND_TIMEOUT_USEC step: covers the next preparation step.
 _SYSTEMD_BOOT_STEP_MARGIN_SECS = 30.0
 
 
@@ -204,11 +206,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         raise TimeoutError(f"{platform.value} connect timed out after {timeout:g}s")
 
     def _extend_systemd_boot_for(self, platform) -> None:
-        """Before one serial secondary connect, push systemd's Type=notify start deadline past it (#137995).
+        """Push systemd's Type=notify start deadline past the next secondary-profile step (#137995).
 
-        READY=1 waits for every secondary profile's adapters, connected one after another; without this the
-        unit's default 90s TimeoutStartSec kills a still-progressing multi-profile boot. Each step buys
-        one connect budget + margin, so only a boot that stops making progress is killed."""
+        READY=1 waits for every secondary profile's adapters, prepared in order and then connected in
+        conflict-free waves; without this the unit's default 90s TimeoutStartSec kills a still-progressing
+        multi-profile boot. Each step buys one connect budget + margin, so only a boot that stops making
+        progress is killed."""
         timeout = self._platform_connect_timeout_secs(platform, initial=True)
         if getattr(self, "_running", False) or self.config.systemd_watchdog_seconds <= 0 or timeout <= 0:
             return
@@ -981,6 +984,51 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 )
         pending.clear()
 
+    def _max_boot_timeout_platform(self, platforms) -> Optional[Platform]:
+        """Return the platform in ``platforms`` with the largest initial connect timeout, or None."""
+        batch = list(platforms)
+        if not batch:
+            return None
+        return max(batch, key=lambda plat: self._platform_connect_timeout_secs(plat, initial=True))
+
+    def _renew_systemd_boot_during_prep(
+        self, batch: _SecondaryConnectBatch, platform: Optional[Platform] = None,
+    ) -> None:
+        """Before each preparation step (a profile's load, a platform's build), renew systemd's start deadline,
+        sized for the largest connect budget staged so far, as the serial sweep did before each connect."""
+        platforms = batch.staged_platforms()
+        if platform is not None:
+            platforms.append(platform)
+        self._extend_systemd_boot_for(self._max_boot_timeout_platform(platforms))
+
+    async def _start_secondary_profiles_parallel(
+        self, active: str, profile_homes, claimed: dict[tuple, str],
+        transient_failed: set[str], profile_serve_signature, config_error_cls,
+    ) -> int:
+        """Prepare all secondary profiles sequentially, then connect staged adapters in conflict-free waves."""
+        batch = _SecondaryConnectBatch()
+        try:
+            for profile_name, profile_home in profile_homes:
+                if profile_name == active:
+                    continue  # handled by the primary startup loop
+                self._renew_systemd_boot_during_prep(batch)
+                # Preserve changes made while the initial connection is awaiting I/O.
+                scan_signature = profile_serve_signature(profile_home)
+                try:
+                    await self._prepare_one_profile_adapters(profile_name, profile_home, claimed, batch)
+                except config_error_cls:
+                    raise
+                except Exception as e:
+                    logger.error("Failed to start adapters for profile '%s': %s", profile_name, e, exc_info=True)
+                    # Not acknowledged: the reconcile watcher retries a transiently-failed profile.
+                    transient_failed.add(profile_name)
+                else:
+                    self._served_profile_signatures[profile_name] = scan_signature
+        except BaseException:
+            batch.rollback(self._release_secondary_claims)
+            raise
+        return await self._connect_staged_profile_adapters(batch, claimed, transient_failed)
+
     async def _start_secondary_profile_adapters(self) -> int:
         """Bring up adapters for every non-active profile (multiplex only); returns connected count.
         Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
@@ -1008,26 +1056,13 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         for name, home in profiles_to_serve(True, include_parked=True):
             if name != "default" and profile_is_parked(home):
                 logger.info("profile '%s' is parked (gateway.parked); not served by this gateway", name)
-        connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
         self._served_profile_signatures = {}
-        transient_failed = set()
-        for profile_name, profile_home in profile_homes:
-            if profile_name == active:
-                continue  # handled by the primary startup loop
-            # Preserve changes made while the initial connection is awaiting I/O.
-            scan_signature = profile_serve_signature(profile_home)
-            try:
-                connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
-            except MultiplexConfigError:
-                raise
-            except Exception as e:
-                logger.error("Failed to start adapters for profile '%s': %s", profile_name, e, exc_info=True)
-                # Not acknowledged: the reconcile watcher retries a transiently-failed profile.
-                transient_failed.add(profile_name)
-            else:
-                self._served_profile_signatures[profile_name] = scan_signature
+        transient_failed: set[str] = set()
+        connected = await self._start_secondary_profiles_parallel(
+            active, profile_homes, claimed, transient_failed, profile_serve_signature, MultiplexConfigError,
+        )
         self._record_served_profiles(active, profile_homes)
         # ``_note_served_profiles`` fills a missing signature with the current one; that refill
         # would park a transiently-failed profile before the first watcher tick can retry it.
@@ -1280,109 +1315,129 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             )
         return lines
 
-    async def _start_one_profile_adapters(
-        self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
-    ) -> int:
-        """Create+connect one profile's adapters under its runtime scope."""
+    async def _prepare_one_profile_platform(
+        self, profile_name: str, profile_home: Path, platform: Platform, platform_config: Any,
+        multiplex: bool, profile_map: dict,
+    ) -> Optional[BasePlatformAdapter]:
+        """Validate and instantiate one eligible secondary platform adapter without connecting."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        if not platform_config.enabled:
+            return None
+        if platform in profile_map or platform in (
+                (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}) or (
+                (profile_name, platform) in (getattr(self, "_secondary_held_claims", None) or {})):
+            return None
+        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+            has_credential = _platform_has_bot_credential(platform, platform_config)
+        if multiplex and not has_credential:
+            if platform is Platform.WHATSAPP:
+                self._note_unserved_secondary_platform(profile_name, platform)
+            logger.info(
+                "[MULTIPLEX] Profile '%s': skipping %s - no bot credential in this profile's secrets",
+                profile_name, platform.value,
+            )
+            return None
+        if multiplex and platform is Platform.RELAY:
+            self._note_unserved_secondary_platform(profile_name, platform)
+            return None
+        if multiplex and platform.value in SHARED_LISTENER_MIRROR_PLATFORMS:
+            logger.info(
+                "[MULTIPLEX] Profile '%s': %s is served by the default profile's listener at /p/%s/ — "
+                "not starting a second listener", profile_name, platform.value, profile_name,
+            )
+            return None
+        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+            try:
+                adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
+            except Exception:
+                logger.error("[MULTIPLEX] Profile '%s': _create_adapter('%s') raised", profile_name,
+                             platform.value, exc_info=True)
+                return None
+            heals = False if adapter else self._adapter_may_heal(platform, platform_config)
+        if not adapter:
+            self._note_unbuilt_secondary_platform(profile_name, platform, heals)
+            return None
+        return adapter
+
+    async def _prepare_one_profile_adapters(
+        self, profile_name: str, profile_home: Path, claimed: dict[tuple, str], batch: _SecondaryConnectBatch,
+    ) -> None:
+        """Load config and stage/defer all eligible adapters for one profile without awaiting connect()."""
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
-        # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
-        # every served profile's home channels, and this is the only place it is loaded.
         configs = getattr(self, "_profile_configs", None)
         if configs is None:
             configs = self._profile_configs = {}
         configs[profile_name] = profile_cfg
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
-        connected = 0
-        for platform, platform_config in profile_cfg.platforms.items():
-            if not platform_config.enabled:
-                continue
-            # Runtime re-scan of a served profile (config/.env changed): only platforms that are not
-            # already live or queued for reconnect are built — never a second poller on the same bot.
-            # Nor held ones (tearing down after a fatal error, or awaiting the boot handoff): their own reconnect
-            # rebuilds them, or none does because the error was not retryable. A teardown that outlived its
-            # profile's unserve reconnects nothing: a re-serve rebuilds past its hold (which blocks only others).
-            if platform in profile_map or platform in (
-                    (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}) or (
-                    (profile_name, platform) in (getattr(self, "_secondary_held_claims", None) or {})):
-                continue
-            # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
-            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-                has_credential = _platform_has_bot_credential(platform, platform_config)
-            if multiplex and not has_credential:
-                if platform is Platform.WHATSAPP:
-                    self._note_unserved_secondary_platform(profile_name, platform)
-                logger.info(
-                    "[MULTIPLEX] Profile '%s': skipping %s - no bot credential "
-                    "in this profile's secrets", profile_name, platform.value,
+        checkpoint = batch.checkpoint()
+        try:
+            for platform, platform_config in profile_cfg.platforms.items():
+                if platform_config.enabled:
+                    self._renew_systemd_boot_during_prep(batch, platform)
+                adapter = await self._prepare_one_profile_platform(
+                    profile_name, profile_home, platform, platform_config, multiplex, profile_map,
                 )
-                continue
-            # Relay still uses process-level shared ingress; WhatsApp owns a session per profile.
-            if multiplex and platform is Platform.RELAY:
-                self._note_unserved_secondary_platform(profile_name, platform)
-                continue
-            # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
-            # instance here would fight the default for the port (#100397).
-            if multiplex and platform.value in SHARED_LISTENER_MIRROR_PLATFORMS:
-                logger.info(
-                    "[MULTIPLEX] Profile '%s': %s is served by the default profile's listener at /p/%s/ — "
-                    "not starting a second listener", profile_name, platform.value, profile_name,
-                )
-                continue
-            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-                try:
-                    adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
-                except Exception:
-                    logger.error("[MULTIPLEX] Profile '%s': _create_adapter('%s') raised", profile_name,
-                                 platform.value, exc_info=True)
-                    continue
-                # Classify in this profile's scope: plugin registration is per profile home.
-                heals = False if adapter else self._adapter_may_heal(platform, platform_config)
-            if not adapter:
-                self._note_unbuilt_secondary_platform(profile_name, platform, heals)
-                continue
+                if adapter is not None:
+                    self._stage_or_defer_adapter(
+                        _StagedProfileAdapter(profile_name, profile_home, platform, adapter), claimed, batch,
+                    )
+        except BaseException:
+            batch.rollback(self._release_secondary_claims, checkpoint)
+            raise
 
-            # Same-token / same-listener conflict detection — refuse a duplicate poll or bind.
-            # Held claims too (a profile earlier in the sweep whose connect failed, or one healing, still owns
-            # its bot), and once live, owners as of now: a runtime caller's snapshot predates these awaits.
-            mine = (profile_name, platform) if any(key == (profile_name, platform) for _owner, key, _claims in (
-                getattr(self, "_teardown_held_claims", None) or {}).values()) else None
-            owners = self._current_claim_owners(mine) if getattr(self, "_running", False) else self._held_claim_owners(mine)
-            claims = self._claim_secondary_platform(
-                profile_name, profile_home, platform, adapter, {**claimed, **owners})
-            if claims is None:
-                continue
-            self._configure_profile_adapter(adapter, profile_name, platform)
-            # Hold the bot across the connect await; a failed connect's reconnect takes the hold over.
-            self._hold_secondary_claims(profile_name, platform, adapter, claims)
-            self._extend_systemd_boot_for(platform)
+    async def _connect_prepared_profile_adapter(
+        self, item: _StagedProfileAdapter, claimed: dict[tuple, str],
+        *, started: Optional[set[int]] = None, disconnected: Optional[set[int]] = None,
+        boot_platform: Optional[Platform] = None,
+    ) -> int:
+        """Connect one staged secondary adapter under its own ContextVar profile scope."""
+        from gateway.run import _profile_runtime_scope
+        profile_name, profile_home, platform, adapter = (
+            item.profile_name, item.profile_home, item.platform, item.adapter,
+        )
+        profile_map = self._profile_adapters.setdefault(profile_name, {})
+        try:
+            self._extend_systemd_boot_for(boot_platform or platform)
             try:
-                try:
-                    with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-                        success = await self._connect_initial_adapter_with_timeout(adapter, platform)
-                    if not success:
-                        logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
-                except Exception as e:
-                    logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
-                    success = False
+                if started is not None:
+                    started.add(id(adapter))
+                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                    success = await self._connect_initial_adapter_with_timeout(adapter, platform)
                 if not success:
+                    logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
+            except Exception as e:
+                logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e, exc_info=True)
+                success = False
+            except BaseException:
+                if disconnected is not None:
+                    disconnected.add(id(adapter))
+                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     await self._safe_adapter_disconnect(adapter, platform)
-                    self._schedule_secondary_profile_startup_reconnect(profile_name, platform, adapter)
-                    continue
-                profile_map[platform] = adapter
-            finally:
-                self._release_secondary_claims(profile_name, platform, adapter)
-            # Restore persisted /voice state for this bot (primary startup and reconnects do too).
-            # See #84872.
-            self._sync_voice_mode_state_to_adapter(adapter)
-            for claim in claims:
-                if claim is not None:
-                    claimed[claim] = profile_name
+                raise
+            if not success:
+                if disconnected is not None:
+                    disconnected.add(id(adapter))
+                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                    await self._safe_adapter_disconnect(adapter, platform)
+                self._schedule_secondary_profile_startup_reconnect(profile_name, platform, adapter)
+                return 0
+            profile_map[platform] = adapter
+        finally:
+            self._release_secondary_claims(profile_name, platform, adapter)
+        self._sync_voice_mode_state_to_adapter(adapter)
+        for claim in item.non_none_claims:
+            claimed[claim] = profile_name
+        logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
+        return 1
 
-            connected += 1
-            logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
-        return connected
+    async def _start_one_profile_adapters(
+        self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
+    ) -> int:
+        """Create+connect one profile's adapters under its runtime scope."""
+        batch = _SecondaryConnectBatch()
+        await self._prepare_one_profile_adapters(profile_name, profile_home, claimed, batch)
+        return await self._connect_staged_profile_adapters(batch, claimed)
 
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,

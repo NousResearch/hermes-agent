@@ -405,7 +405,11 @@ def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tm
         "prompt_yes_no",
         lambda question, default=True: calls.append(("prompt", question)) or True,
     )
-    monkeypatch.setattr(gateway, "remove_legacy_hermes_units", lambda interactive=False: calls.append(("remove_legacy",)))
+    monkeypatch.setattr(
+        gateway,
+        "remove_legacy_hermes_units",
+        lambda interactive=False: calls.append(("remove_legacy",)) or (0, []),
+    )
     monkeypatch.setattr(gateway, "print_legacy_unit_warning", lambda: None)
 
     fake_path = tmp_path / "hermes-gateway.service"

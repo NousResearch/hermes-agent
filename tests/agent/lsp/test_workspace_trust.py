@@ -42,6 +42,7 @@ def _hermes_side_tree(tmp_path, monkeypatch) -> str:
 def _checkout_shipping_its_own_toolchain(root) -> None:
     """Marker files only: an interpreter, a TypeScript SDK and build files the project brings itself."""
     (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     _write(root / "pyproject.toml")
     _write(root / ".venv" / "bin" / "python")
     _write(root / ".venv" / "Scripts" / "python.exe")

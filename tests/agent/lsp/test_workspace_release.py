@@ -38,6 +38,7 @@ def _make_repo(tmp_path: Path, name: str) -> Path:
     repo = tmp_path / name
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     return _seed_project(repo)
 
 
@@ -128,6 +129,7 @@ def _kanban_scratch(project, tmp_path, monkeypatch):
         ws = kbw.resolve_workspace(kb.get_task(conn, tid))
         kbw.set_workspace_path(conn, tid, ws)
     (ws / ".git").mkdir()  # the worker cloned a project into its scratch dir
+    (ws / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     _seed_project(ws)
 
     def remove():

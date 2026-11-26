@@ -132,8 +132,42 @@ def test_satellite_list_and_create_require_own_heartbeat(served_root, capsys, mo
     listed = capsys.readouterr().out
     for output in (created, listed):
         assert ("Check status:  hermes cron status" in output) == (heartbeat != "fresh")
+    assert "Scheduled Jobs (profile: probe)" in listed
+    assert "hermes -p default cron list" not in listed
     cron.cron_status()
     assert ("will fire automatically" in capsys.readouterr().out) == (heartbeat == "fresh")
+
+
+@pytest.mark.parametrize("home_kind, profile, named", [
+    ("default", "default", False),
+    ("probe", "probe", True),
+    ("custom", "custom", True),
+    ("standalone", "custom", False),
+])
+def test_empty_cron_list_guidance(tmp_path, monkeypatch, capsys, home_kind, profile, named):
+    from cron import jobs
+    from hermes_cli.cron import cron_list
+
+    root = tmp_path / "home"
+    root.mkdir()
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    default_job = jobs.create_job(prompt="Default job", schedule="every 1h") if named else None
+
+    if home_kind != "default":
+        home = root / "profiles" / home_kind if named else tmp_path / "standalone"
+        home.mkdir(parents=True)
+        home.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+    cron_list()
+
+    output = capsys.readouterr().out
+    assert f"No scheduled jobs in profile '{profile}'." in output
+    assert ("hermes -p default cron list" in output) == named
+    assert ("hermes cron create" in output) == (not named)
+    if default_job:
+        assert default_job["id"] not in output
 
 
 @pytest.mark.parametrize("home_kind", ["default", "custom", "named"])

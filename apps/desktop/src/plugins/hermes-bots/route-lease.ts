@@ -8,7 +8,9 @@ export async function retainRouteSocket(
   route: Parameters<typeof host.retainProfile>[0],
   options?: Parameters<typeof host.retainProfile>[1]
 ): Promise<(() => void) | null> {
-  if (typeof host.retainProfile !== 'function') {return null}
+  if (typeof host.retainProfile !== 'function') {
+    return null
+  }
 
   try {
     const release = await (options ? host.retainProfile(route, options) : host.retainProfile(route))

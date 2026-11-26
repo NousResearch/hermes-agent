@@ -20,7 +20,13 @@ function serialLocks(blocked = Promise.resolve()) {
   const request = (name: string, run: () => unknown) => {
     const pending = (tails.get(name) ?? blocked).then(run)
 
-    tails.set(name, pending.then(() => undefined, () => undefined))
+    tails.set(
+      name,
+      pending.then(
+        () => undefined,
+        () => undefined
+      )
+    )
 
     return pending
   }
@@ -51,7 +57,14 @@ function backend() {
     return { recorded: true } as never
   }
 
-  return { accepted, attempts, request, loseNextAck: () => { loseAck = true } }
+  return {
+    accepted,
+    attempts,
+    request,
+    loseNextAck: () => {
+      loseAck = true
+    }
+  }
 }
 
 beforeEach(() => {
@@ -97,49 +110,59 @@ describe('peer frame day settlement', () => {
     first.checkpoint()
     second.checkpoint()
     await Promise.all([first.flush(sink.request, current), second.flush(sink.request, current)])
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27',
-      visible_ms: 6 * MINUTE,
-      frames: [{ bucket: '50ms_to_100ms', count: 2 }, { bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 6 * MINUTE,
+        frames: [
+          { bucket: '50ms_to_100ms', count: 2 },
+          { bucket: '100ms_to_250ms', count: 1 }
+        ]
+      }
+    ])
     expect(sink.attempts.every(attempt => JSON.stringify(attempt) === JSON.stringify(sink.attempts[0]))).toBe(true)
     expect(Object.keys(sink.attempts[0]!).sort()).toEqual(['day', 'frames', 'visible_ms'])
   })
 
-  it.each([false, true])('settles a crashed peer only beyond the exact valid-span boundary (Web Locks: %s)', async nativeLocks => {
-    if (nativeLocks) {
-      serialLocks()
-    } else {
-      closeIndexedDb = indexedDbMetricsLocks().close
+  it.each([false, true])(
+    'settles a crashed peer only beyond the exact valid-span boundary (Web Locks: %s)',
+    async nativeLocks => {
+      if (nativeLocks) {
+        serialLocks()
+      } else {
+        closeIndexedDb = indexedDbMetricsLocks().close
+      }
+
+      const sink = backend()
+      const crashed = new DesktopFrameMetrics(KEY)
+
+      crashed.track(11 * MINUTE)
+      vi.setSystemTime(MIDNIGHT - 3 * MINUTE)
+      crashed.record(['100ms_to_250ms']) // Persisted minute survives the renderer disappearing.
+      const survivor = new DesktopFrameMetrics(KEY)
+
+      survivor.track(11 * MINUTE)
+      await survivor.flush(sink.request, current)
+      vi.setSystemTime(MIDNIGHT)
+      survivor.checkpoint()
+      vi.setSystemTime(MIDNIGHT + 8 * MINUTE)
+      survivor.checkpoint()
+      await survivor.flush(sink.request, current)
+      expect(sink.accepted.size).toBe(0)
+      vi.setSystemTime(MIDNIGHT + 8 * MINUTE + 1)
+      await survivor.flush(sink.request, current)
+      expect(sink.accepted.get('2026-09-27')).toEqual({
+        day: '2026-09-27',
+        visible_ms: 4 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      })
+
+      // A suspended rather than crashed peer follows the same exclusion rule on wake.
+      crashed.checkpoint()
+      await crashed.flush(sink.request, current)
+      expect(sink.attempts).toHaveLength(1)
     }
-
-    const sink = backend()
-    const crashed = new DesktopFrameMetrics(KEY)
-
-    crashed.track(11 * MINUTE)
-    vi.setSystemTime(MIDNIGHT - 3 * MINUTE)
-    crashed.record(['100ms_to_250ms']) // Persisted minute survives the renderer disappearing.
-    const survivor = new DesktopFrameMetrics(KEY)
-
-    survivor.track(11 * MINUTE)
-    await survivor.flush(sink.request, current)
-    vi.setSystemTime(MIDNIGHT)
-    survivor.checkpoint()
-    vi.setSystemTime(MIDNIGHT + 8 * MINUTE)
-    survivor.checkpoint()
-    await survivor.flush(sink.request, current)
-    expect(sink.accepted.size).toBe(0)
-    vi.setSystemTime(MIDNIGHT + 8 * MINUTE + 1)
-    await survivor.flush(sink.request, current)
-    expect(sink.accepted.get('2026-09-27')).toEqual({
-      day: '2026-09-27', visible_ms: 4 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    })
-
-    // A suspended rather than crashed peer follows the same exclusion rule on wake.
-    crashed.checkpoint()
-    await crashed.flush(sink.request, current)
-    expect(sink.attempts).toHaveLength(1)
-  })
+  )
 
   it('settles hidden and gracefully reloaded peers immediately and keeps a clean-day denominator', async () => {
     const sink = backend()
@@ -167,18 +190,20 @@ describe('peer frame day settlement', () => {
     const sink = backend()
     let revoked: Promise<DesktopFrameRevocation> | undefined
 
-    vi.stubGlobal('navigator', { locks: {
-      request: async (_key: string, run: () => unknown) => {
-        const result = run()
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: async (_key: string, run: () => unknown) => {
+          const result = run()
 
-        if (storedKeys().some(key => key.startsWith(`${KEY}:frames:report:`)) && !revoked) {
-          immediateMetricsLocks()
-          revoked = DesktopFrameMetrics.purge(KEY)
+          if (storedKeys().some(key => key.startsWith(`${KEY}:frames:report:`)) && !revoked) {
+            immediateMetricsLocks()
+            revoked = DesktopFrameMetrics.purge(KEY)
+          }
+
+          return result
         }
-
-        return result
       }
-    } })
+    })
     await collector.flush(sink.request, current)
     await expect(revoked).resolves.toMatchObject({ complete: true })
     expect(sink.attempts).toEqual([])
@@ -188,9 +213,13 @@ describe('peer frame day settlement', () => {
     replacement.record(['50ms_to_100ms'])
     vi.setSystemTime(MIDNIGHT + DAY)
     await replacement.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-28', visible_ms: 0, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-28',
+        visible_ms: 0,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
   })
 
   it('retries an identical immutable snapshot after a committed report loses its ack', async () => {
@@ -207,9 +236,13 @@ describe('peer frame day settlement', () => {
     await collector.flush(sink.request, current)
     expect(sink.attempts).toHaveLength(2)
     expect(sink.attempts[1]).toEqual(sink.attempts[0])
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 4 * MINUTE, frames: [{ bucket: 'gte_5s', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 4 * MINUTE,
+        frames: [{ bucket: 'gte_5s', count: 1 }]
+      }
+    ])
   })
 
   it('revokes sleeping and in-flight peers across off/on without settling the replacement epoch', async () => {
@@ -243,9 +276,13 @@ describe('peer frame day settlement', () => {
     vi.setSystemTime(MIDNIGHT + DAY)
     replacement.checkpoint()
     await replacement.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-28', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-28',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
   })
 
   it('bounds dead journals and resumes after a fresh consent attachment without reopening old days', async () => {
@@ -271,12 +308,23 @@ describe('peer frame day settlement', () => {
     active.checkpoint()
     resumed.checkpoint()
     await active.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-10-07', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
-    expect(storedKeys().filter(key =>
-      key.startsWith(`${KEY}:frames:`) && !key.includes(':settled:') && !key.includes(':consent:'))).toHaveLength(2)
-    expect(storedKeys().map(key => localStorage.getItem(key)).join('')).not.toContain('2026-09-27')
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-10-07',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
+    expect(
+      storedKeys().filter(
+        key => key.startsWith(`${KEY}:frames:`) && !key.includes(':settled:') && !key.includes(':consent:')
+      )
+    ).toHaveLength(2)
+    expect(
+      storedKeys()
+        .map(key => localStorage.getItem(key))
+        .join('')
+    ).not.toContain('2026-09-27')
   })
 
   it('does not count time twice after a backwards wall-clock correction', async () => {
@@ -324,9 +372,13 @@ describe('peer frame day settlement', () => {
     const reloaded = new DesktopFrameMetrics(KEY)
 
     await reloaded.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-28', visible_ms: MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-28',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }
+    ])
   })
 
   it('adopts the old shared histogram only once even when two windows read it', async () => {
@@ -339,9 +391,13 @@ describe('peer frame day settlement', () => {
     second.adopt('2026-09-27', oldDay)
     vi.setSystemTime(MIDNIGHT)
     await Promise.all([first.flush(sink.request, current), second.flush(sink.request, current)])
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 2 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 3 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 2 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 3 }]
+      }
+    ])
   })
 
   it('cannot overwrite a revocation arriving between constructor token read and initialization', async () => {
@@ -416,33 +472,36 @@ describe('peer frame day settlement', () => {
     expect([...sink.accepted.values()]).toEqual([{ day: '2026-09-27', visible_ms: 2 * MINUTE, frames: [] }])
   })
 
-  it.each(['hidden', 'paused'] as const)('retains the high-water mark when %s tracking resumes behind it', async transition => {
-    const collector = new DesktopFrameMetrics(KEY)
-    const sink = backend()
+  it.each(['hidden', 'paused'] as const)(
+    'retains the high-water mark when %s tracking resumes behind it',
+    async transition => {
+      const collector = new DesktopFrameMetrics(KEY)
+      const sink = backend()
 
-    collector.track(11 * MINUTE)
-    vi.setSystemTime(MIDNIGHT - 2 * MINUTE)
-    collector.checkpoint()
-    vi.setSystemTime(MIDNIGHT - 3 * MINUTE)
-
-    if (transition === 'hidden') {
-      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
-      collector.checkpoint()
-      vi.setSystemTime(MIDNIGHT - 2.5 * MINUTE)
-      vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
-      collector.checkpoint()
-    } else {
-      collector.track(0)
-      vi.setSystemTime(MIDNIGHT - 2.5 * MINUTE)
       collector.track(11 * MINUTE)
-    }
+      vi.setSystemTime(MIDNIGHT - 2 * MINUTE)
+      collector.checkpoint()
+      vi.setSystemTime(MIDNIGHT - 3 * MINUTE)
 
-    vi.setSystemTime(MIDNIGHT - 1.5 * MINUTE)
-    collector.track(0)
-    vi.setSystemTime(MIDNIGHT)
-    await collector.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{ day: '2026-09-27', visible_ms: 2.5 * MINUTE, frames: [] }])
-  })
+      if (transition === 'hidden') {
+        vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+        collector.checkpoint()
+        vi.setSystemTime(MIDNIGHT - 2.5 * MINUTE)
+        vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+        collector.checkpoint()
+      } else {
+        collector.track(0)
+        vi.setSystemTime(MIDNIGHT - 2.5 * MINUTE)
+        collector.track(11 * MINUTE)
+      }
+
+      vi.setSystemTime(MIDNIGHT - 1.5 * MINUTE)
+      collector.track(0)
+      vi.setSystemTime(MIDNIGHT)
+      await collector.flush(sink.request, current)
+      expect([...sink.accepted.values()]).toEqual([{ day: '2026-09-27', visible_ms: 2.5 * MINUTE, frames: [] }])
+    }
+  )
 
   it('revokes a published writer when quota blocks the token until its journal frees space', async () => {
     const locks = serialLocks()
@@ -486,9 +545,13 @@ describe('peer frame day settlement', () => {
     stale.checkpoint()
     await stale.flush(sink.request, current)
     await replacement.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
   })
 
   it('holds the ownership lock across a descheduled checkpoint publication', async () => {
@@ -517,8 +580,7 @@ describe('peer frame day settlement', () => {
     vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
       const journal = JSON.parse(value)
 
-      if (!interrupted && key.startsWith(`${KEY}:frames:`) &&
-        journal.days?.['2026-09-27']?.visibleMs === 5 * MINUTE) {
+      if (!interrupted && key.startsWith(`${KEY}:frames:`) && journal.days?.['2026-09-27']?.visibleMs === 5 * MINUTE) {
         interrupted = true
         vi.setSystemTime(MIDNIGHT + 6 * MINUTE + 1)
         finalizing = reporter.flush(sink.request, current)
@@ -532,9 +594,13 @@ describe('peer frame day settlement', () => {
     await locks.drain()
     await finalizing
     expect(interrupted).toBe(true)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 7 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 7 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }
+    ])
   })
 
   it('checks expiry inside the lock rather than crediting an expired pre-lock sample', async () => {
@@ -564,9 +630,13 @@ describe('peer frame day settlement', () => {
     held.resolve()
     await locks.drain()
     await reporter.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 2 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 2 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }
+    ])
   })
 
   it('keeps queued visibility boundaries instead of counting time hidden behind a lock', async () => {
@@ -608,9 +678,13 @@ describe('peer frame day settlement', () => {
     await collector.flush(sink.request, current)
     expect(sink.attempts).toEqual([])
     await collector.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 4 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 4 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }
+    ])
   })
 
   it('never reassigns a frame observed on an already settled UTC day to the current day', async () => {
@@ -703,9 +777,13 @@ describe('peer frame day settlement', () => {
     expect(sink.attempts).toEqual([])
     full = false
     await collector.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 4 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 4 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }
+    ])
   })
 
   it('serializes quota reclamation behind an in-flight writer so it cannot steal the reclaimed space', async () => {
@@ -762,9 +840,13 @@ describe('peer frame day settlement', () => {
     vi.setSystemTime(MIDNIGHT)
     await stale.flush(sink.request, current)
     await replacement.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
   })
 
   it.each([false, true])('awaits queued source publications before rename (Web Locks: %s)', async nativeLocks => {
@@ -790,113 +872,142 @@ describe('peer frame day settlement', () => {
     vi.setSystemTime(MIDNIGHT)
     await stale.flush(sink.request, current)
     await renamed.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 2 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 2 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }
+    ])
     expect(storedKeys().filter(key => key.startsWith(`${KEY}:frames:`) && !key.includes(':consent:'))).toEqual([])
   })
 
-  it.each(['journal', 'daily', 'withdrawn'])('isolates the old cohort after an interrupted copy (%s)', async failedPart => {
-    const stale = new DesktopFrameMetrics(KEY)
-    const destination = `${KEY}-renamed`
-    const originalDaily = { today: { day: '2026-09-27', actions: { 'composer.send:click': 7 } } }
-    const recreatedDaily = { today: { day: '2026-09-27', actions: { 'composer.send:click': 2 } } }
-    const sourceSink = backend()
-    const destinationSink = backend()
+  it.each(['journal', 'daily', 'withdrawn'])(
+    'isolates the old cohort after an interrupted copy (%s)',
+    async failedPart => {
+      const stale = new DesktopFrameMetrics(KEY)
+      const destination = `${KEY}-renamed`
+      const originalDaily = { today: { day: '2026-09-27', actions: { 'composer.send:click': 7 } } }
+      const recreatedDaily = { today: { day: '2026-09-27', actions: { 'composer.send:click': 2 } } }
+      const sourceSink = backend()
+      const destinationSink = backend()
 
-    stale.track(11 * MINUTE)
-    stale.record(['100ms_to_250ms'])
-    vi.setSystemTime(MIDNIGHT - 2 * MINUTE)
-    stale.track(0)
-    localStorage.setItem(KEY, JSON.stringify(originalDaily))
-    const captured = DesktopFrameMetrics.capture(KEY)
-    const storage = pageStorage()
-    const setItem = storage.setItem
+      stale.track(11 * MINUTE)
+      stale.record(['100ms_to_250ms'])
+      vi.setSystemTime(MIDNIGHT - 2 * MINUTE)
+      stale.track(0)
+      localStorage.setItem(KEY, JSON.stringify(originalDaily))
+      const captured = DesktopFrameMetrics.capture(KEY)
+      const storage = pageStorage()
+      const setItem = storage.setItem
 
-    const failingWrite = vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, key, value) {
-      const journal = key.startsWith(`${destination}:frames:`) && !key.includes(':import:') && !key.includes(':consent:')
+      const failingWrite = vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, key, value) {
+        const journal =
+          key.startsWith(`${destination}:frames:`) && !key.includes(':import:') && !key.includes(':consent:')
 
-      if (failedPart === 'daily' ? key === destination : journal) {
-        throw new DOMException('full', 'QuotaExceededError')
+        if (failedPart === 'daily' ? key === destination : journal) {
+          throw new DOMException('full', 'QuotaExceededError')
+        }
+
+        setItem.call(this, key, value)
+      })
+
+      await expect(DesktopFrameMetrics.migrate(KEY, destination)).resolves.toBeUndefined()
+      expect(stale.isCurrent()).toBe(false)
+      expect(localStorage.getItem(KEY)).toBeNull()
+      expect(storedKeys().some(key => key.startsWith(`${destination}:frames:import:`))).toBe(true)
+      const recreated = new DesktopFrameMetrics(KEY)
+
+      recreated.track(11 * MINUTE)
+      recreated.record(['50ms_to_100ms'])
+      localStorage.setItem(KEY, JSON.stringify(recreatedDaily))
+      vi.setSystemTime(MIDNIGHT - MINUTE)
+      recreated.track(0)
+      failingWrite.mockRestore()
+
+      if (failedPart === 'journal') {
+        await DesktopFrameMetrics.migrate(KEY, destination)
+      } else if (failedPart === 'withdrawn') {
+        await DesktopFrameMetrics.purge(KEY, captured)
       }
 
-      setItem.call(this, key, value)
-    })
+      // A new collector repairs the durable quarantine, including a partially copied daily record.
+      const renamed = new DesktopFrameMetrics(destination)
 
-    await expect(DesktopFrameMetrics.migrate(KEY, destination)).resolves.toBeUndefined()
-    expect(stale.isCurrent()).toBe(false)
-    expect(localStorage.getItem(KEY)).toBeNull()
-    expect(storedKeys().some(key => key.startsWith(`${destination}:frames:import:`))).toBe(true)
-    const recreated = new DesktopFrameMetrics(KEY)
-
-    recreated.track(11 * MINUTE)
-    recreated.record(['50ms_to_100ms'])
-    localStorage.setItem(KEY, JSON.stringify(recreatedDaily))
-    vi.setSystemTime(MIDNIGHT - MINUTE)
-    recreated.track(0)
-    failingWrite.mockRestore()
-
-    if (failedPart === 'journal') {
-      await DesktopFrameMetrics.migrate(KEY, destination)
-    } else if (failedPart === 'withdrawn') {
-      await DesktopFrameMetrics.purge(KEY, captured)
+      await renamed.ready
+      expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual(recreatedDaily)
+      expect(JSON.parse(localStorage.getItem(destination)!)).toEqual(failedPart === 'withdrawn' ? null : originalDaily)
+      vi.setSystemTime(MIDNIGHT)
+      await stale.flush(destinationSink.request, current)
+      await renamed.flush(destinationSink.request, current)
+      await recreated.flush(sourceSink.request, current)
+      expect([...destinationSink.accepted.values()]).toEqual(
+        failedPart === 'withdrawn'
+          ? []
+          : [
+              {
+                day: '2026-09-27',
+                visible_ms: 2 * MINUTE,
+                frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+              }
+            ]
+      )
+      expect([...sourceSink.accepted.values()]).toEqual([
+        {
+          day: '2026-09-27',
+          visible_ms: MINUTE,
+          frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+        }
+      ])
     }
+  )
 
-    // A new collector repairs the durable quarantine, including a partially copied daily record.
-    const renamed = new DesktopFrameMetrics(destination)
+  it.each(['token', 'quarantine'])(
+    'discards only optional old measurements when the %s cannot be stored',
+    async failedPart => {
+      const stale = new DesktopFrameMetrics(KEY)
+      const destination = `${KEY}-renamed`
+      const sink = backend()
 
-    await renamed.ready
-    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual(recreatedDaily)
-    expect(JSON.parse(localStorage.getItem(destination)!)).toEqual(failedPart === 'withdrawn' ? null : originalDaily)
-    vi.setSystemTime(MIDNIGHT)
-    await stale.flush(destinationSink.request, current)
-    await renamed.flush(destinationSink.request, current)
-    await recreated.flush(sourceSink.request, current)
-    expect([...destinationSink.accepted.values()]).toEqual(failedPart === 'withdrawn' ? [] : [{
-      day: '2026-09-27', visible_ms: 2 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
-    expect([...sourceSink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
-  })
+      stale.track(11 * MINUTE)
+      stale.record(['gte_5s'])
+      const captured = DesktopFrameMetrics.capture(KEY)
+      const storage = pageStorage()
+      const setItem = storage.setItem
 
-  it.each(['token', 'quarantine'])('discards only optional old measurements when the %s cannot be stored', async failedPart => {
-    const stale = new DesktopFrameMetrics(KEY)
-    const destination = `${KEY}-renamed`
-    const sink = backend()
+      const failingWrite = vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, key, value) {
+        if (
+          failedPart === 'token' ? key === `${destination}:frames` : key.startsWith(`${destination}:frames:import:`)
+        ) {
+          throw new DOMException('full', 'QuotaExceededError')
+        }
 
-    stale.track(11 * MINUTE)
-    stale.record(['gte_5s'])
-    const captured = DesktopFrameMetrics.capture(KEY)
-    const storage = pageStorage()
-    const setItem = storage.setItem
+        setItem.call(this, key, value)
+      })
 
-    const failingWrite = vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, key, value) {
-      if (failedPart === 'token' ? key === `${destination}:frames` : key.startsWith(`${destination}:frames:import:`)) {
-        throw new DOMException('full', 'QuotaExceededError')
-      }
+      localStorage.setItem('hermes.desktop.sessionTiles.v2', JSON.stringify({ alpha: ['session-1'] }))
+      await expect(DesktopFrameMetrics.migrate(KEY, destination)).resolves.toBeUndefined()
+      expect(localStorage.getItem(captured.consent)).toBeNull()
+      expect(stale.isCurrent()).toBe(false)
+      expect(JSON.parse(localStorage.getItem('hermes.desktop.sessionTiles.v2')!)).toEqual({ alpha: ['session-1'] })
+      failingWrite.mockRestore()
+      const renamed = new DesktopFrameMetrics(destination)
 
-      setItem.call(this, key, value)
-    })
-
-    localStorage.setItem('hermes.desktop.sessionTiles.v2', JSON.stringify({ alpha: ['session-1'] }))
-    await expect(DesktopFrameMetrics.migrate(KEY, destination)).resolves.toBeUndefined()
-    expect(localStorage.getItem(captured.consent)).toBeNull()
-    expect(stale.isCurrent()).toBe(false)
-    expect(JSON.parse(localStorage.getItem('hermes.desktop.sessionTiles.v2')!)).toEqual({ alpha: ['session-1'] })
-    failingWrite.mockRestore()
-    const renamed = new DesktopFrameMetrics(destination)
-
-    renamed.track(11 * MINUTE)
-    renamed.record(['50ms_to_100ms'])
-    vi.setSystemTime(MIDNIGHT - 3 * MINUTE)
-    renamed.track(0)
-    vi.setSystemTime(MIDNIGHT)
-    await renamed.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
-  })
+      renamed.track(11 * MINUTE)
+      renamed.record(['50ms_to_100ms'])
+      vi.setSystemTime(MIDNIGHT - 3 * MINUTE)
+      renamed.track(0)
+      vi.setSystemTime(MIDNIGHT)
+      await renamed.flush(sink.request, current)
+      expect([...sink.accepted.values()]).toEqual([
+        {
+          day: '2026-09-27',
+          visible_ms: MINUTE,
+          frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+        }
+      ])
+    }
+  )
 
   it('verifies the destination before quota reclamation can remove the source', async () => {
     const stale = new DesktopFrameMetrics(KEY)
@@ -935,47 +1046,58 @@ describe('peer frame day settlement', () => {
 
     vi.setSystemTime(MIDNIGHT)
     await renamed.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: 2 * MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
-  })
-
-  it.each(['destination', 'source'])('keeps queued withdrawal authoritative at the rename %s-token write', async phase => {
-    const stale = new DesktopFrameMetrics(KEY)
-    const destination = `${KEY}-renamed`
-    const sink = backend()
-
-    stale.track(11 * MINUTE)
-    stale.record(['gte_5s'])
-    vi.setSystemTime(MIDNIGHT - 2 * MINUTE)
-    stale.track(0)
-    const storage = pageStorage()
-    const setItem = storage.setItem
-    let withdrew = false
-
-    vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, key, value) {
-      if (!withdrew && key === `${phase === 'destination' ? destination : KEY}:frames`) {
-        withdrew = true
-        DesktopFrameMetrics.purge(KEY)
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: 2 * MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
       }
-
-      setItem.call(this, key, value)
-    })
-    await DesktopFrameMetrics.migrate(KEY, destination)
-    expect(withdrew).toBe(true)
-    expect(stale.isCurrent()).toBe(false)
-    const authorizedAgain = new DesktopFrameMetrics(destination)
-
-    authorizedAgain.track(11 * MINUTE)
-    authorizedAgain.record(['50ms_to_100ms'])
-    vi.setSystemTime(MIDNIGHT - MINUTE)
-    authorizedAgain.track(0)
-    vi.setSystemTime(MIDNIGHT)
-    await authorizedAgain.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    ])
   })
+
+  it.each(['destination', 'source'])(
+    'keeps queued withdrawal authoritative at the rename %s-token write',
+    async phase => {
+      const stale = new DesktopFrameMetrics(KEY)
+      const destination = `${KEY}-renamed`
+      const sink = backend()
+
+      stale.track(11 * MINUTE)
+      stale.record(['gte_5s'])
+      vi.setSystemTime(MIDNIGHT - 2 * MINUTE)
+      stale.track(0)
+      const storage = pageStorage()
+      const setItem = storage.setItem
+      let withdrew = false
+
+      vi.spyOn(storage, 'setItem').mockImplementation(function (this: Storage, key, value) {
+        if (!withdrew && key === `${phase === 'destination' ? destination : KEY}:frames`) {
+          withdrew = true
+          DesktopFrameMetrics.purge(KEY)
+        }
+
+        setItem.call(this, key, value)
+      })
+      await DesktopFrameMetrics.migrate(KEY, destination)
+      expect(withdrew).toBe(true)
+      expect(stale.isCurrent()).toBe(false)
+      const authorizedAgain = new DesktopFrameMetrics(destination)
+
+      authorizedAgain.track(11 * MINUTE)
+      authorizedAgain.record(['50ms_to_100ms'])
+      vi.setSystemTime(MIDNIGHT - MINUTE)
+      authorizedAgain.track(0)
+      vi.setSystemTime(MIDNIGHT)
+      await authorizedAgain.flush(sink.request, current)
+      expect([...sink.accepted.values()]).toEqual([
+        {
+          day: '2026-09-27',
+          visible_ms: MINUTE,
+          frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+        }
+      ])
+    }
+  )
 
   it('retires an unpublished old-name collector without stranding a freshly authorized recreation', async () => {
     const stale = new DesktopFrameMetrics(KEY)
@@ -994,9 +1116,13 @@ describe('peer frame day settlement', () => {
     vi.setSystemTime(MIDNIGHT)
     await stale.flush(sink.request, current)
     await recreated.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
   })
 
   it('does not inherit a deleted destination profile when the renamed source has no metric data', async () => {
@@ -1018,9 +1144,13 @@ describe('peer frame day settlement', () => {
     renamed.track(0)
     vi.setSystemTime(MIDNIGHT)
     await renamed.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
   })
 
   it('discards the old optional cohort when rename coordination aborts without failing the rename', async () => {
@@ -1054,9 +1184,13 @@ describe('peer frame day settlement', () => {
     await stale.flush(sourceSink.request, current)
     await recreated.flush(sourceSink.request, current)
     await renamed.flush(destinationSink.request, current)
-    expect([...sourceSink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sourceSink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
     expect([...destinationSink.accepted.values()]).toEqual([])
   })
 
@@ -1068,9 +1202,11 @@ describe('peer frame day settlement', () => {
 
     stale.track(11 * MINUTE)
     stale.record(['gte_5s'])
-    vi.stubGlobal('navigator', { locks: {
-      request: () => Promise.reject(new Error('coordinator unavailable'))
-    } })
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: () => Promise.reject(new Error('coordinator unavailable'))
+      }
+    })
     await expect(DesktopFrameMetrics.purge(KEY, captured)).resolves.toMatchObject({ complete: false })
     expect(localStorage.getItem(captured.consent)).toBeNull()
     immediateMetricsLocks()
@@ -1087,9 +1223,13 @@ describe('peer frame day settlement', () => {
     vi.setSystemTime(MIDNIGHT)
     await stale.flush(sink.request, current)
     await fresh.flush(sink.request, current)
-    expect([...sink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
+    expect([...sink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
   })
 
   it('removes only the captured permit after coordinator failure across moves and a recreated old name', async () => {
@@ -1113,9 +1253,12 @@ describe('peer frame day settlement', () => {
     recreated.record(['50ms_to_100ms'])
     const freshSource = DesktopFrameMetrics.capture(KEY)
 
-    const failCoordination = () => vi.stubGlobal('navigator', { locks: {
-      request: () => Promise.reject(new Error('coordinator unavailable'))
-    } })
+    const failCoordination = () =>
+      vi.stubGlobal('navigator', {
+        locks: {
+          request: () => Promise.reject(new Error('coordinator unavailable'))
+        }
+      })
 
     failCoordination()
     await expect(DesktopFrameMetrics.purge(KEY, captured)).resolves.toMatchObject({ complete: false })
@@ -1138,11 +1281,19 @@ describe('peer frame day settlement', () => {
     vi.setSystemTime(MIDNIGHT)
     await recreated.flush(sourceSink.request, current)
     await renamed.flush(destinationSink.request, current)
-    expect([...sourceSink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '50ms_to_100ms', count: 1 }]
-    }])
-    expect([...destinationSink.accepted.values()]).toEqual([{
-      day: '2026-09-27', visible_ms: MINUTE, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
-    }])
+    expect([...sourceSink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '50ms_to_100ms', count: 1 }]
+      }
+    ])
+    expect([...destinationSink.accepted.values()]).toEqual([
+      {
+        day: '2026-09-27',
+        visible_ms: MINUTE,
+        frames: [{ bucket: '100ms_to_250ms', count: 1 }]
+      }
+    ])
   })
 })

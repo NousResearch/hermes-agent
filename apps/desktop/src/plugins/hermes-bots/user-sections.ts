@@ -389,7 +389,9 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
 
     // A gateway room is not a Desktop room record: a same-name one must not seat it.
     const id = group
-      ? (group as { gateway?: unknown }).gateway ? null : groupChatSectionId(String((group as { name?: string }).name || ''), groupRooms)
+      ? (group as { gateway?: unknown }).gateway
+        ? null
+        : groupChatSectionId(String((group as { name?: string }).name || ''), groupRooms)
       : botSectionId(((row as { bot?: RosterRow })?.bot || row) as RosterRow, metaByName)
 
     if (id && known.has(id)) {

@@ -26,7 +26,14 @@ function harness() {
   const ctx = {
     slashFlightRef: { current: 0 },
     gateway: { gw: { isCanonical: true, request }, rpc: request },
-    transcript: { page: vi.fn(), panel: vi.fn(), send: vi.fn(), sys, setHistoryItems: vi.fn(), trimLastExchange: (items: unknown[]) => items },
+    transcript: {
+      page: vi.fn(),
+      panel: vi.fn(),
+      send: vi.fn(),
+      sys,
+      setHistoryItems: vi.fn(),
+      trimLastExchange: (items: unknown[]) => items
+    },
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
     session: { resumeById: vi.fn() },
     composer: { enqueue: vi.fn() }
@@ -37,7 +44,10 @@ function harness() {
 
 beforeEach(() => {
   resetUiState()
-  patchUiState({ sid: 'owner', info: { model: 'm', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 3 } as any })
+  patchUiState({
+    sid: 'owner',
+    info: { model: 'm', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 3 } as any
+  })
 })
 
 it('/bg starts prompt.background on the shared gateway and tracks the task', async () => {

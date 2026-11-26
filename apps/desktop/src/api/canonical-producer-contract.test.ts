@@ -127,18 +127,8 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     { key: 'approvals.mode', value: 'manual', profile: 'default' },
     ['config.set']
   ],
-  [
-    'voice-live.ts engine',
-    'config.set',
-    { key: 'voice.voice_chat_mode', value: 'chained' },
-    ['config.set']
-  ],
-  [
-    'yolo-session.ts Shift+click zap',
-    'config.set',
-    { key: 'yolo', scope: 'global', value: '1' },
-    ['config.set']
-  ],
+  ['voice-live.ts engine', 'config.set', { key: 'voice.voice_chat_mode', value: 'chained' }, ['config.set']],
+  ['yolo-session.ts Shift+click zap', 'config.set', { key: 'yolo', scope: 'global', value: '1' }, ['config.set']],
   ['yolo-session.ts session toggle', 'config.set', { key: 'yolo', session_id: 's', value: '1' }, ['config.set']],
   [
     'session-tile-delegate / quick entry / bot chats (identityless)',
@@ -165,12 +155,7 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     { session_id: 's', text: 'again', confirm_truncate: true, truncate_before_row_id: 9, confirm_deep_truncate: true },
     ['session.mutate', 'prompt.submit']
   ],
-  [
-    'use-prompt-actions /handoff',
-    'handoff.request',
-    { session_id: 's', platform: 'telegram' },
-    ['handoff.request']
-  ],
+  ['use-prompt-actions /handoff', 'handoff.request', { session_id: 's', platform: 'telegram' }, ['handoff.request']],
   ['use-prompt-actions handoff poll', 'handoff.state', { session_id: 's' }, ['handoff.state']],
   ['use-prompt-actions handoff fail', 'handoff.fail', { session_id: 's', error: 'boom' }, ['handoff.fail']],
   [
@@ -234,7 +219,13 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
   server.on('connection', (socket: any) => {
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
-      if (frame.method === 'client.capabilities') { socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } })); return }
+
+      if (frame.method === 'client.capabilities') {
+        socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { server_requests: [] } }))
+
+        return
+      }
+
       sent.push(frame)
       const fields = problems(frame.method, frame.params)
       const error = { code: 4001, message: 'invalid_params', data: { reason: 'invalid_params', fields } }

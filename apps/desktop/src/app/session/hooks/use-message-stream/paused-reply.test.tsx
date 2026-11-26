@@ -37,7 +37,10 @@ function mountRunningTurn() {
     ])
   })
   emit(BEFORE, { payload: {}, type: 'message.start' })
-  emit(BEFORE, { payload: { args: { path: 'DELIVERY-PLAN.md' }, name: 'read_file', tool_id: 'call-1' }, type: 'tool.start' })
+  emit(BEFORE, {
+    payload: { args: { path: 'DELIVERY-PLAN.md' }, name: 'read_file', tool_id: 'call-1' },
+    type: 'tool.start'
+  })
 }
 
 describe('a reply paused for an automatic continuation', () => {

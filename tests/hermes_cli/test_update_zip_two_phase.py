@@ -20,6 +20,21 @@ import pytest
 from hermes_cli import update_cmd, update_cmd_zip
 from hermes_constants import venv_bin_dir, venv_python_path
 
+
+def test_hardlink_fallbacks_handle_missing_os_link(tmp_path, monkeypatch):
+    """Regression for #140080: Termux can omit the hard-link API."""
+    source = tmp_path / "source"
+    backup = tmp_path / "backup"
+    artifact = tmp_path / "artifact"
+    source.write_bytes(b"artifact")
+    monkeypatch.delattr(os, "link")
+
+    assert update_cmd_zip._hardlink_backup(str(source), str(backup)) is False
+    update_cmd_zip._link_or_copy_artifact(str(source), str(artifact))
+
+    assert not backup.exists()
+    assert artifact.read_bytes() == b"artifact"
+
 # ---------------------------------------------------------------------------
 # Two-phase replace
 # ---------------------------------------------------------------------------

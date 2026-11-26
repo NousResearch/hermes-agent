@@ -446,9 +446,59 @@ def test_manual_rollback_steps_when_old_stop_fails_omit_mv_and_skip_old_enable(h
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
 
     assert "old_enable" not in host.calls
+    manifest = engine.read_manifest(home)
+    assert manifest["old_backend_stopped"] is False and manifest["old_backend_disabled"] is False
     steps = engine.status_payload(host)["manual_steps"]
     assert steps[-1] == f"launchctl kickstart {_DOMAIN}/{_LABEL} || launchctl bootstrap {_DOMAIN} {plist}"
     assert ".disabled" not in steps[-1] and "launchctl enable" not in steps[-1] and "sudo " not in steps[-1]
+
+
+def test_interrupted_old_stop_records_unknown_stop_state_and_safe_manual_steps(home, plist):
+    host = LaunchdHost(home, plist)
+
+    def interrupt_after_bootout(rec):
+        host._change("old_stop")
+        host.old["active"] = False
+        raise KeyboardInterrupt("interrupted before post-stop manifest save")
+
+    host.old_stop = interrupt_after_bootout
+
+    with pytest.raises(KeyboardInterrupt):
+        engine.cmd_apply(host, _args())
+
+    m = engine.read_manifest(home)
+    assert m["old_backend_stopped"] is None and m["old_backend_disabled"] is False
+
+    step_with_path = engine._manual_rollback_steps(m)[-1]
+    assert step_with_path == f"launchctl kickstart {_DOMAIN}/{_LABEL} || launchctl bootstrap {_DOMAIN} {plist}"
+    assert ".disabled" not in step_with_path and "launchctl enable" not in step_with_path and "sudo " not in step_with_path
+
+    for missing in (None, ""):
+        m_missing = {**m, "old_backend": {**m["old_backend"], "unit_path": missing}}
+        step_missing = engine._manual_rollback_steps(m_missing)[-1]
+        assert step_missing == f"locate the original plist for {_LABEL} and run: launchctl bootstrap {_DOMAIN} <plist-path>"
+        assert "kickstart" not in step_missing and "launchctl enable" not in step_missing and ".disabled" not in step_missing
+
+    sys_m = _system_manifest(home, stopped=None, disabled=False, stop_state="running")
+    sys_m["old_backend"]["unit_path"] = None
+    sys_step = engine._manual_rollback_steps(sys_m)[-1]
+    assert sys_step == f"locate the original plist for {_SYSTEM_LABEL} and run: sudo launchctl bootstrap system <plist-path>"
+    assert "kickstart" not in sys_step and "launchctl enable" not in sys_step and ".disabled" not in sys_step
+
+
+def test_restart_hint_uses_shared_system_launchd_check(plist):
+    from hermes_cli.gateway_migrate_backends_plan import BackendPlan, _restart_hint
+
+    daemon = BackendPlan(home="/tmp/h", rec={
+        "supervisor": "launchd", "unit": _SYSTEM_LABEL,
+        "scope": "gui/0", "unit_path": f"/System/Library/LaunchDaemons/{_SYSTEM_LABEL}.plist",
+    })
+    agent = BackendPlan(home="/tmp/h", rec={
+        "supervisor": "launchd", "unit": _LABEL, "scope": _DOMAIN, "unit_path": str(plist),
+    })
+
+    assert _restart_hint(daemon) == f"sudo launchctl kickstart -k gui/0/{_SYSTEM_LABEL}"
+    assert _restart_hint(agent) == f"launchctl kickstart -k {_DOMAIN}/{_LABEL}"
 
 
 def test_manual_rollback_steps_when_old_disable_fails_before_rename_omit_mv(home, plist):

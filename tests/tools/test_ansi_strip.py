@@ -24,6 +24,31 @@ def test_osc_preserves_visible_text_with_either_control_encoding(clean, introduc
     assert clean(f"before{introducer}0;window title{terminator}after") == "beforeafter"
 
 
+@pytest.mark.parametrize("clean", [strip_ansi, sanitize_display_text])
+@pytest.mark.parametrize(
+    ("truncated_start", "next_start"),
+    [
+        ("\x90", "\x1bP"),
+        ("\x1bP", "\x90"),
+        ("\x9d", "\x1b]"),
+        ("\x1b]", "\x9d"),
+        ("\x90", "\x9d"),
+        ("\x1b]", "\x1bP"),
+        ("\x98", "\x1bX"),
+        ("\x1bX", "\x98"),
+    ],
+)
+def test_truncated_string_stops_before_next_control_string(clean, truncated_start, next_start):
+    raw = f"before{truncated_start}unfinished\nvisible{next_start}data\x9cafter"
+    assert clean(raw) == "beforeunfinished\nvisibleafter"
+
+
+@pytest.mark.parametrize("clean", [strip_ansi, sanitize_display_text])
+@pytest.mark.parametrize("start", ["\x1bX", "\x98"])
+def test_sos_consumes_embedded_command_introducers(clean, start):
+    assert clean(f"before{start}data\x1bPmore data\x9cafter") == "beforeafter"
+
+
 class TestStripAnsiBasicSGR:
     """Select Graphic Rendition — the most common ANSI sequences."""
 

@@ -3461,9 +3461,8 @@ def systemd_install(
         print_legacy_unit_warning()
         print()
         if non_interactive or prompt_yes_no("Remove the legacy unit(s) before installing?", True):
-            res = remove_legacy_hermes_units(interactive=False)
+            _, remaining = remove_legacy_hermes_units(interactive=False)
             print()
-            remaining = res[1] if isinstance(res, tuple) and len(res) == 2 else []
             if remaining:
                 is_root = os.geteuid() == 0  # windows-footgun: ok — Linux systemd-only function
                 unremovable_sys = set() if is_root else {p for _, p, s in _find_legacy_hermes_units() if s}

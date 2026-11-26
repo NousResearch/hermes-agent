@@ -5,7 +5,9 @@ description: "Feishu platform override with per-chat Tier-0/Tier-1 context, stan
 maintainer: DanielLi202
 tier: community
 category: platform
-requires_hermes: ">=0.22.5"
+# This pin imports core's plugins.platforms.feishu.adapter, which 0.23.5 no longer ships (Feishu is the
+# official feishu plugin since then): a later Hermes refuses to install it until a pin that supports that is listed.
+requires_hermes: ">=0.22.5,<0.23.5"
 docs_url: https://github.com/DanielLi202/hermes-tag#readme
 version: "0.5.0"
 capabilities:

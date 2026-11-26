@@ -5,6 +5,7 @@ target for a local conversation."""
 import json
 import time
 import uuid
+from contextlib import contextmanager
 
 from persistence.authority.bindings import local_session_id
 from persistence.core.errors import AuthorityRefusal
@@ -14,6 +15,24 @@ from .._schema import TITLE_SOURCE_DERIVED, TITLE_SOURCE_USER
 from ._runtime import _json
 from ._runtime_guards import require_idle, require_target_advanceable
 from ._runtime_picks import validate_prepared
+
+
+@contextmanager
+def user_title_refusals(session_id, title):
+    """A user's title write (rename, sidebar, branch) refused as the user can read it, never as a
+    plain ValueError that crashes the dispatch (#160463): a title past MAX_TITLE_LENGTH is an
+    ``invalid_title`` refusal before any write, and a held title or the canonical Bot Chat's name
+    raises the typed ``TitleConflict`` / ``CanonicalTitleLocked`` the conversation store's own
+    renames raise."""
+    from persistence.core.identity import SessionId
+    from ..conversation._store.titles import sanitize_title
+    from ..conversation.sessions import _title_refusals
+    try:
+        sanitize_title(title)
+    except ValueError as exc:
+        raise AuthorityRefusal('invalid_title', field='title', detail=str(exc)) from exc
+    with _title_refusals(SessionId(session_id)):
+        yield
 
 
 def _profile_from_session_key(session_key):
@@ -133,7 +152,8 @@ def branch_in_transaction(holder, conn, session_id, payload, prepared=None):
     conn.execute('UPDATE sessions SET message_count=?,tool_call_count=? WHERE id=?', (len(ids), tools, child))
     from ..conversation._store.titles import _set_session_title_in_transaction
     if payload.get('title'):
-        _set_session_title_in_transaction(holder, conn, child, payload['title'], source=TITLE_SOURCE_USER)
+        with user_title_refusals(child, payload['title']):
+            _set_session_title_in_transaction(holder, conn, child, payload['title'], source=TITLE_SOURCE_USER)
     else:
         from .._schema import next_title_in_lineage
         # Untitled branch: the next name in the parent's lineage ("my session" → "my session #2"),

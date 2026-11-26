@@ -145,12 +145,15 @@ async def test_ws_rename_of_the_canonical_bot_chat_is_a_readable_refusal(tmp_pat
                                      instance_id='current', epoch=epoch, persistence=storage_handle(tmp_path))
         authority.sessions['bot'] = LiveSession(None, 'route')
         owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        revision = session_row(db, 'bot')['runtime_revision']
         try:
             refused = await _rename(db, owner, 'bot', 'Something else')
             error = refused['error']
+            assert error['code'] == 4001, refused
             assert error['message'].startswith("This is the bot's canonical Bot Chat"), refused
             assert error['data']['reason'] == 'invalid_title', refused
-            assert session_row(db, 'bot')['title'] == CANONICAL_BOT_CHAT_TITLE
+            row = session_row(db, 'bot')
+            assert row['title'] == CANONICAL_BOT_CHAT_TITLE and row['runtime_revision'] == revision
         finally:
             await owner.close()
 

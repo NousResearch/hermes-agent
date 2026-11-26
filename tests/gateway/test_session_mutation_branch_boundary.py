@@ -71,3 +71,53 @@ async def test_branch_through_a_middle_message_excludes_later_and_concurrent_row
         assert refused['error']['message'] == 'invalid_params', refused
     finally:
         await owner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('title, message', [
+    ('Held Name', "Title 'Held Name' is already in use by session holder"),
+    ('x' * 101, 'Title too long (101 chars, max 100)'),
+])
+async def test_branch_onto_a_refused_title_is_a_readable_refusal(tmp_path, monkeypatch, title, message):
+    """#160463: `/branch <name>` wrote the user's title without the title refusals, so a held name
+    or one past MAX_TITLE_LENGTH crashed the dispatch (`-32603 internal error`). It is an
+    `invalid_title` refusal, and no child is created."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from tests.fixtures.storage_seed import seed_session
+
+    monkeypatch.setattr(run, '_load_gateway_config', dict)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store.persistence
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+                             _adapter_for_source=lambda source: None)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=storage_handle(db.scope.profile_dir),
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'))
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='branch-title', source='cli',
+                                                              cwd=str(tmp_path), model='m', toolsets=[]))
+    sid = ref.session_id
+    seed_messages(db, sid, {'role': 'user', 'content': 'question'})
+    seed_session(db, 'holder', 'desktop', title='Held Name')
+    seed_messages(db, 'holder', {'role': 'user', 'content': 'a real chat, not an empty ghost that yields its name'})
+    session = session_row(db, sid)
+    from tests.fixtures.storage_holder import raw_holder
+
+    def session_count():
+        with raw_holder(db)._read_ctx() as conn:
+            return conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
+    before = session_count()
+    try:
+        refused = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': sid, 'request_id': 'branch-held', 'expected_revision': session['runtime_revision'],
+            'expected_generation': session['runtime_generation'], 'operation': 'branch',
+            'payload': {'title': title}}})
+        error = refused['error']
+        assert error['message'] == message, refused
+        assert error['data']['reason'] == 'invalid_title', refused
+        assert session_row(db, sid)['runtime_revision'] == session['runtime_revision']
+        assert session_count() == before  # no branch child was created
+    finally:
+        await owner.close()

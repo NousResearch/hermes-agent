@@ -110,7 +110,8 @@ class StatusOutputMixin:
     def _emit_diagnostic_status(self, message: str) -> None:
         """A diagnostic on the lifecycle rail, without changing legacy formatting."""
         from gateway.warning_notifications import DiagnosticText
-        self._emit_status(DiagnosticText(message))
+        # A finer producer class (TerminalFailureText) stays: the gateway filter reads it.
+        self._emit_status(message if isinstance(message, DiagnosticText) else DiagnosticText(message))
 
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message (CLI + gateway ``status_callback``)."""
@@ -241,24 +242,21 @@ class StatusOutputMixin:
             buf.clear()
 
     def _emit_pending_fallback_notice(self) -> None:
-        """Surface the one-shot fallback-switch notice on successful recovery: a provider switch is durable
-        state operators must see, unlike the retry chatter ``_clear_status_buffer`` drops. Emitted once, then
-        cleared; on terminal failure the buffered switch line is flushed instead (``_flush_status_buffer``)."""
+        """Surface a fallback switch decided before the turn (the primary's credentials failed while the
+        agent was built) at turn start, before the fallback answers. In-turn switches announce themselves
+        when they happen (``fallback_notice.announce_fallback_switch``). Emitted once, then cleared."""
         notice = getattr(self, "_pending_fallback_notice", None)
         if not notice:
             return
         # Clear before emitting so a (swallowed) callback error can't leave a stale re-emit.
         self._pending_fallback_notice = None
+        from agent.fallback_notice import announce_fallback_switch
         for item in notice if isinstance(notice, list) else [notice]:
-            try:
-                self._emit_diagnostic_status(item)
-            except Exception:
-                # One surface failure must not hide later switches from the same chain.
-                continue
+            announce_fallback_switch(self, item)
 
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure so the user sees what was tried."""
-        # The buffered trace already carries the switch line; drop the one-shot notice.
+        # A pre-turn switch notice was already shown at turn start; never repeat it after a failure.
         self._pending_fallback_notice = None
         buf = getattr(self, "_retry_status_buffer", None)
         if not buf:

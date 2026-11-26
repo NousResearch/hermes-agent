@@ -93,6 +93,8 @@ export interface InstallStamp {
   channelBuild?: Readonly<ChannelBuildRequest>
   /** Cross-application receiver shipped in this artifact, absent on older builds. */
   receiverProtocol?: 1
+  /** Outer macOS DMG signed and notarized by this build's packaging hooks. */
+  signedDmg?: true
   /** Pinned release tag; null for channel builds, one-offs and bootstrap. */
   tag: string | null
 }

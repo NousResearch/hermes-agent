@@ -525,6 +525,7 @@ class TestTeamsAttachmentClassification:
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
+        adapter.set_authorization_check(lambda *args, **kwargs: True)  # the runner wires one at startup
         return adapter
 
     def _make_activity(self, attachments, text="see attached"):
@@ -547,6 +548,19 @@ class TestTeamsAttachmentClassification:
         ctx = MagicMock()
         ctx.activity = activity
         return ctx
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("verdict", [False, None])
+    async def test_attachment_from_unauthorized_sender_is_not_downloaded(self, verdict):
+        adapter = self._make_adapter()
+        adapter.set_authorization_check(None if verdict is None else (lambda *args, **kwargs: verdict))
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4")
+
+        await adapter._on_message(self._make_ctx(self._make_activity([self._file_download_attachment()])))
+
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+        event = adapter.handle_message.await_args.args[0]  # still dispatched so the runner can deny/pair
+        assert event.media_urls == []
 
     def _file_download_attachment(self, name="report.pdf", file_type="pdf"):
         att = MagicMock()
@@ -631,6 +645,7 @@ class TestTeamsBotFrameworkAttachments:
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
+        adapter.set_authorization_check(lambda *args, **kwargs: True)  # the runner wires one at startup
         return adapter
 
     def _make_activity(self, attachments):
@@ -1078,6 +1093,7 @@ class TestTeamsRequireMention:
         adapter._app = MagicMock()
         adapter._app.id = self.APP_ID
         adapter.handle_message = AsyncMock()
+        adapter.set_authorization_check(lambda *args, **kwargs: True)
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
         return adapter
 
@@ -1183,9 +1199,25 @@ async def test_long_non_ascii_command_keeps_button_data_small():
     cannot push the card past Teams' ~28 KB limit."""
     adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
     adapter._app, adapter._send_card = object(), AsyncMock()
+    adapter.send = AsyncMock(return_value=MagicMock(success=True))  # the full command, sent before the card
     command = "cat > notes.md <<'EOF'\n" + "这是一个很长的中文文档内容。" * 200 + "\nEOF"
     buttons = []
     with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
         await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
     assert len(buttons) == 4
     assert sum(len(json.dumps(b["data"], ensure_ascii=False).encode()) for b in buttons) < 1024
+
+
+@pytest.mark.anyio
+async def test_shortened_card_preview_says_where_the_full_command_is():
+    """Teams rebuilds its card from ``prompt.command``; a cut preview must still carry the shared notice."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._send_card = object(), AsyncMock()
+    adapter.send = AsyncMock(return_value=MagicMock(success=True, raw_response=None))  # the full command
+    texts = []
+    module = sys.modules[TeamsAdapter.__module__]
+    with patch.object(module, "ExecuteAction", lambda **kw: kw), \
+            patch.object(module, "TextBlock", lambda text="", **kw: texts.append(text)):
+        await adapter.send_exec_approval(chat_id="c1", command="echo " + "C" * 5000, session_key="s1")
+    card_text = " ".join(texts)
+    assert "Preview shortened" in card_text and "5005" in card_text

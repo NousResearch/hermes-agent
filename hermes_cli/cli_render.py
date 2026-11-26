@@ -33,7 +33,7 @@ def _cli():
 _REASONING_TAGS = THINK_TAG_NAMES
 
 
-_TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
+_TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls", "toolcall")
 
 
 def _strip_reasoning_tags(text: str) -> str:

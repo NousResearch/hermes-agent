@@ -1,0 +1,24 @@
+name: agentinbox
+repo: https://github.com/agentinboxhq/hermes-plugin
+sha: 7b8385cce34f2dcb177d6242f0cf6f3af1b1c307
+description: "Agent Inbox for Hermes: messages to your agent on Telegram, Slack or email, from you and the contacts it listens to, start Hermes, and its answer goes back in the same conversation. Hermes's approval prompts go to you as Allow and Deny buttons, and its tools ask people, write to your contacts and read the conversations. Disclosure — connects this Hermes gateway to the Agent Inbox hosted service (agentinbox.md), which decides who may message your agent; messages, Hermes' replies, the text of approval prompts (including the commands Hermes wants to run) and this computer's name are sent to Agent Inbox, the operator approves commands from their phone, and a contact the operator gives full access can approve and run anything in their own conversation. Contacts otherwise get only the tools listed in `platforms.agentinbox.contacts_can_use` (none by default). No telemetry."
+maintainer: agentinboxhq
+tier: community
+category: platform
+version: "0.1.1"
+title: Agent Inbox
+capabilities:
+  provides_tools:
+    - agentinbox_ask_operator
+    - agentinbox_ask_here
+    - agentinbox_card
+    - agentinbox_send
+    - agentinbox_conversations
+    - agentinbox_read
+    - agentinbox_contacts
+    - agentinbox_resolve
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.20.1"

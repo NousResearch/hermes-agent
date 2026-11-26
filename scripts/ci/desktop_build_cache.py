@@ -18,6 +18,7 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from hermes_agent.compat.paths import current_path
 from scripts.ci.pnpm_lock import section_keys
 from scripts.ci.setup_toolchain import current_target, file_commands
 
@@ -28,6 +29,8 @@ _INPUT_FILES = (
     "pyproject.toml", "uv.lock", "pm/lock.json", "pm/pyproject.toml", "pm/uv.lock",
     "scripts/ci/desktop_build_cache.py", "scripts/ci/setup_toolchain.py", "scripts/ci/pnpm_lock.py",
     "scripts/build/node-deps.mjs", "scripts/build/electron-runtime.mjs", "scripts/build/pnpm-lock.mjs",
+    "scripts/build/node-deps-lock.mjs", "scripts/build/node-deps-heartbeat.mjs",
+    "scripts/build/node-deps-watcher.mjs", "scripts/build/node-deps-relay.mjs",
     "scripts/build/frontend-common.mjs", "scripts/build/python.mjs",
     "scripts/build/windows-deps.ps1", "scripts/windows-build-deps.ps1",
     "apps/desktop/scripts/stage-native-deps.mjs", "apps/desktop/scripts/prepare-packaging-tools.mjs",
@@ -50,11 +53,12 @@ _INPUT_FILES = (
     "hermes_cli/__init__.py", "hermes_cli/release_channels.py", "hermes_cli/update_channel.py",
     "hermes_cli/runtime_state.py", "hermes_constants.py", "hermes_platform/__init__.py",
     "hermes_platform/resolver/__init__.py", "hermes_platform/resolver/base.py",
-    "hermes_platform/resolver/core.py", "hermes_platform/resolver/known_dirs.py",
+    "hermes_platform/resolver/core.py", "hermes_platform/resolver/known_dirs.py", "hermes_agent/__init__.py",
 )
 # Python packages preparation owns (or, for pm/, depends on throughout): keyed whole, so a new
 # module or a new late import inside them needs no list edit.
-_INPUT_GLOBS = ("pm/*.py", "scripts/bundles/*.py", "scripts/build/*.py", "apps/desktop/scripts/*.py")
+_INPUT_GLOBS = ("pm/*.py", "scripts/bundles/*.py", "scripts/build/*.py", "apps/desktop/scripts/*.py",
+                "hermes_agent/compat/*.py")
 
 
 def input_files(source: Path, importers: list[str]) -> list[str]:
@@ -71,7 +75,8 @@ def _input_digest(source: Path, importers: list[str]) -> str:
     # admission remains necessary even when this digest matches exactly.
     digest = hashlib.sha256()
     for name in input_files(source, importers):
-        path = source / name
+        # Keyed by the listed name, read where the file lives now: a move keeps the key.
+        path = source / current_path(name)
         digest.update(name.encode() + b"\0")
         digest.update(path.read_bytes() if path.is_file() else b"<missing>")
         digest.update(b"\0")

@@ -139,8 +139,8 @@ def test_save_config_set_bridges_every_cli_terminal_key():
     startup path bridges, so a config-set value takes effect without restart.
     """
     save_keys = _save_config_env_sync_keys()
-    # cwd is bridged separately by set_config_value; home_mode is CLI-only.
-    exempt = _CLI_ONLY_OK | {"cwd", "home_mode"}
+    # cwd is bridged separately by set_config_value.
+    exempt = _CLI_ONLY_OK | {"cwd"}
     missing = (set(_cli_env_map()) - exempt) - save_keys
     assert not missing, (
         f"`hermes config set terminal.X` doesn't sync these keys to .env: "

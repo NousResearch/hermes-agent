@@ -16,7 +16,7 @@ from agent.i18n import t
 RETAIN_SECONDS = 60
 
 # Reader-thread exits report "exited"; `kill_process` / `kill_all` stamp "killed".
-_STATUS_BY_REASON = {"killed": "killed", "lost": "lost", "failed_start": "failed"}
+_STATUS_BY_REASON = {"killed": "killed", "lost": "lost"}
 
 
 def _last_output_line(buffer: str) -> str:

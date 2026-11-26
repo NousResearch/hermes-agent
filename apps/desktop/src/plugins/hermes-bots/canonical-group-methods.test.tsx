@@ -9,7 +9,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
   socket.gateway = atom('open')
   socket.connectionId = atom<null | string>('remote')
 
-  return { host: { requestProfile: captureGroupRequests(request).request, state: { connectionId: socket.connectionId, gateway: socket.gateway } } }
+  const { pluginSdkMock } = await import('./group-test-utils')
+
+  return pluginSdkMock({ requestProfile: captureGroupRequests(request).request, state: { connectionId: socket.connectionId, gateway: socket.gateway } })
 })
 
 import { offersGroupMethod, useGroupMethods } from './canonical-group-capabilities'

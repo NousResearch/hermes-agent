@@ -1,0 +1,33 @@
+name: check-please
+repo: https://github.com/itsLittleOdd/check-please
+sha: "d9c370f09f7ae27b57047f74b235b60ddc7a6024"
+subdir: ""
+description: "Pairs each \"done\" in an agent's reply (tests pass, sent, deployed, pushed, saved, scheduled) with the tool call that proves it, and adds one line when a claim is stale, failed, or proven only by something the agent edited. Disclosure — reads the tool calls and replies Hermes passes to its hooks; runs no shell commands and makes no network or model calls; stores claim sentences, command first lines and a 14-day claim log in its own plugin state file; appends one \"Check:\" line under a flagged reply and, on cron runs, puts one line at the top of the delivered reply; on coding turns its pre_verify hook may send the agent back once to recheck a contradicted claim, and its pre_llm_call hook may add a one-line note about the previous reply's flagged claim (all on by default, each has a setting); `/check today` and `/check jobs` show profile-wide tallies, including short claim snippets from other chats on a shared gateway; the owner-run `hermes check-please audit` command reads the profile's saved sessions (state.db) read-only and prints a summary locally; the Desktop pane polls the plugin's own dashboard route every 4 seconds while a session is focused; no telemetry."
+maintainer: Justin Whalen (Whalen Ventures)
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: ""
+version: "0.4.2"
+screenshots: []
+readme: true
+platforms: []
+title: "Check, Please"
+onboarding: false
+known_issues:
+  - "Heuristic, English-only claim patterns. It cannot see webhook payload bodies, runtime-built strings, or file writes made inside a script body (a Python heredoc)."
+  - "A not-backed claim means no receipt was found, which is common and often not an overclaim, so by default it shows only in /check, not under the reply."
+  - "A delegated sub-agent's claims are judged only by that child's own tool calls, kept separate from the parent session's evidence; see /check subagents."
+  - "Developed and tested on macOS (Hermes CLI, gateway and Desktop). The engine is standard-library Python; Linux and Windows are untested."
+  - "Accuracy numbers (held-out precision and recall, real-world alert rates) are dated and sourced in the README's Results section. Part of the test bench was used to tune the plugin, so bench catch counts are tuned results, not real-world rates."
+  - "The Desktop status-bar chip ran in a real Hermes Desktop window on 2026-11-09. The pane's 0.4.2 label changes are checked by a Node render harness, not yet in a real window."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - subagent_stop
+    - transform_llm_output
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

@@ -115,7 +115,7 @@ Each session is tagged with its source platform:
 | Source | Description |
 |--------|-------------|
 | `cli` | Interactive CLI (`hermes` or `hermes chat`) |
-| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `kanban` and `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list` shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
+| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `kanban` and `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list --all` (or `--source oneshot`) shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
 | `slack` | Slack workspace |
@@ -290,7 +290,7 @@ What happens:
 
 6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
 
-**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
+**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off. Handing off again moves the conversation to the new Telegram topic; the earlier topic starts a fresh conversation at its next message.
 
 **Failure modes:**
 - No home channel configured → CLI refuses with a `/sethome` hint.
@@ -358,6 +358,9 @@ Hermes provides a full set of session management commands via `hermes sessions`:
 ### List Sessions
 
 ```bash
+# Pick a recent conversation with the arrow keys and resume it (prints the list when not on a terminal)
+hermes sessions
+
 # List recent sessions (default: last 20)
 hermes sessions list
 
@@ -366,7 +369,12 @@ hermes sessions list --source telegram
 
 # Show more sessions
 hermes sessions list --limit 50
+
+# Show every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages
+hermes sessions list --all
 ```
+
+The list holds the conversations you resume: one row per thread, ranked by its last message. A thread that was compressed shows once, under the id of its live continuation (the one `hermes --resume` continues) and the title of the most recent part of the thread that has one. Subagent runs never appear here. Cron, webhook, push, kanban, tool and one-shot runs and empty sessions stay out unless you pass `--all` (or name a `--source`).
 
 When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
 
@@ -1023,6 +1031,12 @@ The keyword mode supports standard FTS5 query syntax:
 - `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
 - `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
+
+### Who can search what
+
+`session_search` reads the whole session store of the profile it runs in: every chat, from every platform and every user in that profile's allowlist. On a shared or family bot, anyone allowed to talk to it can ask the agent to find and read anyone else's conversations with it. Hermes does not separate users inside one profile (see `SECURITY.md` §2.6), and profiles on one host are not isolated from each other either: the default profile reads every profile's sessions (below), and an agent with terminal or code-execution tools can read any profile's files. Give each person who needs private history their own instance, under a separate OS user or container (`SECURITY.md` §2.2).
+
+`profile=` (and an `@session:<profile>/<id>` link) reads another profile's store. When one process serves several profiles (a multiplexed gateway, a dashboard or `hermes serve` backend on a host with more than one profile), only the **default** profile may do that, except in your own Desktop, TUI, CLI and editor (ACP) sessions; a call from any other profile that names a different profile is refused with an error. A process running a single profile on its own keeps cross-profile reads.
 
 ### When It's Used
 

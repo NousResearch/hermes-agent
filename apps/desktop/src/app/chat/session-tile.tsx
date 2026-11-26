@@ -59,6 +59,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
+import { sessionNeedsInput } from '@/store/session-card-wait'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import {
@@ -225,7 +226,7 @@ function buildTileView(storedSessionId: string): SessionView {
 }
 
 // Module-level constants so these ChatView props are referentially stable —
-// tiles have no pin/delete affordance, and transcription needs no per-tile state.
+// transcription needs no per-tile state.
 const noop = () => undefined
 
 const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
@@ -240,6 +241,21 @@ const tileTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
   }
 
   return (await transcribeAudio(await blobToDataUrl(audio), audio.type, owner)).transcript
+}
+
+/** Toggle pin for a tile's session, keyed on the durable lineage-root id —
+ *  the same identity rule as the tab menu (`useTileMenuRow`) and the primary
+ *  chat (`toggleSelectedPin` in wiring.tsx). Exported so the tile title/header
+ *  menu and the tab context menu share one implementation and cannot drift. */
+export function toggleTilePin(storedSessionId: string): void {
+  const stored = tileStoredRow(storedSessionId)
+  const pinId = stored ? sessionPinId(stored) : storedSessionId
+
+  if ($pinnedSessionIds.get().includes(pinId)) {
+    unpinSession(pinId)
+  } else {
+    pinSession(pinId)
+  }
 }
 
 function TileChat({
@@ -326,7 +342,8 @@ function TileChat({
       target: scope.target,
       update: attachments.update,
       updateIfCurrent: attachments.updateIfCurrent
-    }
+    },
+    storedSessionId
   })
 
   // ChatView is memo()d — every callback prop must be referentially stable or
@@ -351,6 +368,10 @@ function TileChat({
   const onPickImages = useCallback(() => void pickImages(), [pickImages])
   const onRemoveAttachment = useCallback((id: string) => void removeAttachment(id), [removeAttachment])
   const onRetryResume = useCallback(() => patchSessionTile(storedSessionId, { error: undefined }), [storedSessionId])
+
+  // Pin toggle for the tile's title/header menu — shares the implementation
+  // with the tab context menu so both agree on pinned state and pin identity.
+  const onToggleTilePin = useCallback(() => toggleTilePin(storedSessionId), [storedSessionId])
 
   // Per-tile model menu — rendered under this tile's SessionView so the pill
   // + switch target THIS runtime, not the primary (which may be mid-turn).
@@ -426,7 +447,7 @@ function TileChat({
           onSteerHidden={actions.injectHiddenPrompt}
           onSubmit={actions.submitText}
           onThreadMessagesChange={actions.handleThreadMessagesChange}
-          onToggleSelectedPin={noop}
+          onToggleSelectedPin={onToggleTilePin}
           onTranscribeAudio={tileTranscribeAudio}
           reasoningMenuContent={reasoningMenuContent}
           requestModelOptionsForOwner={requestTileGateway}
@@ -769,12 +790,12 @@ function tileDragPayload(storedSessionId: string): SessionDragPayload {
 const $confirmCloseTile = atom<null | string>(null)
 
 /** The tile closer, gated: a quiet session closes immediately; a busy or
- *  input-blocked one asks first. One state read — the tile's runtime slice. */
+ *  input-blocked one asks first, and so does one with a folder or site card open. */
 export function requestCloseSessionTile(storedSessionId: string): void {
   const runtimeId = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)?.runtimeId
   const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
 
-  if (state?.busy || state?.awaitingResponse || state?.needsInput) {
+  if (state?.busy || state?.awaitingResponse || (runtimeId && sessionNeedsInput(state, runtimeId))) {
     $confirmCloseTile.set(storedSessionId)
   } else {
     closeSessionTile(storedSessionId)

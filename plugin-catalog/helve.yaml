@@ -1,0 +1,32 @@
+name: helve
+title: Helve
+repo: https://github.com/helve-dev/hermes-plugin
+sha: d7298e1d3211b98893bb5cf74d3de92c926f6b18
+description: >-
+  Connect Hermes Agent to 330+ third-party APIs across 260+ providers (web
+  search, page extraction, audio transcription, SEC filings, GitHub, LLMs, and
+  more) with one prepaid balance at 0% markup ($1 free credit ≈ 1,000 Serper
+  searches or 1,000 Exa scrapes), deterministic spend_limit_usd caps, and $0
+  failed-call escrow. Disclosure — Helve (helve.dev, by Helve / helve-dev) is
+  a hosted API gateway: tool calls send your arguments to helve.dev and on to
+  the upstream provider, and paid tool calls debit your prepaid Helve balance.
+  Discovery (helve_search_tools, helve_list_categories) is free and requires no
+  API key.
+maintainer: helve-dev
+tier: community
+category: tools
+docs_url: https://github.com/helve-dev/hermes-plugin#readme
+requires_hermes: ">=0.19.0"
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - helve_search_tools
+    - helve_list_categories
+    - helve_call_tool
+    - helve_request_tool
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - HELVE_API_KEY

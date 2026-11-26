@@ -215,6 +215,15 @@ authorization model, but the rules below apply uniformly.
    Hermes Agent does not model per-caller capabilities inside a
    single adapter. Operators who need capability separation should
    run separate agent instances with separate allowlists.
+   **Profiles are not tenants.** Every profile under one OS user is
+   inside the same trust envelope: an authorized dashboard/`serve`
+   caller, and the agent itself, can reach any sibling profile's
+   files. `serve`/`dashboard --isolated` is a routing and operations
+   convenience (a dedicated server that lists only its launch
+   profile), not an authorization boundary. Isolating users from each
+   other requires separate OS users or containers (§2.2); reports that
+   an `--isolated` server reaches a sibling profile are out of scope
+   (§3.2).
 5. **Binding a local-only surface to a non-loopback interface is a
    break-glass operator decision (§3.2).** The dashboard and other
    plugin HTTP servers default to loopback; exposing them via
@@ -274,6 +283,11 @@ private-disclosure channel and don't receive advisories.
   isolation that only sandboxes shell; reports whose preconditions
   require pre-existing write access to operator-owned configuration
   or credential files (those are already inside the trust envelope).
+- **Sibling-profile reach from a dashboard/`serve` caller.** Profiles
+  under one OS user share one trust envelope (§2.6 rule 4); an
+  `--isolated` server or a `?profile=` selector reaching a sibling
+  profile's files is not a vulnerability. Separate users need separate
+  OS users or containers (§2.2).
 - **Documented break-glass settings.** Operator-selected trade-offs
   that explicitly disable protections: `--insecure` and equivalent
   flags on the dashboard or other components, disabled approvals,

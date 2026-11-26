@@ -10,16 +10,22 @@ Spawn a subagent with an isolated context + terminal session.
 
 - **Single:** `delegate_task(goal, context)`.
 - **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
-  parallel, capped by `delegation.max_concurrent_children` (default 3).
-- **Background:** `delegate_task(background=true)` returns a handle
-  immediately and keeps the parent loop going; the child's result
-  re-enters the conversation as a new turn when it finishes.
-- **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
-  (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
+  parallel, capped by `delegation.max_concurrent_children` (default 10).
+- **Background:** top-level calls run in the background wherever the
+  session can receive a later message: a handle returns immediately and
+  the result is posted back as a new message (the API server stores it
+  for the client's next turn). One-shot runs, cron jobs, Kanban workers,
+  stateless API requests, inline gateway chats and a call made while the
+  background pool is full wait for their children inside the call. The
+  `background` argument is ignored.
+- **Nesting:** decided from depth, not per call: a child may delegate
+  while depth stays below `delegation.max_spawn_depth` (default 1 =
+  flat) and `delegation.orchestrator_enabled` is on.
 - **Not durable.** A backgrounded child is still process-local — if the
   parent process exits, the child is lost. For work that must outlive
-  the process, use `cronjob` or
-  `terminal(background=True, notify_on_complete=True)`.
+  the process, use `cronjob`;
+  `terminal(background=True, persist_on_release=True)` survives the
+  session ending, not a gateway or host shutdown.
 
 Config: `delegation.*` in `config.yaml`.
 

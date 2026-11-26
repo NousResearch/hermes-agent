@@ -21,12 +21,14 @@ statements about one endpoint, not an ambient guess about the machine.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import ssl
 import threading
+import weakref
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ def install_truststore() -> bool:
         import truststore
 
         truststore.inject_into_ssl()
+        _memoize_openssl_bundle_reload()
         _installed = True
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:
@@ -61,6 +64,76 @@ def install_truststore() -> bool:
             exc,
         )
     return _installed
+
+
+_openssl_bundle_state: weakref.WeakKeyDictionary[ssl.SSLContext, tuple] = weakref.WeakKeyDictionary()
+
+
+def _stat_identity(path: Optional[str]) -> Optional[tuple]:
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev, st.st_ctime_ns)
+
+
+def _openssl_trust_signature(fallback_candidates: Iterable[str] = ()) -> tuple:
+    """Identity of the CA sources truststore's OpenSSL backend would load.
+
+    ``cafile``/``capath`` come from ``ssl.get_default_verify_paths()`` (env
+    vars or OpenSSL's compiled-in paths); the stat tuple notices a bundle
+    file being replaced behind our back. When those defaults are unusable,
+    truststore loads the first existing distro candidate instead, so that
+    file is part of the signature too (an unused candidate changing only
+    costs one extra reload).
+    """
+    defaults = ssl.get_default_verify_paths()
+    fallback = next((path for path in fallback_candidates if os.path.isfile(path)), None)
+    return (
+        defaults.cafile, defaults.capath, fallback,
+        _stat_identity(defaults.cafile), _stat_identity(defaults.capath), _stat_identity(fallback),
+    )
+
+
+def _memoize_openssl_bundle_reload() -> None:
+    """Stop truststore's OpenSSL backend re-parsing the system CA bundle per connection.
+
+    On Linux, ``truststore._openssl._configure_context`` runs
+    ``ctx.set_default_verify_paths()`` on the same inner context for every
+    ``wrap_socket``/``wrap_bio``, so each new TLS connection (Telegram
+    heartbeat probes, provider clients, webhooks) pays a full bundle re-read
+    — on the event loop for async clients. Loading is additive and
+    idempotent, so a context configured against an unchanged bundle needs
+    nothing more; only a bundle file actually changing triggers a reload.
+    The platform verifier backends (macOS, Windows) have no such reload and
+    are left alone, as is any truststore layout we don't recognize.
+    """
+    try:
+        from truststore import _api, _openssl
+
+        original = _api._configure_context
+        if getattr(original, "__module__", None) != "truststore._openssl":
+            return
+
+        @contextlib.contextmanager
+        def _configure_context_once(ctx: ssl.SSLContext) -> Iterator[None]:
+            signature = _openssl_trust_signature(getattr(_openssl, "_CA_FILE_CANDIDATES", ()))
+            # Unlocked on purpose: a racing first load merely repeats an
+            # additive load; a lock here would serialize connection setup.
+            if _openssl_bundle_state.get(ctx) == signature:
+                yield
+                return
+            with original(ctx):
+                _openssl_bundle_state[ctx] = signature
+                yield
+
+        _api._configure_context = _configure_context_once
+        logger.debug("TLS trust: OpenSSL bundle load memoized per context")
+    except Exception:
+        # Private-API drift: the reload cost returns, correctness never changes.
+        logger.debug("truststore OpenSSL bundle memo not installed", exc_info=True)
 
 
 def _coerce_insecure(ssl_verify: Any) -> bool:
@@ -309,7 +382,10 @@ def resolve_httpx_verify(
     2. explicit ``ca_bundle`` (the provider's ``ssl_ca_cert``) — that
        bundle INSTEAD of the platform store, for an endpoint whose chain
        the machine has no reason to trust
-    3. ``True`` — the platform store, via the process-wide install, or the
+    3. an exported ``SSL_CERT_FILE``/``SSL_CERT_DIR`` — the platform context,
+       with an existing ``SSL_CERT_FILE`` bundle trusted on top of it
+       (``platform_ssl_context()``)
+    4. ``True`` — the platform store, via the process-wide install, or the
        platform context when the certifi bundle this process resolved at
        import no longer exists (a replaced install environment)
 
@@ -337,7 +413,10 @@ def resolve_httpx_verify(
         )
     # HTTPX reads CA env vars before the injected verifier gets control. Pass
     # the platform context directly so stale paths cannot break construction;
-    # proxy environment handling remains enabled.
+    # proxy environment handling remains enabled. The exported bundle rides that
+    # context ON TOP of the platform store (platform_ssl_context()'s contract):
+    # a store-backed verifier (macOS, Windows) only ever sees the anchors loaded
+    # on the context, never OpenSSL's env paths.
     if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
-        return _shared_context(None)
+        return platform_ssl_context()
     return _default_verify()

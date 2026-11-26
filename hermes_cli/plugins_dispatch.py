@@ -42,7 +42,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
-    "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end", "on_session_open",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
     # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
@@ -53,7 +53,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
 # Hooks whose calls are told apart by another payload field: one session's commands are one
 # sequence, so a still-running callback skips that session's next command, not another session's.
 _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
-    "pre_command": ("session_key",), "post_compaction": ("session_id",),
+    "pre_command": ("session_key",), "post_compaction": ("session_id",), "on_session_open": ("session_id",),
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

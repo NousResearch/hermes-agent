@@ -89,3 +89,67 @@ async def test_discard_after_resume_into_a_cold_conversation_resolves_its_lost_t
         assert runner.session_store.peek_session_id(key) == sid  # /discard never rotates the chat
     finally:
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_discard_reaches_the_lost_turn_when_the_chats_routing_entry_was_dropped(tmp_path, monkeypatch):
+    """#136657: a plugin platform's routing rows are skipped when the routing index loads before the
+    plugin registers, so after a restart the chat has no routing entry until an ordinary message
+    re-adopts its state.db row. /discard (which the pause notice offers) must still find the lost
+    turn instead of replying "nothing to discard", and must not mint a new session."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.run_runtime import recover_profile_native_sessions
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_constants import get_hermes_home
+    from tests.gateway.test_command_bypass_active_session import _StubAdapter
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
+    monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
+    runner = GatewayRunner(GatewayConfig(multiplex_profiles=False, sessions_dir=tmp_path / 'sessions'))
+    adapter = _StubAdapter(PlatformConfig(enabled=True, token='fixture', typing_indicator=False), Platform.TELEGRAM)
+    sent = []
+
+    async def send(chat_id, content, **kwargs):
+        sent.append(content)
+        return SendResult(success=True, message_id=str(len(sent)))
+    monkeypatch.setattr(adapter, 'send', send)
+    adapter.gateway_runner = runner
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._wire_adapter_handlers(adapter)
+    register_transport_home(runner, None, tmp_path)
+    source = adapter.build_source(chat_id='42', chat_type='dm', user_id='42')
+    first = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='old')
+    first._schedule = lambda ref: None
+    first.register(source)
+    head = MessageEvent(text='lost human input', source=source, message_id='head')
+    with native_callback(runner, head, get_hermes_home()):
+        receipt = await first.admit_native(head)
+    sid = receipt.ref.session_id
+    claimed = first.persistence.admissions.claim(epoch=first.epoch, session_id=sid)
+    key = runner._session_key_for_source(source)
+    try:
+        second = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='new')
+        second._schedule = lambda ref: None
+        await recover_profile_native_sessions(runner, second)
+        # The restart dropped the chat's routing entry (as the skipped plugin-platform row is).
+        store = runner.session_store
+        with store._lock:
+            store._entries.pop(key, None)
+        assert store.peek_session_id(key) is None, 'fixture must reproduce the missing routing entry'
+        assert second.persistence.admissions.get(admission_id=claimed.admission_id).status == 'unknown'
+        await adapter.handle_message(MessageEvent(text='/discard', source=source, message_id='discard'))
+        if adapter._background_tasks:
+            await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 10)
+        row = second.persistence.admissions.get(admission_id=claimed.admission_id)
+        assert (row.status, row.outcome) == ('terminal', 'interrupted'), (row, sent)
+        assert not any('Nothing to discard' in s for s in sent), sent
+        # Never a new conversation: the next lookup for the chat still lands on the same session.
+        assert store.recoverable_session_id(key, source) in (None, sid)
+        assert store.peek_session_id(key) in (None, sid)
+    finally:
+        runner.session_store.close_all_db_handles()

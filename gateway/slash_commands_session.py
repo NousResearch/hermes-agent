@@ -276,8 +276,20 @@ class GatewaySessionCommandsMixin:
             return t("gateway.discard.nothing")
         authority = active_authority(self)
         session_key = self._session_key_for_source(event.source)
-        sid = authority.logical_owner(self.session_store.peek_session_id(session_key)) if authority else None
+        if authority is None:
+            logger.info("/discard: no session authority for this chat's profile")
+            return t("gateway.discard.nothing")
+        peeked = self.session_store.peek_session_id(session_key)
+        if not peeked:
+            # The chat's routing entry can be missing while its conversation still holds the lost
+            # turn: a plugin platform's rows are skipped when the routing index loads before the
+            # plugin registers (#136657), and only an ordinary message re-adopts the durable row.
+            # Read that row (DB only: no reopen, no reset policy, never a new session) so /discard
+            # reaches the turn its own pause notice told the user to discard.
+            peeked = await asyncio.to_thread(self.session_store.recoverable_session_id, session_key, event.source)
+        sid = authority.logical_owner(peeked) if peeked else None
         if not sid:
+            logger.info("/discard: no conversation on record for %s", session_key)
             return t("gateway.discard.nothing")
         if sid not in authority.sessions:
             # A conversation /resume brought back after a restart is the chat's route but not yet

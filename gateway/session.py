@@ -1458,6 +1458,21 @@ class SessionStore(
         with self._lock:
             return self._entry_locked(session_key)
 
+    def recoverable_session_id(self, session_key: str, source: SessionSource) -> Optional[str]:
+        """The session id a missing routing entry would be re-adopted from (None if none).
+
+        Read-only: the state.db row is not reopened, no reset policy runs and the entry is not
+        installed, so a caller that only needs the conversation's id (``/discard``) never rotates
+        or revives the route; the chat's next ordinary message still recovers it normally."""
+        if not session_key:
+            return None
+        try:
+            recovered = self._query_recoverable_session(session_key=session_key, source=source, now=_now())
+        except Exception:
+            logger.debug("recoverable_session_id lookup failed for %s", session_key, exc_info=True)
+            return None
+        return recovered.session_id if recovered is not None else None
+
     def peek_session_id(self, session_key: str) -> Optional[str]:
         """Lock-held accessor for the key -> session_id mapping (None if unknown)."""
         if not session_key:

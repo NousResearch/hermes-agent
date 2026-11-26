@@ -48,7 +48,7 @@ async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, bat
                            idx + 1, n_batches, attempt, max_attempts, describe_proxy_error(e, env_proxy_for_redaction(target)) or str(e))
 
 
-async def _send_signal(extra, chat_id, message, media_files=None):
+async def _send_signal(extra, chat_id, message, media_files=None, mentions=None):
     """signal-cli JSON-RPC send; attachments go in SIGNAL_MAX_ATTACHMENTS_PER_MSG batches metered
     by the process-wide SignalAttachmentScheduler (shared with the gateway adapter's rate-limit state)."""
     try:
@@ -77,6 +77,12 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             if styled and text and text_styles:
                 params["textStyle" if len(text_styles) == 1 else "textStyles"] = (
                     text_styles[0] if len(text_styles) == 1 else text_styles)
+            # Mentions ride the text-bearing payload, alongside textStyles: both are
+            # body ranges, so a payload without the body cannot carry either. Attachment
+            # batches after the first send no text, and send_message already limits
+            # mentions to the first payload of a logical send (gateway/outbound/send.py).
+            if styled and text and mentions:
+                params["mentions"] = mentions
             if attachments:
                 params["attachments"] = attachments
             payload = {"jsonrpc": "2.0", "method": "send", "params": params,
@@ -121,7 +127,14 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return _error(f"Signal send failed: {describe_proxy_error(e, env_proxy_for_redaction(extra.get('http_url', 'http://127.0.0.1:8080'))) or e}")
 
 
-async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
+                          mentions=None):
     """``standalone_sender_fn``: attachments ride the JSON-RPC ``attachments`` param (thread_id and
-    force_document have no Signal equivalent)."""
-    return await _send_signal(getattr(pconfig, "extra", None) or {}, chat_id, message, media_files=media_files)
+    force_document have no Signal equivalent).
+
+    ``mentions`` are signal-cli ``start:length:recipient`` strings, where recipient is a UUID or an
+    E.164 number and start/length are UTF-16 code units over the body -- the same units
+    ``markdown_to_signal`` already uses for ``textStyle``. The body must carry U+FFFC at ``start``;
+    a range outside the body is rejected by signal-cli and fails the whole send."""
+    return await _send_signal(getattr(pconfig, "extra", None) or {}, chat_id, message,
+                              media_files=media_files, mentions=mentions)

@@ -1,0 +1,17 @@
+name: browser-cloudbrowser
+repo: https://github.com/laotoutou/hermes-cloudbrowser
+sha: c6b6651e9d6e8957d7b0ab21dd7aca9016cd8506
+description: Run a Hermes browser session in an isolated Chrome desktop on Cloudbrowser.
+maintainer: laotoutou
+tier: community
+category: web
+requires_hermes: ">=0.23.4"
+version: "0.1.0"
+title: Cloudbrowser
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CLOUDBROWSER_API_KEY

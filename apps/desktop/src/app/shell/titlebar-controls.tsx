@@ -1,6 +1,6 @@
 import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
+import { type ComponentProps, type MouseEvent, type PointerEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
@@ -405,6 +405,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   )
 }
 
+// Native titlebar presses stay out of the window drag handler. In the Webapp
+// an open menu needs the outside press to reach the document so it can close.
+function onTitlebarPointerDown(event: PointerEvent) {
+  if (hostHas('nativeTitlebarDrag')) {
+    event.stopPropagation()
+  }
+}
+
 function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
   // Titlebar actions never show an active background — state reads from the
   // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
@@ -425,7 +433,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
             aria-label={tool.label}
             data-tour={tool.tour}
             href={tool.href}
-            onPointerDown={event => event.stopPropagation()}
+            onPointerDown={onTitlebarPointerDown}
             rel="noreferrer"
             target="_blank"
           >
@@ -456,7 +464,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
 
           tool.onSelect?.(event)
         }}
-        onPointerDown={event => event.stopPropagation()}
+        onPointerDown={onTitlebarPointerDown}
         size="icon-titlebar"
         type="button"
         variant="ghost"

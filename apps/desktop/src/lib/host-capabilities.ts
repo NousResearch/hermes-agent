@@ -43,6 +43,8 @@ export const HOST_CAPABILITIES = Object.freeze({
   nativeFolderPicker: 'native',
   /** Host files are read through the Electron bridge, not the gateway's REST routes. */
   nativeHostFiles: 'native',
+  /** The titlebar can drag the native window. */
+  nativeTitlebarDrag: 'native',
   /** Main can enumerate the OS windows around this one (read_window_below); a browser tab cannot. */
   osWindowEnumeration: 'native',
   /** Preferences are stored per serving origin (and per profile) in this tab. */

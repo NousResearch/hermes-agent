@@ -288,3 +288,11 @@ def test_create_that_could_not_move_says_so_and_switches_the_pointer(monkeypatch
         assert pdb.get_active_id(conn) == result["id"]
     assert result["success"] is True and result["moved"] is False
     assert reason in result["not_moved_reason"]
+
+
+def test_sub_agents_never_get_desktop_project():
+    """The commanding session decides the working directory; a sub-agent never moves or selects for it."""
+    from tools.delegate_tool_toolsets import DELEGATE_BLOCKED_TOOLS, _blocked_toolsets_for_role, _strip_blocked_tools
+    assert "desktop_project" in DELEGATE_BLOCKED_TOOLS
+    assert _strip_blocked_tools(["terminal", "project"]) == ["terminal"]
+    assert all("project" in _blocked_toolsets_for_role(role) for role in ("leaf", "orchestrator"))

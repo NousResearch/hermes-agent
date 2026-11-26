@@ -281,3 +281,41 @@ async def test_a_cli_chat_on_the_gateway_keeps_its_folder(tmp_path, monkeypatch)
             assert pdb.get_active_id(conn) == result['id']
     finally:
         await _closed(chat)
+
+
+@pytest.mark.asyncio
+async def test_create_from_a_desktop_chat_leaves_the_chat_and_the_active_project_alone(tmp_path, monkeypatch):
+    from hermes_cli import projects_db as pdb
+    chat = await _chat(tmp_path, monkeypatch)
+    try:
+        with chat.connect_closing(db_path=chat.db_path) as conn:
+            pointer = pdb.create_project(conn, name='Pointer', folders=[str(tmp_path / 'p')])
+            pdb.set_active(conn, pointer)
+        result = _create(chat, chat.worktree)
+        assert result['success'] is True and 'moved' not in result, result
+        assert chat.authority.sessions[chat.sid].pending_workspace is None
+        await _boundary(chat)
+        assert _policy(chat.authority, chat.sid).cwd == str(chat.start)
+        with chat.connect_closing(db_path=chat.db_path) as conn:
+            assert pdb.get_active_id(conn) == pointer
+    finally:
+        await _closed(chat)
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_childs_switch_never_moves_the_parent(tmp_path, monkeypatch):
+    from hermes_cli import projects_db as pdb
+    from tools import project_tools
+    from tools.terminal_tool import register_container_alias
+    chat = await _chat(tmp_path, monkeypatch)
+    try:
+        with chat.connect_closing(db_path=chat.db_path) as conn:
+            pdb.create_project(conn, name='Worktree', folders=[str(chat.worktree)], primary_path=str(chat.worktree))
+
+        def child_call():
+            register_container_alias('child-task', chat.sid)  # what delegate_task does at spawn
+            return json.loads(project_tools.project_switch('Worktree', task_id='child-task'))
+        assert _in_turn(chat, child_call)['moved'] is False
+        assert chat.authority.sessions[chat.sid].pending_workspace is None
+    finally:
+        await _closed(chat)

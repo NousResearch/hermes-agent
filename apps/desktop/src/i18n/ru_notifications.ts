@@ -7,8 +7,8 @@ export const ruNotifications = {
   focusedHint: 'Оповещения о завершении срабатывают только пока Hermes в фоне.',
   kinds: {
     approval: {
-      label: 'Нужно одобрение',
-      description: 'Команда ожидает вашего одобрения или отклонения.'
+      label: 'Нужно подтверждение',
+      description: 'Команда ожидает вашего подтверждения или отклонения.'
     },
     input: {
       label: 'Нужен ввод',

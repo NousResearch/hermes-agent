@@ -79,7 +79,7 @@ it('relabels Kanban after delayed config load and locale switches without replac
     await config
   })
 
-  for (const locale of ['zh', 'ja', 'zh-hant', 'en'] as const) {
+  for (const locale of ['zh', 'ja', 'zh-hant', 'ru', 'en'] as const) {
     if (locale !== 'zh') {
       await act(() => i18n.setLocale(locale))
     }

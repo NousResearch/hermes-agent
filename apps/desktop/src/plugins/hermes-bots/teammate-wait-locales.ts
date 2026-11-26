@@ -146,4 +146,35 @@ const zhHant: TeammateWaitMessages = {
   stale: '無法重新整理——顯示的是上次已知的狀態。'
 }
 
-export const TEAMMATE_WAIT_LOCALES = { en, ja, zh, 'zh-hant': zhHant }
+const ru: TeammateWaitMessages = {
+  title: 'Ожидание других агентов',
+  queued: 'В очереди',
+  claimed: 'Принято в работу',
+  working: 'В работе',
+  waitingClarify: 'Нужен ваш ответ на вопрос агента',
+  waitingApproval: 'Нужно ваше решение — подтвердите или отклоните',
+  failed: reason => `Ошибка: ${reason}`,
+  reasons: {
+    provider_auth_or_access: 'провайдер модели отклонил ключ',
+    provider_quota_limit: 'у провайдера закончились кредиты',
+    provider_rate_limit: 'провайдер ограничил частоту запросов',
+    provider_server_error: 'провайдер недоступен',
+    missing_config: 'модель не настроена',
+    model_unavailable: 'модель недоступна',
+    context_overflow: 'контекст заполнен',
+    runtime_offline: 'агент не в сети',
+    queued_expired: 'агент так и не взял задачу в работу',
+    delivery_timeout: 'истекло время ожидания',
+    agent_blocked: 'агент заблокирован',
+    cancelled: 'отменено',
+    unknown: 'неизвестная ошибка'
+  },
+  unknownOutcome: 'Результат неизвестен',
+  open: 'Открыть',
+  dismiss: 'Скрыть',
+  neverResent:
+    'Запросы из этого списка не отправляются повторно. Если результат неизвестен, агент мог уже выполнить задачу — откройте его чат перед повторным запросом.',
+  stale: 'Не удалось обновить — показано последнее известное состояние.'
+}
+
+export const TEAMMATE_WAIT_LOCALES = { en, ja, ru, zh, 'zh-hant': zhHant }

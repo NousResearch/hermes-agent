@@ -1,7 +1,11 @@
 import type { ApprovalCopy } from './types_approval'
 
-export const ruApproval: Partial<ApprovalCopy> = {
-  gatewayDisconnected: 'Шлюз Hermes не подключён',
+export const ruApproval: ApprovalCopy = {
+  gatewayDisconnected: 'Hermes сейчас не в сети. Команда ждёт вашего ответа до истечения времени ожидания. Переподключитесь и отправьте ответ снова.',
+  reconnect: 'Переподключиться',
+  timedOutSystemLine: 'Время ожидания подтверждения истекло. Команда не выполнена. Попросите Hermes повторить попытку или увеличьте лимит в разделе «Настройки → Безопасность → Время ожидания подтверждения».',
+  openSafetySettings: 'Открыть настройки безопасности',
+  commandDetails: 'Подробности команды',
   sendFailed: 'Не удалось отправить ответ на подтверждение',
   run: 'Выполнить',
   command: 'Команда',

@@ -13,7 +13,7 @@ export const ruPreviewWeb: TranslationOverride<Translations['preview']['web']> =
     'Этот адрес указывает на машину, на которой работает ваш агент, а не на эту. Панель браузера загружает страницы локально, поэтому для удалённого dev-сервера нужен порт-форвардинг или доступный hostname.',
   failedToLoad: 'Не удалось загрузить предпросмотр',
   tryAgain: 'Попробовать снова',
-  restarting: 'Hermes перезапускается...',
+  restarting: 'Hermes перезапускается…',
   askRestart: 'Попросить Hermes перезапустить сервер',
   lookingRestart: taskId => `Hermes ищет сервер предпросмотра для перезапуска (${taskId})`,
   restartingTitle: 'Перезапуск сервера предпросмотра',
@@ -38,7 +38,7 @@ export const ruPreviewWeb: TranslationOverride<Translations['preview']['web']> =
   restartFailedTitle: 'Перезапуск предпросмотра не удался',
   restartFailedMessage: 'Hermes не смог перезапустить сервер.',
   stillWorking:
-    'Hermes всё ещё работает, но результата перезапуска пока нет. Команда сервера может выполняться в foreground.',
+    'Hermes всё ещё работает, но результата перезапуска пока нет. Команда сервера может выполняться на переднем плане.',
   workspaceReloading: 'Рабочее пространство изменилось, перезагружаем предпросмотр',
   fileChanged: url => `Файл изменился, перезагружаем предпросмотр: ${url}`,
   filesChanged: (count, url) =>
@@ -50,6 +50,19 @@ export const ruPreviewWeb: TranslationOverride<Translations['preview']['web']> =
   unreachableDescription: 'Страница предпросмотра недоступна.',
   openTarget: url => `Открыть ${url}`,
   fallbackTitle: 'Предпросмотр',
+  annotate: 'Размечать',
+  annotateOn: 'Остановить разметку',
+  annotateNeedPage: 'Сначала откройте страницу во встроенном браузере.',
+  annotateFailed: 'Не удалось включить режим разметки',
+  commenting: 'Комментирование',
+  addComments: count =>
+    count === 1
+      ? 'Добавить 1 комментарий'
+      : `Добавить ${count} ${RU_NOUN(count, 'комментарий', 'комментария', 'комментариев')}`,
+  commentPlaceholder: 'Добавьте комментарий…',
+  commentTitle: n => `Комментарий ${n}`,
+  saveComment: 'Сохранить',
+  cancelComment: 'Отменить комментарий',
   vaultFill: 'Подставить сохранённый вход',
   vaultTitle: site => `Сохранённые входы для ${site}`,
   vaultLoading: 'Загрузка сохранённых входов…',

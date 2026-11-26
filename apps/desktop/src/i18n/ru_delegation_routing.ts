@@ -53,7 +53,7 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
   deleteConfirmNextDefault: name => `Это основной маршрут, поэтому основным станет «${name}».`,
   deleteConfirmAction: 'Удалить маршрут',
   saveFailed: 'Не удалось сохранить маршруты',
-  baseUrlRoute: url => `эндпоинт ${url}`,
+  baseUrlRoute: url => `конечная точка ${url}`,
 
   dialogNew: 'Новый маршрут модели',
   dialogEdit: 'Изменить маршрут модели',

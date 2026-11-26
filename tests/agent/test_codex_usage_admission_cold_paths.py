@@ -183,7 +183,7 @@ def test_pool_choice_commit_refuses_an_entry_over_its_ceiling(probes, caplog):
 
 
 def test_revert_credential_rotation_does_not_move_back_onto_an_over_ceiling_entry(probes):
-    from agent.agent_runtime_helpers import _revert_credential_rotation
+    from agent.usage_admission.restore import revert_credential_rotation
 
     pool = _with_sibling()
     swapped = []
@@ -191,6 +191,6 @@ def test_revert_credential_rotation_does_not_move_back_onto_an_over_ceiling_entr
         _credential_pool=pool, _credential_pool_revert_id=LIMITED, _credential_pool_entry_id=FREE,
         model="gpt-5.6-codex", _swap_credential=lambda entry: swapped.append(entry.id),
     )
-    _revert_credential_rotation(agent)
+    revert_credential_rotation(agent)
     assert swapped == []
     assert agent._credential_pool_revert_id == LIMITED  # checked again next turn

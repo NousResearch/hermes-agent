@@ -31,6 +31,9 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.credential_pool_model_cooldowns import record_plan_window, usage_allowance_spent
+from agent.usage_admission.restore import (
+    primary_excluded_by_usage_policy, revert_credential_rotation, snapshot_key_came_from_pool,
+)
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
@@ -826,19 +829,6 @@ def drop_thinking_only_and_merge_users(
     return merged
 
 
-def _primary_excluded_by_usage_policy(pool, primary_provider: str, primary_model: str) -> bool:
-    """True when ``primary_provider`` has configured usage ceilings, every pool entry is
-    unavailable, and at least one is unavailable because of policy (not cooldown alone)."""
-    from agent.usage_admission.policy import get_pool_usage_limits, usage_admission_policy_denied
-    if not get_pool_usage_limits(primary_provider):
-        return False
-    refresh = getattr(pool, "_refresh_usage_admission_cache", None)
-    if callable(refresh):
-        refresh()
-    return (not pool.has_available(model=primary_model or None)
-            and usage_admission_policy_denied(primary_provider))
-
-
 def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base_url, matches_primary, load_primary_pool):
     """Reset-aware gate: skip a guaranteed-to-fail restore while the primary pool reports a
     future reset; fails open on any error/None. Returns ``(blocked, prefetched_pool, prefetched)``
@@ -846,9 +836,7 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
     prefetched_pool, prefetched = None, False
     try:
         pool = getattr(agent, "_credential_pool", None)
-        # A fallback without a pool clears the live binding; the snapshot's pool-entry provenance says the
-        # saved key came from a pool, so reload it and re-run admission instead of bypassing a usage ceiling.
-        if not matches_primary(pool) or (pool is None and str(rt.get("credential_pool_entry_id") or "").strip()):
+        if not matches_primary(pool) or snapshot_key_came_from_pool(pool, rt):
             prefetched_pool = pool = load_primary_pool()
             prefetched = True
         primary_model = str(rt.get("model") or "").strip()
@@ -863,11 +851,7 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
                     agent.model,
                 )
             return True, prefetched_pool, prefetched
-        if pool is not None and _primary_excluded_by_usage_policy(pool, primary_provider, primary_model):
-            logger.info(
-                "Primary %s is excluded by credential usage policy; staying on fallback %s/%s",
-                primary_provider or "?", agent.provider, agent.model,
-            )
+        if primary_excluded_by_usage_policy(agent, pool, primary_provider, primary_model):
             return True, prefetched_pool, prefetched
     except Exception:
         logger.debug("Reset-aware restore gate failed; falling back to per-turn retry", exc_info=True)
@@ -890,9 +874,7 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
     rotation; re-select the pool's best entry, keeping the snapshot key when none is usable."""
     pool = getattr(agent, "_credential_pool", None)
     pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
-    if (pool is not None and pool_provider and not matches_primary(pool)) or (
-        pool is None and prefetched and prefetched_pool is not None
-    ):
+    if (pool is not None and pool_provider and not matches_primary(pool)) or (pool is None and prefetched_pool is not None):
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:
@@ -923,33 +905,6 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
             str(getattr(entry, "provider", "") or "").strip().lower() or "?",
             primary_provider or "?",
         )
-
-
-def _revert_credential_rotation(agent) -> None:
-    """Move a live session back onto the credential a quota bench rotated it off, once the bench
-    lifts. New sessions already do this through ``select()``; without it a long-lived (gateway)
-    session keeps billing the fallback for its whole life (#114501). Credential-only: the
-    model/base_url/compressor restore stays gated on ``_fallback_activated``."""
-    revert_id = getattr(agent, "_credential_pool_revert_id", None)
-    if not revert_id:
-        return
-    pool = getattr(agent, "_credential_pool", None)
-    if pool is None or getattr(agent, "_credential_pool_entry_id", None) == revert_id:
-        agent._credential_pool_revert_id = None
-        return
-    try:
-        entry = pool.reclaim(revert_id, model=getattr(agent, "model", None))
-    except Exception as exc:
-        logger.warning("Credential revert check failed: %s", exc)
-        return
-    if entry is None:
-        return  # still cooling down, or over its usage ceiling (``reclaim`` applies it); check again next turn
-    if agent._swap_credential(entry) is not False:
-        logger.info(
-            "Credential %s (%s) available again — reverted pool rotation",
-            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
-        )
-    agent._credential_pool_revert_id = None
 
 
 def _primary_quota_reopened_early(agent, primary_provider, primary_model, matches_primary, load_primary_pool) -> bool:
@@ -995,7 +950,7 @@ def restore_primary_runtime(agent) -> bool:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks (#20465).
         agent._fallback_index = 0
-        _revert_credential_rotation(agent)
+        revert_credential_rotation(agent)
         return False
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()

@@ -5,7 +5,8 @@ send that history as assistant text. Tool output must never land in a user turn 
 import json
 from unittest.mock import MagicMock, patch
 
-from agent.auxiliary_client import _AnthropicCompletionsAdapter, _BedrockCompletionsAdapter
+from agent.auxiliary_client import _AnthropicCompletionsAdapter
+from agent.bedrock_adapter import BedrockCompletionsAdapter
 from agent.context_compressor import ContextCompressor
 
 _TOOL = [{"type": "function", "function": {"name": "terminal", "description": "", "parameters": {"type": "object"}}}]
@@ -45,7 +46,7 @@ def _converse_wire(**create_kwargs):
     client.converse.return_value = {"output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
                                     "stopReason": "end_turn", "usage": {}}
     with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
-        _BedrockCompletionsAdapter("us-east-1", "anthropic.claude-sonnet-4-5").create(
+        BedrockCompletionsAdapter("us-east-1", "anthropic.claude-sonnet-4-5").create(
             messages=_summarizer_messages(), **create_kwargs)
     return client.converse.call_args.kwargs
 

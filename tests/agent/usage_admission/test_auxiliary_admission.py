@@ -67,12 +67,12 @@ class TestAuxiliaryUsageAdmission:
 
         with (
             patch(
-                "agent.auxiliary_client.get_pool_usage_limits",
+                "agent.usage_admission.policy.get_pool_usage_limits",
                 return_value={"configured-entry": 80.0},
             ),
             patch("agent.auxiliary_client.load_pool", return_value=pool),
             patch(
-                "agent.auxiliary_client.usage_admission_credential_denied",
+                "agent.usage_admission.policy.usage_admission_credential_denied",
                 return_value=False,
             ) as denied,
             patch(
@@ -110,12 +110,12 @@ class TestAuxiliaryUsageAdmission:
         pool.has_credentials.return_value = True
         with (
             patch(
-                "agent.auxiliary_client.get_pool_usage_limits",
+                "agent.usage_admission.policy.get_pool_usage_limits",
                 return_value={"configured-entry": 80.0},
             ),
             patch("agent.auxiliary_client.load_pool", return_value=pool),
             patch(
-                "agent.auxiliary_client.usage_admission_credential_denied",
+                "agent.usage_admission.policy.usage_admission_credential_denied",
                 return_value=True,
             ) as denied,
             patch("agent.auxiliary_client.resolve_provider_client") as resolve,

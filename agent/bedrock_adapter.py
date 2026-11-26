@@ -1653,3 +1653,45 @@ def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> s
         logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
     _inference_profile_model_cache[profile_arn] = resolved
     return resolved
+
+
+class BedrockCompletionsAdapter:
+    """Translates ``chat.completions.create(**kwargs)`` into Bedrock Converse."""
+
+    def __init__(self, region: str, model: str):
+        self._region = region
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        model = kwargs.get("model", self._model)
+        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
+        # OpenAI accepts ``stop`` as str or list; Converse requires a list.
+        stop = kwargs.get("stop")
+        if isinstance(stop, str):
+            stop = [stop]
+        if kwargs.get("tool_choice") is not None:
+            # Converse toolChoice isn't wired through call_converse(); surface the drop.
+            logger.debug(
+                "BedrockAuxiliaryClient: tool_choice=%r not supported by the "
+                "Converse shim — ignored.", kwargs.get("tool_choice"),
+            )
+        if kwargs.get("stream"):
+            # Converse streaming isn't wired here; call_llm's streaming consumer
+            # detects a final object and downgrades to non-live output.
+            logger.debug(
+                "BedrockAuxiliaryClient: stream=True requested for %s — returning a complete response "
+                "(Converse shim does not stream); caller downgrades to non-streaming.", model,
+            )
+        response = call_converse(
+            region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
+            # Converse specifically defaults to the model maximum when omitted.
+            # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
+            max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
+            top_p=kwargs.get("top_p"), stop_sequences=stop,
+        )
+        # Converse is complete-response here: mark provider progress only after
+        # return so TTFP reflects real Bedrock latency, not dispatch/setup.
+        from agent.auxiliary_client import _notify_aux_provider_response  # imports this module lazily too
+
+        _notify_aux_provider_response()
+        return response

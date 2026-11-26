@@ -812,12 +812,12 @@ def test_completed_probe_callback_clears_inflight_without_reentrant_lock(
             lambda provider: {"a1b2c3": 80.0},
         )
         patcher.setattr(
-            credential_pool,
+            policy,
             "_USAGE_ADMISSION_CACHE_LOCK",
             RejectReentrantLock(),
         )
         patcher.setattr(
-            credential_pool,
+            policy,
             "_USAGE_ADMISSION_PROBE_EXECUTOR",
             CompletedExecutor(),
         )
@@ -920,7 +920,7 @@ def test_auxiliary_codex_does_not_fall_back_after_pool_denial(monkeypatch):
         lambda: singleton_calls.append(True) or "reserved-token",
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_policy_denied",
         lambda provider: True,
         raising=False,
@@ -1004,7 +1004,7 @@ def test_auxiliary_codex_keeps_legacy_singleton_fallback_without_policy_denial(
         lambda provider, model=None: (True, None),
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_policy_denied",
         lambda provider: False,
         raising=False,
@@ -1038,7 +1038,7 @@ def test_raw_codex_token_does_not_fall_back_after_pool_denial(monkeypatch):
         lambda provider, model=None: (True, None),
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_policy_denied",
         lambda provider: True,
     )
@@ -1068,7 +1068,7 @@ def test_cached_auxiliary_codex_client_is_rechecked_after_policy_denial(monkeypa
         lambda *args, **kwargs: cache_key,
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
         raising=False,
@@ -1079,7 +1079,7 @@ def test_cached_auxiliary_codex_client_is_rechecked_after_policy_denial(monkeypa
         lambda provider, model=None: (True, None),
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_policy_denied",
         lambda provider: True,
     )
@@ -1114,12 +1114,12 @@ def test_cached_auxiliary_explicit_codex_client_rejects_denied_token(monkeypatch
         lambda *args, **kwargs: cache_key,
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_credential_denied",
         lambda provider, credential: credential == "denied-explicit-token",
     )
@@ -1163,7 +1163,7 @@ def test_cached_auxiliary_codex_uses_freshly_selected_eligible_entry(monkeypatch
 
     monkeypatch.setattr(auxiliary_client, "_client_cache_key", cache_key)
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"A": 80.0},
     )
@@ -1173,7 +1173,7 @@ def test_cached_auxiliary_codex_uses_freshly_selected_eligible_entry(monkeypatch
         lambda provider, model=None: (True, eligible_entry),
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_policy_denied",
         lambda provider: True,
     )
@@ -1214,7 +1214,7 @@ def test_auxiliary_codex_build_uses_same_freshly_selected_entry(monkeypatch):
     built_client = SimpleNamespace(marker="BUILT_WITH_B", close=lambda: None)
 
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"A": 80.0},
     )
@@ -1224,7 +1224,7 @@ def test_auxiliary_codex_build_uses_same_freshly_selected_entry(monkeypatch):
         lambda provider, model=None: (True, selected),
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_policy_denied",
         lambda provider: True,
     )
@@ -1260,7 +1260,7 @@ def test_auto_auxiliary_uses_freshly_selected_codex_entry(monkeypatch):
     calls = []
     built_client = SimpleNamespace(marker="BUILT_WITH_B", close=lambda: None)
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"A": 80.0},
     )
@@ -1319,7 +1319,7 @@ def test_auxiliary_cache_rebinds_after_same_id_codex_token_refresh(monkeypatch):
     ]
     built = []
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -1401,7 +1401,7 @@ def test_auto_auxiliary_continues_to_fallback_after_codex_policy_denial(
     )
     calls = []
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
@@ -1411,7 +1411,7 @@ def test_auto_auxiliary_continues_to_fallback_after_codex_policy_denial(
         lambda provider, model=None: (True, None),
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_policy_denied",
         lambda provider: True,
     )
@@ -1455,7 +1455,7 @@ def test_non_codex_auxiliary_pool_entry_never_inherits_codex_base_url(monkeypatc
         access_token="legacy-pool-token",
     )
     calls = []
-    monkeypatch.setattr(auxiliary_client, "get_pool_usage_limits", lambda provider: {})
+    monkeypatch.setattr(policy, "get_pool_usage_limits", lambda provider: {})
     from hermes_cli import runtime_provider
 
     monkeypatch.setattr(auxiliary_client, "pool_for_aux_provider", lambda *args, **kwargs: object())
@@ -1678,12 +1678,12 @@ def test_auxiliary_cache_hit_rejects_explicit_policy_denied_codex_token(
         close=lambda: None,
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "usage_admission_credential_denied",
         lambda provider, token: (
             provider == "openai-codex" and token == "reserved-token"
@@ -1785,7 +1785,7 @@ def test_explicit_unrelated_codex_token_does_not_relabel_as_pool_entry(monkeypat
     built_client = SimpleNamespace(close=lambda: None)
 
     monkeypatch.setattr(
-        auxiliary_client,
+        policy,
         "get_pool_usage_limits",
         lambda provider: {"a1b2c3": 80.0},
     )

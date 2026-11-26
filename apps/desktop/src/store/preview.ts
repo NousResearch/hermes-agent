@@ -1,13 +1,7 @@
 import { randomUuid } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { togglePaneReveal } from '@/components/pane-shell'
-import {
-  $narrowViewport,
-  dismissTreePane,
-  isPaneVisible,
-  revealTreePane
-} from '@/components/pane-shell/tree/store'
+import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
 import {
   capturePreviewAnnotateDestination,
   clearPreviewAnnotateDestination,
@@ -33,7 +27,6 @@ import {
 import { normalizeProfileKey } from './profile'
 import { $activeSessionId } from './session'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'
-import { $portalShell } from './shell-variant'
 import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBrowserTabId } from './windows'
 
 /**
@@ -1019,37 +1012,14 @@ export function openPreview(
 
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
-  revealPreviewPane(id)
+  $previewReveal.set({ id, seq: ($previewReveal.get()?.seq ?? 0) + 1 })
 }
+
+/** Signaled by every explicit `openPreview` so `preview-tile.tsx` can surface
+ *  a narrow overlay sheet even when the tab was already selected. */
+export const $previewReveal = atom<null | { id: string; seq: number }>(null)
 
 const blankPage = (): PreviewTarget => ({ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })
-
-/** Below wide the redesign's preview panes are collapsible, so they have left
- *  the grid and the narrow host (NarrowOverlays) owns the sheet that paints
- *  them: fronting the tab in the tree alone cannot show it. Ask for that sheet
- *  explicitly — a repeat open of the already-fronted tab would otherwise change
- *  nothing and leave a dismissed sheet closed. Wide windows and classic keep
- *  their existing docked reveal untouched. */
-function revealPreviewPane(tabId: string) {
-  if (!$portalShell.get() || !$narrowViewport.get()) {
-    return
-  }
-
-  const paneId = `${PREVIEW_TILE_PREFIX}:${tabId}`
-
-  revealTreePane(paneId)
-  togglePaneReveal(paneId, 'open')
-  // A brand-new preview pane registers synchronously in the registry, but NarrowOverlays'
-  // `panesRef` refreshes after React commits it — re-dispatch on the next frame if this
-  // tab is still active so the narrow sheet opens on the very first click.
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(() => {
-      if ($portalShell.get() && $narrowViewport.get() && $rightRailActiveTabId.get() === tabId) {
-        togglePaneReveal(paneId, 'open')
-      }
-    })
-  }
-}
 
 /** Tombstone the tabs for a confirmed-missing file: keep them open this
  *  session (the pane shows "file no longer exists"), but flag the target so

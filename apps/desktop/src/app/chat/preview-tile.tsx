@@ -13,6 +13,7 @@
 import { useStore } from '@nanostores/react'
 
 import { DEVELOPER_TOOL_PANEL_WIDTH } from '@/app/redesign/developer-tool-panel'
+import { togglePaneReveal } from '@/components/pane-shell'
 import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $activeTreeGroup,
@@ -32,6 +33,7 @@ import {
   $browserPages,
   $dockedVisiblePreviewTabs,
   $poppedBrowserTabIds,
+  $previewReveal,
   $previewTabs,
   $visiblePreviewTabs,
   adoptPersistedBrowserTab,
@@ -275,6 +277,24 @@ export function watchPreviewTiles(): void {
   $visiblePreviewTabs.listen(() => {
     rehome()
     reveal()
+  })
+  $previewReveal.listen(request => {
+    if (!request || !$portalShell.get() || !$narrowViewport.get() || !targetFor(request.id)) {
+      return
+    }
+
+    const paneId = `${PREVIEW_TILE_PREFIX}:${request.id}`
+
+    revealTreePane(paneId)
+    togglePaneReveal(paneId, 'open')
+
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        if ($portalShell.get() && $narrowViewport.get() && $rightRailActiveTabId.get() === request.id) {
+          togglePaneReveal(paneId, 'open')
+        }
+      })
+    }
   })
 
   // A session switch (or an unpin) can leave the active tab outside the

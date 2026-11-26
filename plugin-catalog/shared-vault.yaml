@@ -1,8 +1,8 @@
 name: shared-vault
 title: Shared Vault
-version: "0.1.0"
+version: "0.1.1"
 repo: https://github.com/mcheng916/hermes-shared-vault
-sha: 251b77dec1e6f4984e8c7fcf9df06f3e0564a24c
+sha: 3860301d0632b763c155284543e07cf749367f2b
 description: >-
   Your existing Obsidian/Markdown vault becomes Hermes's long-term memory: a
   pre_llm_call hook retrieves the vault sections relevant to the current message

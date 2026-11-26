@@ -1137,7 +1137,9 @@ def _resolve_target_transport(
         # primary route maps it to this profile; a miss fails closed below.
         # See #101113.
         shared = adapters.get(platform, target)
-        target_adapters = {platform: shared} if shared is not None else {}
+        # No routed native bot: the process Relay may carry the platform. ``resolve_delivery_transport``
+        # below checks that it fronts it and that THIS profile's config keeps the Relay enabled.
+        target_adapters = {platform: shared} if shared is not None else adapters.relay_adapters()
         if shared is not None:
             # The PRIMARY's route authorized this exact native adapter. The satellite's own
             # ``platforms.<p>`` block describes a connector it never runs (no credential), so

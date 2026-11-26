@@ -236,6 +236,11 @@ class SharedRouteAdapters:
     the same profile, as dispatch would pick it. Build cron's view with
     ``shared_route_adapters_for_current_home`` so both tables come from one read.
 
+    The process's Relay is not the primary's bot: one connector socket serves every profile, and
+    the connector authorizes each destination. ``relay_adapters()`` lends it for platforms it
+    fronts, with no route needed; the caller resolves it against the profile's OWN config, so a
+    profile that opted out of the Relay stays out.
+
     See #101113.
     """
 
@@ -247,7 +252,13 @@ class SharedRouteAdapters:
         self._dispatch_routes = None if dispatch_routes is None else list(dispatch_routes)
 
     def __bool__(self) -> bool:
-        return bool(self._primary) and bool(self._routes)
+        return bool(self.relay_adapters()) or (bool(self._primary) and bool(self._routes))
+
+    def relay_adapters(self) -> dict:
+        """``{Platform.RELAY: relay}`` when the primary holds the process's Relay, else ``{}``."""
+        from gateway.config import Platform
+        relay = self._primary.get(Platform.RELAY)
+        return {Platform.RELAY: relay} if relay is not None else {}
 
     def get(self, platform, target=None, default=None):
         if not target or self._dispatch_routes is None:

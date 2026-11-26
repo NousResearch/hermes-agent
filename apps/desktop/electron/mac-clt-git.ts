@@ -8,14 +8,12 @@ export const XCODE_SELECT_TIMEOUT_MS = 2_000
 export const NEGATIVE_CACHE_TTL_MS = 5_000
 
 export interface CltGitCache {
-  clear: () => void
-  check: (probe: () => boolean, opts?: { cached?: boolean; nowMs?: () => number }) => boolean
+  check: (probe: () => boolean, opts?: { nowMs?: () => number }) => boolean
 }
 
 export interface MacGitCheckOptions {
   platform?: NodeJS.Platform
   env?: NodeJS.ProcessEnv
-  cached?: boolean
   appleStubPath?: string
   developerDirProbe?: (env: NodeJS.ProcessEnv) => string
   cache?: CltGitCache
@@ -53,20 +51,12 @@ export function createCltGitCache(negativeTtlMs: number = NEGATIVE_CACHE_TTL_MS)
   }
 
   return {
-    clear() {
-      usable = null
-      expiresAt = null
-    },
     check(probe, opts = {}) {
-      const cached = opts.cached ?? true
       const nowMs = opts.nowMs ?? Date.now
+      const hit = readCached(nowMs())
 
-      if (cached) {
-        const hit = readCached(nowMs())
-
-        if (hit !== null) {
-          return hit
-        }
+      if (hit !== null) {
+        return hit
       }
 
       const result = Boolean(probe())
@@ -80,10 +70,6 @@ export function createCltGitCache(negativeTtlMs: number = NEGATIVE_CACHE_TTL_MS)
 }
 
 const defaultCltCache = createCltGitCache()
-
-export function clearMacCltGitCache(): void {
-  defaultCltCache.clear()
-}
 
 function defaultRealpath(filePath: string): string {
   try {
@@ -174,10 +160,7 @@ export function isUsableMacGitCandidate(candidate: string, opts: MacGitCheckOpti
   const probe = opts.developerDirProbe ?? (probeEnv => probeXcodeSelectDeveloperDir(probeEnv))
   const cache = opts.cache ?? defaultCltCache
 
-  return cache.check(() => hasDeveloperGit(probe(env), isExecutableFile), {
-    cached: opts.cached,
-    nowMs: opts.nowMs
-  })
+  return cache.check(() => hasDeveloperGit(probe(env), isExecutableFile), { nowMs: opts.nowMs })
 }
 
 export function resolvePosixGitBinary(opts: PosixGitResolveOptions): string | null {

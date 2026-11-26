@@ -5,7 +5,7 @@ import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { hostHas } from '@/lib/host-capabilities'
 import { persistStore } from '@/lib/persist-store'
-import { initialGatewayProfile } from '@/lib/platform'
+import { browserLaunchProfilePending, initialGatewayProfile } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -496,7 +496,8 @@ let _lastRoutedProfile: string | null = null
 
 $activeGatewayProfile.subscribe(value => {
   const key = normalizeProfileKey(value)
-  setApiRequestProfile(key)
+  // The starting profile is a placeholder while the agent's own is unknown: name none.
+  setApiRequestProfile(_lastRoutedProfile === null && browserLaunchProfilePending() ? null : key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
     // Profile-scoped settings + the unified session list are now stale.

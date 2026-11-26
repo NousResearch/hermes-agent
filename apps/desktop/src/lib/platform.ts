@@ -70,6 +70,15 @@ export function _resetAdoptedLaunchProfileForTests(): void {
   adoptedLaunchProfile = ''
 }
 
+/**
+ * On a host that runs no agent, the profile the window's agent runs as is not known until boot
+ * reads it through the relay (`adoptBrowserLaunchProfile`). Until then a request names no profile,
+ * so the agent answers for its own; `default` may be another profile there.
+ */
+export function browserLaunchProfilePending(): boolean {
+  return isBrowserHostedDesktop() && browserHostRunsNoAgent() && !browserLaunchProfile()
+}
+
 /** The profile a request that names none reaches: the one the server runs as, else `default`. */
 export function browserLaunchProfileOrDefault(): string {
   return browserLaunchProfile() || 'default'

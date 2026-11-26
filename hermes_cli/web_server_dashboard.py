@@ -144,7 +144,7 @@ def mount_spa(application: FastAPI):
     """
     from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
     from hermes_cli.web_deps import _server
-    from hermes_cli.web_server_surface import policy
+    from hermes_cli.web_server_surface import policy, private_launch
     from hermes_cli.web_server_static_assets import is_static_asset_path, public_font_file
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
@@ -212,7 +212,15 @@ def mount_spa(application: FastAPI):
         # A loopback Webapp browser that signed in via /login holds verified session cookies
         # (request.state.session) rather than the launch-link sessionStorage token; telling the
         # SPA auth is active makes it use same-origin cookies while _SESSION_TOKEN stays withheld.
+        # When interactive providers are registered on loopback Webapp, also advertise
+        # __HERMES_LOGIN_AVAILABLE__ so a tokenless reload after cookie expiry discovers /login
+        # while a tab holding a launch-link sessionStorage token still uses its token.
         cookie_session = getattr(request.state, "session", None) is not None
+        from hermes_cli.dashboard_auth import list_interactive_providers
+        login_js = (
+            "window.__HERMES_LOGIN_AVAILABLE__=true;"
+            if private_launch(application.state) and list_interactive_providers() else ""
+        )
         # Only a host that records its surface (the gateway's Webapp) names it to the page.
         surface = getattr(application.state, "ui_surface", None)
         surface_js = "" if surface is None else f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
@@ -239,6 +247,7 @@ def mount_spa(application: FastAPI):
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if (gated or cookie_session) else 'false'};"
+            f"{login_js}"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
             f"{surface_js}"
             f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"

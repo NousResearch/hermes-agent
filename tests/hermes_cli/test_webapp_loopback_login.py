@@ -414,17 +414,68 @@ def test_loopback_webapp_expired_cookie_jar_returns_structured_401_without_redir
     assert prefixed.status_code == 401
     assert prefixed.json()["login_url"] == "/hermes/login"
 
-    # Public routes and HTML loads stay non-redirecting so launch-link tabs are never trapped.
+    # Public routes and HTML loads stay non-redirecting so launch-link tabs are never trapped,
+    # while advertising __HERMES_LOGIN_AVAILABLE__ so a tokenless reload discovers /login.
     assert browser.get("/api/status").status_code == 200
     root = browser.get("/", follow_redirects=False)
     assert root.status_code == 200
     assert "window.__HERMES_AUTH_REQUIRED__=false;" in root.text
+    assert "window.__HERMES_LOGIN_AVAILABLE__=true;" in root.text
     assert loopback_webapp.server._SESSION_TOKEN not in root.text
 
     # Launch-link token admission remains intact.
     launch_headers = {"X-Hermes-Session-Token": _TOKEN}
     assert browser.get("/api/profiles", headers=launch_headers).status_code == 200
     assert browser.post("/api/webapp/socket-ticket?socket=gateway", headers=launch_headers).status_code == 200
+
+
+def test_loopback_webapp_reload_after_cookie_expiry_advertises_login_only_when_providers_exist(
+    loopback_webapp, monkeypatch
+):
+    """Reloading `/` after cookie expiry clears dead cookies, keeps HTML non-redirecting, and
+    advertises ``__HERMES_LOGIN_AVAILABLE__=true`` iff interactive providers are registered on the
+    loopback Webapp surface (launch-link-only installs and standalone dashboards omit it)."""
+    from hermes_cli.dashboard_auth import clear_providers
+
+    browser = loopback_webapp.browser()
+    _sign_in_password(browser)
+    assert "window.__HERMES_AUTH_REQUIRED__=true;" in browser.get("/").text
+
+    # Simulate an expired/invalid session cookie pair still sitting in the browser jar on reload.
+    for name in list(browser.cookies.keys()):
+        if name.startswith("hermes_session_at") or name.startswith("hermes_session_rt"):
+            browser.cookies.delete(name)
+            browser.cookies.set(name, "expired-token", domain="127.0.0.1")
+
+    reloaded = browser.get("/", follow_redirects=False)
+    assert reloaded.status_code == 200
+    assert "window.__HERMES_AUTH_REQUIRED__=false;" in reloaded.text
+    assert "window.__HERMES_LOGIN_AVAILABLE__=true;" in reloaded.text
+    assert 'window.__HERMES_UI_SURFACE__="webapp";' in reloaded.text
+    assert loopback_webapp.server._SESSION_TOKEN not in reloaded.text
+    assert any("Max-Age=0" in header for header in reloaded.headers.get_list("set-cookie"))
+
+    # Next API call from the tokenless reloaded tab gets the structured 401 with login_url.
+    api_after_reload = browser.get("/api/profiles")
+    assert api_after_reload.status_code == 401
+    assert api_after_reload.json()["login_url"] == "/login"
+    assert api_after_reload.json()["error"] in {"unauthenticated", "session_expired"}
+
+    # Off the Webapp surface (standalone loopback dashboard), never emit __HERMES_LOGIN_AVAILABLE__.
+    monkeypatch.setattr(loopback_webapp.server.app.state, "ui_surface", "dashboard")
+    dashboard_root = loopback_webapp.browser().get("/", follow_redirects=False)
+    assert dashboard_root.status_code == 200
+    assert "__HERMES_LOGIN_AVAILABLE__" not in dashboard_root.text
+
+    # On a launch-link-only loopback Webapp (no interactive providers registered), omit the flag so
+    # tokenless browsers keep showing the `hermes webapp` instructions.
+    monkeypatch.setattr(loopback_webapp.server.app.state, "ui_surface", "webapp")
+    clear_providers()
+    launch_only_root = loopback_webapp.browser().get("/", follow_redirects=False)
+    assert launch_only_root.status_code == 200
+    assert "window.__HERMES_AUTH_REQUIRED__=false;" in launch_only_root.text
+    assert "__HERMES_LOGIN_AVAILABLE__" not in launch_only_root.text
+    assert loopback_webapp.server._SESSION_TOKEN not in launch_only_root.text
 
 
 def test_gateway_dashboard_mount_loopback_webapp_login_end_to_end(tmp_path, monkeypatch):

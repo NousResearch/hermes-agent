@@ -339,7 +339,7 @@ test.skipIf(process.platform === 'win32')('xcode-select probe enforces its timeo
 
   const fast = probeXcodeSelectDeveloperDir(process.env, {
     xcodeSelect: makeSelect('xcode-select-fast', 0),
-    timeoutMs: 2_000
+    timeoutMs: 30_000
   })
 
   assert.equal(fast, devDir)

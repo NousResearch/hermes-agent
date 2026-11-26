@@ -484,11 +484,34 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
     ):
         # Only installed trees: pnpm links each installed workspace's own node_modules.
         if tool and (tree / "node_modules").exists():
+            if audit_extra and tree == PROJECT_ROOT and _bundled_typescript_only(PROJECT_ROOT):
+                check_info("Root workspace audit not applicable: image contains bundled TypeScript only; "
+                           "root workspace dependencies are not installed (not a bundled-artifact security audit).")
+                continue
             _audit_one(str(tool), PROJECT_ROOT if audit_extra else tree, label, audit_extra, f.manual_issues)
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
         for note in _TERMUX_INSTALL_ALL_FALLBACK_NOTES:
             check_info(note)
+
+
+def _bundled_typescript_only(root: Path) -> bool:
+    """Docker copies standalone tsc, not the root pnpm workspace the source lock describes."""
+    import json
+    from hermes_cli.steward import STEWARD_DOCKER, sealed_steward
+
+    if sealed_steward(root) != STEWARD_DOCKER:
+        return False
+    modules = root / "node_modules"
+    try:
+        if {p.name for p in modules.iterdir()} != {".bin", "typescript"}:
+            return False
+        package = json.loads((modules / "typescript" / "package.json").read_text(encoding="utf-8"))
+        return (isinstance(package, dict) and package.get("name") == "typescript"
+                and not any(package.get(key) for key in ("dependencies", "optionalDependencies", "bundledDependencies"))
+                and not (modules / "typescript" / "node_modules").exists())
+    except (OSError, ValueError):
+        return False
 
 
 @doctor_check("Could not check tool availability", "({e})")

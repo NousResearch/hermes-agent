@@ -118,16 +118,18 @@ def test_degraded_gateway_still_rolls_back_when_webapp_page_is_broken(home, monk
     assert host.old["active"] is True
 
 
-def test_plan_verify_step_title_uses_verify_seconds(monkeypatch):
-    """Plan copy derives its verify timeout from VERIFY_SECONDS instead of hardcoding 90 s."""
+def test_plan_verify_step_title_uses_verify_seconds(monkeypatch, tmp_path):
+    """Plan copy derives its verify timeout from shared VERIFY_SECONDS instead of hardcoding 90 s."""
+    from hermes_cli import gateway_migrate_backends_timeouts as timeouts
     from hermes_cli.gateway_migrate_backends_plan import BackendPlan
 
-    plan = BackendPlan(home="/tmp/hermes-home", new_host="0.0.0.0", new_port=9119)
+    assert engine.VERIFY_SECONDS == timeouts.VERIFY_SECONDS
+    plan = BackendPlan(home=str(tmp_path), new_host="0.0.0.0", new_port=9119)
     verify_step = next(step for step in plan.step_titles() if step["name"] == "verify")
-    assert f"within {int(engine.VERIFY_SECONDS)} s" in verify_step["title"]
+    assert f"within {int(timeouts.VERIFY_SECONDS)} s" in verify_step["title"]
     assert "within 300 s" in verify_step["title"]
     assert "within 90 s" not in verify_step["title"]
 
-    monkeypatch.setattr(engine, "VERIFY_SECONDS", 420.0)
+    monkeypatch.setattr(timeouts, "VERIFY_SECONDS", 420.0)
     updated = next(step for step in plan.step_titles() if step["name"] == "verify")
     assert "within 420 s" in updated["title"]

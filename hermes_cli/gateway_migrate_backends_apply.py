@@ -36,6 +36,9 @@ from hermes_cli.gateway_migrate_backends_plan import (
 from hermes_cli.gateway_migrate_backends_detach import (
     clear_refusal, detach, read_refusal, record_refusal, refusal_status,
 )
+from hermes_cli.gateway_migrate_backends_timeouts import (
+    RESTART_HANDOFF_SECONDS, ROLLBACK_VERIFY_SECONDS, VERIFY_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +62,6 @@ def env_writes(plan: BackendPlan) -> dict[str, str]:
 
 MANIFEST_NAME = "backend_migration.json"
 BACKUP_DIR = "backend_migration"
-#: Upper bound for the new gateway to answer on every address. A good run passes as soon as it answers
-#: (the whole outage was 3.4 to 8.5 s on the Linux and macOS test guests); only a failing run waits the
-#: whole budget, with the old address dark, before it rolls back. It is generous because this is the
-#: floor for the whole boot: a busy multi-profile home prints its startup banner 56-92 s before it
-#: finishes, and a first start on a small ARM board or a cold disk is slower still.
-VERIFY_SECONDS = 300.0
-#: Upper bound for ``start_gateway`` to hand over to a replacement process (see :func:`_await_replacement`).
-#: Advisory: past it the verify step still decides, so a slow hand-off costs time, never correctness.
-RESTART_HANDOFF_SECONDS = 240.0
-ROLLBACK_VERIFY_SECONDS = 60.0
 FINAL_STATES = frozenset({"done", "rolled_back", "restored"})
 RESTORE_STEPS = ("stop_gateway", "restore_files", "restore_gateway_service", "start_old_backend",
                  "verify_old_backend")

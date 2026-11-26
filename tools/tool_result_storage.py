@@ -195,8 +195,20 @@ def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUB
     The write is read back and compared byte-for-byte before the caller tells the model "Full
     output saved": a partially-flushed or corrupted file (quota, ENOSPC race) fails closed to the
     bounded inline truncation instead of referencing an archive that silently lost bytes.
+
+    The bytes are fsynced before the caller commits a stub that names this file: an archive the
+    store has not seen yet is the ONLY copy of that tool result, so a crash between the stub's
+    commit and the page cache reaching disk would leave a durable pointer to a file that lost its
+    data (issue #156164 item 4).
     """
-    data = content.encode("utf-8", errors="replace")
+    try:
+        data = content.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        # A lone surrogate cannot be stored exactly. Archiving a ``?``-substituted copy would make
+        # the stub's promise false (``errors="replace"`` used to do this silently), so refuse the
+        # archive and let the caller keep the bounded inline truncation instead.
+        logger.warning("Archive for %s is not byte-exact (undecodable surrogate) — not archiving", filename)
+        return None
     created = False
     try:
         from hermes_constants import get_hermes_home
@@ -206,6 +218,8 @@ def _write_to_spillover(content: str, filename: str, subdir: str = SPILLOVER_SUB
         with open(path, "xb" if exclusive else "wb") as fh:  # exclusive: never overwrite another original
             created = True
             fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
         persisted_size = os.stat(path).st_size
         # Size first (cheap), then the bytes: the content is already in memory.
         exact = persisted_size == len(data) and path.read_bytes() == data
@@ -322,6 +336,34 @@ def _archive_stub_path(host_path: str) -> str:
         return to_agent_visible_cache_path(host_path)
     rel = Path(host_path).relative_to(get_hermes_home())
     return f"{PurePath(display_hermes_home()).as_posix()}/{rel.as_posix()}"
+
+
+def rehome_archive_path(path: str) -> str | None:
+    """The same archive by *file name* in THIS home, or ``None`` when *path* is no archive or the
+    file is not here either.
+
+    A stub writes the archive as a home-relative display path when the prune runs, so a session
+    resumed under another ``HERMES_HOME`` or profile names a path that never existed there while
+    the bytes sit untouched in the original home (issue #156164 item 5). Only the
+    ``cache/<spillover|pruned>/<name>`` segment is meaningful across homes: regenerate the host
+    path from this home's ``get_hermes_home()`` and accept it only when the file is really there,
+    so a genuinely expired archive still reports ``expired``.
+    """
+    from hermes_constants import get_hermes_home
+
+    if not isinstance(path, str):
+        return None
+    for subdir in _ARCHIVE_SUBDIRS:
+        match = re.search(rf"(?:^|[/\\]){re.escape(subdir)}[/\\]([A-Za-z0-9_.-]+)$", path.replace("\\", "/"))
+        if not match:
+            continue
+        candidate = get_hermes_home() / subdir / match[1]
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            return None
+    return None
 
 
 def write_pruned_original(content: str, session_id: str, tool_name: str, tool_call_id: str) -> tuple[str, str] | None:

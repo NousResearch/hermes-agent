@@ -14,6 +14,7 @@ import filecmp
 import importlib.util
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -43,6 +44,20 @@ def test_committed_prompt_surface_is_current(tmp_path):
         "    scripts/run-in-hermes-env python scripts/ci/prompt_surface.py render\n"
         + "\n".join(differences[:20])
     )
+
+
+def test_render_ignores_workspaces_above_the_throwaway_home(tmp_path, monkeypatch):
+    outer = tmp_path / "project"
+    temp = outer / "tmp"
+    temp.mkdir(parents=True)
+    (outer / "pyproject.toml").write_text('[project]\nname = "outer"\n', encoding="utf-8")
+    (outer / ".git").mkdir()
+    (outer / "outer.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(temp))
+
+    rendered = tmp_path / "snapshot"
+    assert prompt_surface.render(rendered) == 0
+    assert _tree_differences(prompt_surface.SNAPSHOT, rendered) == []
 
 
 def test_snapshot_is_checked_out_with_the_lf_that_render_writes():

@@ -9,7 +9,9 @@
 //    once when the backend is back.
 // Slash commands, other profiles' chats and chats without a transition are not affected.
 import { AssistantRuntimeProvider, type ThreadMessageLike, useExternalStoreRuntime } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -73,26 +75,30 @@ function Harness({
     onNew: async () => {}
   })
 
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
+
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <MemoryRouter>
-        <I18nProvider configClient={null} initialLocale="en">
-          <ChatBar
-            busy={busy}
-            disabled={disabled}
-            freshDraftKey={freshDraftKey}
-            gateway={null}
-            onCancel={vi.fn()}
-            onSteer={vi.fn(async () => true)}
-            onSubmit={onSubmit}
-            profile={profile}
-            queueSessionKey={queueSessionKey}
-            sessionId={sessionId}
-            state={state}
-          />
-        </I18nProvider>
-      </MemoryRouter>
-    </AssistantRuntimeProvider>
+    <QueryClientProvider client={client}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale="en">
+            <ChatBar
+              busy={busy}
+              disabled={disabled}
+              freshDraftKey={freshDraftKey}
+              gateway={null}
+              onCancel={vi.fn()}
+              onSteer={vi.fn(async () => true)}
+              onSubmit={onSubmit}
+              profile={profile}
+              queueSessionKey={queueSessionKey}
+              sessionId={sessionId}
+              state={state}
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </AssistantRuntimeProvider>
+    </QueryClientProvider>
   )
 }
 

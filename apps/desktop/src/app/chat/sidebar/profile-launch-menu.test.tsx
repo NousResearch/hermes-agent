@@ -104,3 +104,26 @@ it("offers a Webapp tab's window and default actions only for its own gateway's 
     delete window.document.documentElement.dataset.hermesDesktopHost
   }
 })
+
+// The hosted dashboard: no agent of its own, so every profile names one of the account's agents.
+it("offers New Window, not Set as default, for a hosted agent's profile", () => {
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  Object.assign(window, { __HERMES_HOST_AGENT__: false })
+
+  try {
+    render(
+      <I18nProvider configClient={null}>
+        <ProfileLaunchContextMenu connectionId="beta" label="Beta research" profile="research">
+          <button type="button">Beta research</button>
+        </ProfileLaunchContextMenu>
+      </I18nProvider>
+    )
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Beta research' }))
+    expect(screen.getByRole('menuitem', { name: 'Open in new window' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Set as default' })).toBeNull()
+  } finally {
+    delete window.document.documentElement.dataset.hermesDesktopHost
+    Reflect.deleteProperty(window, '__HERMES_HOST_AGENT__')
+  }
+})

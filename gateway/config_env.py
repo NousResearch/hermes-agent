@@ -309,6 +309,11 @@ def _enable_plugin_platforms_from_env(config: GatewayConfig, entries: list) -> N
             logger.debug("Plugin platform enable pass failed for %s: %s", entry.name, e)
 
 
+# What the relay-exclusive rule leaves running: the relay itself and the non-messaging surfaces
+# (local, the API server, generic webhooks). Every other platform is switched off.
+RELAY_EXCLUSIVE_KEEPS = frozenset({Platform.RELAY, Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK})
+
+
 def _relay(config: GatewayConfig) -> None:
     """Relay (connector-fronted, EXPERIMENTAL): enabled by GATEWAY_RELAY_URL or gateway.relay_url;
     the URL is mirrored into extra["relay_url"] for the connected-checker.
@@ -333,9 +338,8 @@ def _relay(config: GatewayConfig) -> None:
 
     if not relay_url_env or is_truthy_value(getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS")):
         return
-    skip = {Platform.RELAY, Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
     for platform, platform_config in config.platforms.items():
-        if platform in skip or not platform_config.enabled:
+        if platform in RELAY_EXCLUSIVE_KEEPS or not platform_config.enabled:
             continue
         if _STATUS_READ.get():
             pass  # status reads repeat this on every poll

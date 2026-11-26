@@ -124,6 +124,7 @@ export type {
   StaleAuxAssignment,
   StarmapGraph,
   StatusResponse,
+  TeamGatewayInfo,
   TelegramOnboardingApplyResponse,
   TelegramOnboardingStartResponse,
   TelegramOnboardingStatusResponse,

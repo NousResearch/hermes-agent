@@ -91,3 +91,33 @@ def test_shared_bot_platforms_are_offered_as_account_links(client, monkeypatch):
     telegram = _telegram(client)
     assert telegram["relay_fronted"] is True
     assert telegram["relay_exclusive"] is False
+
+
+def test_team_gateway_owning_messaging_points_channels_at_the_portal(client, monkeypatch):
+    """Under the relay-exclusive stamp the Channels surfaces replace per-platform setup with the
+    Portal's Manage Agents page; without the stamp, or with the direct-platforms opt-out, they keep it."""
+    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", "https://portal.example.test")
+    assert client.get("/api/messaging/platforms").json()["team_gateway"] is None
+
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "https://relay.example.test")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "telegram,discord")
+    assert client.get("/api/messaging/platforms").json()["team_gateway"] == {
+        "portal_url": "https://portal.example.test/agents", "platforms": ["discord", "telegram"],
+        "direct_platforms": ["api_server", "webhook"]}
+
+    monkeypatch.setenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "true")
+    assert client.get("/api/messaging/platforms").json()["team_gateway"] is None
+
+
+def test_unreadable_sign_in_falls_back_to_the_default_portal(client, monkeypatch):
+    """An auth store that cannot be read must not take the whole Channels page down."""
+    from hermes_cli import auth
+
+    def _unreadable(*_a, **_k):
+        raise PermissionError("auth.json")
+
+    monkeypatch.setattr(auth, "get_provider_auth_state", _unreadable)
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "https://relay.example.test")
+    resp = client.get("/api/messaging/platforms")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["team_gateway"]["portal_url"] == "https://portal.nousresearch.com/agents"

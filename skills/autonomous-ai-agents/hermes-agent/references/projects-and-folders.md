@@ -65,17 +65,18 @@ accept the display name; get the slug from `hermes project list`.
   from `hermes project list`); setting a color or icon on one turns it into a real project.
 - **The `desktop_project` tool** (toolset `project`, folded in by the desktop/TUI gateway;
   not in the default CLI or messaging toolsets). `action: create|switch|list` with `name` /
-  `path`; unlike the CLI it also matches display names, and archived projects. In a live
-  desktop/TUI chat, `create` and `switch` move *that chat's* workspace to the project's
+  `path`; unlike the CLI it also matches display names, and archived projects. `create` only
+  creates the project: the calling chat stays where it is and the active-project pointer is
+  unchanged. In a live desktop/TUI chat, `switch` moves *that chat's* workspace to the project's
   primary folder and the sidebar follows — the intended way to move a chat between projects,
   not `cd`. In a chat the gateway serves, the move lands when the turn ends: the result says
   `moved: "pending"` and the turn's own commands keep their folder. A chat that moves leaves the
   active-project pointer (the shared sidebar selection) alone, though the desktop sidebar
   following the chat you are viewing can select the new project. A chat that cannot move (a
   project with no folders, a primary folder that does not exist on disk, a CLI or messaging
-  caller) gets `moved: false` with `not_moved_reason`, and the pointer is set instead. `create`
-  with a `path` that is already another project's primary reuses that project instead of
-  failing.
+  caller) gets `moved: false` with `not_moved_reason`, and the pointer is set instead. Sub-agents
+  never get the tool. `create` with a `path` that is already another project's primary reuses
+  that project instead of failing.
 - **Kanban.** A task is linked to a project when it is created with
   `hermes kanban create … --project <id-or-slug>`, or when its board is bound to the project
   in the kanban dashboard (the board's Project selector); tasks on such a board inherit the

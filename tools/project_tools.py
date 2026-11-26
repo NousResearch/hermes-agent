@@ -164,7 +164,9 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
         return json.dumps({"success": False, "error": str(exc)})
     if proj is None:
         return json.dumps({"success": False, "error": "project vanished after create"})
-    return _activated(proj, task_id)
+    # Create only creates: this chat stays where it is and the active project is untouched; `switch` moves.
+    return json.dumps({"success": True, "id": proj.id, "slug": proj.slug, "name": proj.name,
+                       "primary_path": _primary_path(proj)})
 
 
 def project_switch(project: str, task_id: Optional[str] = None) -> str:
@@ -199,11 +201,11 @@ registry.register(
     schema={
         "name": "desktop_project",
         "description": (
-            "Create or switch desktop Projects (named workspaces). create: one and switch "
-            "this chat into it — pass path to anchor it to a repo/folder (the "
-            "chat's workspace moves there, the sidebar follows). switch: move "
-            "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which one this chat is in."
+            "Create or switch desktop Projects (named workspaces). create: make one; pass path to "
+            "anchor it to a repo/folder. This chat stays where it is and the active project is unchanged. "
+            "switch: move this chat into an existing project by name/slug/id (the chat's workspace "
+            "moves there, the sidebar follows); the intentional way to move the session, not `cd`. "
+            "list: all projects + which one this chat is in."
         ),
         "parameters": {
             "type": "object",

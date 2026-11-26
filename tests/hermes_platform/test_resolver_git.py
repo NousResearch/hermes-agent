@@ -337,9 +337,57 @@ def test_explicit_env_without_developer_dir_does_not_inherit_ambient_developer_d
     assert res == GitResolution(executable=None, status="clt_stub", raw_path=str(stub))
 
 
-def test_empty_path_reports_missing_not_clt_stub():
+def test_empty_path_reports_missing_not_clt_stub(tmp_path):
     res = inspect_git({"PATH": ""}, platform="darwin", cache=_CltGitCache())
     assert res == GitResolution(executable=None, status="missing", raw_path=None)
+    res_cwd = inspect_git({"PATH": ""}, cwd=tmp_path, platform="darwin", cache=_CltGitCache())
+    assert res_cwd == GitResolution(executable=None, status="missing", raw_path=None)
+
+
+@pytest.mark.platforms("posix")
+def test_inspect_git_resolves_relative_path_entries_against_cwd(tmp_path, monkeypatch):
+    stub = _make_exe(tmp_path / "usr_bin" / "git")
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    child.mkdir()
+    _make_exe(parent / "bin" / "git")
+    monkeypatch.chdir(parent)
+
+    env = {"PATH": f"bin{os.pathsep}{stub.parent}"}
+    in_child = inspect_git(
+        env,
+        cwd=child,
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=lambda _env: "",
+        cache=_CltGitCache(),
+    )
+    assert in_child == GitResolution(executable=None, status="clt_stub", raw_path=str(stub))
+
+    empty_seg_env = {"PATH": f"{os.pathsep}{stub.parent}"}
+    child_local = _make_exe(child / "git")
+    found_in_child = inspect_git(
+        empty_seg_env,
+        cwd=child,
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=lambda _env: "",
+        cache=_CltGitCache(),
+    )
+    assert found_in_child.status == "usable"
+    assert found_in_child.executable is not None
+    assert os.path.realpath(found_in_child.executable) == os.path.realpath(child_local)
+
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{stub.parent}")
+    ambient_in_child = inspect_git(
+        None,
+        cwd=child,
+        platform="darwin",
+        apple_stub_path=str(stub),
+        developer_dir_probe=lambda _env: "",
+        cache=_CltGitCache(),
+    )
+    assert ambient_in_child == GitResolution(executable=None, status="clt_stub", raw_path=str(stub))
 
 
 def test_spawn_guard_refuses_only_the_clt_stub_not_a_git_it_cannot_find(tmp_path):

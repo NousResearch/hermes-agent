@@ -287,3 +287,45 @@ def test_report_dashboard_status_preserves_argv_boundaries_from_psutil(monkeypat
 
     assert main_dashboard._report_dashboard_status() == 1
     assert probed == [expected_bind]
+
+
+def test_backend_address_and_runtime_use_last_bind_flag_for_exact_and_unwrapped_argv():
+    from pathlib import Path
+    from hermes_cli import venv_sync
+    from hermes_cli.gateway_migrate_backends_plan import backend_address
+    from hermes_cli.main_dashboard import _parse_dashboard_runtime
+
+    # Exact argv sequences follow argparse/CLI last-value semantics for repeated flags.
+    repeated = [
+        "hermes", "serve",
+        "--host", "127.0.0.1", "--port", "9120",
+        "--host", "0.0.0.0", "--port", "9121",
+    ]
+    assert backend_address(repeated) == ("0.0.0.0", 9121)
+    assert _parse_dashboard_runtime(repeated) == ("serve", "0.0.0.0", 9121)
+    assert backend_address(
+        ["hermes", "serve", "--host=127.0.0.1", "--port=9120", "--host=0.0.0.0", "--port=9121"]
+    ) == ("0.0.0.0", 9121)
+    # Invalid, negative, or missing trailing --port on exact argv is rejected even after a prior valid port.
+    assert _parse_dashboard_runtime(["hermes", "serve", "--port", "9120", "--port", "notaport"]) is None
+    assert _parse_dashboard_runtime(["hermes", "serve", "--port", "9120", "--port=-1"]) is None
+    assert _parse_dashboard_runtime(["hermes", "serve", "--port", "9120", "--port"]) is None
+
+    # Unwrapped relaunched inline-bootstrap commands also preserve last-value semantics
+    # whether passed as exact argv or space-joined ps text.
+    py = Path("/opt/hermes/venv/bin/python")
+    root = Path("/opt/hermes/hermes-agent")
+    inner_argv = [
+        "/home/alice/.local/bin/hermes", "serve",
+        "--host", "127.0.0.1", "--port", "9120",
+        "--host", "0.0.0.0", "--port", "9121",
+    ]
+    for shape in ("run_module", "run_path"):
+        if shape == "run_module":
+            relaunched = venv_sync.relaunch_command(
+                py, root, inner_argv, ["/old/python", "-m", "hermes_cli.main", *inner_argv[1:]], "hermes_cli.main"
+            )
+        else:
+            relaunched = venv_sync.relaunch_command(py, root, inner_argv, ["/old/python", *inner_argv], None)
+        assert backend_address(relaunched) == ("0.0.0.0", 9121)
+        assert _parse_dashboard_runtime(" ".join(relaunched)) == ("serve", "0.0.0.0", 9121)

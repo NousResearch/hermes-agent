@@ -44,8 +44,13 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
-def _extract_dashboard_bind(tokens: list[str]) -> tuple[str, int] | None:
-    """Read the first explicit ``--host`` and ``--port`` from *tokens*; None on invalid port."""
+def _extract_dashboard_bind(tokens: list[str], *, exact: bool) -> tuple[str, int] | None:
+    """Read ``--host`` and ``--port`` from *tokens*; None on invalid port.
+
+    *exact* (argv sequence or unwrapped inline bootstrap) uses last-value CLI semantics and
+    rejects invalid/negative ports even after a prior valid one; flattened text keeps the first
+    explicit valid bind so trailing path fragments cannot overwrite or erase it.
+    """
     port = 9119
     explicit_port = False
     host = "127.0.0.1"
@@ -54,13 +59,13 @@ def _extract_dashboard_bind(tokens: list[str]) -> tuple[str, int] | None:
     while i < len(tokens):
         raw = tokens[i].strip("\"'")
         flag, eq, inline_value = raw.partition("=")
-        if flag == "--port" and not explicit_port:
+        if flag == "--port" and (exact or not explicit_port):
             if eq:
                 value, step = inline_value.strip("\"'"), 1
             elif i + 1 < len(tokens):
                 value, step = tokens[i + 1].strip("\"'"), 2
             else:
-                break
+                return None if exact else (host, port)
             try:
                 parsed_port = int(value)
             except ValueError:
@@ -68,7 +73,7 @@ def _extract_dashboard_bind(tokens: list[str]) -> tuple[str, int] | None:
             if parsed_port < 0:
                 return None
             port, explicit_port = parsed_port, True
-        elif flag == "--host" and not explicit_host:
+        elif flag == "--host" and (exact or not explicit_host):
             if eq:
                 value, step = inline_value.strip("\"'"), 1
             elif i + 1 < len(tokens):
@@ -78,7 +83,7 @@ def _extract_dashboard_bind(tokens: list[str]) -> tuple[str, int] | None:
             host, explicit_host = value or "127.0.0.1", True
         else:
             step = 1
-        if explicit_port and explicit_host:
+        if not exact and explicit_port and explicit_host:
             break
         i += step
     return host, port
@@ -92,12 +97,14 @@ def _parse_dashboard_runtime(command: str | list[str] | tuple[str, ...]) -> tupl
     """
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     if isinstance(command, str):
+        exact = False
         cmdline = command
         try:
             tokens = shlex.split(command, posix=False)
         except ValueError:
             tokens = command.split()
     else:
+        exact = True
         tokens = [str(part) for part in command]
         cmdline = shlex.join(tokens)
 
@@ -110,9 +117,9 @@ def _parse_dashboard_runtime(command: str | list[str] | tuple[str, ...]) -> tupl
     if command_line_runs_inline_source(normalized):
         unwrapped = inline_bootstrap_argv(normalized)
         if unwrapped:
-            tokens = unwrapped
+            tokens, exact = unwrapped, True
 
-    bind = _extract_dashboard_bind(tokens)
+    bind = _extract_dashboard_bind(tokens, exact=exact)
     if bind is None:
         return None
     return mode, bind[0], bind[1]

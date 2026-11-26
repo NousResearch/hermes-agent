@@ -59,7 +59,14 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     if entry:
         return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or [], tenant=entry.get("tenant", ""))
     url = _local_profile_url(agent)
-    return {"url": url, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": [], "tenant": ""} if url else None
+    if not url:
+        return None
+    # A mount with a token configured refuses an anonymous caller (401), so a by-name call presents the
+    # caller's own shared A2A_BEARER_TOKEN, read in its own profile scope. Profiles that keep distinct
+    # tokens need an ``a2a_agents`` entry for the peer instead.
+    token = str(_get_scoped_secret("A2A_BEARER_TOKEN", "") or "").strip()
+    auth = {"type": "bearer", "token": token} if token else {}
+    return {"url": url, "auth": auth, "timeout": _DEFAULT_TIMEOUT, "capabilities": [], "tenant": ""}
 
 
 def _auth_header(auth: dict) -> dict:

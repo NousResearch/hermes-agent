@@ -273,6 +273,33 @@ class TestCallByProfileName:
         assert listeners.local_url("target-pm") is None
 
 
+class TestCallByProfileNameWithToken:
+    def test_a_by_name_call_presents_the_callers_bearer_token(self, shared_port, monkeypatch):
+        """With ``A2A_BEARER_TOKEN`` set the mount refuses anonymous callers, so a call by profile
+        name carries the caller's own token; with no token configured the call stays anonymous."""
+        from plugins.platforms.a2a import tools
+        monkeypatch.setattr(tools, "_configured_peers", dict)
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "fleet-token")
+        monkeypatch.setenv("A2A_ALLOW_ALL_USERS", "true")
+        target = _adapter("target-pm")
+
+        async def run():
+            assert await target.connect() is True
+            try:
+                peer = tools._resolve_peer("target-pm")
+                reply = await asyncio.to_thread(tools.a2a_call, {"agent": "target-pm", "message": "ping"})
+                monkeypatch.delenv("A2A_BEARER_TOKEN")
+                anonymous = tools._resolve_peer("target-pm")
+                return peer, reply, anonymous
+            finally:
+                await target.disconnect()
+
+        peer, reply, anonymous = asyncio.run(run())
+        assert peer["auth"] == {"type": "bearer", "token": "fleet-token"}
+        assert "target-pm says hi" in reply
+        assert anonymous["auth"] == {}
+
+
 class TestPerHomePluginCopies:
     def test_two_profile_copies_of_the_plugin_share_one_listener(self, shared_port):
         """The loader imports the plugin once per profile home (``hermes_plugins.<slug>__home_<digest>``),

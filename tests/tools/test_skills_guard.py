@@ -822,6 +822,18 @@ class TestFormatScanReport:
         assert "DANGEROUS" in report
         assert "curl $KEY" in report
 
+    def test_raw_match_with_markup_renders_without_crash(self):
+        # Regression: the report embeds the raw scan-hit text. A match
+        # containing "[/" (e.g. a Python regex character class) was parsed
+        # by rich as a closing tag, so CLI install crashed with MarkupError
+        # before the verdict was ever shown.
+        f = [Finding("obf", "medium", "obfuscation", "scripts/ingest.py", 78,
+                     '[/\\\\:<>""|?*]+', "regex literal")]
+        result = ScanResult("some-skill", "skills-sh/x", "community", "caution", findings=f)
+        report = format_scan_report(result)
+        from rich.console import Console
+        Console(record=True).print(report)  # raised MarkupError before the escape fix
+
 
 # ---------------------------------------------------------------------------
 # content_hash

@@ -64,14 +64,19 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
     with db:
         receipt = await _submit(authority, 'photo')
         if path == 'waiter':
-            authority.native_waiters.add(receipt.admission_id)
-            waiter = authority.waiters[receipt.admission_id] = asyncio.get_running_loop().create_future()
+            async def admit_native(event):
+                return receipt
+
+            monkeypatch.setattr(authority, 'admit_native', admit_native)
 
             async def send_waiter():
-                assert await waiter == 'reply'
+                event = SimpleNamespace(message_id='photo')
+                assert await session_ingress.admit_message(authority, event) == 'reply'
                 order.append('send')
 
             observer = asyncio.create_task(send_waiter())
+            await async_wait_until(lambda: receipt.admission_id in authority.native_waiters,
+                                   timeout=5, what='native delivery owner')
         drain = asyncio.create_task(authority._drain(REF))
         operation = drain
         try:

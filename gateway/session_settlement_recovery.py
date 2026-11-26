@@ -277,7 +277,7 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                     if captured is None:
                         # An operator discarded uncertainty while recovery yielded. There is
                         # no committed answer to replay; its queued successor may now run.
-                        authority.pending_deliveries.pop(admission_id, None)
+                        authority.native_waiters.discard(admission_id)
                         waiter = authority.waiters.pop(admission_id, None)
                         if waiter is not None and not waiter.done():
                             waiter.set_exception(AuthorityRefusal('unknown_execution'))
@@ -299,19 +299,22 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
             publish_transfers(authority, ref, row['generation'])
             if settled is None or discarded:
                 # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
-                authority.pending_deliveries.pop(admission_id, None)
+                from gateway.session_ingress import drop_pending_delivery, fire_post_delivery
                 drop_producer_turn(authority, admission_id)
-                from gateway.session_ingress import fire_post_delivery
+                await drop_pending_delivery(authority, admission_id)
                 await fire_post_delivery(authority, admission_id)
-            from gateway.session_ingress import waiter_replies
-            waiter_replies(authority).pop(admission_id, None)
             # Taken on every exit, so a turn that never settled leaves no reset for a later one.
             reset = authority.deferred_resets.pop(live.route, None)
         await authority._run_deferred_reset(live.route, reset)
         from gateway.session_ingress import deliver_settled, fire_post_delivery
+        # Hand off to a live native sender first; if it cancels, the drain still owes the send.
+        native = admission_id in authority.native_waiters
+        if native:
+            await authority._resolve_settled_waiter(admission_id, response)
         await deliver_settled(authority, admission_id)
         await fire_post_delivery(authority, admission_id)
-        await authority._resolve_settled_waiter(admission_id, response)
+        if not native:
+            await authority._resolve_settled_waiter(admission_id, response)
         return True
     finally:
         # A resolution that raced this drain handed its collection here (``_resolved_unknown``):

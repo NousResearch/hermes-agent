@@ -11,6 +11,10 @@
 
 export const isMac = process.platform === 'darwin'
 
+/** Resolve select-to-copy's tri-state config while preserving macOS's legacy default. */
+export const resolveCopyOnSelect = (configured: boolean | null | undefined, platformIsMac = isMac): boolean =>
+  configured ?? platformIsMac
+
 /** True when the platform action-modifier is pressed (Cmd on macOS, Ctrl elsewhere). */
 export const isActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean =>
   isMac ? key.meta || key.super === true : key.ctrl

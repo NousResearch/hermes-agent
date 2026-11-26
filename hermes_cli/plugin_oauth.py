@@ -61,7 +61,8 @@ class OAuthClient:
 
 
 _DEFAULTED = {"scope_separator": " ", "redirect_port": 0, "redirect_path": "/callback", "redirect_host": "127.0.0.1"}
-_REDIRECT_PATH_RE = re.compile(r"/(?!/)[A-Za-z0-9._~/-]*")  # fullmatch; no leading "//" (the server folds it)
+# fullmatch; no "//" and no "." / ".." segment, since clients and the server rewrite those and the callback would 404
+_REDIRECT_PATH_RE = re.compile(r"(?!.*//)(?!(?:.*/)?\.\.?(?:/|$))/[A-Za-z0-9._~/-]*")
 
 
 # ── Manifest ───────────────────────────────────────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
         problems.append(f"{where}.redirect_port: must be a port number from 1024 to 65535")
     path = entry.get("redirect_path", "/callback")
     if not (isinstance(path, str) and _REDIRECT_PATH_RE.fullmatch(path)):
-        problems.append(f"{where}.redirect_path: must be a URL path starting with a single / (letters, digits, ._~-/)")
+        problems.append(f"{where}.redirect_path: must be a URL path starting with / (letters, digits, ._~-/; no // or . / .. segments)")
     if entry.get("redirect_host", "127.0.0.1") not in ("127.0.0.1", "localhost"):
         problems.append(f"{where}.redirect_host: must be 127.0.0.1 or localhost")
     return problems
@@ -332,7 +333,9 @@ def _require_granted_scopes(client: OAuthClient, payload: Mapping[str, Any], key
     granted = payload.get("scope")
     if not isinstance(granted, str) or not granted.strip():
         return  # the IdP did not say which scopes it granted
-    missing = [scope for scope in client.scopes if scope not in re.split(r"[,\s]+", granted)]
+    # A comma is legal inside an RFC 6749 scope token, so it splits only for an entry that chose the comma dialect.
+    granted_set = re.split(r"[,\s]+" if client.scope_separator == "," else r"\s+", granted.strip())
+    missing = [scope for scope in client.scopes if scope not in granted_set]
     if missing:
         raise _auth_error(key, "not every permission was granted, so nothing was saved. Missing: "
                           + ", ".join(missing), "oauth_scope_not_granted")

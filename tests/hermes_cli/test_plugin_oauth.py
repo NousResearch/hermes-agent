@@ -417,7 +417,7 @@ def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_worki
     allowed, _ = api
     assert plugin.call("google", allowed.url).status == 200
 
-    for bad in ("//linear/callback", "/linear/callback\n"):  # the HTTP server would fold/strip these
+    for bad in ("//linear/callback", "/linear/callback\n", "/linear/../callback", "/./callback"):  # rewritten in transit
         assert any("redirect_path" in p for p in plugin_oauth._entry_problems(
             {**_entry(idp), "redirect_path": bad}, "oauth[0]"))
     positional = pkce.OAuthPKCEConfig("cid", "https://a.example/auth", "https://a.example/t", ("s",), 8650)
@@ -425,6 +425,8 @@ def test_exact_redirect_and_comma_scopes_reach_the_idp_and_old_grants_keep_worki
 
     old = plugin_oauth.OAuthClient(id="x", authorize_url="https://a.example/auth", token_url="https://a.example/t",
                                    scopes=("s",), client_id_env="X_ID", hosts=("api.example.com",))
+    comma_token = dataclasses.replace(old, scopes=("urn:example:read,write",))  # one RFC 6749 token, default dialect
+    plugin_oauth._require_granted_scopes(comma_token, {"scope": "urn:example:read,write"}, "x")
     legacy = {k: v for k, v in dataclasses.asdict(old).items()
               if k not in ("scope_separator", "redirect_port", "redirect_path", "redirect_host")}
     assert old.fingerprint == hashlib.sha256(

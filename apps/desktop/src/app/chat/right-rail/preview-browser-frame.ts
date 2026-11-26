@@ -10,7 +10,11 @@ import type { RefObject } from 'react'
 /** The navigation calls the pane makes on its live preview surface — an
  *  Electron webview or the browser-hosted iframe. */
 export interface PreviewNavigationSurface {
-  loadURL?: (url: string) => Promise<void>
+  /** `options` is Electron's LoadURLOptions subset a popup's form POST needs; the iframe ignores it. */
+  loadURL?: (
+    url: string,
+    options?: { extraHeaders?: string; postData?: Array<{ bytes: Uint8Array; type: 'rawData' }> }
+  ) => Promise<void>
   reload?: () => void
 }
 

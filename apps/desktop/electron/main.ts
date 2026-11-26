@@ -450,8 +450,9 @@ import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { previewGuestInputAction } from './preview-guest-escape'
 import { registerPreviewGuestIpc } from './preview-guest-ipc'
+import { createPopupLimiter, installPreviewGuestNewWindow } from './preview-guest-new-window'
 import { commandFocusedGuest } from './preview-guest-offscreen'
-import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
+import { applyPreviewGuestAttachPrefs, isPreviewGuestSession } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { registerPreviewSignins, runSigninExport } from './preview-signins'
 import { previewHttpUrlTarget } from './preview-url-target'
@@ -11697,12 +11698,10 @@ function installPreviewGuestEscapeHatch() {
  * inherits nothing from this mechanism.
  *
  * The preload (preview-guest-preload-entry.ts) never opens anything itself.
- * It forwards a clicked `_blank` anchor to the host renderer via
- * `sendToHost`, and the pane admits the scheme and routes the URL through the
- * audited `hermes:openExternal` channel. Popup requests themselves stay
- * denied-by-omission: the webview has no `allowpopups`, and the
- * `setWindowOpenHandler` contract (GHSA-9f4c-93c8-jc8g) stays side-effect
- * free.
+ * A page's new tab is handled at `did-attach-webview` below: the guest has
+ * `allowpopups`, its `setWindowOpenHandler` always answers `deny` (the
+ * GHSA-9f4c-93c8-jc8g contract stays side-effect free) and forwards the
+ * request to the pane, which opens a preview tab (preview-guest-new-window.ts).
  */
 function installPreviewGuestPreload() {
   app.on('web-contents-created', (_event, contents) => {
@@ -11715,8 +11714,19 @@ function installPreviewGuestPreload() {
         session.fromPartition(p)
       )
     })
+
+    // A preview page's new tab (`_blank` link or form POST, `window.open`)
+    // becomes a new preview tab in the same chat: always `deny` the popup and
+    // hand the request to this window's pane (preview-guest-new-window.ts).
+    contents.on('did-attach-webview', (_attachEvent, guest) => {
+      if (isPreviewGuestSession(guest.session)) {
+        installPreviewGuestNewWindow(guest, contents, previewPopupLimiter, rememberLog)
+      }
+    })
   })
 }
+
+const previewPopupLimiter = createPopupLimiter()
 
 // Every window we open starts with `show: false` so the renderer's first themed
 // paint lands before it appears, and `ready-to-show` is what reveals it.

@@ -191,28 +191,28 @@ Untrusted HTML runs in two places: sandboxed `allow-scripts` iframes (artifact
 previews) and the preview pane's `<webview>` (`persist:hermes-preview`). Neither
 may drive the OS browser without the user's hand on it (GHSA-9f4c-93c8-jc8g):
 `setWindowOpenHandler` denies everything and never opens a URL as a side
-effect (`electron/window-open-policy.ts`), and the webview has no
-`allowpopups` — do not add it.
+effect (`electron/window-open-policy.ts`).
 
-A guest page's `target="_blank"` links (Streamlit's "Ask Google" traceback
-button) reach the OS browser through one explicit bridge instead:
+A preview guest's new tab (`target="_blank"` link or form POST, `window.open`)
+becomes a new **preview tab** in the same chat, never an OS-browser open and
+never an Electron popup (`electron/preview-guest-new-window.ts`):
 
-- `main.ts` installs `electron/preview-guest-preload-entry.ts` via
-  `will-attach-webview`, keyed on the `persist:hermes-preview` partition only.
-  It is the app's only guest preload; a new webview does not inherit it unless
-  it opts into that partition.
-- The preload runs in the isolated world, exposes nothing to the page, and
-  forwards only a **trusted** (`event.isTrusted`) primary-button click on an
-  `a[target="_blank"]` to the host via `ipcRenderer.sendToHost`. A synthetic
-  `dispatchEvent(click)` from page script is dropped there; page `window.open`
-  stays blocked.
-- `PreviewPane` admits `http:`/`https:` only (`src/lib/preview-external.ts`)
-  and hands the URL to the existing `hermes:openExternal` IPC, which applies
-  main's URL policy. `file:` is excluded on purpose: a guest must never reach
-  `shell.openPath`.
+- The preview `<webview>` carries `allowpopups` only so Chromium hands the
+  request to `setWindowOpenHandler`. `main.ts` installs the handler at
+  `did-attach-webview`, and only on a guest whose session is a preview-family
+  jar (`isPreviewGuestSession`). It **always returns `deny`**: no window is
+  created and no URL is opened as a side effect.
+- It admits `http:`/`https:` only, replays a form POST's raw body (a file-upload
+  part is dropped, not half-sent), and allows at most 5 requests per guest per
+  10 s, so a page cannot flood the strip.
+- The admitted request goes to the embedding renderer, whose pane matches the
+  guest by webContents id and calls `openPreviewPopupTab`: same owner and pin as
+  the opener, so the same profile bucket and cookie jar. A foreground tab becomes
+  the chat's active tab, which is the tab agent tools act on.
 
-Widening any of those three (partition key, trusted-click gate, scheme set)
-reopens the gesture-less forced-navigation class the advisory closed.
+Nothing in this path reaches `hermes:openExternal` or `shell.openPath`. Widening
+it to non-web schemes, to non-preview webviews, or to anything but `deny` would
+reopen the class the advisory closed.
 
 ## Rendering work follows visibility and ownership
 

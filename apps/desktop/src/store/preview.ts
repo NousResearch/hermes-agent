@@ -1080,6 +1080,81 @@ export function newBrowserTab() {
   selectRightRailTab(id)
 }
 
+/** A form POST a popup tab must replay on its first load (memory only, one shot). */
+export interface PreviewPopupPost {
+  body: Uint8Array
+  contentType: string
+  url: string
+}
+
+const pendingPopupPosts = new Map<string, PreviewPopupPost>()
+
+/** The POST a freshly opened popup tab owes its guest; cleared on read. */
+export function takePreviewPopupPost(tabId: string): PreviewPopupPost | undefined {
+  const post = pendingPopupPosts.get(tabId)
+  pendingPopupPosts.delete(tabId)
+
+  return post
+}
+
+/**
+ * A page in Browser tab `openerTabId` opened a new tab (`_blank` link or form
+ * POST, `window.open`). It opens as another Browser tab with the opener's
+ * owner and pin, so it lives in the same chat, the same profile bucket and so
+ * the same cookie jar, and (unless `background`) becomes that chat's active
+ * tab: the agent's next `desktop_preview read` / `drive_preview` acts on it
+ * (preview-active-tab.ts). A POST tab starts blank and the pane replays the
+ * POST once (`takePreviewPopupPost`). Returns the new tab id, or null when the
+ * opener is not an open Browser tab or the URL is not http(s).
+ */
+export function openPreviewPopupTab(
+  openerTabId: string,
+  url: string,
+  options: { background?: boolean; post?: { body: Uint8Array; contentType: string } } = {}
+): null | RightRailTabId {
+  const current = $previewTabs.get()
+  const opener = current.find(tab => tab.id === openerTabId)
+
+  if (!opener || !isBrowserTab(opener) || !/^https?:\/\//i.test(url)) {
+    return null
+  }
+
+  const id = mintBrowserTabId()
+
+  const label = (() => {
+    try {
+      return new URL(url).host || 'Browser'
+    } catch {
+      return 'Browser'
+    }
+  })()
+
+  const target: PreviewTarget = options.post
+    ? { kind: 'url', label, source: 'about:blank', url: 'about:blank' }
+    : { kind: 'url', label, source: url, url }
+
+  if (options.post) {
+    pendingPopupPosts.set(id, { ...options.post, url })
+  }
+
+  $previewTabs.set([...current, { id, pinned: opener.pinned, sessionId: opener.sessionId, target }])
+
+  if (options.background) {
+    return id
+  }
+
+  if (!$visiblePreviewTabs.get().some(item => item.id === id)) {
+    rememberActiveTab(opener.sessionId ?? null, id)
+
+    return id
+  }
+
+  noteExplicitPreviewOpen(id)
+  selectRightRailTab(id)
+
+  return id
+}
+
 /** Pin or unpin a preview tab. Pinned tabs render in EVERY session — the
  *  explicit cross-session workspace; unpinning returns it to its session
  *  (adopting the current one when the tab never had an owner). */

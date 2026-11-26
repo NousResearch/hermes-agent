@@ -44,6 +44,11 @@ approval:
     second_one: "{count} second"
     second_other: "{count} seconds"
 
+delegation:
+  progress:
+    heartbeat: '⏳ Background task "{goal}" — {minutes} min elapsed, {done}/{total} subtasks done. Latest: {detail}'
+    waiting: 'waiting on the model'
+
 gateway:
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining: "⏳ Draining {count} active agent(s) before restart..."

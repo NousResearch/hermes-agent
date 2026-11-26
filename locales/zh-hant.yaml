@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} 分鐘"
     second_one: "{count} 秒"
     second_other: "{count} 秒"
+
+delegation:
+  progress:
+    heartbeat: '⏳ 後台任務「{goal}」執行中 — 已 {minutes} 分鐘，子任務 {done}/{total} 完成，最近動作：{detail}'
+    waiting: '等待模型回覆'
+
 gateway:
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining: "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."

@@ -95,6 +95,20 @@ def _get_prefix_stagger_seconds() -> float:
     )
 
 
+def _get_progress_report_interval() -> float:
+    """delegation.progress_report_interval > HERMES_DELEGATION_PROGRESS_INTERVAL > 0 (off).
+
+    Seconds between user-visible progress lines for a RUNNING background delegation. Negative or
+    non-numeric values fall back to off; the async monitor only ticks every 30 s, so a smaller
+    positive value is honored at that granularity rather than rejecting the setting.
+    """
+    return _knob(
+        "progress_report_interval", "HERMES_DELEGATION_PROGRESS_INTERVAL",
+        lambda v: max(0.0, float(v)), 0.0,
+        "delegation.progress_report_interval=%r is not a number; progress reports are off",
+    )
+
+
 def _get_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 

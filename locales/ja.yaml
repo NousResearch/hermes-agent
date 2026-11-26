@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} 分"
     second_one: "{count} 秒"
     second_other: "{count} 秒"
+
+delegation:
+  progress:
+    heartbeat: '⏳ バックグラウンドタスク「{goal}」実行中 — {minutes} 分経過、サブタスク {done}/{total} 完了、直近の動作: {detail}'
+    waiting: 'モデル応答を待機中'
+
 gateway:
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining: "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."

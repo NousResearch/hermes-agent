@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} dakika"
     second_one: "{count} saniye"
     second_other: "{count} saniye"
+
+delegation:
+  progress:
+    heartbeat: '⏳ Arka plan görevi "{goal}" çalışıyor — {minutes} dk geçti, {done}/{total} alt görev tamamlandı, son işlem: {detail}'
+    waiting: 'model yanıtı bekleniyor'
+
 gateway:
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining: "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."

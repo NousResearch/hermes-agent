@@ -5,7 +5,10 @@ The parent dispatches a subagent on a module-level daemon executor and returns a
 immediately. On completion a ``type="async_delegation"`` event (self-contained task-source
 block) is pushed onto the SHARED ``process_registry.completion_queue`` the CLI/gateway drain
 while idle, so results surface as a NEW turn (never mid-turn) and inherit its de-dup and
-crash-recovery wiring. Only the async lifecycle lives here; the child run is an injected ``runner``."""
+crash-recovery wiring. While a unit runs, the same monitor can push ``type="delegation_progress"``
+lines (``delegation.progress_report_interval``) that the gateway delivers as ephemeral chat
+messages: they carry no delivery claim and never settle the result. Only the async lifecycle
+lives here; the child run is an injected ``runner``."""
 
 from __future__ import annotations
 
@@ -97,6 +100,12 @@ _STALE_CHECK_INTERVAL = 30.0
 _STALE_IDLE_SECONDS = 450.0
 _STALE_IN_TOOL_SECONDS = 1200.0
 _STALL_GRACE_SECONDS = 120.0
+
+# User-visible progress reports for a RUNNING background delegation (delegation.progress_report_interval).
+# Deliberately NOT an "async_delegation*" type: every completion consumer (claim, dedup, wake, delivery
+# row) keys on that name, and a progress line must never settle or duplicate the result. The gateway's
+# async watcher delivers it as an ephemeral chat line; every other drain drops it unformatted.
+DELEGATION_PROGRESS_EVENT = "delegation_progress"
 
 _monitor_lock = threading.Lock()
 _monitor_thread: Optional[threading.Thread] = None
@@ -866,7 +875,7 @@ def _dispatch_admitted(
             rec = _records.get(delegation_id)
             if rec is not None:
                 # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
-                rec.update(_started=True, _progress_ts=time.time())
+                rec.update(_started=True, _started_at=time.time(), _progress_ts=time.time())
         try:
             result = run_with_notify_lease(lease, runner) or {}
             status = classify(result)
@@ -1186,6 +1195,91 @@ def _sweep_stale_locked(now: float):
     return stalled, expired, any_monitorable
 
 
+# ── Progress reports (delegation.progress_report_interval) ──────────────────
+def _progress_total(record: dict[str, Any]) -> int:
+    """Subtasks this unit is responsible for (1 for a single delegation)."""
+    if not record.get("is_batch"):
+        return 1
+    indexes = record.get("task_indexes")
+    return max(1, len(indexes) if indexes is not None else len(record.get("goals") or ()))
+
+
+def _progress_done(record: dict[str, Any]) -> int:
+    """Subtasks already finished inside a running batch unit; a single delegation has none until it ends."""
+    if not record.get("is_batch"):
+        return 0
+    return min(len(record.get("_finished_children") or {}), _progress_total(record))
+
+
+def _progress_detail(token: Any) -> Optional[str]:
+    """Latest tool a child reported, or None (a child is streaming a model turn / token unreadable)."""
+    try:
+        parts = list(token)
+    except TypeError:
+        return None
+    latest: Optional[tuple[float, str]] = None
+    for part in parts:
+        if not (isinstance(part, (list, tuple)) and len(part) >= 2) or not part[1]:
+            continue
+        ts = part[2] if len(part) >= 3 and isinstance(part[2], (int, float)) else 0.0
+        if latest is None or ts >= latest[0]:
+            latest = (ts, str(part[1]))
+    return latest[1] if latest else None
+
+
+def progress_event(record: dict[str, Any], now: float, *, language: Optional[str] = None) -> dict[str, Any]:
+    """One ``DELEGATION_PROGRESS_EVENT`` for a running delegation.
+
+    Carries the same routing origin as the completion event (``session_key`` + ``_ROUTING_KEYS``) so
+    the consumer finds the originating chat the same way, plus the structured numbers and the
+    rendered ``text``. ``language`` exists for tests; production resolves the active language.
+    """
+    from agent.i18n import t
+    goal = " ".join(str(record.get("goal") or "").split())
+    if len(goal) > 60:  # keep the line phone-sized without cutting mid-word
+        goal = goal[:60].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    minutes = max(0, int((now - (record.get("_started_at") or record.get("dispatched_at") or now)) // 60))
+    total, done = _progress_total(record), _progress_done(record)
+    detail = _progress_detail(record.get("_progress_token")) or t("delegation.progress.waiting", lang=language)
+    text = t("delegation.progress.heartbeat", lang=language,
+             goal=goal, minutes=minutes, done=done, total=total, detail=detail)
+    return {
+        "type": DELEGATION_PROGRESS_EVENT, "delegation_id": record.get("delegation_id"),
+        "session_key": record.get("session_key", ""),
+        "origin_ui_session_id": record.get("origin_ui_session_id", ""),
+        "origin_session_id": record.get("origin_session_id", ""),
+        "parent_session_id": record.get("parent_session_id"),
+        "goal": goal, "is_batch": bool(record.get("is_batch")),
+        "minutes": minutes, "done": done, "total": total, "detail": detail, "text": text,
+        **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
+    }
+
+
+def _collect_due_progress_locked(now: float, interval: float) -> list[dict[str, Any]]:
+    """Caller holds ``_records_lock``. Snapshot each delegation whose OWN interval has elapsed.
+
+    Per-record gating (``_progress_report_ts``) is what keeps a 30 s monitor tick from re-sending a
+    line every tick: a unit reports at most once per interval, and concurrent units never share a
+    clock. A queued-but-not-started unit is silent (nothing has happened yet). Snapshots (not live
+    records) are returned so rendering — which touches the i18n catalogs — happens outside the lock.
+    """
+    if interval <= 0:
+        return []
+    due: list[dict[str, Any]] = []
+    for record in _records.values():
+        if record.get("status") != "running" or record.get("progress_fn") is None:
+            continue
+        if not record.get("_started"):
+            continue
+        last = (record.get("_progress_report_ts") or record.get("_started_at")
+                or record.get("dispatched_at") or now)
+        if now - last < interval:
+            continue
+        record["_progress_report_ts"] = now
+        due.append(dict(record))
+    return due
+
+
 def _call_interrupt(fn, msg: str, *args) -> bool:
     """Invoke an ``interrupt_fn``; True on success, else debug-log ``msg`` (+ exc)."""
     if not callable(fn):
@@ -1203,10 +1297,24 @@ def _stale_monitor_loop() -> None:
     record's timestamp; a frozen token past the idle/in-tool threshold marks the record
     ``stalling`` and calls ``interrupt_fn``; a ``stalling`` record still unreturned after the
     grace window is force-finalized with a terminal ``stalled`` event."""
+    from tools.delegate_tool_config import _get_progress_report_interval
     while not _monitor_stop.wait(_STALE_CHECK_INTERVAL):
         now = time.time()
+        interval = _get_progress_report_interval()
         with _records_lock:
             stalled, expired, any_monitorable = _sweep_stale_locked(now)
+            # Runs under the same lock hold as the sweep: ``_progress_token`` is fresh, and the
+            # per-record timestamp update is atomic with the decision to emit.
+            due_records = _collect_due_progress_locked(now, interval)
+        progress_events = [progress_event(record, now) for record in due_records]
+        if progress_events:
+            from tools.process_registry import process_registry
+            for evt in progress_events:
+                try:
+                    process_registry.completion_queue.put(evt)
+                except Exception:  # pragma: no cover - a broken queue must not kill the monitor
+                    logger.debug("Could not enqueue delegation progress for %s",
+                                 evt.get("delegation_id"), exc_info=True)
         for delegation_id, quiet_for, in_tool in stalled:
             logger.warning("Async delegation %s made no progress for %.0fs "
                            "(in_tool=%s) — interrupting; grace window %.0fs",

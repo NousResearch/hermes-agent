@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} nóiméad"
     second_one: "{count} soicind"
     second_other: "{count} soicind"
+
+delegation:
+  progress:
+    heartbeat: '⏳ Tasc cúlra "{goal}" ar siúl — {minutes} nóiméad caite, {done}/{total} fo-thasc críochnaithe, an gníomh is déanaí: {detail}'
+    waiting: 'ag fanacht leis an tsamhail'
+
 gateway:
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining: "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."

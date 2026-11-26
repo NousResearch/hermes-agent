@@ -1660,14 +1660,27 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # Process completions remain owned by their per-process watchers.
                 requeue = []
                 async_events = []
+                progress_events = []
                 while not _pr.completion_queue.empty():
                     try:
                         evt = _pr.completion_queue.get_nowait()
                     except Exception:
                         break
-                    (async_events if evt.get("type") == "async_delegation" else requeue).append(evt)
+                    evt_type = evt.get("type")
+                    if evt_type == "async_delegation":
+                        async_events.append(evt)
+                    elif evt_type == "delegation_progress":
+                        progress_events.append(evt)
+                    else:
+                        requeue.append(evt)
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
+                # Ephemeral chat lines for still-running delegations, delivered BEFORE the completion
+                # groups so a unit that finished in this tick never reports progress after its result.
+                if progress_events:
+                    from gateway.delegation_progress import deliver_delegation_progress
+                    for evt in progress_events:
+                        await deliver_delegation_progress(self, evt)
                 # A fan-out finishing together yields N completions for one session; group by full route +
                 # parent session so each group becomes ONE consolidated turn.
                 # A same-tick drain often carries several completions for the SAME originating session (a

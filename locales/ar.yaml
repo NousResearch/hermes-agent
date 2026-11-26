@@ -41,6 +41,12 @@ approval:
     minute_other: "{count} دقائق"
     second_one: "{count} ثانية"
     second_other: "{count} ثوانٍ"
+
+delegation:
+  progress:
+    heartbeat: '⏳ مهمة الخلفية "{goal}" قيد التشغيل — مضت {minutes} دقيقة، اكتملت {done}/{total} مهام فرعية، آخر إجراء: {detail}'
+    waiting: 'بانتظار رد النموذج'
+
 gateway:
   approval_expired: "⚠️ انتهت صلاحية الموافقة (لم يعد الوكيل ينتظر). اطلب من الوكيل المحاولة مرة أخرى."
   draining: "⏳ جارٍ إنهاء {count} وكيل نشط قبل إعادة التشغيل..."

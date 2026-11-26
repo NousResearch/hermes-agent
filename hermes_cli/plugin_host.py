@@ -140,7 +140,7 @@ class PluginHost:
         return launcher_for(self._home, own)
 
     def _env(self, own: bool, templates: Optional[dict[str, str]], launcher: list) -> dict[str, str]:
-        from hermes_cli.plugin_isolation import lending_launcher
+        from hermes_cli.plugin_isolation import home_moved_refusal, lending_launcher
         from tools.environments.local import served_profile_child_env
         env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True,
                                      own_profile=own, template_env=templates)
@@ -149,6 +149,9 @@ class PluginHost:
             with lending_launcher(launcher):
                 return _hosted_ambient_credentials(self._home, own, templates)
 
+        # That scan imports the home's provider plugins, in Hermes for an in-process home: not through a moved name.
+        if (moved := home_moved_refusal(self._home)) is not None:
+            raise PluginHomeMoved(moved)
         env.update(self._base_context.run(ambient))
         repo_root = project_root_str()
         # Absolute entries only: the host starts in the profile home, where an empty or relative entry

@@ -244,6 +244,47 @@ def test_a_provider_extraction_whose_link_is_repointed_while_it_picks_its_launch
     assert not ran.exists()
 
 
+@pytest.mark.platforms("posix")  # a directory symlink
+def test_a_host_start_whose_link_is_repointed_before_it_reads_ambient_credentials_imports_no_provider(
+        tmp_path, monkeypatch):
+    """A start reads which providers take ambient credentials by scanning the home's provider plugins, and an
+    in-process home imports them into Hermes. A link repointed before that scan refuses the start, and the other
+    directory's provider code never runs."""
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugin_isolation import ISOLATION_IN_PROCESS
+    from hermes_cli.plugins_loader import PluginHomeMoved
+
+    home = _home_with_plugins(tmp_path / "home", monkeypatch, {})
+    other = _home_with_plugins(tmp_path / "other", monkeypatch, {}, isolation=ISOLATION_IN_PROCESS)
+    imported = tmp_path / "provider.imported"
+    provider = other / "plugins" / "model-providers" / "otherprov"
+    provider.mkdir(parents=True)
+    (provider / "__init__.py").write_text(f"from pathlib import Path\nPath({str(imported)!r}).write_text('ran')\n",
+                                          encoding="utf-8")
+    link = tmp_path / "root" / "profiles" / "ops"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    plugins_mod._reset_plugin_managers_for_tests()
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    launcher = PluginHost._launcher
+
+    def repointed_after_the_launcher(self, own):
+        chosen = launcher(self, own)
+        link.unlink()
+        link.symlink_to(other, target_is_directory=True)
+        return chosen
+
+    monkeypatch.setattr(PluginHost, "_launcher", repointed_after_the_launcher)
+    try:
+        with pytest.raises(PluginHomeMoved):
+            host.ensure_started()
+        assert not imported.exists()
+    finally:
+        host.shutdown()
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 @pytest.mark.platforms("posix")  # directory symlinks
 @pytest.mark.parametrize("failure", ["refused", "launcher_unreadable", "built_with_the_host"])
 def test_a_host_context_built_while_its_link_led_elsewhere_reads_the_profiles_own_secrets_once_it_leads_back(

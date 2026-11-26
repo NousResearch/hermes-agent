@@ -711,7 +711,8 @@ def choose_pool_key(pool: Optional[CredentialPool], provider: str, *, model: Opt
     ``credential_pool_selection.AsCalled``), the provider profile's preparation of its secret, and a
     usable-secret check. ``mode``: ``select`` counts and rotates as the pick is made; ``choose`` makes
     the same pick without touching the pool (the caller ``pool.commit``s it once the key is sent);
-    ``peek`` reads the entry the pool is already on. None when no entry qualifies."""
+    ``peek`` reads the entry the pool is already on. All three modes apply ``credential_pool_usage_limits``
+    (a cold admission cache is probed by the pool). None when no entry qualifies."""
     if pool is None or not pool.has_credentials():
         return None
     model = model or None
@@ -778,7 +779,10 @@ class PoolChoice:
         from agent.auxiliary_client import _to_openai_base_url
         if self.picked.pool.commit(self.picked.entry.id, model=self.model, endpoint_url=self._endpoint_url,
                                    as_called=_to_openai_base_url) is None:
-            logger.info("Credential pool entry %s left the pool before its first request", self.picked.entry.id)
+            # ``commit`` re-checks availability, including the usage ceiling (a cold admission cache is probed
+            # there), so an entry that crossed its ceiling after ``choose`` is refused here, not sent.
+            logger.info("Credential pool entry %s left the pool (or reached its usage ceiling) before its first request",
+                        self.picked.entry.id)
 
 
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,

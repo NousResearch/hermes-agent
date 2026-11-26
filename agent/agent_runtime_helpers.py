@@ -943,7 +943,7 @@ def _revert_credential_rotation(agent) -> None:
         logger.warning("Credential revert check failed: %s", exc)
         return
     if entry is None:
-        return  # still cooling down; check again next turn
+        return  # still cooling down, or over its usage ceiling (``reclaim`` applies it); check again next turn
     if agent._swap_credential(entry) is not False:
         logger.info(
             "Credential %s (%s) available again — reverted pool rotation",

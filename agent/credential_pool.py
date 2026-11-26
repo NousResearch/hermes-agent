@@ -2535,7 +2535,9 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         """Entry *credential_id* once its cooldown has lifted (cleared and token-refreshed the way
         ``select`` would), else ``None``. Never bumps ``request_count`` or round-robin order: a
-        live session asking "may I go back?" every turn is not a request."""
+        live session asking "may I go back?" every turn is not a request. A cold usage-admission cache is
+        probed first, so a session is never moved back onto a credential that is over its configured ceiling."""
+        self._refresh_usage_admission_cache()
         with self._lock:
             available, pending = self._available_entries(clear_expired=True, refresh=True, model=model)
         if any(e.id == credential_id for e in pending):

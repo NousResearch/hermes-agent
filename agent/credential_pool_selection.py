@@ -96,7 +96,9 @@ class CredentialPoolSelectionMixin:
                as_called: AsCalled = None) -> Optional[PooledCredential]:
         """The entry ``select`` would pick now, without counting it, rotating the pool, refreshing a token
         or saving anything; ``commit`` records it once its key is actually used. Under ``random`` a later
-        ``select`` may pick another entry."""
+        ``select`` may pick another entry. A cold usage-admission cache is probed first (as in ``select``), so a
+        configured ceiling is applied to this pick too; ``choose`` stays free of pool-state writes."""
+        self._refresh_usage_admission_cache()
         with self._lock:
             available = _serving(self._available_entries(model=model)[0], endpoint_url, as_called)
             return self._strategy_pick(available) if available else None
@@ -104,7 +106,9 @@ class CredentialPoolSelectionMixin:
     def commit(self, credential_id: str, *, model: Optional[str] = None, endpoint_url: Optional[str] = None,
                as_called: AsCalled = None) -> Optional[PooledCredential]:
         """Record a ``choose`` result as used: its request count and the round-robin order move the way
-        ``select`` moves them. None when the entry is no longer available."""
+        ``select`` moves them. None when the entry is no longer available, including when its usage ceiling
+        was reached between ``choose`` and ``commit``."""
+        self._refresh_usage_admission_cache()
         with self._lock:
             available = _serving(self._available_entries(clear_expired=True, model=model)[0], endpoint_url, as_called)
             entry = next((e for e in available if e.id == credential_id), None)
@@ -115,9 +119,10 @@ class CredentialPoolSelectionMixin:
 
     def peek(self, *, model: Optional[str] = None, endpoint_url: Optional[str] = None) -> Optional[PooledCredential]:
         from agent.credential_pool import credential_pool_entry_serves_endpoint
+        self._refresh_usage_admission_cache()
         with self._lock:  # the current entry, else the first available; with ``model``: the current one if available
             current = self._current_unlocked()
-            if current is not None and model is None and (
+            if current is not None and model is None and not self._usage_admission_denied(current) and (
                 endpoint_url is None or credential_pool_entry_serves_endpoint(current, endpoint_url)
             ):
                 return current

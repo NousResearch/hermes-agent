@@ -124,6 +124,8 @@ def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     # ``hermes_cli/`` package in the directory Hermes was started from would run instead of ours.
     argv = [*extraction_launcher(Path(home)), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child",
             "--extract-profiles", str(plugin_dir.resolve()), module_name]
+    if (moved := home_moved_refusal(Path(home))) is not None:  # the launcher was read through the name too
+        return {"error": moved}
     try:
         done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
                               cwd=home, timeout=_EXTRACT_TIMEOUT_SECS, check=False)

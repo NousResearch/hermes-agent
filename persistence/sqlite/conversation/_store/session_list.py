@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from persistence.sqlite.conversation._store.compression import get_compression_chain
 from persistence.sqlite.conversation._store.portability import _get_session_rich_rows_batch
+from persistence.sqlite.conversation._store.sql_common import _id_chunks, _placeholders
 
 
 def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
@@ -24,10 +25,11 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
     )
     # An untitled tip inherits the nearest titled segment's name, not only the root's: a lineage
     # titled after its first rotation keeps that title on a MIDDLE segment, so the tip read '—'.
-    untitled = {i for c in chain_by_root.values() if not (tip_rows.get(c[-1]) or {}).get("title") for i in c[:-1]}
-    titles = dict(db._read_all(
-        f"SELECT id, title FROM sessions WHERE title IS NOT NULL AND id IN ({','.join('?' * len(untitled))})",
-        list(untitled))) if untitled else {}
+    untitled = sorted({i for c in chain_by_root.values() if not (tip_rows.get(c[-1]) or {}).get("title") for i in c[:-1]})
+    titles = {}
+    for chunk in _id_chunks(untitled):  # long chains x many rows must stay under SQLite's variable limit
+        titles.update(db._read_all(
+            f"SELECT id, title FROM sessions WHERE title IS NOT NULL AND id IN ({_placeholders(chunk)})", chunk))
     projected = []
     for s in sessions:
         chain = chain_by_root.get(s["id"])

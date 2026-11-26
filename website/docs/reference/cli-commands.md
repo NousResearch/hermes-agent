@@ -1878,7 +1878,7 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List recent conversations: one row per thread (a compressed thread shows its live continuation's id), ranked by last message. Subagent runs are left out; so are cron/webhook/push/kanban/one-shot runs and empty sessions unless you pass `--all`. |
+| `list` | List recent conversations: one row per thread (a compressed thread shows its live continuation's id), ranked by last message. Subagent runs are left out; so are cron/webhook/push/kanban/tool/one-shot runs and empty sessions unless you pass `--all`. |
 | `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |

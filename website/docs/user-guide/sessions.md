@@ -370,11 +370,11 @@ hermes sessions list --source telegram
 # Show more sessions
 hermes sessions list --limit 50
 
-# Also show cron/webhook/push runs and sessions with no messages
+# Show every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages
 hermes sessions list --all
 ```
 
-The list holds the conversations you resume: one row per thread, ranked by its last message. A thread that was compressed shows once, under the id of its live continuation (the one `hermes --resume` continues) and the title of the most recent part of the thread that has one. Subagent runs never appear here. Cron, webhook, push, kanban and one-shot runs and empty sessions stay out unless you pass `--all` (or name a `--source`).
+The list holds the conversations you resume: one row per thread, ranked by its last message. A thread that was compressed shows once, under the id of its live continuation (the one `hermes --resume` continues) and the title of the most recent part of the thread that has one. Subagent runs never appear here. Cron, webhook, push, kanban, tool and one-shot runs and empty sessions stay out unless you pass `--all` (or name a `--source`).
 
 When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
 

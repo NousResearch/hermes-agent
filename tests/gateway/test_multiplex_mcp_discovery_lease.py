@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -154,6 +155,85 @@ async def test_multiplex_mcp_discovery_failure_warns_and_continues_subsequent_pr
     assert any("finished" in msg.lower() and "healthy" in msg and re.search(r"\d+\.\d+s", msg) for msg in info_messages)
 
 
+class _FakeClock:
+    """Thread-safe deterministic monotonic clock for driving StartupWatchdogHandle."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self._lock = threading.Lock()
+        self._now = start
+
+    def monotonic(self) -> float:
+        with self._lock:
+            return self._now
+
+    def advance(self, seconds: float) -> float:
+        with self._lock:
+            self._now += seconds
+            return self._now
+
+
+class _StepEvent:
+    """Event stand-in for StartupWatchdogHandle._disarmed_event that wakes the watchdog
+    thread deterministically after advancing a fake clock."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._flag = False
+        self._stopped = False
+        self._epoch = 0
+        self._parked_at_epoch = -1
+        self._waiting = False
+
+    def is_set(self) -> bool:
+        with self._cond:
+            return self._flag
+
+    def set(self) -> None:
+        with self._cond:
+            self._flag = True
+            self._cond.notify_all()
+
+    def notify_stopped(self) -> None:
+        with self._cond:
+            self._stopped = True
+            self._cond.notify_all()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        with self._cond:
+            if self._flag:
+                return True
+            seen_epoch = self._epoch
+            self._waiting = True
+            self._parked_at_epoch = seen_epoch
+            self._cond.notify_all()
+            try:
+                self._cond.wait_for(
+                    lambda: self._flag or self._epoch != seen_epoch,
+                    timeout=10.0,
+                )
+                return self._flag
+            finally:
+                self._waiting = False
+
+    def step(self, timeout: float = 10.0) -> bool:
+        """Wake the parked watchdog for one expiry check and wait until it parks again or stops."""
+        with self._cond:
+            if not self._cond.wait_for(
+                lambda: self._flag or self._stopped or (self._waiting and self._parked_at_epoch == self._epoch),
+                timeout=timeout,
+            ):
+                return False
+            if self._flag or self._stopped:
+                return True
+            self._epoch += 1
+            target = self._epoch
+            self._cond.notify_all()
+            return self._cond.wait_for(
+                lambda: self._flag or self._stopped or (self._waiting and self._parked_at_epoch == target),
+                timeout=timeout,
+            )
+
+
 @pytest.mark.asyncio
 async def test_multiplex_mcp_discovery_keeps_armed_watchdog_alive_across_slow_profiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -167,20 +247,51 @@ async def test_multiplex_mcp_discovery_keeps_armed_watchdog_alive_across_slow_pr
     for _name, home in homes:
         home.mkdir()
 
+    clock = _FakeClock()
     fired = threading.Event()
-    monkeypatch.setattr(StartupWatchdogHandle, "_exit", staticmethod(lambda _code: fired.set()))
+    step_events: list[_StepEvent] = []
+
+    def make_event() -> _StepEvent:
+        ev = _StepEvent()
+        step_events.append(ev)
+        return ev
+
+    def on_exit(_code: int) -> None:
+        fired.set()
+        for ev in step_events:
+            ev.notify_stopped()
+
+    monkeypatch.setattr(
+        sw,
+        "time",
+        SimpleNamespace(monotonic=clock.monotonic, process_time=lambda: 0.0, sleep=time.sleep),
+    )
+    monkeypatch.setattr(
+        sw,
+        "threading",
+        SimpleNamespace(Lock=threading.Lock, Thread=threading.Thread, Event=make_event),
+    )
+    monkeypatch.setattr(StartupWatchdogHandle, "_exit", staticmethod(on_exit))
     monkeypatch.setattr(StartupWatchdogHandle, "_process_cpu_seconds", staticmethod(lambda: 0.0))
     monkeypatch.setattr(sw, "_MAX_CPU_EXTENSIONS", 0)
-    monkeypatch.setattr(sw, "_POLL_SLICE_S", 0.02)
     monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda multiplex: homes)
+
+    expected_lease = _expected_per_profile_lease_s()
+    timeout_s = min(sw.DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S, expected_lease / 2.0)
+    step_s = (timeout_s + expected_lease) / 2.0
+
+    handle = arm_startup_watchdog(timeout_s=timeout_s)
+    assert handle is not None
+
     def slow_discover() -> list[str]:
-        time.sleep(0.12)  # health: allow HX013 -- simulates I/O-bound discovery outlasting watchdog timeout
+        now = clock.advance(step_s)
+        assert handle._disarmed_event.step(timeout=10.0)
+        if not fired.is_set():
+            with handle._state_lock:
+                assert handle._deadline > now
         return []
 
     monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", slow_discover)
-
-    handle = arm_startup_watchdog(timeout_s=0.15)
-    assert handle is not None
     try:
         await gateway_run._discover_gateway_mcp_tools(GatewayConfig(multiplex_profiles=True))
         assert not fired.is_set(), "watchdog fired during active multiplex MCP discovery"
@@ -189,6 +300,7 @@ async def test_multiplex_mcp_discovery_keeps_armed_watchdog_alive_across_slow_pr
             assert handle._lease_phase == "mcp_discovery:p2"
     finally:
         disarm_startup_watchdog()
+        handle.join(timeout=10.0)
 
 
 @pytest.mark.asyncio

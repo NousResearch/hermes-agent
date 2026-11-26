@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Hermes WebTmux</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --fg: #c9d1d9;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --pane-bg: #161b22;
+    --input-bg: #21262d;
+    --tab-active: #238636;
+    --tab-hover: #1a1e24;
+    --danger: #da3633;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    overflow: hidden;
+    -webkit-text-size-adjust: none;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+
+  /* ---- Tabs bar ---- */
+  #tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab {
+    display: flex; align-items: center; gap: 4px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    background: var(--pane-bg);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--fg);
+    user-select: none;
+  }
+  .tab:hover { background: var(--tab-hover); }
+  .tab.active { background: var(--tab-active); color: #fff; border-color: var(--tab-active); }
+  .tab .close-tab {
+    font-size: 14px; line-height: 1; opacity: 0.5; cursor: pointer;
+    padding: 0 2px; border-radius: 3px;
+  }
+  .tab .close-tab:hover { opacity: 1; background: var(--danger); color: #fff; }
+  #newtab-btn {
+    padding: 5px 10px;
+    border-radius: 6px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--fg);
+    flex-shrink: 0;
+  }
+  #newtab-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* ---- Main content ---- */
+  #main {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* ---- Panes grid ---- */
+  #panes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 3px;
+    flex: 1;
+    padding: 3px;
+    min-height: 0;
+    min-width: 0;
+    position: relative;
+  }
+  .pane {
+    background: var(--pane-bg);
+    border: 2px solid var(--border);
+    border-radius: 6px;
+    overflow: auto;
+    padding: 4px 6px;
+    font-size: 10px;
+    line-height: 1.3;
+    white-space: pre;
+    position: relative;
+    cursor: pointer;
+    min-width: 0;
+    min-height: 0;
+    transition: border-color 0.15s;
+  }
+  .pane::-webkit-scrollbar { width: 4px; }
+  .pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .pane.active-pane { border-color: var(--accent); }
+  .pane-label {
+    position: absolute;
+    top: 2px; right: 4px;
+    font-size: 9px;
+    color: #8b949e;
+    background: rgba(0,0,0,0.5);
+    padding: 1px 5px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .pane-content { display: block; }
+
+  /* ---- Optimistic input echo ---- */
+  .input-echo {
+    position: absolute;
+    bottom: 4px; left: 6px; right: 6px;
+    background: rgba(88,166,255,0.15);
+    color: var(--accent);
+    font-size: inherit;
+    line-height: 1.3;
+    padding: 2px 6px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 2;
+    white-space: pre;
+    overflow: hidden;
+    max-height: 1.6em;
+    display: none;
+  }
+  .pane.active-pane .input-echo.visible { display: block; }
+
+  /* ---- Fullscreen pane ---- */
+  .pane.fullscreen {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 10;
+    border-radius: 0;
+    font-size: 12px;
+  }
+  .fullscreen-exit {
+    display: none;
+    position: absolute;
+    top: 6px; left: 6px;
+    z-index: 11;
+    background: var(--danger);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    opacity: 0.7;
+  }
+  .fullscreen-exit:hover { opacity: 1; }
+  .pane.fullscreen .fullscreen-exit { display: block; }
+
+  /* ---- Hidden textarea for mobile keyboard ---- */
+  #hidden-input {
+    position: fixed;
+    bottom: 0; left: 0;
+    width: 100%; height: 1px;
+    opacity: 0;
+    font-size: 16px; /* prevents iOS zoom on focus */
+    border: none;
+    outline: none;
+    resize: none;
+    z-index: 100;
+    pointer-events: none;
+  }
+  #hidden-input:focus {
+    pointer-events: auto;
+  }
+
+  /* ---- Bottom status bar ---- */
+  #status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+    font-size: 11px;
+    color: #8b949e;
+  }
+  #active-pane-label { color: var(--accent); }
+  #ws-status { margin-left: auto; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 3px; }
+  .dot.green { background: #3fb950; }
+  .dot.red { background: var(--danger); }
+
+  /* ---- Empty state ---- */
+  #empty-state {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    color: #8b949e;
+    font-size: 16px;
+    flex-direction: column;
+    gap: 12px;
+  }
+  #empty-state button {
+    padding: 10px 24px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+  }
+
+  /* ---- Mobile layout ---- */
+  @media (max-width: 768px) {
+    #main { flex-direction: column; }
+    #panes {
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      flex: 1;
+      min-height: 200px;
+    }
+    .pane { font-size: 8px; line-height: 1.2; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="tabs">
+    <button id="newtab-btn" title="New session">+</button>
+  </div>
+
+  <!-- Empty state shown when no sessions exist -->
+  <div id="empty-state">
+    <div>No active sessions</div>
+    <button onclick="createSession()">Create Session</button>
+  </div>
+
+  <!-- Main content: panes only (hidden until session active) -->
+  <div id="main" style="display:none;">
+    <div id="panes">
+      <div class="pane active-pane" data-pane="0">
+        <span class="pane-label">hermes</span>
+        <button class="fullscreen-exit">X</button>
+        <span class="pane-content"></span>
+        <span class="input-echo"></span>
+      </div>
+      <div class="pane" data-pane="1">
+        <span class="pane-label">term</span>
+        <button class="fullscreen-exit">X</button>
+        <span class="pane-content"></span>
+        <span class="input-echo"></span>
+      </div>
+      <div class="pane" data-pane="2">
+        <span class="pane-label">term</span>
+        <button class="fullscreen-exit">X</button>
+        <span class="pane-content"></span>
+        <span class="input-echo"></span>
+      </div>
+      <div class="pane" data-pane="3">
+        <span class="pane-label">term</span>
+        <button class="fullscreen-exit">X</button>
+        <span class="pane-content"></span>
+        <span class="input-echo"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden textarea for mobile keyboard capture -->
+  <textarea id="hidden-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+
+  <div id="status-bar">
+    <span id="active-pane-label">Pane 0 (hermes)</span>
+    <span id="ws-status"><span class="dot red"></span>Disconnected</span>
+  </div>
+</div>
+
+<script>
+(function() {
+  "use strict";
+
+  // ---- DOM refs ----
+  var tabsEl = document.getElementById("tabs");
+  var newtabBtn = document.getElementById("newtab-btn");
+  var emptyState = document.getElementById("empty-state");
+  var mainEl = document.getElementById("main");
+  var panesEl = document.getElementById("panes");
+  var activePaneLabel = document.getElementById("active-pane-label");
+  var wsStatusEl = document.getElementById("ws-status");
+  var hiddenInput = document.getElementById("hidden-input");
+  var paneEls = document.querySelectorAll(".pane");
+
+  // ---- State ----
+  var ws = null;
+  var currentSid = null;
+  var sessions = [];       // [{id, name}]
+  var activePane = 0;
+  var paneLabels = ["hermes", "term", "term", "term"];
+
+  var urlParams = new URLSearchParams(location.search);
+  var accessCode = urlParams.get("code") || "";
+
+  // ---- Utility ----
+  function apiUrl(path) {
+    return path + (accessCode ? (path.includes("?") ? "&" : "?") + "code=" + encodeURIComponent(accessCode) : "");
+  }
+
+  // ---- WebSocket ----
+  function connectWS(sid) {
+    if (ws) {
+      // Detach handlers before closing to prevent the old onclose
+      // from nulling out the new ws reference (async race condition)
+      ws.onopen = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+      ws = null;
+    }
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    var url = proto + "//" + location.host + "/ws?sid=" + encodeURIComponent(sid) + "&code=" + encodeURIComponent(accessCode);
+    ws = new WebSocket(url);
+
+    ws.onopen = function() {
+      currentSid = sid;
+      setWsStatus(true);
+    };
+    ws.onclose = function() {
+      // Only null ws if this is still the current connection
+      if (this === ws) {
+        ws = null;
+        setWsStatus(false);
+      }
+    };
+    ws.onerror = function(e) {
+      console.error("WS error", e);
+    };
+    ws.onmessage = function(ev) {
+      try { handleMsg(JSON.parse(ev.data)); }
+      catch(e) { console.error("Bad WS msg", e); }
+    };
+  }
+
+  function setWsStatus(connected) {
+    wsStatusEl.innerHTML = connected
+      ? '<span class="dot green"></span>Connected'
+      : '<span class="dot red"></span>Disconnected';
+  }
+
+  function sendWs(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  // ---- Pane resize helpers ----
+  function measureChar(paneEl) {
+    var span = document.createElement("span");
+    span.textContent = "XXXXXXXXXXXXXXXXXXXX";
+    span.style.visibility = "hidden";
+    span.style.position = "absolute";
+    paneEl.appendChild(span);
+    var rect = span.getBoundingClientRect();
+    paneEl.removeChild(span);
+    return { w: rect.width / 20, h: rect.height };
+  }
+
+  function resizePaneToFit(paneIndex) {
+    var paneEl = document.querySelector('.pane[data-pane="' + paneIndex + '"]');
+    if (!paneEl || !currentSid) return;
+    var ch = measureChar(paneEl);
+    if (!ch.w || !ch.h) return;
+    var padX = 12;
+    var padY = 8;
+    var cols = Math.floor((paneEl.clientWidth - padX) / ch.w);
+    var rows = Math.floor((paneEl.clientHeight - padY) / ch.h);
+    if (cols > 0 && rows > 0) {
+      sendWs({type: "resize", pane: paneIndex, width: cols, height: rows});
+    }
+  }
+
+  function resizeAllPanes() {
+    for (var i = 0; i < 4; i++) resizePaneToFit(i);
+  }
+
+  // ---- ANSI to HTML converter ----
+  var ANSI_COLORS = [
+    '#000','#c00','#0a0','#c50','#00c','#c0c','#0cc','#ccc',
+    '#555','#f55','#5f5','#ff5','#55f','#f5f','#5ff','#fff'
+  ];
+
+  function ansiColor256(n) {
+    if (n < 16) return ANSI_COLORS[n];
+    if (n < 232) {
+      n -= 16;
+      var r = Math.floor(n / 36) * 51;
+      var g = Math.floor((n % 36) / 6) * 51;
+      var b = (n % 6) * 51;
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    }
+    var v = (n - 232) * 10 + 8;
+    return 'rgb(' + v + ',' + v + ',' + v + ')';
+  }
+
+  function ansiToHtml(text) {
+    var result = '';
+    var fg = null, bg = null, bold = false, dim = false, italic = false, underline = false, inverse = false;
+    var openSpan = false;
+
+    function applySpan() {
+      if (openSpan) result += '</span>';
+      var styles = [];
+      var aFg = inverse ? (bg || '#000') : fg;
+      var aBg = inverse ? (fg || '#ccc') : bg;
+      if (aFg) styles.push('color:' + aFg);
+      if (aBg) styles.push('background:' + aBg);
+      if (bold) styles.push('font-weight:bold');
+      if (dim) styles.push('opacity:0.7');
+      if (italic) styles.push('font-style:italic');
+      if (underline) styles.push('text-decoration:underline');
+      if (styles.length > 0) {
+        result += '<span style="' + styles.join(';') + '">';
+        openSpan = true;
+      } else {
+        openSpan = false;
+      }
+    }
+
+    var i = 0;
+    while (i < text.length) {
+      // ESC [ ... <letter> — CSI sequence
+      if (text.charCodeAt(i) === 0x1b && text[i + 1] === '[') {
+        var j = i + 2;
+        while (j < text.length && j - i < 24) {
+          var cc = text.charCodeAt(j);
+          if (cc >= 0x40 && cc <= 0x7e) break; // final byte
+          j++;
+        }
+        if (j < text.length) {
+          var finalChar = text[j];
+          if (finalChar === 'm') {
+            // SGR — parse color/style codes
+            var raw = text.substring(i + 2, j);
+            var codes = raw === '' ? [0] : raw.split(';').map(Number);
+            var k = 0;
+            while (k < codes.length) {
+              var c = codes[k];
+              if (c === 0) { fg=null; bg=null; bold=false; dim=false; italic=false; underline=false; inverse=false; }
+              else if (c === 1) bold = true;
+              else if (c === 2) dim = true;
+              else if (c === 3) italic = true;
+              else if (c === 4) underline = true;
+              else if (c === 7) inverse = true;
+              else if (c === 22) { bold=false; dim=false; }
+              else if (c === 23) italic = false;
+              else if (c === 24) underline = false;
+              else if (c === 27) inverse = false;
+              else if (c >= 30 && c <= 37) fg = ANSI_COLORS[c - 30 + (bold ? 8 : 0)];
+              else if (c >= 40 && c <= 47) bg = ANSI_COLORS[c - 40];
+              else if (c >= 90 && c <= 97) fg = ANSI_COLORS[c - 90 + 8];
+              else if (c >= 100 && c <= 107) bg = ANSI_COLORS[c - 100 + 8];
+              else if (c === 39) fg = null;
+              else if (c === 49) bg = null;
+              else if (c === 38 && codes[k+1] === 5 && codes.length > k+2) { fg = ansiColor256(codes[k+2]); k += 2; }
+              else if (c === 48 && codes[k+1] === 5 && codes.length > k+2) { bg = ansiColor256(codes[k+2]); k += 2; }
+              else if (c === 38 && codes[k+1] === 2 && codes.length > k+4) { fg = 'rgb('+codes[k+2]+','+codes[k+3]+','+codes[k+4]+')'; k += 4; }
+              else if (c === 48 && codes[k+1] === 2 && codes.length > k+4) { bg = 'rgb('+codes[k+2]+','+codes[k+3]+','+codes[k+4]+')'; k += 4; }
+              k++;
+            }
+            applySpan();
+          }
+          // Skip non-SGR CSI sequences silently
+          i = j + 1;
+          continue;
+        }
+      }
+      // Strip other ESC sequences (OSC, etc.)
+      if (text.charCodeAt(i) === 0x1b) { i++; continue; }
+      // HTML-escape literal characters
+      var ch = text[i];
+      if (ch === '&') result += '&amp;';
+      else if (ch === '<') result += '&lt;';
+      else if (ch === '>') result += '&gt;';
+      else result += ch;
+      i++;
+    }
+    if (openSpan) result += '</span>';
+    return result;
+  }
+
+  // ---- Optimistic input echo state ----
+  var inputBuffer = '';      // chars typed since last snapshot
+  var inputFlushTimer = null;
+  var INPUT_FLUSH_MS = 80;   // batch chars for 80ms before sending
+
+  function showInputEcho(text) {
+    var el = document.querySelector('.pane[data-pane="' + activePane + '"] .input-echo');
+    if (!el) return;
+    if (text) {
+      el.textContent = text;
+      el.classList.add('visible');
+    } else {
+      el.textContent = '';
+      el.classList.remove('visible');
+    }
+  }
+
+  function flushInputBuffer() {
+    inputFlushTimer = null;
+    if (!inputBuffer || !currentSid) return;
+    // Send as a single batch instead of one WS message per char
+    sendWs({type: "keys", pane: activePane, text: inputBuffer});
+    inputBuffer = '';
+  }
+
+  function queueChar(ch) {
+    inputBuffer += ch;
+    showInputEcho(inputBuffer);
+    // Debounce: wait for more chars before sending
+    if (inputFlushTimer) clearTimeout(inputFlushTimer);
+    inputFlushTimer = setTimeout(flushInputBuffer, INPUT_FLUSH_MS);
+  }
+
+  function sendSpecialKey(key, ctrl) {
+    // Flush any pending literal chars first
+    if (inputBuffer) flushInputBuffer();
+    if (ctrl) {
+      sendWs({type: "key", pane: activePane, key: key, ctrl: true});
+    } else {
+      sendWs({type: "key", pane: activePane, key: key});
+    }
+    // Clear echo on Enter (command submitted)
+    if (key === 'Enter') showInputEcho('');
+  }
+
+  // ---- Message handling (debounced rendering) ----
+  var pendingSnapshot = null;
+  var renderRAF = null;
+
+  function renderSnapshot() {
+    renderRAF = null;
+    var msg = pendingSnapshot;
+    if (!msg) return;
+    pendingSnapshot = null;
+    for (var i = 0; i < msg.panes.length && i < 4; i++) {
+      var el = document.querySelector('.pane[data-pane="' + i + '"] .pane-content');
+      if (el) el.innerHTML = ansiToHtml(msg.panes[i]);
+    }
+    // Auto-scroll each pane to bottom
+    paneEls.forEach(function(p) { p.scrollTop = p.scrollHeight; });
+    // Clear input echo once tmux reflects the input
+    if (!inputBuffer) showInputEcho('');
+  }
+
+  function handleMsg(msg) {
+    if (msg.type === "pane_snapshot" && msg.sid === currentSid) {
+      // Debounce: only render on next animation frame
+      pendingSnapshot = msg;
+      if (!renderRAF) renderRAF = requestAnimationFrame(renderSnapshot);
+    }
+  }
+
+  // ---- Tabs ----
+  function renderTabs() {
+    var children = Array.from(tabsEl.children);
+    for (var c = 0; c < children.length; c++) {
+      if (children[c] !== newtabBtn) tabsEl.removeChild(children[c]);
+    }
+
+    for (var s = 0; s < sessions.length; s++) {
+      (function(sess) {
+        var tab = document.createElement("div");
+        tab.className = "tab" + (sess.id === currentSid ? " active" : "");
+
+        var label = document.createElement("span");
+        label.textContent = sess.id;
+        label.onclick = function() { switchSession(sess.id); };
+        tab.appendChild(label);
+
+        var close = document.createElement("span");
+        close.className = "close-tab";
+        close.textContent = "\u00d7";
+        close.title = "Destroy session";
+        close.onclick = function(e) {
+          e.stopPropagation();
+          destroySession(sess.id);
+        };
+        tab.appendChild(close);
+
+        tabsEl.insertBefore(tab, newtabBtn);
+      })(sessions[s]);
+    }
+
+    if (sessions.length === 0) {
+      emptyState.style.display = "flex";
+      mainEl.style.display = "none";
+    } else {
+      emptyState.style.display = "none";
+      mainEl.style.display = "flex";
+    }
+  }
+
+  function switchSession(sid) {
+    currentSid = sid;
+    renderTabs();
+    connectWS(sid);
+  }
+
+  // ---- Session API ----
+  async function createSession() {
+    var id = "sess_" + Date.now();
+    try {
+      var res = await fetch(apiUrl("/api/sessions"), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id: id}),
+      });
+      if (!res.ok) {
+        var t = await res.text();
+        alert("Failed to create session: " + t);
+        return;
+      }
+      var data = await res.json();
+      sessions.push({id: data.id, name: data.name});
+      renderTabs();
+      switchSession(data.id);
+    } catch(e) {
+      alert("Error creating session: " + e.message);
+    }
+  }
+  // Expose for onclick in empty-state button
+  window.createSession = createSession;
+
+  async function destroySession(sid) {
+    if (!confirm("Destroy session " + sid + "? This kills the tmux session.")) return;
+    try {
+      await fetch(apiUrl("/api/sessions/" + encodeURIComponent(sid)), {method: "DELETE"});
+    } catch(e) { /* ignore */ }
+    sessions = sessions.filter(function(s) { return s.id !== sid; });
+    if (currentSid === sid) {
+      if (ws) { ws.close(); ws = null; }
+      currentSid = sessions.length > 0 ? sessions[0].id : null;
+    }
+    renderTabs();
+    if (currentSid) switchSession(currentSid);
+  }
+
+  async function listSessions() {
+    try {
+      var res = await fetch(apiUrl("/api/sessions"));
+      if (!res.ok) return;
+      var data = await res.json();
+      sessions = data.sessions.map(function(s) { return {id: s.id, name: s.name || s.id}; });
+      renderTabs();
+      if (sessions.length > 0 && !currentSid) switchSession(sessions[0].id);
+    } catch(e) { /* ignore */ }
+  }
+
+  newtabBtn.onclick = createSession;
+
+  // ---- Pane focus + single/double click discrimination ----
+  var clickTimer = null;
+
+  function setActivePane(paneEl) {
+    paneEls.forEach(function(x) { x.classList.remove("active-pane"); });
+    paneEl.classList.add("active-pane");
+    activePane = parseInt(paneEl.dataset.pane);
+    activePaneLabel.textContent = "Pane " + activePane + " (" + paneLabels[activePane] + ")";
+  }
+
+  paneEls.forEach(function(p) {
+    p.addEventListener("click", function(e) {
+      if (e.target.classList.contains("fullscreen-exit")) return;
+      if (clickTimer) return; // waiting for dblclick discrimination
+
+      var isAlreadyActive = p.classList.contains("active-pane");
+
+      if (isAlreadyActive) {
+        // Already selected — immediately open keyboard, no delay
+        hiddenInput.focus();
+        return;
+      }
+
+      // New pane — use delay to discriminate from double-click
+      clickTimer = setTimeout(function() {
+        clickTimer = null;
+        setActivePane(p);
+        hiddenInput.focus();
+      }, 180);
+    });
+
+    // Double click: toggle fullscreen with tmux zoom
+    p.addEventListener("dblclick", function(e) {
+      if (e.target.classList.contains("fullscreen-exit")) return;
+
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+      }
+
+      var entering = !p.classList.contains("fullscreen");
+      p.classList.toggle("fullscreen");
+      setActivePane(p);
+
+      if (entering) {
+        // Zoom the tmux pane to fill the tmux window
+        sendWs({type: "zoom", pane: activePane});
+      } else {
+        // Unzoom + equalize layout so all panes get equal space
+        sendWs({type: "zoom", pane: activePane});
+        sendWs({type: "equalize"});
+      }
+    });
+  });
+
+  // Fullscreen exit buttons
+  document.querySelectorAll(".fullscreen-exit").forEach(function(btn) {
+    btn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var pane = btn.closest(".pane");
+      if (pane) {
+        var idx = parseInt(pane.dataset.pane);
+        pane.classList.remove("fullscreen");
+        // Unzoom + equalize
+        sendWs({type: "zoom", pane: idx});
+        sendWs({type: "equalize"});
+      }
+    });
+  });
+
+  activePaneLabel.textContent = "Pane 0 (" + paneLabels[0] + ")";
+
+  // ---- Input handling via hidden textarea ----
+  // All keyboard input goes through this textarea so mobile keyboards work.
+
+  // Special keys list for keydown handling
+  var specials = [
+    "Enter", "Backspace", "Tab", "Escape",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+    "Home", "End", "PageUp", "PageDown", "Delete", "Insert",
+    "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"
+  ];
+
+  // Shared keydown handler for both hidden input and document fallback
+  function handleKeydown(e) {
+    if (!currentSid) return;
+
+    var key = e.key;
+    var ctrl = e.ctrlKey || e.metaKey;
+
+    // Ctrl combos — send immediately
+    if (ctrl && key.length === 1) {
+      sendSpecialKey(key, true);
+      e.preventDefault();
+      return;
+    }
+
+    // Special keys — send immediately
+    if (specials.indexOf(key) !== -1) {
+      sendSpecialKey(key, false);
+      e.preventDefault();
+      return;
+    }
+
+    // Let printable characters go through to the input event (hidden textarea)
+    // or queue them directly (document fallback)
+    if (e.target !== hiddenInput && key.length === 1 && !e.altKey) {
+      queueChar(key);
+      e.preventDefault();
+      return;
+    }
+  }
+
+  hiddenInput.addEventListener("keydown", handleKeydown);
+
+  hiddenInput.addEventListener("input", function(e) {
+    if (!currentSid) return;
+    var text = hiddenInput.value;
+    if (text) {
+      for (var i = 0; i < text.length; i++) {
+        queueChar(text[i]);
+      }
+    }
+    hiddenInput.value = "";
+  });
+
+  // Fallback for desktop users who haven't clicked a pane
+  document.addEventListener("keydown", function(e) {
+    if (document.activeElement === hiddenInput) return;
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+    handleKeydown(e);
+  });
+
+  // ---- Init ----
+  listSessions();
+  setWsStatus(false);
+})();
+</script>
+</body>
+</html>

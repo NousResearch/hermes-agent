@@ -41,6 +41,11 @@ const pick = (colors: SkinColors, keys: string[], backdrop: string): string | nu
 
 const titleCase = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1)
 
+// Catalog presentation for the shipped One Dark Pro skin; upstream still labels
+// it "One-dark / Hermes skin", so only this skin gets the display strings.
+const ONE_DARK_LABEL = 'One Dark Pro'
+const ONE_DARK_DESCRIPTION = 'Atom One Dark Pro theme for Hermes Desktop / Web App'
+
 /**
  * Convert a resolved skin into a `DesktopTheme`, or null when it carries no
  * usable colors (so a broken/empty skin never registers junk).
@@ -109,8 +114,8 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
 
   const theme: DesktopTheme = {
     name,
-    label: titleCase(name),
-    description: 'Hermes skin',
+    label: name === 'one-dark' ? ONE_DARK_LABEL : titleCase(name),
+    description: name === 'one-dark' ? ONE_DARK_DESCRIPTION : 'Hermes skin',
     // Single palette in both slots: a skin is one-mode, so the light/dark toggle
     // shouldn't invert it. renderedModeFor still paints `.dark` from luminance.
     colors: palette,

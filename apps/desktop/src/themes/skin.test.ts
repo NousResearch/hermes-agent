@@ -31,6 +31,13 @@ describe('skinToDesktopTheme', () => {
     expect(theme.name).toBe('one-dark')
   })
 
+  it('labels the One Dark Pro skin for the theme catalog', () => {
+    const theme = withColors('one-dark', { background: '#282c34' })!
+
+    expect(theme.label).toBe('One Dark Pro')
+    expect(theme.description).toBe('Atom One Dark Pro theme for Hermes Desktop / Web App')
+  })
+
   it('returns null without a name or colors', () => {
     expect(skinToDesktopTheme({ name: 'x' })).toBeNull()
     expect(skinToDesktopTheme({ name: '', colors: { background: '#101010' } })).toBeNull()

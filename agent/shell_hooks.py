@@ -7,10 +7,12 @@ Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor).
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -320,13 +322,15 @@ def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]],
     """Allowlisted, or approved now (opt-in, or a TTY prompt when ``prompt``; recorded); ``allowed``
     caches one read."""
     pair = (spec.event, spec.command)
-    changed = (script_change_since_approval(allowlist_entry_for(*pair), spec.command)
-                if pair in allowed and prompt else None)
-    if pair in allowed and not changed:
-        return True  # a changed script elsewhere stays registered; its callback refuses to run it
+    if pair in allowed:
+        if (accept or prompt) and (changed := script_change_since_approval(allowlist_entry_for(*pair), spec.command)):
+            # An opt-in or a yes refreshes the pin; a no keeps the hook wired, and its callback refuses the
+            # changed bytes (a fail_closed guard blocks instead of vanishing).
+            _prompt_and_record(spec.event, spec.command, accept_hooks=accept, changed=changed)
+        return True
     if not (accept or prompt):
         return False
-    if not _prompt_and_record(spec.event, spec.command, accept_hooks=accept, changed=changed):
+    if not _prompt_and_record(spec.event, spec.command, accept_hooks=accept):
         return False
     allowed.add(pair)
     return True
@@ -856,14 +860,17 @@ def script_mtime_iso(command: str) -> Optional[str]:
 
 
 def script_content_hash(command: str) -> Optional[str]:
-    """SHA-256 hex digest of the resolved script file, or ``None`` if
-    the script is missing or unreadable."""
-    import hashlib
+    """SHA-256 hex digest of the script file ``command`` runs, or ``None`` if missing or unreadable. A bare
+    first token (``guard.sh``) that is not a file here is looked up on PATH, as ``Popen`` runs it."""
     path = _command_script_path(command)
     if not path:
         return None
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded) and os.sep not in path and "/" not in path:
+        with suppress(ValueError):
+            argv = split_command_line(command)
+            expanded = (shutil.which(path) or expanded) if argv and argv[0] == path else expanded
     try:
-        expanded = os.path.expanduser(path)
         with open(expanded, "rb") as fh:
             return hashlib.sha256(fh.read()).hexdigest()
     except OSError:
@@ -872,15 +879,15 @@ def script_content_hash(command: str) -> Optional[str]:
 
 def script_change_since_approval(entry: Optional[dict[str, Any]], command: str) -> Optional[str]:
     """Why the script ``command`` runs no longer matches what ``entry`` approved, or ``None``. An entry
-    with no pinned hash (approved before pinning) counts as changed only when the mtime it recorded moved."""
+    with no hash key (approved before pinning) counts as changed only when the mtime it recorded moved;
+    a ``None`` hash (approved while unreadable) counts as changed once the script reads."""
     if not isinstance(entry, dict):
         return None
-    pinned = entry.get("script_hash_at_approval")
-    if not isinstance(pinned, str):
+    if "script_hash_at_approval" not in entry:
         mtime_at, mtime_now = entry.get("script_mtime_at_approval"), script_mtime_iso(command)
         moved = isinstance(mtime_at, str) and mtime_now is not None and mtime_now != mtime_at
         return "script modified since approval" if moved else None
-    current = script_content_hash(command)
+    pinned, current = entry.get("script_hash_at_approval"), script_content_hash(command)
     if current == pinned:
         return None
     return "script unreadable since approval" if current is None else "script content changed since approval"
@@ -894,7 +901,7 @@ def _unapproved_change(spec: ShellHookSpec) -> Optional[str]:
         return None
     reason = script_change_since_approval(entry, spec.command)
     if reason is None:
-        if not isinstance(entry.get("script_hash_at_approval"), str):
+        if "script_hash_at_approval" not in entry:
             _pin_hash(spec.event, spec.command)  # an approval from before pinning, unchanged since: pin it now
         return None
     if _opt_in_in_force():  # hooks_auto_accept / --accept-hooks approve every hook, the changed one too
@@ -915,7 +922,7 @@ def _pin_hash(event: str, command: str) -> None:
         return
     with _locked_update_approvals() as data:
         for e in data.get("approvals", []):
-            if _entry_matches(e, event, command) and not isinstance(e.get("script_hash_at_approval"), str):
+            if _entry_matches(e, event, command) and "script_hash_at_approval" not in e:
                 e["script_hash_at_approval"] = digest
 
 

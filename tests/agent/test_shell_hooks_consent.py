@@ -349,7 +349,17 @@ def test_changed_script_does_not_run_until_approved_again(tmp_path):
     assert blocked["action"] == "block" and "changed since approval" in blocked["message"]
     assert (tmp_path / "ran.log").read_text().split() == ["approved"]
 
-    shell_hooks._record_approval("pre_tool_call", str(script))
+    from hermes_cli import plugins
+    plugins._plugin_manager = plugins.PluginManager()
+    cfg = {"hooks": {"pre_tool_call": [{"command": str(script), "fail_closed": True}]}}
+    with patch("sys.stdin") as stdin, patch("builtins.input", return_value="n"):
+        stdin.isatty.return_value = True  # declining the re-ask keeps the guard wired, still refusing
+        assert len(shell_hooks.register_from_config(cfg, interactive=True)) == 1
+    verdicts = plugins._plugin_manager.invoke_hook("pre_tool_call", tool_name="terminal", args={}, session_id="s", task_id="t")
+    assert any(isinstance(v, dict) and v.get("action") == "block" for v in verdicts)
+
+    shell_hooks.reset_for_tests()  # a fresh worker process registering with --accept-hooks re-pins
+    shell_hooks.register_from_config(cfg, accept_hooks=True)
     _fire(script)
     assert (tmp_path / "ran.log").read_text().split() == ["approved", "tampered"]
 

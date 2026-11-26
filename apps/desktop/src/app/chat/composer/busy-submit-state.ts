@@ -41,18 +41,12 @@ export function deriveBusySubmitState({
   // Compaction does not: the gateway holds the correction until it finishes.
   const canSteer = busy && !blockingPrompt && hasSteerHandler && attachmentCount === 0 && isSteerableText
 
-  // A media payload can never ride a steer (the gateway carries no image into a
-  // tool result), so it used to QUEUE — the message then waited for the whole
-  // turn to finish. Policy: messages are NEVER queued. A media payload ends
-  // the live turn and runs as the next turn. Compaction still demotes to
-  // queue: the gateway holds a correction until the compaction finishes.
+  // Ordinary busy Send follows backend policy; attachments queue and empty stops.
   const busyAction: ComposerBusyAction = canSteer
     ? (busyInputMode ?? 'interrupt')
-    : hasComposerPayload && !compacting
-      ? 'interrupt'
-      : compacting
-        ? 'queue'
-        : 'stop'
+    : compacting || hasComposerPayload
+      ? 'queue'
+      : 'stop'
 
   return { busyAction, canSteer, canSubmit }
 }

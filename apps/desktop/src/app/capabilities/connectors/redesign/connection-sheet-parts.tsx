@@ -195,11 +195,12 @@ export function useSheetFocusTrap(sheet: RefObject<HTMLDivElement | null>, onEsc
   }, [onEscape, sheet])
 }
 
-/** A Radix menu, popover or dialog rendered above the sheet owns Escape and Tab while it is open. */
+/** A Radix menu, popover or dialog rendered above the sheet owns Escape and Tab while it is open.
+ *  Tooltips are excluded: their popper wrapper wraps a `<Tip>` bubble, which takes no focus. */
 function portalAboveSheet(): boolean {
   return (
     document.querySelector(
-      '[role="menu"], [data-radix-popper-content-wrapper], [role="dialog"]:not([data-slot="connection-sheet"])'
+      '[role="menu"], [role="dialog"]:not([data-slot="connection-sheet"]), [data-slot="popover-content"]'
     ) !== null
   )
 }

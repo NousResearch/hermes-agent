@@ -167,7 +167,8 @@ describe('PaneTabStrip horizontal overflow & scrolling', () => {
       configurable: true,
       get: () => currentLeft,
       set: value => {
-        currentLeft = Math.max(0, Math.min(scrollWidth - clientWidth, value))
+        const max = scrollWidth - clientWidth
+        currentLeft = Math.max(-max, Math.min(max, value))
       }
     })
     el.scrollBy = vi.fn(({ left = 0 }: ScrollToOptions) => {
@@ -220,5 +221,28 @@ describe('PaneTabStrip horizontal overflow & scrolling', () => {
     fireEvent.click(leftBtn)
     expect(list.scrollLeft).toBeLessThan(200)
     expect(rightBtn).toBeTruthy()
+  })
+
+  it("flips the overflow edges for Chromium's negative RTL scroll origin", () => {
+    render(
+      <PaneTabStrip>
+        <PaneTab active role="tab">
+          <PaneTabLabel>Browser</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    const list = screen.getByRole('tablist')
+    stubOverflow(list, { clientWidth: 300, scrollLeft: 0, scrollWidth: 900 })
+
+    const computedStyle = vi
+      .spyOn(window, 'getComputedStyle')
+      .mockReturnValue({ direction: 'rtl' } as CSSStyleDeclaration)
+    fireEvent.scroll(list)
+    computedStyle.mockRestore()
+
+    // 0 is the rightmost start in RTL: left/right swap, and only the left edge remains.
+    expect(list.getAttribute('data-overflow-left')).toBe('true')
+    expect(list.hasAttribute('data-overflow-right')).toBe(false)
   })
 })

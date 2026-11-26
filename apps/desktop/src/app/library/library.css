@@ -544,15 +544,15 @@
 
 .library-lightbox-scrim {
   position: fixed;
-  z-index: var(--portal-layer-sheet);
+  z-index: var(--z-modal-backdrop);
   inset: 0;
-  background: var(--portal-surface-scrim);
-  backdrop-filter: blur(12px);
+  background-color: color-mix(in srgb, var(--portal-raw-black) 70%, transparent);
+  backdrop-filter: none;
 }
 
 .library-lightbox {
   position: fixed;
-  z-index: var(--portal-layer-sheet);
+  z-index: var(--z-modal);
   inset: 0;
   display: flex;
   flex-direction: column;

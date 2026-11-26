@@ -307,8 +307,13 @@ function useTabStripOverflow(scrollerRef: React.RefObject<HTMLDivElement | null>
       return
     }
 
-    const left = el.scrollLeft > OVERFLOW_EPSILON
-    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - OVERFLOW_EPSILON
+    // Chromium's RTL origin is the right edge: `scrollLeft` starts at 0 there
+    // and runs negative toward the leftmost end, so the edges flip.
+    const rtl = getComputedStyle(el).direction === 'rtl'
+    const max = Math.max(0, el.scrollWidth - el.clientWidth)
+    const offset = Math.abs(el.scrollLeft)
+    const left = rtl ? offset < max - OVERFLOW_EPSILON : el.scrollLeft > OVERFLOW_EPSILON
+    const right = rtl ? offset > OVERFLOW_EPSILON : el.scrollLeft < max - OVERFLOW_EPSILON
 
     setOverflow(current => (current.left === left && current.right === right ? current : { left, right }))
   }, [scrollerRef])

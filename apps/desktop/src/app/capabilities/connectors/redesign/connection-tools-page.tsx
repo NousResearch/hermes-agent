@@ -145,7 +145,7 @@ export function ConnectionToolsPage({
   return (
     <section className="conn-tools-page" data-slot="connection-tools-page">
       <button className="conn-back-link" onClick={onBack} type="button">
-        <span aria-hidden>←</span> {card.name}
+        <Codicon aria-hidden className="conn-back-glyph" name="arrow-left" size="0.875rem" /> {card.name}
       </button>
 
       <header className="conn-tools-header">

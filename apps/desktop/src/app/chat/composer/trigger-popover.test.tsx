@@ -188,4 +188,18 @@ describe('ComposerTriggerPopover keyboard scrolling', () => {
     expect(drawer.style.maxHeight).toBe('352px')
     expect(drawer.style.left).toBe('48px')
   })
+
+  it('keeps the drawer inside the HUD shell instead of the main window root', () => {
+    const view = render(
+      <div id="root">
+        <div data-hud-shell="">{popover(0)}</div>
+      </div>
+    )
+    const hud = view.container.querySelector('[data-hud-shell]') as HTMLElement
+    const root = view.container.querySelector('#root') as HTMLElement
+    const drawer = document.querySelector('[data-slot="composer-completion-drawer"]') as HTMLElement
+
+    expect(drawer.parentElement).toBe(hud)
+    expect(drawer.parentElement).not.toBe(root)
+  })
 })

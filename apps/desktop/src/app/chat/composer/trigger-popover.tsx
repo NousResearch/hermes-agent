@@ -91,9 +91,17 @@ function anchorBlock(anchor: HTMLElement): HTMLElement {
  * anchor. Portalling there — rather than `<body>` — keeps the drawer inside the
  * app's own theme/zoom frame (browser-hosted windows scale `#root`) while still
  * stepping outside the window-top zones that clip it. In a bare document (a test
- * container) that is the container itself.
+ * container) that is the container itself; inside the HUD window it is the HUD
+ * shell, whose background, dimming, backdrop and frost the drawer must sit on.
  */
 function shellPortalHost(anchor: HTMLElement): HTMLElement {
+  // A HUD window's shell is the window: escaping it would paint into the hidden main one.
+  const hud = anchor.closest<HTMLElement>('[data-hud-shell]')
+
+  if (hud) {
+    return hud
+  }
+
   let host = anchor.parentElement ?? document.body
 
   while (host.parentElement && host.parentElement !== document.body) {

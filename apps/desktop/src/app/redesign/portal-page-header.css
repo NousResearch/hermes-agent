@@ -154,7 +154,7 @@
 }
 
 :where(:root[data-shell='portal']) .portal-page-tabs-list > [aria-selected='true'] {
-  border-bottom-color: var(--portal-surface-brand);
+  border-bottom-color: var(--portal-brand-ink);
 }
 
 :where(:root[data-shell='portal']) .portal-page-tabs-list > [role='tab']:focus-visible {

@@ -1,6 +1,7 @@
 import './connections.css'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 
 import { cardKey } from '../derive'
 import type { ConnectorCardModel } from '../types'
@@ -53,7 +54,7 @@ export function ConnectionsCategoryDetail({
   return (
     <div className="conn-page" data-conn-mode={mode} data-owns-header="true">
       <button className="conn-back-link" onClick={onBack} type="button">
-        <span aria-hidden>←</span>
+        <Codicon aria-hidden className="conn-back-glyph" name="arrow-left" size="0.875rem" />
         <span>{copy.filters.backToConnections}</span>
       </button>
 

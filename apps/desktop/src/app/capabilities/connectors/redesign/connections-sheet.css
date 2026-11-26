@@ -2,14 +2,14 @@
 
 :root[data-shell='portal'] .conn-sheet-backdrop {
   position: fixed;
-  z-index: var(--portal-layer-sheet-scrim);
+  z-index: var(--z-modal-backdrop);
   inset: 0;
   background: color-mix(in srgb, var(--portal-surface-scrim) 80%, transparent);
 }
 
 :root[data-shell='portal'] .conn-sheet {
   position: fixed;
-  z-index: var(--portal-layer-sheet);
+  z-index: var(--z-modal);
   inset-block: 0;
   inset-inline-end: 0;
   display: flex;
@@ -19,9 +19,9 @@
   flex-direction: column;
   overflow: hidden;
   border-inline-start: 1px solid var(--portal-stroke-floating);
-  background: color-mix(in srgb, var(--portal-surface-elevated) 94%, transparent);
+  background-color: var(--portal-surface-elevated);
   box-shadow: var(--portal-shadow-floating);
-  backdrop-filter: blur(1.25rem);
+  backdrop-filter: none;
   color: var(--portal-text-primary);
 }
 
@@ -161,8 +161,16 @@
 :root[data-shell='portal'] .conn-sheet-card,
 :root[data-shell='portal'] .conn-card {
   padding: 0.875rem 2rem;
+  border: 1px solid var(--portal-stroke-hairline);
   border-radius: var(--portal-radius-frame);
   background: var(--portal-settings-card);
+}
+
+/* Light's settings card is a near-white wash; the sheet needs a solid card to separate from the
+   elevated surface behind it. */
+:root[data-shell='portal']:not(.dark) .conn-sheet-card,
+:root[data-shell='portal']:not(.dark) .conn-card {
+  background-color: var(--portal-surface-card);
 }
 
 :root[data-shell='portal'] .conn-sheet-section-title {
@@ -256,7 +264,7 @@
   width: 100%;
   min-height: 0;
   padding-block: calc(var(--titlebar-height) + var(--portal-page-top)) var(--portal-page-end-space);
-  padding-inline: max(2rem, calc((100% - 62rem) / 2));
+  padding-inline: max(1.5rem, calc((100% - var(--page-content-max-width, 61.25rem)) / 2));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -413,6 +421,11 @@
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-ui-size);
   font-weight: 500;
+}
+
+:root[data-shell='portal'] .conn-tools-group-action:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
 }
 
 :root[data-shell='portal'] .conn-tools-group-card {

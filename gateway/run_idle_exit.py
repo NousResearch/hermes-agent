@@ -124,11 +124,14 @@ def _kanban_busy() -> str | None:
 
 def _ledger_busy(runner) -> str | None:
     from gateway.session_authorities import all_authorities
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import StoreUnavailable
     for authority in all_authorities(runner):
-        db = authority.db
-        if db._read_all("SELECT 1 FROM session_admissions WHERE status IN ('queued','started') LIMIT 1"):
+        if (store := authority_persistence(authority)) is None:
+            raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
+        if store.admissions.has_pending(statuses=frozenset({"queued", "started"})):
             return f"admissions pending in {authority.profile_id}"
-        if db._read_all("SELECT 1 FROM worker_executions WHERE status != 'terminal' LIMIT 1"):
+        if store.worker_executions.has_live_worker():
             return f"managed worker live in {authority.profile_id}"
         service = getattr(authority, "hosted_room_service", None)
         if service is not None:
@@ -198,8 +201,9 @@ def busy_reason(runner, *, window: float, count_clients: bool = True) -> str | N
         return (_messaging_busy(runner) or _ledger_busy(runner) or _profile_start_busy(runner)
                 or _cron_busy(homes) or _kanban_busy() or _store_gates_busy(homes))
     except Exception as exc:
+        from storage_user_copy import error_type_name
         logger.debug("idle-exit probe failed; staying up", exc_info=True)
-        return f"idle probe failed ({type(exc).__name__})"
+        return f"idle probe failed ({error_type_name(exc)})"
 
 
 def _begin_idle_exit(runner, window: float, restart: str | None = None) -> None:

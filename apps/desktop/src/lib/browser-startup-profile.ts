@@ -1,3 +1,5 @@
+import { PROFILE_ID_ARG_RE } from '@hermes/shared/profile-id'
+
 import type { DesktopProfileRoute } from '@/global'
 
 import { requireBrowserConnection } from './browser-connection'
@@ -17,7 +19,7 @@ export function requireProfileRoute(value: unknown): DesktopProfileRoute {
 
   const { connectionId, profile } = value as Record<string, unknown>
 
-  if (typeof profile !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile)) {
+  if (typeof profile !== 'string' || !PROFILE_ID_ARG_RE.test(profile)) {
     throw new Error('Invalid profile name.')
   }
 

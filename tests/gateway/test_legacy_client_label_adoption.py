@@ -10,6 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+
 _CAPS = ['session:create', 'session:read', 'session:submit', 'session:control', 'session:approve',
          'session:respond']
 
@@ -25,7 +28,7 @@ async def _owner(tmp_path, monkeypatch, toolsets):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': toolsets})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _restored_source=lambda entry: entry.origin,
                              _delivery_adapter_for=lambda source: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -38,18 +41,19 @@ async def _owner(tmp_path, monkeypatch, toolsets):
 @pytest.mark.asyncio
 async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_read_only(tmp_path, monkeypatch):
     store, desktop = await _owner(tmp_path, monkeypatch, {'gui': []})
-    db = store._db
+    db = store.persistence
     for sid, source, user_id in (('phone-mobile', 'mobile', None), ('phone-ios', 'ios', 'basic:admin'),
                                  ('webui-row', 'webui', None), ('teams-row', 'teams', None),
                                  ('curator-row', 'curator', None)):
-        db.create_session(sid, source=source, model='m', cwd=str(tmp_path), user_id=user_id)
-        db.append_message(sid, role='user', content='hi from ' + sid)
-        db.end_session(sid, 'ws_orphan_reap')
+        seed_session(db, sid, source, model='m', cwd=str(tmp_path), user_id=user_id)
+        seed_messages(db, sid, {'role': 'user', 'content': 'hi from ' + sid})
+        db.sessions.end(sid, 'ws_orphan_reap')
     # hermes-mobile installed registers Platform('mobile'): a routeless row with that label still adopts.
     from gateway.config import Platform
     Platform._add_pseudo_member('mobile')
     from hermes_cli.sessions_adopt import adoptable_sessions
-    offered = {row['id'] for row in adoptable_sessions(db.db_path)}
+    from persistence_assembly import store_location
+    offered = {row.session_id for row in adoptable_sessions(store_location(db.scope))}
     assert {'phone-mobile', 'phone-ios'} <= offered and not offered & {'webui-row', 'teams-row', 'curator-row'}
     for i, sid in enumerate(('phone-mobile', 'phone-ios')):
         if sid == 'phone-mobile':
@@ -62,7 +66,7 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
                                        'params': {'session_id': sid, 'text': 'go on', 'submission_id': 's-' + sid}})
         assert 'error' not in sent, sent
         # Bound, it is the Desktop chat it resumes as; a second open still finds it.
-        assert db.get_session(sid)['source'] == 'desktop'
+        assert session_row(db, sid)['source'] == 'desktop'
         again = await desktop.dispatch({'id': 20 + i, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert again.get('result', {}).get('session_id') == sid, again
     # A foreign writer's rows, a bundled plugin platform's label and automation stay read-only.
@@ -71,7 +75,7 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
         sent = await desktop.dispatch({'id': 40 + i, 'method': 'prompt.submit',
                                        'params': {'session_id': sid, 'text': 'go on', 'submission_id': 's-' + sid}})
         assert (sent.get('error', {}).get('data') or {}).get('reason') == 'session_read_only', (sid, sent)
-        assert db.get_session(sid)['source'] == sid.split('-')[0]
+        assert session_row(db, sid)['source'] == sid.split('-')[0]
 
 
 @pytest.mark.asyncio
@@ -83,8 +87,8 @@ async def test_a_plugin_platform_sharing_the_label_keeps_its_messaging_route(tmp
     Platform._add_pseudo_member('mobile')  # what the hermes-mobile plugin's platform registration yields
     entry = store.get_or_create_session(SessionSource(platform=Platform('mobile'), chat_id='device-1',
                                                       chat_type='dm', user_id='device-1'))
-    store._db.append_message(entry.session_id, role='user', content='from the plugin app')
+    seed_messages(store.persistence, entry.session_id, {'role': 'user', 'content': 'from the plugin app'})
     resumed = await desktop.dispatch({'id': 1, 'method': 'session.resume',
                                       'params': {'session_id': entry.session_id}})
     assert [m['content'] for m in resumed.get('result', {}).get('messages', [])] == ['from the plugin app'], resumed
-    assert store._db.get_session(entry.session_id)['source'] == 'mobile'
+    assert session_row(store.persistence, entry.session_id)['source'] == 'mobile'

@@ -14,14 +14,21 @@ mints the continuation) and asserts one turn's rows stay in ONE session.
 from types import SimpleNamespace
 
 from agent.turn_context import _stage_turn_user_message
-from hermes_state import SessionDB
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import (
+    ConversationRequest, NewMessage, TranscriptRead, TranscriptView,
+)
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 from tui_gateway import server
 
 
 def _flush_agent(db, key):
     agent = SimpleNamespace(
-        _session_db=db, _session_db_created=True, _persist_disabled=False, session_id=key,
+        _session_db=db, persistence=db, _session_db_created=True, _persist_disabled=False, session_id=key,
         _session_persist_lock=None, _flushed_db_message_ids=set(), _flushed_db_message_session_id=None,
         _last_flushed_db_idx=0, _persist_user_message_idx=None, _persist_user_message_override=None,
         _persist_user_message_timestamp=None, _pending_cli_user_message=None)
@@ -51,21 +58,21 @@ def _rotate_to_compression_child(db, parent, agent, *, reopen_parent):
     the ``_ended_by_compression`` guard refuses the submit append outright and the row is silently
     dropped; reopened, the stale key is writable and the turn's rows split across both sessions.
     """
-    from hermes_state_ids import new_session_id
+    from session_rules.session_ids import new_session_id
 
     child = new_session_id()
-    db.publish_compression_child(
-        parent_session_id=parent, child_session_id=child, source="desktop", model="test-model",
-        messages=[{"role": "user", "content": "earlier turn"}, {"role": "assistant", "content": "earlier reply"}],
+    db.lineage.publish_compression_child(
+        parent, CompressionChild(session_id=child, source="desktop", model="test-model"),
+        [NewMessage(role="user", content="earlier turn"), NewMessage(role="assistant", content="earlier reply")],
         compression_lock_holder=None, require_compression_lease=False)
     agent.session_id = child  # what every adoption/rotation path does to the live agent
     if reopen_parent:
-        db.reopen_session(parent)
+        db.sessions.reopen(parent)
     return child
 
 def _rows(db, key):
     return [(r["role"], (r["content"] or "")[:48]) for r in
-            db.get_messages_as_conversation(key, include_inactive=True)]
+            conversation(db, key, ConversationRequest(view=TranscriptView.ALL))]
 
 
 def _rotated_session(monkeypatch, db):
@@ -84,7 +91,7 @@ def _rotated_session(monkeypatch, db):
 
 def test_submit_user_row_lands_where_the_turns_tool_rows_land(monkeypatch, tmp_path):
     """The reporter's exact shape: one typed message, a tool result and the final text — all one session."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
@@ -135,7 +142,7 @@ def test_submit_user_row_lands_where_the_turns_tool_rows_land(monkeypatch, tmp_p
 def test_expanded_submit_row_is_rewritten_on_the_session_that_owns_it(monkeypatch, tmp_path):
     """The @-expansion rewrite addresses the row by (session_id, row_id). When the submit row was written to
     the continuation, the rewrite must address it there — a stale session_key misses the row silently."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
@@ -162,7 +169,7 @@ def test_expanded_submit_row_is_rewritten_on_the_session_that_owns_it(monkeypatc
 
 
 def _full_rows(db, key):
-    return [(r["role"], str(r["content"])) for r in db.get_messages_as_conversation(key, include_inactive=True)]
+    return [(r["role"], str(r["content"])) for r in conversation(db, key, ConversationRequest(view=TranscriptView.ALL))]
 
 
 def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
@@ -170,7 +177,7 @@ def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
     live agent writes to ``agent.session_id``. On a rotated session the notice is filed under a parent the
     conversation no longer reads — the reporter's 130 stray ``model_switch`` rows. ``personality_switch``
     is unaffected: it only ever touches ``session["history"]``, never the DB."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         server._append_model_switch_marker(session, model="test-model-2", provider="test-provider")
@@ -188,7 +195,7 @@ def test_model_switch_markers_do_not_accumulate_across_switches(monkeypatch, tmp
     marker, not N re-sent on every API call (#65891). The DURABLE write had no counterpart, so N switches
     left N active rows that all replay on resume — the invariant held in memory only. Filed in the live
     session (see the test above), those rows are exactly the reporter's 130 stray markers."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
@@ -201,14 +208,14 @@ def test_model_switch_markers_do_not_accumulate_across_switches(monkeypatch, tmp
         for i in range(3):
             server._append_model_switch_marker(session, model=f"model-{i}", provider="test-provider")
         prefix = server._MODEL_SWITCH_MARKER_PREFIX
-        # LIVE rows only (get_messages defaults to active=1), and full content: the marker prefix is
-        # longer than the _rows() helper's 48-char preview.
-        live = [r for r in db.get_messages(key) if prefix in str(r.get("content") or "")]
+        # LIVE rows only (the transcript read defaults to the active view), and full content: the marker
+        # prefix is longer than the _rows() helper's 48-char preview.
+        live = [r for r in transcript_rows(db, key) if prefix in str(r.get("content") or "")]
         assert len(live) == 1, (
             f"3 switches must leave 1 live durable marker, not {len(live)}: "
             f"{[str(r.get('content'))[:60] for r in live]}")
         # The superseded rows are preserved inactive, never deleted (same contract as deactivate_message).
-        kept = [r for r in db.get_messages(key, include_inactive=True)
+        kept = [r for r in transcript_rows(db, key, TranscriptRead(view=TranscriptView.ALL))
                 if prefix in str(r.get("content") or "")]
         assert len(kept) == 3, f"superseded markers must be kept inactive, not deleted: {len(kept)}"
     finally:
@@ -222,24 +229,28 @@ def test_message_react_targets_the_row_in_the_session_that_owns_it(monkeypatch, 
     ``session_key`` reacts to the PARENT's last user row — the previous turn — or 404s when the parent
     has no text row. Same defect class as the submit row: an off-turn write addressed by a key a
     rotation invalidated (#123545)."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, _session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         # The continuation's newest user row is the rotated turn's own submit row.
-        db.append_message(child, "user", content="the turn the user just reacted to")
+        seed_messages(db, child, {"role": "user", "content": "the turn the user just reacted to"})
         # The parent still holds the PREVIOUS turn's last user row.
-        db.append_message(key, "user", content="the previous turn")
+        seed_messages(db, key, {"role": "user", "content": "the previous turn"})
+
+        def read_one(sql, params):
+            with raw_holder(db)._read_ctx() as conn:
+                return conn.execute(sql, params).fetchone()
 
         got = server.handle_request({"id": "r1", "method": "message.react", "params": {
             "session_id": sid, "newest_role": "user", "emoji": "thumbsup"}})
         assert "result" in got, got
-        want = db._read_one("SELECT id FROM messages WHERE session_id = ? AND content = ?",
-                            (child, "the turn the user just reacted to"))
+        want = read_one("SELECT id FROM messages WHERE session_id = ? AND content = ?",
+                        (child, "the turn the user just reacted to"))
         assert want is not None
         row_id = int(got["result"]["row_id"])
         assert row_id == want[0], (
             f"reaction landed on row {row_id} (session "
-            f"{db._read_one('SELECT session_id FROM messages WHERE id = ?', (row_id,))[0]}), "
+            f"{read_one('SELECT session_id FROM messages WHERE id = ?', (row_id,))[0]}), "
             f"not the newest user row {want[0]} in the live session {child}")
     finally:
         server._sessions.pop(sid, None)
@@ -250,10 +261,10 @@ def test_session_history_reads_the_continuation_after_a_rotation(monkeypatch, tm
     """``session.history`` addresses the durable transcript by session. ``include_ancestors`` walks PARENT
     pointers, so a stale ``session_key`` materializes root..parent and never the continuation — a
     reconnect in the post-rotation window renders a transcript missing every turn since the rotation."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, _session, _agent, child = _rotated_session(monkeypatch, db)
     try:
-        db.append_message(child, "user", content="sent after the rotation")
+        seed_messages(db, child, {"role": "user", "content": "sent after the rotation"})
         got = server.handle_request({"id": "h1", "method": "session.history", "params": {"session_id": sid}})
         assert "result" in got, got
         texts = [m.get("text") or m.get("content") for m in got["result"]["messages"]]
@@ -269,7 +280,7 @@ def test_out_of_band_probe_reads_the_continuation_after_a_rotation(monkeypatch, 
     written since the turn started. On a rotated session the parent holds none of them, so the probe
     returns nothing and the model never sees the out-of-band turn — a regression of the contract this
     function exists for (#42962/#86588)."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         from tui_gateway import prompt_turn
@@ -282,14 +293,14 @@ def test_out_of_band_probe_reads_the_continuation_after_a_rotation(monkeypatch, 
         # newest row the agent's own flush wrote and the foreign row is strictly newer.
         with session["history_lock"]:
             session["history"] = [
-                dict(r, _row_id=r["_row_id"]) for r in db.get_messages_as_conversation(child, include_row_ids=True)
+                dict(r, _row_id=r["_row_id"]) for r in conversation(db, child, ConversationRequest(include_row_ids=True))
             ]
             session["history_version"] = 1
         stamped = [m["_row_id"] for m in session["history"]]
         assert stamped, "the rotation must have created rows to stamp"
         seen = max(stamped)
         # Another surface appends to the session the LIVE agent writes to, after those rows.
-        foreign = db.append_message(child, "user", content="a Telegram reply that arrived mid-turn")
+        foreign = db.messages.append(child, NewMessage(role="user", content="a Telegram reply that arrived mid-turn"))
         assert foreign > seen, f"the foreign row {foreign} must sort after the in-flight rows {stamped}"
 
         # Call the REBOUND copy on server: bind_module re-creates each body against server's globals, and
@@ -306,7 +317,7 @@ def test_out_of_band_probe_reads_the_continuation_after_a_rotation(monkeypatch, 
 
 def test_unrotated_session_keeps_writing_to_session_key(monkeypatch, tmp_path):
     """The ordinary case is unchanged: no rotation, the row lands under session_key as before."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
@@ -331,13 +342,13 @@ def test_busy_queue_accept_row_lands_with_the_turn_and_is_addressed_there(monkey
     rotated-away ``session_key`` silently updates zero rows — the merged text never lands and the
     accept-time row stays ACTIVE beside its replacement, the [uA, uB, aA] glue that
     ``_replace_queued_user_row_for_turn`` exists to prevent."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, _key, session, agent, child = _rotated_session(monkeypatch, db)
     try:
         with session["history_lock"]:
             session["running"] = True
             server._start_inflight_turn(session, "in-flight turn A")
-        db.append_message(agent.session_id, "user", content="in-flight turn A")
+        seed_messages(db, agent.session_id, {"role": "user", "content": "in-flight turn A"})
         assert server._handle_busy_submit("r1", sid, session, "first QUEUED-A", "ws-1",
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
         # The accept-time row is in the continuation, where the drained turn will write.
@@ -353,7 +364,7 @@ def test_busy_queue_accept_row_lands_with_the_turn_and_is_addressed_there(monkey
         # Drain: the accept-time row is re-placed at the end and the early one deactivated.
         server._replace_queued_user_row_for_turn(session, session["queued_prompt"])
         assert len([r for r in _rows(db, child) if "QUEUED-A" in r[1]]) == 2
-        active = [r for r in db.get_messages_as_conversation(child, include_row_ids=True)
+        active = [r for r in conversation(db, child, ConversationRequest(include_row_ids=True))
                   if "QUEUED-A" in str(r["content"])]
         assert len(active) == 1, f"deactivation missed the row's session: {len(active)} still active"
     finally:

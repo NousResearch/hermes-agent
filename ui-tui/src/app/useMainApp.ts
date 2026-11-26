@@ -8,20 +8,8 @@ import {
   useStdout,
   useTerminalTitle
 } from '@hermes/ink'
+import { sharedControlParams } from '@hermes/shared/gateway-canonical'
 import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
-import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
-import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-
-import { sharedControlParams } from '../canonicalGateway.js'
-import { DASHBOARD_TUI_MODE, NATIVE_MODE, STARTUP_RESUME_ID } from '../config/env.js'
-import { WHEEL_SCROLL_STEP } from '../config/limits.js'
-import { RESIZE_COALESCE_MS } from '../config/timing.js'
-import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
-import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
-import { type GatewayClient } from '../gatewayClient.js'
-import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
   AnyGatewayEvent,
   ClarifyLockResponse,
@@ -29,8 +17,21 @@ import type {
   SessionActiveListResponse,
   SessionCloseResponse,
   SharedControlRespondResponse,
+  SubagentListResponse,
   TerminalResizeResponse
-} from '../gatewayTypes.js'
+} from '@hermes/shared/gateway-types'
+import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+import { DASHBOARD_TUI_MODE, NATIVE_MODE, STARTUP_RESUME_ID } from '../config/env.js'
+import { WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { RESIZE_COALESCE_MS } from '../config/timing.js'
+import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
+import { SECTION_NAMES, sectionMode } from '../domain/details.js'
+import { hasPasteChip } from '../domain/pasteExpand.js'
+import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
+import { type GatewayClient } from '../gatewayClient.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { t } from '../i18n/runtime.js'
@@ -47,6 +48,7 @@ import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
+import { noteLiveSessions } from './backgroundSessionNotices.js'
 import { clarifySettledRows } from './clarifyTranscript.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
@@ -54,7 +56,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow, type UiState } from './interfaces.js'
-import { requestLiveSessions } from './liveSessions.js'
+import { applyLiveSessionRoster, requestLiveSessions } from './liveSessions.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
@@ -67,6 +69,7 @@ import { captureDestination, isCurrentDestination, type SubmissionDestination } 
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useApprovalAnswers } from './useApprovalAnswers.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -256,6 +259,32 @@ export async function startPromptLiveSession({
   dispatchSubmission(trimmed, destination)
 
   return sid
+}
+
+// One bucket per layout that changes row heights (width, prompt, compact, inline images, details).
+function heightCacheBucket(
+  ui: { compact?: boolean; inlineImages?: boolean; sid?: null | string; theme: { brand: { prompt: string } } },
+  cols: number,
+  detailsLayoutKey: string
+): string {
+  const flags = `${ui.compact ? '1' : '0'}:${ui.inlineImages ? '1' : '0'}`
+
+  return `${ui.sid ?? 'draft'}:${cols}:${composerPromptWidth(ui.theme.brand.prompt)}:${flags}:${detailsLayoutKey}`
+}
+
+// 0 is a real measurement (a row that draws nothing), never a miss.
+function copyMeasuredHeights(
+  heights: ReadonlyMap<string, number>,
+  rows: readonly { key: string }[],
+  cache: Map<string, number>
+): void {
+  for (const row of rows) {
+    const h = heights.get(row.key)
+
+    if (h !== undefined) {
+      cache.set(row.key, h)
+    }
+  }
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -479,8 +508,7 @@ export function useMainApp(gw: GatewayClient) {
     ui
   )
 
-  const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const heightCacheKey = heightCacheBucket(ui, cols, detailsLayoutKey)
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -507,6 +535,7 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        inlineImages: ui.inlineImages,
         leadGap: hasLeadGap(
           prevRenderedMsg(i => virtualRows[i]?.msg, index, {
             commandOverride: ui.detailsModeCommandOverride,
@@ -529,6 +558,7 @@ export function useMainApp(gw: GatewayClient) {
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
+      ui.inlineImages,
       ui.detailsMode,
       ui.detailsModeCommandOverride,
       ui.sections,
@@ -539,13 +569,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const syncHeightCache = useCallback(
     (heights: ReadonlyMap<string, number>) => {
-      for (const row of virtualRows) {
-        const h = heights.get(row.key)
-
-        if (h) {
-          activeHeightCache.set(row.key, h)
-        }
-      }
+      copyMeasuredHeights(heights, virtualRows, activeHeightCache)
     },
     [activeHeightCache, virtualRows]
   )
@@ -733,24 +757,8 @@ export function useMainApp(gw: GatewayClient) {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
           if (!stopped && result?.sessions) {
-            const liveSessionCount = result.sessions.length
-
-            // Surface the current session's (auto-)title for the terminal
-            // titlebar. The active_list poll already carries it, so no extra
-            // round-trip is needed.
-            const currentSid = getUiState().sid
-
-            const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
-
-            // Only patch when something actually changed. patchUiState always
-            // produces a new state object, which notifies every $uiState
-            // subscriber; patching unconditionally on each 1.5s poll re-renders
-            // the whole TUI and causes idle flicker.
-            const prev = getUiState()
-
-            if (prev.liveSessionCount !== liveSessionCount || prev.sessionTitle !== sessionTitle) {
-              patchUiState({ liveSessionCount, sessionTitle })
-            }
+            noteLiveSessions(gw, result.sessions, sys, () => !stopped)
+            applyLiveSessionRoster(result.sessions)
           }
         })
         .catch(() => {})
@@ -763,7 +771,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, ui.sid, ui.gatewayConnected])
+  }, [gw, sys, ui.sid, ui.gatewayConnected])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
@@ -999,10 +1007,12 @@ export function useMainApp(gw: GatewayClient) {
     actions: {
       appendMessage,
       cancelClarify,
+      countPrompts: () => historyItemsRef.current.filter(msg => msg.role === 'user' && !msg.kind).length,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
       newSession: session.newSession,
+      openBacktrack: () => slashRef.current('/rewind', undefined, false),
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
@@ -1182,10 +1192,14 @@ export function useMainApp(gw: GatewayClient) {
         composer: {
           attachClipboardImage: composerActions.attachClipboardImage,
           attachImagePath: composerActions.attachImagePath,
+          appendPaste: composerActions.appendPaste,
+          appendText: composerActions.appendText,
+          attachImagePaths: composerActions.attachImagePaths,
           enqueue: composerActions.enqueue,
           hasSelection,
           openEditor: composerActions.openEditor,
           queueRef: composerRefs.queueRef,
+          restoreDraft: composerActions.restoreDraft,
           selection,
           setInput: composerActions.setInput
         },
@@ -1240,39 +1254,7 @@ export function useMainApp(gw: GatewayClient) {
     done()
   }, [])
 
-  const answerApproval = useCallback(
-    (choice: string) => {
-      const fresh = capturePromptResponseGuard('approval', overlay.approval)
-
-      if (!fresh() || !overlay.approval) {
-        return
-      }
-
-      const settle = () => {
-        if (!fresh()) {
-          return
-        }
-
-        patchOverlayState({ approval: null })
-        patchTurnState({
-          outcome: choice === 'deny' ? t('session.approval.denied') : t('session.approval.approved', choice)
-        })
-        patchUiState({ status: 'running…' })
-      }
-
-      // Canonical shared controls answer through the generation-bound RPC; a
-      // legacy server→client request resolves its response frame locally.
-      if (overlay.approval.sharedControl) {
-        return rpc<SharedControlRespondResponse>('approval.respond', {
-          choice,
-          ...sharedControlParams(overlay.approval)
-        }).then(r => r && settle())
-      }
-
-      respondWith(overlay.approval.requestId, { choice }, settle)
-    },
-    [overlay.approval, respondWith, rpc]
-  )
+  const approvalAnswers = useApprovalAnswers(overlay.approval, gw.isCanonical, composerActions.enqueue, respondWith, rpc, sys)
 
   const answerSudo = useCallback(
     (pw: string) => {
@@ -1507,7 +1489,7 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
-      answerApproval,
+      ...approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
@@ -1533,7 +1515,7 @@ export function useMainApp(gw: GatewayClient) {
       setStickyPrompt
     }),
     [
-      answerApproval,
+      approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
@@ -1582,6 +1564,11 @@ export function useMainApp(gw: GatewayClient) {
       input: composerState.input,
       inputBuf: composerState.inputBuf,
       pagerPageSize,
+      pasteHint: composerState.pasteExpanded
+        ? ('collapse' as const)
+        : hasPasteChip(composerState.input, composerState.tokens)
+          ? ('expand' as const)
+          : null,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,

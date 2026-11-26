@@ -1,9 +1,9 @@
+import type { SubscriptionStateResponse } from '@hermes/shared/gateway-types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { subscriptionCommands } from '../app/slash/commands/subscription.js'
 import { findSlashCommand } from '../app/slash/registry.js'
-import type { SubscriptionStateResponse } from '../gatewayTypes.js'
 
 vi.mock('../lib/openExternalUrl.js', () => ({
   openExternalUrl: vi.fn(() => true)

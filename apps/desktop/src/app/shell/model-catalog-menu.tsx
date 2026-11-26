@@ -805,7 +805,7 @@ export function ModelCatalogMenu({
                 <DropdownMenuItem
                   className={cn(
                     catalogGroupLabel,
-                    'group/label flex w-full cursor-pointer items-center gap-1 !bg-transparent focus:!bg-transparent'
+                    'group/label flex w-full cursor-pointer items-center gap-1 !bg-transparent focus:!bg-transparent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-ring focus-visible:-outline-offset-2'
                   )}
                   onSelect={event => {
                     event.preventDefault()
@@ -1011,6 +1011,31 @@ interface ModelFamilyRowProps {
   search: string
 }
 
+function rowSpeedSetting(
+  fastControl: FastControl,
+  tier: string | undefined,
+  ultrafastSupported: boolean,
+  labels: { fast: string; ultrafast: string }
+): string | null {
+  if (fastControl.kind === 'none' || !fastControl.on) {
+    return null
+  }
+
+  if (fastControl.kind === 'variant') {
+    return labels.fast
+  }
+
+  if (fastControl.canEnable === false) {
+    return null
+  }
+
+  if (tier === 'ultrafast') {
+    return ultrafastSupported ? labels.ultrafast : null
+  }
+
+  return labels.fast
+}
+
 /** One model family row: the favorite star, the trigger that commits the
  *  model, plus the hover-revealed options submenu. Shared by the Favorites
  *  section and the provider groups, so the two can never paint a model
@@ -1086,11 +1111,10 @@ function ModelFamilyRow({
   // be the same chip on every row, so it shows only on the active model and
   // on a row whose remembered preset chose one.
   const settings = [
-    fastControl.kind !== 'none' && fastControl.on && !(fastControl.kind === 'param' && fastControl.canEnable === false)
-      ? effTier === 'ultrafast'
-        ? t.shell.modelOptions.ultrafast
-        : copy.fast
-      : null,
+    rowSpeedSetting(fastControl, effTier, Boolean(caps?.ultrafast), {
+      fast: copy.fast,
+      ultrafast: t.shell.modelOptions.ultrafast
+    }),
     daybreak?.on ? t.shell.modelOptions.daybreak : null,
     (caps?.reasoning ?? true) && (isCurrent ? !current.effortPending : Boolean(effEffort))
       ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
@@ -1368,12 +1392,10 @@ function groupModels(
   for (const provider of providers) {
     let allFamilies = collapseModelFamilies(provider.models ?? [])
 
-    // The catalog row is a hint, not the authority: an OpenRouter current
-    // model the returned catalog omits must still render and stay selectable,
-    // or the picker has no active-model row at all (#57534). The backend
-    // injects current_model into the row when it can, but the renderer cannot
-    // rely on that — the row may arrive from a cache that predates the switch.
+    // Keep the OpenRouter/custom fallback (#57534), but don't synthesize
+    // Codex choices the backend omitted. The composer still shows the current model.
     if (
+      (provider.slug !== 'openai-codex' || provider.is_user_defined) &&
       catalogProviderMatches(provider, current.provider) &&
       current.model &&
       !allFamilies.some(family => family.id === current.model || family.fastId === current.model)

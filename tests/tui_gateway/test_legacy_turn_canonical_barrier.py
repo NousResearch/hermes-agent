@@ -1,13 +1,14 @@
 """Standalone ``serve`` (no session authority) must not run a legacy turn past the gateway's
 durable ledger: an ``unknown`` admission is never replayed, queued input runs in FIFO order."""
 
+import contextlib
+import types
+
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import (
-    admit_session_input, begin_runtime_epoch, claim_session_input, list_session_admissions,
-    recover_session_inputs, resolve_unknown_session_input,
-)
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway import server
 
 
@@ -21,7 +22,7 @@ class _InlineThread:
 
 @pytest.mark.parametrize("ledger", ["unknown", "queued"])
 def test_legacy_submit_refuses_while_canonical_ledger_holds_work(monkeypatch, tmp_path, ledger):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     for name in ("_schedule_agent_build", "_schedule_session_cap_enforcement", "_register_session_cwd",
                  "_start_agent_build"):
@@ -32,15 +33,15 @@ def test_legacy_submit_refuses_while_canonical_ledger_holds_work(monkeypatch, tm
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     created = server.handle_request({"id": "c", "method": "session.create", "params": {"source": "desktop"}})
     sid, key = created["result"]["session_id"], created["result"]["stored_session_id"]
-    db.create_session(key, "cli")
-    first = begin_runtime_epoch(db, instance_id="gateway-1")
-    admit_session_input(db, epoch=first, principal_id="owner", session_id=key, request_id="r1",
+    seed_session(db, key, "cli")
+    first = db.runtime.begin_epoch(instance_id="gateway-1")
+    db.admissions.admit(epoch=first, principal_id="owner", session_id=key, request_id="r1",
                         payload={"text": "lost?"})
     epoch = first
     if ledger == "unknown":
-        claim_session_input(db, epoch=first, session_id=key)
-        epoch = begin_runtime_epoch(db, instance_id="gateway-2")
-        recover_session_inputs(db, epoch=epoch)
+        db.admissions.claim(epoch=first, session_id=key)
+        epoch = db.runtime.begin_epoch(instance_id="gateway-2")
+        db.admissions.recover(epoch=epoch)
 
     def submit():
         return server.handle_request({"id": "p", "method": "prompt.submit", "params": {"session_id": sid, "text": "hi"}})
@@ -49,14 +50,28 @@ def test_legacy_submit_refuses_while_canonical_ledger_holds_work(monkeypatch, tm
         refused = submit()
         assert refused["error"]["code"] == 4090, refused
         assert refused["error"]["data"] == {"reason": "SESSION_NOT_OWNED"}
-        assert turns == [] and db.get_messages_as_conversation(key) == []
+        assert turns == [] and conversation(db, key) == []
         if ledger == "unknown":
             # Once the operator discards the lost turn through the gateway the barrier lifts.
-            (row,) = list_session_admissions(db, session_id=key)
-            resolve_unknown_session_input(db, epoch=epoch, admission_id=row["admission_id"],
-                                          generation=row["generation"])
+            (row,) = db.admissions.list(session_id=key)
+            db.admissions.resolve_unknown(epoch=epoch, admission_id=row.admission_id, generation=row.generation)
             assert submit()["result"]["status"] == "streaming"
             assert turns == [sid]
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_ledger_read_failure_refuses_as_coordination_unavailable(monkeypatch):
+    """A store failure reading the ledger refuses the turn rather than running it past unknown work."""
+    from hermes_cli.active_sessions import SESSION_COORDINATION_UNAVAILABLE
+    from persistence.core.errors import TransientStoreError
+
+    def _failing(_key):
+        raise TransientStoreError("disk I/O error")
+
+    handle = types.SimpleNamespace(runtime=types.SimpleNamespace(pending_ledger_status=_failing))
+    monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(object()))
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(handle))
+    refusal = server._canonical_ledger_refusal({"session_key": "stored"})
+    assert refusal is not None and refusal.reason == SESSION_COORDINATION_UNAVAILABLE

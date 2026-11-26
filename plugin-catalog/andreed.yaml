@@ -1,0 +1,23 @@
+name: andreed
+repo: https://github.com/Agozie180/andreed
+sha: c2338b38f22bff8fbeb72d94fd5da3e6bee0d832
+title: Andreed
+description: "Deterministic Android device-care tools for Hermes: audits storage and bounded total/metered data usage, reports main-process state, restricts metered background data, force-stops selected third-party apps, and requests safe device-wide cache trimming. Disclosure — runs local adb and bounded argv-only adb shell commands; reads device identifiers, Android version, package names, UIDs, storage, netstats and netpolicy state; detailed netstats above its processing cap fall back to since-boot totals without a metered split; mutations require per-call Hermes approval; no raw shell, pm clear, credentials, telemetry or third-party service; ADB may run its standard local server; requires owner-authorized USB or wireless debugging."
+maintainer: Agozie180
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Agozie180/andreed#readme
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools:
+    - andreed_doctor
+    - andreed_scan
+    - andreed_force_stop
+    - andreed_set_background_data
+    - andreed_trim_caches
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

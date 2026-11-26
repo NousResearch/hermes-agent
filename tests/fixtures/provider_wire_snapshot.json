@@ -10055,8 +10055,14 @@
  },
  "solstice": {
   "api_mode": "chat_completions",
-  "base_url": "https://generativelanguage.googleapis.com/v1alpha",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta",
   "high": {
+   "extra_body": {
+    "thinking_config": {
+     "includeThoughts": true,
+     "thinkingLevel": "high"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -10090,7 +10096,7 @@
      "role": "user"
     }
    ],
-   "model": "gemini-3.1-pro",
+   "model": "gemini-4-hydrogen",
    "timeout": 1800.0,
    "tools": [
     {
@@ -10113,8 +10119,14 @@
     }
    ]
   },
-  "model": "gemini-3.1-pro",
+  "model": "gemini-4-hydrogen",
   "off": {
+   "extra_body": {
+    "thinking_config": {
+     "includeThoughts": false,
+     "thinkingLevel": "low"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -10148,7 +10160,7 @@
      "role": "user"
     }
    ],
-   "model": "gemini-3.1-pro",
+   "model": "gemini-4-hydrogen",
    "timeout": 1800.0,
    "tools": [
     {
@@ -10172,6 +10184,12 @@
    ]
   },
   "unset": {
+   "extra_body": {
+    "thinking_config": {
+     "includeThoughts": true,
+     "thinkingLevel": "high"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -10205,7 +10223,7 @@
      "role": "user"
     }
    ],
-   "model": "gemini-3.1-pro",
+   "model": "gemini-4-hydrogen",
    "timeout": 1800.0,
    "tools": [
     {

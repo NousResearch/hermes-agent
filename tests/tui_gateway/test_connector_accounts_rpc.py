@@ -15,14 +15,14 @@ from tui_gateway import server
 
 @pytest.fixture(autouse=True)
 def _gate(monkeypatch):
-    live.reset_for_tests()
+    live._open.clear()
     monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
     # Connect and rename create the guest identity first; in an empty test home that is a real
     # mint on the live Portal (up to 5s), so a slow or refusing Portal failed these tests.
     monkeypatch.setattr("tools.connectors.ensure_guest_identity", lambda: None)
     monkeypatch.setattr("tools.connectors.managed.ensure_guest_identity", lambda: None)
     yield
-    live.reset_for_tests()
+    live._open.clear()
 
 
 class _Transport:

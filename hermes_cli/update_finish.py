@@ -25,6 +25,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
     )
     from hermes_cli import update_receipt
     from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_build_stage, record_followup
+    from hermes_cli.update_launch_files import refresh_launch_files
 
     owed = followups if followups is not None else []
     runtime_safe = False
@@ -57,6 +58,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _write_gateway_update_exit_code(True)
     run = update_receipt._current.get()
     update_id = run.data.get("update_id") if run is not None else None
+    refresh_launch_files()
     try:
         restarted = _restart_gateway_fleet_after_update(plan, gateway_mode)
         _resume_windows_gateways_and_merge_outcome(restarted, windows_resume, gateway_mode)

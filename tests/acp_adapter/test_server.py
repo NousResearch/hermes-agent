@@ -550,11 +550,11 @@ class TestSlashCommands:
         state.agent.compression_enabled = True
         state.agent._cached_system_prompt = "system"
         state.agent.tools = None
-        original_session_db = object()
-        state.agent._session_db = original_session_db
+        original_session_db, original_persistence = object(), object()
+        state.agent._session_db, state.agent.persistence = original_session_db, original_persistence
 
         def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force, **kwargs):
-            assert state.agent._session_db is None
+            assert state.agent._session_db is None and state.agent.persistence is None
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40
@@ -577,6 +577,7 @@ class TestSlashCommands:
         assert "~40 -> ~12 tokens" in result
         assert state.history == [{"role": "user", "content": "summary"}]
         assert state.agent._session_db is original_session_db
+        assert state.agent.persistence is original_persistence
         state.agent._compress_context.assert_called_once_with(
             [
                 {"role": "user", "content": "one"},

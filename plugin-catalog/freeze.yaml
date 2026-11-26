@@ -1,0 +1,22 @@
+name: freeze
+title: Freeze
+repo: https://github.com/mauricemohr88-debug/hermes-freeze
+sha: 3e0d9a83857ab53937ce7b91aa7b3e10c1aae392
+version: "0.1.5"
+description: "Let Hermes do a task once, then replay it without the model: /freeze turns the last turn's tool calls into a checked workflow (bindings, loops over lists, and model-worked values compiled into Python that must reproduce the recording exactly), and hermes freeze run repeats it with 0 model calls, stops on drift, never overwrites a file you edited, and hermes freeze schedule makes it a no-agent cron job. Disclosure — hooks record each turn's task, tool arguments, tool results (truncated at 256 KB), final answer and token counts in <HERMES_HOME>/plugin-data/freeze/data.db, pruned after 14 days (at load and at most hourly while recording); /freeze makes model calls through your active model (one per compiled step, at most 3 attempts) and sends the task, shortened tool results and the recorded value; replays repeat every recorded tool call except clarify, todo, memory, delegate_task, session_search, skill tools, vision/image/speech tools, mixture_of_agents, cronjob_manage, send_message and tool search (so terminal, file, execute_code, browser, MCP and plugin tool calls are re-run) through Hermes' own tools and Hermes' approvals (unattended runs follow approvals.cron_mode, default deny), and run model-compiled code with no Hermes approval in a separate python -I process with static and runtime module allowlists, no environment variables beyond PATH, and a 10 s timeout; /freeze run starts hermes freeze run as a child process, --fallback agent starts hermes chat; schedule writes <HERMES_HOME>/scripts/freeze-<name>.sh and creates a cron job with hermes cron create --no-agent that reports drift and stops (only with --fallback agent does it start hermes chat on drift, which costs model calls); no network calls of its own, no telemetry, no credentials."
+maintainer: mauricemohr88-debug
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mauricemohr88-debug/hermes-freeze/tree/3e0d9a83857ab53937ce7b91aa7b3e10c1aae392#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+    - post_api_request
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

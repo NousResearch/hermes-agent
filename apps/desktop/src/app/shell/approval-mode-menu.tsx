@@ -1,7 +1,17 @@
 import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
 import { useEffect, useMemo } from 'react'
 
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import {
+  $activeTreeGroup,
+  $collapsedTreeSides,
+  $dismissedPanes,
+  $hiddenTreePanes,
+  $layoutTree,
+  isPaneVisible
+} from '@/components/pane-shell/tree/store'
 import {
   DropdownMenuCheckboxItem,
   DropdownMenuLabel,
@@ -9,6 +19,8 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu'
+import { $registryVersion, registry } from '@/contrib/registry'
+import type { PluginWorkspaceOptions } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { Zap, ZapFilled } from '@/lib/icons'
 import {
@@ -18,6 +30,48 @@ import {
   setApprovalModeForProfile,
   syncApprovalModeForProfile
 } from '@/store/approval-mode'
+import { $lastApprovalContentPane, isApprovalContentPane } from '@/store/session-focus'
+
+const declaresPerProfileApprovals = (paneId: string): boolean =>
+  (registry.getArea('panes').find(c => c.id === paneId)?.data as Partial<PluginWorkspaceOptions> | undefined)
+    ?.approvalScope === 'per-profile'
+
+// A workspace that declares `approvalScope: 'per-profile'` (a group room) runs several
+// independently gated profiles, so the ambient profile's mode neither describes nor controls it.
+const $showsPerProfileWorkspace = computed(
+  [
+    $activeTreeGroup,
+    $layoutTree,
+    $lastApprovalContentPane,
+    $dismissedPanes,
+    $hiddenTreePanes,
+    $collapsedTreeSides,
+    $registryVersion
+  ],
+  (groupId, tree, remembered) => {
+    const active = tree && groupId ? findGroup(tree, groupId)?.active : undefined
+    const visible = (paneId?: null | string) => (paneId && isPaneVisible(paneId) ? paneId : undefined)
+
+    // A preview fronting the remembered pane's group covers it without leaving it.
+    const covered = (paneId: null | string) => {
+      if (!paneId || !tree || $hiddenTreePanes.get().has(paneId) || $dismissedPanes.get().has(paneId)) {
+        return undefined
+      }
+
+      const front = findGroupOfPane(tree, paneId)?.active
+
+      return front && !isApprovalContentPane(front) && visible(front) ? paneId : undefined
+    }
+
+    const content =
+      (isApprovalContentPane(active) && visible(active)) ||
+      visible(remembered) ||
+      covered(remembered) ||
+      visible(tree ? findGroupOfPane(tree, 'workspace')?.active : undefined)
+
+    return Boolean(content && declaresPerProfileApprovals(content))
+  }
+)
 
 export interface SessionYoloOptions {
   /** Per-session approval bypass (`/yolo`, ⌘K "Toggle yolo") for the FOCUSED
@@ -42,6 +96,7 @@ export function useApprovalModeStatusbarItem(
   const copy = t.shell.approvalMode
   const modes = useStore($approvalModes)
   const mode = modes[profile.trim() || 'default'] ?? 'smart'
+  const hasProfileTarget = !useStore($showsPerProfileWorkspace)
   const yoloActive = sessionYolo?.active === true
   const onToggleYolo = sessionYolo?.onToggle
 
@@ -72,6 +127,19 @@ export function useApprovalModeStatusbarItem(
 
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
   }, [gatewayState, profile, requestGateway, routeIdentity])
+
+  if (!hasProfileTarget) {
+    return {
+      icon: <Zap className="size-3.5 opacity-70" />,
+      id: 'approval-mode',
+      label: copy.perProfile,
+      menuAlign: 'end',
+      menuClassName: 'w-72 p-1',
+      menuContent: <DropdownMenuLabel className="whitespace-normal">{copy.perProfileDescription}</DropdownMenuLabel>,
+      title: copy.perProfileDescription,
+      variant: 'menu'
+    }
+  }
 
   // Global "off" already bypasses everything; the per-chat flag adds nothing
   // on top of it, so the trigger reads the mode and the row is inert.

@@ -121,3 +121,19 @@ def test_automatic_caller_passes_its_trigger_label(drive, expected_label):
         drive(_agent(labels))
 
     assert labels == [expected_label]
+
+
+def test_preflight_reads_the_cooldown_after_a_moved_route_clears_it(monkeypatch):
+    """Preflight checks the compression route before it reads the failure cooldown: a route move clears
+    the previous summariser's cooldown, so the same pass compresses with the replacement."""
+    import agent.turn_preflight as tp
+    labels: list = []
+    agent = _agent(labels)
+    cooldown = {"active": True}
+    agent.context_compressor.get_active_compression_failure_cooldown = (
+        lambda: {"remaining_seconds": 290.0} if cooldown["active"] else None)
+    monkeypatch.setattr(tp, "ensure_compression_feasibility_checked",
+                        lambda _agent, _tokens: cooldown.update(active=False))
+    with pytest.raises(_CompressionReached):
+        _drive_pre_api(agent)
+    assert labels == ["pre_api"]

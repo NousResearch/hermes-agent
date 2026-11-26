@@ -70,7 +70,7 @@ async def test_verification_challenge_is_echoed_without_a_run(home):
         assert resp.status == 200 and await resp.json() == {"challenge": "nonce-123"}
         forged = await _post(cli, {"type": "verification", "challenge": "nonce-123"},
                              secret="whsec_" + base64.b64encode(b"x" * 32).decode())
-        assert forged.status == 401
+        assert forged.status == 404
     adapter.handle_message.assert_not_called()
 
 

@@ -298,6 +298,17 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
         return False
 
 
+def adopt_published_dependencies() -> bool:
+    """Whether this process just moved onto a dependency generation published after it booted."""
+    from pm.environments_adopt import adopt_published
+    from pm.paths import repo_root
+    try:
+        return adopt_published(repo_root())
+    except (OSError, RuntimeError, ValueError):  # unreadable selection: keep the restart remedy
+        logger.debug("dependency generation adoption failed", exc_info=True)
+        return False
+
+
 class PluginLoaderMixin:
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
@@ -514,12 +525,21 @@ class PluginLoaderMixin:
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
         """Report missing dependencies without installing during discovery.
 
-        Plugin admission and PM repair own dependency changes.
+        Plugin admission and PM repair own dependency changes. When the generation PM selected since this
+        process booted carries them (a platform plugin installed at gateway start, or by Desktop while the
+        gateway runs), this process adopts it first (``pm.environments_adopt.adopt_published``: only when
+        nothing it already imported would change), so the plugin loads now instead of after a restart.
         """
         missing = missing_python_dependencies(manifest)
         if not missing:
             return
         key = manifest_key(manifest)
+        if installed_in_selected_environment(missing) and adopt_published_dependencies():
+            missing = missing_python_dependencies(manifest)
+            if not missing:
+                logger.info("Plugin %s: loaded its Python dependencies from the dependency environment "
+                            "published after this process started.", key)
+                return
         if installed_in_selected_environment(missing):
             logger.warning(
                 "Plugin %s's Python dependencies were installed after this process started: %s. "
@@ -623,6 +643,7 @@ class PluginLoaderMixin:
         try:
             if run_with_load_deadline(plugin_key, ctx, _import_and_register):
                 self._attribute_registrations(loaded, plugin_key, registration_start)
+                self._publish_staged_registrations(ctx)
                 loaded.enabled = True
                 from hermes_cli.plugins_ledger import _hook_source_of
 
@@ -686,6 +707,11 @@ class PluginLoaderMixin:
                 if host is None:
                     host = self._plugin_host_instance = PluginHost(self)
         return host
+
+    def _running_plugin_host(self) -> Any:
+        """This manager's plugin host when its process is running, else None (never creates one)."""
+        host = getattr(self, "_plugin_host_instance", None)
+        return host if host is not None and host.alive else None
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""

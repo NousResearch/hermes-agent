@@ -383,6 +383,12 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   existing components under `src/components/assistant-ui` and
   `src/app/chat/composer`; do not fork a second markdown, message, tool-call, or
   approval renderer for one feature.
+  The composer's local `ComposerStateInput` retains the hidden, non-tabbable
+  plain-textarea binding; the visible contentEditable owns interaction, without
+  an invisible autosizing input's layout work.
+- `ComposerHeartField` in `src/app/chat/index.tsx` owns pet-visibility
+  subscriptions: reaction hearts rise from the composer only when neither the
+  in-window nor popped-out pet is present.
 - **Inline widgets** — a tool result that renders as a panel the user reads or
   acts on (clarify, artifact card) wears `WIDGET_SHELL_CLASS`
   (`src/components/chat/widget-shell.ts`): shared radius, the
@@ -445,6 +451,24 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
+- A profile switch never covers the conversation. `ChatSwitchIndicator`
+  escalates by elapsed time: nothing under 2s, a quiet corner pill tinted with
+  the target profile's colour until 10s, then an inline strip above the thread
+  saying sends will wait. A rejected rail switch ends in that strip's terminal
+  failure with Retry; the rail square shows busy/failed, and the composer names
+  where a send will go while the switch is pending. Paint-first sync (#89843)
+  is the same component's quiet pill.
+  `ProfileSquareContent` in `sidebar/profile-switcher.tsx` owns the square's
+  spinner and badges; failure takes precedence over its inactive-session dot.
+  The enclosing button retains the accessible state and drag/selection gestures.
+  Retrying the same failed profile restarts the quiet grace period; an earlier
+  attempt's stalled indicator must not carry into the new attempt.
+  Send assurances follow the captured draft route or existing session owner,
+  not an older activation still holding the switch queue. A new draft, source,
+  or selected conversation invalidates the old Retry, including saved callbacks;
+  retrying a still-current intent preserves its draft and captured source.
+  Slash profile selections claim their intent before metadata lookup; stale
+  lookups, activations, and launch-restore rollbacks cannot replace a newer draft.
 - Guide startup has a dedicated landing screen with the shared long-operation
   Loader and a localized startup label. It remains active until the guide's
   saved conversation is loaded. No greeting, composer, Skip setup, or statusbar
@@ -527,6 +551,20 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Zone tabs have one keyboard entry point at the selected tab. Arrows follow
+  the strip's orientation; Home/End move focus, Enter/Space activate, and Tab
+  leaves the tabs. Delete invokes an available close action and retains focus
+  on a surviving sibling. Restoring a vertical rail retains its tab focus.
+  The collapsed rail keeps the zone context menu on its outer surface; its
+  inner tab list owns vertical keyboard navigation.
+- Tab-header focus belongs to navigation: session activation and queued composer
+  focus retries must not redirect it. Explicit composer focus still works.
+  Entering a split's tab strip selects its visible chat as the typing recipient
+  without moving focus into the editor; hidden tabs must not receive that input.
+- Sidebar keyboard stops are real controls: session title, reorder handle and
+  actions, not timestamps. Focus uses existing theme tokens, stays distinct from
+  selection, and reveals hover-only controls. Focused/open actions replace their
+  metadata tail; real metadata actions remain independently reachable.
 - Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
   Dimming still distinguishes session panes; sidebar navigation must not desaturate
   the chat or transfer its active highlight to a hidden primary tab.
@@ -574,7 +612,21 @@ The detailed state contract lives in the scoped
 
 - `cursor-pointer` at the primitive level (Button, dropdown/select) — don't
   hardcode it per call site.
-- Global focus-ring reset; titlebar actions have no active-background state.
+- Keep keyboard focus visible through existing control primitives and theme
+  tokens; never globally suppress outlines or focus rings. Preserve native
+  focus indicators on controls without a themed replacement. Titlebar actions
+  have no active-background state.
+- Each control has one focus treatment: its existing ring, outline, or field
+  border. Suppress the native outline only when that replacement is visible.
+  In forced-colors mode, use one system-color outline on the focused control
+  (or its field wrapper); don't outline unfocused menu rows or containers.
+  Keep command-picker input and selected-row fallback outlines inset so scroll
+  and group clipping cannot cut off their edges.
+  Inline message editors delegate focus chrome to their card border, just like
+  the main composer; their inner contenteditable must not add a second outline.
+- Keyboard users can activate image viewers and return to their available
+  opener when the viewer closes. Composer focus-follow must preserve focus
+  returning from a floating layer while updating the owning chat surface.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".
 

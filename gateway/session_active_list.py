@@ -9,24 +9,28 @@ turn that was still running. Rows keep ``server._session_live_item``'s shape; ``
 """
 from __future__ import annotations
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def _status(live, handle, pending) -> str:
     if handle.execution_state == 'running':
-        prompts = live.controls.snapshot(handle.ref.session_id, handle.execution_generation)
-        return 'waiting' if prompts else 'working'
+        from gateway.session_server_requests import open_requests
+        sid = handle.ref.session_id
+        # A question holds the turn: a shared control (approval) or a viewer request (clarify batch,
+        # sudo, secret, vault) still open on the stream.
+        asked = live.controls.snapshot(sid, handle.execution_generation) or open_requests(live.event_stream, sid)
+        return 'waiting' if asked else 'working'
     # Admitted, not yet claimed by the drain: the turn exists, its agent has not started.
     return 'starting' if any(row['status'] == 'queued' for row in pending) else 'idle'
 
 
 async def active_list(connection, ref, params):
     if set(params) - {'profile', 'current_session_id'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if 'session:read' not in connection.actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     from gateway.session_live_listing import live_entries
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
     current = str(params.get('current_session_id') or '')
     rows = []
     for entry in await live_entries(connection.authority, connection.actor):

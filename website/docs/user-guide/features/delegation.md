@@ -8,7 +8,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 The `delegate_task` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
-Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
+Top-level model calls run in the background wherever the session can receive a later message. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. One-shot runs, cron jobs, Kanban workers, stateless API requests and [inline gateway chats](#messaging-chats-without-interim-messages) wait for their children inside the call, as does a call made while the background pool is full. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
 
 ## Completion delivery
 
@@ -27,9 +27,15 @@ Setting background process notifications to `off` still drains pattern-watch eve
 
 ## Background process lifetime
 
-Background terminal processes belong to the agent that starts them. Closing a child during delegation teardown terminates its remaining processes, including work started in earlier turns, without stopping processes owned by the parent or sibling agents. Sharing a terminal environment does not transfer process ownership.
+Background terminal processes belong to the agent that starts them. Closing a child during delegation teardown terminates its remaining processes, including work started in earlier turns, without stopping processes owned by the parent or sibling agents. A process the child started with `persist_on_release=true` is left running. Sharing a terminal environment does not transfer process ownership.
 
 A child should wait for its builds, tests, and other bounded background commands before returning its final summary. Start a CI watcher or server in the parent session if it must continue after the child finishes; returning a process ID does not transfer ownership to the parent.
+
+## Approvals from background children
+
+A background child that needs approval for a command after the parent's turn has ended still asks in the chat the parent was started from. On messaging platforms the approval card (or the plain-text `/approve` prompt) appears there, and `/approve`, `/deny` or a tap on the card answers that child's command. A card the child raised while the parent was still replying stays answerable after the parent finishes. Stopping the child (`/stop`), resetting the session (`/new`) or the child finishing withdraws its open prompts.
+
+Where no chat can show the prompt once the parent's turn is over (API-server runs, webhooks, local viewers), the child's command is refused with an explicit "no approval channel" result. It is never reported as pending.
 
 ## Single Task
 
@@ -54,7 +60,7 @@ delegate_task(tasks=[
 
 ## Structured Output (`output_schema`)
 
-Each task can carry an optional `output_schema`, a JSON Schema object the child's final answer must validate against. The child sees the schema up front as an output contract ("return ONLY the JSON value — no prose, no code fence"); when the answer comes back the parent validates it, and on failure sends the child exactly one bounded correction turn carrying the validation errors verbatim (the schema is not re-pasted). The task's result then gains `schema_valid` (true/false) and, on failure, `schema_errors`.
+Each task can carry an optional `output_schema`, a JSON Schema object the child's final answer must validate against. The child sees the schema up front as an output contract ("Your FINAL response must be ONLY the JSON value that validates against this JSON Schema"); when the answer comes back the parent validates it, and on failure sends the child exactly one bounded correction turn carrying the validation errors verbatim, with the output contract and its schema appended again. The task's result then gains `schema_valid` (true/false) and, on failure, `schema_errors`.
 
 A contract miss after the retry does **not** discard the child's work: the result keeps `status: completed` with the child's raw final text in `summary`, `schema_valid: false`, the `schema_errors`, and a `schema_note` saying the text is unvalidated. The parent extracts what it needs from the raw text instead of re-running a task that may have taken an hour. Prose or a code fence around otherwise-valid JSON (object or array) is tolerated by the validator.
 
@@ -83,7 +89,9 @@ Keep schemas forgiving: require only the fields you will actually read. Tasks wi
 Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`.
 :::
 
-One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
+One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery and priority as the main agent's system prompt, each file capped at `context_file_max_chars` or 20,000 characters when that is unset; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
+
+The `context` and `goal` arrive as the subagent's first user message, context first. Its system prompt carries nothing task-specific, so the subagents of one parent send an identical prompt prefix and can read each other's prompt cache, including a context they share. That first message is kept verbatim through context compression.
 
 This means the parent agent must pass **everything** the subagent needs in the call:
 
@@ -102,7 +110,7 @@ delegate_task(
 )
 ```
 
-The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
+The subagent's first message is your context followed by the goal. Its system prompt instructs it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
 
 ### Forwarding Images to a Subagent
 
@@ -183,7 +191,7 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. By default the call returns **one** consolidated message once every task has finished. Results are delivered only between the parent's turns: the parent should finish anything that does not depend on the children, then end its turn rather than polling transcripts, artifacts, or CI while it waits.
+When a top-level agent provides a `tasks` array in a session that can receive a later message, Hermes returns one background handle and runs the subagents in parallel. By default the call returns **one** consolidated message once every task has finished. Results are delivered only between the parent's turns: the parent should finish anything that does not depend on the children, then end its turn rather than polling transcripts, artifacts, or CI while it waits.
 
 ### Independent completions (opt-in)
 
@@ -191,11 +199,12 @@ Set `delegation.independent_completions: true` to have results land **per comple
 
 When independent completions are enabled:
 
-- Omit `group` when each result is useful to act on separately. Each task reports as soon as it finishes.
-- Use the same `group` string when you want to review outputs together: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks can belong in one group when their results inform the same decision.
-- Different groups report independently; grouped and ungrouped tasks can share one call.
+- The schema marks `group` as required on every task, so the model states the delivery choice in each call instead of falling into per-task delivery by leaving a field out.
+- The same `group` string on every task is the choice when the parent will respond only once all of them are done: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks belong in one group when their results inform the same decision.
+- A task gets its own `group` only when the parent will act on that result as soon as it lands. Each such result re-enters alone and costs the parent a turn.
+- Different groups report independently and can share one call. A task that arrives without a `group` (an older transcript, a model that ignores `required`) is still accepted and reports alone, as before.
 
-This is off by default because every unit is a new turn for the orchestrator: a 15-task call becomes up to 15 wake-ups, which fragmented long campaigns. Grouping controls **result delivery, not execution order**: all tasks still run in parallel. If task B needs task A's output to do its work, dispatch A first, then dispatch B with that output after A returns.
+This is off by default because every unit is a new turn for the orchestrator: a 10-task call becomes up to 10 wake-ups, which fragmented long campaigns. Grouping controls **result delivery, not execution order**: all tasks still run in parallel. If task B needs task A's output to do its work, dispatch A first, then dispatch B with that output after A returns.
 
 ```json
 {"tasks": [
@@ -208,7 +217,7 @@ This is off by default because every unit is a new turn for the orchestrator: a 
 
 The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting (the worker pool grows to the number of live units so no unit waits behind a full pool). An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
-- **Maximum concurrency:** 10 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
+- **Maximum concurrency:** 10 tasks by default (configurable via `delegation.max_concurrent_children`; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
 - **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
@@ -226,7 +235,7 @@ consumers use a durable claim, so only the consumer that successfully accepts
 the synthetic turn acknowledges delivery; failed attempts release the claim for
 retry.
 
-This does not resume child execution after a crash. A delegation whose owner
+This does not resume child execution after a crash; resuming a child is `delegation.auto_resume`, off by default. A delegation whose owner
 process disappears while it is still running is recorded as `unknown`, because
 Hermes cannot prove whether its external side effects happened. Pending and
 delivered records are bounded and profile-local.
@@ -253,7 +262,7 @@ delegation:
 
 ### Handing a process to the parent
 
-A subagent's background processes are also **killed when the subagent finishes**, so a CI watcher or build a child starts with `notify=true` never reports to anyone. The child's `terminal` result says so (`notify_on_complete: false` plus a `subagent_note`), and the child has three honest options before it finishes:
+A subagent's background processes are also **killed when the subagent finishes** (unless the child started them with `persist_on_release=true`), so a CI watcher or build a child starts with `notify=true` never reports to anyone. The child's `terminal` result says so (`notify_on_complete: false` plus a `subagent_note`), and the child has three honest options before it finishes:
 
 - **wait** — `process_manage(action="wait", session_id=...)` and report the result itself;
 - **kill** — `process_manage(action="kill", ...)`;
@@ -289,7 +298,7 @@ delegation:
   provider: "openrouter"             # optional: route children to a different provider
 ```
 
-Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
+Resolution order: `delegation.base_url` (direct endpoint) takes precedence unless `delegation.provider` is a native-SDK provider (`bedrock`, `vertex`, `google`, `google-genai`), then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model, except that a `delegation.provider` with its own default model supplies that one. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
 Note that the pin is global: with the default strategy `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session, use a delegation strategy plugin (below), or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
 
@@ -350,16 +359,16 @@ What happens:
 
 1. The last 10 user/assistant messages are snapshotted as the reviewer's starting evidence (tool output and system messages are excluded). On the gateway they come from the session's stored transcript when its agent has been released (after `agent.agent_cache.idle_ttl_secs` of idling, one hour by default), so `/review` works on a session you left alone without sending a message first.
 2. A reviewer subagent is dispatched on the same background delegation rail as `delegate_task` — it gets the full normal subagent toolset (terminal, web, files, browser...), so it actually opens the PR, reads the diff, and runs code rather than judging from the excerpt.
-3. The reviewer inherits the primary agent's working context: any skills the primary agent had loaded (launch-preloaded or via `skill_view` during the session) are named in its briefing with an instruction to load them and judge the work against their conventions. Like every subagent, its system prompt also embeds the workspace's project context files (AGENTS.md / CLAUDE.md / .cursorrules) as binding conventions.
+3. The reviewer inherits the primary agent's working context: up to eight skills the primary agent had loaded (launch-preloaded or via `skill_view` during the session) are named in its briefing with an instruction to load them and judge the work against their conventions. Like every subagent, its system prompt also embeds the workspace's project context files (AGENTS.md / CLAUDE.md / .cursorrules) as binding conventions.
 4. When it finishes, its full review re-enters the same session as a normal background-subagent completion — your primary agent sees it and can act on it (fix the findings, push follow-ups, reply to you).
 
 The canonical flow: your main agent opens a PR, you type `/review`, and a second pair of eyes investigates it while you keep working; the review lands back in the chat addressed to the agent that created the PR.
 
-Dispatch prints only “Review started. Results will return here.” The live subagent viewer identifies the worker as **Review: your focus** (or **Review recent work** for bare `/review`), with a shortened single-line label; the reviewer still receives your full instructions. In the classic CLI, the dock above the composer shows elapsed time and latest activity; **Ctrl+T** (or **F6**) opens the roster with its model, transcript, steering, and stop controls. The same review label appears in the TUI and Desktop subagent viewers.
+Dispatch prints only “Review started. Results will return here.” A session that cannot receive a later message runs the review inside the command and prints its result instead. The live subagent viewer identifies the worker as **Review: your focus** (or **Review recent work** for bare `/review`), with a shortened single-line label; the reviewer still receives your full instructions. In the classic CLI, the dock above the composer shows elapsed time and latest activity; **Ctrl+T** (or **F6**) opens the roster with its transcript, steering, and stop controls. The same review label appears in the TUI and Desktop subagent viewers.
 
 ### Review model
 
-By default the reviewer runs on your main model. To pin a dedicated review model, set `auxiliary.review` in `config.yaml`:
+By default the reviewer is routed like any other subagent: on `delegation.model` / `delegation.provider` when those are set, otherwise on your main model. To pin a dedicated review model, set `auxiliary.review` in `config.yaml`:
 
 ```yaml
 auxiliary:
@@ -377,11 +386,11 @@ Credentials resolve exactly like a `delegation.provider` pin (full runtime-provi
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
 Certain tools are blocked for subagents even when the parent has them:
-- `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `delegate_task` — blocked for leaf subagents (the default). A child above the leaf depth keeps it when `max_spawn_depth` is 2 or more — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
 - `send_message` — no cross-platform side effects
-- `cronjob` — no scheduling more work in the parent's name
+- `cronjob_manage` — no scheduling more work in the parent's name
 
 Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
@@ -430,19 +439,19 @@ provider from a runaway), and `timeout_phase`
 
 A subagent that fails — non-retryable provider error (404/400), timeout, crash, or no usable output — is never silent:
 
-- **CLI**: the delegation tree prints a one-line reason: `⚠️ Subagent failed — "your goal": HTTP 404: model not found (after 12s)`. Batch runs append the reason to the per-task `✗` completion line.
+- **CLI**: the delegation tree prints a one-line reason: `⚠️ Subagent failed — "your goal" after 12s: <reason>. Details: /agents, or ask me to retry with a smaller task.` A timeout prints `⚠️ Subagent timed out — "your goal" after 12s without finishing.` with the same kind of next step. Batch runs append the reason to the per-task `✗` completion line.
 - **Gateway platforms** (Telegram, Discord, Slack, ...): the same clean line is delivered as a standalone chat notice, **even when `tool_progress` is off** for that platform.
-- **Parent agent**: the tool result entry carries `status: "failed"` plus the full `error` text, so the model can react (retry, re-route, report).
+- **Parent agent**: the tool result entry carries `status` `"failed"`, `"error"` (a crash) or `"timeout"` plus the full `error` text, so the model can react (retry, re-route, report).
 
 Error text is reduced to the single most informative line (the exception message, not a traceback wall) and capped in length.
 
 :::tip Diagnostic dump on zero-call timeout
-With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
+If a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<subagent_id>-<timestamp>.log` containing the subagent's config snapshot, toolsets, prompt and schema sizes, activity summary, and stack traces for the worker and other live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
 :::
 
 ## Stall Detection for Background Subagents
 
-Background delegations (`delegate_task(background=true)`) are watched by a
+Background delegations are watched by a
 **progress-based stall monitor** — on by default, zero config. Unlike a
 wall-clock timeout, it never touches a child that is making progress, no
 matter how long it runs.
@@ -487,7 +496,7 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 
 ### Live activity above the composer
 
-The classic CLI, TUI, and Desktop automatically show live subagents above the composer. You can keep writing while watching the live count, task names, elapsed time, and latest activity. The terminal dock limits visible rows according to screen height and shows how many additional workers are hidden; Desktop previews up to three workers.
+The classic CLI, TUI, and Desktop automatically show live subagents above the composer (Desktop's Simple interface mode hides the section). You can keep writing while watching the live count, task names, elapsed time, and latest activity. The terminal dock limits visible rows according to screen height and shows how many additional workers are hidden; Desktop lists every live worker in a scrolling section.
 
 | Surface | Expand and inspect | Control a selected worker |
 |---|---|---|
@@ -505,19 +514,23 @@ The live transcript tail is a bounded recent excerpt, not an unlimited conversat
 
 The classic CLI's `/agents` and `/tasks` commands still print a text summary; **Ctrl+T** (or **F6**) is the immediate interactive monitor, including while the parent is busy. See [TUI — Slash commands](../tui.md#slash-commands).
 
-On the classic CLI and every gateway platform (Telegram, Discord, Slack, ...),
+On every gateway platform (Telegram, Discord, Slack, ...),
 `/agents` also lists **background delegations with live per-child activity**,
 sampled directly from each running child:
 
 ```
-Background delegations: 1 running
-- deleg_ab12cd34 · running · research the delegation stall monitor
-  - child 1: 4 api calls · in web_search · active 12s ago
+**Background delegations:** 1
+- `deleg_ab12cd34` · running · research the delegation stall monitor
+  - child 1: 4 api calls · `web_search` · active 12s ago
   - child 2: 7 api calls · between turns · active 3s ago
 ```
 
+The classic CLI prints its own form of these rows when it runs the agent in
+its own process, and only the count (`Background delegations: 1 running`) when it is
+attached to a gateway session.
+
 A delegation the stall monitor has flagged shows as
-`stalling · no progress 450s — interrupting`, and long-quiet-but-healthy
+`stalling · no progress 450s`, and long-quiet-but-healthy
 children show their quiet time so you can tell "slow" from "stuck" at a
 glance.
 
@@ -541,9 +554,42 @@ The parent agent orchestrates its own running children with the same `delegate_t
 
 Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
 
+**Continue a finished child.** `{"action": "continue", "subagent_id": "sa-0-1a2b3c4d", "message": "now add tests for it"}` gives a child that already returned its result a follow-up. The child is rebuilt on the same route (model, provider, profile) and toolsets, its history is loaded from its saved transcript, and `message` becomes its next turn; it keeps its `subagent_id` and session (the transcript appends, like `--resume`) and runs as a new background delegation with its own `delegation_id`, so the result arrives as a normal completion. A still-running child is refused with a pointer to `steer`, and so is a child whose inherited route now resolves to a different provider or endpoint because the parent switched since it ran. Only the owning conversation (or an ancestor in its spawn tree) can continue a child; background processes it started are gone, so it gets a fresh terminal, which starts in the directory and worktree the child stopped in. A continue is an ordinary dispatch: a closed chat, `max_concurrent_children`, `max_spawn_depth` and the spawn pause all refuse it the same way they refuse a spawn. It is not offered in one-shot sessions or managed worker sessions.
+
+**Resumable after a restart or crash.** Every child also keeps a durable record in the profile's `state.db`, so `continue` works after a gateway restart, a hard kill or a PC crash, not only while the process still remembers it. After a restart the child's route is re-resolved from its own routing request and must land on the same provider and endpoint. A child that did not complete and was not stopped by you or its parent (gateway shutdown, a crash, a usage limit, a provider refusal) is *resumable*: its completion entry carries `resume_mode`, and a limit failure also carries `failure_resets_at` (and `usage_limit` on a plan window) so you know when continuing can succeed. `resume_mode` is one of:
+
+| `resume_mode` | Typical cause | What continuing needs |
+|---|---|---|
+| `AUTO_AT` | usage/rate limit with a reset time, transient provider errors | wait until `failure_resets_at` |
+| `AUTO_ON_BOOT` | gateway shutdown, crash or hard kill | nothing; check git state and the last tool before re-running side effects |
+| `ON_FIX` | credits, auth, model access, account policy, request-shape errors | you fix the cause first |
+| `REPAIR_THEN_CONTINUE` | the conversation no longer fits, or an image/reasoning part is rejected | the transcript needs repairing first |
+| `HANDOFF` | a provider safety refusal of this conversation | another model, or the parent takes the work over |
+
+A resumable child's worktree (where its terminal was when it stopped, plus any worktree it created) is kept from the startup worktree sweep while its record lives: `delegation.resumable_ttl_hours` (default 48), at most `delegation.max_resumable` (default 32) per profile; beyond the cap the oldest loses its pin first. When the pin ends the normal sweep archives the tree to `refs/hermes/archive/` before removing it. Completed children and children you stopped are not pinned. Nothing resumes on its own unless you opt in with `delegation.auto_resume: true` (default `false`, see below).
+
+### Automatic resume (`delegation.auto_resume`, opt-in)
+
+With `delegation.auto_resume: true` the gateway continues stopped background children on its own, through the same claim and `continue` path as `action='continue'`, on the child's own conversation and worktree, with a message naming the real cause ("Your run was stopped by a provider limit (rate_limit); continue where you left off."). A gateway checks every profile it serves every 15 seconds, each under that profile's own configuration, credentials and `state.db`.
+
+- **What resumes:** `AUTO_AT` children once their limit's reset time has passed, and `AUTO_ON_BOOT` children (gateway shutdown, crash, hard kill) once the gateway is back up.
+- **What never resumes:** `ON_FIX`, `REPAIR_THEN_CONTINUE` and `HANDOFF` children (credits, auth, model not found, refusals, deterministic request errors), children you or the parent stopped, children whose stop did not promise a resume (stopped while `auto_resume` was off, or under a parent no gateway serves, such as a classic local CLI: those get the manual `continue` hint), expired records, records whose worktree pin was dropped by `max_resumable`, and nested children (an orchestrator subagent's own workers; that orchestrator resumes instead).
+- **Silent while it waits.** A stop that is promised an automatic resume sends the parent no completion. `delegate_task(action='list')` shows the child as `waiting_to_resume` with a note such as "waiting to resume at 14:05 (attempt 1 of 2); gives up at 19:40". In a batch where only some children wait, the completion lists the waiting ones with that same status, and the failed-delegations view does not count them as failed.
+- **One report at the end.** The parent hears once per child: the resumed run's own result, or ONE terminal failure when the scheduler gives up. It gives up when 2 automatic attempts are used, when `delegation.auto_resume_deadline_minutes` (default 360) has passed since the child's first stop, when the limit's reset is known to land after that deadline (it gives up at once), or when a permanent reason appears (for example its worktree pin was dropped). A child already promised a resume still gets its one failure when `auto_resume` is turned off while it waits, or when its record reaches `delegation.resumable_ttl_hours` first; `/stop`, a session end and `action='stop'` still cancel it while `auto_resume` is off. The failure carries the reason, the child's last summary, the tail of its transcript, and how to continue it by hand (`delegate_task(action='continue', subagent_id=..., message=...)`) or re-dispatch it. A crash during the last attempt reports that same give-up, not a generic "outcome unknown".
+- **Explicit cancel only.** Only these cancel a waiting resume (the record becomes `superseded`, or `stopped` for `stop`; it can still be continued by hand until its TTL):
+  - `delegate_task(action='stop', subagent_id=...)` on the waiting child: it never resumes and its worktree pin is released (the transcript stays);
+  - the parent continued the child itself;
+  - the parent conversation was stopped (`/stop`), reset (`/new`), closed, deleted, or no longer exists to receive the result.
+  Other work the parent starts, including new subagents in the same repository, does not cancel it. These decisions also win while a resume is starting: the scheduler claims the record and re-checks them in one `state.db` transaction, and checks again right before the child runs, so a stop, `/stop` or `/new` that lands meanwhile cancels it (the attempt is not counted). A child that is already running is stopped like any other, with `delegate_task(action='stop')`.
+- **No duplicate of a waiting child.** A spawn whose goal is exactly (ignoring surrounding whitespace) the goal of one of the parent's children that is waiting to resume is refused with a tool error naming that `subagent_id`, when it resumes, and the two ways forward: wait for it, or `delegate_task(action='stop', subagent_id=...)` first and then re-dispatch. In a batch only that task is refused; its siblings run. The guard is off when `auto_resume` is off, and it stops refusing once that child is past its deadline or out of attempts, even before the scheduler has delivered its give-up.
+- **Unconfirmed side effects.** The resume message tells the child: if its last tool call has no recorded result and it cannot establish whether that call ran, it must not repeat it and must finish with a result that starts with `BLOCKED:` naming that call.
+  A parent stopped by the same limit is simply woken by the resumed children's results (the usual unattended-wake limit applies).
+- **Bounded:** at most 2 automatic attempts per child, counted before each attempt runs, so a child whose resume crashes the gateway every time stops after two boots; the record says why. A resume that hits the limit again goes back to waiting with its attempt counted. Resumes stay within the profile's own `delegation.max_concurrent_children` (counting that profile's running background units only), wait while delegation spawning is paused, run on the parent conversation's own model route (its `/model` choice, channel override or launch policy), and children waiting on the same reset are started one per provider endpoint per pass (15 s apart) rather than all at once.
+- **Cost:** a resumed child spends tokens with nobody watching, and so does the parent turn its result starts. Leave it off where unattended spend is not wanted.
+
 ### From the TUI / gateway (session-facing)
 
-`steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](../../reference/slash-commands.md) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+`steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](../../reference/slash-commands.md) — the text is delivered as a user message after the child's current tool batch, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
@@ -573,25 +619,22 @@ The dispatch response includes the paths as `live_transcripts`, and the files ar
 tail -f ~/.hermes/cache/delegation/live/deleg_ab12cd34/task-0.log
 ```
 
-Each line is timestamped and shows the child's assistant text, thinking snippets, tool calls (`-> tool_name({args})`), tool results, and a final status marker. A `manifest.json` in the same directory describes the batch (goals, task count, per-task status). The logs persist after completion — they double as the full-fidelity operational record alongside the summary — and directories older than 7 days are pruned automatically on new dispatches. Because they live under `cache/delegation`, they are also readable from remote terminal backends (Docker/Modal/SSH).
+Each line is timestamped and shows the child's assistant text, thinking snippets, tool calls (`-> tool_name({args})`), tool results, and a final status marker. A `manifest.json` in the same directory describes the batch (goals, task count, per-task status). The logs persist after completion — they are a compact operational record alongside the summary (long lines are truncated and credentials redacted; the child's stored session holds the full text) — and directories older than 7 days are pruned automatically on new dispatches. Because they live under `cache/delegation`, they are also readable from remote terminal backends (Docker/Modal/SSH).
 
 ## Depth Limit and Nested Orchestration
 
 By default, delegation is **flat**: a parent (depth 0) spawns children (depth 1), and those children cannot delegate further. This prevents runaway recursive delegation.
 
-For multi-stage workflows (research → synthesis, or parallel orchestration over sub-problems), a parent can spawn **orchestrator** children that *can* delegate their own workers:
+For multi-stage workflows (research → synthesis, or parallel orchestration over sub-problems), raise `delegation.max_spawn_depth` so children become **orchestrators** that *can* delegate their own workers:
 
-```python
-delegate_task(
-    goal="Survey three code review approaches and recommend one",
-    role="orchestrator",  # Allows this child to spawn its own workers
-    context="...",
-)
+```yaml
+delegation:
+  max_spawn_depth: 2   # children (depth 1) may spawn leaf grandchildren (depth 2)
 ```
 
-- `role="leaf"` (default): child cannot delegate further — identical to the flat-delegation behavior.
-- `role="orchestrator"`: child retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3+ for deeper trees. There is no upper ceiling — cost is the practical limit.
-- `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
+- The runtime decides from depth: a child keeps the `delegation` toolset while its depth is below `max_spawn_depth`. `delegate_task` has no `role` parameter; a call that still passes one is accepted and the value is ignored.
+- `max_spawn_depth: 1` (default): flat, every child is a leaf. `2` lets children spawn leaf grandchildren; 3+ allows deeper trees. There is no upper ceiling — cost is the practical limit.
+- `delegation.orchestrator_enabled: false`: global kill switch that makes every child a leaf regardless of `max_spawn_depth`.
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
@@ -655,7 +698,7 @@ Nested delegation is unchanged.
 
 Inline turns that run past `agent.gateway_notify_interval` (180 seconds by default) still
 get the periodic "still working" notice, which `display.long_running_notifications`
-controls separately and which is on by default for Telegram, Slack, Discord and WhatsApp.
+controls separately and which is on by default for Telegram, Discord and WhatsApp, and off for Slack.
 For a single message per turn, also set it to `off` for that platform (`generic` only
 changes the notice's wording):
 
@@ -685,24 +728,24 @@ and delegation follows the schema the model sees.
 Top-level model-facing `delegate_task` calls run in the background automatically where the session supports later delivery. Hermes returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. Orchestrator subagents wait for their workers in the current turn because they must synthesize those results before returning. Stateless request/response endpoints fall back to synchronous execution when they cannot deliver a detached result later.
 
 - Normal follow-up messages do not cancel background children, and neither does stopping the current turn: Ctrl+C, Esc, the Desktop/TUI Stop button and an ACP cancel end only the turn. The `/stop` command (gateway `/stop` — also when the session is idle after the dispatching turn ended — or CLI `/stop`) ends the session's running background delegations, and closing or resetting the owning session does the same.
-- Explicit session close/reset interrupts that session's background children. In the CLI and TUI, the gateway owns the session and the client only views it: when the last viewer exits or runs `/new` (a TUI resume switch counts too), the gateway interrupts that session's background children at once and refuses new ones for it until a viewer opens the session again. A plain detach cancels nothing: closing Desktop, a dropped connection, or exiting while another viewer is still attached leaves the work running. Background processes (`terminal(background=True)`) keep running either way.
-- A completion for a CLI or TUI session — a background child's result (including an interrupted one), or a `notify_on_complete` process exit or watch-pattern notice — that reaches the head of the session's queue while no viewer is attached does not start a turn. It is written into the session as a note, and the next turn reads it (for example after `hermes chat --resume`). If a viewer is attached by then, including one that came back after the completion arrived, the completion runs as a turn as before. Messaging chats have no viewers and are unchanged: their completions still start a turn.
-- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
+- Explicit session close/reset interrupts that session's background children. In the CLI and TUI, the gateway owns the session and the client only views it: when the last viewer exits or runs `/new` (a TUI resume switch counts too), the gateway interrupts that session's background children at once and refuses new ones for it until a viewer opens the session again. A plain detach cancels nothing: closing Desktop, a dropped connection, or exiting while another viewer is still attached leaves the work running. Background processes (`terminal(background=true)`) end when their session ends, unless they were started with `persist_on_release=true`.
+- A background child's final result (including an interrupted one) or a `notify_on_complete` process exit for a CLI, TUI, Desktop or web session runs as the parent's turn whether or not a viewer is attached, so the work carries on while your laptop sleeps, the connection drops or the tab is closed. Results for a chat you closed (exit, `/new`, or a TUI resume or branch switch) are written into that session as a note instead, and the next turn reads it (for example after `hermes chat --resume`). A watch-pattern notice, the early per-task failure notice and a manual cron run's result (`cronjob_manage(action='run')`) are also notes while no viewer is attached. A result with a failed child (an error, a timeout, a provider refusal, a stuck child a stall watchdog had to stop, or an unknown outcome after a restart) wakes the parent at most three times in a row while nobody is watching: a further failure is written as a note until you attach or send a message, so a parent that keeps re-dispatching into the same failure cannot loop. Successful results and `notify_on_complete` process exits (whatever their exit code) have no such limit. When a child failed for a reason that repeats on the same model (a safety-filter refusal `content_policy_blocked`, billing, authentication, an unknown model), the result tells the parent not to re-dispatch it unchanged: use a different model, or report it. Messaging chats have no viewers and are unchanged: their completions still start a turn.
+- A Hermes process restart does **not** resume a running child unless `delegation.auto_resume` is on. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened. The child stays continuable with `action="continue"` for `delegation.resumable_ttl_hours`.
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Stopped children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`) whose `summary` is the last text the child produced before the stop (the interrupt placeholder moves to `error`). The stop recurses down the spawn tree — an orchestrator child's synchronous workers are interrupted first and their partial results roll up into the child's own interrupted result — and each background unit's result re-enters the conversation right away as its normal completion notice (`Subagent Task Interrupted: …`), so nothing waits for the child to exhaust its budget.
 
 For **durable execution** that must survive session closure or process restart, use:
 
-- `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
-- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
+- `cronjob_manage` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
+- `terminal(background=true, persist_on_release=true)` — a shell command that outlives its session (session end, `/new`, compression). A gateway or host shutdown still ends it.
 :::
 
 ## Key Properties
 
 - Each subagent gets its **own terminal session** (separate from the parent)
 - Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call
-- **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
-- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
+- **Nested delegation is opt-in** — children can delegate further only when `max_spawn_depth` is raised from its default of 1 (flat); the runtime decides from depth. Disable globally with `orchestrator_enabled: false`.
+- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob_manage`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session ends its background children and the synchronous descendants beneath them; each returns an interrupted completion carrying its partial output
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
@@ -731,7 +774,10 @@ With isolation on:
   `path`, `branch`, `commits` (ahead of the base), and `dirty`. The parent
   reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
 - A worktree left with **no commits and a clean tree is pruned automatically**
-  (`pruned: true`); anything holding work is kept.
+  (`pruned: true`). A worktree holding commits or uncommitted edits is
+  archived to a `refs/hermes/archive/…` ref and removed, with its branch kept;
+  the entry's `note` gives the `hermes worktree restore` command. With
+  `worktrees.archive_dirty: false` such a worktree stays on disk.
 - Pruning requires proof. If a git inspection probe fails — or finalization
   itself errors — the worktree and branch are kept and the entry carries
   `inspection_failed: true` plus a `note` — `commits`/`dirty` are then
@@ -769,9 +815,12 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # resumable_ttl_hours: 48                 # How long a stopped child stays continuable after a restart, worktree kept
+  # max_resumable: 32                       # Resumable children per profile whose worktree is kept (oldest unpinned first)
+  # auto_resume: false                      # Opt-in: the gateway resumes limit/restart-stopped children itself (spends tokens unattended)
+  # auto_resume_deadline_minutes: 360       # Give up (one failure to the parent) this long after a child's first stop
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
-  api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
 
 # Or use a direct custom endpoint instead of provider:
 delegation:

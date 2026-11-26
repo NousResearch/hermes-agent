@@ -1,0 +1,19 @@
+name: frame
+title: Frame
+repo: https://github.com/lambdasec/frame-mcp
+sha: 99688c3dafd18e0aff6706ef83dbdc1cd22bd230
+subdir: hermes
+version: "0.3.0"
+description: "Frame, a verification-driven security agent: scans source for vulnerabilities (SQL injection, command injection, XSS, path traversal, SSRF, deserialization and more) by taint analysis whose paths Z3 checks, in Python, JavaScript/TypeScript, Java, C# and C/C++; verifies fixes; records baselines; generates verified fixes; and answers engine queries (entry points and whether they are protected, data flows, callers, the guards on every path to a line). Bundles a frame:frame skill for security reviews. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: the server runs locally as `uvx --from frame-mcp==0.3.0 --with frame-security[scan]==1.1.7 frame-mcp` (Apache-2.0), fetched from PyPI on first run, so the PyPI packages are not covered by the pinned sha; needs uv. It reads the files it is asked to scan; write_baseline writes the named baseline file and fix writes files only with in_place. Plain scans make no network calls; scan with ai or hunt_authz, fix and exploit send source code to the OpenAI-compatible endpoint the user sets in FRAME_LLM_BASE_URL / FRAME_LLM_MODEL / FRAME_LLM_API_KEY (passed through only when set), and exploit sends requests to the target the user names. The engine_* tools keep one frame query --serve process per project. No telemetry. The package marks the server untrusted, so Hermes asks before write_baseline, fix and exploit and refuses them in unattended runs; every other tool is annotated read-only. Tool-call timeout raised to 1800 s for large scans."
+maintainer: lambdasec
+tier: community
+category: tools
+docs_url: https://github.com/lambdasec/frame-mcp/tree/main/hermes
+requires_hermes: ">=0.23.2"
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

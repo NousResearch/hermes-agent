@@ -143,6 +143,59 @@ test('Homebrew git after CLT stub is selected while skipping the stub without pr
   assert.deepEqual(probed, [homebrew])
 })
 
+test('Homebrew git missing from a minimal Finder PATH is found in the fallback dirs', () => {
+  const dir = makeTempDir('hermes-mac-clt-fallback-')
+  const stub = makeExecutable(path.join(dir, 'usr_bin', 'git'))
+  const homebrew = makeExecutable(path.join(dir, 'homebrew', 'bin', 'git'))
+  const probed: string[] = []
+
+  const selected = resolvePosixGitBinary({
+    candidates: [stub],
+    fallbackDirs: [path.dirname(homebrew), path.dirname(stub)],
+    platform: 'darwin',
+    env: { PATH: path.dirname(stub) },
+    appleStubPath: stub,
+    developerDirProbe: () => '',
+    cache: createCltGitCache(),
+    fileExists: candidate => fs.existsSync(candidate),
+    binaryRuns: candidate => {
+      probed.push(candidate)
+
+      return candidate === homebrew
+    }
+  })
+
+  assert.equal(selected, homebrew)
+  assert.deepEqual(probed, [homebrew])
+})
+
+test('fallback dirs come after PATH and a dir on both is probed once', () => {
+  const dir = makeTempDir('hermes-mac-clt-fallback-order-')
+  const broken = makeExecutable(path.join(dir, 'local', 'bin', 'git'))
+  const nix = makeExecutable(path.join(dir, 'nix', 'bin', 'git'))
+  const homebrew = makeExecutable(path.join(dir, 'homebrew', 'bin', 'git'))
+  const probed: string[] = []
+
+  const resolve = (candidates: string[]) =>
+    resolvePosixGitBinary({
+      candidates,
+      fallbackDirs: [path.dirname(broken), path.dirname(homebrew)],
+      platform: 'linux',
+      env: { PATH: candidates.map(candidate => path.dirname(candidate)).join(':') },
+      fileExists: candidate => fs.existsSync(candidate),
+      binaryRuns: candidate => {
+        probed.push(candidate)
+
+        return candidate !== broken
+      }
+    })
+
+  assert.equal(resolve([nix]), nix)
+  assert.deepEqual(probed.splice(0), [nix])
+  assert.equal(resolve([broken]), homebrew)
+  assert.deepEqual(probed, [broken, homebrew])
+})
+
 test('DEVELOPER_DIR accepts both a Developer directory and an Xcode.app bundle', () => {
   const dir = makeTempDir('hermes-mac-clt-devdir-')
   const stub = makeExecutable(path.join(dir, 'usr_bin', 'git'))

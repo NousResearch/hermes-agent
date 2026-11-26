@@ -77,7 +77,7 @@ import {
 import { createBackendConnectionState } from './backend-connection-state'
 import { assertDescriptorStillOwned, forgetFailedDescriptor } from './backend-descriptor-cache'
 import { BackendDialClaims } from './backend-dial-claim'
-import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
+import { buildDesktopBackendEnv, POSIX_SANE_PATH_ENTRIES, profileBackendParentEnv } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   backendCommandMatches,
@@ -3210,7 +3210,9 @@ function resolveGitBinary(): string | null {
   }
 
   if (!IS_WINDOWS) {
-    const selected = resolvePosixGitBinary({ candidates: findPathCandidates('git'), fileExists, binaryRuns })
+    const candidates = findPathCandidates('git')
+    const fallbackDirs = POSIX_SANE_PATH_ENTRIES
+    const selected = resolvePosixGitBinary({ candidates, fallbackDirs, fileExists, binaryRuns })
 
     if (selected) {
       _gitBinaryCache = selected

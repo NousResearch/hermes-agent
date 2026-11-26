@@ -1,0 +1,32 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 2
+
+name: kumiho-memory
+description: Recall and save decisions, facts, and preferences in a Kumiho Cloud workspace.
+source: https://github.com/KumihoIO/kumiho-plugins
+
+transport:
+  type: http
+  url: https://mcp.kumiho.cloud/mcp
+
+auth:
+  type: oauth
+
+# Memory writes require Hermes approval unless the server marks a tool read-only.
+# Version 2 makes older clients warn rather than silently ignore this gate.
+trust: untrusted
+
+suggest:
+  keywords:
+    - kumiho
+  hosts:
+    - kumiho.io
+  examples:
+    - Recall the reason behind my last decision.
+
+post_install: |
+  Complete Kumiho's browser OAuth flow to connect your workspace. Hermes holds
+  the OAuth tokens. This connector uses the same server name as the Kumiho
+  Memory plugin and shares one Hermes MCP configuration. Choose this direct MCP
+  route if you want the tools without the plugin's six skills.

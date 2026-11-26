@@ -1,9 +1,9 @@
 name: edenai-provider
 repo: https://github.com/edenai/hermes-edenai-provider
-sha: e2dc4023228243951324353f317eae97851d4dfd
+sha: c6408e158ae155ddde471d13bba041685fdc8cff
 subdir: model-providers/edenai
 title: "Eden AI"
-description: "Eden AI models through its OpenAI-compatible API: live model list by name from /v3/models?view=models (tool-calling models in the picker), exact context windows, reasoning effort, and a session id kept across compression. Disclosure: model provider; prompts, tool schemas and EDENAI_API_KEY go to api.edenai.run (or EDENAI_BASE_URL), then to the provider serving the model."
+description: "Eden AI models through its OpenAI-compatible API: live model list by name from /v3/models?view=models (tool-calling models in the picker), exact context windows, reasoning effort, a session id kept across compression, and delegate_task subagents named as threads of it. Disclosure: model provider; prompts, tool schemas and EDENAI_API_KEY go to api.edenai.run (or EDENAI_BASE_URL), then to the provider serving the model."
 maintainer: edenai
 tier: community
 category: models

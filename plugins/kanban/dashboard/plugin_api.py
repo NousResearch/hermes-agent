@@ -37,6 +37,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
+from hermes_cli.kanban_transition_guard import BoardTransitionRefused, TransitionSource
 
 log = logging.getLogger(__name__)
 
@@ -577,13 +578,17 @@ _RUNNING_DIRECT_MSG = "Cannot set status to 'running' directly; use the dispatch
 def _drag_to(conn, task_id: str, s: str) -> bool:
     """Drag-drop into ready/todo/triage: blocked/scheduled -> ready re-opens via ``unblock_task``;
     leaving ``review`` goes through ``reopen_review_task`` (stale-run recovery, parent re-gate,
-    ``review_reopened`` event) instead of a raw write; ``triage`` needs no current-state query."""
-    current = kanban_db.get_task(conn, task_id) if s != "triage" else None
-    if s == "ready" and current and current.status in ("blocked", "scheduled"):
-        return kanban_db.unblock_task(conn, task_id)
-    if current is not None and current.status == "review":
-        return kanban_db.reopen_review_task(conn, task_id)
-    return _set_status_direct(conn, task_id, s)
+    ``review_reopened`` event) instead of a raw write; ``triage`` needs no current-state query.
+    An armed board (``kanban.transition_guard.boards``) refuses every one of these without a
+    one-use release, from ``unblock_task``'s own check or the one below."""
+    with TransitionSource("dashboard"):
+        kanban_db.require_armed_board_release(conn, task_id, "unblock")
+        current = kanban_db.get_task(conn, task_id) if s != "triage" else None
+        if s == "ready" and current and current.status in ("blocked", "scheduled"):
+            return kanban_db.unblock_task(conn, task_id)
+        if current is not None and current.status == "review":
+            return kanban_db.reopen_review_task(conn, task_id)
+        return _set_status_direct(conn, task_id, s)
 
 
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
@@ -635,13 +640,17 @@ _OVERRIDE_OPS = (
 
 def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_deferred: bool) -> None:
     """PATCH status phase: 400 on a rejected verb, 409 when the transition is refused
-    (naming the blocking parent(s) for ``ready``/``done``/``review`` so the UI renders an actionable toast)."""
+    (naming the blocking parent(s) for ``ready``/``done``/``review`` so the UI renders an
+    actionable toast) — and 409 with the release instructions on an armed board
+    (``kanban.transition_guard.boards``) when no one-use release authorizes the move."""
     s = payload.status
+    ok = False
     if s == "archived":
         ok = kanban_db.archive_task(conn, task_id)
     else:
-        with _map_errors(400, _StatusRejected, ValueError):
-            ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
+        with _map_errors(409, BoardTransitionRefused):
+            with TransitionSource("dashboard"), _map_errors(400, _StatusRejected, ValueError):
+                ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
         if s == "review" and ok and review_assignee_deferred and not payload.assignee:
             ok = kanban_db.assign_task(conn, task_id, None)
     if ok:
@@ -757,6 +766,11 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
         # dispatcher spawns a child whose upstream work hasn't completed.
         if effective_status == "ready" and not kanban_db._parents_satisfied(conn, task_id):
             return False
+        # The direct writer is the dashboard's own path into 'ready'; on an armed board it
+        # needs the same one-use release the structured verbs do, spent with the flip.
+        if effective_status == "ready":
+            kanban_db.require_armed_board_release(conn, task_id, "unblock")
+            kanban_db.spend_armed_board_release(conn, task_id, "unblock")
         was_running = prev["status"] == "running"
         reopening_satisfied_parent = prev["status"] in {"done", "archived"} and effective_status not in {"done", "archived"}
         cur = conn.execute(
@@ -832,7 +846,14 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
         entry.update(ok=False, error="archive refused")
     if payload.status is not None and not payload.archive:
         s = payload.status
-        if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
+        applied = False
+        try:
+            with TransitionSource("dashboard"):
+                applied = _apply_status(conn, tid, s, payload, f"unknown status {s!r}")
+        except BoardTransitionRefused as e:
+            entry.update(ok=False, error=str(e))
+            return
+        if not applied:
             entry.update(ok=False, error=_open_parent_refusal(conn, tid, s) or f"transition to {s!r} refused")
     if payload.assignee is not None:
         try:

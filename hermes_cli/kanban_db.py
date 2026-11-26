@@ -985,27 +985,6 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 # --- ID generation ---
 
-def _new_task_id() -> str:
-    """``t_`` + 4 hex bytes (collision ~1e-3 at 100k tasks; 2 bytes would hit 50%
-    by 10k). Idempotency belongs to ``idempotency_key``, not id uniqueness."""
-    return "t_" + secrets.token_hex(4)
-
-
-def _claimer_id() -> str:
-    """Return a ``host:pid`` string that identifies this claimer."""
-    import socket
-    try:
-        host = socket.gethostname() or "unknown"
-    except Exception:
-        host = "unknown"
-    return f"{host}:{os.getpid()}"
-
-
-def _host_prefix() -> str:
-    """``"<host>:"`` prefix shared by every claim lock issued from this host."""
-    return f"{_claimer_id().split(':', 1)[0]}:"
-
-
 # --- Task creation / mutation ---
 
 def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -2013,24 +1992,6 @@ def _latest_event(
         sql += " AND run_id = ?"
         params = (*params, int(run_id))
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
-
-
-def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
-    """``review`` when the newest lifecycle event carries a review
-    ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
-    row = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind IN ("
-        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
-        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
-        ") ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    payload = _json_dict(_row_get(row, "payload"))
-    for key in ("resume_status", "retry_status", "source_status"):
-        if payload.get(key) == "review":
-            return "review"
-    return "ready"
 
 
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
@@ -3480,7 +3441,8 @@ def promote_task(
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished; ``dry_run`` only validates.
+    Refused while a parent is unfinished; ``dry_run`` only validates. An armed board
+    (``kanban.transition_guard.boards``) additionally needs its one-use release file.
     Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
@@ -3513,6 +3475,9 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
+        # Inside the txn: the spend and the flip commit together, and a losing race
+        # leaves the release for whoever does change the row.
+        spend_armed_board_release(conn, task_id, "promote")
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
@@ -3556,9 +3521,16 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. An armed board
+    (``kanban.transition_guard.boards``) refuses without a one-use release file, which
+    this call spends inside the same transaction as the flip."""
     now = int(time.time())
+    # Before the txn: a refused card must not even have its leaked run reclaimed.
+    release = _transition_release(conn, task_id, "unblock")
+    if release is not None:
+        _ktg().refuse_without_release(conn, release)
     with write_txn(conn):
+        _spend_release(conn, release)
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"
@@ -4202,8 +4174,22 @@ from hermes_cli.kanban_db_boards import (
     create_board,
     list_boards,
     read_board_metadata,
-    remove_board,
     write_board_metadata,
+)
+# ``remove_board`` lives one level down (kanban_db_boards is over its line cap); import it
+# from the leaf module, not the parent, because the parent's own tail import of this file
+# has not yet bound it while we are still executing the tail here.
+from hermes_cli.kanban_db_boards_pkg.lifecycle import remove_board
+from hermes_cli.kanban_db_transition import (
+    _claimer_id,
+    _host_prefix,
+    _ktg,
+    _new_task_id,
+    _resume_status_from_events,
+    _spend_release,
+    _transition_release,
+    require_armed_board_release,
+    spend_armed_board_release,
 )
 from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,

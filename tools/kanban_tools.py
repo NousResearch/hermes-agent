@@ -1277,15 +1277,25 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
 @_kanban_handler("kanban_unblock")
 def _handle_unblock(args: dict, **kw) -> str:
-    """Transition a blocked task to ready, or todo while parents remain open."""
+    """Transition a blocked task to ready, or todo while parents remain open.
+
+    On a board listed under ``kanban.transition_guard.boards`` this refuses unless a
+    human-written one-use release file authorizes exactly this task (see
+    ``hermes_cli.kanban_transition_guard``): ``purge`` when the card is armed without one,
+    as no further tool call can create it."""
     _reject_delegated_child_mutation("kanban_unblock")
     _require_orchestrator_tool("kanban_unblock")
     tid = args.get("task_id")
     _check(tid, "task_id is required")
     tid = str(tid)
     _enforce_worker_task_ownership(tid)
-    with _board(args.get("board")) as (kb, conn):
-        _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+    from hermes_cli.kanban_transition_guard import BoardTransitionRefused, TransitionSource
+
+    with _board(args.get("board")) as (kb, conn), TransitionSource("tool:kanban_unblock"):
+        try:
+            _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+        except BoardTransitionRefused as exc:
+            return tool_error(str(exc))
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 

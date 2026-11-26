@@ -33,6 +33,7 @@ from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser
+from hermes_cli.kanban_transition_guard import BoardTransitionRefused, TransitionSource
 
 
 # --- Flag parsing helpers ---
@@ -1027,7 +1028,12 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        def op(tid):
+            # An armed board refuses before the reason comment is written, so a refused
+            # card keeps its thread clean; unblock_task spends the release itself.
+            kb.require_armed_board_release(conn, tid, "unblock")
+            return kb.unblock_task(conn, tid)
+        op = _commented(conn, reason, author, "UNBLOCK", op)
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 
@@ -1097,10 +1103,14 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 
     results: list[dict[str, object]] = []
     with kbc.connect_closing() as conn:
-        for tid in ids:
-            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, dry_run=dry_run)
-            results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run,
-                            "reason": reason, "error": err})
+        with TransitionSource("cli"):
+            for tid in ids:
+                try:
+                    ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, dry_run=dry_run)
+                except BoardTransitionRefused as exc:
+                    ok, err = False, str(exc)
+                results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run,
+                                "reason": reason, "error": err})
 
     failed = [r for r in results if not r["promoted"]]
     if getattr(args, "json", False):
@@ -1338,6 +1348,46 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _cmd_transition_status(args: argparse.Namespace) -> int:
+    """Read-only: is this board armed, where is its release inbox, what is waiting there."""
+    from hermes_cli import kanban_transition_guard as ktg
+
+    slug = kb._slug_or_default(kb.get_current_board())
+    armed = ktg.board_is_armed(slug, ktg.armed_boards())
+    inbox = ktg.releases_dir(slug)
+    pending = [
+        {"file": r["file"], "task_id": r["task_id"], "request_id": r["request_id"],
+         "scope": r["scope"],
+         "expires_in_seconds": int(ktg.RELEASE_WINDOW_SECONDS - (time.time() - float(r["requested_at"])))}
+        for r in ktg.pending_releases(slug)
+    ]
+    report = {
+        "board": slug,
+        "armed": armed,
+        "releases_dir": str(inbox) if inbox is not None else None,
+        "release_window_seconds": ktg.RELEASE_WINDOW_SECONDS,
+        "release_fields": list(ktg.RELEASE_FIELDS),
+        "pending_releases": pending,
+    }
+    if getattr(args, "json", False):
+        _print_json(report)
+        return 0
+    print(f"board {slug}: {'armed — transitions need a one-use release' if armed else 'not armed (normal transitions)'}")
+    if not armed:
+        return 0
+    print(f"release inbox: {report['releases_dir']}")
+    print(f"a release authorizes one blocked/todo -> ready move, requested within "
+          f"{ktg.RELEASE_WINDOW_SECONDS // 60} minutes:")
+    print('  {"task_id": "<id>", "request_id": "<7-digit owner request code>", "board": "' + slug + '", '
+          '"scope": "unblock", "requested_at": "<unix seconds>", "requested_by": "<owner profile>"}')
+    if not pending:
+        print("pending releases: none")
+    for r in pending:
+        print(f"pending: {r['file']} -> {r['task_id']} request {r['request_id']} "
+              f"(scope {r['scope']}, expires in {r['expires_in_seconds']}s)")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1357,7 +1407,7 @@ _HANDLERS = {
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
-    "gc": _cmd_gc,
+    "gc": _cmd_gc, "transition-status": _cmd_transition_status,
 }
 
 

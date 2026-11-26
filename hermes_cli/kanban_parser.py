@@ -451,6 +451,15 @@ _SPECS = [
              "class is reported and left untouched (fail-closed). Exits 0 when the DB is healthy "
              "or was repaired, non-zero when it is still corrupt."
          )),
+    _cmd("transition-status", [_json_flag(help="Emit the release inbox as JSON")],
+         help="Show whether this board demands a release file, and which releases are pending",
+         description=(
+             "Boards listed under kanban.transition_guard.boards in config.yaml refuse every "
+             "blocked/todo -> ready transition without a one-use release control file written "
+             "for that task, board and scope (kanban/boards/<slug>/controls/releases/). This "
+             "read-only command prints the board slug, whether it is armed, the inbox path, the "
+             "release JSON shape, and the well-formed releases waiting there."
+         )),
 ]
 
 

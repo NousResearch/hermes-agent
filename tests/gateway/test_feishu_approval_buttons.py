@@ -249,6 +249,7 @@ class TestNonApprovalCardAction:
     @pytest.mark.asyncio
     async def test_routes_as_synthetic_command(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = frozenset({"ou_user1"})  # clicker passes the group allowlist
 
         data = _make_card_action_data(
             action_value={"custom_action": "something_else"},

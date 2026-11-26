@@ -124,18 +124,20 @@ config = {
 import hermes_yaml as yaml
 
 Path(os.environ["HERMES_HOME"], "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 from agent.moa_loop import MoAClient
 from agent.turn_request_assembly import _prepare_moa_request
 from agent.transports.chat_completions import ChatCompletionsTransport
 from types import SimpleNamespace
 from openai import OpenAI
 
-db = SessionDB(Path(os.environ["HERMES_HOME"]) / "state.db")
-db.create_session("probe-session", source="cli")
-db.append_message("probe-session", "user", "Remember this token")
-db.append_message("probe-session", "assistant", "Acknowledged")
-history = db.get_messages_as_conversation("probe-session")
+store = open_persistence(profile_scope(home=Path(os.environ["HERMES_HOME"])), eager=True)
+store.sessions.create(NewSession(session_id="probe-session", source="cli"))
+store.messages.append("probe-session", NewMessage(role="user", content="Remember this token"))
+store.messages.append("probe-session", NewMessage(role="assistant", content="Acknowledged"))
+history = [m.as_openai_message() for m in store.messages.read_conversation("probe-session")]
 assert all(m.get("_db_persisted") for m in history)
 messages = [
     {"role": "system", "content": "You are a test assistant"},
@@ -186,7 +188,7 @@ print(
             "production_imports": {
                 name: sys.modules[name].__file__
                 for name in [
-                    "hermes_state",
+                    "persistence_assembly",
                     "agent.moa_loop",
                     "agent.auxiliary_client",
                     "agent.turn_request_assembly",
@@ -198,4 +200,4 @@ print(
     )
 )
 server.shutdown()
-db.close()
+store.close()

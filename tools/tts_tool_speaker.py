@@ -22,6 +22,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator, List, Optional
 
+from agent.memory_provider import ctx_bound, spawn_context_thread
 from tools.tts_text_normalize import _strip_markdown_for_tts
 from tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly
 
@@ -115,7 +116,7 @@ class _SyncSentencePipeline:
     def speak(self, cleaned: str) -> None:
         """Queue one sentence. Blocks only when the lookahead bound is full."""
         if not self._stop.is_set():
-            self._queue.put((cleaned, self._executor.submit(self._synthesize_to_tmp, cleaned)))
+            self._queue.put((cleaned, self._executor.submit(ctx_bound(self._synthesize_to_tmp), cleaned)))
 
     def close(self) -> None:
         """Flush queued sentences in order (skipped if stopped), then join."""
@@ -232,8 +233,9 @@ class _StreamerPlayback:
         self._prefetch_sem.acquire()
         chunk_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=self._CHUNK_QUEUE_MAX)
         self._audio_queue.put(chunk_queue)
-        self._prefetch_threads.append(threading.Thread(
-            target=self._consume_to_queue, args=(audio_iter, chunk_queue), daemon=True))
+        # The provider's generator resolves its credentials on the first next(), in this thread.
+        self._prefetch_threads.append(spawn_context_thread(
+            self._consume_to_queue, name="tts-prefetch", args=(audio_iter, chunk_queue)))
         self._prefetch_threads[-1].start()
 
     def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: queue.Queue[Optional[bytes]]) -> None:

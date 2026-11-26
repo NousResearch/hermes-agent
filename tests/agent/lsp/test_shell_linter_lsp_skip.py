@@ -18,9 +18,8 @@ These tests pin the contract:
   - When LSP is inactive or disabled-for-path, the shell linter runs
     exactly as before (regression guard for the default config).
   - The skip only applies to extensions in
-    ``_SHELL_LINTER_LSP_REDUNDANT`` — Python ``py_compile`` and
-    ``node --check`` keep running unconditionally because they're fast,
-    file-local, and correct.
+    ``_SHELL_LINTER_LSP_REDUNDANT`` — ``node --check`` keeps running
+    unconditionally because it's fast, file-local, and correct.
   - ``.tsx`` is intentionally NOT in either ``LINTERS`` or
     ``_SHELL_LINTER_LSP_REDUNDANT``: it had no ``LINTERS`` entry
     pre-PR (so it was already implicitly ``skipped`` via the

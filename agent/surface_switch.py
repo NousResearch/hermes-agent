@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any, List
 
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 
 logger = logging.getLogger("run_agent")

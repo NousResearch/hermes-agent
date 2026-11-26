@@ -1,19 +1,20 @@
 name: epoch
 title: Epoch
 repo: https://github.com/KyaniteLabs/Epoch
-sha: 36de521a89501c2b68b70251d50d32027ad96f2b
+sha: 13e37fb94f78e68409aa11d2a445921278b33688
 subdir: plugins/epoch-hermes
-version: "0.7.0"
-description: "Calibrated time estimates on the Hermes Kanban board: when a worker claims a task, Epoch posts a Monte Carlo P50/P90 (plus P80/P95) estimate as a task comment, and when the run completes it records that run's wall-clock hours back to Epoch's ledger (auto_wallclock provenance, sanity-gated) so later estimates calibrate. Dispatcher and worker profiles can differ; the estimate-to-run binding lives next to the ledger, Kanban comments are display only. Also adds an epoch_estimate tool and /epoch. Disclosure — runs `npx -y @kyanitelabs/epoch@0.7.0` as a child process (downloads Epoch and its caret-ranged npm dependencies on first run, which the catalog pin does not cover; needs Node >=22), passing the task title and its three-point hint to the local CLI; the child env is scrubbed (allow-listed PATH/HOME/locale/Node/npm/proxy vars only, the parent environment is never passed through); estimates, actuals and run bindings live under <HERMES_HOME>/plugin-data/epoch/ and are shared by every profile; Epoch telemetry is forced off for plugin runs; no network besides the npm download, no API key; hook work runs on short-lived background threads and unfinished jobs resume when the plugin next loads; /epoch passes other Epoch subcommands through (it refuses serve, self-improve and telemetry/data mutations, and refuses ledger writes on gateway platforms unless opted in)."
+version: "0.8.0"
+description: "Calibrated time estimates on the Hermes Kanban board: when a worker claims a task, Epoch posts a Monte Carlo P50/P90 (plus P80/P95) estimate as a task comment, and when the run completes it records that run's wall-clock hours back to Epoch's ledger (auto_wallclock provenance, sanity-gated) so later estimates calibrate. A Hermes Desktop page charts a card's Monte Carlo spread three ways (distribution, chance-done-by curve, 50 dots); it is read-only and never writes the ledger. Dispatcher and worker profiles can differ; the estimate-to-run binding lives next to the ledger, Kanban comments are display only. Also adds an epoch_estimate tool and /epoch. Disclosure — runs `npx -y @kyanitelabs/epoch@0.8.0` as a child process (downloads Epoch and its caret-ranged npm dependencies on first run, which the catalog pin does not cover; needs Node >=22), passing the task title and its three-point hint to the local CLI; the child env is scrubbed (allow-listed PATH/HOME/locale/Node/npm/proxy vars only, the parent environment is never passed through); estimates, actuals and run bindings live under <HERMES_HOME>/plugin-data/epoch/ and are shared by every profile; Epoch telemetry is forced off for plugin runs; no network besides the npm download, no API key; hook work runs on short-lived background threads and unfinished jobs resume when the plugin next loads; the Desktop page reads every Kanban board read-only through Hermes' internal kanban modules and runs a forecast in a throwaway data directory when you open a card; /epoch passes other Epoch subcommands through (it refuses serve, self-improve and telemetry/data mutations, and refuses ledger writes on gateway platforms unless opted in)."
 maintainer: KyaniteLabs
 tier: community
 category: tools
 requires_hermes: ">=0.21.6"
-docs_url: https://github.com/KyaniteLabs/Epoch/tree/36de521a89501c2b68b70251d50d32027ad96f2b/plugins/epoch-hermes#readme
-image: https://raw.githubusercontent.com/KyaniteLabs/Epoch/36de521a89501c2b68b70251d50d32027ad96f2b/plugins/epoch-hermes/docs/banner.png
+docs_url: https://github.com/KyaniteLabs/Epoch/tree/13e37fb94f78e68409aa11d2a445921278b33688/plugins/epoch-hermes#readme
+image: https://raw.githubusercontent.com/KyaniteLabs/Epoch/13e37fb94f78e68409aa11d2a445921278b33688/plugins/epoch-hermes/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/KyaniteLabs/Epoch/36de521a89501c2b68b70251d50d32027ad96f2b/plugins/epoch-hermes/docs/kanban-claim-comment.png
-  - https://raw.githubusercontent.com/KyaniteLabs/Epoch/36de521a89501c2b68b70251d50d32027ad96f2b/plugins/epoch-hermes/docs/actual-recorded.png
+  - https://raw.githubusercontent.com/KyaniteLabs/Epoch/13e37fb94f78e68409aa11d2a445921278b33688/plugins/epoch-hermes/docs/kanban-claim-comment.png
+  - https://raw.githubusercontent.com/KyaniteLabs/Epoch/13e37fb94f78e68409aa11d2a445921278b33688/plugins/epoch-hermes/docs/actual-recorded.png
+  - https://raw.githubusercontent.com/KyaniteLabs/Epoch/13e37fb94f78e68409aa11d2a445921278b33688/plugins/epoch-hermes/docs/desktop-pane.png
 readme: true
 platforms: []
 known_issues:

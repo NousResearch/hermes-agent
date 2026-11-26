@@ -260,7 +260,7 @@ def routing_lifecycle(lifecycle, monkeypatch):
         "api_mode": "chat_completions", "request_overrides": {"temperature": 0.2},
     })
     monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
-    monkeypatch.setattr("tools.delegate_tool._load_config", config)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", config)
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
     return lifecycle, build, config, resolve
 

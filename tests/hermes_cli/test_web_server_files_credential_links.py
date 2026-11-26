@@ -1,0 +1,132 @@
+"""Credential stores reached through a symlink stay hidden from the Files API (#95311).
+
+The name checks see only the names a path is spelled with; ``~/.ssh -> ~/keys`` gives the
+store's resolved form an innocuous name, so the guard also compares the resolved path with
+the resolved credential-store locations of the guard homes.
+"""
+
+import base64
+
+import pytest
+from starlette.testclient import TestClient
+
+from hermes_cli import web_server
+
+
+@pytest.fixture
+def home_client(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    previous = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    try:
+        yield client, home
+    finally:
+        client.close()
+        if previous is None:
+            delattr(web_server.app.state, "auth_required")
+        else:
+            web_server.app.state.auth_required = previous
+
+
+def _link(link, target, *, is_dir):
+    try:
+        link.symlink_to(target, target_is_directory=is_dir)
+    except (OSError, NotImplementedError):
+        pytest.skip("filesystem does not allow symlinks")
+
+
+def test_symlinked_credential_dir_and_file_stay_hidden(home_client):
+    client, home = home_client
+    (home / "keys").mkdir()
+    (home / "keys" / "id_rsa").write_text("secret")
+    (home / "dotfiles").mkdir()
+    (home / "dotfiles" / "netrc").write_text("secret")
+    (home / "notes.txt").write_text("safe")
+    _link(home / ".ssh", home / "keys", is_dir=True)
+    _link(home / ".netrc", home / "dotfiles" / "netrc", is_dir=False)
+    _link(home / "alias", home / ".ssh", is_dir=True)  # a scan must still walk an innocuous link
+
+    names = [e["name"] for e in client.get("/api/files", params={"path": str(home)}).json()["entries"]]
+    assert "notes.txt" in names and "dotfiles" in names
+    assert "keys" not in names and "alias" not in names
+    dotfiles = client.get("/api/files", params={"path": str(home / "dotfiles")}).json()["entries"]
+    assert [e["name"] for e in dotfiles] == []
+
+    for rel in (".ssh/id_rsa", "keys/id_rsa", ".netrc", "dotfiles/netrc"):
+        for route in ("/api/files/read", "/api/files/download"):
+            resp = client.get(route, params={"path": str(home / rel)})
+            assert resp.status_code == 403, (route, rel, resp.status_code)
+        resp = client.get("/api/fs/read-text", params={"path": str(home / rel)})
+        assert resp.status_code == 403, ("/api/fs/read-text", rel, resp.status_code)
+
+    fs_names = [e["name"] for e in client.get("/api/fs/list", params={"path": str(home)}).json()["entries"]]
+    assert "keys" not in fs_names and "alias" not in fs_names and "notes.txt" in fs_names
+
+    data_url = "data:text/plain;base64," + base64.b64encode(b"ssh-ed25519 AAAA").decode()
+    resp = client.post("/api/files/upload", json={"path": str(home / "keys" / "authorized_keys"), "data_url": data_url})
+    assert resp.status_code == 403, resp.status_code
+    assert not (home / "keys" / "authorized_keys").exists()
+
+
+@pytest.mark.platforms("macos")
+def test_case_variant_of_symlinked_store_is_refused(home_client):
+    """APFS opens ``~/KEYS/id_rsa`` for ``~/keys/id_rsa``; realpath keeps the typed case."""
+    client, home = home_client
+    (home / "keys").mkdir()
+    (home / "keys" / "id_rsa").write_text("secret")
+    _link(home / ".ssh", home / "keys", is_dir=True)
+    if not (home / "KEYS" / "id_rsa").exists():
+        pytest.skip("case-sensitive volume")
+
+    for route in ("/api/files/read", "/api/fs/read-text"):
+        resp = client.get(route, params={"path": str(home / "KEYS" / "id_rsa")})
+        assert resp.status_code == 403, (route, resp.status_code)
+
+
+@pytest.mark.parametrize("route", [
+    "/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download", "/api/fs/list",
+    "/api/files/download", "/api/files/stream", "/api/files/upload-stream",
+])
+@pytest.mark.parametrize("locked_root", [False, True], ids=["home", "locked-root"])
+def test_file_credential_check_runs_off_the_event_loop(home_client, monkeypatch, route, locked_root):
+    """Resolving every guard home's stores may stat a slow mount; it must not park the loop."""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hermes_cli.web_routers import files
+
+    client, home = home_client
+    if locked_root:  # _hosted_fs_read_guard runs the same store check on a locked files root
+        monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(home))
+    (home / "clip.mp3").write_bytes(b"ID3")  # /api/files/stream serves media only
+    entered, release = threading.Event(), threading.Event()
+    real_stores = files.resolved_home_credential_stores
+
+    def slow_stores():
+        entered.set()
+        release.wait(timeout=5)
+        return real_stores()
+
+    monkeypatch.setattr(files, "resolved_home_credential_stores", slow_stores)
+    with TestClient(web_server.app) as loop_client, ThreadPoolExecutor(max_workers=1) as pool:
+        loop_client.headers.update(client.headers)
+        if route == "/api/files/upload-stream":
+            blocked = pool.submit(loop_client.post, route, data={"path": str(home / "up.txt")}, files={"file": ("up.txt", b"hi")})
+        else:
+            blocked = pool.submit(loop_client.get, route, params={"path": str(home if route == "/api/fs/list" else home / "clip.mp3")})
+        try:
+            assert entered.wait(timeout=5)
+            start = time.monotonic()
+            probe = loop_client.get("/api/health")
+            elapsed = time.monotonic() - start
+        finally:
+            release.set()
+        assert blocked.result(timeout=10).status_code == 200
+    assert probe.status_code == 200 and elapsed < 2.5, elapsed

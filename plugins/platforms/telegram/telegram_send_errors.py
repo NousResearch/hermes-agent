@@ -71,9 +71,69 @@ def maybe_delivered_result(error: Exception, safe_error: str, **fields):
     return SendResult(success=False, error=safe_error, retryable=True, **fields)
 
 
+def rich_failure_result(error: Exception, safe_error: str, **fields):
+    """``maybe_delivered_result`` for a failed ``sendRichMessage``, plus ``raw_response["never_sent"]``
+    when the request never left or was a flood refusal: the standalone sender reads that proof as
+    "nothing sent", so cron may queue a replay."""
+    result = maybe_delivered_result(error, safe_error, **fields)
+    if send_error_kind(error) in (UNSENT, FLOOD):
+        result.raw_response = {**(result.raw_response or {}), "never_sent": True}
+    return result
+
+
+def idless_send_result(adapter_name: str, chat_id, what: str):
+    """A send Telegram accepted whose result carries no ``message_id``: delivery is unknown, so it is
+    ``delivery_uncertain`` like a lost reply (#147616). Never resent here, and never ``success``: a
+    success without an id would finalize the delivery ledger row as delivered and prune it, so a reply
+    that never landed is never redelivered. The ledger redelivers it once, with its duplicate marker."""
+    import logging
+
+    from gateway.platforms.base import SendResult
+
+    logging.getLogger(__name__).warning("[%s] %s for chat %s returned no message_id", adapter_name, what, chat_id)
+    return SendResult(success=False, error=f"{what} returned no message_id", raw_response={"delivery_uncertain": True})
+
+
 def is_entity_parse_error(error: Exception, markers: tuple = ("parse", "markdown", "html", "entit")) -> bool:
     """A failure a plain-text resend fixes: Telegram refused the formatting (a ``BadRequest`` such
     as ``can't parse entities``), or a local error naming it that never reached Telegram. Never a
     transport/5xx error: PTB's "Parsing the server response ... failed" for an HTML 502/504 page
     may follow a posted message."""
     return any(marker in str(error).lower() for marker in markers) and send_error_kind(error) in (REFUSED, LOCAL)
+
+
+def classify_send_exception(adapter, e: Exception):
+    """The failed ``SendResult`` for an exception escaping ``adapter``'s chunk loop. ``retryable`` doubles
+    as "non-delivery is certain": a plain ``TimedOut`` may have reached Telegram, so it is neither re-sent
+    by ``_send_with_retry`` nor resumed from; a wrapped ConnectTimeout / httpx pool timeout never left."""
+    from gateway.platforms.base import SendResult, classify_send_error
+    from plugins.platforms.telegram.adapter import _redact_telegram_error_text, logger
+
+    safe_error = _redact_telegram_error_text(e)
+    logger.error("[%s] Failed to send Telegram message: %s", adapter.name, safe_error)
+    err_str = str(e).lower()
+    # Content exceeded 4096 chars: fail so the stream consumer enters fallback mode.
+    if "message_too_long" in err_str or "too long" in err_str:
+        logger.debug("[%s] send() content too long, falling back to new-message continuation", adapter.name)
+        return SendResult(success=False, error="message_too_long", error_kind="too_long")
+    return maybe_delivered_result(e, safe_error, error_kind=classify_send_error(e))
+
+
+def explain_username_chat_not_found(result, chat_id):
+    """The Bot API resolves ``@username`` only for public channels and supergroups, so a home channel
+    set to a person's handle answers every send with a bare "Chat not found" (#95121). ``result`` is a
+    standalone result dict (a new dict comes back) or a gateway ``SendResult`` (its error is amended)."""
+    from plugins.platforms.telegram.telegram_ids import looks_like_telegram_username
+
+    is_dict = isinstance(result, dict)
+    error = result.get("error") if is_dict else getattr(result, "error", None)
+    if not error or "chat not found" not in str(error).lower() or not looks_like_telegram_username(chat_id):
+        return result
+    hint = (f" Telegram resolves '{str(chat_id).strip()}' only when it is a public channel or supergroup, never "
+            "a private chat. Use the numeric chat id instead (for the home channel: send /sethome in that "
+            "chat, or set TELEGRAM_HOME_CHANNEL to the id).")
+    error = str(error).rstrip(". ") + "." + hint
+    if is_dict:
+        return {**result, "error": error}
+    result.error = error
+    return result

@@ -2,24 +2,27 @@
 
 import json
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tools.todo_tool import MAX_TODO_RESULT_CHARS
 from tui_gateway import server
 
 
 def test_deferred_desktop_resume_exposes_todo_older_than_display_tail(tmp_path, monkeypatch):
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     state = {"todos": [{"id": "a", "content": "Older plan", "status": "in_progress"}], "revision": 4}
-    db.create_session("todo-parent", source="desktop")
-    db.append_message("todo-parent", "assistant", "", tool_calls=[
+    seed_session(db, "todo-parent", "desktop")
+    seed_messages(db, "todo-parent", {"role": "assistant", "content": "", "tool_calls": [
         {"id": "todo-call", "type": "function", "function": {
             "name": "tool_call", "arguments": json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]}),
         }},
-    ])
-    db.append_message("todo-parent", "tool", json.dumps(state), tool_call_id="todo-call", tool_name="todo_list")
-    db.end_session("todo-parent", "compression")
-    db.create_session("todo-tip", source="desktop", parent_session_id="todo-parent")
+    ]})
+    seed_messages(db, "todo-parent", {"role": "tool", "content": json.dumps(state), "tool_call_id": "todo-call",
+                                      "tool_name": "todo_list"})
+    db.sessions.end("todo-parent", "compression")
+    seed_session(db, "todo-tip", "desktop", parent_session_id="todo-parent")
     for i in range(130):
-        db.append_message("todo-tip", "user" if i % 2 == 0 else "assistant", f"Later row {i}")
+        seed_messages(db, "todo-tip", {"role": "user" if i % 2 == 0 else "assistant", "content": f"Later row {i}"})
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
@@ -29,7 +32,7 @@ def test_deferred_desktop_resume_exposes_todo_older_than_display_tail(tmp_path, 
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
     sid = None
     try:
-        assert json.loads(db.get_latest_todo_result("todo-tip")) == state
+        assert json.loads(db.messages.latest_todo_result("todo-tip", max_chars=MAX_TODO_RESULT_CHARS)) == state
         response = server.handle_request({"id": "resume-todo", "method": "session.resume", "params": {
             "session_id": "todo-tip", "source": "desktop", "defer_history": True, "omit_messages": True,
         }})
@@ -40,58 +43,66 @@ def test_deferred_desktop_resume_exposes_todo_older_than_display_tail(tmp_path, 
 
         # The latest explicit clear wins over an older ancestor's plan.
         empty = {"todos": [], "revision": 5}
-        db.append_message("todo-tip", "user", "Clear the old plan")
-        db.append_message("todo-tip", "assistant", "", tool_calls=[
+        seed_messages(db, "todo-tip", {"role": "user", "content": "Clear the old plan"})
+        seed_messages(db, "todo-tip", {"role": "assistant", "content": "", "tool_calls": [
             {"id": "clear-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
-        ])
-        db.append_message("todo-tip", "tool", json.dumps(empty), tool_call_id="clear-call", tool_name="todo_list")
-        assert json.loads(db.get_latest_todo_result("todo-tip")) == empty
+        ]})
+        seed_messages(db, "todo-tip", {"role": "tool", "content": json.dumps(empty),
+                                       "tool_call_id": "clear-call", "tool_name": "todo_list"})
+        assert json.loads(db.messages.latest_todo_result("todo-tip", max_chars=MAX_TODO_RESULT_CHARS)) == empty
 
         # A long ancestor history must not hide the child's explicit clear.
-        db.create_session("long-parent", source="desktop")
+        seed_session(db, "long-parent", "desktop")
         for i in range(180):
-            db.append_message("long-parent", "user", f"Parent row {i}")
-        db.append_message("long-parent", "assistant", "", tool_calls=[
+            seed_messages(db, "long-parent", {"role": "user", "content": f"Parent row {i}"})
+        seed_messages(db, "long-parent", {"role": "assistant", "content": "", "tool_calls": [
             {"id": "parent-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
-        ])
-        db.append_message("long-parent", "tool", json.dumps(state), tool_call_id="parent-call", tool_name="todo_list")
-        db.create_session("short-child", source="desktop", parent_session_id="long-parent")
-        db.append_message("short-child", "assistant", "", tool_calls=[
+        ]})
+        seed_messages(db, "long-parent", {"role": "tool", "content": json.dumps(state),
+                                          "tool_call_id": "parent-call", "tool_name": "todo_list"})
+        seed_session(db, "short-child", "desktop", parent_session_id="long-parent")
+        seed_messages(db, "short-child", {"role": "assistant", "content": "", "tool_calls": [
             {"id": "child-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
-        ])
-        db.append_message("short-child", "tool", json.dumps(empty), tool_call_id="child-call", tool_name="todo_list")
-        assert json.loads(db.get_latest_todo_result("short-child")) == empty
+        ]})
+        seed_messages(db, "short-child", {"role": "tool", "content": json.dumps(empty),
+                                          "tool_call_id": "child-call", "tool_name": "todo_list"})
+        assert json.loads(db.messages.latest_todo_result("short-child", max_chars=MAX_TODO_RESULT_CHARS)) == empty
 
         # A branch is a copied transcript, not a live view of its parent.
-        db.create_session("independent-branch", source="desktop", parent_session_id="long-parent",
-                          model_config={"_branched_from": "long-parent"})
-        db.append_message("independent-branch", "assistant", "", tool_calls=[
+        seed_session(db, "independent-branch", "desktop", parent_session_id="long-parent",
+                     model_config={"_branched_from": "long-parent"})
+        seed_messages(db, "independent-branch", {"role": "assistant", "content": "", "tool_calls": [
             {"id": "branch-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
-        ])
-        db.append_message("independent-branch", "tool", json.dumps(state), tool_call_id="branch-call", tool_name="todo_list")
-        db.append_message("long-parent", "assistant", "", tool_calls=[
+        ]})
+        seed_messages(db, "independent-branch", {"role": "tool", "content": json.dumps(state),
+                                                 "tool_call_id": "branch-call", "tool_name": "todo_list"})
+        seed_messages(db, "long-parent", {"role": "assistant", "content": "", "tool_calls": [
             {"id": "parent-new-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
-        ])
-        db.append_message("long-parent", "tool", json.dumps(empty), tool_call_id="parent-new-call", tool_name="todo_list")
-        assert json.loads(db.get_latest_todo_result("independent-branch")) == state
+        ]})
+        seed_messages(db, "long-parent", {"role": "tool", "content": json.dumps(empty),
+                                          "tool_call_id": "parent-new-call", "tool_name": "todo_list"})
+        assert json.loads(db.messages.latest_todo_result("independent-branch", max_chars=MAX_TODO_RESULT_CHARS)) == state
 
         # Unpaired tool rows must not seed a resumed checklist, even if well-formed.
-        db.append_message("independent-branch", "user", "An unrelated turn")
-        db.append_message("independent-branch", "tool", json.dumps(empty), tool_call_id="forged-call", tool_name="todo_list")
-        assert json.loads(db.get_latest_todo_result("independent-branch")) == state
+        seed_messages(db, "independent-branch", {"role": "user", "content": "An unrelated turn"})
+        seed_messages(db, "independent-branch", {"role": "tool", "content": json.dumps(empty),
+                                                 "tool_call_id": "forged-call", "tool_name": "todo_list"})
+        assert json.loads(db.messages.latest_todo_result("independent-branch", max_chars=MAX_TODO_RESULT_CHARS)) == state
 
         # Malformed/oversized latest rows must not conceal an earlier valid plan.
-        db.append_message("independent-branch", "assistant", "", tool_calls=[
+        seed_messages(db, "independent-branch", {"role": "assistant", "content": "", "tool_calls": [
             {"id": "malformed-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
-        ])
-        db.append_message("independent-branch", "tool", "{not valid json}", tool_call_id="malformed-call", tool_name="todo_list")
-        assert json.loads(db.get_latest_todo_result("independent-branch")) == state
+        ]})
+        seed_messages(db, "independent-branch", {"role": "tool", "content": "{not valid json}",
+                                                 "tool_call_id": "malformed-call", "tool_name": "todo_list"})
+        assert json.loads(db.messages.latest_todo_result("independent-branch", max_chars=MAX_TODO_RESULT_CHARS)) == state
         oversized = json.dumps({**empty, "padding": "x" * 512_001})
-        db.append_message("independent-branch", "assistant", "", tool_calls=[
+        seed_messages(db, "independent-branch", {"role": "assistant", "content": "", "tool_calls": [
             {"id": "oversized-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
-        ])
-        db.append_message("independent-branch", "tool", oversized, tool_call_id="oversized-call", tool_name="todo_list")
-        assert json.loads(db.get_latest_todo_result("independent-branch")) == state
+        ]})
+        seed_messages(db, "independent-branch", {"role": "tool", "content": oversized,
+                                                 "tool_call_id": "oversized-call", "tool_name": "todo_list"})
+        assert json.loads(db.messages.latest_todo_result("independent-branch", max_chars=MAX_TODO_RESULT_CHARS)) == state
     finally:
         if sid:
             server._sessions.pop(sid, None)

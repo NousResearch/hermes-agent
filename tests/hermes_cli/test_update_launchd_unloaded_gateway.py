@@ -108,6 +108,26 @@ class TestLaunchdRestartAfterUpdate:
         out = capsys.readouterr().out
         assert "hermes gateway restart" in out
 
+    def test_invoking_label_of_another_home_is_left_alone(self, launchd, capsys, tmp_path, monkeypatch):
+        """2026-10-01: a scratch HERMES_HOME shaped like the native default derives the bare label,
+        and the plist path follows the real account home, so the update refreshed and restarted the
+        account's LIVE gateway onto the scratch home. A plist pinning another home is not ours (#93349)."""
+        import plistlib
+
+        calls, state, subprocess_calls = launchd
+        plist = tmp_path / "ai.hermes.gateway.plist"
+        plist.write_bytes(plistlib.dumps({"Label": "ai.hermes.gateway",
+                                          "EnvironmentVariables": {"HERMES_HOME": str(tmp_path / "live-home")}}))
+        before = plist.read_bytes()
+        state["plist"] = plist
+        monkeypatch.setattr("hermes_cli.update_fleet_scope.update_scope_homes", lambda: {(tmp_path / "scratch").resolve()})
+
+        assert update_cmd._restart_launchd_gateway_after_update(supervision_verify=False) == ([], [])
+        assert calls == []
+        assert subprocess_calls == []
+        assert plist.read_bytes() == before
+        assert "left alone" in capsys.readouterr().out
+
     def test_no_plist_is_not_a_launchd_install(self, launchd, capsys):
         """No service definition → nothing to restart, and nothing to warn about."""
         calls, state, _ = launchd

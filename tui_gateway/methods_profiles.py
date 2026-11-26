@@ -4,9 +4,10 @@ server.py's globals (method_ctx.bind_module) and use them bare; module-level nam
 onto server.py, so they must not collide with its globals.
 """
 
+import contextlib
 import logging
-import sqlite3
 
+from hermes_cli.profiles_cache import yaml_scalar_to_json as _yaml_scalar_to_json
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -88,71 +89,65 @@ def _read_profile_yaml(profile_dir) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _yaml_scalar_to_json(value):
-    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
-    isoformat = getattr(value, "isoformat", None)
-    return isoformat() if callable(isoformat) else str(value)
-
-
 def _clean_revisions(raw: dict) -> dict:
     """Normalise a ``_ui_meta_revisions`` map: str keys, non-bool ints clamped at 0."""
     return {str(k): max(0, int(v)) for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
 
 
-def _latest_message_preview(db, session_id):
-    """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics).
-    Same query shape as ``SessionDB.latest_message_row_id``; keep them in step."""
+def _latest_message_preview(persistence, session_id):
+    """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics)."""
     try:
-        with db._lock:
-            row = db._conn.execute(
-                "SELECT content FROM messages"
-                " WHERE session_id = ? AND role IN ('user', 'assistant')"
-                " AND active = 1 AND content IS NOT NULL AND TRIM(content) != ''"
-                " ORDER BY id DESC LIMIT 1",
-                (session_id,)).fetchone()
+        content = persistence.messages.latest_dialogue_message(session_id)
     except Exception:
         return ""
-    text = " ".join(str(row[0] or "").split()).strip() if row else ""
+    text = " ".join(str(content or "").split()).strip()
     return text[:80] + "..." if len(text) > 80 else text
 
 
-def _resurrect_recoverable_canonical(db, profile_path, session_id):
+def _resurrect_recoverable_canonical(persistence, profile_path, session_id):
     """Un-archive an accidentally archived canonical row (judged read-only, written via a
     short-lived writable handle); False otherwise.
 
     See #92687.
     """
     try:
-        row = db.get_session(session_id)
-        if not row or not row.get("archived"):
+        row = persistence.sessions.get(session_id)
+        if not row or not row.archived:
             return False
-        tip_id = _try(lambda: db.get_compression_tip(session_id), None) or session_id
-        tip = (_try(lambda: db.get_session(tip_id), None) or row) if tip_id != session_id else row
-        from hermes_state import SessionDB
-        from hermes_state_registry import acquire
-        if (tip.get("end_reason") or "") not in SessionDB.RECOVERABLE_END_REASONS:
+        tip_id = _try(lambda: persistence.lineage.tip(session_id), None) or session_id
+        tip = (_try(lambda: persistence.sessions.get(tip_id), None) or row) if tip_id != session_id else row
+        from persistence.conversation.sessions import RECOVERABLE_END_REASONS
+        from persistence_assembly import open_persistence, profile_scope
+        if (tip.end_reason or "") not in RECOVERABLE_END_REASONS:
             return False
-        wdb = acquire(Path(profile_path) / "state.db")
+        writer = open_persistence(profile_scope(home=Path(profile_path)))
         try:
-            return bool(wdb.unarchive_recoverable_session(session_id))
+            return bool(writer.sessions.unarchive_recoverable(session_id))
         finally:
-            _best_effort(lambda: _lazy("hermes_state_registry", "release_or_close")(wdb))
+            _best_effort(writer.close)
     except Exception:
         return False
 
 
 def _live_count_field(db, session_id) -> dict:
-    """``{"live_message_count": n}`` sized like a stored-transcript read, else ``{}`` (older stores).
+    """``{"live_message_count": n}`` sized like a stored-transcript read, else ``{}`` (older stores)."""
+    with _persistence_for(db) as persistence:
+        return _display_count_field(persistence, session_id)
+
+
+def _display_count_field(persistence, session_id) -> dict:
+    """:func:`_live_count_field` on an interface handle.
 
     The denormalized ``message_count`` also counts folded rows (orphaned compaction marks, full
     rewinds, model-only rows), which once made the roster wait for history no reader serves."""
+    from persistence.core.errors import STORE_FAILURES
     try:
-        return {"live_message_count": db.display_message_count(str(session_id))}
-    except sqlite3.Error:
+        return {"live_message_count": persistence.messages.display_count(str(session_id))}
+    except STORE_FAILURES:
         return {}
 
 
-def _canonical_session_row(db, profile_path):
+def _canonical_session_row(persistence, profile_path):
     """Summary of the profile's canonical "Bot Chat" row (identity is the NAME), or None.
     Lineages via ``get_compression_tip`` (NOT the resume walker's unmarked-child fallback);
     worker sources count as absent. ``id`` is the registry row, ``resolved_id`` the live tip.
@@ -164,9 +159,9 @@ def _canonical_session_row(db, profile_path):
     involved.
     """
     try:
-        row = db.get_session_by_title("Bot Chat")
-        session_id = str((row or {}).get("id") or "").strip()
-        if not session_id or _denied_source(row):
+        row = persistence.sessions.get_by_title("Bot Chat")
+        session_id = str(getattr(row, "session_id", "") or "").strip()
+        if not session_id or _denied_source({"source": row.source}):
             return None
         # Archived = retired (absent), except accidental reaper archives: resurrect those.
         # An archived canonical row usually means the user deliberately retired it — report absent. But the
@@ -174,22 +169,22 @@ def _canonical_session_row(db, profile_path):
         # recoverability READ-ONLY first so the writable open (20s write-lock patience, the very stall this
         # refactor removes from the 5s poll) is paid only in the rare accidental-archive case, then run the
         # real predicate through unarchive_recoverable_session on a short-lived writable handle.
-        if row.get("archived") and not _resurrect_recoverable_canonical(db, profile_path, session_id):
+        if row.archived and not _resurrect_recoverable_canonical(persistence, profile_path, session_id):
             return None
-        tip = _try(lambda: db.get_compression_tip(session_id), None) or session_id
-        tip_row = db.get_session(tip) or row
-        started = row.get("started_at") or 0
+        tip = _try(lambda: persistence.lineage.tip(session_id), None) or session_id
+        tip_row = persistence.sessions.get(tip) or row
+        started = row.started_at or 0
         return {
-            "id": session_id, "resolved_id": tip, "root_title": row.get("title") or "",
-            "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
-            "started_at": tip_row.get("started_at") or started,
-            "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
-            "message_count": tip_row.get("message_count") or 0, **_live_count_field(db, tip)}
+            "id": session_id, "resolved_id": tip, "root_title": row.title or "",
+            "title": tip_row.title or "", "preview": _latest_message_preview(persistence, tip),
+            "started_at": tip_row.started_at or started,
+            "last_active": tip_row.last_activity_at or tip_row.started_at or started,
+            "message_count": tip_row.message_count or 0, **_display_count_field(persistence, tip)}
     except Exception:
         return None
 
 
-def _latest_profile_session_rows(db):
+def _latest_profile_session_rows(persistence):
     """(newest human-facing session, newest worker session); the worker row lets rosters show a
     profile as working (workers heartbeat ``last_activity_at`` every ≤60s).
 
@@ -201,20 +196,23 @@ def _latest_profile_session_rows(db):
     any failure (missing state.db, locked db, older schema) degrades to (None, None) rather than failing the
     whole profiles.list call.
     """
+    from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
     try:
         human = worker = None
-        for s in db.list_sessions_rich(source=None, limit=20, order_by_last_active=True, compact_rows=True):
-            title, last_active = s.get("title") or "", s.get("last_active") or s.get("started_at") or 0
-            if _denied_source(s):
+        for entry in persistence.sessions.list_sessions(
+                SessionQuery(order=SessionOrder.LAST_ACTIVE), SessionWindow(limit=20), compact_rows=True):
+            s = entry.session
+            title, last_active = s.title or "", entry.last_active or s.started_at or 0
+            if _denied_source({"source": s.source}):
                 if worker is None:
-                    worker = {"id": s["id"], "source": (s.get("source") or "").strip().lower(),
+                    worker = {"id": s.session_id, "source": (s.source or "").strip().lower(),
                               "title": title, "last_active": last_active}
             elif human is None:  # rosters want "where the conversation IS": prefer the newest text
-                human = {"id": s["id"], "title": title,
-                         "preview": _latest_message_preview(db, s["id"]) or s.get("preview") or "",
-                         "started_at": s.get("started_at") or 0, "last_active": last_active,
-                         "message_count": s.get("message_count") or 0,
-                         **_live_count_field(db, s["id"])}
+                human = {"id": s.session_id, "title": title,
+                         "preview": _latest_message_preview(persistence, s.session_id) or entry.preview,
+                         "started_at": s.started_at or 0, "last_active": last_active,
+                         "message_count": s.message_count or 0,
+                         **_display_count_field(persistence, s.session_id)}
             if human is not None and worker is not None:
                 break
         return human, worker
@@ -227,18 +225,16 @@ def _profile_session_fields(row, profile_path):
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
     def _read() -> dict:
-        db_path = Path(profile_path) / "state.db"
-        db = None
-        if _try(db_path.exists, False):
-            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
-        try:
-            last, worker = _latest_profile_session_rows(db)
+        from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+        scope = profile_scope(home=Path(profile_path))
+        with contextlib.ExitStack() as handles:
+            persistence = None
+            if _try(lambda: store_exists(scope), False):
+                persistence = _try(lambda: handles.enter_context(open_persistence_reader(scope.profile_dir)), None)
+            last, worker = _latest_profile_session_rows(persistence)
             # Resolved server-side on every listing so no client carries a session pointer.
             return {"last_session": last, "worker_session": worker,
-                    "canonical_session": _canonical_session_row(db, profile_path)}
-        finally:
-            if db is not None:
-                _best_effort(db.close)
+                    "canonical_session": _canonical_session_row(persistence, profile_path)}
 
     # These three are a pure function of the profile's session store, and the roster re-asks every
     # 5s per connection — so they are reused while that store has not moved (#117257).
@@ -276,11 +272,12 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
 def _(rid, params: dict) -> dict:
     """List Hermes profiles. ``include_sessions`` (default true) adds ``last_session`` /
     ``worker_session`` / ``canonical_session`` so a roster paints previews without N calls."""
+    from hermes_cli.isolated_scope import scope_to_launch_profile
     from hermes_cli.profiles import list_profiles
     include_sessions = is_truthy_value(params.get("include_sessions", True))
     out = []
     # Roster polls this every 5s: ``skill_count`` is the last known value, refreshed off-request.
-    for p in list_profiles(lazy_skill_count=True):
+    for p in scope_to_launch_profile(list_profiles(lazy_skill_count=True), lambda info: info.name):
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
@@ -302,33 +299,52 @@ def _(rid, params: dict) -> dict:
     ``clone_from`` (omitted = fresh + bundled skills, or with ``clone_all`` a full copy of the active profile), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``no_alias``, ``share_auth`` / ``mirror_credentials`` (both default true, the
-    bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless)."""
+    bot page's defaults: a bare ``create_profile()`` seeds a comment-only .env = NO provider headless).
+    ``hermes profile create`` also sends ``clone_config`` (``--clone``: copy the caller's profile),
+    ``sync_imports`` and ``report`` (add the receipt it prints, read here).
+
+    On ``/api/ws`` it runs in the connection's profile (``ws_legacy_fallback.dispatch_legacy`` binds the
+    ticket's), so ``--clone`` and the copied keys/model come from the profile the terminal is on. A
+    refused create answers 4062 with ``data.type`` / ``data.message_parts`` so a client re-raises it."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_cli.profile_provision import (
+        CREATE_REFUSALS, ProfileCreateReceipt, ProfileCreateRequest, provision_profile, refusal,
+    )
     name = str(params.get("name") or "").strip()
-    if not name:
-        return _err(rid, 4061, "name required")
-    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    if not name:  # the CLI shows its usual empty-name error, never "may have created"
+        return _err(rid, 4061, "name required", data=refusal(ValueError("profile name cannot be empty"))[1])
     clone_from = str(params.get("clone_from") or "").strip() or None
     clone_all = is_truthy_value(params.get("clone_all", False))
+    clone_config = is_truthy_value(params.get("clone_config", False)) or (bool(clone_from) and not clone_all)
     soul = params.get("soul")
     soul = soul if isinstance(soul, str) and soul.strip() else None
     model, provider = _model_provider_params(params)
+    request = ProfileCreateRequest(
+        name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
+        no_skills=is_truthy_value(params.get("no_skills", False)),
+        description=str(params.get("description") or "").strip() or None,
+        clone_channels=is_truthy_value(params.get("clone_channels", False)), soul=soul,
+        sync_imports=is_truthy_value(params.get("sync_imports", False)),
+        alias=not is_truthy_value(params.get("no_alias", False)),
+        mirror_credentials=is_truthy_value(params.get("mirror_credentials"), True),
+        share_auth=is_truthy_value(params.get("share_auth"), True),
+        model=model, provider=provider)
     try:
-        result = provision_profile(ProfileCreateRequest(
-            name=name, clone_from=clone_from, clone_all=clone_all,
-            clone_config=bool(clone_from) and not clone_all,
-            no_skills=is_truthy_value(params.get("no_skills", False)),
-            description=str(params.get("description") or "").strip() or None,
-            clone_channels=is_truthy_value(params.get("clone_channels", False)), soul=soul,
-            alias=not is_truthy_value(params.get("no_alias", False)),
-            mirror_credentials=is_truthy_value(params.get("mirror_credentials"), True),
-            share_auth=is_truthy_value(params.get("share_auth"), True),
-            model=model, provider=provider))
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
-        return _err(rid, 4062, str(e))
-    except Exception as e:
-        return _err(rid, 5062, str(e))
-    return _ok(rid, {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
-                     "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings})
+        result = provision_profile(request)
+        receipt = ProfileCreateReceipt.of(request, result) if is_truthy_value(params.get("report", False)) else None
+    except (Exception, ConfigBackendUnavailable) as e:  # health: allow BLE001 -- the request's one reply (a config outage is a SystemExit)
+        # The full text (redacted) for Desktop's dialog; ``data`` carries it in the parts a client keeps.
+        message, data = refusal(e)
+        if isinstance(e, CREATE_REFUSALS):
+            return _err(rid, 4062, message, data=data)
+        # Not a refusal: it may have failed after the profile was made, so never "nothing was created".
+        logging.getLogger(__name__).warning("profiles.create %r failed", name, exc_info=True)
+        return _err(rid, 5062, message, data=data)
+    out = {"ok": True, "name": name, "path": str(result.path), "soul_written": soul is not None,
+           "model_set": result.model_set, "mirrored": result.mirrored, "warnings": result.warnings}
+    if receipt is not None:
+        out["receipt"] = receipt.to_wire()
+    return _ok(rid, out)
 
 
 @_profile_handler("profiles.describe", 5063)
@@ -531,6 +547,38 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
         applied["ui_meta"] = False
 
 
+def _profile_group_selection_context(profile_dir, target_model):
+    """The largest measured context among this profile's affected group members. The store is read through a
+    reader's handle, which ``persisted_anchor_tokens`` does not read through, so the anchor read here is applied
+    the way that helper applies it."""
+    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, _serialize, anchored_context_tokens
+    from hermes_cli.model_selection_guards import SelectionContext
+    from persistence.conversation.sessions import SessionQuery, SessionWindow
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+
+    scope = profile_scope(home=Path(profile_dir))
+    if not store_exists(scope):
+        return None
+
+    largest = None
+    with open_persistence_reader(scope.profile_dir) as store:
+        sessions = store.sessions.list_sessions(
+            SessionQuery(sources=("bot_room",), include_hidden=True), SessionWindow(limit=None), compact_rows=True)
+        for entry in sessions:
+            current_model = entry.session.model
+            if current_model == target_model:
+                continue
+            sid = entry.session.session_id
+            anchor = store.sessions.get_model_config_value(sid, USAGE_ANCHOR_MODEL_CONFIG_KEY)
+            if not anchor:
+                continue
+            history = [m.as_openai_message() for m in store.messages.read_conversation(sid)]
+            tokens = anchored_context_tokens(history, _serialize(anchor))
+            if tokens and (largest is None or tokens > (largest.context_tokens or 0)):
+                largest = SelectionContext(context_tokens=tokens, current_model=current_model)
+    return largest
+
+
 def _configure_model(profile_dir, params, applied):
     """Apply a ``model`` + ``provider`` pin, or return a confirm message and write NOTHING (client
     resends with ``confirm_expensive_model``). A failing guard = no warning (as _apply_model_switch)."""
@@ -547,7 +595,10 @@ def _configure_model(profile_dir, params, applied):
     # ``_apply_model_switch``.
     if not is_truthy_value(params.get("confirm_expensive_model", False)):
         warn = _lazy("hermes_cli.model_selection_guards", "combined_selection_warning")
-        confirm_message = _try(lambda: getattr(warn(model, provider=provider or None), "message", None), None)
+        context = _try(lambda: _profile_group_selection_context(profile_dir, model), None)
+        with _hermes_home_scope(profile_dir):
+            confirm_message = _try(
+                lambda: getattr(warn(model, provider=provider, selection_context=context), "message", None), None)
     if confirm_message is None:
         applied["model"] = _best_effort(lambda: _pin_profile_model(profile_dir, provider, model))
     return confirm_message
@@ -573,14 +624,14 @@ def _save_toolset_pin(cfg, enabled, save_config) -> None:
 def _mcp_entry_enabled(entry: dict) -> bool:
     """The runtime's ``enabled`` reader; a legacy ``disabled: true`` (what older editors wrote,
     migrated by config v46) still reads as off."""
-    from hermes_cli.tools_config import _parse_enabled_flag
     from tools.mcp_tool_common import mcp_server_enabled
-    return mcp_server_enabled(entry) and not _parse_enabled_flag(entry.get("disabled", False), default=False)
+    return mcp_server_enabled(entry)
 
 
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
     """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
     coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
+    from tools.mcp_tool_common import write_mcp_server_enabled
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
@@ -588,8 +639,7 @@ def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
             mcp_cfg[srv] = dict(launch_mcp[srv])
     for srv, entry in mcp_cfg.items():
         if isinstance(entry, dict):
-            entry["enabled"] = srv in wanted
-            entry.pop("disabled", None)
+            write_mcp_server_enabled(entry, srv in wanted)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)

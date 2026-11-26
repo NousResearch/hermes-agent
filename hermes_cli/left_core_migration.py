@@ -39,6 +39,7 @@ from hermes_cli.memory_provider_migration import (
     _failed_recently, _home_consent, _home_label, _install_command, _interactive,
     _note_failure, _unattended_consent,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
     from hermes_cli.platforms import PLATFORMS
     try:
-        bundled = {p.name for p in (Path(__file__).resolve().parents[1] / "plugins" / "platforms").iterdir()
+        bundled = {p.name for p in (Path(project_root_str()) / "plugins" / "platforms").iterdir()
                    if (p / "plugin.yaml").is_file()}
     except OSError:
         bundled = set()
@@ -216,12 +217,8 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
 
 def _auth_store(home: Path) -> dict:
     """*home*'s ``auth.json``; ``{}`` when missing, unreadable or invalid (no login we can see)."""
-    import json
-    try:
-        store = json.loads((home / "auth.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
-    return store if isinstance(store, dict) else {}
+    from utils import read_json_or_empty
+    return read_json_or_empty(home / "auth.json")
 
 
 def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
@@ -452,6 +449,72 @@ def copilot_in_use(home: Path, *, process_env: bool = False) -> bool:
     """Core routed inference through GitHub Copilot for *home*: ``copilot`` or ``copilot-acp`` (any alias)
     is a provider it chose (:func:`providers_selected`). A GH_TOKEN in ``.env`` alone is not use."""
     return bool(providers_selected(home, _COPILOT_API + _COPILOT_ACP, process_env=process_env))
+
+
+# Google (Gemini AI Studio + Solstice OAuth): ids and every alias their profiles declare.
+# Prepared ahead of cutover; appended to ``LEFT_CORE`` when ``plugins/model-providers/google/`` leaves core.
+_GOOGLE_PROVIDERS = ("gemini", "google", "google-gemini", "google-ai-studio", "solstice", "solstice-oauth")
+_GOOGLE_PREEMPTING_ENV_KEYS = ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
+
+
+def _main_model_cfg(home: Path) -> dict:
+    from gateway import config_loader
+    try:
+        cfg = config_loader.read_yaml_layers(home)
+    except Exception:
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        cfg = {}
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+    return model_cfg if isinstance(model_cfg, dict) else {}
+
+
+def _configured_main_route(home: Path, *, process_env: bool = False) -> bool:
+    """True when *home* explicitly pins a non-auto main provider or a custom ``model.base_url``."""
+    env_provider = _home_env(home, "HERMES_INFERENCE_PROVIDER", process_env=process_env).strip().lower()
+    if env_provider and env_provider != "auto":
+        return True
+    model_cfg = _main_model_cfg(home)
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    if cfg_provider and cfg_provider != "auto":
+        return True
+    return bool(str(model_cfg.get("base_url") or "").strip())
+
+
+def _openrouter_pool_configured(home: Path) -> bool:
+    """True when ``auth.json`` has a usable OpenRouter credential-pool row (outranks env keys)."""
+    from hermes_cli.auth import has_usable_secret
+    pool = _auth_store(home).get("credential_pool")
+    rows = pool.get("openrouter") if isinstance(pool, dict) else None
+    if not isinstance(rows, list):
+        return False
+    return any(
+        isinstance(row, dict) and any(
+            has_usable_secret(str(row.get(k) or "")) for k in ("api_key", "access_token", "agent_key")
+        )
+        for row in rows
+    )
+
+
+def google_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """Core routed inference through Google (Gemini or Solstice) for *home*:
+    1. Explicit selection of any Gemini/Solstice id or alias (:func:`providers_selected`).
+    2. A configured route targeting a native Gemini or Vertex Express URL (excludes ``/openai``
+       and Vertex OAuth ``…/endpoints/openapi``).
+    3. Env-key auto-detection: ``GOOGLE_API_KEY`` / ``GEMINI_API_KEY`` would win ``resolve_provider("auto")``
+       (no explicit main provider/custom base_url, no OpenRouter pool row, and no higher-priority
+       auto-detected key such as OpenRouter/OpenAI), so a Google key used only for TTS alongside
+       another selected provider does not trigger."""
+    if providers_selected(home, _GOOGLE_PROVIDERS, process_env=process_env):
+        return True
+    from agent.gemini_urls import is_native_gemini_base_url
+    if any(is_native_gemini_base_url(str(slot.get("base_url") or "")) for slot in _route_slots(home)):
+        return True
+    if _configured_main_route(home, process_env=process_env) or _openrouter_pool_configured(home):
+        return False
+    from hermes_cli.auth import has_usable_secret
+    if any(has_usable_secret(_home_env(home, var, process_env=process_env)) for var in _GOOGLE_PREEMPTING_ENV_KEYS):
+        return False
+    return any(has_usable_secret(_home_env(home, var, process_env=process_env)) for var in ("GOOGLE_API_KEY", "GEMINI_API_KEY"))
 
 
 def copilot_relogin_notice(home: Path, *, process_env: bool = False) -> str:
@@ -850,11 +913,12 @@ def installs_held():
         _installs_held.reset(token)
 
 
-def defer_startup_notice(message: str) -> None:
+def defer_startup_notice(message: str, *, log: bool = True) -> None:
     """Hand *message* to the active home's next turn someone sees (:func:`claim_kept_notices`), once.
-    For boot-path work that runs before any agent exists."""
+    For boot-path work that runs before any agent exists. *log* False: the caller already logged it."""
     from hermes_constants import get_hermes_home
-    logger.warning(message)
+    if log:
+        logger.warning(message)
     _queue_notice(Path(get_hermes_home()), message)
 
 
@@ -1141,11 +1205,14 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
-    def _install(name: str) -> dict:
+    def _install(name: str, discard: Optional[Path] = None) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
+            if discard is not None:  # the caller's own leftover tree, removed under this same binding
+                from hermes_cli.plugins_cmd_remove import _remove_plugin_core
+                _remove_plugin_core(discard)
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
                                             assume_deps_consent=_unattended_consent() if consent is None
                                             else consent)

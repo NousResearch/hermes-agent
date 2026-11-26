@@ -43,13 +43,15 @@ _HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "su
 
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
-    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
-    *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
-    Returns the installed plugin names. Blocking: call it off the event loop."""
+    """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, and every
+    catalog platform plugin whose credentials *home* has (:mod:`hermes_cli.catalog_platforms`), in *home*'s
+    runtime scope (its config, secrets and allow_lazy_installs); once per process per home and settings
+    fingerprint. Returns the installed plugin names. Blocking: call it off the event loop."""
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.left_core_migration import recover_at_startup
+    from hermes_cli.catalog_platforms import recover_in
+    from hermes_cli.left_core_migration import defer_startup_notice, recover_at_startup
     with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
-        return recover_at_startup(gateway_start=True)
+        return recover_at_startup(gateway_start=True) + recover_in(Path(home), report=defer_startup_notice)
 
 
 def recover_left_core_at_gateway_start() -> bool:
@@ -58,16 +60,18 @@ def recover_left_core_at_gateway_start() -> bool:
     secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
     so a platform plugin it gets starts its adapter in the same gateway start. True when a plugin
     that ships a gateway platform was installed: platform config loaded before it lacks the platform."""
-    from hermes_cli.left_core_migration import LEFT_CORE
+    from hermes_cli.left_core_migration import LEFT_CORE, gateway_start_lock_budget
     from hermes_constants import get_default_hermes_root, get_hermes_home
     # The launch home too runs in its own scope: a multiplexing config load already armed fail-closed
     # secret reads, so an unscoped install read of its own .env raised. Its sources were hydrated at boot.
     launch = Path(get_hermes_home())
-    installed = recover_left_core_in(launch, hydrate_secrets=False)
-    root = Path(get_default_hermes_root())
-    if root.resolve() != launch.resolve():
-        installed += recover_left_core_in(root)
-    return any(feature.platform and feature.plugin in installed for feature in LEFT_CORE)
+    with gateway_start_lock_budget():  # another installer holds the start back at most this long, in all
+        installed = recover_left_core_in(launch, hydrate_secrets=False)
+        root = Path(get_default_hermes_root())
+        if root.resolve() != launch.resolve():
+            installed += recover_left_core_in(root)
+    moved = {feature.plugin for feature in LEFT_CORE if not feature.platform}
+    return any(name not in moved for name in installed)  # every catalog platform install ships one
 
 
 
@@ -676,7 +680,8 @@ class GatewayStartupMixin:
         return scheduled
 
     def _startup_should_abort(self) -> bool:
-        return self._restart_requested or self._draining or self._shutdown_event.is_set()
+        from gateway.run_common import startup_should_abort
+        return startup_should_abort(self)
 
     async def _startup_teardown_adapter(self, adapter, platform) -> None:
         """Cancel an adapter's background tasks (best-effort) then disconnect it."""
@@ -696,16 +701,8 @@ class GatewayStartupMixin:
             return False
         if adapter is not None and platform is not None:
             await self._startup_teardown_adapter(adapter, platform)
-        stop_task = self._stop_task
-        current_task = asyncio.current_task()
-        if stop_task is not None and stop_task is not current_task:
-            await stop_task
-        elif not self._shutdown_event.is_set():
-            await self.stop(
-                restart=self._restart_requested, detached_restart=self._restart_detached,
-                service_restart=self._restart_via_service,
-            )
-        return True
+        from gateway.run_common import abort_startup_if_shutdown_requested
+        return await abort_startup_if_shutdown_requested(self, check=False)
 
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
         from gateway.run_startup_liveness import start_loop_liveness_guards

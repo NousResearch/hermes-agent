@@ -20,6 +20,8 @@ import logging
 import os
 import time
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger("gateway.run")
 
 # How often the wait re-checks for idleness and refreshes the published ``active_work``.
@@ -146,7 +148,47 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
     if getattr(runner, "_restart_force_event", None) is None:
         runner._restart_force_event = asyncio.Event()
 
+    in_stop = []
+
     async def _run_restart() -> None:
+        try:
+            await _restart_when_idle()
+        except Exception:
+            # Nothing else awaits this task, so its failure is logged here, except one raised inside its
+            # own stop() after the stop's guard was entered: the guard logged that one and owns the exit.
+            if getattr(runner, "_stop_task", None) is not None:
+                if not in_stop:
+                    logger.warning("Restart wait failed while the gateway was already stopping", exc_info=True)
+                elif not getattr(runner, "_stop_guard_entered", False):
+                    logger.exception("Restart stop failed before its teardown began; the gateway stays "
+                                     "draining with no shutdown watchdog and needs an external restart")
+                return
+            # No stop has begun: keep serving and let the next restart request run.
+            logger.exception("Restart failed before the gateway began stopping; still serving, and the "
+                             "next restart request will run")
+            if getattr(runner, "_detached_restart_helper_started", False):
+                logger.warning("The detached restart helper launched for this restart still runs and will "
+                               "restart the gateway; this process launches no second helper, so if that "
+                               "restart fails, a later detached /restart stops the gateway without relaunching it")
+            runner._draining = False
+            runner._restart_task_started = runner._restart_requested = False
+            # Drop the failed restart's plan too: a later plain stop would otherwise exit 75 and be relaunched.
+            runner._restart_detached = runner._restart_via_service = False
+            chat_restart = getattr(runner, "_restart_command_source", None) is not None
+            runner._restart_command_source = None  # a /restart's requester: the next restart is not theirs
+            runner._restart_force_event = None
+            budgets = runner.__dict__.pop("_budgets_before_force", None)
+            if budgets is not None:  # the force expected a stop that never came: drain as before it
+                runner._restart_drain_timeout, runner._cron_drain_timeout = budgets
+            if not getattr(runner, "_external_drain_active", False):  # an operator's drain still holds
+                runner._scale_to_zero_status(runner._serving_state(), "restart failure: status restore failed")
+            if chat_restart:  # nor is its notice; best-effort, after the recovery (a read-only home)
+                try:
+                    (get_hermes_home() / ".restart_notify.json").unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove the failed /restart's notice", exc_info=True)
+
+    async def _restart_when_idle() -> None:
         idle = await await_idle(runner)
         # Close admission in the same loop tick the wait saw idle: a turn admitted during the helper
         # launch or the yield below would otherwise be interrupted by a drain-less stop().
@@ -162,6 +204,7 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
             except Exception:
                 logger.error("Failed to launch detached gateway restart helper", exc_info=True)
         await asyncio.sleep(0.05)
+        in_stop.append(True)
         await runner.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
     from contextvars import Context
@@ -173,6 +216,7 @@ def request_restart(runner, *, detached: bool, via_service: bool) -> bool:
 
 def force_stop_budgets(runner) -> None:
     """A forced restart does not drain: ``stop()`` interrupts turns, delegations and processes."""
+    runner.__dict__.setdefault("_budgets_before_force", (runner._restart_drain_timeout, runner._cron_drain_timeout))
     runner._restart_drain_timeout = 0.0
     runner._cron_drain_timeout = 0.0
 

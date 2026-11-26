@@ -138,6 +138,12 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+def _process_event_turn_origin(evt: dict) -> str:
+    """The ``turn_origin()`` of the turn a process-registry event wakes: an async delegation's result,
+    or a background process's own notice (completion, watch match, liveness tick)."""
+    return "delegation_result" if str(evt.get("type") or "").startswith("async_delegation") else "process_notification"
+
+
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
@@ -955,6 +961,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 metadata=metadata,
             )
+            synth_event.set_turn_origin(_process_event_turn_origin(evt))
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,

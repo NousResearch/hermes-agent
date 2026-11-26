@@ -124,10 +124,10 @@ def gemini_thinking_config(model: Optional[str], reasoning_config: object) -> Op
     takes no such field or no reasoning config is set. Published for provider plugins on the native Gemini
     wire: the shared effort mapping plus the ``xhigh`` lift, keyed on :func:`bare_gemini_model_id` (the id
     the native client sends); the caller picks the request format."""
-    from agent.transports.chat_completions import _build_gemini_thinking_config
+    from agent.gemini_model_family import build_gemini_thinking_config
 
     bare = bare_gemini_model_id(model)
-    raw = _build_gemini_thinking_config(bare, reasoning_config if isinstance(reasoning_config, dict) else None)
+    raw = build_gemini_thinking_config(bare, reasoning_config if isinstance(reasoning_config, dict) else None)
     return gemini_top_thinking_level(bare, reasoning_config, raw) if raw else None
 
 

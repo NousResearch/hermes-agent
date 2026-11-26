@@ -94,15 +94,16 @@ class Resolution:
 def _which(name: str, ctx: LookupContext) -> str | None:
     if ctx.path == "":
         return None
+    effective = ctx.effective_path()
     if ctx.pathext is not None and os.name == "nt":
         # shutil.which reads PATHEXT from os.environ; an explicit pathext is honored without mutating it.
         exts = [e for e in ctx.pathext.split(os.pathsep) if e]
         for ext in ["", *exts]:
-            hit = shutil.which(name + ext, path=ctx.effective_path())
+            hit = shutil.which(name + ext) if effective is None else shutil.which(name + ext, path=effective)
             if hit:
                 return hit
         return None
-    return shutil.which(name, path=ctx.effective_path())
+    return shutil.which(name) if effective is None else shutil.which(name, path=effective)
 
 
 def _is_executable_file(path: str) -> bool:

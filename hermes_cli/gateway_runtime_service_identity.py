@@ -445,11 +445,23 @@ def _is_own_cmd_wrapper(command: str, arguments: str, home: Path, task_name: str
     """Whether a task action is exactly ``<home>/gateway-service/<task>.cmd`` with no arguments, the
     action ``schtasks /Create /TR <wrapper>`` registered before the task ran wscript.exe."""
     from hermes_cli.gateway_windows import _sanitize_filename
-    value = command.strip().strip('"')  # /TR quoted a wrapper path with spaces
-    if arguments.strip() or not value or not Path(value).is_absolute():
+    value = command.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':  # /TR quoted a wrapper path with spaces
+        value = value[1:-1]
+    if arguments.strip() or not Path(value).is_absolute():
         return False
     wrapper = home.resolve() / "gateway-service" / f"{_sanitize_filename(task_name)}.cmd"
-    return os.path.normcase(str(Path(value).resolve())) == os.path.normcase(str(wrapper))
+    # The file name as registered, in the folder this home resolves to: the wrapper need not exist.
+    return (os.path.normcase(Path(value).name) == os.path.normcase(wrapper.name)
+            and os.path.normcase(str(Path(value).parent.resolve())) == os.path.normcase(str(wrapper.parent)))
+
+
+def _starts_at_logon_only(task, ns: dict[str, str]) -> bool:
+    """One plain logon trigger and no restart policy: Task Scheduler starts the action at logon, once."""
+    triggers = task.find("t:Triggers", ns)
+    return (triggers is not None and len(triggers) == 1 and triggers[0].tag == '{' + ns['t'] + '}LogonTrigger'
+            and triggers[0].find("t:Repetition", ns) is None
+            and task.find("t:Settings/t:RestartOnFailure", ns) is None)
 
 
 def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str, *,
@@ -482,7 +494,7 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str, *,
     if task.findtext("t:Settings/t:Enabled", "true", ns) != "true":
         raise ValueError("service_disabled")
     action = actions[0]
-    if task_name and action.tag == '{' + ns['t'] + '}Exec' and _is_own_cmd_wrapper(
+    if task_name and action.tag == '{' + ns['t'] + '}Exec' and _starts_at_logon_only(task, ns) and _is_own_cmd_wrapper(
             action.findtext('t:Command', '', ns), action.findtext('t:Arguments', '', ns), home, task_name):
         raise LogonOnlyTask
     if action.tag != '{' + ns['t'] + '}Exec' or action.findtext('t:Command', '', ns).lower() not in {"wscript.exe", r"c:\windows\system32\wscript.exe"}:

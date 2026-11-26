@@ -75,6 +75,13 @@ def test_the_pre_wscript_task_of_this_home_is_logon_only(case, tmp_path):
     ("with_arguments", "service_identity_unverified", "not wscript.exe"),
     ("relative", "service_identity_unverified", "not wscript.exe"),
     ("no_task_name", "service_identity_unverified", "not wscript.exe"),
+    ("renamed_link", "service_identity_unverified", "not wscript.exe"),
+    ("unmatched_quote", "service_identity_unverified", "not wscript.exe"),
+    # A task Task Scheduler can start or restart on its own is not login persistence.
+    ("time_trigger", "service_identity_unverified", "not wscript.exe"),
+    ("second_trigger", "service_identity_unverified", "not wscript.exe"),
+    ("repeating", "service_identity_unverified", "not wscript.exe"),
+    ("restart_policy", "service_identity_unverified", "not wscript.exe"),
     # The principal and enabled checks come first, exactly as for a current task.
     ("wrong_user", "service_account_mismatch", None),
     ("elevated", "service_identity_unverified", "RunLevel"),
@@ -98,6 +105,16 @@ def test_only_this_homes_own_wrapper_is_recognised(case, reason, check, tmp_path
         command = "gateway-service\\Hermes_Gateway.cmd"
     if case == "no_task_name":
         task_name = None
+    if case == "renamed_link":  # another registered name for the same file is not the installer's action
+        _wrapper(home).parent.mkdir(parents=True)
+        _wrapper(home).write_text("@echo off\r\n")
+        (home / "gateway-service" / "retired.cmd").symlink_to(_wrapper(home))
+        command = str(home / "gateway-service" / "retired.cmd")
+    if case == "unmatched_quote":
+        command = '"' + command
+    if case == "restart_policy":
+        kwargs["extra_settings"] = ("\n    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count>"
+                                    "</RestartOnFailure>")
     if case == "wrong_user":
         kwargs["user"] = "S-1-5-18"
     if case == "elevated":
@@ -107,6 +124,12 @@ def test_only_this_homes_own_wrapper_is_recognised(case, reason, check, tmp_path
     xml = _legacy_task_xml(command, **kwargs)
     if case == "extra_action":
         xml = xml.replace("</Actions>", "<Exec><Command>other.exe</Command></Exec></Actions>")
+    if case == "time_trigger":
+        xml = xml.replace("LogonTrigger>", "TimeTrigger>")
+    if case == "second_trigger":
+        xml = xml.replace("</Triggers>", "<BootTrigger><Enabled>true</Enabled></BootTrigger></Triggers>")
+    if case == "repeating":
+        xml = xml.replace("</LogonTrigger>", "<Repetition><Interval>PT1M</Interval></Repetition></LogonTrigger>")
     with pytest.raises(ValueError, match=reason) as refused:
         verify_windows_task(xml, home, ACCOUNT, SID, task_name=task_name)
     if check:

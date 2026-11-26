@@ -39,8 +39,10 @@ def lean_tail_budget(context_length: int, threshold_tokens: int) -> int:
 
 
 def is_demoted_stub(content: str) -> bool:
-    """True for a tail tool result already replaced by ``_lean_recovery_stub`` (plus an optional reload marker)."""
-    return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None
+    """True for a tail tool result already replaced by ``_lean_recovery_stub`` (plus an optional reload marker),
+    or for a prune stub naming its archived original (re-summarizing it would drop the only pointer back)."""
+    from tools.tool_result_storage import has_archive_pointer
+    return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None or has_archive_pointer(content)
 
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
@@ -73,8 +75,9 @@ def demote_stale_tail_tools(
 ) -> tuple[list[dict[str, Any]], int]:
     """Demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to recovery stubs;
     skill-marker rows untouched. A demoted ``skill_view`` body carries the canonical reload marker, as its
-    Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). Returns a new list
-    (untouched rows shared, demoted copied) and the number of rows demoted."""
+    Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). On the local backend
+    each demoted original is archived and its stub names the file (a failed write keeps that row whole). Returns
+    a new list (untouched rows shared, demoted copied) and the number of rows demoted."""
     from agent.context_compressor import (
         SKILL_PRUNED_MARKER_PREFIX, _is_summary_stub, _result_failure_suffix, _rewritten, _skill_pruned_marker,
     )
@@ -104,6 +107,11 @@ def demote_stale_tail_tools(
             stub += " " + _skill_pruned_marker(skill)
         result[i] = _rewritten(msg, stub)
         demoted += 1
+    if demoted:  # the demoted originals are saved and named like the window's prune stubs
+        from tools.tool_result_storage import archive_compaction_drops
+
+        result, _, kept = archive_compaction_drops(messages, result, session_id)
+        demoted -= kept
     return result, demoted
 
 
@@ -116,6 +124,39 @@ SKILL_SAFETY_RULE = (
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
 )
+
+
+def native_anthropic_tail_prices(compressor: Any):
+    """Tail prices ``messages -> [tokens per row]`` on a preserved-thinking native Anthropic route, else
+    None. That route replays exactly the projected carriers minus this session's rejected signatures —
+    what the preflight estimate prices — never the canonical ``reasoning`` keys. Priced over the whole
+    list: whether a row's signed thinking survives conversion depends on its neighbours."""
+    from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+    if (getattr(compressor, "api_mode", "") or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
+        getattr(compressor, "base_url", ""), getattr(compressor, "model", "")
+    ):
+        return None
+    from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
+    from agent.context_compressor import _estimate_msg_budget_tokens
+    from agent.message_sanitization import native_anthropic_row_costs
+
+    rejected = session_rejected_thinking(
+        compressor, getattr(compressor, "_session_db", None), getattr(compressor, "_session_id", ""),
+        persistence=getattr(compressor, "_persistence", None),
+    )
+
+    def prices(messages: list[dict[str, Any]]) -> list[int]:
+        request_copies = [dict(m) if isinstance(m, dict) else m for m in messages]
+        if rejected:
+            for copy in request_copies:
+                strip_rejected_thinking(copy, rejected)
+        return [
+            _estimate_msg_budget_tokens(shadow) + thinking if isinstance(shadow, dict) else 0
+            for shadow, thinking in native_anthropic_row_costs(request_copies)
+        ]
+
+    return prices
 
 
 def tail_cut_pricer(compressor: Any, messages: list[dict[str, Any]], head_end: int):
@@ -132,6 +173,27 @@ def tail_cut_pricer(compressor: Any, messages: list[dict[str, Any]], head_end: i
     return price if newest < 0 else (lambda i: 0 if i <= newest else price(i))
 
 
+def tail_cut_progress_floor(compressor: Any, messages: list[dict[str, Any]], head_end: int, cut_idx: int) -> int:
+    """Lowest tail cut that leaves the summary window a row the handoff scan keeps.
+
+    The scan drops standalone handoff rows from the window, so when every row before the cut (and up to the newest
+    handoff) is a handoff, the planned window is empty and compress() no-ops with ``empty_post_handoff_window``. That
+    happens when the cut lands inside the tool group right after the handoff and is aligned back onto the group's
+    assistant. The floor then moves past that group, unless doing so would take the newest row or the active user
+    request out of the tail; those cases keep the old ``head_end + 1`` floor. ``_compress_window``'s
+    assistant/tool bridge before the active request obeys the same floor, so the two never disagree: when the floor
+    sits on the active request, the summary merges into that row instead of the bridge emptying the window."""
+    floor = head_end + 1
+    newest = next(
+        (i for i in range(len(messages) - 1, head_end - 1, -1) if compressor._is_context_summary_message(messages[i])), -1,
+    )
+    if newest < 0 or not all(map(compressor._is_context_summary_message, messages[head_end:max(cut_idx, newest + 1)])):
+        return floor
+    raised = compressor._align_boundary_forward(messages, newest + 2)
+    last_user = compressor._find_last_user_message_idx(messages, newest + 1)
+    return floor if raised >= len(messages) or 0 <= last_user < raised else raised
+
+
 def with_skill_safety_rule(
     summary: str, head: list[dict[str, Any]], tail: list[dict[str, Any]],
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
@@ -139,7 +201,8 @@ def with_skill_safety_rule(
     prune marker (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs). A kept
     prune-only stub's copy (:func:`with_pruned_row_skill_safety_rule`) moves onto the handoff: compaction is the
     sanctioned rewrite, and the token-budget tail often keeps a stub the count-protected prune-only tail ruled."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX
+    from session_rules.turns import _content_text_for_contains
 
     def unruled(rows):
         return [{**m, "content": without_skill_safety_rule(m["content"])}
@@ -173,7 +236,8 @@ def elide_keeping_skill_safety_rule(content: str, limit: int) -> str:
 def with_pruned_row_skill_safety_rule(original: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*pruned* (a prune-only rewrite of *original*) with the rule on the first row it turned into a prune marker,
     when no row carries the rule yet: prune-only has no handoff for :func:`with_skill_safety_rule` to ride."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX
+    from session_rules.turns import _content_text_for_contains
     if any(SKILL_SAFETY_RULE in _content_text_for_contains(m.get("content")) for m in pruned if isinstance(m, dict)):
         return pruned
     for i, (before, after) in enumerate(zip(original, pruned)):

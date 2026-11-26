@@ -15,6 +15,7 @@ import {
   resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { endReplyPause, markReplyPaused } from '@/store/paused-replies'
 import {
   $sessions,
   _resetSessionOwnerHintsForTests,
@@ -273,6 +274,93 @@ describe('useBackgroundQueueDrain', () => {
 
     expect(submitText).not.toHaveBeenCalled()
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  // A send held for a paused reply (store/paused-replies.ts) waits for the
+  // continuation to complete even when the user switched to another chat.
+  // The queue is keyed by the chat's lineage root; the pause was marked under the id its runtime showed
+  // (a compression tip).
+  it('holds a compressed chat\'s background queue while its reply is paused under its tip id', async () => {
+    const runtimeMap = { current: new Map([['lineage-root', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    setSessions([lineageSession({ _lineage_root_id: 'lineage-root', id: 'compression-tip' })])
+    enqueueQueuedPrompt('lineage-root', { text: 'after the continuation', attachments: [] })
+    clearAllSessionStates()
+    markReplyPaused('compression-tip')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('compression-tip'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('compression-tip')
+    }
+  })
+
+  it('holds a background queue while its reply is paused, then drains it', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'after the continuation', attachments: [] })
+    clearAllSessionStates()
+    markReplyPaused('stored-session-a')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('stored-session-a'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('stored-session-a')
+    }
+  })
+
+  // A request another surface sends through the composer during the pause is held in this queue too. A
+  // preview widget's is hidden: an instruction for the model, never a message the user wrote. If the user
+  // opens another chat before the continuation has completed, this drainer sends it, still hidden.
+  it('sends a hidden request held for a paused reply as hidden once the pause ends', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn<(text: string, options?: SubmitTextOptions) => Promise<boolean>>(async () => true)
+
+    const entry = enqueueQueuedPrompt('stored-session-a', {
+      text: 'the widget choice',
+      attachments: [],
+      displayKind: 'hidden'
+    })!
+
+    clearAllSessionStates()
+    markReplyPaused('stored-session-a')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('stored-session-a'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+      expect(submitText).toHaveBeenCalledWith('the widget choice', {
+        submission_id: entry.id,
+        attachments: [],
+        displayKind: 'hidden',
+        fromQueue: true,
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a'
+      })
+    } finally {
+      endReplyPause('stored-session-a')
+    }
   })
 
   it('passes a null runtime id so submitText can resume stale background sessions by stored id', async () => {

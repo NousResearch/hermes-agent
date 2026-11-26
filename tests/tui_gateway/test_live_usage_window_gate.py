@@ -17,10 +17,10 @@ def calls(monkeypatch):
     seen: list[dict] = []
 
     def _lines(**kw):
-        seen.append(kw)
+        seen.append({k: v for k, v in kw.items() if k == "credits_state" and v is not None})
         return ["Nous credits block"]
 
-    monkeypatch.setattr("agent.account_usage.nous_credits_lines", _lines)
+    monkeypatch.setattr("agent.account_usage_nous.nous_credits_lines", _lines)
     monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **kw: None)
     # The handlers run against server.py's globals (method_ctx.bind_module), so patch them there.
     monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda session, **kw: contextlib.nullcontext())
@@ -31,7 +31,7 @@ def calls(monkeypatch):
 
 
 def _session(state):
-    agent = SimpleNamespace(model="m", _credits_state=state)
+    agent = SimpleNamespace(model="m", provider="nous", _credits_state=state)
     return {"agent": agent, "history": [], "history_lock": threading.Lock()}
 
 

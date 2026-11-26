@@ -1,0 +1,16 @@
+name: coretica
+repo: https://github.com/Front-Line/coretica-plugins
+sha: 4f5e4922d63e93103d5ab1f5b4ed9d741efcb30d
+subdir: hermes/coretica
+description: "Connect Coretica private memories through its remote MCP service. Requires a Coretica account token; use coretica-memory-rules for automatic capture guidance. Disclosure — connects to the hosted Coretica MCP server at coretica.frontli.ne.kr with your CORETICA_AGENT_TOKEN; its bundled skill tells the model to send new facts you share and summaries of completed work to Coretica as private memories without asking each time, and lets the model read memories your Coretica account permits."
+maintainer: Front-Line
+tier: community
+category: memory
+version: "0.1.0"
+docs_url: https://github.com/Front-Line/coretica-plugins/blob/4f5e4922d63e93103d5ab1f5b4ed9d741efcb30d/README.md#hermes
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [CORETICA_AGENT_TOKEN]

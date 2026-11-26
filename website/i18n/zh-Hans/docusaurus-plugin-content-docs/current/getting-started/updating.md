@@ -27,6 +27,15 @@ hermes update --set-channel stable   # 恢复为仅正式版本
 `hermes update` 会自动检测新的配置选项并提示你添加。如果跳过了该提示，可手动运行 `hermes config check` 查看缺失的选项，再运行 `hermes config migrate` 以交互方式添加。
 :::
 
+### 捆绑桌面应用更新 {#bundled-desktop-updates}
+
+自包含桌面软件包要求 **macOS 13 Ventura 或更新版本（Apple Silicon `arm64`，`Hermes Agent.app`）** 或 **Windows 11 22H2 或更新版本（`10.0.22621.0`，x64 或 ARM64，涵盖 Microsoft Store 与 `.appinstaller` MSIX）**。Intel Mac 和 macOS 12 及更早版本请使用源码安装脚本（`install.sh`）；Windows 10 和低于 22H2 的 Windows 11 请使用 `install.ps1` 或 [WSL2](../user-guide/windows-wsl-quickstart.md)。
+
+桌面软件包的更新耗时由**网络下载时间**（取决于带宽）与**本地校验和替换时间**两部分组成。以下体积为近似值，会随版本变化：
+
+- **macOS：** 首次安装的 DMG 约 948 MB。在应用内选择**更新**后，应用会下载签名更新 ZIP（完整大小约 983 MB）。下载完成后，Squirrel.Mac 在本地解压、校验代码签名并替换应用约需 **50 秒**（在 Apple Silicon M4 上实测），随后自动重启应用。
+- **Windows：** 分架构完整 MSIX 包约为 1.89 GB（ARM64）至 2.86 GB（x64）。Windows App Installer 和 Microsoft Store 仅下载当前主机架构并支持版本间差分块更新，因此常规增量下载量小于完整安装包，随后执行本地包部署。
+
 ### 更新过程
 
 运行 `hermes update` 时，将依次执行以下步骤：

@@ -1,0 +1,23 @@
+name: sluice
+title: Sluice
+repo: https://github.com/orjinameh/airlock
+sha: 5a0857d9991cc4f5cad56049d23003903df522cb
+subdir: sluice
+version: "1.0.1"
+description: "An airlock for agent changes. A terminal backend that runs the agent's commands and file tools (read_file, write_file, patch, search_files) in a staged copy of the workspace, so the real files are untouched until you review the diff hunk by hunk and apply only what you approve (/sluice diff, /sluice apply, /sluice discard, also as `hermes sluice`). Calls a copy cannot contain (git push, package installs, network writes, deploys, writes or deletes outside the workspace) are sent to Hermes's own approval prompt labelled NOT CONTAINED. Select it with `hermes config set terminal.backend sluice`. Disclosure — No network calls and no background processes. Runs the agent's shell commands and file tools on this host as the user, in a staged copy of the workspace kept under <HERMES_HOME>/plugin-data/sluice (every non-gitignored workspace file plus a copy of .git; stages idle 14 days are deleted), and runs `git ls-files` to list files; it never reads Hermes credential files. Only when the user runs `/sluice apply` does it write the approved changes (including new symlinks) into the workspace. One pre_tool_call hook sends calls the copy cannot contain (installs, network writes, git push, writes outside the workspace) to Hermes's approval prompt and never approves anything itself. Not an operating-system sandbox: the hold list reads command text, so Python in execute_code or a command that builds its target path at run time can write outside the workspace without being held."
+maintainer: orjinameh
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/orjinameh/airlock#readme
+platforms:
+  - linux
+  - macos
+known_issues:
+  - "Not an OS sandbox: the gate reads command text, so a command that builds its target path at run time can get past it."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

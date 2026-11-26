@@ -92,6 +92,14 @@ export const ko: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "활성 메모리 제공자",
+    noProvider: "없음 — 내장 메모리만",
+    builtinLayer: "내장 레이어",
+    builtinNote: "MEMORY.md와 USER.md는 외부 제공자와 별개인 Hermes 자체 메모리입니다. 기본적으로 둘 다 세션에 로드되며, 설정 토글 (memory.memory_enabled / memory.user_profile_enabled)로 각각 끌 수 있습니다. 외부 제공자는 여기에 더해질 뿐, 이를 대체하지 않습니다.",
+  },
+
   status: {
     actionFailed: "작업 실패",
     actionFinished: "완료됨",
@@ -361,6 +369,13 @@ export const ko: Translations = {
     authRequired: "인증 필요",
     authRequiredHint: "이 명령을 실행하여 인증하세요:",
     updateGit: "Git pull",
+    updateAll: "모두 업데이트",
+    updatingAll: "플러그인 업데이트 중…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `업데이트 ${updated}, 검토 필요 ${needsReview}, 실패 ${failed}`,
+    autoUpdate: "자동 업데이트",
+    autoUpdateDesc: (hours: number) =>
+      `게이트웨이가 확인할 때(${hours}시간마다) 플러그인 업데이트를 자동으로 적용합니다. 업데이트된 코드는 새 세션에서 로드됩니다.`,
     versionBadge: "버전",
     showInSidebar: "사이드바에 표시",
     hideFromSidebar: "사이드바에서 숨기기",
@@ -782,5 +797,18 @@ export const ko: Translations = {
       "작업 공간 경로 (선택, 비어 있으면 담당자에서 파생됨)",
     logTruncated: "(마지막 100 KB 표시 중 — 전체 로그 위치: ",
     logAt: ")",
+  },
+  channelsCatalog: {
+    title: "설치 가능",
+    hint: "Hermes 플러그인 카탈로그의 메시징 플랫폼입니다. 설치하면 플러그인이 추가되고 활성화된 뒤 설정이 열립니다.",
+    badgeOfficial: "공식",
+    badgeVerified: "검증됨",
+    disclosure: "고지:",
+    lazyInstallsOff: "자동 플러그인 설치가 꺼져 있습니다(security.allow_lazy_installs).",
+    run: "실행:",
+    install: "설치",
+    installing: "설치 중…",
+    installed: (title: string) => `${title} 설치됨. 연결하려면 자격 증명을 입력하세요.`,
+    installFailed: (title: string) => `${title}을(를) 설치할 수 없습니다`,
   },
 };

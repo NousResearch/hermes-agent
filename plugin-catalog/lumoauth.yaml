@@ -1,0 +1,17 @@
+name: lumoauth
+repo: https://github.com/lumoauth/hermes
+sha: 265ff2ea05e7108653b3d6138d1db558e94acadb
+description: "Checks every tool call outside the model, against rules kept in LumoAuth, and allows it, asks a person or blocks it. Disclosure — talks only to the LumoAuth organization you name in setup (app.lumoauth.dev or eu.app.lumoauth.dev): it fetches the agent's token and capability list every minute, and for calls that wait for a LumoAuth approval it sends the tool, reason, capability, risk and up to five argument lines (values named like secrets hidden), which LumoAuth delivers to the owner's phone app and the organization's Slack or Discord approval channels; with `decisionMode: server` it sends each call's needed capability for LumoAuth to decide; only if you say yes in setup does it send an audit receipt per decision (tool name, outcome, SHA-256 of the arguments) and the model token count once a minute. Every tool call is blocked after enabling until `hermes lumoauth setup` finishes, and again when LumoAuth cannot be reached for more than 5 minutes. Setup stores an agent private key under ~/.lumoauth/guard/hermes/ (shared by all Hermes profiles) and edits Hermes' config.yaml to enable the plugin and raise plugins.hook_callback_timeout unless run with --no-hermes-config."
+maintainer: LumoAuth
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://docs.lumoauth.dev/agents/personal-agents
+version: "0.1.3"
+title: LumoAuth Guard
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, post_approval_response, post_api_request, on_session_start]
+  provides_middleware: []
+  requires_env: []

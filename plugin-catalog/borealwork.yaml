@@ -1,0 +1,19 @@
+name: borealwork
+title: boreal.work
+repo: https://github.com/raldblox/hermes-boreal
+sha: 9ed0133e163e1b5c1c7c0aefff88b2a754c454f1
+description: "Give Hermes verified human hands: hire a verified person on boreal.work for a step no agent can do online (confirm a supplier is real, check a shelf price, photograph a site), with the money held until the result passes review against your criteria and a public rulebook. Twelve native tools for the task loop; a spend guard (pre_tool_call) that sends every money-moving call (funding at any amount, accepting a pass, judging a result yourself) to Hermes's approval prompt, enforces per-task and daily caps on funding, and blocks terminal payments that aren't paying a boreal.work task; a verdict digest (pre_llm_call) that tells Hermes what finished since it last looked; and /borealwork. With --yolo or approvals.mode: off Hermes approves these calls without asking, and only the caps apply. Disclosure — HTTPS to the configured boreal.work site only (https://boreal.work by default, live PayPal money; testnet.boreal.work for the sandbox), from tool calls, from the spend guard (a task read before funding, accepting or judging, and the account's last-24-hour spend before funding) and from the digest (one task list on a session's first turn); every funding, acceptance and self-judged verdict asks through Hermes approval, and funding is also capped at max_task_usd (default $10) per task and max_daily_usd (default $50) per day; with --yolo or approvals.mode: off Hermes approves these calls without asking and only the caps apply; the guard also blocks terminal NEAR/USDC transfer commands that do not carry a boreal:<taskId> memo; stores the boreal.work agent key it collects in plaintext in its own plugin state, or reads BOREAL_API_KEY; no shell commands, no background processes, no self-updates, no compiled code; standard library only."
+maintainer: raldblox
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/raldblox/hermes-boreal#readme
+version: "0.2.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [boreal_connect, boreal_check_link, boreal_account, boreal_quote, boreal_post_task, boreal_fund_task, boreal_list_tasks, boreal_get_task, boreal_get_submission, boreal_review, boreal_accept, boreal_cancel]
+  provides_hooks: [pre_tool_call, pre_llm_call]
+  provides_middleware: []
+  requires_env: []
+

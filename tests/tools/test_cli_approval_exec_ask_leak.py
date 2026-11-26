@@ -46,7 +46,6 @@ def _clean_approval_env(monkeypatch):
     )
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
-    approval_module._pending.clear()
     # The consecutive-denial breaker is process-global; a tally left behind by
     # another test would leak its escalated addendum into these assertions.
     approval_module._denial_tally.clear()

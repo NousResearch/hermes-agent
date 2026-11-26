@@ -1,0 +1,20 @@
+name: compache
+title: compache
+repo: https://github.com/BarendPotijk/compache
+sha: 10ea507131dbf66ca2b3e17e3335318482146145
+subdir: integrations/hermes
+version: "0.14.0"
+description: "Context engine that makes long sessions cheaper. It leaves out of each request what later turns rarely need, by a policy fitted to conversations like yours, and only once the prompt cache has expired, when the history has to be paid for in full anyway. The conversation Hermes keeps is untouched, and the model fetches a trimmed part back with a reopen tool. Select it with context.engine: compache. Disclosure: installs compache from PyPI (no further dependencies); reads the policy file named by COMPACHE_POLICY and prompt_caching.cache_ttl from Hermes' configuration; writes nothing unless COMPACHE_RECORD names a folder, and then sizes, times and token counts, never text; no network calls, no telemetry, no shell commands, no background work; makes no model calls of its own, and hands the model route Hermes gave it to Hermes' own compressor when a conversation outgrows the model."
+maintainer: BarendPotijk
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/BarendPotijk/compache/blob/main/docs/integrations.md#hermes
+known_issues:
+  - "It sends no keep-warm pings: Hermes sends the requests. compache's proxy does."
+  - "Uses agent.context_compressor and hermes_cli.config, which are not documented as public."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

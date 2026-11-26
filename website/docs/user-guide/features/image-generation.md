@@ -128,6 +128,19 @@ Auth reuses the same env vars as the Meta chat provider — `MODEL_API_KEY`
 as aliases. Set `META_BASE_URL` to point at a proxy or alternate host. Text-to-image
 only for now; responses are saved to `$HERMES_HOME/cache/images/`.
 
+## FAL: GPT Image 2.6
+
+GPT Image 2.6 (November 2026) is listed beside 2.5 under `hermes tools` →
+Image Generation → FAL.ai as **GPT Image 2.6 Flare** and **GPT Image 2.6 Sunburst**:
+
+- `openai/gpt-image-2.6/flare/text-to-image`
+- `openai/gpt-image-2.6/sunburst/text-to-image`
+
+It behaves like 2.5 in Hermes: reference images route to the matching
+`openai/gpt-image-2.6/<variant>/edit` endpoint (up to 16), quality is pinned to
+`medium`, and token pricing matches 2.5. The 2.6 GIF/SVG output formats are not
+exposed; Hermes always requests raster PNG.
+
 ## FAL: GPT Image 2.5
 
 Select **GPT Image 2.5 Flare** or **GPT Image 2.5 Sunburst** under

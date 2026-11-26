@@ -39,9 +39,7 @@ def _bootstrap(monkeypatch, tmp_path):
     runner = gateway_run.GatewayRunner(config)
     runner.adapters = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
@@ -167,7 +165,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
 
     # The next unrelated input remains its own turn instead of alternation repair
     # merging the failed mutating request into it.
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     replay = [*transcript_rows, {"role": "user", "content": "unrelated question"}]
     assert repair_message_sequence(None, replay) == 0

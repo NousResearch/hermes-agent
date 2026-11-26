@@ -31,7 +31,11 @@ def _settle_job_record(job_id: str, execution_id: str, delivery_error: Optional[
     the ledger's latest attempt for the job AND the job's latest recorded completion."""
     from cron.executions import latest_execution
     from cron.jobs import _with_job, save_jobs
+    from cron.jobs_error_text import sanitize_persisted_error
 
+    # The queue row is redacted but not length-bounded; jobs.json gets the same cap as every
+    # other last_delivery_error writer, and the no-op check compares the stored form.
+    delivery_error = sanitize_persisted_error(delivery_error)
     latest = latest_execution(job_id)
     if latest is None or latest.get("id") != execution_id:
         return False

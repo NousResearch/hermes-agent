@@ -65,6 +65,19 @@ def test_activate_moves_store_dirs_ahead_of_user_dirs(checked_store, monkeypatch
     assert os.environ["PATH"].split(os.pathsep) == [*store, user_dir]
 
 
+def test_activate_keeps_the_path_this_process_inherited(checked_store, monkeypatch):
+    environments = importlib.import_module("pm.environments")
+    # As in a process whose activate_dependencies() returned before putting anything first.
+    monkeypatch.setattr(environments, "_inherited_path", None)
+    inherited = os.path.join(os.sep, "user", "bin")
+    monkeypatch.setenv("PATH", inherited)
+
+    assert pm.activate() == []
+
+    assert os.environ["PATH"] != inherited
+    assert environments.inherited_path() == inherited
+
+
 def test_drift_activates_intact_chains_and_reports_the_live_verdict(checked_store, monkeypatch):
     binaries, checks = checked_store
     user_dir = os.path.join(os.sep, "user", "bin")

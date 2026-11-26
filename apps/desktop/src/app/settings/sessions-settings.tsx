@@ -18,10 +18,10 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
 import { formatCombo } from '@/lib/keybinds/combo'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
 import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
@@ -223,7 +223,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
 // Opt-in retention: soft-hide chats untouched for N days. The policy itself
 // (last-activity sweep, pin exemption) lives in the backend
-// (sessions.auto_archive in config.yaml + SessionDB.maybe_auto_archive); this
+// (sessions.auto_archive in config.yaml + session_retention.run_auto_archive); this
 // just toggles the config keys, so CLI / gateway / Desktop all honour one
 // setting. Pins are exempt on the backend, so pinned chats survive regardless.
 function AutoArchiveSetting() {
@@ -362,7 +362,7 @@ function DefaultProjectDirSetting() {
     // The folder on screen belongs to the profile this effect loaded. Drop it
     // on a switch so the next paint and the next save both use the profile
     // that is open now.
-    if (isBrowserHostedDesktop()) {
+    if (hostHas('originScopedPrefs')) {
       setDir(null)
     }
 
@@ -393,7 +393,7 @@ function DefaultProjectDirSetting() {
     try {
       // A browser tab has no native dialog for the server's disk: pick through the server
       // folder browser Projects already use.
-      const picked = isBrowserHostedDesktop()
+      const picked = !hostHas('nativeFolderPicker')
         ? { dir: (await selectDesktopPaths({ defaultPath: dir ?? undefined, directories: true }))[0] ?? null }
         : await settings.pickDefaultProjectDir()
 

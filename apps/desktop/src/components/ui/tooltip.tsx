@@ -3,6 +3,7 @@ import './tooltip.css'
 import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import * as React from 'react'
 
+import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
 import { useI18n } from '@/i18n'
 import { type InputModality, lastInputModality } from '@/lib/input-modality'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
@@ -151,8 +152,10 @@ function hasLayout(element: Element | null): boolean {
 }
 
 function TooltipContent(props: TooltipContentProps) {
+  const container = usePopoverPortalContainer(undefined, 'tooltip')
+
   return (
-    <TooltipPrimitive.Portal>
+    <TooltipPrimitive.Portal container={container}>
       <PaneClippedContent {...props} />
     </TooltipPrimitive.Portal>
   )

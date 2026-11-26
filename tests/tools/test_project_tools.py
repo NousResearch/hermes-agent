@@ -16,7 +16,7 @@ def _use_projects_db(monkeypatch, tmp_path):
     return db_path, original_connect_closing
 
 
-def test_agent_session_project_create_keeps_profile_active_pointer_and_moves_session(monkeypatch, tmp_path):
+def test_agent_session_project_create_keeps_profile_active_pointer_and_leaves_the_session(monkeypatch, tmp_path):
     db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
     with connect_closing(db_path=db_path) as conn:
         active_id = pdb.create_project(conn, name="Foreground", folders=["/work/foreground"])
@@ -41,10 +41,10 @@ def test_agent_session_project_create_keeps_profile_active_pointer_and_moves_ses
     assert result["success"] is True
     assert created is not None
     assert created.name == "Background"
-    assert workspace_moves == [("session-background", "/work/background", "Background")]
+    assert workspace_moves == []  # create only creates; switch moves
 
 
-def test_legacy_project_create_sets_profile_active_pointer(monkeypatch, tmp_path):
+def test_project_create_leaves_the_profile_active_pointer(monkeypatch, tmp_path):
     db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
     with connect_closing(db_path=db_path) as conn:
         previous_id = pdb.create_project(conn, name="Previous", folders=["/work/previous"])
@@ -53,7 +53,7 @@ def test_legacy_project_create_sets_profile_active_pointer(monkeypatch, tmp_path
     result = json.loads(project_tools.project_create("Created", path="/work/created"))
 
     with connect_closing(db_path=db_path) as conn:
-        assert pdb.get_active_id(conn) == result["id"]
+        assert pdb.get_active_id(conn) == previous_id
 
     assert result["success"] is True
 
@@ -174,6 +174,9 @@ def test_two_sessions_switch_projects_independently(gui_sessions, tmp_path):
 
     project_a = _tool("create", "tab-a", name="Project A", path=str(folders["a"]))["id"]
     project_b = _tool("create", "tab-b", name="Project B", path=str(folders["b"]))["id"]
+    assert (tab_a["cwd"], tab_b["cwd"]) == (str(folders["foreground"]),) * 2  # create only creates
+    _tool("switch", "tab-a", name="Project A")
+    _tool("switch", "tab-b", name="Project B")
 
     # Each tab's workspace moved; the profile-global pointer the sidebar owns did not.
     assert (tab_a["cwd"], tab_b["cwd"]) == (str(folders["a"]), str(folders["b"]))
@@ -209,6 +212,24 @@ def test_project_list_reports_no_project_for_a_detached_session(gui_sessions, tm
     assert _tool("list")["active_id"] == active
 
 
+def test_project_list_keeps_the_sessions_project_on_unmounted_docker(gui_sessions, tmp_path, monkeypatch):
+    """Unmounted Docker registers no host cwd for the terminal, but the chat is still in its folder."""
+    from tui_gateway import server
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+    folder = tmp_path / "project"
+    folder.mkdir()
+    with pdb.connect_closing() as conn:
+        project = pdb.create_project(conn, name="Project", folders=[str(folder)])
+    session = gui_sessions("docker-tab", str(folder))
+    session["explicit_cwd"] = True
+    server._register_session_cwd(session)
+
+    assert terminal_tool.resolve_task_overrides("docker-tab")["cwd"] == ""
+    assert _tool("list", "docker-tab")["active_id"] == project
+
+
 def test_idempotent_create_from_a_session_keeps_profile_active_pointer(gui_sessions, tmp_path):
     folders = {name: tmp_path / name for name in ("foreground", "existing")}
     for folder in folders.values():
@@ -223,6 +244,60 @@ def test_idempotent_create_from_a_session_keeps_profile_active_pointer(gui_sessi
     result = _tool("create", "tab", name="Again", path=str(folders["existing"]))
 
     assert result["id"] == existing
-    assert tab["cwd"] == str(folders["existing"])
+    assert tab["cwd"] == str(folders["foreground"])  # create only creates
     with pdb.connect_closing() as conn:
         assert pdb.get_active_id(conn) == foreground
+
+
+def test_switch_reports_moved_when_the_callback_moved_the_session(monkeypatch, tmp_path):
+    db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
+    with connect_closing(db_path=db_path) as conn:
+        target_id = pdb.create_project(conn, name="Target", folders=["/work/target"])
+    project_tools.set_project_workspace_callback(lambda *args: True)
+    try:
+        result = json.loads(project_tools.project_switch(target_id, task_id="gui-session"))
+    finally:
+        project_tools.set_project_workspace_callback(None)
+    assert result["moved"] is True and "not_moved_reason" not in result
+
+
+def test_legacy_callback_returning_none_counts_as_moved(monkeypatch, tmp_path):
+    """Before the verdict existed a callback returned None; no exception still means it moved."""
+    _use_projects_db(monkeypatch, tmp_path)
+    project_tools.set_project_workspace_callback(lambda *args: None)
+    try:
+        made = json.loads(project_tools.project_create("Legacy", path="/work/legacy"))
+        result = json.loads(project_tools.project_switch(made["id"], task_id="gui-session"))
+    finally:
+        project_tools.set_project_workspace_callback(None)
+    assert result["moved"] is True
+
+
+@pytest.mark.parametrize("callback, task_id, reason", [
+    (None, "cli-session", "no live GUI session"),
+    (lambda *args: True, None, "no calling session"),
+    (lambda *args: False, "gui-session", "no live GUI session owns"),
+    (lambda *args: (_ for _ in ()).throw(RuntimeError("boom")), "gui-session", "workspace move failed: boom"),
+], ids=["no-callback", "no-task", "no-session", "raised"])
+def test_switch_that_could_not_move_says_so_and_switches_the_pointer(monkeypatch, tmp_path, callback, task_id, reason):
+    """A success that left the chat in its old folder made the agent keep working there: the result
+    names the miss, and the profile-global pointer takes the switch instead."""
+    db_path, connect_closing = _use_projects_db(monkeypatch, tmp_path)
+    project_tools.set_project_workspace_callback(callback)
+    try:
+        made = json.loads(project_tools.project_create("Wt", path="/work/wt"))
+        result = json.loads(project_tools.project_switch(made["id"], task_id=task_id))
+    finally:
+        project_tools.set_project_workspace_callback(None)
+    with connect_closing(db_path=db_path) as conn:
+        assert pdb.get_active_id(conn) == result["id"]
+    assert result["success"] is True and result["moved"] is False
+    assert reason in result["not_moved_reason"]
+
+
+def test_sub_agents_never_get_desktop_project():
+    """The commanding session decides the working directory; a sub-agent never moves or selects for it."""
+    from tools.delegate_tool_toolsets import DELEGATE_BLOCKED_TOOLS, _blocked_toolsets_for_role, _strip_blocked_tools
+    assert "desktop_project" in DELEGATE_BLOCKED_TOOLS
+    assert _strip_blocked_tools(["terminal", "project"]) == ["terminal"]
+    assert all("project" in _blocked_toolsets_for_role(role) for role in ("leaf", "orchestrator"))

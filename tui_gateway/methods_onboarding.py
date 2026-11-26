@@ -137,9 +137,10 @@ _onboarding_start_lock = threading.Lock()
 def _active_run() -> dict:
     """The onboarding chat in progress and its run id, both None when no run is open."""
     from agent.onboarding_record import active_session_id, load
-    with _profile_db(_ONBOARDING_PROFILE) as db:
-        session_id = None if db is None else active_session_id(db)
-        return {"session_id": session_id, "run_id": (load(db, session_id) or {}).get("run_id") if session_id else None}
+    with _profile_db(_ONBOARDING_PROFILE) as db, _persistence_for(db) as persistence:
+        session_id = None if db is None else active_session_id(db, persistence=persistence)
+        return {"session_id": session_id,
+                "run_id": (load(db, session_id, persistence=persistence) or {}).get("run_id") if session_id else None}
 
 
 class _NoModelForTheRun(Exception):
@@ -168,11 +169,12 @@ def _claim_before_run(scope: dict, *, assume_fresh: bool):
 @method("onboarding.start")
 def _(rid, params: dict) -> dict:
     from agent.onboarding_facts import read_facts
-    from agent.onboarding_flow import End, Facts
+    from session_rules.onboarding_flow import End, Facts
     from agent.onboarding_record import advance, load, open_session_ids, start
     from agent.onboarding_text import CHAT_TITLE, opening_prompt
     from hermes_cli.auth_constants import AuthError
     from hermes_cli import free_tier_bootstrap
+    from persistence.conversation.sessions import NewSession
     # The app's once-per-launch start: closing the app mid-run does not count, so that run's chat goes
     # and the run starts over. A second window or a reconnect sends no flag and gets the run back.
     fresh_launch = bool(params.get("fresh_launch"))
@@ -180,10 +182,10 @@ def _(rid, params: dict) -> dict:
     with _onboarding_start_lock:
         claimed = None
         try:
-            with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+            with _profile_db(_ONBOARDING_PROFILE, writer=True) as db, _persistence_for(db) as persistence:
                 if db is None:
                     return _db_unavailable_error(rid, code=5000)
-                open_ids = open_session_ids(db)
+                open_ids = open_session_ids(db, persistence=persistence)
                 stored = None if params.get("rerun") or fresh_launch else next(iter(open_ids), None)
                 created = stored is None
                 if created:
@@ -194,25 +196,25 @@ def _(rid, params: dict) -> dict:
                         facts = read_facts(facts_source=params.get("facts_source") or "local", locale=params.get("locale"))
                     if not params.get("rerun"):  # a rerun never claims: it runs on the configured model
                         claimed = _claim_before_run(scope, assume_fresh=bool(params.get("assume_fresh")))
-                    stored = db.create_session(new_session_id(), "desktop")
+                    stored = persistence.sessions.create(NewSession(session_id=new_session_id(), source="desktop"))
                     # The record exists before the agent is built, so the build folds the onboarding toolset in.
-                    start(db, stored, facts)
+                    start(db, stored, facts, persistence=persistence)
                 else:
-                    facts = Facts.from_stored(load(db, stored)["facts"])
-                run_id = load(db, stored).get("run_id") or ""
+                    facts = Facts.from_stored(load(db, stored, persistence=persistence)["facts"])
+                run_id = load(db, stored, persistence=persistence).get("run_id") or ""
                 # One open run at a time. The kept run is open before the others end, so the install
                 # flag never closes in between; finishing it closes the flag.
                 replaced = [sid for sid in open_ids if sid != stored]
                 if fresh_launch:
-                    _discard_unfinished_runs(db, replaced)
+                    _discard_unfinished_runs(db, replaced, persistence=persistence)
                 else:
                     for old in replaced:
-                        advance(db, old, End("replaced"))
+                        advance(db, old, End("replaced"), persistence=persistence)
                 if created:
                     # After the discard, so a run started over keeps the title its deleted chat had.
-                    db.set_session_title(stored, db.get_next_title_in_lineage(CHAT_TITLE))
+                    persistence.sessions.set_title(stored, persistence.sessions.next_title_in_lineage(CHAT_TITLE))
                 # A chat with no messages never got its opening (a restart between start and the first turn).
-                opening = None if (db.get_session(stored) or {}).get("message_count") else opening_prompt(facts)
+                opening = None if getattr(persistence.sessions.get(stored), "message_count", None) else opening_prompt(facts)
         except AuthError as e:
             # The trial claim failed (portal down, rate limited): no guest and no chat, so the next
             # launch is still a first install and tries again.
@@ -242,17 +244,17 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.skip")
 def _(rid, params: dict) -> dict:
-    from agent.onboarding_flow import End
+    from session_rules.onboarding_flow import End
     from agent.onboarding_record import advance, load
     session, err = _sess_nowait(params, rid)
     if err:
         return err
     agent = session.get("agent")
     stored = getattr(agent, "session_id", None) or session["session_key"]
-    with _session_db(session) as db:
-        if load(db, stored) is None:
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if load(db, stored, persistence=persistence) is None:
             return _ok(rid, {"skipped": False})
-        step = advance(db, stored, End("skipped"))
+        step = advance(db, stored, End("skipped"), persistence=persistence)
     # The card that waits returns to setup_beat, which reads the skipped record.
     _cancel_session_requests(params["session_id"], "resolved", method="setup_beat")
     return _ok(rid, {"skipped": bool(step.result.get("skipped_all"))})
@@ -273,29 +275,47 @@ def _withdraw_setup_cards(stored_ids: list[str]) -> None:
         _cancel_session_requests(sid, "resolved", method="setup_beat")
 
 
-def _discard_unfinished_runs(db, stored_ids: list[str]) -> None:
+def _discard_unfinished_runs(db, stored_ids: list[str], *, persistence=None) -> None:
     """A new launch's start: the runs the app was closed on never count as done. Each chat is closed if
     still live here (a backend that outlived the app), then deleted the way ``session.delete`` deletes
     it, which ends its run (``deleted``) and tells every window. A chat the delete refuses keeps its
     messages, and its run ends as ``replaced`` so it is never resumed."""
-    from agent.onboarding_flow import End
+    from session_rules.onboarding_flow import End
     from agent.onboarding_record import advance, delete_chat
+    from gateway.session_ingress_media import native_inputs_root
     for sid in _live_session_ids(stored_ids):
         _close_session_by_id(sid, end_reason="onboarding_restart")
     sessions_dir = Path(_profile_home("default") or get_hermes_home()) / "sessions"
+    media_root = str(native_inputs_root())
     for old in stored_ids:
         try:
-            deleted = delete_chat(db, old, lambda old=old: db.delete_session(
-                old, sessions_dir=sessions_dir, exclude_active_write_guards=True))
+            deleted = delete_chat(db, old, lambda old=old: _delete_unfinished_chat(
+                db, old, sessions_dir=sessions_dir, media_root=media_root, persistence=persistence),
+                persistence=persistence)
         except Exception:
             logger.exception("onboarding.start could not delete unfinished chat %s", old)
             deleted = False
         if not deleted:
-            advance(db, old, End("replaced"))
+            advance(db, old, End("replaced"), persistence=persistence)
+
+
+def _delete_unfinished_chat(db, session_id: str, *, sessions_dir, media_root: str, persistence=None) -> bool:
+    """Delete *session_id* as ``session.delete`` does, refusing a chat under a live turn lease or compression lock;
+    True when it existed. Through the writer handle beside *db*: the delete, then ``after_sessions_removed`` once it
+    committed (the retired media under *media_root*, the transcript files under *sessions_dir*); else on *db*."""
+    from agent.agent_init_session import writer_interface
+    store = writer_interface(persistence, db)
+    if store is None:
+        return db.delete_session(session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+    from session_retention import after_sessions_removed
+    removed = store.sessions.delete(session_id, refuse_guarded=True, media_root=media_root)
+    after_sessions_removed(store, store.scope.profile_dir, removed, reason="delete", primary=session_id,
+                           sessions_dir=sessions_dir)
+    return bool(removed)
 
 
 def _setup_beat_request(sid: str, payload: dict) -> dict | None:
-    from agent.onboarding_flow import CARD_TIMEOUT_S
+    from session_rules.onboarding_flow import CARD_TIMEOUT_S
     from tui_gateway import server_requests
     return server_requests.send("setup_beat", sid, dict(payload), timeout=CARD_TIMEOUT_S)
 

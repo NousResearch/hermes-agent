@@ -1,0 +1,18 @@
+name: walkley-data
+title: "China Workdays, Package Advisories, SEC Insider Trades"
+repo: https://github.com/walkley/walkley-data-hermes-plugin
+sha: db65dac548f6e021ec63dc9e2e790fc7572ac143
+version: "0.1.0"
+description: "Three read-only lookups through a hosted MCP server (Streamable HTTP at https://mvqz0m8d6g.execute-api.ap-northeast-1.amazonaws.com/mcp, no key, no sign-in): whether a date is a working day in mainland China, or the working days in a range (State Council holidays and weekend makeup workdays, 2020 to 2027, with the gov.cn source); known OSV.dev advisories for one exact npm, PyPI, Go, crates.io or Maven package version; and recent SEC Form 4 insider trades of a US company by ticker or CIK. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code; every tool call goes to the author's AWS API Gateway endpoint, which receives the tool's arguments (dates, package ecosystem/name/version, a ticker or CIK) and queries OSV.dev for advisories; all 3 tools are annotated read-only and the package marks the server untrusted; the server never signs, sends transactions or moves money; no key is stored or sent; 20 free calls per IP per UTC day for the workday and advisory tools, none for insider trades; past that, and on every insider-trades call, the answer is a tool error naming a paid x402 URL (USDC on Base, $0.003 to $0.005 a call) that the plugin cannot pay; no telemetry from the plugin (the server's quota counters keep a keyed hash of the IP for 2 days, API Gateway access logs keep the IP for 30 days). The tool set is served by the remote server at runtime and is not covered by the pinned sha; the server's source is public at github.com/walkley/x402-content-site."
+maintainer: walkley
+tier: community
+category: tools
+docs_url: https://github.com/walkley/walkley-data-hermes-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

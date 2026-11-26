@@ -1,0 +1,25 @@
+name: mem-diffs
+title: MemDiffs
+repo: https://github.com/daji-dev/mem-diffs
+sha: e6b424c1ca1b0249fd06a4c002a5971da7f76198
+description: |-
+  Make updates to memory, skills, and self-improvement reviews expand on-click to show the diff.
+  Set display.memory_notifications to off if using this, or you'll see duplicate non-clickable notifications
+  (config.yaml → display). Existing chats keep their old setting, so start a new chat afterwards.
+maintainer: daji-dev
+tier: community
+category: memory
+version: "0.7.1"
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/daji-dev/mem-diffs
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - transform_llm_output
+    - on_session_delete
+  provides_middleware:
+    - tool_execution
+    - llm_request
+  requires_env: []

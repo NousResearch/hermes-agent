@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [SiYuan, Notes, Knowledge Base, PKM, API]
-    related_skills: [obsidian, notion]
+    related_skills: [obsidian]
     homepage: https://github.com/siyuan-note/siyuan
 prerequisites:
   env_vars: [SIYUAN_TOKEN]

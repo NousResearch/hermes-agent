@@ -100,7 +100,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
           className={cn(
             SCAFFOLD_LABEL_CLASS,
             'min-w-0 truncate text-left transition-colors',
-            open ? 'hover:text-foreground focus-visible:text-foreground focus-visible:outline-none' : 'cursor-default'
+            open ? 'hover:text-foreground focus-visible:text-foreground' : 'cursor-default'
           )}
           disabled={!open}
           onClick={open}

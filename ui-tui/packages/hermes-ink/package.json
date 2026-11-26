@@ -2,10 +2,13 @@
   "name": "@hermes/ink",
   "version": "0.0.1",
   "private": true,
+  "engines": {
+    "npm": "npm is refused here: run pnpm install --frozen-lockfile at the repository root"
+  },
   "type": "module",
   "scripts": {
     "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
-    "check": "npm run typecheck",
+    "check": "pnpm run typecheck",
     "typecheck": "tsc -b . --noEmit",
     "lint": "echo 'ok!'",
     "fix": "echo 'nothing to fix'"
@@ -53,7 +56,9 @@
     "wrap-ansi": "9.0.2"
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
     "esbuild": "0.28.2",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
   }
 }

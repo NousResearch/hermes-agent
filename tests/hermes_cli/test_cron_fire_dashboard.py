@@ -279,6 +279,16 @@ def test_fire_endpoint_profile_env_port(tmp_path, monkeypatch):
     assert url == "http://127.0.0.1:8701/api/cron/fire"
 
 
+def test_fire_endpoint_profile_env_port_expands_references(tmp_path, monkeypatch):
+    """The other profile's .env is read the way its own gateway reads it: ${VAR} expanded."""
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
+    monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
+    (tmp_path / ".env").write_text("WORKER_PORT=8702\nAPI_SERVER_PORT=${WORKER_PORT}\n", encoding="utf-8")
+    url = _web_server_cron._gateway_fire_endpoint("worker_alpha", tmp_path)
+    assert url == "http://127.0.0.1:8702/api/cron/fire"
+
+
 def test_fire_endpoint_multiplex_profile_prefix(tmp_path, monkeypatch):
     """Multiplex mode: a non-default profile routes through the default
     gateway's port with the /p/<profile>/ prefix mirror."""

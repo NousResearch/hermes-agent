@@ -412,15 +412,36 @@ export function createBrowserConnectionBridge({
 
       return getGatewayWsUrl(profile)
     },
-    getProfileRoutes: async (profiles: string[]) => {
+    // `own` asks only for the window socket's gateway's routes (boot's check of the address's
+    // profile), so another gateway that is slow to answer cannot hold that check up.
+    getProfileRoutes: async (profiles: string[], options?: { own?: boolean }) => {
       const home = await homeOf()
+
+      if (home && options?.own) {
+        const { connectionId, relays } = home
+
+        // A list or a roster that cannot be read fails the read, as `relayedRoutes` does.
+        if (!(await relays.gateways()).some(row => row.id === connectionId)) {
+          throw new Error(`"${connectionId}" is not in this account's list`)
+        }
+
+        return (await relays.rosterAgents(connectionId))
+          .filter(row => row.reachable !== false)
+          .map(row => ({
+            connectionId,
+            mode: 'remote' as const,
+            primary: true as const,
+            profile: row.profile,
+            targetProfile: row.targetProfile || row.profile
+          }))
+      }
 
       if (home) {
         return relayedRoutes(home.connectionId)
       }
 
       // The serving gateway's: only the named profiles it has and serves.
-      const [installed, remote] = await Promise.all([installedProfiles(), relayedRoutes()])
+      const [installed, remote] = await Promise.all([installedProfiles(), options?.own ? [] : relayedRoutes()])
       const available = new Set(installed.filter(reachesSocket))
 
       return [

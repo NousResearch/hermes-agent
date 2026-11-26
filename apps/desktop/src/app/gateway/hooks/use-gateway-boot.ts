@@ -195,7 +195,7 @@ async function openWebappTabProfile(desktop: Window['hermesDesktop'], primary: s
 
   // A stale link or bookmark can name a profile this gateway no longer has or does not serve: stay on its own.
   // Routes list other gateways' profiles too; this tab's socket is the serving one's, or marked primary.
-  const routes = await desktop.getProfileRoutes?.([profile]).catch(() => null)
+  const routes = await desktop.getProfileRoutes?.([profile], { own: true }).catch(() => null)
   const own = routes?.filter(route => route.primary || route.connectionId === LOCAL_CONNECTION_ID)
 
   if (own && !own.some(route => normalizeProfileKey(route.profile) === normalizeProfileKey(profile))) {

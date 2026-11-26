@@ -75,7 +75,8 @@ function dashboardHost({
   profiles = { alpha: ['default'], beta: ['default'] } as Record<string, string[]>,
   refusedBy = new Set<string>(),
   runsAs = {} as Record<string, string>,
-  unreadable = new Set<string>()
+  unreadable = new Set<string>(),
+  hung = new Set<string>()
 }: {
   agents?: DesktopRegistryConnection[]
   expired?: Set<string>
@@ -86,6 +87,8 @@ function dashboardHost({
   runsAs?: Record<string, string>
   /** Agents whose profile list cannot be read (a 500). */
   unreadable?: Set<string>
+  /** Agents whose profile list never answers. */
+  hung?: Set<string>
 } = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
@@ -111,6 +114,10 @@ function dashboardHost({
 
         if (refusedBy.has(id)) {
           return json({ detail: 'The agent did not accept this session. Reload to reconnect.', error: 'relay_reconnect' }, 409)
+        }
+
+        if (rest === '/api/profiles' && hung.has(id)) {
+          return new Promise<Response>(() => undefined)
         }
 
         if (rest === '/api/profiles' && unreadable.has(id)) {
@@ -429,7 +436,25 @@ describe('a Webapp whose host runs no agent', () => {
   it("fails the route read when the window socket's agent cannot list its profiles", async () => {
     dashboardHost({ profiles: { alpha: ['default', 'research'], beta: ['default'] }, unreadable: new Set(['alpha']) })
 
-    await expect(install().getProfileRoutes!(['research'])).rejects.toThrow()
+    const desktop = install()
+    await expect(desktop.getProfileRoutes!(['research'])).rejects.toThrow()
+    await expect(desktop.getProfileRoutes!(['research'], { own: true })).rejects.toThrow()
+  })
+
+  // Boot checks the address's profile against the window's own routes only; another agent that
+  // never answers must not hold that check up for the roster timeout.
+  it("answers the window's own routes without waiting on another agent", async () => {
+    dashboardHost({ hung: new Set(['beta']), profiles: { alpha: ['default', 'research'], beta: ['default'] } })
+    const desktop = install()
+    $connection.set(await desktop.getConnection())
+    const late = new Promise(resolve => setTimeout(() => resolve('timed out'), 500))
+
+    const routes = await Promise.race([desktop.getProfileRoutes!(['research'], { own: true }), late])
+
+    expect(routes).toEqual([
+      { connectionId: 'alpha', mode: 'remote', primary: true, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'alpha', mode: 'remote', primary: true, profile: 'research', targetProfile: 'research' }
+    ])
   })
 
   it('fails the route read when the account list cannot be read after boot', async () => {
@@ -444,6 +469,7 @@ describe('a Webapp whose host runs no agent', () => {
     )
 
     await expect(desktop.getProfileRoutes!(['research'])).rejects.toThrow()
+    await expect(desktop.getProfileRoutes!(['research'], { own: true })).rejects.toThrow()
   })
 
   it("still routes the window socket's agent when another agent cannot list its profiles", async () => {

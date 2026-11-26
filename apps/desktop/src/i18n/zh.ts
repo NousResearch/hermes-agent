@@ -161,7 +161,8 @@ export const zhOverrides = {
       gatewayConnectionLostDetail:
         'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: '需要登录网关',
-      ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
+      ipcBridgeUnavailable: '桌面 IPC 桥不可用。',
+      hostedAgentUnavailable: agentId => `此账户无法使用 Hermes 代理“${agentId}”。重试将改为打开账户的主代理。`
     },
     failure: {
       title: 'Hermes 无法启动',

@@ -20,7 +20,8 @@ export const ruBoot = {
       desktopBootFailed: 'Не удалось запустить приложение',
       gatewayConnectionLost: 'Соединение с шлюзом потеряно',
       gatewaySignInRequired: 'Требуется вход в шлюз',
-      ipcBridgeUnavailable: 'IPC-мост приложения недоступен.'
+      ipcBridgeUnavailable: 'IPC-мост приложения недоступен.',
+      hostedAgentUnavailable: agentId => `Агент Hermes «${agentId}» недоступен для этой учётной записи. «Повторить» откроет вместо него основной агент учётной записи.`
     },
     failure: {
       title: 'Hermes не удалось запустить',

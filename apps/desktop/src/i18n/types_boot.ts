@@ -25,6 +25,7 @@ export interface BootTranslations {
     gatewaySignInRequiredDetail: string
     signInAgain: string
     ipcBridgeUnavailable: string
+    hostedAgentUnavailable: (agentId: string) => string
   }
   causes: {
     exitedEarly: string

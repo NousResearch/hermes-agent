@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { pluginRouteStillRegistered } from '@/sdk/profile-request'
+import { $desktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
 import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
+import { HostedAgentUnavailableError } from './browser-hosted-route'
 import { ManagedConnectionsError, NoHostedAgentError } from './browser-saved-connections'
 import { signsInToCloudAgents, transferAvailable } from './hermes-cloud-host'
 import { _resetAdoptedLaunchProfileForTests, browserLaunchProfile } from './platform'
@@ -275,6 +277,26 @@ describe('a Webapp whose host runs no agent', () => {
   it('opens on the first agent when the list names no primary it holds', async () => {
     dashboardHost({ primary: 'gone' })
 
+    expect((await install().getConnection()).connectionId).toBe('alpha')
+  })
+
+  // A bookmark or a reopened tab naming an agent that left the account: opening the primary in its
+  // place would send the user's chats and settings to an agent they did not pick.
+  it('fails to open, naming the agent, when the address names one the account no longer lists', async () => {
+    dashboardHost()
+    window.history.replaceState(null, '', '/?connectionId=gamma&profile=research#/')
+    const desktop = install()
+
+    await expect(desktop.getConnection()).rejects.toBeInstanceOf(HostedAgentUnavailableError)
+    expect($desktopBoot.get().error).toContain('gamma')
+    // Nothing in this page opens another agent in its place.
+    await expect(desktop.api({ path: '/api/config' })).rejects.toBeInstanceOf(HostedAgentUnavailableError)
+    await expect(desktop.getGatewayWsUrl()).rejects.toBeInstanceOf(HostedAgentUnavailableError)
+
+    // Retry reloads the page, which opens the account's primary: the address no longer names gamma.
+    const address = new URL(window.location.href)
+    expect([address.searchParams.get('connectionId'), address.searchParams.get('profile')]).toEqual([null, null])
+    Reflect.deleteProperty(win, 'hermesDesktop')
     expect((await install().getConnection()).connectionId).toBe('alpha')
   })
 

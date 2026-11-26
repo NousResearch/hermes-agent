@@ -1,6 +1,18 @@
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
+import { translateNow } from '@/i18n/runtime'
 import type { BrowserSavedConnections } from '@/lib/browser-saved-connections'
+
+/**
+ * The agent a window was opened for is not in the account's list. The window does not open on
+ * another one in its place: a chat or a setting meant for that agent would land on another.
+ */
+export class HostedAgentUnavailableError extends Error {
+  constructor(readonly agentId: string) {
+    super(translateNow('boot.errors.hostedAgentUnavailable', agentId))
+    this.name = 'HostedAgentUnavailableError'
+  }
+}
 
 /**
  * Where a request goes on a host that runs no agent (`browserHostRunsNoAgent`). The host has no
@@ -30,13 +42,22 @@ interface HostedRouteOptions {
   windowAgent: () => null | string | undefined
   /** The agent this window was opened for, if any (a popped-out chat's address names it). */
   launchAgent: () => null | string | undefined
+  /** The agent the window was opened for is not listed: the window fails rather than open another. */
+  onUnavailable?: (error: HostedAgentUnavailableError) => void
 }
 
 const named = (connectionId?: null | string) =>
   connectionId && connectionId !== LOCAL_CONNECTION_ID ? connectionId : undefined
 
-export function createHostedRoute({ launchAgent, relays, windowAgent }: HostedRouteOptions): HostedRoute {
+export function createHostedRoute({
+  launchAgent,
+  onUnavailable,
+  relays,
+  windowAgent
+}: HostedRouteOptions): HostedRoute {
   let pinned: string | undefined
+  // Once the window could not open on its agent it opens on none: not on another one later either.
+  let unavailable: HostedAgentUnavailableError | undefined
 
   // A candidate counts only while the account still lists it: an agent that left the list is
   // refused by the relay, so the next rung answers instead.
@@ -48,11 +69,41 @@ export function createHostedRoute({ launchAgent, relays, windowAgent }: HostedRo
 
   // The window's own socket: the agent it opened on while listed, else the one the window was
   // opened for, else the list's primary (or first). The next dial opens on that, so it becomes the pin.
-  const knownHome = () => listed(pinned) ?? listed(launchAgent()) ?? relays.knownWindowConnection()
+  const knownHome = () => {
+    if (unavailable) {
+      return undefined
+    }
+
+    const opened = named(launchAgent())
+
+    return listed(pinned) ?? (opened ? listed(opened) : relays.knownWindowConnection())
+  }
+
+  // An address naming an agent the account no longer lists (a bookmark, a tab reopened after the
+  // agent left) fails the window, naming the agent, instead of opening the primary in its place.
+  const refuse = (agentId: string) => {
+    if (!unavailable) {
+      unavailable = new HostedAgentUnavailableError(agentId)
+      onUnavailable?.(unavailable)
+    }
+
+    throw unavailable
+  }
 
   const home = async () => {
     const primary = await relays.windowConnection()
-    pinned = listed(pinned) ?? listed(launchAgent()) ?? primary
+
+    if (unavailable) {
+      throw unavailable
+    }
+
+    const opened = named(launchAgent())
+
+    if (!pinned && opened && !listed(opened)) {
+      refuse(opened)
+    }
+
+    pinned = listed(pinned) ?? listed(opened) ?? primary
 
     return pinned
   }

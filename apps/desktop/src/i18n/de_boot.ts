@@ -29,7 +29,8 @@ export const deBoot = {
       gatewaySignInRequiredDetail:
         'Melden Sie sich erneut an, um die Verbindung wiederherzustellen. Ihre Chats und Einstellungen sind sicher.',
       signInAgain: 'Erneut anmelden',
-      ipcBridgeUnavailable: 'Der Desktop-IPC-Bridge ist nicht verfügbar.'
+      ipcBridgeUnavailable: 'Der Desktop-IPC-Bridge ist nicht verfügbar.',
+      hostedAgentUnavailable: agentId => `Der Hermes-Agent „${agentId}“ ist für dieses Konto nicht verfügbar. „Erneut versuchen“ öffnet stattdessen den primären Agenten des Kontos.`
     },
     causes: {
       exitedEarly: 'Der Hintergrunddienst von Hermes hat direkt nach dem Start aufgehört.',

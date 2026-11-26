@@ -543,6 +543,7 @@
     "boot.errors.gatewayConnectionLostDetail",
     "boot.errors.gatewaySignInRequired",
     "boot.errors.gatewaySignInRequiredDetail",
+    "boot.errors.hostedAgentUnavailable",
     "boot.errors.ipcBridgeUnavailable",
     "boot.errors.openLogs",
     "boot.errors.reconnectNow",

@@ -29,7 +29,8 @@ export const frBoot = {
       gatewaySignInRequiredDetail:
         'Reconnectez-vous pour rétablir la connexion. Vos conversations et paramètres sont en sécurité.',
       signInAgain: 'Se reconnecter',
-      ipcBridgeUnavailable: 'Le pont IPC du desktop est indisponible.'
+      ipcBridgeUnavailable: 'Le pont IPC du desktop est indisponible.',
+      hostedAgentUnavailable: agentId => `L’agent Hermes « ${agentId} » n’est pas disponible pour ce compte. Réessayer ouvre plutôt l’agent principal du compte.`
     },
     causes: {
       exitedEarly: "Le service en arrière-plan de Hermes s'est arrêté juste après son démarrage.",

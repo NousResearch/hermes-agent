@@ -23,7 +23,8 @@ export const arBoot = {
       gatewayConnectionLostDetail:
         'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'تسجيل الدخول للبوابة مطلوب',
-      ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.'
+      ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.',
+      hostedAgentUnavailable: agentId => `وكيل Hermes "${agentId}" غير متاح لهذا الحساب. ستفتح إعادة المحاولة الوكيل الأساسي للحساب بدلاً منه.`
     },
     failure: {
       title: 'تعذر تشغيل Hermes',

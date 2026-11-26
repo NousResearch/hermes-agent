@@ -292,9 +292,22 @@
     {
       "source": "model-provider-plugin.md § Public helpers for native Gemini reasoning",
       "entries": [
-        "agent.reasoning_effort:gemini_thinking_config",
+        "agent.bounded_response:read_streaming_error_body",
+        "agent.gemini_model_family",
+        "agent.gemini_urls",
+        "agent.output_budget_timeout",
+        "agent.process_bootstrap:build_keepalive_http_client",
+        "agent.reasoning_effort:bare_gemini_model_id",
         "agent.reasoning_effort:clamp_effort",
-        "agent.reasoning_effort:bare_gemini_model_id"
+        "agent.reasoning_effort:gemini_thinking_config",
+        "agent.reasoning_effort:gemini_top_thinking_level",
+        "agent.ssl_verify:resolve_httpx_verify",
+        "hermes_cli.auth:default_httpx_verify",
+        "hermes_cli.auth:get_provider_auth_state",
+        "hermes_cli.auth:nous_portal_base_url",
+        "hermes_cli.auth:resolve_nous_access_token",
+        "hermes_cli.config_providers:get_custom_provider_tls_settings",
+        "tools.schema_sanitizer:normalize_type_array"
       ]
     }
   ]

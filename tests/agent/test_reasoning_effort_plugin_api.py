@@ -34,7 +34,10 @@ _CONFIGS = (
 
 
 def _gemini_profile_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
-    body = providers.get_provider_profile("gemini").build_extra_body(model=model, reasoning_config=reasoning_config, base_url=_NATIVE)
+    profile = providers.get_provider_profile("gemini")
+    if profile is None:
+        pytest.skip("google model-provider plugin not installed")
+    body = profile.build_extra_body(model=model, reasoning_config=reasoning_config, base_url=_NATIVE)
     return body.get("thinking_config")
 
 
@@ -96,10 +99,10 @@ def test_bare_gemini_model_id(model, expected):
     assert bare_gemini_model_id(model) == expected
 
 
-def test_native_adapter_keeps_its_import_name():
-    from agent import gemini_native_adapter
+def test_model_family_keeps_bare_gemini_model_id_identity():
+    from agent import gemini_model_family
 
-    assert gemini_native_adapter.bare_gemini_model_id is bare_gemini_model_id
+    assert gemini_model_family.bare_gemini_model_id is bare_gemini_model_id
 
 
 def test_importing_the_helpers_loads_no_http_stack():

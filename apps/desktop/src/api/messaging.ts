@@ -1,4 +1,5 @@
 import type {
+  MessagingCatalogInstallResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -27,10 +28,38 @@ export function getMessagingPlatforms(profile?: null | string): Promise<Messagin
   })
 }
 
-/** `hot_served`: a live multiplexer serving this named profile rebuilt its adapters from the new
- *  credentials right away — no gateway restart is needed for the change to take effect. */
+// Clones the plugin and resolves its Python dependencies on the backend: minutes, not the default deadline.
+const CATALOG_INSTALL_TIMEOUT_MS = 300_000
+
+/** Install and enable catalog platform `name` into the profile (the catalog install every surface uses).
+ *  A refusal resolves `ok: false` with the reason and the terminal command. */
+export function installMessagingCatalogPlatform(
+  name: string,
+  profile?: null | string
+): Promise<MessagingCatalogInstallResponse> {
+  return hermesApi<MessagingCatalogInstallResponse>({
+    ...profileScoped(profile),
+    path: `/api/messaging/catalog/${encodeURIComponent(name)}/install`,
+    method: 'POST',
+    body: {},
+    timeoutMs: CATALOG_INSTALL_TIMEOUT_MS
+  })
+}
+
+/** The running gateway's answer to a save: `applied` means it started, restarted or stopped the
+ *  platform's adapter itself (`state` is that platform's live state); false means only a restart
+ *  applies the change (`detail` says why when the gateway could not build the adapter). */
+export interface MessagingLiveApply {
+  applied: boolean
+  detail?: string
+  state?: null | string
+}
+
+/** `hot_served`: the change is live without a gateway restart (mirrors `live.applied`; older
+ *  backends send only `hot_served`, for a multiplexed named profile). */
 export interface MessagingPlatformUpdateResponse {
   hot_served?: boolean
+  live?: MessagingLiveApply
   ok: boolean
   platform: string
 }

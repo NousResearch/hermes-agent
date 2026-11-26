@@ -151,7 +151,7 @@ def onboarding_entries() -> list[dict[str, Any]]:
         rows.append({
             "name": entry.name,
             "title": entry.title or entry.name,
-            "description": _first_sentence(entry.description),
+            "description": first_sentence(entry.description),
             "tier": entry.tier,
             "platforms": list(entry.platforms),
             "app_state": found.state,
@@ -179,17 +179,17 @@ def presence_for(names: list[str]) -> list[dict[str, Any]]:
     with ThreadPoolExecutor(max_workers=len(entries)) as pool:
         found = list(pool.map(presence, entries))
     return [{"name": entry.name, "title": entry.title or entry.name, "state": state.state,
-             "sentence": state.sentence, "disclosure": _disclosure(entry.description)}
+             "sentence": state.sentence, "disclosure": disclosure(entry.description)}
             for entry, state in zip(entries, found)]
 
 
-def _disclosure(text: str) -> str:
+def disclosure(text: str) -> str:
     """The sentence after the description's ``Disclosure:`` (or ``Disclosure —``) marker; empty when absent."""
     match = _DISCLOSURE.search(" ".join(str(text or "").split()))
-    return _first_sentence(match.group(1)) if match else ""
+    return first_sentence(match.group(1)) if match else ""
 
 
-def _first_sentence(text: str) -> str:
+def first_sentence(text: str) -> str:
     text = " ".join(str(text or "").split())
     head, dot, _rest = text.partition(". ")
     return f"{head}." if dot else text

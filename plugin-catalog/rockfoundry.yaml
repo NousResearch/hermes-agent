@@ -1,0 +1,27 @@
+name: rockfoundry
+repo: https://github.com/ranggaoscar/rockfoundry
+sha: cbd52b5bde1267ba389dbd2d5611fee2bd490656
+subdir: hermes-plugin
+title: Rock Foundry
+description: "Project memory for builders who work with AI agents: a plain-language card for every repo you work on with Hermes (where it started, what is live, which of its many worktrees are hanging or safe to tidy, what must not be touched according to the repo's own AGENTS.md/CLAUDE.md/release notes, and a short history), a Projects gallery page in Hermes Desktop (search, filters, a progress bar while scanning, the first scan right after choosing folders, and the option to scan a whole drive while skipping system and app folders), a /project command, a rockfoundry skill that asks the agent to read the card before working in a project and weigh it as project guidance, never over the user's instructions or Hermes approvals, and a rockfoundry_refresh_projects tool. Cards refresh after each session; AI summaries use the current Hermes model through ctx.llm. Disclosure — reads the project folders or drives you choose (read-only; on a whole drive it only looks for .git folders and never enters system, app-data, hidden or dependency folders; only committed files are read and secret-looking files such as .env, *credential*, *token* and keys are never opened; repos whose local git config could run a program get no git commands beyond reading that config) and writes only to its plugin data folder (<HERMES_HOME>/plugin-data/rockfoundry, which follows the profile; existing ~/.rockfoundry data is copied into each profile's folder once and left in place); runs local read-only git commands and, unless use_github = false, your own gh CLI to read pull-request status for GitHub remotes; git and gh run with a minimal environment, so tokens and API keys from Hermes are never passed on and gh uses its own login; sends redacted excerpts of each repo's AGENTS.md, CLAUDE.md, README and release docs to your current Hermes model to write card summaries; background threads rescan touched projects after each session and on refresh; no telemetry; no cron job is created (/project schedule only prints a hermes cron create command)."
+maintainer: ranggaoscar
+tier: community
+category: desktop
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/ranggaoscar/rockfoundry#readme
+version: "2.3.0"
+image: https://raw.githubusercontent.com/ranggaoscar/rockfoundry/cbd52b5bde1267ba389dbd2d5611fee2bd490656/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ranggaoscar/rockfoundry/cbd52b5bde1267ba389dbd2d5611fee2bd490656/docs/images/gallery.png
+  - https://raw.githubusercontent.com/ranggaoscar/rockfoundry/cbd52b5bde1267ba389dbd2d5611fee2bd490656/docs/images/project.png
+known_issues:
+  - After installing or updating, restart the Hermes gateway (hermes gateway restart); a Desktop Rescan only reloads the Projects page.
+  - Sessions are linked to a project through the file paths Hermes tools touch; terminal-only work is not linked.
+capabilities:
+  provides_tools:
+    - rockfoundry_refresh_projects
+  provides_hooks:
+    - post_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

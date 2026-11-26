@@ -1,0 +1,27 @@
+name: "spellcheck-plus"
+repo: "https://github.com/samieshmil-blip/hermes-spellcheck-plus"
+sha: "3584e6ba2fb5faa3cdd9dc2a114c126b36aab707"
+title: "Spellcheck Plus"
+description: "Replacement suggestions for misspelled words in the Hermes Desktop composer: right-click a word and the custom context menu lists up to four candidates plus \"Add to dictionary\". Ten bundled frequency dictionaries (ru 200k word forms, en 46 691, uk 44 303, de 49 305, fr 46 687, es 49 520, it 45 114, pt 43 952, pl 49 635, tr 48 515), each language toggled in Settings ▸ Plugins and only decompressed when enabled; the entry is named in the UI language (\"Проверка орфографии\" in Russian). Desktop-only, built on the plugin SDK: it registers a `composer.contextMenu` provider and a settings page, never touches the app's DOM and patches no core file. Disclosure — runs only in the Desktop renderer, computes suggestions locally from bundled word lists and makes no network calls; \"Add to dictionary\" writes the word into the app's Chromium spell-check dictionary. The repository also ships an optional Windows script (patches/apply-fix.cjs) that, if you run it yourself, edits the installed Hermes Desktop app's bundled JavaScript to turn on spell-check underlines and copies bundled Chromium dictionary files into the app's data folder; the plugin never runs it, and an app update undoes it."
+maintainer: "samieshmil-blip"
+tier: "community"
+category: "desktop"
+requires_hermes: ">=0.22.6"
+version: "0.2.1"
+docs_url: "https://github.com/samieshmil-blip/hermes-spellcheck-plus"
+readme: true
+platforms:
+  - "windows"
+  - "macos"
+  - "linux"
+image: "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/menu-ru.png"
+screenshots:
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/menu-en.png"
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/menu-de.png"
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/settings-ru.png"
+  - "https://raw.githubusercontent.com/samieshmil-blip/hermes-spellcheck-plus/3584e6ba2fb5faa3cdd9dc2a114c126b36aab707/docs/screenshots/where-to-find.png"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

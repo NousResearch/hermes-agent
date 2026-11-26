@@ -1,0 +1,16 @@
+name: onomeo
+title: onomeo
+repo: https://github.com/Owaid0723666/hermes-onomeo
+sha: 8d3c277a60aed393dd1c2e358920401424a44aa8
+description: "onomeo — OpenAI-compatible gateway; one key for Claude, GPT, Gemini, DeepSeek, Kimi and GLM models, with the /model picker fed by the live GET /v1/models catalog. Public beta: not every feature is guaranteed to work. Disclosure — sends your prompts, conversation history, tool definitions, tool results and ONOMEO_API_KEY to onomeo.com, which forwards each request to a third-party provider serving the chosen model; that provider's processing location and retention vary per model. onomeo keeps an excerpt of each API call (first 1,000 characters of the system prompt, first 4,000 of the last user message and of the reply) for at most 30 days and its latest 100 calls per account, and does not train on them. Separately, the last message and each reply are compared with a child sexual abuse material term list on onomeo's own server, and each check creates a moderation record outside that 100-call/30-day limit (time, account and email, where it happened, first 200 characters of the checked text, decision, category, any operator review), visible only to the operator; the most recent 5,000 records site-wide are kept and older ones are deleted as new ones arrive; on account deletion the account, email and excerpt are removed from them (https://onomeo.com/privacy, Content moderation). Requests carry a `User-Agent: HermesAgent-onomeo/<version>` header so onomeo can count usage from Hermes. Paid models are billed per token from a prepaid onomeo balance (top-ups from 5 US dollars by card, WeChat Pay or Alipay); new accounts can call deepseek-v4.1-flash for free within usage limits (30 free-model calls per account every 5 hours); the plugin itself makes no payments."
+maintainer: Owaid0723666
+tier: community
+category: models
+docs_url: https://github.com/Owaid0723666/hermes-onomeo#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ONOMEO_API_KEY

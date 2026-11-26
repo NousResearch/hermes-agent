@@ -5,7 +5,10 @@ behavior — key names, order and omission rules are pinned by tests and read by
 the model.
 """
 
+import os
 import re
+import stat
+import time
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
@@ -326,3 +329,107 @@ def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
                                 limit: Any = DEFAULT_SEARCH_LIMIT) -> tuple[int, int]:
     """Return safe search pagination bounds for shell head/tail pipelines."""
     return max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET)), max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
+
+
+# --- read_file views for shell one-liners (tail -n N, ls -la, a cell's parse-ready page) ---
+
+# A listing is a context payload like any read: past this many entries it points to a glob search.
+DIR_LISTING_MAX_ENTRIES = 500
+_GUTTER = re.compile(r"^\d+\|", re.MULTILINE)
+_KINDS = ((stat.S_ISDIR, "dir"), (stat.S_ISLNK, "link"), (stat.S_ISREG, "file"))
+
+
+def tail_request(offset: Any, limit: int) -> tuple[int | None, int]:
+    """``(N, min(N, limit))`` when ``offset`` asks for the last N lines (a negative integer),
+    else ``(None, limit)``: the offset places the window, ``limit`` still bounds the page."""
+    try:
+        value = int(offset)
+    except (TypeError, ValueError):
+        return None, limit
+    return (-value, min(-value, limit)) if value < 0 else (None, limit)
+
+
+def tail_start(total_lines: int, lines: int | None, offset: int) -> int:
+    """First line of the last ``lines`` of a ``total_lines`` file (``offset`` when not a tail read)."""
+    return offset if lines is None else max(1, (total_lines or 0) - lines + 1)
+
+
+def cell_read_fields(content: str, programmatic: bool) -> dict[str, str]:
+    """Extra fields for a cell's read: ``text``, the page without its ``N|`` gutter, so code can
+    parse or rewrite it without stripping prefixes. The model's own reads get none."""
+    return {"text": _GUTTER.sub("", content or "")} if programmatic else {}
+
+
+def _dir_entry(entry: os.DirEntry) -> dict | None:
+    try:
+        st = entry.stat(follow_symlinks=False)
+    except FileNotFoundError:  # removed between scandir and stat
+        return None
+    kind = next((name for test, name in _KINDS if test(st.st_mode)), "other")
+    # Every kind carries its lstat size, as ``ls -la`` shows it: a "-" for a directory sent the
+    # model back to ``stat`` in the live eval when it was asked for every entry's size.
+    item = {"name": entry.name, "type": kind, "size": st.st_size,
+            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))}
+    if kind == "link":
+        item["target"] = os.readlink(entry.path)
+    return item
+
+
+def _dir_row(item: dict) -> str:
+    size = str(item["size"])
+    name = item["name"] + ("/" if item["type"] == "dir" else "")
+    link = f" -> {item['target']}" if item["type"] == "link" else ""
+    display = name + link
+    if not display.isprintable():  # a newline in a name must not split one entry over two rows
+        display = repr(display)
+    return f"{size:>10}  {item['mtime']}  {display}"
+
+
+def directory_listing(path: str, *, structured: bool, max_chars: int | None = None) -> dict:
+    """``ls -la`` for one directory: dirs first, then by name, capped at ``DIR_LISTING_MAX_ENTRIES``
+    and, when given, at ``max_chars`` in whole rows (the model's read budget).
+    ``structured`` (a cell's read) adds the same shown entries as a list of dicts."""
+    with os.scandir(path) as it:
+        items = [e for e in map(_dir_entry, it) if e is not None]
+    items.sort(key=lambda e: (e["type"] != "dir", e["name"]))
+    shown = items[:DIR_LISTING_MAX_ENTRIES]
+    dirs = sum(1 for e in items if e["type"] == "dir")
+    header = f"{path}: {len(items)} entries ({dirs} dirs, {len(items) - dirs} other). size  mtime  name"
+    rows, used = [header], len(header)
+    for item in shown:
+        row = _dir_row(item)
+        used += 1 + len(row)
+        if max_chars is not None and used > max_chars:
+            shown = shown[:len(rows) - 1]
+            break
+        rows.append(row)
+    result = {"path": path, "is_directory": True, "total_entries": len(items), "content": "\n".join(rows)}
+    if len(items) > len(shown):
+        result["truncated"] = True
+        result["hint"] = (f"Showing {len(shown)} of {len(items)} entries. Use search_files with "
+                          "target='files' and a glob to narrow it.")
+    if structured:
+        result["entries"] = shown
+    return result
+
+
+def tail_offset(file_ops, path: str, lines: int | None, offset: int) -> int:
+    """Start line for a read: ``offset``, or for a tail read the first of the file's last ``lines``
+    (one count probe; a failed probe gives line 1 and the read reports the failure as usual)."""
+    return offset if lines is None else tail_start(file_ops.read_file(path, 1, 1).total_lines, lines, offset)
+
+
+def settle_tail(file_ops, path: str, lines: int | None, offset: int, limit: int, result):
+    """``(offset, result)`` for a tail read whose file changed between the count and the read
+    (rotated or appended): the page's own ``total_lines`` names the right start, re-read once there,
+    so a nonempty log never comes back as an empty or stale tail."""
+    if lines is None or result.error:
+        return offset, result
+    settled = tail_start(result.total_lines, lines, offset)
+    if settled == offset:
+        return offset, result
+    retry = file_ops.read_file(path, settled, limit)
+    # A second change during the retry is reported, never returned as a stale tail.
+    if not retry.error and not retry.is_binary and tail_start(retry.total_lines, lines, settled) != settled:
+        raise ValueError("File changed during tail read; retry with the same negative offset.")
+    return settled, retry

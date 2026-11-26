@@ -48,6 +48,48 @@ export interface MessagingPlatform {
   env_vars: MessagingPlatformEnvVar[];
 }
 
+export interface MessagingPlatformTestResult {
+  ok: boolean;
+  state: string;
+  message: string;
+}
+
+export interface MessagingPlatformUpdate {
+  enabled?: boolean;
+  env?: Record<string, string>;
+  clear_env?: string[];
+}
+
+/** A curated-catalog messaging platform the profile does not have yet (hermes_cli/catalog_platform_listing.py). */
+export interface CatalogMessagingPlatform {
+  name: string;
+  title: string;
+  badge: "official" | "verified";
+  summary: string;
+  /** The catalog's "Disclosure" sentence, "" when it has none. */
+  disclosure: string;
+  /** "" when a pick can install it, else a reason code ("lazy_installs_off"). */
+  blocked: string;
+  /** English sentence for ``blocked``, "" when not blocked. */
+  blocked_reason: string;
+  /** The one command that installs it into this profile. */
+  install_command: string;
+}
+
+export interface MessagingPlatformsResponse {
+  /** Digest of what this list shows; `GET /api/messaging/platforms/signature` moves with it. Absent on older backends. */
+  signature?: string;
+  env_path: string;
+  gateway_start_command: string;
+  platforms: MessagingPlatform[];
+  /** Absent on older backends. */
+  available?: CatalogMessagingPlatform[];
+}
+
+export type MessagingCatalogInstallResult =
+  | { ok: true; plugin_name: string; platforms: string[]; warnings: string[] }
+  | { ok: false; error: string; install_command: string };
+
 export interface RelayLinkedAccount {
   platformUserId: string;
   handle?: string;

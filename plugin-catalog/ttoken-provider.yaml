@@ -1,0 +1,19 @@
+name: ttoken-provider
+repo: https://github.com/naufalmaulana0577-ui/hermes-ttoken
+sha: ead54b90328b2b123e22bcb324e04e961adc910f
+subdir: model-providers/ttoken
+title: "TTOken"
+description: "TTOken models (DeepSeek, GLM, Qwen) via the OpenAI-compatible gateway at api.ttoken.dev/v1, billed in Indonesian Rupiah: live model list from the key-scoped /v1/models, DeepSeek V4.1 Flash as the default. Disclosure — model provider; prompts, tool schemas and TTOKEN_API_KEY go to api.ttoken.dev (or to TTOKEN_BASE_URL when the user sets it)."
+maintainer: naufalmaulana0577-ui
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/naufalmaulana0577-ui/hermes-ttoken#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TTOKEN_API_KEY

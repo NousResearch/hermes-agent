@@ -136,19 +136,33 @@ def _bundled_rg() -> Optional[str]:
 # ("rg: ...", indented carets) never match.
 _SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
+# Prefixed to every STDOUT line of a files_only search (before stderr joins it), so a
+# file name of any shape is told apart from a diagnostic or banner without guessing.
+_FILE_ROW_MARK = "@hermes-file@ "
 
-def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+
+def _mark_rows(row_mark: str) -> str:
+    """Shell pipe stage that prefixes ``row_mark`` to every stdout line (stderr bypasses it).
+    Shell builtins only, so no backend needs sed; the rows are already bounded by ``head``."""
+    return (f" | while IFS= read -r row || [ -n \"$row\" ]; do printf '%s%s\\n' '{row_mark}' \"$row\"; done"
+            if row_mark else "")
+
+
+def _split_tool_diagnostics(output: str, *, row_mark: str = "") -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
     ``_exec`` merges stderr into stdout; classifying by SHAPE lets the exit-2 guard
     tell a pure failure (no payload) from a partial one (one unreadable file, others
-    matched) and guarantees error text is never parsed as a match."""
+    matched) and guarantees error text is never parsed as a match. With ``row_mark``
+    only marked lines are payload (mark removed): file names may hold spaces."""
     diagnostics: list[str] = []
     payload: list[str] = []
     for line in output.split('\n'):
         if not line.strip():
             continue
+        if row_mark:
+            (payload.append(line[len(row_mark):]) if line.startswith(row_mark) else diagnostics.append(line))
         # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
-        if line.lstrip().startswith(("rg: ", "grep: ", "find: ")):
+        elif line.lstrip().startswith(("rg: ", "grep: ", "find: ")):
             diagnostics.append(line)
         elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
             payload.append(line)
@@ -424,7 +438,8 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     errors (one unreadable file), so an error is surfaced only when exit==2 AND no
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
-    diagnostics, payload = _split_tool_diagnostics(stdout)
+    diagnostics, payload = _split_tool_diagnostics(
+        stdout, row_mark=_FILE_ROW_MARK if output_mode == "files_only" else "")
     if result.exit_code in _SHELL_EXEC_FAILURE_CODES:
         # The shell could not run the engine at all (126 not executable, 127 not found).
         return SearchResult(error=f"Search failed: {result.stdout.strip() or 'Search error'}",
@@ -456,14 +471,18 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
         skipped_warning = f"{error_warning} {skipped_warning}" if skipped_warning else error_warning
     if skipped_warning:
         warning = skipped_warning if not warning else f"{skipped_warning} {warning}"
-    lines = [ln for ln in payload.strip().split('\n') if ln]
+    # A files_only row is a whole file name ("report.txt " is not "report.txt"): never trim it.
+    rows = payload if output_mode == "files_only" else payload.strip()
+    lines = [ln for ln in rows.split('\n') if ln]
+    # The pipeline fetches one row past the page, so a longer list means more exist.
     if output_mode == "files_only":
         return SearchResult(
             files=lines[offset:offset + limit], total_count=len(lines),
-            truncated=bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
+            truncated=len(lines) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
+            warning=warning, **skip)
     if output_mode == "count":
         counts = {}
-        for line in lines:
+        for line in lines[:offset + limit]:
             if ':' in line:
                 path, n = line.rsplit(':', 1)
                 try:
@@ -471,8 +490,9 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                 except ValueError:
                     pass
         return SearchResult(
-            counts=counts, total_count=sum(counts.values()),
-            truncated=bool(limit_reason), limit_reason=limit_reason, warning=warning, **skip)
+            counts=dict(list(counts.items())[offset:]), total_count=sum(counts.values()),
+            truncated=len(lines) > offset + limit or bool(limit_reason), limit_reason=limit_reason,
+            warning=warning, **skip)
     matches = []
     for line in lines:
         if line == "--":
@@ -592,7 +612,7 @@ class SearchMixin:
     # --- native rg transport (local POSIX) --------------------------------------
 
     def _run_rg_native(self, argv: list[str], fetch_limit: int, timeout: int,
-                       merge_stderr: bool = False) -> ExecuteResult:
+                       merge_stderr: bool = False, row_mark: str = "") -> ExecuteResult:
         """Run ``argv`` (shell-quoted rg words) natively and stop reading after
         ``fetch_limit`` lines — the ``| head -n`` of the shell pipeline without the
         two bash spawns. ``shlex.split`` undoes the escaping the builders apply for
@@ -604,7 +624,8 @@ class SearchMixin:
         searches (diagnostics name unreadable paths or the error), discarded
         (``2>/dev/null``) for probes. Like the shell's ``2>&1``-free ``| head``, kept
         stderr is drained on its own pipe so diagnostics never use up the
-        ``fetch_limit`` lines meant for results; it is prepended to stdout."""
+        ``fetch_limit`` lines meant for results; it is prepended to stdout. ``row_mark``
+        prefixes each stdout line, like the shell path's ``| sed``."""
         from tools.environments.local import _kill_process_group_posix, _make_run_env
         cwd = getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
@@ -662,7 +683,7 @@ class SearchMixin:
         proc.wait()
         drainer.join()
         proc.stdout.close()
-        stdout = b"".join(lines).decode("utf-8", errors="replace")
+        stdout = "".join(row_mark + raw.decode("utf-8", errors="replace") for raw in lines)
         if err_drainer is not None:
             err_drainer.join()
             if proc.stderr is not None:
@@ -681,15 +702,16 @@ class SearchMixin:
 
     def _run_rg_bounded(self, words: list[str], fetch_limit: int, timeout: int, *,
                         merge_stderr: bool = False, native_ok: bool = True,
-                        shell_prefix: str = "") -> ExecuteResult:
+                        shell_prefix: str = "", row_mark: str = "") -> ExecuteResult:
         """Run an rg command (shell-quoted words) and keep the first ``fetch_limit``
         lines: natively on a local POSIX host, else through the backend shell as
         ``<prefix><words> | head -n N``. ``native_ok=False`` keeps a form the native
  lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only."""
         if native_ok and self._native_read_enabled():
-            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
+            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr, row_mark=row_mark)
         stderr = "" if merge_stderr else " 2>/dev/null"
-        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}{_mark_rows(row_mark)}",
+                          timeout=timeout)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
@@ -920,6 +942,31 @@ class SearchMixin:
                 paths = ", ".join(per_file[:5]) + (f" (+{extra} more)" if extra > 0 else "")
                 return template.format(total=total, n=len(per_file), paths=paths)
         return None
+
+    def hidden_match_counts(self, pattern: str, path: str, file_glob: Optional[str]) -> Optional[dict[str, int]]:
+        """Matching-line count per file with hidden and gitignored files included (heavyweight
+        trees still pruned), from one bounded count-only rg run; None without rg or past the bound.
+        A complete result compares it with its own files to say whether the default skip hid
+        anything, the question models otherwise answer by re-running the search with grep."""
+        rg_executable = self._resolve_command('rg')
+        if not rg_executable:
+            return None
+        path = self._expand_path(path)  # the same backend root the primary search used (~ included)
+        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        words = [self._quote_executable(rg_executable), "--hidden --no-ignore --count --with-filename",
+                 f"{glob_expr} {self._search_prune_glob_args()}",
+                 "-e", self._escape_shell_arg(pattern, translate_path=False), "--", self._escape_native_tool_arg(path)]
+        bound = 1000
+        probe = self._run_rg_bounded(words, bound, timeout=30, shell_prefix="set -o pipefail; ")
+        lines = (probe.stdout or "").splitlines()  # no strip: a name may begin with a space
+        if probe.exit_code not in (0, 1) or len(lines) >= bound:
+            return None
+        counts = {}
+        for line in lines:
+            p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                counts[p] = int(n)
+        return counts
 
     def _is_broad_local_search_root(self, path: str) -> bool:
         """Whether a no-rg LOCAL root (filesystem root, $HOME or an ancestor of it) is
@@ -1323,15 +1370,16 @@ class SearchMixin:
         ``line_cap`` appends ``| cut -c1-2000`` for engines without --max-columns
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
-        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        fetch_limit = limit + offset + 1 + (200 if context > 0 else 0)
+        row_mark = _FILE_ROW_MARK if output_mode == "files_only" else ""
         if line_cap:  # grep/find pipelines: shell only, with the column cap
             parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
             if output_mode not in ("files_only", "count"):
                 parts += ["|", "cut", "-c1-2000"]
-            result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
+            result = self._exec("set -o pipefail; " + " ".join(parts) + _mark_rows(row_mark), timeout=60)
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
-                                          shell_prefix="set -o pipefail; ")
+                                          shell_prefix="set -o pipefail; ", row_mark=row_mark)
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],

@@ -1,15 +1,34 @@
 name: nextcloud-talk-platform
 repo: https://github.com/smilinTux/hermes-nextcloud-talk
-sha: 03f27203fd983d4714891302c49f06b404c4b02f
-description: "Nextcloud Talk platform adapter for Hermes Agent, in two modes behind one plugin: a webhook bot (Nextcloud Talk Bot API, HMAC-SHA256 signed, with an explicit body-size cap and a nonce-replay cache ahead of payload parsing) and a real Nextcloud user account (app password, long-polling the Chat REST API, with federation-invite support, per-room mention/watch/free modes, and an agent-to-agent loop guard plus active-listening context for multi-agent rooms). Mode is picked automatically by which credential is configured. No extra SDKs -- aiohttp for bot mode, httpx for user mode, both already Hermes dependencies. Disclosure — Connects to your Nextcloud server either as a Talk bot (HMAC-verified webhook listener, 127.0.0.1:18797 by default) or as a real Nextcloud user with an app password (long-polls the Chat API and auto-accepts federation invites only from NEXTCLOUD_TALK_ALLOWED_INVITERS); in user mode, unanswered room messages from allowed senders (up to 40 per room by default) and, for rooms listed in NEXTCLOUD_TALK_ROOM_MODES or with room_rules_all_rooms on, the room description are added to the agent's next turn in that room."
+sha: fccf49cc6ca3c3d6baca6d6f4f2a591341111083
+description: "Nextcloud Talk platform adapter for Hermes Agent, in two modes behind one plugin: a webhook bot (Nextcloud Talk Bot API, HMAC-SHA256 signed, with an explicit body-size cap and a nonce-replay cache ahead of payload parsing) and a real Nextcloud user account (app password, long-polling the Chat REST API, with federation-invite support, per-room mention/watch/free modes, and an agent-to-agent loop guard plus active-listening context for multi-agent rooms). Mode is picked automatically by which credential is configured. No extra SDKs -- aiohttp for bot mode, httpx for user mode, both already Hermes dependencies. Disclosure — Connects to your Nextcloud server either as a Talk bot (HMAC-verified webhook listener, 127.0.0.1:18797 by default) or as a real Nextcloud user with an app password (long-polls the Chat API and auto-accepts federation invites only from NEXTCLOUD_TALK_ALLOWED_INVITERS); in user mode, unanswered room messages from allowed senders (up to 40 per room by default) and, for rooms listed in NEXTCLOUD_TALK_ROOM_MODES or with room_rules_all_rooms on, the room description are added to the agent's next turn in that room. Since 1.5: optional Talk tools (threads, polls, scheduled messages, a raw nextcloud_ocs_call for the agent's own account, room history/threads/files reads, a per-room shared-folder workspace whose guest writes wait for an owner approval, and opt-in call_join/call_leave/call_status that start and stop a local skcall-join@<room> systemd --user unit). An optional per-agent access file (~/.skcapstone/agents/<agent>/config/talk-access.yaml or NEXTCLOUD_TALK_ACCESS_FILE) is read for allowlists; open polls are kept under $HERMES_HOME/nctalk."
 maintainer: smilinTux
 tier: community
 category: platform
 docs_url: https://github.com/smilinTux/hermes-nextcloud-talk#readme
-version: "1.4.3"
+version: "1.18.0"
 readme: true
 capabilities:
-  provides_tools: []
+  provides_tools:
+    - call_join
+    - call_leave
+    - call_status
+    - talk_thread_start
+    - talk_thread_reply
+    - talk_thread_list
+    - talk_thread_close
+    - talk_poll_create
+    - talk_poll_status
+    - talk_poll_close
+    - talk_message_schedule
+    - nextcloud_ocs_call
+    - talk_room_history
+    - talk_room_threads
+    - talk_room_files
+    - talk_workspace_list
+    - talk_workspace_read
+    - talk_workspace_write
+    - talk_ask_owner
   provides_hooks: []
   provides_middleware: []
   requires_env: []

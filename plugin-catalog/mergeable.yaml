@@ -1,0 +1,20 @@
+name: mergeable
+repo: https://github.com/Senci/hermes-mergeable
+sha: 787f87cf3ac147428cca05b14408efa76b210949
+description: "Your open GitLab merge requests in Hermes Desktop: a tab stacked with Files and a full page, rebase and merge behind a confirm dialog, a trivial batch for the safe ones, and a model-rated audit of every Renovate bump (what it fixes, how hard it is to merge, merge or hold). Needs the glab CLI logged in to your GitLab host. Disclosure — runs glab with argv lists (never a shell) under your own glab login against the configured host, with the backend's environment, reading merge requests, pipelines, diffs and notes. It writes to GitLab (rebase, merge, retry a pipeline, mark ready, a Renovate hold commit and merge request) only from an action you confirm in the UI, and a merge job waits for a green pipeline in a background thread of the backend. A Renovate audit fetches release notes unauthenticated from api.github.com and raw.githubusercontent.com and sends them, with a capped MR diff and up to 150 lines of the project's own repository text (lines with secret words or key shapes dropped), to an Anthropic model through a tool-less 'hermes chat --oneshot --safe-mode --source tool -t clarify' child; audits start on their own when the list refreshes and a Renovate merge request has a new head (auto_audit false turns that off), and the model's rating of that third-party text decides which Renovate merge requests join the trivial batch you confirm. Reads session databases (state.db of the default home and profiles, read-only) to find the session that made a branch. Keeps its results under $HERMES_HOME/mergeable (audits.db, facts.json, actions.log). Never reads glab's token or config files; no credentials of its own, no telemetry."
+maintainer: Senci
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Senci/hermes-mergeable
+version: "0.1.2"
+image: https://raw.githubusercontent.com/Senci/hermes-mergeable/787f87cf3ac147428cca05b14408efa76b210949/docs/assets/cover.jpg
+screenshots:
+  - https://raw.githubusercontent.com/Senci/hermes-mergeable/787f87cf3ac147428cca05b14408efa76b210949/docs/assets/pane.png
+  - https://raw.githubusercontent.com/Senci/hermes-mergeable/787f87cf3ac147428cca05b14408efa76b210949/docs/assets/page.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

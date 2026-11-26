@@ -325,6 +325,30 @@ def _own_port(home: Path) -> Optional[object]:
     return block.get("port") if isinstance(block, dict) else None
 
 
+def _claimed_port(home: Path) -> Optional[int]:
+    """The port *home* claims, expanding ``${VAR}`` / ``${env:VAR}`` against *home*'s own ``.env``
+    scope without mutating ``os.environ``."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.webapp_listener import configured_port
+    from hermes_cli.env_loader import _DOTENV_LOCK, _dotenv_lookup_env, resolve_home_dotenv
+    from hermes_cli.profiles_run_elsewhere import home_runs_elsewhere
+    from hermes_scope import BoundSecrets, push_state
+
+    with _DOTENV_LOCK:
+        env = _dotenv_lookup_env(None)
+    if home_runs_elsewhere(home):
+        from hermes_cli.managed_scope import load_managed_env
+        env.update(load_managed_env())
+    else:
+        env.update(resolve_home_dotenv(home, lookup_env=env))
+    mux_token = set_multiplex_context(True)
+    try:
+        with push_state(secrets=BoundSecrets(env, str(home))):
+            return configured_port(_own_port(home))
+    finally:
+        reset_multiplex_context(mux_token)
+
+
 def _claimed_ports(home: Path) -> set[int]:
     """The Webapp ports the other Hermes homes beside *home* claim: the default profile's (9120 unless
     set) and every other profile's own ``webapp.port``, whether or not its gateway runs now. Only that
@@ -336,11 +360,10 @@ def _claimed_ports(home: Path) -> set[int]:
     if profile is None:
         return set()
     root = profile.parent.parent
-    root_port = _own_port(root)
-    claimed = {root_port if isinstance(root_port, int) else DEFAULT_PORT}
+    claimed = {_claimed_port(root) or DEFAULT_PORT}
     for other in profile.parent.iterdir() if profile.parent.is_dir() else ():
-        port = _own_port(other) if other != profile and other.is_dir() else None
-        if isinstance(port, int) and not isinstance(port, bool):
+        port = _claimed_port(other) if other != profile and other.is_dir() else None
+        if port is not None:
             claimed.add(port)
     return claimed
 

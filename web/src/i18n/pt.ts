@@ -800,4 +800,17 @@ export const pt: Translations = {
     logTruncated: "(a mostrar os últimos 100 KB — registo completo em ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Disponível para instalar",
+    hint: "Plataformas de mensagens do catálogo de plugins do Hermes. Instalar uma adiciona e ativa o plugin e depois abre a configuração.",
+    badgeOfficial: "Oficial",
+    badgeVerified: "Verificado",
+    disclosure: "Aviso:",
+    lazyInstallsOff: "As instalações automáticas de plugins estão desativadas (security.allow_lazy_installs).",
+    run: "Execute:",
+    install: "Instalar",
+    installing: "Instalando…",
+    installed: (title: string) => `${title} instalado. Insira as credenciais para conectá-lo.`,
+    installFailed: (title: string) => `Não foi possível instalar ${title}`,
+  },
 };

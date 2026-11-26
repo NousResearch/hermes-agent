@@ -355,9 +355,14 @@ export function viewOf(st: BackendMigrationStatus): PollView {
 
 /** Seconds after the request with no record of the new run before its outcome counts as unknown. */
 export const NOT_STARTED_AFTER_SECONDS = 60;
-/** Seconds without an answer about the followed run before a poll stops calling it the restart (the
- *  move's own verify waits 90 s for the gateway, and its rollback starts the older server again). */
-export const UNREACHABLE_AFTER_SECONDS = 150;
+/** Seconds without an answer about the followed run before a poll stops calling it the restart: the
+ *  sum of the migration's own caps from stopping the old backend through a failed verify and rollback
+ *  (port-free 30 s + gateway restart 540 s + handoff 240 s + verify 300 s + rollback stop 240 s
+ *  + rollback gateway start 300 s + listener-gone 30 s + old backend start 90 s + rollback verify 60 s
+ *  = 1830 s). An estimate, not a bound: a launchd restart waits for the gateway to go idle for up to
+ *  the CLI's restart exit-wait budget (`agent.restart_after_turn_timeout` plus the stop envelope), and
+ *  a raised drain setting outlasts the systemctl caps. */
+export const UNREACHABLE_AFTER_SECONDS = 1830;
 
 /** Which run a poll follows. `requestedAt`: the server time the apply answer named, or `null` when that
  *  answer was lost (or the server said a move was already starting); then any record newer than

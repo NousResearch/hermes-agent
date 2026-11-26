@@ -1,0 +1,30 @@
+name: wow-forever
+repo: https://github.com/Grizaceo/wow-forever
+sha: 24b8d35b8ab3b15cc3074b1525267bdf5f8254ae
+title: "WoW Forever"
+description: "Offline guide to World of Warcraft: Forever (Blizzard's official game, client 1.60) for any race, class and faction: a Hermes Desktop page and an agent skill that answer from the same bundled data. Tabs: Character, Class (trainers with coordinates, spells by level, class quests), Route (leveling zones and quests), Professions (recipes, reagents, a leveling plan, cost and margin), Dungeons (bosses in order with their loot, plus the new Forever dungeons), Market (local price history and deals from your Auctionator scans, TSM accounting and the WoWForeverBridge daily diary, with item thumbnails) and Legacy, plus a curated Horde Hunter guide checked against the data. English UI, Spanish optional. Every value is labeled with its source (the Forever client tables, WoW Classic 1.12 through CMaNGOS, approximate for Forever, or the curated guide), and what no publishable source covers shows as no data. Not affiliated with Blizzard. Disclosure — the page reads only Auctionator.lua, TradeSkillMaster.lua and WoWForeverBridge.lua inside the SavedVariables folder you grant through Hermes's folder picker (bounded subfolder search), plus Pawn.lua only after an explicit, revocable opt-in; files are parsed as data and Lua is never run. Once the folder is granted, those three files are polled every 30 s while Hermes is open and the plugin is enabled; the poll never opens a picker. Profile, guide progress and prices stay in the plugin's own storage. The page makes no network calls, launches no processes and has no telemetry. Its Ask the agent button inserts a context block you preview into the chat composer through the SDK and never sends it. The skill registers no tools: its stdlib-only Python scripts read the plugin's data/ and, only when given one, a price file you name; they write nothing and are run by the agent through its own terminal, under Hermes approvals. Bundled data: CMaNGOS classic-db (GPL-3.0) and Blizzard client tables and item icons, fetched at build time by the maintainer's tools/ scripts, which the plugin never runs (see LICENSE-DATA.md). The repository also carries an optional companion addon (addon/WoWForeverBridge) that the player copies into the game by hand; the plugin never installs it and never touches the game."
+maintainer: Grizaceo
+tier: community
+category: desktop
+docs_url: https://github.com/Grizaceo/wow-forever#readme
+version: "2.2.1"
+screenshots:
+  - https://raw.githubusercontent.com/Grizaceo/wow-forever/24b8d35b8ab3b15cc3074b1525267bdf5f8254ae/docs/media/personaje.png
+  - https://raw.githubusercontent.com/Grizaceo/wow-forever/24b8d35b8ab3b15cc3074b1525267bdf5f8254ae/docs/media/profesiones.png
+  - https://raw.githubusercontent.com/Grizaceo/wow-forever/24b8d35b8ab3b15cc3074b1525267bdf5f8254ae/docs/media/dungeons.png
+  - https://raw.githubusercontent.com/Grizaceo/wow-forever/24b8d35b8ab3b15cc3074b1525267bdf5f8254ae/docs/media/mercado.png
+  - https://raw.githubusercontent.com/Grizaceo/wow-forever/24b8d35b8ab3b15cc3074b1525267bdf5f8254ae/docs/media/guia-curada.png
+  - https://raw.githubusercontent.com/Grizaceo/wow-forever/24b8d35b8ab3b15cc3074b1525267bdf5f8254ae/docs/media/oscuro.png
+image: https://raw.githubusercontent.com/Grizaceo/wow-forever/24b8d35b8ab3b15cc3074b1525267bdf5f8254ae/docs/media/banner.png
+readme: true
+requires_hermes: ">=0.23.0"
+known_issues:
+  - "The Desktop page arrives switched off: after installing, turn it on under Capabilities → Plugins → WoW Forever."
+  - "Loot, drop rates, NPC and quest data come from WoW Classic 1.12 (CMaNGOS) and are approximate for Forever; each value is labeled with its source."
+  - "The Market tab needs the Auctionator addon in the game and a one-time grant of the WTF/Account/<account>/SavedVariables folder."
+  - "The agent skill's instructions are written in Spanish."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

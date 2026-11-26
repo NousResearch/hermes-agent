@@ -45,6 +45,11 @@ def test_prefixed_inert_heredoc_body_path_not_walked_as_script(tmp_path):
     ("env -S 'bash -s' python3 <<'PY'", "bash {big}", True),
     ("cat <<'PY' | sort --compress-program=sh", "hermes gateway restart", True),
     ("timeout 600 python3 - <<'PY' 2>&1 | grep -v x", "import os\nos.system('hermes gateway restart')", True),
+    # A later command on the line may run what the first one wrote, and a path-qualified filter is
+    # whatever that file is (an earlier revision of this fix allowed all three).
+    ("cat <<'PY' > run.sh; f=run.sh; bash \"$f\"", "hermes gateway restart", True),
+    ("cat <<'PY' | cat > run.sh && bash run.sh", "hermes gateway restart", True),
+    ("cat <<'PY' | ./grep", "hermes gateway restart", True),
 ])
 def test_heredoc_body_belongs_to_its_owner_through_wrappers_and_pipes(tmp_path, opener, body, blocked):
     """A wrapped (`timeout 600 python3 - <<'PY'`) or filter-piped Python heredoc that only reads a

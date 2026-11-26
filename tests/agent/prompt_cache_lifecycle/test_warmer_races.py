@@ -5,6 +5,7 @@ warmer's own state machine, not of any provider's cache TTL."""
 import json
 import sys
 import threading
+import uuid
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -286,3 +287,132 @@ def test_a_reset_never_lands_between_the_epoch_check_and_the_add(tmp_path):
         assert agent.session_cache_read_tokens == 0 and agent.session_estimated_cost_usd == 0.0
         assert agent.session_cache_warm_calls == 0
         db.close()
+
+
+def _adaptive_5m(agent):
+    agent.platform = "cli"
+    agent._cache_ttl = "5m"
+    agent._cache_ttl_adaptive = agent._cache_ttl_auto = True
+
+
+def test_a_committed_5m_edge_compaction_upgrades_the_next_message_even_right_after_the_edge(tmp_path, monkeypatch):
+    """The edge falls ~250 s after the last keep-alive; a compaction committed there replaced the prompt, so
+    nothing warm matches it and the return asks for 1h at once (a skipped one keeps 5m: test_compaction)."""
+    import time
+
+    from agent.context_compressor import ContextCompressor
+    from agent.prompt_cache_lifecycle.tier import maybe_upgrade_cache_tier
+
+    with _endpoint() as (client, _server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)  # the upgrade is kept per session id
+        _adaptive_5m(agent)
+        agent.compression_enabled = True
+        agent.context_compressor = ContextCompressor(model=agent.model)
+        agent.context_compressor.last_prompt_tokens, agent.context_compressor.threshold_tokens = 150_000, 200_000
+        t0 = cache_window(agent).refreshed_at
+        try:
+            for step in (1, 2, 3):
+                with monkeypatch.context() as clock:
+                    clock.setattr(time, "time", lambda step=step: t0 + step * 250)
+                    warmer._refresh(run)
+                    if run.timer:
+                        run.timer.cancel()
+            due = warmer._spent.due_at
+            assert warmer.claim_edge(now=due) == "compact"
+            _compact(agent)
+            assert maybe_upgrade_cache_tier(agent, now=due + 1) and agent._cache_ttl == "1h"
+        finally:
+            warmer.cancel()
+            db.close()
+
+
+def test_a_keep_alive_awaiting_its_reply_keeps_the_entry_warm_for_the_tier_and_the_cold_prune(tmp_path, monkeypatch):
+    """Past the old expiry with a refresh in flight, the next message neither upgrades nor prunes: the
+    refresh renewed that prefix."""
+    import time
+
+    from agent.context_compressor import ContextCompressor
+    from agent.prompt_cache_lifecycle.tier import maybe_upgrade_cache_tier
+    from agent.turn_proactive_prune import run_proactive_prune
+    from persistence.conversation.messages import ConversationRequest
+    from tests.agent.test_proactive_prune_cold_cache import _history
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages
+
+    with _endpoint() as (client, server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)  # the upgrade is kept per session id
+        _adaptive_5m(agent)
+        seed_messages(db, agent.session_id, *_history(20, big=set(range(18)), chars=24_000, start=1))
+        history = conversation(db, agent.session_id, ConversationRequest(include_row_ids=True))
+        compressor = ContextCompressor(model=agent.model, quiet_mode=True)
+        compressor.bind_session_state(session_db=db, session_id=agent.session_id, persistence=db)
+        agent.context_compressor, agent.compression_enabled = compressor, True
+        t0 = cache_window(agent).refreshed_at
+        now = [t0 + 250]
+        server.release.clear()
+        with monkeypatch.context() as clock:
+            clock.setattr(time, "time", lambda: now[0])
+            worker = threading.Thread(target=warmer._refresh, args=(run,))
+            worker.start()
+            try:
+                assert server.entered.wait(5)
+                now[0] = t0 + 301
+                assert not maybe_upgrade_cache_tier(agent)
+                assert run_proactive_prune(agent, history, 120_000, None) is history
+            finally:
+                server.release.set()
+                worker.join(10)
+                warmer.cancel()
+                db.close()
+
+
+def test_the_tier_check_never_reads_the_old_clock_and_a_cleared_in_flight_mark(tmp_path, monkeypatch):
+    """The refresh's reply folds and clears its in-flight mark while the turn is mid-check: the check
+    still sees one consistent snapshot, so it never upgrades over the entry that reply renewed."""
+    import time
+
+    from agent.prompt_cache_clock import cache_certainly_warm
+    from agent.prompt_cache_lifecycle.tier import maybe_upgrade_cache_tier
+
+    with _endpoint() as (client, server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)  # the upgrade is kept per session id
+        _adaptive_5m(agent)
+        t0 = cache_window(agent).refreshed_at
+        now = [t0 + 250]
+        server.release.clear()
+        paused, resume, result = threading.Event(), threading.Event(), []
+
+        def trace(frame, event, _arg):
+            if event == "call" and frame.f_code is cache_certainly_warm.__code__:
+                paused.set()
+                assert resume.wait(10)
+
+        def user_turn():
+            sys.settrace(trace)
+            try:
+                result.append(maybe_upgrade_cache_tier(agent))
+            finally:
+                sys.settrace(None)
+
+        with monkeypatch.context() as clock:
+            clock.setattr(time, "time", lambda: now[0])
+            worker = threading.Thread(target=warmer._refresh, args=(run,))
+            worker.start()
+            try:
+                assert server.entered.wait(5)
+                now[0] = t0 + 301
+                user = threading.Thread(target=user_turn)
+                user.start()
+                assert paused.wait(5)  # the turn is past its clock read
+                server.release.set()
+                worker.join(10)
+                assert not worker.is_alive() and cache_certainly_warm(cache_window(agent))
+                resume.set()
+                user.join(10)
+                assert result == [False]
+            finally:
+                server.release.set()
+                resume.set()
+                worker.join(10)
+                warmer.cancel()
+                db.close()

@@ -365,7 +365,20 @@ class PromptCacheWarmer:
                 self._offloaded = True
             return action
 
+    def touch_snapshot(self) -> tuple[Any, Optional[float]]:
+        """``(cache_window, in-flight keep-alive send time)`` read together under the lock the reply's
+        fold and the in-flight mark's clearing take, so a reader never sees the old clock with the mark
+        already cleared."""
+        from agent.prompt_cache_clock import cache_window
+
+        with self._lock:
+            return cache_window(self.agent), self.last_sent_at
+
     # -- internals ------------------------------------------------------------------------------
+    def _set_in_flight(self, sent_at: Optional[float]) -> None:
+        with self._lock:
+            self.last_sent_at = sent_at
+
     def _clear_run(self) -> Optional[_Run]:
         with self._lock:
             run, self._run = self._run, None
@@ -518,18 +531,19 @@ class PromptCacheWarmer:
         reserved = self._admit(run, decision)
         if reserved is None:
             return
-        sent_at = self.last_sent_at = time.time()
+        sent_at = time.time()
+        self._set_in_flight(sent_at)
         try:
             message = self._send(run)
         except Exception as exc:  # health: allow BLE001 -- warming must never disturb the live turn; logged
-            self.last_sent_at = None  # it renewed nothing
+            self._set_in_flight(None)  # it renewed nothing
             logger.info("%sprompt cache warm failed: %s", self._prefix(), exc, exc_info=True)
             self._stop_if_current(run, f"warm request failed: {type(exc).__name__}")
             return
         finally:
             run.refreshing = False
         miss = self._record(run, message, decision, sent_at, reserved)
-        self.last_sent_at = None  # the reply is folded: the clock is the touch again (a miss renewed nothing)
+        self._set_in_flight(None)  # the reply is folded: the clock is the touch again (a miss renewed nothing)
         if miss is not None and not miss.startswith("cache refresh missed"):
             self._stop_if_current(run, miss)
             return
@@ -914,6 +928,17 @@ def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
             warmer._missed_route = _MISSED_ROUTES.get(getattr(agent, "session_id", None) or "")
         agent._prompt_cache_warmer = warmer
     return warmer
+
+
+def cache_touch_snapshot(agent: Any) -> tuple[Any, Optional[float]]:
+    """:meth:`PromptCacheWarmer.touch_snapshot` for any agent; one that never armed a warmer has no
+    keep-alive in flight."""
+    from agent.prompt_cache_clock import cache_window
+
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    if not isinstance(warmer, PromptCacheWarmer):
+        return cache_window(agent), None
+    return warmer.touch_snapshot()
 
 
 def session_totals_lock(agent: Any) -> Any:

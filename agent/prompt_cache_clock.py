@@ -811,12 +811,16 @@ def prompt_cache_is_cold(agent: Any, *, now: float | None = None) -> bool:
 
     Only a proven or declared window prunes. An assumed one includes the window the clock rebuilds for a
     pre-clock session from TODAY's TTL and route: a session cached for 1h (or on another route) then
-    reads cold while still warm. The /context line keeps showing that estimate.
+    reads cold while still warm. The /context line keeps showing that estimate. A keep-alive still
+    waiting for its reply has renewed the same prefix, so it answers False too.
 
     A route switch (``/model``, a fallback, any change of provider, endpoint or model since the last
     response) is cold too: the new route has never seen this prefix, so the first request there writes
     it whole and an offload before it breaks nothing."""
-    window = cache_window(agent)
+    from agent.prompt_cache_lifecycle.warmer import cache_touch_snapshot
+
+    window, in_flight = cache_touch_snapshot(agent)  # a keep-alive awaiting its reply renewed the entry
     if window is not None and window.reason == "route_changed":
         return True
-    return window is not None and window.confidence in (PROVEN, DECLARED) and cache_certainly_cold(window, now=now)
+    return (in_flight is None and window is not None and window.confidence in (PROVEN, DECLARED)
+            and cache_certainly_cold(window, now=now))

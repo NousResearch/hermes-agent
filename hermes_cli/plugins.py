@@ -384,8 +384,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def _leads_here(self, path: Path) -> bool:
         # The process's remembered key for that spelling too (hermes_home_key keeps one per path text): a name
         # repointed here from another directory still keys that one, so plugin code bound to it would run there.
-        return (os.path.normcase(os.path.realpath(path)) == self.scope_key
-                and hermes_home_key(path) == self.scope_key)
+        # The directory's key, not scope_key: a transient hook manager's scope_key carries a suffix.
+        here = os.fspath(self.home_path)
+        return os.path.normcase(os.path.realpath(path)) == here and hermes_home_key(path) == here
 
     @staticmethod
     def _profile_names_beside(named: Path) -> list[Path]:

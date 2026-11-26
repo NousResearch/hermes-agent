@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -27,6 +27,7 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
 import type {
+  CatalogMessagingPlatform,
   MessagingPlatform,
   MessagingPlatformEnvVar,
   MessagingPlatformUpdate,
@@ -34,12 +35,14 @@ import type {
   WhatsAppOnboardingStartResponse,
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
+import { usePlatformsSignaturePoll } from "@/hooks/usePlatformsSignaturePoll";
 import { AllowlistInput } from "@/components/AllowlistInput";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 import { RelayLinkPanel } from "./ChannelsRelayLink";
+import { AvailablePlatforms } from "./ChannelsCatalog";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -157,6 +160,8 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
+  const [available, setAvailable] = useState<CatalogMessagingPlatform[]>([]);
+  const [listSignature, setListSignature] = useState<string | null>(null);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
     "hermes gateway start",
@@ -167,6 +172,11 @@ export default function ChannelsPage() {
 
   // Config modal state
   const [editing, setEditing] = useState<MessagingPlatform | null>(null);
+  // Read after an await (a catalog install), where the render's `editing` is stale.
+  const editingRef = useRef<MessagingPlatform | null>(null);
+  useEffect(() => {
+    editingRef.current = editing;
+  }, [editing]);
   const [draftEnv, setDraftEnv] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -194,20 +204,28 @@ export default function ChannelsPage() {
 
   const gatewayRunning = platforms.length > 0 && platforms[0].gateway_running;
 
+  // Resolves to the fresh platform list (undefined when the load failed).
   const load = useCallback(() => {
     return api
       .getMessagingPlatforms()
       .then((res) => {
         setPlatforms(res.platforms);
+        setAvailable(res.available ?? []);
+        setListSignature(res.signature ?? null);
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+        return res.platforms;
       })
-      .catch((e) => showToast(`Could not load channels: ${errorMessage(e)}`, "error"));
+      .catch((e) => {
+        showToast(`Could not load channels: ${errorMessage(e)}`, "error");
+        return undefined;
+      });
   }, [showToast]);
 
   useEffect(() => {
     load().finally(() => setLoading(false));
   }, [load]);
+  usePlatformsSignaturePoll(listSignature, load);
 
   const openConfig = (platform: MessagingPlatform) => {
     const initial: Record<string, string> = {};
@@ -218,6 +236,14 @@ export default function ChannelsPage() {
     setDraftEnv(initial);
     setFieldErrors({});
     setEditing(platform);
+  };
+
+  // A catalog install registered these platform ids: open the first one's credential form, unless the
+  // user opened another form while it ran (its unsaved input wins; the new card is listed either way).
+  const handleCatalogInstalled = async (platformIds: string[]) => {
+    const fresh = await load();
+    const added = fresh?.find((p) => p.id === platformIds[0]);
+    if (added && !editingRef.current) openConfig(added);
   };
 
   const handleSave = async () => {
@@ -744,6 +770,12 @@ export default function ChannelsPage() {
           );
         })}
       </div>
+
+      <AvailablePlatforms
+        rows={available}
+        onInstalled={handleCatalogInstalled}
+        showToast={showToast}
+      />
     </div>
   );
 }
@@ -755,7 +787,7 @@ export function WhatsAppOnboardingPanel({
   setRestartNeeded,
   showToast,
 }: {
-  onChanged: () => Promise<void>;
+  onChanged: () => Promise<unknown>;
   onRestartNeeded: () => void;
   platform: MessagingPlatform;
   setRestartNeeded: (needed: boolean) => void;
@@ -1187,7 +1219,7 @@ function TelegramOnboardingPanel({
   showToast,
 }: {
   onManualSetup: () => void;
-  onChanged: () => Promise<void>;
+  onChanged: () => Promise<unknown>;
   onRestartNeeded: () => void;
   platform: MessagingPlatform;
   setRestartNeeded: (needed: boolean) => void;

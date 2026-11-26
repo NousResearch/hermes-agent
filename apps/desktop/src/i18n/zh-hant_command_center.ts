@@ -144,6 +144,23 @@ export const zhHantCommandCenter = {
   },
 
   messaging: {
+    catalog: {
+      sectionTitle: '可安裝',
+      badges: { official: '官方', verified: '已驗證', labs: 'Hermes Labs' },
+      notInstalled: '未安裝',
+      intro: (name: string) => `${name} 是 Hermes 目錄中的外掛。安裝後即啟用，接著可在此填寫憑證。`,
+      disclosure: '揭露：',
+      install: '安裝',
+      installing: '正在安裝…',
+      installed: (name: string) => `已安裝 ${name}`,
+      installedDetail: '填寫憑證以完成連線。',
+      installFailed: (name: string) => `無法安裝 ${name}`,
+      lazyOff: '外掛自動安裝已關閉（security.allow_lazy_installs），因此 Hermes 不會在此安裝。',
+      runCommand: '在終端機中安裝：',
+      labsTitle: '安裝 Hermes Labs 外掛？',
+      labsBody: (name: string) => `${name} 是 Hermes Labs 外掛：由 Nous Research 建置，不提供支援，且可能不再維護。`,
+      labsConfirm: '仍要安裝',
+    },
     search: '搜尋訊息平台…',
     statusFilter: {
       all: '全部',

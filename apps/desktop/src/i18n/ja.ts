@@ -1614,6 +1614,23 @@ export const jaOverrides = {
   },
 
   messaging: {
+    catalog: {
+      sectionTitle: 'インストール可能',
+      badges: { official: '公式', verified: '検証済み', labs: 'Hermes Labs' },
+      notInstalled: '未インストール',
+      intro: (name: string) => `${name} は Hermes カタログのプラグインです。インストールすると有効になり、ここで認証情報を入力できます。`,
+      disclosure: '開示:',
+      install: 'インストール',
+      installing: 'インストール中…',
+      installed: (name: string) => `${name} をインストールしました`,
+      installedDetail: '認証情報を入力して接続してください。',
+      installFailed: (name: string) => `${name} をインストールできませんでした`,
+      lazyOff: 'プラグインの自動インストールがオフ (security.allow_lazy_installs) のため、ここからはインストールしません。',
+      runCommand: 'ターミナルでインストール:',
+      labsTitle: 'Hermes Labs プラグインをインストールしますか?',
+      labsBody: (name: string) => `${name} は Hermes Labs プラグインです。Nous Research 製ですがサポート対象外で、今後メンテナンスされない可能性があります。`,
+      labsConfirm: 'インストールする',
+    },
     search: 'メッセージングを検索...',
     statusFilter: {
       all: 'すべて',

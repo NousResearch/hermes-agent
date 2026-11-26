@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
@@ -27,12 +27,15 @@ const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
 const applyTelegramOnboarding = vi.fn()
 const notify = vi.fn()
+const installMessagingCatalogPlatform = vi.fn()
 
 vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
     approvePairing(platformId, requestId, profile),
   getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
   getPairing: (profile?: null | string) => getPairing(profile),
+  installMessagingCatalogPlatform: (name: string, confirmed: boolean, profile?: null | string) =>
+    installMessagingCatalogPlatform(name, confirmed, profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
     revokePairing(platformId, userId, profile),
@@ -648,5 +651,146 @@ describe('MessagingView Telegram quick setup', () => {
     } finally {
       $settingsScopeOverride.set(null)
     }
+  })
+})
+
+describe('MessagingView catalog platforms', () => {
+  const yuanbao = {
+    badge: 'labs' as const,
+    blocked: '',
+    blocked_reason: '',
+    disclosure: 'Messages travel between Yuanbao servers and your gateway.',
+    install_command: 'hermes plugins install yuanbao',
+    name: 'yuanbao',
+    needs_confirm: true,
+    summary: 'Tencent Yuanbao messaging platform.',
+    title: 'yuanbao'
+  }
+
+  it('installs a Hermes Labs platform only after the confirm, then opens the card it registered', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ available: [yuanbao], platforms: [platform()] })
+    installMessagingCatalogPlatform.mockResolvedValue({ ok: true, platforms: ['yuanbao'], plugin_name: 'yuanbao' })
+
+    await renderMessaging()
+    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Hermes Labs/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Install$/ }))
+    expect(installMessagingCatalogPlatform).not.toHaveBeenCalled()
+
+    // What the backend lists once the plugin is installed: its own card, labelled and masked.
+    getMessagingPlatforms.mockResolvedValue({
+      available: [],
+      platforms: [
+        platform(),
+        platform({
+          id: 'yuanbao',
+          name: 'Yuanbao',
+          env_vars: [
+            {
+              advanced: false,
+              description: 'The App Secret',
+              is_password: true,
+              is_set: false,
+              key: 'YUANBAO_APP_SECRET',
+              prompt: 'App Secret',
+              redacted_value: null,
+              required: true,
+              url: null
+            }
+          ]
+        })
+      ]
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Install anyway' }))
+    await waitFor(() => expect(installMessagingCatalogPlatform).toHaveBeenCalledWith('yuanbao', true, 'default'))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Yuanbao' })).toBeTruthy())
+  })
+
+  it('drops a selected row that was installed elsewhere instead of still offering Install', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ available: [yuanbao], platforms: [platform()] })
+
+    await renderMessaging()
+    await act(async () => {
+      $changeEventsAvailable.set(true)
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Hermes Labs/i }))
+    expect(await screen.findByRole('button', { name: /^Install$/ })).toBeTruthy()
+
+    // The background default install lands the plugin; the change watcher ticks platforms.changed.
+    getMessagingPlatforms.mockResolvedValue({
+      available: [],
+      platforms: [platform(), platform({ id: 'yuanbao', name: 'Yuanbao' })]
+    })
+    await act(async () => {
+      $platformsChangeTick.set($platformsChangeTick.get() + 1)
+    })
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Install$/ })).toBeNull())
+    expect(screen.queryByText('Not installed')).toBeNull()
+    expect(installMessagingCatalogPlatform).not.toHaveBeenCalled()
+  })
+
+  it('leaves the user where they went when an install finishes after Messaging unmounted', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({
+      available: [{ ...yuanbao, badge: 'official', needs_confirm: false }],
+      platforms: [platform()]
+    })
+    let finish!: (value: unknown) => void
+    installMessagingCatalogPlatform.mockImplementation(() => new Promise(resolve => (finish = resolve)))
+
+    function Nav() {
+      const navigate = useNavigate()
+      const location = useLocation()
+
+      return (
+        <>
+          <button onClick={() => navigate('/elsewhere')}>Leave Messaging</button>
+          <div data-testid="current-route">{location.pathname}</div>
+        </>
+      )
+    }
+
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/messaging']}>
+          <Nav />
+          <Routes>
+            <Route element={<MessagingView />} path="/messaging" />
+            <Route element={<div>Elsewhere</div>} path="/elsewhere" />
+          </Routes>
+        </MemoryRouter>
+      )
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Official/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Install$/ }))
+    await waitFor(() => expect(installMessagingCatalogPlatform).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Leave Messaging' }))
+    expect(screen.getByTestId('current-route').textContent).toBe('/elsewhere')
+
+    getMessagingPlatforms.mockResolvedValue({
+      available: [],
+      platforms: [platform(), platform({ id: 'yuanbao', name: 'Yuanbao' })]
+    })
+    await act(async () => {
+      finish({ ok: true, platforms: ['yuanbao'], plugin_name: 'yuanbao' })
+    })
+
+    expect(screen.getByTestId('current-route').textContent).toBe('/elsewhere')
+  })
+
+  it('says why a row cannot install and the command to run instead', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({
+      available: [{ ...yuanbao, blocked: 'lazy_installs_off', blocked_reason: 'off' }],
+      platforms: [platform()]
+    })
+
+    await renderMessaging()
+    fireEvent.click(await screen.findByRole('button', { name: /yuanbao.*Hermes Labs/i }))
+    expect(await screen.findByText(/security\.allow_lazy_installs/)).toBeTruthy()
+    expect(screen.getByText('hermes plugins install yuanbao')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Install$/ })).toBeNull()
   })
 })

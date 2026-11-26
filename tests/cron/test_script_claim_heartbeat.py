@@ -336,19 +336,19 @@ def test_run_one_job_refreshes_fire_claim_in_profile_store(tmp_path, monkeypatch
         original_claim = dict(claimed_job["fire_claim"])
 
     heartbeat_seen = threading.Event()
-    real_heartbeat = jobs.heartbeat_fire_claim
+    real_renewal = jobs.renew_fire_claim
 
-    def _observed_heartbeat(job_id: str, *, expected_owner: str) -> bool:
-        updated = real_heartbeat(job_id, expected_owner=expected_owner)
+    def _observed_renewal(job_id: str, *, expected_owner: str):
+        renewed = real_renewal(job_id, expected_owner=expected_owner)
         heartbeat_seen.set()
-        return updated
+        return renewed
 
     def _blocking_body(job, **kwargs):
         assert heartbeat_seen.wait(timeout=2)
         return True
 
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _observed_heartbeat)
+    monkeypatch.setattr(scheduler, "renew_fire_claim", _observed_renewal)
     monkeypatch.setattr(scheduler, "_run_one_job_body", _blocking_body)
 
     with jobs.use_cron_store(profile_home):
@@ -396,7 +396,12 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
         "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "stale-owner"},
     }
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _heartbeat)
+    # The boolean check answers both the pre-execution validation (ours until the takeover) and
+    # the post-loss re-check (someone else's now, so the stale result is discarded); the heartbeat
+    # loop is the one that observes the takeover, through the tri-state renewal.
+    monkeypatch.setattr(
+        scheduler, "heartbeat_fire_claim", lambda *_args, **_kwargs: not lost_seen.is_set())
+    monkeypatch.setattr(scheduler, "renew_fire_claim", _heartbeat)
     monkeypatch.setattr(scheduler, "run_job", _run_job)
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda job_id: True)
     monkeypatch.setattr(scheduler, "mark_execution_running", lambda execution_id: {})
@@ -550,7 +555,9 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
         "id": "heartbeat-errors",
         "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
     }
-    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
+    # Pre-execution validation is the boolean fail-closed check; only the loop is under test.
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(scheduler, "renew_fire_claim", heartbeat)
     monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
     monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)

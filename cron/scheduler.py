@@ -463,7 +463,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, use_cron_store)
+    renew_fire_claim, save_job_output, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, create_execution, finish_execution, get_execution,
     mark_execution_handoff_pending, mark_execution_running, recover_interrupted_executions)
@@ -2379,26 +2379,29 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire claim ownership lost; interrupting stale run",
-                        job_id)
-                    return
-                last_confirmed = time.monotonic()
+                # None = fence busy, so ownership is unverified rather than lost. This run's own
+                # delivery holds that fence across a network send, so a timeout is routine.
+                renewed = renew_fire_claim(job_id, expected_owner=owner)
             except Exception:
+                renewed = None
                 logger.debug("Job '%s': fire_claim heartbeat failed", job_id, exc_info=True)
-                if (
-                    time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
-                ):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire_claim could not be renewed within %.1fs; "
-                        "interrupting uncertain run",
-                        job_id,
-                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
-                    return
+            if renewed is False:
+                # Only a heartbeat that took the fence and read another owner is conclusive.
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire claim ownership lost; interrupting stale run",
+                    job_id)
+                return
+            if renewed:
+                last_confirmed = time.monotonic()
+            elif time.monotonic() - last_confirmed >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS:
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire_claim could not be renewed within %.1fs; "
+                    "interrupting uncertain run",
+                    job_id,
+                    _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
+                return
 
     heartbeat_thread = _start_heartbeat_thread(
         _heartbeat_loop, "cron-fire-claim-heartbeat",

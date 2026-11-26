@@ -2590,13 +2590,26 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+def renew_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
+    """Compare-and-refresh the job's ``fire_claim`` and report what that proved: True when
+    *expected_owner* still holds it, False when the store shows it does not (replaced or gone),
+    None when the fence could not be taken — ownership UNVERIFIED, not lost. The fence is shared
+    with the run's own delivery, which holds it across a network send, so a busy fence is routine;
+    only the caller knows whether "unverified" may be tolerated."""
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return None
+        return _with_job(job_id, apply, False)
+
+
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
+    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim.
+    False whenever ownership could not be confirmed — another owner, or no fence to check under."""
+    return renew_fire_claim(job_id, expected_owner=expected_owner) is True
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

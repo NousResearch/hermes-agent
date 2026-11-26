@@ -1,0 +1,42 @@
+name: hermes-linear
+repo: https://github.com/masha256/hermes-linear
+sha: bd2c018c9f43a263fd7445807dc4527dfd07eff6
+description: "Work with Hermes from Linear as a native Linear agent: delegate a ticket and it gets one Hermes session for the whole ticket, with progress, approvals, questions and Stop in Linear's agent UI. Community plugin, not affiliated with Linear. Disclosure — webhook listener on 127.0.0.1:8650 you expose over HTTPS; calls api.linear.app as your own OAuth app; writes outside the session ticket ask for approval; nothing is deleted."
+maintainer: masha256
+tier: community
+category: platform
+requires_hermes: ">=0.23.3"
+docs_url: https://github.com/masha256/hermes-linear#readme
+version: "0.2.1"
+title: Linear
+screenshots:
+  - https://raw.githubusercontent.com/masha256/hermes-linear/bd2c018c9f43a263fd7445807dc4527dfd07eff6/docs/screenshots/hermes-linear-screenshot0.jpg
+  - https://raw.githubusercontent.com/masha256/hermes-linear/bd2c018c9f43a263fd7445807dc4527dfd07eff6/docs/screenshots/hermes-linear-screenshot1.jpg
+  - https://raw.githubusercontent.com/masha256/hermes-linear/bd2c018c9f43a263fd7445807dc4527dfd07eff6/docs/screenshots/hermes-linear-screenshot2.jpg
+  - https://raw.githubusercontent.com/masha256/hermes-linear/bd2c018c9f43a263fd7445807dc4527dfd07eff6/docs/screenshots/hermes-linear-screenshot3.jpg
+platforms: []
+capabilities:
+  provides_tools:
+    - linear_issue_get
+    - linear_issue_create
+    - linear_issue_update
+    - linear_comment
+    - linear_sync_spec
+    - linear_sync_plan
+    - linear_task_state
+    - linear_query
+    - linear_search
+    - linear_attach
+    - linear_session_link
+    - linear_relation
+    - linear_lookup
+    - linear_project
+    - linear_document
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env:
+    - LINEAR_CLIENT_SECRET
+    - LINEAR_WEBHOOK_SECRET

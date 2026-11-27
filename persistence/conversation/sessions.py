@@ -127,8 +127,8 @@ BOUNDARY_END_REASONS: frozenset[str] = frozenset(
     {END_REASON_SESSION_RESET, "session_switch", "idle", "daily", "suspended", "resume_pending_expired", "new_session"}
 )
 
-#: Sources every human session picker leaves out (workers, tool integrations, one-shot runs).
-INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")
+#: Sources every human session picker leaves out (workers, tool integrations, one-shot runs, cron ticks).
+INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot", "cron")
 
 #: Maximum sanitized title length; a longer title is a ``ValueError``.
 MAX_TITLE_LENGTH = 100

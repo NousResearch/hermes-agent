@@ -2030,18 +2030,18 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return False
 
     def _mark_connected(self, *, listener_base: Optional[str] = None) -> None:
-        """``listener_base`` (``http://host:port``) is stamped by port-binders after a REAL bind (``bind_listener``
-        records it as ``_bound_listener_base``): under the multiplexer it is the shared listener a served profile's
-        ``/p/<profile>/`` mirror hangs off, and what the dashboard/Desktop report as that profile's URL/port."""
+        """``listener_base`` (``http://host:port``; ``bind_listener`` records it as ``_bound_listener_base``) is
+        stamped after a REAL bind, None otherwise so an earlier run's stamp stops showing: under the multiplexer it
+        is the shared listener a served profile's ``/p/<profile>/`` mirror hangs off, and the dashboard's port."""
         self._running = True
         self._fatal_error_code = self._fatal_error_message = None
         self._fatal_error_retryable = True
         if self.send_path_degraded:
             self._mark_degraded()
         else:
-            extra = {"listener_base": b} if (b := listener_base or getattr(self, "_bound_listener_base", None)) else {}
             self._write_runtime_status_safe(
-                "connected", platform_state="connected", error_code=None, error_message=None, **extra)
+                "connected", platform_state="connected", error_code=None, error_message=None,
+                listener_base=listener_base or getattr(self, "_bound_listener_base", None))
 
     def _mark_degraded(self) -> None:
         """Publish ``retrying`` for a running adapter whose delivery path is unproven."""

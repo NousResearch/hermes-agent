@@ -90,7 +90,7 @@ _PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
 
 def _stamped_port(state: dict) -> Optional[int]:
     """The port an adapter really bound, from the ``listener_base`` it stamped into runtime status
-    (``BasePlatformAdapter._mark_connected``), else None (an older gateway, or no bind)."""
+    (``BasePlatformAdapter._mark_connected``), else None (no bind, or a stamp with no port)."""
     from urllib.parse import urlsplit
     base = state.get("listener_base")
     try:
@@ -103,7 +103,8 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
     """Best-effort ``platform -> host TCP port`` for one profile's live gateway.
 
     A live adapter that stamped its real bind (``listener_base``) reports that port, so a plugin platform
-    the dashboard's own profile never loaded still shows. Otherwise ports come from the profile's own
+    the dashboard's own profile never loaded still shows; one that stamped None reports none. A record
+    without the field (an older gateway) takes ports from the profile's own
     config.yaml (``gateway.platforms`` then top-level ``platforms`` — later wins, matching
     load_gateway_config precedence), falling back to the adapter default. Env-var overrides (e.g.
     WEBHOOK_PORT in that profile's .env) are not resolved on that path.
@@ -112,7 +113,8 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
     live = {name: state for name, state in platforms.items()
             if isinstance(state, dict) and state.get("state") not in _PLATFORM_DEAD_STATES}
     ports: dict[str, int] = {name: port for name, state in live.items() if (port := _stamped_port(state))}
-    active = [name for name in live if name not in ports and _port_spec(name)]
+    # A stamped None is "bound nothing"; only an older record without the field falls back to config.
+    active = [name for name, state in live.items() if "listener_base" not in state and _port_spec(name)]
     if not active:
         return ports
 

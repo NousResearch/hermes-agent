@@ -47,3 +47,34 @@ def test_a_dead_listeners_stamp_reports_no_port(tmp_path):
     from hermes_cli.web_server_gateway import _profile_platform_ports
     runtime = {"platforms": {"feishu": {"state": "fatal", "listener_base": "http://127.0.0.1:8765"}}}
     assert _profile_platform_ports(tmp_path, runtime) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_bot_restarted_without_a_listener_clears_its_old_port(tmp_path, monkeypatch):
+    """Webhook mode, then a restart in WebSocket mode: the status file must stop naming the old port."""
+    from hermes_cli.web_server_gateway import _profile_platform_ports
+    from gateway.platforms.shared_ingress import bind_listener
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    webhook_mode = _adapter("feishu")
+    app = web.Application()
+    app.router.add_post("/feishu/webhook", lambda request: web.Response())
+    runner = await bind_listener(webhook_mode, app, "127.0.0.1", 0, "/feishu/webhook")
+    webhook_mode._mark_connected()
+    assert status.flush_runtime_status(timeout=2.0)
+    await runner.cleanup()
+
+    monkeypatch.setattr(status, "_runtime_status_state", None)  # a new gateway process re-reads the file
+    _adapter("feishu")._mark_connected()  # WebSocket mode binds nothing
+    assert status.flush_runtime_status(timeout=2.0)
+    runtime = status.read_runtime_status()
+    assert runtime["platforms"]["feishu"]["listener_base"] is None
+    assert _profile_platform_ports(tmp_path / "other", runtime) == {}
+
+
+def test_only_a_record_without_the_field_falls_back_to_config(tmp_path):
+    from hermes_cli.web_server_gateway import _profile_platform_ports
+    older = {"platforms": {"webhook": {"state": "connected"}}}
+    assert _profile_platform_ports(tmp_path, older) == {"webhook": 8644}
+    no_listener = {"platforms": {"webhook": {"state": "connected", "listener_base": None}}}
+    assert _profile_platform_ports(tmp_path, no_listener) == {}

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import ntpath
 import os
 import re
 import sys
@@ -40,6 +39,7 @@ _PROGRAM_MSG_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 # OSC 7577 Program Resume Protocol (rev 0.5)
 _OSC7577_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{22,64}")
 _OSC7577_CONTROLS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_OSC7577_WIN_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]")
 _OSC7577_MAX_BYTES = 2048
 _OSC7577_MAX_ARGV = 64
 
@@ -88,20 +88,45 @@ def program_status_clear_sequence() -> str:
     return "\x1b]7501;state=clear\x1b\\"
 
 
+_claimed_osc7577_token: str | None = None
+
+
+def claim_osc7577_token() -> None:
+    """Move ``OSC7577_TOKEN`` out of ``os.environ`` into this module. Its holder can register a command the
+    terminal runs later, and OSC 7577 asks a reporting program to keep it from its children: every
+    subprocess inherits ``os.environ`` unless handed another env, so the CLI entry point claims it before
+    starting any. The TUI launcher and ``restore_osc7577_token`` hand it on explicitly."""
+    global _claimed_osc7577_token
+    token = os.environ.pop("OSC7577_TOKEN", None)
+    if token is not None:
+        _claimed_osc7577_token = token
+
+
+def restore_osc7577_token() -> None:
+    """Put a claimed token back into ``os.environ`` for an in-place relaunch, which reports for the same pane."""
+    if _claimed_osc7577_token is not None:
+        os.environ["OSC7577_TOKEN"] = _claimed_osc7577_token
+
+
 def osc7577_token(env: Mapping[str, str] | None = None) -> str | None:
-    """Return the pane's validated ``OSC7577_TOKEN`` or ``None`` if absent/malformed."""
-    source = os.environ if env is None else env
-    token = source.get("OSC7577_TOKEN")
+    """Return the pane's validated ``OSC7577_TOKEN`` (from *env*, else ``os.environ`` or the claimed one)
+    or ``None`` if absent/malformed."""
+    if env is not None:
+        token = env.get("OSC7577_TOKEN")
+    else:
+        token = os.environ.get("OSC7577_TOKEN") or _claimed_osc7577_token
     if not isinstance(token, str) or not _OSC7577_TOKEN_RE.fullmatch(token):
         return None
     return token
 
 
 def _is_valid_osc7577_abs_path(path: str) -> bool:
-    """True when *path* is an absolute path without C0, DEL, or C1 control characters."""
+    """True when *path* is absolute (POSIX root, drive letter plus separator, or UNC) without C0, DEL, or
+    C1 control characters. Same rule as the TUI's ``isValidAbsPath``; ``ntpath.isabs`` varies by Python
+    version (3.12 accepts a rooted path with no drive)."""
     if not isinstance(path, str) or not path or _OSC7577_CONTROLS_RE.search(path):
         return False
-    return path.startswith("/") or ntpath.isabs(path)
+    return path.startswith(("/", "\\\\")) or _OSC7577_WIN_DRIVE_RE.match(path) is not None
 
 
 def _is_valid_osc7577_argv0(arg: str) -> bool:
@@ -169,77 +194,10 @@ def program_resume_clear_sequence(
     pid: int | None = None,
     now: int | None = None,
 ) -> str:
-    """Encode an authenticated OSC 7577 ``clear=1`` report removing this process's record."""
+    """Encode an authenticated OSC 7577 ``clear=1`` report removing the record of owner *pid* (default: this process)."""
     resolved_token, resolved_pid, resolved_time = _resolve_osc7577_params(token, pid, now)
     body = f"pid={resolved_pid}:time={resolved_time}:clear=1"
     return _finalize_osc7577(body, resolved_token)
-
-
-def build_hermes_resume_argv_prefix(
-    *,
-    surface: str = "cli",
-    tui_native: bool = False,
-    tui_dev: bool = False,
-) -> list[str]:
-    """Build the entrypoint + profile + surface prefix for OSC 7577 resume commands.
-
-    Omits session creation policy flags (``-m``, ``--provider``, ``--safe-mode``, etc.)
-    because ``hermes --resume`` validates launch flags against the session's frozen route.
-    """
-    argv: list[str] = []
-    bin_path: str | None = None
-    with suppress(Exception):
-        from hermes_cli.relaunch import resolve_hermes_bin
-        bin_path = resolve_hermes_bin()
-    if bin_path and _is_valid_osc7577_argv0(bin_path):
-        argv.append(bin_path)
-    elif sys.executable and _is_valid_osc7577_argv0(sys.executable):
-        argv.extend((sys.executable, "-m", "hermes_cli.main"))
-    else:
-        argv.append("hermes")
-
-    explicit_profile: str | None = None
-    active_profile = "default"
-    for mod_name in ("hermes_cli.main", "__main__"):
-        main_mod = sys.modules.get(mod_name)
-        fn = getattr(main_mod, "explicit_cli_profile", None) if main_mod is not None else None
-        if callable(fn):
-            with suppress(Exception):
-                val = fn()
-                if val:
-                    explicit_profile = val
-                    break
-    with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
-        active_profile = get_active_profile_name()
-    if explicit_profile == "default":
-        argv.extend(("-p", "default"))
-    elif active_profile and active_profile not in ("default", "custom"):
-        argv.extend(("-p", active_profile))
-
-    if surface == "tui":
-        argv.append("--tui")
-        if tui_native:
-            argv.append("--tui-native")
-        if tui_dev:
-            argv.append("--dev")
-    else:
-        argv.append("--cli")
-    return argv
-
-
-def build_hermes_resume_argv(
-    session_id: str | None = None,
-    *,
-    surface: str = "cli",
-    tui_native: bool = False,
-    tui_dev: bool = False,
-) -> list[str]:
-    """Build the full OSC 7577 resume ``argv``, appending ``--resume <session_id>`` when durable."""
-    argv = build_hermes_resume_argv_prefix(surface=surface, tui_native=tui_native, tui_dev=tui_dev)
-    if session_id:
-        argv.extend(("--resume", session_id))
-    return argv
 
 
 def warp_supported(env=None) -> bool:

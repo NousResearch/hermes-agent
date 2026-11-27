@@ -279,3 +279,22 @@ def test_a_present_feishu_the_home_disables_is_said_off_once_and_stays_disabled(
     assert read_user_config_raw(home / "config.yaml")["plugins"]["disabled"] == ["feishu"]
     off = [line for line in said if "which now turns Feishu off" in line]
     assert len(off) == 1 and "`hermes plugins enable feishu` turns it on" in off[0], said
+
+
+@pytest.mark.parametrize("recorded", ["_default_plugins_installed: [feishu]\n", ""], ids=["default-placed", "user-placed"])
+def test_a_present_feishu_under_host_isolation_is_told_once(tmp_path, recorded):
+    """Whoever placed the feishu plugin, a profile with ``plugins.isolation: host`` cannot load its adapter
+    (core's bundled one was exempt): the upgrade says so once, and installs nothing."""
+    home = _home(tmp_path, env=_CREDS, config=recorded + "plugins:\n  isolation: host\n")
+    (home / "plugins" / "feishu").mkdir(parents=True)
+    calls, said = [], []
+
+    def install(name):
+        calls.append(name)
+        return {"ok": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert calls == []
+    told = [line for line in said if "plugins.isolation: host" in line]
+    assert len(told) == 1 and "Feishu" in told[0], said

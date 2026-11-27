@@ -246,3 +246,20 @@ async def test_home_lookup_for_a_moved_platform_names_the_install_and_stays_retr
                                              route_name="r1", profile=None, event_type="push")
     assert outcome is None  # -> "Admission unavailable; retry this delivery", 503
     assert f"hermes plugins install {feature.plugin}" in caplog.text
+
+
+@pytest.mark.parametrize("feature", _MOVED_PLATFORMS, ids=[f.platform for f in _MOVED_PLATFORMS])
+def test_moved_platform_refusal_keeps_the_whole_install_command_for_a_longest_profile_name(
+        profile_homes, feature, monkeypatch, tmp_path):
+    """The refusal detail is length-bounded; the bound cuts free text, never the command the operator copies."""
+    from persistence.core.errors import AuthorityRefusal
+    from gateway.platforms.webhook_delivery import snapshot_destination
+
+    name = "p" * 64  # PROFILE_ID_RE's longest id
+    long_home = tmp_path / ".hermes" / "profiles" / name
+    long_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(long_home))
+    adapter = _webhook(_Runner({}, {}, profile_homes))
+    with pytest.raises(AuthorityRefusal) as refused:
+        snapshot_destination(adapter, {"deliver": feature.platform, "deliver_extra": {}})
+    assert f"hermes -p {name} plugins install {feature.plugin}" in (refused.value.detail or "")

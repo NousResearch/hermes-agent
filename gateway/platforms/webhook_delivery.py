@@ -64,10 +64,13 @@ def snapshot_destination(adapter, delivery):
             platform = Platform(result['deliver'])
         except ValueError:
             # A platform that left core, plugin not loaded: the route stays loaded (``is_known_platform``), and
-            # the refusal names the install so the retryable 503 is not the operator's only clue.
-            from hermes_cli.left_core_migration import platform_install_hint
-            raise AuthorityRefusal('not_found', field='deliver',
-                                   detail=platform_install_hint(result['deliver']).lstrip('. ') or None) from None
+            # the refusal names the install so the retryable 503 is not the operator's only clue. The command
+            # leads: the detail's length bound (a 64-char profile id) may cut only the trailing text.
+            from hermes_cli.left_core_migration import platform_install_command
+            command = platform_install_command(result['deliver'])
+            raise AuthorityRefusal('not_found', field='deliver', detail=(
+                f"run `{command}`: the '{result['deliver']}' platform moved out of core into a plugin"
+                if command else None)) from None
         with adapter._profile_scope(profile):
             home = adapter._delivery_config(profile).get_home_channel(platform)
         if home is None:

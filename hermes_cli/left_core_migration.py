@@ -785,6 +785,14 @@ def platform_install_hint(platform: str) -> str:
     return f". {_install_sentence(feature)}" if feature else ""
 
 
+def platform_install_command(platform: str) -> str:
+    """For a platform that left core: its bare install command for the active home, else ``""``. For a
+    length-bounded message (a refusal detail) that must lead with the command, never cut it."""
+    from hermes_constants import get_hermes_home
+    feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+    return _install_command(feature.plugin, Path(get_hermes_home())) if feature else ""
+
+
 def platform_home_env_var(platform: str) -> str:
     """Cron home-channel env var (``<PLATFORM>_HOME_CHANNEL``) core read for a platform that left core, when its
     ``private_env`` keeps it, else ``""``: a process with no registration for the platform (a profile without the

@@ -157,7 +157,7 @@
 }
 
 .agent-channel-status[data-tone='connected'] {
-  color: var(--portal-status-online, var(--ui-green));
+  color: var(--portal-status-online);
 }
 
 /* 877:4307: a #a22a20 dot beside softer #cc8a84 text (the dot alone carries the alarm colour). */
@@ -221,7 +221,7 @@
 
 .agent-overview-section h2 {
   color: var(--ui-text-primary);
-  font-size: 15px;
+  font-size: var(--portal-type-section-size);
   font-weight: 500;
   line-height: 1.1;
 }
@@ -267,7 +267,7 @@
   gap: 12px;
   padding: 10px 12px 10px 16px;
   text-align: start;
-  font-size: 14px;
+  font-size: var(--portal-type-body-size);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -409,7 +409,7 @@
   align-items: center;
   gap: 12px;
   margin-bottom: 24px;
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
 }
 
 .agent-management-editor {

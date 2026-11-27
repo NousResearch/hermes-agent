@@ -153,7 +153,7 @@
 }
 .agent-history-filter-chips > button {
   min-height: 28px;
-  font-size: 12px;
+  font-size: var(--portal-type-meta-size);
 }
 .agent-history-filter-trigger[data-active] {
   border-color: var(--portal-brand-ink);
@@ -215,7 +215,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
 }
 .agent-history-body,
 .agent-history-list {
@@ -450,7 +450,7 @@
   width: 100%;
   padding-block: 6px 4px;
   color: var(--ui-text-tertiary);
-  font-family: var(--font-mono);
+  font-family: var(--portal-font-mono);
   font-size: var(--portal-type-caption-size);
   letter-spacing: var(--portal-tracking-caption);
   text-transform: uppercase;
@@ -707,7 +707,7 @@
   background: var(--portal-raw-ink-4);
 }
 .agent-history-message p {
-  color: color-mix(in srgb, var(--ui-text-primary) 87%, transparent);
+  color: var(--portal-text-primary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
   white-space: pre-wrap;
@@ -815,8 +815,8 @@
   padding: 12px;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: var(--portal-radius-card);
-  color: var(--dt-destructive);
-  font-size: 13px;
+  color: var(--portal-status-error-ink);
+  font-size: var(--portal-type-ui-size);
   overflow-wrap: anywhere;
 }
 .agent-history-error p + p {

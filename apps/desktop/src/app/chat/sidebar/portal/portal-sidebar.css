@@ -227,7 +227,7 @@
   padding-inline: 0.3125rem;
   border-radius: var(--portal-radius-control);
   background: var(--portal-raw-ink-10);
-  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  color: var(--portal-text-secondary);
   font-size: var(--portal-type-chip-size);
   font-weight: 500;
   letter-spacing: var(--portal-tracking-caption);
@@ -476,7 +476,7 @@ button.portal-section-title:hover {
   color: var(--portal-brand-ink);
   font-size: var(--portal-sidebar-caption);
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.2;
   text-align: center;
 }

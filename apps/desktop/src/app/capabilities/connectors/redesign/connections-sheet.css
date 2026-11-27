@@ -95,7 +95,7 @@
   color: var(--portal-status-online);
   font-family: var(--portal-font-body);
   font-size: var(--portal-type-chip-size);
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: var(--portal-tracking-chip);
   line-height: 1;
   text-transform: uppercase;

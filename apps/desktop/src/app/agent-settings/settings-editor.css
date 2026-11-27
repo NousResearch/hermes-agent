@@ -45,7 +45,7 @@
   min-height: 2rem;
   padding: 0.375rem 0.625rem;
   border-radius: var(--portal-radius-control);
-  color: color-mix(in srgb, var(--ui-base) 80%, transparent);
+  color: var(--portal-text-secondary);
   font-size: var(--portal-type-ui-size);
   letter-spacing: var(--portal-tracking-ui);
   line-height: 1.4;
@@ -121,7 +121,7 @@
 }
 .agent-settings-main-model h3 {
   margin-bottom: 8px;
-  font-size: 15px;
+  font-size: var(--portal-type-section-size);
   font-weight: 500;
 }
 /* Titled settings groups (895:9666) and their 64px rows with a text column plus controls. */
@@ -176,20 +176,20 @@
   gap: 12px;
 }
 .agent-settings-instructions-section > header h3 {
-  font-size: 15px;
+  font-size: var(--portal-type-section-size);
   font-weight: 500;
-  line-height: 17px;
+  line-height: 1.15;
 }
 .agent-settings-instructions-section > header p {
   margin-top: 2px;
   color: var(--ui-text-tertiary);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
 }
 :root[data-shell='portal'] .agent-settings-instructions :is(.cm-scroller, .cm-content, .cm-line) {
   font-family: var(--portal-font-body);
-  font-size: 13px;
-  line-height: 21px;
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.5;
 }
 :root[data-shell='portal'] .agent-settings-instructions .cm-scroller {
   padding: 8px;
@@ -202,9 +202,9 @@
   margin-inline-end: auto;
   overflow: hidden;
   color: var(--ui-text-tertiary);
-  font-family: var(--font-mono);
+  font-family: var(--portal-font-mono);
   font-size: var(--portal-type-micro-size);
-  line-height: 15px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

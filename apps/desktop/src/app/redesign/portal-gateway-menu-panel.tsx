@@ -129,7 +129,7 @@ const trimLogLine = (raw: string) => raw.trim().replace(TIMESTAMP_RE, '').replac
 function GatewayHeader({ actions, name }: { actions?: ReactNode; name: string }) {
   return (
     <div className="flex min-h-[2.125rem] items-center justify-between gap-2">
-      <h2 className="min-w-0 truncate text-[0.8125rem] font-semibold" title={name}>
+      <h2 className="min-w-0 truncate text-[length:var(--portal-type-ui-size)] font-semibold" title={name}>
         {name}
       </h2>
       {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
@@ -295,7 +295,7 @@ export function PortalGatewayMenuPanel({
               {platforms.map(([name, platform]) => (
                 <li className="flex min-h-6 items-center justify-between gap-2" key={name}>
                   <span className="truncate font-medium capitalize">{name}</span>
-                  <span className="flex shrink-0 items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
+                  <span className="flex shrink-0 items-center gap-1.5 text-[length:var(--portal-type-micro-size)] text-(--ui-text-secondary)">
                     <StatusDot tone={platformStatusTone({ state: platform.state })} />
                     {prettyState(platform.state)}
                   </span>
@@ -489,7 +489,7 @@ function GatewayReadiness({
 function StatusRow({ label, good, waiting, value }: { label: string; good: boolean; waiting: boolean; value: string }) {
   return (
     <div className="flex min-h-5 items-center justify-between gap-3">
-      <dt className="text-[0.6875rem] text-(--ui-text-tertiary)">{label}</dt>
+      <dt className="text-[length:var(--portal-type-micro-size)] text-(--ui-text-tertiary)">{label}</dt>
       <dd
         className={cn(
           'flex items-center gap-2 text-right font-medium',
@@ -529,7 +529,7 @@ function RecentGatewayActivity() {
       )}
       {lines.length > 0 ? (
         <LogView
-          className="max-h-44 rounded-[6px] border-[color-mix(in_srgb,var(--ui-base)_8%,transparent)] text-[0.625rem] leading-normal"
+          className="max-h-44 rounded-[6px] border-[color-mix(in_srgb,var(--ui-base)_8%,transparent)] text-[length:var(--portal-type-caption-size)] leading-normal"
           ref={scrollRef}
         >
           {lines.map(trimLogLine).join('\n')}
@@ -555,7 +555,9 @@ const GATEWAY_CARD =
 
 function SectionLabel({ children }: { children: string }) {
   return (
-    <div className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--portal-brand-ink)">{children}</div>
+    <div className="text-[length:var(--portal-type-caption-size)] font-medium uppercase tracking-[var(--portal-tracking-caption)] text-(--portal-brand-ink)">
+      {children}
+    </div>
   )
 }
 

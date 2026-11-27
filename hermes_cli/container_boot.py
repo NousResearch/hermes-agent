@@ -300,6 +300,10 @@ def _is_dashboard_container(argv: Sequence[str]) -> bool:
 def _read_desired_state(profile_dir: Path) -> str | None:
     """Persisted ``desired_state`` (operator intent), else legacy ``gateway_state``; missing or
     unparseable files count as "no state" so a corrupt file can't bork boot."""
+    from hermes_cli.s6_profile_lifecycle import profile_gateway_retired
+
+    if profile_gateway_retired(profile_dir):
+        return "stopped"
     state_file = profile_dir / "gateway_state.json"
     if not state_file.exists():
         return None

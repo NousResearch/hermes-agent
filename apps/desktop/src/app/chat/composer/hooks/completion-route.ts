@@ -1,4 +1,5 @@
 import type { HermesGateway } from '@/hermes'
+import { resolveNewChatBackendOwner } from '@/store/profile'
 import { ambientRequestFor } from '@/store/session-gone-latch'
 import { sessionOwnerIsKnown } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute, requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
@@ -21,6 +22,14 @@ export function completionOwner(sessionId: null | string | undefined): SessionOw
   const owner = sessionId ? knownOwnerForSession(sessionId) : undefined
 
   return sessionOwnerIsKnown(owner) ? owner : undefined
+}
+
+/** Path lookup and reference capture on a new draft must name the same backend. */
+export function pathCompletionOwner(sessionId: null | string | undefined): SessionOwnerScope {
+  if (sessionId) { return completionOwner(sessionId) }
+  const owner = resolveNewChatBackendOwner()
+
+  return owner.connectionId === null ? owner.profile : { ...owner, connectionId: owner.connectionId }
 }
 
 /** Cache-key fragment naming the backend that answered, so a result cached

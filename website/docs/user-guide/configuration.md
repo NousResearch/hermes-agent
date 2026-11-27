@@ -324,6 +324,8 @@ itself. `hermes doctor`
 reports the directory, its size and any such skipped entries, and
 warns about directories over 1 GB elsewhere under `cache/` that no pruner covers.
 
+`desktop.coding.show_controls` (default `false`) shows the **Project** and **Work in** pickers above the input for new chats in Hermes Desktop, so a chat can start in a chosen project folder, a new Git worktree, an existing worktree or the current checkout. It only changes new chats in that profile; you can also turn it on in **Settings → Workspace**. `desktop.coding.default_checkout` (`worktree` or `current`, default `worktree`) is the checkout those pickers preselect for a new coding chat.
+
 `desktop.font_family` sets the font for chat and the rest of the Hermes Desktop interface (the terminal pane has its own key above). Give it one installed family name (for example, `OpenDyslexic` or `Atkinson Hyperlegible`) or a CSS font stack; Hermes keeps the active theme's own stack behind it so CJK and emoji glyphs still resolve, and an empty value uses the theme's font. Edit it in **Settings → Appearance → Chat Font**.
 
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.

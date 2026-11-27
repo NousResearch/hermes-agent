@@ -773,6 +773,8 @@ class SessionAuthority:
             # attachment fields it yields still pass the full payload-digest comparison below.
             return admission_row(store.admissions.find(principal_id=actor.subject, session_id=request.ref.session_id,
                                                        request_id=request.request_id))
+        from gateway.session_coding_workspace import verify_admission
+        await verify_admission(self, request.ref, admitted=admitted)
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}

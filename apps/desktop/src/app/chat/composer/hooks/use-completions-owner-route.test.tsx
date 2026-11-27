@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as GatewayStore from '@/store/gateway'
+import { $newChatRoute } from '@/store/profile'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
 import { useAtCompletions } from './use-at-completions'
@@ -78,6 +79,27 @@ afterEach(() => {
   queryClient.clear()
   _resetSessionOwnerHintsForTests()
   routed.requestGatewayForAgent.mockReset()
+  $newChatRoute.set(null)
+})
+
+it('new-chat file completion uses the captured draft owner before a session exists', async () => {
+  $newChatRoute.set({ connectionId: 'fixture-remote', profile: 'coder' })
+  const gateway = ambientGateway()
+  const api: { search?: Search } = {}
+
+  function Probe() {
+    api.search = useAtCompletions({ cwd: '/original', gateway, sessionId: null }).adapter.search
+
+    return null
+  }
+
+  render(<Probe />)
+  const items = await settle(api, 'no')
+  expect(items.map(item => (item.metadata as { rawText?: string }).rawText)).toContain('@file:nonotes.md')
+  expect(gateway.request).not.toHaveBeenCalled()
+  expect(routed.requestGatewayForAgent).toHaveBeenCalledWith('fixture-remote', 'coder', 'complete.path', {
+    cwd: '/original', word: '@no', cwd_explicit: false
+  })
 })
 
 // #141583: a non-primary-profile window's composer sent completion RPCs on the

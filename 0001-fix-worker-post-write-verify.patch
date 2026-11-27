@@ -1,0 +1,639 @@
+From 365e9311be2cf3e3edee52a6f3f79b2700d89e83 Mon Sep 17 00:00:00 2001
+From: Gebhard <direkt@gebhardborck.de>
+Date: Sat, 10 Oct 2026 10:33:47 +0200
+Subject: [PATCH] fix(worker): post-write verification, exit-code respect, no
+ acceptance-anxiety blocks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three patches close the failure mode observed in t_cd4c0ae0 (developer,
+blocked 2026-10-06): a worker that produced correct-looking diffs in
+its conversation log but did not persist them, ignored test-runner exit
+codes, and used kanban_block(needs_input) as an acceptance escape hatch.
+
+Patches
+
+1. Post-write verification (tools/file_tools.py). patch_tool now takes a
+   content-SHA256 snapshot of every target path before and after the
+   write. When the underlying file_ops backend is local the snapshot
+   reads from the host; for non-local backends (Docker/SSH/Modal) the
+   backend's own read_file_raw is the authoritative source. A reported
+   success with an unchanged disk becomes success=False with an explicit
+   'Post-write verification failed' error.
+
+2. Exit-code respect (tools/terminal_tool_result.py). finalize_foreground_result
+   classifies test-runner commands via agent.verification_evidence and
+   attaches status=failed, error='failed: <tail>' whenever the runner
+   exited non-zero, even if its stdout prints 'N passed' for some
+   sub-runner. status=ok is reserved for exit_code == 0.
+
+3. Block-kind guard (tools/kanban_tools.py + kanban_tools_schemas.py
+   + agent/prompt_builder.py KANBAN_GUIDANCE). Dispatcher workers may
+   call kanban_block with kind=needs_input only when the task body
+   contains an explicit 'Question for user: <X>' or 'Frage an User: <X>'
+   line and the call's reason repeats <X> exactly. Acceptance anxiety
+   (Akzeptanzpunkt, please confirm, 'möchte gerne Bestätigung') is
+   refused with a message that points at kanban_complete and
+   kanban_request_review. The KANBAN_GUIDANCE prompt is updated in the
+   same shape so workers stop attempting the escape in the first place.
+
+Tests (all green locally with /usr/bin/git, 4 + 2 + 1 tests):
+
+- tests/hermes_cli/test_worker_post_write_verify.py
+  4 tests cover the local-success path, the local-silent-write path,
+  the local-no-op path, and a host-absent / remote-backend path where
+  the backend read is the authoritative snapshot.
+- tests/hermes_cli/test_worker_test_exit_honored.py
+  1 test asserts that exit_code=1 with stdout '4 passed' yields
+  status=failed and an error string starting with 'failed:'.
+- tests/hermes_cli/test_kanban_block_guard.py
+  2 tests assert that 'Akzeptanzpunkt' reason is refused and that a
+  reason that exactly matches a briefed 'Frage an User:' line is
+  accepted. The first test reproduces the t_cd4c0ae0 failure mode.
+
+Anti-pattern under repair: workers that emit convincing diffs in their
+conversation transcript without persisting them to disk; workers that
+read test-runner stdout instead of the runner's exit code; workers
+that treat the dispatcher review as a forum to renegotiate scope.
+
+Refs: Kanban t_4c2758c2 (this card), Kanban t_cd4c0ae0 (anti-example).
+---
+ agent/prompt_builder.py                       |   7 +-
+ tests/hermes_cli/test_kanban_block_guard.py   |  90 +++++++++++
+ .../test_worker_post_write_verify.py          | 150 ++++++++++++++++++
+ .../test_worker_test_exit_honored.py          |  44 +++++
+ tests/tools/test_kanban_tools.py              |  13 +-
+ tools/file_tools.py                           |  70 ++++++++
+ tools/kanban_tools.py                         |  24 +++
+ tools/kanban_tools_schemas.py                 |   5 +-
+ tools/terminal_tool_result.py                 |  28 ++++
+ 9 files changed, 424 insertions(+), 7 deletions(-)
+ create mode 100644 tests/hermes_cli/test_kanban_block_guard.py
+ create mode 100644 tests/hermes_cli/test_worker_post_write_verify.py
+ create mode 100644 tests/hermes_cli/test_worker_test_exit_honored.py
+
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 6c975b0a6b..997ab73b3d 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -283,9 +283,10 @@ KANBAN_GUIDANCE = (
+     "`kanban.dispatch_stale_timeout_seconds` (default 4 hours) when no heartbeat has arrived in the last hour. A "
+     "reclaim re-queues the task as `ready` without penalty (no failure counter tick), but you lose your current run's "
+     "progress.\n"
+-    "4. **Block on genuine ambiguity.** If you need a human decision you cannot infer (missing credentials, UX choice, "
+-    "paywalled source, peer output you need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. The "
+-    "user will unblock with context and the dispatcher will respawn you.\n"
++    "4. **Block only on a briefed blocker.** For `kind=needs_input` (or an omitted kind), the task body must contain "
++    "an explicit `Question for user: <X>` or `Frage an User: <X>` line, and `reason` must repeat `<X>` exactly. "
++    "Acceptance anxiety (`acceptance point`, `Akzeptanzpunkt`, `please confirm`) is not a blocker: finish with "
++    "`kanban_complete` or `kanban_request_review`. Use other block kinds only for genuine external walls.\n"
+     "5. **Finish with the review model encoded by the task graph.** Always include the structured handoff (`summary`, "
+     "`metadata`) on the lifecycle transition itself; never put secrets, tokens, or raw PII in these durable fields. If "
+     "`kanban_show()` lists child IDs, inspect those cards with `kanban_show(task_id=...)` before choosing the terminal "
+diff --git a/tests/hermes_cli/test_kanban_block_guard.py b/tests/hermes_cli/test_kanban_block_guard.py
+new file mode 100644
+index 0000000000..44d4a9ce9e
+--- /dev/null
++++ b/tests/hermes_cli/test_kanban_block_guard.py
+@@ -0,0 +1,90 @@
++"""Regression coverage for worker needs-input block admission."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++
++
++@pytest.fixture
++def worker_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setenv("HERMES_PROFILE", "developer")
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++
++    from hermes_cli import kanban_db as kb
++    from hermes_cli import kanban_db_connect as kbc
++
++    kb._INITIALIZED_PATHS.clear()
++    kb.init_db()
++
++    def create(body: str) -> str:
++        with kbc.connect_closing() as conn:
++            task_id = kb.create_task(
++                conn,
++                title="block guard",
++                body=body,
++                assignee="developer",
++            )
++            kb.claim_task(conn, task_id)
++            task = kb.get_task(conn, task_id)
++            assert task is not None
++            run_id = task.current_run_id
++        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
++        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
++        return task_id
++
++    return create
++
++
++def test_worker_cannot_block_for_acceptance_without_briefed_user_question(
++    worker_task,
++) -> None:
++    task_id = worker_task("Implement the requested change and return a working-tree diff.")
++
++    from hermes_cli import kanban_db as kb
++    from hermes_cli import kanban_db_connect as kbc
++    from tools import kanban_tools as kt
++
++    result = json.loads(
++        kt._handle_block(
++            {
++                "reason": "Akzeptanzpunkt muss noch bestätigt werden",
++                "kind": "needs_input",
++            }
++        )
++    )
++
++    assert "error" in result
++    assert "kanban_complete" in result["error"]
++    with kbc.connect_closing() as conn:
++        task = kb.get_task(conn, task_id)
++        assert task is not None and task.status == "running"
++
++
++def test_worker_can_block_for_question_explicitly_named_in_briefing(worker_task) -> None:
++    question = "Welche Exportvariante soll verwendet werden?"
++    task_id = worker_task(f"Frage an User: {question}")
++
++    from hermes_cli import kanban_db as kb
++    from hermes_cli import kanban_db_connect as kbc
++    from tools import kanban_tools as kt
++
++    result = json.loads(
++        kt._handle_block(
++            {
++                "reason": question,
++                "kind": "needs_input",
++            }
++        )
++    )
++
++    assert result["ok"] is True
++    assert result["block_kind"] == "needs_input"
++    with kbc.connect_closing() as conn:
++        task = kb.get_task(conn, task_id)
++        assert task is not None and task.status == "blocked"
+diff --git a/tests/hermes_cli/test_worker_post_write_verify.py b/tests/hermes_cli/test_worker_post_write_verify.py
+new file mode 100644
+index 0000000000..a17ccacc82
+--- /dev/null
++++ b/tests/hermes_cli/test_worker_post_write_verify.py
+@@ -0,0 +1,150 @@
++"""Regression coverage for worker-visible patch persistence evidence."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++from pathlib import Path
++
++from tools.file_operations_common import PatchResult, ReadResult
++from tools.file_tools import patch_tool
++
++
++class _PatchOps:
++    def __init__(self, *, persist: bool) -> None:
++        self.persist = persist
++
++    def read_file_raw(self, path: str) -> ReadResult:
++        target = Path(path)
++        if not target.exists():
++            return ReadResult(error="file not found", not_found=True)
++        raw = target.read_bytes()
++        return ReadResult(
++            content=raw.decode("utf-8"),
++            file_size=len(raw),
++            _content_sha256=hashlib.sha256(raw).hexdigest(),
++        )
++
++    def patch_replace(
++        self, path: str, old: str, new: str, replace_all: bool = False
++    ) -> PatchResult:
++        target = Path(path)
++        updated = target.read_text(encoding="utf-8").replace(old, new)
++        if self.persist:
++            target.write_text(updated, encoding="utf-8")
++        return PatchResult(success=True, diff=f"-{old}\n+{new}\n")
++
++
++class _RemotePatchOps:
++    env = object()
++
++    def __init__(self, path: str, *, persist: bool) -> None:
++        self.persist = persist
++        self.files = {path: "before\n"}
++        self.reads: list[str] = []
++
++    def read_file_raw(self, path: str) -> ReadResult:
++        self.reads.append(path)
++        content = self.files.get(path)
++        if content is None:
++            return ReadResult(error="file not found", not_found=True)
++        raw = content.encode("utf-8")
++        return ReadResult(
++            content=content,
++            file_size=len(raw),
++            _content_sha256=hashlib.sha256(raw).hexdigest(),
++        )
++
++    def patch_replace(
++        self, path: str, old: str, new: str, replace_all: bool = False
++    ) -> PatchResult:
++        updated = self.files[path].replace(old, new)
++        if self.persist:
++            self.files[path] = updated
++        return PatchResult(success=True, diff=f"-{old}\n+{new}\n")
++
++
++def test_worker_patch_rejects_success_when_disk_did_not_change(
++    tmp_path: Path, monkeypatch
++) -> None:
++    target = tmp_path / "worker.py"
++    target.write_text("before\n", encoding="utf-8")
++    monkeypatch.setattr("tools.file_tools._get_file_ops", lambda _task_id: _PatchOps(persist=False))
++
++    result = json.loads(
++        patch_tool(
++            path=str(target),
++            old_string="before",
++            new_string="after",
++            task_id="worker-noop",
++        )
++    )
++
++    assert result["success"] is False
++    assert "post-write verification failed" in result["error"].lower()
++    assert target.read_text(encoding="utf-8") == "before\n"
++
++
++def test_worker_patch_returns_verification_snapshot_when_disk_changed(
++    tmp_path: Path, monkeypatch
++) -> None:
++    target = tmp_path / "worker.py"
++    target.write_text("before\n", encoding="utf-8")
++    monkeypatch.setattr("tools.file_tools._get_file_ops", lambda _task_id: _PatchOps(persist=True))
++
++    result = json.loads(
++        patch_tool(
++            path=str(target),
++            old_string="before",
++            new_string="after",
++            task_id="worker-write",
++        )
++    )
++
++    assert result["success"] is True
++    assert result["verification_snapshot"]["changed_paths"] == [str(target)]
++    assert target.read_text(encoding="utf-8") == "after\n"
++
++
++def test_worker_patch_verifies_change_in_remote_backend(
++    tmp_path: Path, monkeypatch
++) -> None:
++    target = str(tmp_path / "host-absent-remote.py")
++    ops = _RemotePatchOps(target, persist=True)
++    monkeypatch.setattr("tools.file_tools._get_file_ops", lambda _task_id: ops)
++
++    result = json.loads(
++        patch_tool(
++            path=target,
++            old_string="before",
++            new_string="after",
++            task_id="worker-remote-write",
++        )
++    )
++
++    assert not Path(target).exists()
++    assert result["success"] is True
++    assert result["verification_snapshot"]["changed_paths"] == [target]
++    assert ops.reads == [target, target]
++
++
++def test_worker_patch_rejects_remote_backend_noop(
++    tmp_path: Path, monkeypatch
++) -> None:
++    target = str(tmp_path / "host-absent-remote.py")
++    ops = _RemotePatchOps(target, persist=False)
++    monkeypatch.setattr("tools.file_tools._get_file_ops", lambda _task_id: ops)
++
++    result = json.loads(
++        patch_tool(
++            path=target,
++            old_string="before",
++            new_string="after",
++            task_id="worker-remote-noop",
++        )
++    )
++
++    assert not Path(target).exists()
++    assert result["success"] is False
++    assert "post-write verification failed" in result["error"].lower()
++    assert ops.reads == [target, target]
+diff --git a/tests/hermes_cli/test_worker_test_exit_honored.py b/tests/hermes_cli/test_worker_test_exit_honored.py
+new file mode 100644
+index 0000000000..1ce935f27a
+--- /dev/null
++++ b/tests/hermes_cli/test_worker_test_exit_honored.py
+@@ -0,0 +1,44 @@
++"""Regression coverage for non-zero worker test results."""
++
++from __future__ import annotations
++
++import json
++import subprocess
++from pathlib import Path
++from types import SimpleNamespace
++
++from tools.terminal_tool_result import finalize_foreground_result
++
++
++def test_worker_test_exit_one_is_failed_even_when_output_says_passed(monkeypatch) -> None:
++    repo = Path(__file__).resolve().parents[2]
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="4 passed"),
++    )
++    completed = subprocess.run(["test-runner"], capture_output=True, text=True)
++    payload = json.loads(
++        finalize_foreground_result(
++            command=(
++                "scripts/run_tests.sh "
++                "tests/hermes_cli/test_worker_test_exit_honored.py -v"
++            ),
++            result={"output": completed.stdout, "returncode": completed.returncode},
++            env=SimpleNamespace(cwd=str(repo)),
++            env_type="local",
++            effective_task_id="worker-test-exit",
++            task_id="worker-test-exit",
++            session_id="worker-session",
++            session_key="worker-session",
++            workdir=None,
++            command_cwd=str(repo),
++            approval_note=None,
++        )
++    )
++
++    assert payload["exit_code"] == 1
++    assert payload["status"] == "failed"
++    assert payload["error"].startswith("failed:")
++    assert "4 passed" in payload["error"]
++    assert payload["status"] != "ok"
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index e80d4bc998..63a682734f 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -419,12 +419,19 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
+ 
+ 
+ def test_block_happy_path(worker_env):
++    from hermes_cli import kanban_db as kb
++    from hermes_cli import kanban_db_connect as kbc
+     from tools import kanban_tools as kt
+-    out = kt._handle_block({"reason": "need clarification"})
++    question = "need clarification"
++    with kbc.connect() as conn:
++        conn.execute(
++            "UPDATE tasks SET body = ? WHERE id = ?",
++            (f"Question for user: {question}", worker_env),
++        )
++        conn.commit()
++    out = kt._handle_block({"reason": question})
+     d = json.loads(out)
+     assert d["ok"] is True
+-    from hermes_cli import kanban_db as kb
+-    from hermes_cli import kanban_db_connect as kbc
+     conn = kbc.connect()
+     try:
+         assert kb.get_task(conn, worker_env).status == "blocked"
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+index 953cce88db..fb1f3adcc8 100644
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -8,6 +8,7 @@ staleness state).
+ 
+ import base64
+ import errno
++import hashlib
+ import json
+ import logging
+ import os
+@@ -956,6 +957,64 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[st
+     return paths, content_paths, entry_paths
+ 
+ 
++def _patch_disk_snapshot(file_ops, paths: list[str]) -> dict[str, dict[str, object]]:
++    """Return content-only persistence markers for patch targets.
++
++    The patch implementation already verifies each individual write. This
++    second, tool-boundary snapshot catches a broken or replaced implementation
++    that reports success without changing any target — the exact contract the
++    model relies on when it reports a worker edit as landed.
++    """
++    snapshot: dict[str, dict[str, object]] = {}
++    use_host_paths = _file_ops_uses_host_paths(file_ops)
++    for path in dict.fromkeys(paths):
++        if use_host_paths:
++            try:
++                raw = Path(path).read_bytes()
++            except FileNotFoundError:
++                snapshot[path] = {"exists": False}
++                continue
++            except OSError:
++                pass
++            else:
++                snapshot[path] = {
++                    "exists": True,
++                    "sha256": hashlib.sha256(raw).hexdigest(),
++                }
++                continue
++        result = file_ops.read_file_raw(path)
++        if getattr(result, "error", None):
++            snapshot[path] = (
++                {"exists": False}
++                if getattr(result, "not_found", False)
++                else {"verified": False}
++            )
++            continue
++        digest = getattr(result, "_content_sha256", None)
++        if not digest:
++            digest = hashlib.sha256(result.content.encode("utf-8")).hexdigest()
++        snapshot[path] = {"exists": True, "sha256": digest}
++    return snapshot
++
++
++def _verify_patch_changed_disk(
++    result_dict: dict, before: dict[str, dict[str, object]], after: dict[str, dict[str, object]]
++) -> None:
++    """Attach the post-write snapshot or turn an unproven success into failure."""
++    changed = sorted(path for path in before if before[path] != after.get(path))
++    result_dict["verification_snapshot"] = {
++        "method": "content_sha256",
++        "changed_paths": changed,
++        "after": after,
++    }
++    if result_dict.get("success") and not result_dict.get("no_change") and not changed:
++        result_dict["success"] = False
++        result_dict["error"] = (
++            "Post-write verification failed: patch reported success but no target "
++            "changed on disk. Nothing was recorded as written."
++        )
++
++
+ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
+                new_string: str = None, replace_all: bool = False, patch: str = None,
+                task_id: str = "default", cross_profile: bool = False,
+@@ -989,6 +1048,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
+                 _locks.enter_context(file_state.lock_path(_r))
+             stale_warnings = _edit_warnings(_paths_to_check, _path_to_resolved, task_id)
+             file_ops = _get_file_ops(task_id)
++            _verification_targets = [
++                _path_to_entry.get(_p) or _path_to_resolved.get(_p) or _p
++                for _p in _paths_to_check
++            ]
++            _before_snapshot = _patch_disk_snapshot(file_ops, _verification_targets)
+             # Whole-file knowledge held BEFORE the patch reads, under the same locks. Like
+             # every baseline check it stats the host path, so a sandbox path carries nothing.
+             _known = _known_full_content_sha256(_path_to_resolved.values(), task_id)
+@@ -1011,6 +1075,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
+                 return tool_error(f"Unknown mode: {mode}")
+ 
+             result_dict = result.to_dict()
++            if result_dict.get("success"):
++                _verify_patch_changed_disk(
++                    result_dict,
++                    _before_snapshot,
++                    _patch_disk_snapshot(file_ops, _verification_targets),
++                )
+             if stale_warnings:
+                 result_dict["_warning"] = " | ".join(stale_warnings)
+             if not result_dict.get("error"):
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index c8b64c095c..16371f077f 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -11,6 +11,7 @@ import functools
+ import json
+ import logging
+ import os
++import re
+ import time
+ from contextlib import contextmanager
+ from typing import Any, Callable, Optional
+@@ -349,6 +350,28 @@ def _redact(value: Any) -> str:
+     return redact_sensitive_text(str(value), force=True)
+ 
+ 
++_USER_QUESTION_LINE = re.compile(
++    r"^\s*(?:Frage an (?:User|Benutzer)|Question for (?:user|operator))\s*:\s*(.+?)\s*$",
++    re.IGNORECASE | re.MULTILINE,
++)
++
++
++def _guard_worker_needs_input(task, reason: str, kind: Optional[str]) -> None:
++    """Refuse a worker-authored human pause that its briefing never requested."""
++    if _default_task_id(None) is None or kind not in (None, "needs_input"):
++        return
++    questions = [" ".join(match.split()).casefold() for match in _USER_QUESTION_LINE.findall(task.body or "")]
++    named = " ".join(reason.split()).casefold()
++    _check(
++        named in questions,
++        "kanban_block needs_input refused: the task briefing does not contain a matching "
++        "'Question for user:' or 'Frage an User:' line. Acceptance anxiety, a desired "
++        "confirmation, or an unbriefed acceptance point is not a blocker. If the requested "
++        "work is finished, call kanban_complete (or kanban_request_review when this card "
++        "itself needs review).",
++    )
++
++
+ def _redact_opt(value: Any) -> Any:
+     return _redact(value) if value else value
+ 
+@@ -834,6 +857,7 @@ def _handle_block(args: dict, **kw) -> str:
+                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
+                f"finished or cannot proceed for another reason, call kanban_complete instead — "
+                f"the completion judge will evaluate it.")
++        _guard_worker_needs_input(task, reason, kind)
+         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
+         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+         landed_kind = kb.get_task(conn, tid).block_kind
+diff --git a/tools/kanban_tools_schemas.py b/tools/kanban_tools_schemas.py
+index ec5a72610e..26eefc0461 100644
+--- a/tools/kanban_tools_schemas.py
++++ b/tools/kanban_tools_schemas.py
+@@ -179,7 +179,10 @@ KANBAN_BLOCK_SCHEMA = _schema(
+         "``reason`` is shown to the human on the board. If a task keeps "
+         "getting unblocked and re-blocked for the same reason, it is "
+         "auto-escalated to triage. Use for genuine blockers only — don't "
+-        "block on things you can resolve yourself."
++        "block on things you can resolve yourself. Dispatcher workers may use "
++        "'needs_input' (or omit kind) only when the task body contains an "
++        "explicit 'Question for user: <X>' or 'Frage an User: <X>' line and "
++        "reason repeats <X> exactly; acceptance anxiety is not a blocker."
+     ),
+     {
+         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+diff --git a/tools/terminal_tool_result.py b/tools/terminal_tool_result.py
+index 942b1780c1..769739418d 100644
+--- a/tools/terminal_tool_result.py
++++ b/tools/terminal_tool_result.py
+@@ -203,6 +203,31 @@ def _verification_evidence(command, cwd, session_id, returncode, output) -> Opti
+     return None
+ 
+ 
++def _test_run_outcome(command: str, cwd: Optional[str], returncode: int, output: str) -> Optional[dict]:
++    """Machine-readable outcome for commands classified as test runs.
++
++    Test runners can print a passing sub-summary before exiting non-zero. The
++    exit code remains authoritative; make that impossible to miss in the tool
++    result instead of asking the model to infer it from a distant JSON field.
++    """
++    with _quiet("test result classification"):
++        from agent.verification_evidence import classify_verification_command
++
++        evidence = classify_verification_command(
++            command,
++            cwd=cwd,
++            exit_code=returncode,
++            output=output,
++        )
++        if evidence is None or evidence.kind != "test":
++            return None
++        if returncode == 0:
++            return {"status": "ok"}
++        tail = output[-500:].strip() or f"exit code {returncode}"
++        return {"status": "failed", "error": f"failed: {tail} (exit code {returncode})"}
++    return None
++
++
+ def finalize_foreground_result(
+     *, command: str, result: dict, env: Any, env_type: str, effective_task_id: str,
+     task_id: Optional[str], session_id: Optional[str], session_key: str,
+@@ -255,7 +280,10 @@ def finalize_foreground_result(
+     if approval_note and returncode == 130 and "[Command interrupted]" in output:
+         approval_note = approval_note.rstrip(".") + ", then interrupted."
+ 
++    test_outcome = _test_run_outcome(command, command_cwd, returncode, output)
+     result_dict = {"output": output, "exit_code": returncode, "error": None}
++    if test_outcome:
++        result_dict.update(test_outcome)
+     # Optional fields in observable JSON key order; None means "omit". Spill
+     # metadata is present only when output overflowed the capture window.
+     optional_fields: list[tuple[str, Any]] = [
+-- 
+2.54.0 (Apple Git-157)
+

@@ -174,7 +174,7 @@ class TestMediaInflightFallbackList:
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule), \
-             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+             patch("gateway.outbound.send._send_to_platform", new=standalone_send):
             result = _deliver_result(
                 job, content, adapters={Platform.TELEGRAM: adapter}, loop=loop)
 
@@ -232,7 +232,7 @@ class TestMediaInflightFallbackList:
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule), \
-             patch("tools.send_message_tool._send_to_platform", new=fake_standalone):
+             patch("gateway.outbound.send._send_to_platform", new=fake_standalone):
             result = _deliver_result(
                 job, content, adapters={Platform.TELEGRAM: adapter}, loop=loop)
 

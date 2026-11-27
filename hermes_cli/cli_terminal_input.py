@@ -349,20 +349,38 @@ _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
 
 
 def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the terminal is Ghostty.
+    """Whether the terminal must be treated as Ghostty for the extended-keys push.
 
     Ghostty gets ONLY modifyOtherKeys: its Kitty disambiguate mode strips Alt from
     Backspace (upstream bug), breaking backward-kill-word.
 
     Ghostty implements modifyOtherKeys correctly (it then emits ``\\x1b[27;3;127~``, which the alias table
     also maps). See #87630.
+
+    herdr panes embed a Ghostty core but scrub the ghostty TERM markers, and a
+    WT_SESSION inherited from the outer Windows Terminal describes that outer
+    terminal, not the pane hermes talks to — pushing Kitty there re-encodes
+    shifted punctuation as CSI-u sequences the alias table doesn't map, leaking
+    them as literal text on non-US layouts (#100169).  herdr sets HERDR_ENV in
+    every pane, so that marker means the same Ghostty core and the same
+    modifyOtherKeys-only exception applies.
     """
     env = os.environ if env is None else env
-    return (env.get("TERM_PROGRAM") or "").strip() == "ghostty" or (env.get("TERM") or "").strip().lower() == "xterm-ghostty"
+    return (
+        (env.get("TERM_PROGRAM") or "").strip() == "ghostty"
+        or (env.get("TERM") or "").strip().lower() == "xterm-ghostty"
+        or bool((env.get("HERDR_ENV") or "").strip())
+    )
 
 
 def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Allowlist of terminals where requesting modified-Enter reporting is safe (aligned with the Ink TUI)."""
+    """Allowlist of terminals where requesting modified-Enter reporting is safe (aligned with the Ink TUI).
+
+    herdr panes embed a Ghostty core, so ``HERDR_ENV`` (set in every pane) admits
+    them like the ``ghostty`` entries themselves: without it, a pane that doesn't
+    inherit an outer ``WT_SESSION`` matches nothing here and never gets any push,
+    leaving Shift+Enter collapsed to a bare CR (#100169).
+    """
     env = os.environ if env is None else env
     term_program = (env.get("TERM_PROGRAM") or "").strip()
     term = (env.get("TERM") or "").strip().lower()
@@ -371,6 +389,7 @@ def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = No
         or term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode"}
         or env.get("KITTY_WINDOW_ID") or "kitty" in term
         or term == "xterm-ghostty"
+        or bool((env.get("HERDR_ENV") or "").strip())
         or term.startswith("tmux") or term_program.lower() == "tmux"
     )
 

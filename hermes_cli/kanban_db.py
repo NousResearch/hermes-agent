@@ -1580,6 +1580,8 @@ def link_tasks(
                     "dependency_wait",
                     {"reason": "parent_not_done", "demoted": True, "parent": parent_id},
                 )
+            else:
+                _recover_rekinded_dependency(conn, parent_id, child_id)
         _append_event(
             conn,
             child_id,
@@ -1588,6 +1590,48 @@ def link_tasks(
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
     return gated
+
+
+def _recover_rekinded_dependency(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+    """Demote a child that ``block_task`` parked as sticky ``needs_input`` back
+    into the dependency-wait lane now that its real dependency is being linked.
+
+    ``block_task(kind='dependency')`` with no open parent re-kinds to
+    ``needs_input`` (sticky), stamping the ``blocked`` event with
+    ``requested_kind='dependency'`` / ``rekind_reason='no_open_parent'``. When
+    the dependency is only linked afterwards, the plain ``ready -> todo``
+    demotion above cannot fire (the child is ``blocked``), and
+    ``recompute_ready`` would skip it forever via ``_has_sticky_block``. Re-kind
+    to ``block_kind='dependency'`` / ``status='todo'`` so the next
+    ``recompute_ready`` promotes it once this parent completes. The caller only
+    reaches here with a non-terminal ``parent_id``; a terminal parent leaves
+    nothing to wait on, so the card stays ``blocked`` / ``needs_input`` as the
+    breaker left it.
+    """
+    child = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (child_id,),
+    ).fetchone()
+    if child is None or child["status"] != "blocked":
+        return
+    payload = _json_dict(_row_get(_latest_event(conn, child_id, "blocked"), "payload"))
+    if payload.get("requested_kind") != "dependency" or payload.get("rekind_reason") != "no_open_parent":
+        return
+    conn.execute(
+        "UPDATE tasks SET block_kind = 'dependency', status = 'todo' WHERE id = ?",
+        (child_id,),
+    )
+    _append_event(
+        conn,
+        child_id,
+        "dependency_wait",
+        {
+            "reason": None,
+            "kind": "dependency",
+            "source_status": "blocked",
+            "demoted_from_needs_input": True,
+            "parent": parent_id,
+        },
+    )
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:

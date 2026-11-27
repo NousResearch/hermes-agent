@@ -60,13 +60,15 @@
 /* The machine chip beside the name (18563:12863): 10px caps on the status green, black ink, as the
    sign-in steps' "ok" badge; the quiet waiting fill while this window's gateway is not connected. */
 .agent-management-machine {
-  padding: 0.1875rem 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
   border-radius: var(--portal-radius-control);
   background-color: var(--portal-badge-waiting-fill);
   color: var(--portal-badge-waiting-ink);
-  font-size: var(--portal-type-caption-size);
+  font-size: var(--portal-type-micro-size);
   font-weight: 500;
-  letter-spacing: var(--portal-tracking-caption);
+  letter-spacing: var(--portal-tracking-chip);
   line-height: 1;
   text-transform: uppercase;
   white-space: nowrap;
@@ -85,7 +87,8 @@
 
 .agent-management-machine[data-connected='true'] {
   background-color: var(--portal-badge-ok-fill);
-  color: var(--portal-badge-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--portal-badge-ok-ink) 24%, transparent);
+  color: var(--portal-badge-ok-ink);
 }
 
 /* The overflow sits on the hero's brightest corner: it takes the solid floating fill (page-hero.css). */
@@ -101,10 +104,10 @@
 
 /* "DEFAULT AGENT" under the name (18563:12868): the 10px caps caption at the quiet ink. */
 .agent-management-role {
-  color: var(--ui-text-tertiary);
-  font-size: var(--portal-type-caption-size);
-  letter-spacing: var(--portal-tracking-caption);
-  line-height: 1.6;
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 1.5;
   text-transform: uppercase;
 }
 
@@ -325,15 +328,19 @@
 .agent-overview-footer {
   padding: 12px 16px;
   color: var(--ui-text-tertiary);
-  font-size: 13px;
+  font-size: var(--portal-type-ui-size);
 }
 
 .agent-instructions-preview {
   padding: 16px;
-  color: var(--ui-text-secondary);
+  color: var(--ui-text-primary);
   font-family: var(--portal-font-mono);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--portal-type-body-size);
+  line-height: 1.55;
+}
+
+.agent-instructions-preview:hover {
+  background: var(--portal-surface-row-hover);
 }
 
 .agent-instructions-preview p {
@@ -363,7 +370,7 @@
   margin-top: 10px;
   white-space: nowrap;
   color: var(--ui-text-tertiary);
-  font-size: 11px;
+  font-size: var(--portal-type-meta-size);
 }
 
 .agent-management-error {

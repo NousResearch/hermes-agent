@@ -449,6 +449,7 @@
 
 :root[data-shell='portal'] .discovery-status-badge[data-tone='ok'] {
   background-color: var(--portal-badge-ok-fill);
+  color: var(--portal-badge-ok-ink);
 }
 
 :root[data-shell='portal'] .discovery-status-badge[data-tone='waiting'] {

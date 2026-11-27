@@ -487,6 +487,20 @@
   font-size: var(--portal-type-body-size);
 }
 
+/* Keep classic Badges on the portal micro scale instead of fractional 9.6px / 10.4px sizes. */
+:root[data-shell='portal'] [data-slot='badge'] {
+  font-size: var(--portal-type-micro-size);
+}
+
+/* Give overflowing page scrollers a quiet resting scrollbar cue so clipped content is discoverable. */
+:root[data-shell='portal'] [data-page-surface] ::-webkit-scrollbar-thumb {
+  background: var(--portal-stroke-divider);
+}
+
+:root[data-shell='portal'] [data-page-surface] :hover::-webkit-scrollbar-thumb {
+  background: var(--portal-stroke-control);
+}
+
 /* ── Touch (DESIGN.md › Responsive) ───────────────────────────────────────────
    A coarse pointer on the browser host, at any width: every control takes the 44px target. Buttons,
    select triggers and tabs grow to it; switches and checkboxes keep their visual and extend their hit

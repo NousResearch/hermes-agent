@@ -408,7 +408,7 @@
 /* RUNNING wears the status green (18563:12897), the sign-in steps' "ok" badge. */
 .agent-history-chips small[data-tone='running'] {
   background: var(--portal-badge-ok-fill);
-  color: var(--portal-badge-ink);
+  color: var(--portal-badge-ok-ink);
 }
 /* The scroller's end space is under it (agent-settings.css), so the row pads only its top. */
 .agent-history-footer {
@@ -842,7 +842,7 @@
 }
 .agent-history-outcome[data-tone='ok'] {
   background: var(--portal-badge-ok-fill);
-  color: var(--portal-badge-ink);
+  color: var(--portal-badge-ok-ink);
 }
 .agent-history-outcome[data-tone='ok'] > button {
   color: inherit;

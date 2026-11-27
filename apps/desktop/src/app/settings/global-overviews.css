@@ -58,7 +58,7 @@
   [data-slot='settings-row']
   > div
   > div:first-child
-  > div:nth-child(2) {
+  > div:nth-child(n + 2) {
   margin-top: 2px;
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;
@@ -408,7 +408,7 @@
 
 .gateway-status-badge[data-status='online'] {
   background-color: var(--portal-badge-ok-fill);
-  color: var(--portal-badge-ink);
+  color: var(--portal-badge-ok-ink);
 }
 
 /* The list's closing actions (18563:12594): a 36px plus tile and the label on its own 36px fill, 12px
@@ -678,7 +678,10 @@
   font-family: var(--portal-settings-meta-font);
 }
 
-:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-section-head h3 {
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is(.global-settings-section-head h3, fieldset > legend) {
   color: var(--portal-settings-section-ink);
   font-size: var(--portal-type-ui-size);
   font-weight: 600;
@@ -733,8 +736,16 @@
   [data-slot='settings-row']
   > div
   > div:first-child
-  > div:nth-child(2) {
+  > div:nth-child(n + 2) {
   font-family: var(--portal-settings-meta-font);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  .global-settings-card
+  button[data-size='sm']:not([data-variant='link'], [data-variant='text'], [data-variant='textStrong'], [data-variant='ghost']) {
+  font-size: var(--portal-type-ui-size);
 }
 
 :root[data-shell='portal']

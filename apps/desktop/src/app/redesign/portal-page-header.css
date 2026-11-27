@@ -65,11 +65,11 @@
   min-width: 0;
   grid-area: eyebrow;
   margin-bottom: 0.25rem;
-  color: var(--ui-text-tertiary);
+  color: var(--ui-text-secondary);
   font-family: var(--portal-font-mono);
-  font-size: var(--portal-type-caption-size);
-  letter-spacing: var(--portal-tracking-caption);
-  line-height: 1.6;
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.5;
 }
 
 /* The H1 with its chip beside it (18563:12861), the chip centred on the H1's line. */

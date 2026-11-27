@@ -53,7 +53,10 @@
      page's column, and its thin line across the top fades in where the box now starts mid-stage. */
   inset-inline-start: max(var(--page-stage-nav, 0px), calc(100% - var(--page-hero-min-width)));
   width: var(--page-hero-min-width);
-  mask-image: linear-gradient(to right, transparent, var(--portal-raw-black) 6rem);
+  mask-image:
+    linear-gradient(to right, transparent, var(--portal-raw-black) 6rem),
+    linear-gradient(to bottom, var(--portal-raw-black) 70%, transparent);
+  mask-composite: intersect;
 }
 
 :where(:root[data-shell='portal'].dark) .portal-page-hero[data-art='tide'] {

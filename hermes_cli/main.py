@@ -39,6 +39,17 @@ import os
 import re
 import sys
 
+# Some aarch64 hosts advertise SVE/SME in AT_HWCAP without being able to execute the
+# instructions OpenSSL's load-time cpuprobe runs, so the process dies with SIGILL before it can
+# report anything. Probe in a throwaway child and skip the probe when it faults. This must run
+# before the first OpenSSL-backed import anywhere below; ``_openssl_arm_guard`` is stdlib-only
+# so it cannot itself be the thing that dies. No-op off aarch64 Linux, and when OPENSSL_armcap
+# is already configured.
+from hermes_cli._openssl_arm_guard import ensure_openssl_armcap_safe
+
+if _armcap_reason := ensure_openssl_armcap_safe():
+    print(f"hermes: {_armcap_reason}", file=sys.stderr)
+
 # Inline path math so ``python hermes_cli/main.py`` (script mode: sys.path[0]
 # is hermes_cli/, not the repo root) can import hermes_cli._startup_fast.
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))

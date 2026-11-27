@@ -501,17 +501,29 @@ def _assistant_message_item(
     )
 
 
+class _ReplayItem(NamedTuple):
+    position: int | float
+    wire: dict[str, Any]
+
+    @classmethod
+    def from_stored(cls, raw: dict[str, Any], wire: dict[str, Any]) -> _ReplayItem:
+        index = raw.get("_codex_output_index")
+        # Stable sort leaves unindexed (legacy) rows in their original bucket order.
+        legacy_position = float("inf") if wire["type"] == "function_call" else -1
+        return cls(index if type(index) is int and index >= 0 else legacy_position, wire)
+
+
 def _replay_reasoning_items(
     msg: dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool,
-) -> list[dict[str, Any]]:
+) -> list[_ReplayItem]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
     checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
     another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped) replay on a
     matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
-    replayed: list[dict[str, Any]] = []
+    replayed: list[_ReplayItem] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
         if not (isinstance(ri, dict) and ri.get("encrypted_content")):
             continue
@@ -535,7 +547,8 @@ def _replay_reasoning_items(
                 )
                 _CROSS_ISSUER_WARN_EMITTED = True
             continue
-        replayed.append({k: v for k, v in ri.items() if k not in ("id", "_issuer_kind", "_issuer_model")})
+        wire = {k: v for k, v in ri.items() if k not in ("id", "_issuer_kind", "_issuer_model", "_codex_output_index")}
+        replayed.append(_ReplayItem.from_stored(ri, wire))
         if item_id:
             seen_item_ids.add(item_id)
     return replayed
@@ -543,7 +556,7 @@ def _replay_reasoning_items(
 
 def _replay_message_items(
     msg: dict[str, Any], *, drop_replay_item_ids: bool, current_issuer_kind: Optional[str] = None,
-) -> list[dict[str, Any]]:
+) -> list[_ReplayItem]:
     """Replay exact assistant message items (id/phase) for prefix-cache hits.
 
     A ``msg_*`` id minted in the same response as a ``reasoning`` item is bound to that item's ``rs_*`` id,
@@ -553,7 +566,7 @@ def _replay_message_items(
     trimmed by the transport (``codex_reasoning_trimmed``) — and the message goes out as content/status/phase
     only. Reasoning-free turns keep their id.
     """
-    replayed: list[dict[str, Any]] = []
+    replayed: list[_ReplayItem] = []
     linked_to_reasoning = bool(msg.get("codex_reasoning_trimmed")) or any(
         isinstance(ri, dict) and ri.get("encrypted_content") for ri in _as_list(msg.get("codex_reasoning_items"))
     )
@@ -568,9 +581,10 @@ def _replay_message_items(
         if content:
             if linked_to_reasoning and raw_item.get("id"):
                 raw_item = {k: v for k, v in raw_item.items() if k != "id"}
-            replayed.append(_assistant_message_item(
+            wire = _assistant_message_item(
                 raw_item, content, drop_replay_item_ids=drop_replay_item_ids, current_issuer_kind=current_issuer_kind,
-            ))
+            )
+            replayed.append(_ReplayItem.from_stored(raw_item, wire))
     return replayed
 
 
@@ -605,9 +619,9 @@ class _WireCallIds:
 
 def _replay_tool_call_items(
     msg: dict[str, Any], *, start_index: int, wire_ids: Optional[_WireCallIds] = None,
-) -> list[dict[str, Any]]:
+) -> list[_ReplayItem]:
     """Convert an assistant message's ``tool_calls`` into ``function_call`` items."""
-    replayed: list[dict[str, Any]] = []
+    replayed: list[_ReplayItem] = []
     for tc in _as_list(msg.get("tool_calls")):
         if not isinstance(tc, dict):
             continue
@@ -617,11 +631,11 @@ def _replay_tool_call_items(
             continue
         index = start_index + len(replayed)
         call_id = _resolve_call_id(tc.get("call_id"), tc.get("id"), fn_name, str(arguments), index, canonicalize_fc=True)
-        replayed.append({
+        replayed.append(_ReplayItem.from_stored(tc, {
             "type": "function_call",
             "call_id": wire_ids.for_call(call_id) if wire_ids else _clamp_responses_call_id(call_id),
             "name": coerce_tool_name(fn_name, fallback="fn"), "arguments": _coerce_arguments(arguments),
-        })
+        }))
     return replayed
 
 
@@ -728,23 +742,24 @@ def _chat_messages_to_responses_input(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
         )
-        emit(reasoning_items, msg)
         message_items = _replay_message_items(
             msg, drop_replay_item_ids=drop_replay_item_ids, current_issuer_kind=current_issuer_kind,
         )
-        emit(message_items, msg)
         fallback = None
         if not message_items:
             fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
-        tool_items = _replay_tool_call_items(msg, start_index=len(items) + (fallback is not None), wire_ids=wire_ids)
+        start_index = len(items) + len(reasoning_items) + len(message_items) + (fallback is not None)
+        tool_items = _replay_tool_call_items(msg, start_index=start_index, wire_ids=wire_ids)
+        replay = [i.wire for i in sorted([*reasoning_items, *message_items, *tool_items], key=lambda i: i.position)]
         # A function_call already follows its reasoning. Inventing an empty assistant
         # message between them changes the replayed turn (Muse can emit corrupt finals).
         # Keep a follower only for reasoning with no other following item, and make it
         # non-empty: strict Responses-compatible providers reject "" with 400.
         if fallback is not None and not (fallback == "" and tool_items):
             follower = " " if fallback == "" else fallback
-            emit([_role_message_item("assistant", wire_content(follower), msg.get("phase"))], msg)
-        emit(tool_items, msg)
+            before_calls = next((i for i, item in enumerate(replay) if item["type"] == "function_call"), len(replay))
+            replay.insert(before_calls, _role_message_item("assistant", wire_content(follower), msg.get("phase")))
+        emit(replay, msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
     # first, retain pre-checkpoint USER and SUMMARY messages within a token budget, leave the tail.
@@ -942,9 +957,9 @@ def _preflight_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> di
 
 
 def _preflight_role_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
-    """``user``/``assistant`` role message, typed or untyped; string content or Responses parts."""
+    """``user``/``assistant``/``developer`` role message, typed or untyped; string content or Responses parts."""
     role = item.get("role")
-    if role not in {"user", "assistant"}:
+    if role not in {"user", "assistant", "developer"}:
         raise ValueError(
             f"Codex Responses input[{idx}] has unsupported item shape (type={item.get('type')!r}, role={role!r})."
         )
@@ -1050,26 +1065,101 @@ def _optional_dict(api_kwargs: dict[str, Any], key: str) -> Optional[dict[str, A
     return value
 
 
+_DEVELOPER_INSTRUCTIONS_MODEL_RE = re.compile(
+    r"(?:^|[/:.])gpt-(?:6\.(?:[2-9]|[1-9]\d+)|[7-9]|[1-9]\d+)(?:[-.]|$)"
+)
+
+
+def _uses_developer_instructions(model: Any, *, is_xai_responses: bool = False) -> bool:
+    if is_xai_responses:
+        return False
+    return bool(_DEVELOPER_INSTRUCTIONS_MODEL_RE.search(str(model or "").strip().lower()))
+
+
+def _prepend_developer_instructions(input_items: list[dict[str, Any]], instructions: str) -> list[dict[str, Any]]:
+    # Native compaction drops items placed before a replayed compaction checkpoint.
+    insert_at = 0
+    while (
+        insert_at < len(input_items)
+        and isinstance(input_items[insert_at], dict)
+        and input_items[insert_at].get("type") == "compaction"
+    ):
+        insert_at += 1
+    dev_item = {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": instructions}]}
+    return [*input_items[:insert_at], dev_item, *input_items[insert_at:]]
+
+
+def apply_developer_instructions_if_needed(
+    kwargs: dict[str, Any], model: Any, *, is_xai_responses: bool = False,
+    system_prompt: Optional[str] = None, keep_instructions: bool = False,
+) -> None:
+    # GPT-6.2+ appends top-level instructions after input and bills them uncached on every step.
+    if not _uses_developer_instructions(model, is_xai_responses=is_xai_responses):
+        return
+    instructions = kwargs.get("instructions") if keep_instructions else kwargs.pop("instructions", None)
+    prompt_text = system_prompt if system_prompt is not None else instructions
+    if not isinstance(prompt_text, str) or not prompt_text.strip():
+        return
+    input_items = kwargs.get("input")
+    if not isinstance(input_items, list):
+        return
+    has_developer = any(
+        isinstance(item, dict) and item.get("type") in (None, "message") and item.get("role") == "developer"
+        for item in input_items
+    )
+    if not has_developer:
+        kwargs["input"] = _prepend_developer_instructions(input_items, prompt_text)
+
+
+def extract_developer_prompt(items: Any) -> Optional[str]:
+    """Text of the leading ``developer`` input item (past any leading compaction checkpoints), or None."""
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        if item.get("type") == "compaction":
+            continue
+        if item.get("role") != "developer":
+            return None
+        content = item.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
+        return None
+    return None
+
+
 def _preflight_codex_api_kwargs(
     api_kwargs: Any, *, allow_stream: bool = False, drop_replay_item_ids: bool = False,
     sanitize_harmony_tokens: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
-    if missing := sorted(key for key in ("model", "instructions", "input") if key not in api_kwargs):
+    raw_input = api_kwargs.get("input")
+    has_developer_message = isinstance(raw_input, list) and any(
+        isinstance(item, dict) and item.get("type") in (None, "message") and item.get("role") == "developer"
+        for item in raw_input
+    )
+    required_keys = ("model", "input") if has_developer_message else ("model", "instructions", "input")
+    if missing := sorted(key for key in required_keys if key not in api_kwargs):
         raise ValueError(f"Codex Responses request missing required field(s): {', '.join(missing)}.")
     model = api_kwargs.get("model")
     if not _nonblank(model):
         raise ValueError("Codex Responses request 'model' must be a non-empty string.")
-    instructions = _str_or_empty(api_kwargs.get("instructions")).strip() or DEFAULT_AGENT_IDENTITY
-    if sanitize_harmony_tokens:
-        instructions = _neutralize_harmony_tokens(instructions)
     input_items = _preflight_codex_input_items(
-        api_kwargs.get("input"), drop_replay_item_ids=drop_replay_item_ids, sanitize_harmony_tokens=sanitize_harmony_tokens,
+        raw_input, drop_replay_item_ids=drop_replay_item_ids, sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
-    normalized: dict[str, Any] = {
-        "model": model.strip(), "instructions": instructions, "input": input_items, "store": False,
-    }
+    normalized: dict[str, Any] = {"model": model.strip()}
+    raw_instructions = _str_or_empty(api_kwargs.get("instructions")).strip()
+    if raw_instructions or not has_developer_message:
+        instructions = raw_instructions or DEFAULT_AGENT_IDENTITY
+        if sanitize_harmony_tokens:
+            instructions = _neutralize_harmony_tokens(instructions)
+        normalized["instructions"] = instructions
+    normalized["input"] = input_items
+    normalized["store"] = False
     tools = api_kwargs.get("tools")
     if tools is not None:
         if not isinstance(tools, list):
@@ -1123,17 +1213,17 @@ def _text_chunks(parts: Any, types: Optional[set] = None) -> list[str]:
     return [text for text in (getattr(part, "text", None) for part in selected) if _nonempty_str(text)]
 
 
-def _extract_responses_message_text(item: Any) -> str:
+def _responses_message_parts(item: Any) -> list[dict[str, str]]:
     """Assistant text from a Responses message output item. A ``refusal`` part carries the
     model's explanation in ``refusal`` instead of ``text``; it is message text too, otherwise a
     refusal-only turn reads as an empty response (sibling of chat_completions ``message.refusal``)."""
-    chunks = []
+    parts = []
     for part in _as_list(_field(item, "content")):
         ptype = _field(part, "type")
         text = _field(part, "refusal") if ptype == "refusal" else (_field(part, "text") if ptype in _OUTPUT_TEXT_TYPES else None)
-        if _nonempty_str(text):
-            chunks.append(text)
-    return "".join(chunks).strip()
+        if isinstance(text, str):
+            parts.append({"type": "output_text", "text": text})
+    return parts
 
 
 def _extract_responses_reasoning_text(item: Any) -> str:
@@ -1211,14 +1301,14 @@ class _OutputScan:
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
 
     def scan(self, output: list[Any], issuer_kind: Optional[str], issuer_model: Optional[str] = None) -> None:
-        for item in output:
+        for output_index, item in enumerate(output):
             item_type = getattr(item, "type", None)
             item_status = _lower_or_none(getattr(item, "status", None))
             if item_status in _INCOMPLETE_STATUSES and item_type not in _SERVER_SIDE_TOOL_CALL_TYPES:
                 self.has_incomplete_items = True
                 self.saw_streaming_or_item_incomplete = True
             if item_type == "message":
-                self._message(item, item_status)
+                self._message(item, item_status, output_index)
             elif item_type in {"reasoning", "compaction"}:
                 if item_type == "reasoning":
                     self.saw_reasoning_item = True
@@ -1229,30 +1319,36 @@ class _OutputScan:
                 # replay, cross-issuer guard and kill switch for free).
                 raw_item = _capture_encrypted_item(item, item_type, issuer_kind, issuer_model)
                 if raw_item is not None:
+                    raw_item["_codex_output_index"] = output_index
                     self.reasoning_items_raw.append(raw_item)
                     if item_type == "compaction":
                         logger.info(
                             "Native Responses compaction item captured (%d chars encrypted).", len(raw_item["encrypted_content"]),
                         )
             elif item_type == "custom_tool_call" or (item_type == "function_call" and item_status not in _INCOMPLETE_STATUSES):
-                self.tool_calls.append(_response_tool_call(item, item_type, len(self.tool_calls)))
+                call = _response_tool_call(item, item_type, len(self.tool_calls))
+                call._codex_output_index = output_index
+                self.tool_calls.append(call)
 
-    def _message(self, item: Any, item_status: Optional[str]) -> None:
+    def _message(self, item: Any, item_status: Optional[str], output_index: int) -> None:
         normalized_phase = _lower_or_none(getattr(item, "phase", None))
         is_commentary_phase = normalized_phase in {"commentary", "analysis"}
         self.saw_commentary_phase = self.saw_commentary_phase or is_commentary_phase
         self.saw_final_answer_phase = self.saw_final_answer_phase or normalized_phase in {"final_answer", "final"}
-        message_text = _extract_responses_message_text(item)
-        if not message_text:
+        parts = _responses_message_parts(item)
+        if not any(part["text"] for part in parts):
             return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.
-        (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
+        if message_text := "".join(part["text"] for part in parts).strip():
+            (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
         item_id = getattr(item, "id", None)
-        self.message_items_raw.append(_message_item(
-            [{"type": "output_text", "text": message_text}], status=_normalize_responses_message_status(item_status),
+        raw = _message_item(
+            parts, status=_normalize_responses_message_status(item_status),
             item_id=item_id if isinstance(item_id, str) else None, phase=normalized_phase,
-        ))
+        )
+        raw["_codex_output_index"] = output_index
+        self.message_items_raw.append(raw)
 
 
 def _untrusted_completed_issuers() -> frozenset:
@@ -1279,8 +1375,7 @@ def _normalize_codex_response(
     if not isinstance(output, list) or not output:
         # Codex can deliver the whole answer via stream events with an empty output.
         out_text = getattr(response, "output_text", None)
-        out_text = out_text.strip() if isinstance(out_text, str) else ""
-        if out_text:
+        if isinstance(out_text, str) and out_text.strip():
             msg = "Codex response has empty output but output_text is present (%d chars); synthesizing output item."
             logger.debug(msg, len(out_text))
             content: list[Any] = [SimpleNamespace(type="output_text", text=out_text)]

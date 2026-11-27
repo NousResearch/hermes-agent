@@ -11,8 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, get_session_admission
+from persistence.core.errors import AuthorityRefusal as RuntimeStoreError
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture
@@ -27,16 +28,16 @@ def authority(tmp_path, monkeypatch):
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession, SessionAuthority
 
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session('s', source='telegram', user_id='human')
-    epoch = begin_runtime_epoch(db, instance_id='owner')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'telegram', user_id='human')
+    epoch = db.runtime.begin_epoch(instance_id='owner')
 
     async def handle(event):
         return 'ok'
 
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
                              _adapter_for_source=lambda source: None, _handle_message=handle)
-    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', epoch=epoch, persistence=db)
     authority.sessions['s'] = LiveSession(
         SessionSource(platform=Platform.TELEGRAM, chat_id='c', user_id='human'), 'route')
     yield authority
@@ -49,6 +50,7 @@ async def test_a_first_submit_on_a_sibling_socket_auto_attaches_and_admits(autho
     up subscribed exactly as if it had resumed first."""
     from gateway.session_controls import AuthorityConnection
     from gateway.session_contract import SessionRef
+    from persistence.sqlite.authority._admission_store import get_session_admission
 
     connection = AuthorityConnection(authority, object(), {'user_id': 'human'})
     assert connection.subscriptions == {}  # session.create rode another socket
@@ -56,7 +58,8 @@ async def test_a_first_submit_on_a_sibling_socket_auto_attaches_and_admits(autho
     result = await connection.submit(SessionRef('p', 's'), {'text': 'hello', 'submission_id': 'r1'})
     assert result['admission_id']
     assert 's' in connection.subscriptions
-    row = get_session_admission(authority.db, admission_id=result['admission_id'])
+    from tests.fixtures.storage_holder import raw_holder
+    row = get_session_admission(raw_holder(authority.persistence), admission_id=result['admission_id'])
     assert row['status'] in ('queued', 'started')
 
 

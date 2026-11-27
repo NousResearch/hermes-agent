@@ -163,11 +163,15 @@ class ReasoningParamsMixin:
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """``build_assistant_message``; a held turn's row with visible text comes back typed hidden
-        (``withhold_held_row``) until ``finish_text_response`` publishes it as the final."""
+        (``withhold_held_row``) until ``finish_text_response`` publishes it as the final. The row is
+        stamped with the response's reasoning count: the replay price of its (encrypted) reasoning."""
         from agent.chat_completion_helpers import build_assistant_message
+        from agent.message_metadata import stamp_reasoning_tokens
         from agent.stream_delivery import withhold_held_row
 
-        return withhold_held_row(self, build_assistant_message(self, assistant_message, finish_reason))
+        msg = build_assistant_message(self, assistant_message, finish_reason)
+        stamp_reasoning_tokens(msg, getattr(self, "_last_response_reasoning_tokens", 0))
+        return withhold_held_row(self, msg)
 
     def _reasoning_replay_route(self):
         """Reasoning replay decision for the active route (``message_sanitization.reasoning_replay_route``).
@@ -251,9 +255,9 @@ class ReasoningParamsMixin:
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
-        from agent.transports.chat_completions import _model_consumes_thought_signature
+        from agent.transports.chat_completions import _model_consumes_thought_signature, RESPONSES_TOOL_CALL_FIELDS
         keep_signature = _model_consumes_thought_signature(model, base_url, provider)
-        strip = {"call_id", "response_item_id"} | (set() if keep_signature else {"extra_content"})
+        strip = RESPONSES_TOOL_CALL_FIELDS if keep_signature else RESPONSES_TOOL_CALL_FIELDS | {"extra_content"}
         api_msg["tool_calls"] = [{k: v for k, v in tc.items() if k not in strip} if isinstance(tc, dict) else tc
                                  for tc in tool_calls]
         return api_msg

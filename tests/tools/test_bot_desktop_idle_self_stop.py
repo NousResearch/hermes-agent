@@ -41,6 +41,10 @@ from tools.bot_desktop import runtime
 runtime._X_LOCK_DIR = Path({scratch!r})
 runtime._ALLOC_LOCK = runtime._X_LOCK_DIR / "alloc.lock"
 runtime.missing_binaries = list
+# The idle check runs on this interpreter, not a launcher bound to whatever tool store the host's
+# HOME holds (that launcher, under this temporary HERMES_HOME, has no dependencies to select).
+from hermes_cli import _launchers
+_launchers.resolve_store_python = lambda root, **_: None
 {prelude}
 print(runtime.start(wait_seconds=15).pid, flush=True)
 time.sleep(600)
@@ -113,7 +117,7 @@ def test_a_screen_started_before_an_update_still_stops_itself(abandoned_screen, 
     prelude = (
         "from hermes_cli import _launchers\n"
         f"_launchers.resolve_store_python = lambda root, **_: Path({str(tmp_path / 'store/bin/python3')!r})\n"
-        f"runtime.__file__ = {str(install / 'tools/bot_desktop/runtime.py')!r}\n"
+        f"import hermes_cli._startup_fast as _sf; _sf.project_root_str = lambda: {str(install)!r}\n"
         f"sys.executable = {str(tmp_path / 'old-env/bin/python')!r}  # removed by the update\n"
         f"import os; os.environ['PYTHONPATH'] = {str(tmp_path / 'collected-generation')!r}")
     sd, launcher = abandoned_screen(idle_stop_minutes=0.02, prelude=prelude)

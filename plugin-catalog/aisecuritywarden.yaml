@@ -1,0 +1,16 @@
+name: aisecuritywarden
+title: aiSecurityWarden
+repo: https://github.com/SoftDevEng/aiSecurityWarden-hermes
+sha: d24b7ddc8100b77e5ed332b26e0b10064e30a1b1
+description: "Keep your bots' API keys out of .env. Hermes loads them at startup from an encrypted vault; revoke a bot's access in one click, or require a phone approval. Disclosure — when enabled, runs your installed aiSecurityWarden `swctl` client (argv only, allowlisted environment, up to 180 s to allow a phone approval) at Hermes start-up, which contacts the aiSecurityWarden server your machine token was set up with, and loads every secret in that token's project into Hermes's environment (existing values are kept unless `override_existing` is on); the plugin itself makes no network calls and never reads the token."
+maintainer: SoftDevEng
+tier: community
+category: tools
+version: "0.7.16"
+docs_url: https://github.com/SoftDevEng/aiSecurityWarden-hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.1"

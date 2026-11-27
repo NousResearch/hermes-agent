@@ -6,21 +6,23 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import hermes_state
-from hermes_state import SessionDB
-from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
-from hermes_cli import session_recovery
 from hermes_cli.session_recovery import (
     SessionRecoverySafetyError,
     SessionRecoverySourceError,
     inspect_session_database,
     recover_session_database,
 )
+from persistence.sqlite.admin import _recovery
+from persistence_assembly import close_stores_under, open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _sha256(path: Path) -> str:
@@ -31,75 +33,104 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+@contextmanager
+def _store(path: Path):
+    """A storage handle whose store file is *path*. A handle opens ``<home>/state.db``, so a file with another
+    name is written in a home beside it and moved to *path*, with its sidecars, when the handle closes."""
+    home = path.parent if path.name == "state.db" else path.parent / f"{path.name}.home"
+    home.mkdir(parents=True, exist_ok=True)
+    with open_persistence(profile_scope(home=home)) as store:
+        yield store
+    if home != path.parent:
+        close_stores_under(home)
+        for suffix in ("", "-wal", "-shm"):
+            if (home / f"state.db{suffix}").exists():
+                os.replace(home / f"state.db{suffix}", f"{path}{suffix}")
+
+
+def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
 def _make_source(path: Path) -> dict[str, int]:
-    db = SessionDB(db_path=path)
-    try:
+    with _store(path) as store:
         for session_number in range(3):
             session_id = f"recovery-session-{session_number}"
-            db.create_session(
+            seed_session(
+                store,
                 session_id,
                 "cli",
+                title=f"Recovery {session_number}",
                 cwd=f"/tmp/recovery-{session_number}",
             )
-            db.set_session_title(session_id, f"Recovery {session_number}")
-            for message_number in range(7):
-                db.append_message(
-                    session_id,
-                    "user" if message_number % 2 == 0 else "assistant",
-                    f"recoverable payload {session_number} {message_number}",
-                )
+            seed_messages(
+                store,
+                session_id,
+                *(
+                    {
+                        "role": "user" if message_number % 2 == 0 else "assistant",
+                        "content": f"recoverable payload {session_number} {message_number}",
+                    }
+                    for message_number in range(7)
+                ),
+            )
 
-        db.set_meta("goal:recovery-session-0", '{"status":"active"}')
-        db.apply_telegram_topic_migration()
-        db._conn.execute(
-            """
-            INSERT INTO telegram_dm_topic_mode (
-                chat_id, user_id, enabled, activated_at, updated_at
-            ) VALUES (?, ?, 1, ?, ?)
-            """,
-            ("chat-1", "user-1", 1.0, 2.0),
-        )
-        db._conn.execute(
-            """
-            INSERT INTO telegram_dm_topic_bindings (
-                chat_id, thread_id, user_id, session_key, session_id,
-                managed_mode, linked_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "chat-1",
-                "thread-1",
-                "user-1",
-                "telegram:user-1:chat-1",
-                "recovery-session-0",
-                "auto",
-                1.0,
-                2.0,
-            ),
-        )
-        db._conn.execute(
-            """
-            INSERT INTO gateway_routing (
-                scope, session_key, entry_json, updated_at
-            ) VALUES (?, ?, ?, ?)
-            """,
-            ("telegram", "telegram:user-1:chat-1", "{}", 2.0),
-        )
-        db._conn.execute(
-            """
-            INSERT INTO async_delegations (
-                delegation_id, origin_session, state, dispatched_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            ("delegation-1", "recovery-session-0", "completed", 1.0, 2.0),
-        )
-        # These are derived transition markers and must not reach the new DB.
-        db.set_meta("fts_rebuild_high_water", "999")
-        db.set_meta("fts_rebuild_progress", "500")
-        db.set_meta("fts_tool_full_content_high_water", "7")
-    finally:
-        db.close()
+        store.routing.prepare_topic_storage()
+        raw_holder(store)._execute_write(_seed_source_rows)
     return {"sessions": 3, "messages": 21}
+
+
+def _seed_source_rows(conn: sqlite3.Connection) -> None:
+    _set_meta(conn, "goal:recovery-session-0", '{"status":"active"}')
+    conn.execute(
+        """
+        INSERT INTO telegram_dm_topic_mode (
+            chat_id, user_id, enabled, activated_at, updated_at
+        ) VALUES (?, ?, 1, ?, ?)
+        """,
+        ("chat-1", "user-1", 1.0, 2.0),
+    )
+    conn.execute(
+        """
+        INSERT INTO telegram_dm_topic_bindings (
+            chat_id, thread_id, user_id, session_key, session_id,
+            managed_mode, linked_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "chat-1",
+            "thread-1",
+            "user-1",
+            "telegram:user-1:chat-1",
+            "recovery-session-0",
+            "auto",
+            1.0,
+            2.0,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO gateway_routing (
+            scope, session_key, entry_json, updated_at
+        ) VALUES (?, ?, ?, ?)
+        """,
+        ("telegram", "telegram:user-1:chat-1", "{}", 2.0),
+    )
+    conn.execute(
+        """
+        INSERT INTO async_delegations (
+            delegation_id, origin_session, state, dispatched_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("delegation-1", "recovery-session-0", "completed", 1.0, 2.0),
+    )
+    # These are derived transition markers and must not reach the new DB.
+    _set_meta(conn, "fts_rebuild_high_water", "999")
+    _set_meta(conn, "fts_rebuild_progress", "500")
+    _set_meta(conn, "fts_tool_full_content_high_water", "7")
 
 
 def _orphan_fts_schema(path: Path) -> None:
@@ -118,24 +149,27 @@ def _make_page_spanning_source(
     path: Path,
     message_count: int = 320,
 ) -> tuple[int, int | None]:
-    db = SessionDB(db_path=path)
-    try:
-        db.create_session(
+    with _store(path) as store:
+        seed_session(
+            store,
             "partial-recovery-session",
             "cli",
             cwd="/tmp/partial-recovery",
         )
-        for message_number in range(message_count):
-            db.append_message(
-                "partial-recovery-session",
-                "user" if message_number % 2 == 0 else "assistant",
-                (
-                    f"partial recovery payload {message_number:04d} "
-                    + chr(65 + message_number % 26) * 1_500
-                ),
-            )
-    finally:
-        db.close()
+        seed_messages(
+            store,
+            "partial-recovery-session",
+            *(
+                {
+                    "role": "user" if message_number % 2 == 0 else "assistant",
+                    "content": (
+                        f"partial recovery payload {message_number:04d} "
+                        + chr(65 + message_number % 26) * 1_500
+                    ),
+                }
+                for message_number in range(message_count)
+            ),
+        )
 
     conn = sqlite3.connect(str(path), isolation_level=None)
     try:
@@ -182,11 +216,11 @@ def _make_many_sessions_source(
     path: Path,
     session_count: int = 180,
 ) -> int:
-    db = SessionDB(db_path=path)
-    try:
+    with _store(path) as store:
         for session_number in range(session_count):
             session_id = f"partial-session-{session_number:04d}"
-            db.create_session(
+            seed_session(
+                store,
                 session_id,
                 "cli",
                 cwd=f"/tmp/partial-session-{session_number:04d}",
@@ -195,9 +229,7 @@ def _make_many_sessions_source(
                     + chr(65 + session_number % 26) * 1_500
                 ),
             )
-            db.append_message(session_id, "user", f"message {session_number}")
-    finally:
-        db.close()
+            seed_messages(store, session_id, {"role": "user", "content": f"message {session_number}"})
 
     conn = sqlite3.connect(str(path), isolation_level=None)
     try:
@@ -319,10 +351,10 @@ def test_snapshot_blocks_connections_opened_during_the_copy(
     """
     import threading
 
-    from hermes_cli import session_recovery as recovery_module
+    from persistence.sqlite.admin import _recovery as recovery_module
     from hermes_cli.sqlite_safe_read import connect_tracked
 
-    source = tmp_path / "racy-state.db"
+    source = tmp_path / "racy" / "state.db"
     snapshot_dir = tmp_path / "snapshot"
     snapshot_dir.mkdir()
     _make_source(source)
@@ -336,7 +368,7 @@ def test_snapshot_blocks_connections_opened_during_the_copy(
 
     def slow_copy2(src, dst, *args, **kwargs):
         result = real_copy2(src, dst, *args, **kwargs)
-        if str(src).endswith("racy-state.db"):
+        if str(src).endswith(os.path.join("racy", "state.db")):
             inside_copy.set()
             release_copy.wait(30)
         return result
@@ -404,7 +436,7 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
     the placeholder-ness must be reported as loss rather than passed off as a
     clean recovery.
     """
-    source = tmp_path / "sessions-destroyed.db"
+    source = tmp_path / "sessions-destroyed" / "state.db"
     output = tmp_path / "sessions-destroyed-recovered.db"
 
     messages_per_session = {
@@ -412,18 +444,17 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
         "doomed-session-b": 35,
         "doomed-session-c": 45,
     }
-    db = SessionDB(db_path=source)
-    try:
+    with _store(source) as store:
         for session_id, message_count in messages_per_session.items():
-            db.create_session(session_id, "cli", cwd=f"/tmp/{session_id}")
-            for index in range(message_count):
-                db.append_message(
-                    session_id,
-                    "user",
-                    f"irreplaceable {session_id} {index}",
-                )
-    finally:
-        db.close()
+            seed_session(store, session_id, "cli", cwd=f"/tmp/{session_id}")
+            seed_messages(
+                store,
+                session_id,
+                *(
+                    {"role": "user", "content": f"irreplaceable {session_id} {index}"}
+                    for index in range(message_count)
+                ),
+            )
 
     # sessions unrecoverable, messages intact — the reported shape.
     conn = sqlite3.connect(str(source), isolation_level=None)
@@ -492,7 +523,7 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
 def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "corrupt-state.db"
+    source = tmp_path / "corrupt" / "state.db"
     rejected_output = tmp_path / "rejected.db"
     output = tmp_path / "partial-recovered.db"
     message_count = 320
@@ -599,7 +630,7 @@ def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
 def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "corrupt-system-prompts.db"
+    source = tmp_path / "corrupt-system-prompts" / "state.db"
     output = tmp_path / "partial-system-prompts.db"
     session_count = 180
     _make_many_sessions_source(source, session_count)
@@ -651,11 +682,9 @@ def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
 
 
 def _insert_delivery_obligations(path: Path, rows: list[tuple[object, ...]]) -> None:
-    from gateway.delivery_ledger import _initialize_schema
-
     conn = sqlite3.connect(str(path), isolation_level=None)
     try:
-        _initialize_schema(conn)
+        _recovery._AUXILIARY_TABLE_SCHEMAS["delivery_obligations"](conn)
         conn.executemany(
             """INSERT INTO delivery_obligations (
                 obligation_id, session_key, platform, chat_id, thread_id,
@@ -786,8 +815,6 @@ def test_recovery_flags_delivery_obligation_count_mismatch_as_loss(
     missing on the way over" failure the verifier has to catch.
     """
 
-    from hermes_cli import session_recovery
-
     source = tmp_path / "state.db"
     output = tmp_path / "recovered.db"
     _make_source(source)
@@ -800,7 +827,7 @@ def test_recovery_flags_delivery_obligation_count_mismatch_as_loss(
         ],
     )
 
-    real_init = session_recovery._AUXILIARY_TABLE_SCHEMAS["delivery_obligations"]
+    real_init = _recovery._AUXILIARY_TABLE_SCHEMAS["delivery_obligations"]
 
     def lossy_init(conn: sqlite3.Connection) -> None:
         real_init(conn)
@@ -810,7 +837,7 @@ def test_recovery_flags_delivery_obligation_count_mismatch_as_loss(
         )
 
     monkeypatch.setitem(
-        session_recovery._AUXILIARY_TABLE_SCHEMAS, "delivery_obligations", lossy_init
+        _recovery._AUXILIARY_TABLE_SCHEMAS, "delivery_obligations", lossy_init
     )
 
     report = recover_session_database(source, output, work_dir=tmp_path)
@@ -823,9 +850,9 @@ def test_recovery_flags_delivery_obligation_count_mismatch_as_loss(
 
 
 def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path) -> None:
-    """The .recover lane copies the ledger even though SessionDB never made it."""
+    """The .recover lane copies the ledger even though the store never made it."""
 
-    from hermes_cli.session_lost_and_found import _copy_direct_tables
+    from persistence.sqlite.admin._lost_and_found import _copy_direct_tables
 
     recovered_source = tmp_path / "lost_and_found.db"
     now = 1_720_000_000.0
@@ -836,8 +863,9 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
             ("ob-2", "k", "telegram", "chat-1", None, "two", "failed", 3, now, now, None, None, "boom", "default"),
         ],
     )
-    output = tmp_path / "rebuilt.db"
-    SessionDB(db_path=output).close()
+    output = tmp_path / "rebuilt" / "state.db"
+    with _store(output) as store:
+        store.ready()
 
     lf_conn = sqlite3.connect(str(recovered_source), isolation_level=None)
     dest = sqlite3.connect(str(output), isolation_level=None)
@@ -862,7 +890,7 @@ def test_partial_recovery_skips_phantom_row_rejected_by_destination_schema(
 ) -> None:
     """#102240: a phantom ``sessions`` row with NULL ``started_at`` must be reported as a skipped
     singleton, not abort the whole ``--allow-partial`` run at the exact-lookup boundary."""
-    source = tmp_path / "phantom-state.db"
+    source = tmp_path / "phantom" / "state.db"
     output = tmp_path / "phantom-recovered.db"
     _make_source(source)
 
@@ -905,7 +933,7 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
     """#98050: with the leftmost leaf damaged, ``ORDER BY rowid ASC LIMIT 1`` fails while
     ``min(rowid)`` still answers via the covering index. Bisecting from INT64_MIN burned the
     whole 10,000-query budget and lost every row; the aggregate must seed the bound instead."""
-    source = tmp_path / "low-edge.db"
+    source = tmp_path / "low-edge" / "state.db"
     sessions_root = _make_many_sessions_source(source, session_count=180)
     page_size, leaf_pages = _btree_leaf_pages(source, sessions_root)
     assert len(leaf_pages) >= 3
@@ -920,13 +948,13 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
     try:
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute('SELECT rowid FROM "sessions" ORDER BY rowid ASC LIMIT 1').fetchone()
-        bounds = session_recovery._salvage_rowid_bounds(conn, "sessions")
+        bounds = _recovery._salvage_rowid_bounds(conn, "sessions")
         assert bounds["low"] == 1 and bounds["high"] == 180
         assert bounds["fallback_edges"] == []
 
         destination = sqlite3.connect(":memory:")
         destination.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL)")
-        result = session_recovery._copy_table_salvage(
+        result = _recovery._copy_table_salvage(
             conn, destination, "sessions", chunk_size=16, progress_cb=None, source_rows=180,
         )
     finally:
@@ -940,37 +968,35 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
 def test_recover_carries_message_identity_columns(tmp_path):
     """``hermes sessions recover`` copies the compatible columns of ``messages`` into a current-schema
     database: the durable ids (``message_uid``, the merge witness, the tool-call uids) survive with the rows."""
-    source = tmp_path / "source.db"
-    db = SessionDB(db_path=source)
-    try:
-        db.create_session("s", "cli", model="m")
-        db.append_message(session_id="s", role="user", content="q")
-        db._conn.execute("UPDATE messages SET absorbed_message_uids = ? WHERE content = 'q'", (json.dumps(["b" * 32]),))
-        db._conn.commit()
-        db.append_message(
-            session_id="s", role="assistant", content="",
-            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}])
-        db.append_message(session_id="s", role="tool", content="r", tool_call_id="call_1", tool_name="t")
-        expected = [dict(r) for r in db._conn.execute(
-            "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
-            "FROM messages WHERE session_id = 's' ORDER BY id")]
-    finally:
-        db.close()
+    source = tmp_path / "source" / "state.db"
+    with _store(source) as store:
+        seed_session(store, "s", "cli", model="m")
+        seed_messages(store, "s", {"role": "user", "content": "q"})
+        raw_holder(store)._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET absorbed_message_uids = ? WHERE content = 'q'", (json.dumps(["b" * 32]),)))
+        seed_messages(
+            store, "s",
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "content": "r", "tool_call_id": "call_1", "tool_name": "t"})
+        with raw_holder(store)._read_ctx() as conn:
+            expected = [dict(r) for r in conn.execute(
+                "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
+                "FROM messages WHERE session_id = 's' ORDER BY id")]
     assert all(len(r["message_uid"]) == 32 for r in expected)
 
-    output = tmp_path / "recovered.db"
+    output = tmp_path / "recovered" / "state.db"
+    output.parent.mkdir()
     report = recover_session_database(source, output, work_dir=tmp_path)
     assert report["complete"] is True
 
-    recovered = SessionDB(db_path=output)
-    try:
-        got = [dict(r) for r in recovered._conn.execute(
-            "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
-            "FROM messages WHERE session_id = 's' ORDER BY id")]
+    with _store(output) as recovered:
+        with raw_holder(recovered)._read_ctx() as conn:
+            got = [dict(r) for r in conn.execute(
+                "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
+                "FROM messages WHERE session_id = 's' ORDER BY id")]
         assert got == expected
-        restored = recovered.get_messages_as_conversation("s")
+        restored = conversation(recovered, "s")
         assert [m["message_uid"] for m in restored] == [r["message_uid"] for r in expected]
         assert restored[0]["_absorbed_message_uids"] == ["b" * 32]
         assert restored[2]["_tool_call_uid"] == restored[1]["_tool_call_uids"]["call_1"]
-    finally:
-        recovered.close()

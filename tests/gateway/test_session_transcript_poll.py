@@ -9,7 +9,12 @@ import random
 
 import pytest
 
-from tests.gateway.test_session_stored_reads import _call, _compact_carrying_tail, _legacy_owner, _native, _summary
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import ConversationRequest, NewMessage, RewindTargetUnavailable
+from tests.fixtures.storage_read import conversation
+from tests.gateway.test_session_stored_reads import (
+    _append, _call, _compact_carrying_tail, _legacy_owner, _native, _summary,
+)
 
 
 def _shape(rows):
@@ -44,6 +49,13 @@ class Reader:
         return _shape(await Reader(self.connection, self.session_id, self.limit).poll())
 
 
+def _rotate(db, parent, child, *messages):
+    """A compression rotation of *parent* into *child* carrying *messages* (live dicts)."""
+    db.lineage.publish_compression_child(parent, CompressionChild(session_id=child, source='tui', model='m'),
+                                         [NewMessage.from_live(message) for message in messages],
+                                         require_compression_lease=False)
+
+
 @pytest.mark.asyncio
 async def test_a_poller_gets_appends_as_new_rows_and_resets_on_every_other_change(tmp_path, monkeypatch):
     from gateway.session_local_recovery import transcript_target
@@ -57,8 +69,8 @@ async def test_a_poller_gets_appends_as_new_rows_and_resets_on_every_other_chang
         reader = Reader(owner, ref.session_id)
         assert await reader.poll() == [] and reader.resets == [True]  # empty transcript: a cursor all the same
         for i in (1, 2, 3):
-            db.append_message(target, 'user', f'question {i}')
-            db.append_message(target, 'assistant', f'answer {i}')
+            _append(db, target, 'user', f'question {i}')
+            _append(db, target, 'assistant', f'answer {i}')
         reader.resets.clear()
         assert [row['text'] for row in await reader.poll()] == [
             'question 1', 'answer 1', 'question 2', 'answer 2', 'question 3', 'answer 3']
@@ -66,7 +78,7 @@ async def test_a_poller_gets_appends_as_new_rows_and_resets_on_every_other_chang
         assert _shape(reader.rows) == await reader.fresh()
 
         # Append: only the new row, no reset.
-        db.append_message(target, 'user', 'question 4')
+        _append(db, target, 'user', 'question 4')
         reader.resets.clear()
         assert [row['text'] for row in await reader.poll()] == ['question 4'] and not any(reader.resets)
 
@@ -80,16 +92,16 @@ async def test_a_poller_gets_appends_as_new_rows_and_resets_on_every_other_chang
 
         # A rewrite of a held row (a reaction): start over, and the reader now holds the reacted row.
         held = next(row['row_id'] for row in reader.rows if row.get('text') == 'question 4')
-        db.set_message_reaction(target, held, '\U0001f44d')
+        db.messages.set_reaction(target, held, '\U0001f44d', author='user')
         reader.resets.clear()
         await reader.poll()
         assert reader.resets[0] is True, reader.resets
         assert _shape(reader.rows) == await reader.fresh()
 
         # A rewind of held rows: start over, the rewound rows gone.
-        db.append_message(target, 'assistant', 'answer 4')
+        _append(db, target, 'assistant', 'answer 4')
         await reader.poll()
-        db.rewind_to_message(target, held)
+        db.messages.rewind_user_turn(target, -1)  # the newest user turn: the held 'question 4'
         reader.resets.clear()
         await reader.poll()
         assert reader.resets[0] is True, reader.resets
@@ -112,11 +124,11 @@ async def test_rows_written_and_compacted_between_two_polls_reset_the_poller(tmp
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
         target = transcript_target(authority, ref)
-        db.append_message(target, 'user', 'question 1')
+        _append(db, target, 'user', 'question 1')
         reader = Reader(owner, ref.session_id)
         await reader.poll()
-        db.append_message(target, 'assistant', 'answer 1')
-        db.append_message(target, 'user', 'question 2')
+        _append(db, target, 'assistant', 'answer 1')
+        _append(db, target, 'user', 'question 2')
         _compact_carrying_tail(db, target, _summary('## Goal\nboth', 3), tail_rows=1)
         reader.resets.clear()
         await reader.poll()
@@ -140,15 +152,10 @@ async def test_a_rotation_between_polls_resets_the_poller_onto_the_new_segment(t
         await reader.poll()
         assert [row.get('text') for row in reader.rows] == [
             'before compression', 'old answer', 'after compression', 'new answer']
-        db.append_message('tui-tip', 'user', 'tip question')
+        _append(db, 'tui-tip', 'user', 'tip question')
         reader.resets.clear()
         assert [row.get('text') for row in await reader.poll()] == ['tip question'] and not any(reader.resets)
-        assert db.try_acquire_compression_lock('tui-tip', 'fixture')
-        try:
-            db.publish_compression_child(parent_session_id='tui-tip', child_session_id='tui-tip-2', source='tui',
-                model='m', messages=[{'role': 'user', 'content': 'rotated question'}], compression_lock_holder='fixture')
-        finally:
-            db.release_compression_lock('tui-tip', 'fixture')
+        _rotate(db, 'tui-tip', 'tui-tip-2', {'role': 'user', 'content': 'rotated question'})
         reader.resets.clear()
         await reader.poll()
         assert reader.resets[0] is True, reader.resets
@@ -176,10 +183,10 @@ async def test_a_poller_matches_a_fresh_read_after_any_sequence_of_changes(tmp_p
 
         def append():
             n[0] += 1
-            db.append_message(target, 'user' if n[0] % 2 else 'assistant', f'message {n[0]}')
+            _append(db, target, 'user' if n[0] % 2 else 'assistant', f'message {n[0]}')
 
         def live_ids():
-            return [row['_row_id'] for row in db.get_messages_as_conversation(target, include_row_ids=True)]
+            return [row['_row_id'] for row in conversation(db, target, ConversationRequest(include_row_ids=True))]
         for step in range(40):
             op = rng.choice(['append', 'append', 'append', 'compact', 'rewind', 'react'])
             ids = live_ids()
@@ -189,12 +196,12 @@ async def test_a_poller_matches_a_fresh_read_after_any_sequence_of_changes(tmp_p
             elif op == 'compact':
                 _compact_carrying_tail(db, target, _summary(f'## Goal\nstep {step}', len(ids)), tail_rows=2)
             elif op == 'rewind':
-                user_ids = [row['_row_id'] for row in db.get_messages_as_conversation(target, include_row_ids=True)
-                            if row['role'] == 'user']
-                if user_ids:
-                    db.rewind_to_message(target, user_ids[-1])
+                try:
+                    db.messages.rewind_user_turn(target, -1)
+                except RewindTargetUnavailable:
+                    pass  # no user turn left to rewind
             else:
-                db.set_message_reaction(target, rng.choice(ids), rng.choice(['\U0001f44d', '\U0001f525']))
+                db.messages.set_reaction(target, rng.choice(ids), rng.choice(['\U0001f44d', '\U0001f525']), author='user')
             await reader.poll()
             assert _shape(reader.rows) == await reader.fresh(), (step, op)
     finally:

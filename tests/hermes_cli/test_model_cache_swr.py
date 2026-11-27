@@ -162,6 +162,20 @@ class TestProviderModelsSWR:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
         spawn.assert_called_once_with("openai-codex")
 
+    @pytest.mark.parametrize("fallback,age,expected", [(False, 0, True), (True, 0, False), (False, 2, False)])
+    def test_codex_gpt62_cache_requires_fresh_verified_discovery(self, monkeypatch, fallback, age, expected):
+        from hermes_cli import models as mod
+
+        gated = ["gpt-6.2-sol", "openai/gpt-6.2-astra"]
+        row = {**self._cache_entry([*gated, "gpt-6-sol"], age), "fallback": fallback}
+        monkeypatch.setattr(mod, "_load_provider_models_cache", lambda: {"openai-codex": row})
+        monkeypatch.setattr(mod, "_credential_fingerprint", lambda _: "fp")
+        monkeypatch.setattr(mod, "_spawn_swr_refresh", lambda _: None)
+        monkeypatch.setattr(mod, "provider_model_ids", lambda *a, **kw: [])
+        assert mod.cached_provider_model_ids("openai-codex", ttl_seconds=1, non_blocking=True) == (
+            row["models"] if expected else ["gpt-6-sol"])
+        assert mod.cached_provider_model_ids("openai-codex", force_refresh=True) == ["gpt-6-sol"]
+
     def test_force_refresh_bypasses_swr(self):
         import hermes_cli.models as mod
 

@@ -12,18 +12,20 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence.core.errors import AuthorityRefusal as RuntimeStoreError
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 @pytest.fixture
 def authority(tmp_path, monkeypatch):
-    """A live authority over a temp SessionDB holding a cold desktop row."""
+    """A live authority over a temp profile store holding a cold desktop row."""
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     from gateway.session_authority import SessionAuthority
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
 
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session(SID, source='desktop', user_id='basic:admin', profile_name='default')
-    epoch = begin_runtime_epoch(db, instance_id='owner')
+    db = storage_handle(tmp_path)
+    seed_session(db, SID, 'desktop', user_id='basic:admin', profile_name='default')
+    epoch = db.runtime.begin_epoch(instance_id='owner')
 
     class _Store:
         def __init__(self):
@@ -39,7 +41,7 @@ def authority(tmp_path, monkeypatch):
             return build_session_key(source)
 
     runner = SimpleNamespace(_draining=False, session_store=_Store())
-    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', epoch=epoch, persistence=db)
     adapter = SimpleNamespace(gateway_runner=runner)
     runner._adapter_for_source = lambda source: adapter
     yield authority
@@ -77,7 +79,6 @@ async def test_the_api_turn_gate_keys_on_the_family_marker(authority, monkeypatc
     stays claimable); a real api_turn_v1 payload still does."""
     import gateway.session_api_turn as api_turn
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError
 
     actor = SimpleNamespace(profile_id=authority.profile_id,
                             capabilities=frozenset({'session:read'}))
@@ -112,25 +113,23 @@ async def test_cold_desktop_row_resumes_in_its_named_profile_only(authority, tmp
     """
     from gateway.session_authority import SessionAuthority
     from gateway.session_contract import SessionRef
-    from hermes_state import SessionDB
-    from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
+    from persistence_assembly import open_persistence, profile_scope
 
     profile = 'qa-assistant'
     home = tmp_path / 'profiles' / profile
     home.mkdir(parents=True)
-    db = SessionDB(home / 'state.db')
+    db = open_persistence(profile_scope(home=home))
     try:
         # The same session id may exist in multiple profile stores. A request
         # addressed to the named profile must never mount the default row.
-        db.create_session(SID, source='desktop', user_id='basic:admin',
-                          profile_name=profile)
+        seed_session(db, SID, 'desktop', user_id='basic:admin', profile_name=profile)
         runner = SimpleNamespace(
             _draining=False,
             session_store=type(authority.runner.session_store)(),
         )
         named = SessionAuthority(
-            runner, profile_id=profile, instance_id='named-owner', db=db,
-            epoch=begin_runtime_epoch(db, instance_id='named-owner'),
+            runner, profile_id=profile, instance_id='named-owner',
+            epoch=db.runtime.begin_epoch(instance_id='named-owner'), persistence=db,
         )
         actor = SimpleNamespace(
             profile_id=profile, subject='local:user',
@@ -148,7 +147,7 @@ async def test_cold_desktop_row_resumes_in_its_named_profile_only(authority, tmp
         assert live.source.user_id == 'basic:admin'
         assert runner.session_store._entries[live.route].session_id == SID
         assert SID not in authority.sessions
-        assert authority.db.get_session(SID)['profile_name'] == 'default'
-        assert db.get_session(SID)['profile_name'] == profile
+        assert authority.persistence.sessions.get(SID).profile_name == 'default'
+        assert db.sessions.get(SID).profile_name == profile
     finally:
         db.close()

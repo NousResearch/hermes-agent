@@ -3,7 +3,7 @@ for the user (``CARD_TIMEOUT_S``), and returns their answer with a short reminde
 
 The ``onboarding`` toolset carrying it is folded in only for the onboarding chat, at agent build
 (``tui_gateway/methods_onboarding.py``). The run record is the session's ``onboarding_run``
-(``agent/onboarding_record.py``); the order and the options are ``agent/onboarding_flow.py``.
+(``agent/onboarding_record.py``); the order and the options are ``session_rules/onboarding_flow.py``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent import onboarding_flow as flow
+from session_rules import onboarding_flow as flow
 from agent.onboarding_text import finish_reminder, reminder
 from agent.onboarding_text import question as beat_question
 from tools.registry import registry, tool_error
@@ -132,7 +132,7 @@ def _card(beat: str, step: flow.Step, args: Mapping[str, Any]) -> dict:
     return card
 
 
-def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", tool_call_id: str = "",
+def setup_beat_tool(args: Mapping[str, Any], *, db=None, persistence=None, session_id: str = "", tool_call_id: str = "",
                     callback: Callable[[dict], dict | None] | None = None,
                     end_turn: Callable[[], object] | None = None) -> str:
     """``callback(payload) -> {answer?} | {said} | {wrote_instead: true} | None`` asks the desktop to show
@@ -143,11 +143,11 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
     beat = args.get("beat")
     if beat not in BEATS:
         return tool_error(f"beat must be one of: {', '.join(BEATS)}.")
-    record = records.load(db, session_id)
+    record = records.load(db, session_id, persistence=persistence)
     if record is None:
         return tool_error("Onboarding is not running in this chat.")
     if beat != "next" and (event := _direct_event(beat, args)) is not None:
-        return _result(records.advance(db, session_id, event))
+        return _result(records.advance(db, session_id, event, persistence=persistence))
     if beat == "next":
         beat = flow.next_beat(record) if flow.is_active(record) else None
         if beat is None:
@@ -157,19 +157,20 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
         return tool_error("setup_beat cards show only in the Hermes desktop app.")
     if beat == "connectors" and (refused := _unlisted_suggestions(args)):
         return refused
-    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id, args.get("options"), args.get("suggest")))
+    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id, args.get("options"), args.get("suggest")),
+                            persistence=persistence)
     if shown.result:  # refused, or a beat this machine skips
         extra = _suggest_from(_connector_slugs()) if shown.reminder == "offer_first" else ""
         return _result(shown, extra=extra)
     question = str(args.get("question") or "").strip() or beat_question(beat, (record.get("facts") or {}).get("locale"))
     reply = callback({"beat": beat, "question": question, "card": _card(beat, shown, args),
                       "tool_call_id": tool_call_id or None})
-    after = records.load(db, session_id)
+    after = records.load(db, session_id, persistence=persistence)
     if after is not None and after["phase"] == flow.PHASE_SKIPPED:
         # Skip setup closed the card (onboarding.skip already wrote the record).
         return _result(flow.Step(after, {"skipped_all": True}, "skip_all"))
     event = _reply_event(beat, reply)
-    result = _result(records.advance(db, session_id, event), beat)
+    result = _result(records.advance(db, session_id, event, persistence=persistence), beat)
     if isinstance(event, flow.Wrote) and end_turn is not None:
         # Otherwise the model answers a card the user moved past while their message waits for the turn to end.
         end_turn()

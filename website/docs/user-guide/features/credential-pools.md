@@ -26,7 +26,8 @@ Your request
   → Pick key from pool (round_robin / least_used / fill_first / random)
   → Send to provider
   → 429 rate limit?
-      → Plan/usage limit reached (e.g. ChatGPT/Codex "usage limit reached")?
+      → Plan/usage limit reached (e.g. ChatGPT/Codex "usage limit reached", or a Claude plan
+        window the response marks `rejected`)?
           → Rotate to next pool key immediately (no retry — the cap won't clear on retry)
       → Generic / transient 429?
           → Retry same key once (transient blip)
@@ -203,7 +204,7 @@ The pool handles different errors differently:
 
 | Error | Behavior | Cooldown |
 |-------|----------|----------|
-| **429 Rate Limit** | Retry same key once (transient). Second consecutive 429 rotates to next key | 1 hour |
+| **429 Rate Limit** | Retry same key once (transient). Second consecutive 429 rotates to next key; a usage-limit or rejected Claude plan-window 429 rotates at once (see below) | 1 hour, or the provider's reset |
 | **402 Billing/Quota** | Immediately rotate to next key | 1 hour |
 | **401 Auth Expired** | Try refreshing the OAuth token first. Rotate only if refresh fails | 5 minutes |
 | **400 Codex model entitlement** (`The '<model>' model is not supported when using Codex with a ChatGPT account.`) | Bench this key for the rejected model only and rotate to the next key; other models keep using the key. Other 400s never rotate | Until `hermes auth reset` (per model; an entitlement is a plan property, not a window) |
@@ -224,6 +225,11 @@ does not trigger this; an explicit `/model` switch cancels a pending switch-back
 one Claude model cools that credential down for *that model only* — the same key keeps serving every
 other Claude model, and `ANTHROPIC_API_KEY` / borrowed Claude Code tokens honour the same per-model
 cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the whole credential.
+A Claude subscription 429 that names a spent plan window (`anthropic-ratelimit-unified-status: rejected`,
+window in `anthropic-ratelimit-unified-representative-claim`) rotates on the first 429 instead of retrying
+the spent seat. An account-wide window (`five_hour`, `seven_day`) benches the whole credential, for every
+model, until the window's `anthropic-ratelimit-unified-reset`; a model-family window (`seven_day_opus`, …)
+benches that model only.
 
 **A dead OAuth login is reported, not benched.** When a refresh token is rejected for good
 (`invalid_grant`, `invalid_token`, `refresh_token_reused` — the token was revoked, or another program
@@ -277,6 +283,8 @@ Custom endpoint pools are stored in `auth.json` under `credential_pool` with a `
   }
 }
 ```
+
+A key added for a custom endpoint (`hermes auth add`, or the dashboard's credential pool) records the endpoint address it was entered for, and is only ever sent to that origin (scheme, host and port). If you change the endpoint's address, its pooled keys stay behind: the Desktop and dashboard editors ask for the new address's key (or an explicit blank for none) rather than reuse them. Keys added before addresses were recorded are bound to the endpoint's address the first time they are used. A built-in provider's keys (for example `DEEPSEEK_API_KEY` for a `providers.deepseek` entry) serve the entry only on that provider's own address, unless the entry names the variable as its `key_env` (for example `key_env: DEEPSEEK_API_KEY`); Hermes logs one warning per entry when it withholds them. This also covers a delegated subagent (`delegation.provider: deepseek`) and auxiliary tasks on that entry. A key added to a built-in provider's pool without an address belongs to that provider's own address, never to a same-named entry's. An origin is scheme, host and port only: two endpoints on the same host that differ only by path (`https://gw.example/tenantA/v1` and `https://gw.example/tenantB/v1`) count as one origin, so their pooled keys can serve each other.
 
 ## Auto-Discovery
 

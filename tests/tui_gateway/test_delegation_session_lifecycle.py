@@ -13,16 +13,29 @@ Covers the two hardening rules layered on top of the origin-routing salvage:
    TUI owns the lifecycle).
 """
 
+import contextlib
+import dataclasses
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import tools.async_delegation as ad
+from persistence.conversation.sessions import SessionRecord
 from tui_gateway.server import (
     _finalize_session,
     _session_owns_notification_event,
 )
+
+
+def _persistence_for_yielding(persistence):
+    """A stand-in for ``server._persistence_for`` that yields ``persistence`` for any store."""
+    return lambda _db: contextlib.nullcontext(persistence)
+
+
+def _record(**values):
+    """A ``SessionRecord`` carrying ``values``; every other field None."""
+    return SessionRecord(**{f.name: None for f in dataclasses.fields(SessionRecord)} | values)
 
 
 @pytest.fixture(autouse=True)
@@ -62,9 +75,10 @@ class TestSessionOwnsNotificationEvent:
 
     def test_compression_chain_resolution_owns(self):
         evt = {"type": "async_delegation", "origin_ui_session_id": "", "session_key": "parent_key"}
-        db = MagicMock()
-        db.resolve_resume_session_id.return_value = "child_key"
-        with patch("tui_gateway.server._get_db", return_value=db):
+        persistence = MagicMock()
+        persistence.lineage.resolve_resume_target.return_value = "child_key"
+        with patch("tui_gateway.server._get_db", return_value=MagicMock()), \
+                patch("tui_gateway.server._persistence_for", _persistence_for_yielding(persistence)):
             assert _session_owns_notification_event("tabX", self._session("child_key"), evt) is True
 
 
@@ -126,11 +140,12 @@ class TestFinalizeInterruptsOwnDelegations:
 
     @patch("tui_gateway.server._get_db")
     def test_finalize_interrupts_sessions_delegations(self, mock_get_db):
-        mock_db = MagicMock()
-        mock_db.get_session.return_value = {"source": "tui"}
-        mock_get_db.return_value = mock_db
+        mock_get_db.return_value = MagicMock()
+        persistence = MagicMock()
+        persistence.sessions.get.return_value = _record(source="tui")
 
-        with patch("tools.async_delegation.interrupt_for_session") as mock_int:
+        with patch("tools.async_delegation.interrupt_for_session") as mock_int, \
+                patch("tui_gateway.server._persistence_for", _persistence_for_yielding(persistence)):
             _finalize_session(self._make_session(), end_reason="tui_close")
 
         mock_int.assert_called_once()
@@ -143,11 +158,12 @@ class TestFinalizeInterruptsOwnDelegations:
         """Closing a TUI viewer tab on a live gateway session must not kill
         the gateway's own background work — key-based interrupt is skipped,
         origin-id interrupt (this tab's own dispatches) still applies."""
-        mock_db = MagicMock()
-        mock_db.get_session.return_value = {"source": "telegram"}
-        mock_get_db.return_value = mock_db
+        mock_get_db.return_value = MagicMock()
+        persistence = MagicMock()
+        persistence.sessions.get.return_value = _record(source="telegram")
 
-        with patch("tools.async_delegation.interrupt_for_session") as mock_int:
+        with patch("tools.async_delegation.interrupt_for_session") as mock_int, \
+                patch("tui_gateway.server._persistence_for", _persistence_for_yielding(persistence)):
             _finalize_session(
                 self._make_session(session_key="agent:main:telegram:dm:123", sid="tab9"),
                 end_reason="ws_orphan_reap",

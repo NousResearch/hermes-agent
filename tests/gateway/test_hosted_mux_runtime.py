@@ -8,7 +8,11 @@ import time
 
 import pytest
 
+from gateway.session_authority import admission_row
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
+from persistence.gateway.hosted_rooms import HostedTaskIdentity, TERMINAL_STATUSES
 
 
 @pytest.fixture
@@ -47,7 +51,7 @@ def mux(tmp_path, monkeypatch, request):
             service = getattr(authority, 'hosted_room_service', None)
             if service is not None:
                 assert service.stop(timeout=5)
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         server = getattr(runner, 'session_control_server', None)
         if server is not None:
             call(server.stop())
@@ -87,7 +91,7 @@ def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
     from gateway import hosted_room_driver as tasks
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway.session_ingress_media import restore_native_media
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     runner, homes, loop, _ = mux
     # Isolate routing from startup: construct the real per-profile services directly.
@@ -100,47 +104,46 @@ def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
     target = runner.session_authorities.require(homes['beta'])
     service = source.hosted_room_service
     with owner_scope(source):
-        service.authorize_room('alice', 'room', create=True)
-        hosted_rooms.create_room(source.db.db_path, room_id='room', name='Room',
-            authority_gateway_id=hosted_rooms.local_authority_gateway_id(),
+        service.insert_room(room_id='room', name='Room', owner='alice',
             members=[{'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
     rpc = HostedRoomOwnerRPC(home=homes['beta'], source_home=homes['alpha'],
                             room_id='room', member_id='helper', profile='beta')
     sid = rpc.create(profile='beta', source='bot_room', title='Group: room')['session_id']
-    assert target.db.get_session(sid)['source'] == 'bot_room'
-    assert source.db.get_session(sid) is None
-    assert runner.session_authority.db.get_session(sid) is None
+    assert session_row(target.persistence, sid)['source'] == 'bot_room'
+    assert session_row(source.persistence, sid) is None
+    assert session_row(runner.session_authority.persistence, sid) is None
     assert rpc.resume(profile='beta', source='bot_room', session_id=sid)['session_id'] == sid
     assert rpc.ref.profile_id == str(homes['beta'])
-    with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
+    with pytest.raises(AuthorityRefusal, match='profile_mismatch'):
         HostedRoomOwnerRPC(home=homes['default'], source_home=homes['alpha'],
             room_id='room', member_id='helper', profile='beta').create(
                 profile='beta', source='bot_room', title='Group: room')
 
     data = base64.b64decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=')
-    store = HostedRoomAttachmentStore(source.db.db_path)
+    from gateway.session_persistence import authority_persistence
+    store = HostedRoomAttachmentStore(authority_persistence(source))
     saved = store.put(room_id='room', upload_id='upload', kind='image', name='image.png',
                       mime='image/png', data=data)
     manifest = [{k: saved[k] for k in ('attachment_id', 'kind', 'name', 'size', 'mime')}]
     store.commit_message(room_id='room', event_id='event', manifest=manifest,
                          recipient_member_ids=['helper'])
     manifest[0]['event_id'] = 'event'
-    identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+    identity = HostedTaskIdentity('room', 'task', 'thread', 'turn')
     payload = {'target_profile': 'beta', 'target_member_id': 'helper', 'source_event_seq': 1,
                'prompt': 'input', 'attachments': manifest}
-    tasks.admit_task(source.db.db_path, identity, payload=payload, clock=time.time)
-    lease = tasks.acquire_lease(source.db.db_path, room_id='room',
+    tasks.admit_task(source.persistence, identity, placement='profile', payload=payload, clock=time.time)
+    lease = tasks.acquire_lease(source.persistence, placement='profile', room_id='room',
         gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1,
         process_generation='fixture', ttl_seconds=30, clock=time.time)
-    tasks.start_task(source.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
+    tasks.start_task(source.persistence, identity, lease, placement='profile', expected_cancel_generation=0, clock=time.time)
     try:
         receipt = rpc.submit(profile='beta', source='bot_room', session_id=sid, prompt='input',
             task=identity, execution_generation=1, attachments=manifest, on_terminal=lambda row: None)
         repeated = rpc.submit(profile='beta', source='bot_room', session_id=sid, prompt='input',
             task=identity, execution_generation=1, attachments=manifest, on_terminal=lambda row: None)
         assert repeated['admission_id'] == receipt['admission_id']
-        row, = list_session_admissions(target.db, session_id=sid, pending_only=False)
+        row, = map(admission_row, target.persistence.admissions.list(session_id=sid, pending_only=False))
         assert row['status'] == 'queued'
         assert check_remote_hosted_admission(target, rpc.ref, row)
         with owner_scope(target):
@@ -181,7 +184,6 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
     from gateway.session_authority import SessionAuthority
     from gateway.session_hosted_service import ensure_hosted_service
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
 
     runner, homes, _, call = mux
     executed = []
@@ -196,15 +198,14 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
     target = runner.session_authorities.require(homes['beta'])
     with owner_scope(source):
         service = source.hosted_room_service
-        service.authorize_room('alice', 'room', create=True)
-        service.create_room(room_id='room', name='Room', members=[
+        service.create_room(room_id='room', name='Room', owner='alice', members=[
             {'member_id': 'host', 'profile': 'alpha', 'handle': 'host'},
             {'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
         service.send(room_id='room', event_id='input',
                      payload={'text': '@helper hello', 'thread_id': 'thread'})
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        events = hosted_rooms.read_events(source.db.db_path, room_id='room')['events']
+        events = hosted_rooms.read_events(source.persistence, placement='profile', room_id='room')['events']
         if any(event['kind'] == 'room.activity' and event['payload'].get('status') == 'settled'
                for event in events):
             break
@@ -214,9 +215,9 @@ def test_room_coordinator_submits_once_to_destination_authority(mux, monkeypatch
     assert len(executed) == 1
     assert executed[0][:3] == (str(homes['beta']),) * 3
     sid, = target.sessions
-    row, = list_session_admissions(target.db, session_id=sid, pending_only=False)
-    assert row['admission_id'] == executed[0][3]
-    assert row['status'] == 'terminal'
+    row, = target.persistence.admissions.list(session_id=sid, pending_only=False)
+    assert row.admission_id == executed[0][3]
+    assert row.status == 'terminal'
     assert not source.sessions and not runner.session_authority.sessions
     assert sum(event['kind'] == 'message.member' for event in events) == 1
 
@@ -229,7 +230,6 @@ def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
     from gateway.session_authorities import owner_scope
     from gateway.session_authority import SessionAuthority
     from gateway.session_hosted_service import CanonicalHostedRoomService, ensure_hosted_service
-    from hermes_state_runtime import list_session_admissions
 
     runner, homes, loop, call = mux
     source = runner.session_authorities.require(homes['alpha'])
@@ -244,24 +244,23 @@ def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
     with owner_scope(source):
         service = CanonicalHostedRoomService(source, loop)
         source.hosted_room_service = service
-        service.authorize_room('alice', 'startup-room', create=True)
-        service.create_room(room_id='startup-room', name='Startup', members=[
+        service.create_room(room_id='startup-room', name='Startup', owner='alice', members=[
             {'member_id': 'host', 'profile': 'alpha', 'handle': 'host'},
             {'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
         service.send(room_id='startup-room', event_id='input',
                      payload={'text': '@helper hello', 'thread_id': 'thread'})
-    queued, = tasks.list_tasks(source.db.db_path, room_id='startup-room')
+    queued, = tasks.list_tasks(source.persistence, placement='profile', room_id='startup-room')
     assert queued['status'] == 'queued'
     call(ensure_hosted_service(runner))
     # If startup released a worker, let its real pre-submit path finish. No
     # exception is injected: the live private descriptor still says starting.
     deadline = time.monotonic() + 3
     while service.runtime.status()['running'] and time.monotonic() < deadline:
-        current = tasks.get_task(source.db.db_path, queued['identity'])
-        if current['status'] in tasks.TERMINAL_STATUSES:
+        current = tasks.get_task(source.persistence, queued['identity'], placement='profile')
+        if current['status'] in TERMINAL_STATUSES:
             break
         time.sleep(0.02)
-    current = tasks.get_task(source.db.db_path, queued['identity'])
+    current = tasks.get_task(source.persistence, queued['identity'], placement='profile')
     assert current['status'] == 'queued', current
     assert current['execution_generation'] == 0
     assert not executed and not target.sessions
@@ -276,12 +275,12 @@ def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
     call(ready())
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        current = tasks.get_task(source.db.db_path, queued['identity'])
+        current = tasks.get_task(source.persistence, queued['identity'], placement='profile')
         if current['status'] == 'settled':
             break
         time.sleep(0.02)
     assert current['status'] == 'settled', current
     assert len(executed) == 1
     sid, = target.sessions
-    admission, = list_session_admissions(target.db, session_id=sid, pending_only=False)
-    assert admission['admission_id'] == executed[0] and admission['status'] == 'terminal'
+    admission, = target.persistence.admissions.list(session_id=sid, pending_only=False)
+    assert admission.admission_id == executed[0] and admission.status == 'terminal'

@@ -49,8 +49,14 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
         env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
     npmrc = user_npmrc(env)
-    if npmrc == hermes_npmrc():
-        env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
+    twins = [name for name in env if name.upper() == "NPM_CONFIG_USERCONFIG"]
+    if npmrc == hermes_npmrc() or twins:
+        # npm reads the last non-empty twin in environ order; pnpm reads the lowercase name when
+        # set, even empty (as unset: ~/.npmrc), else the uppercase one, and never a mixed-case one.
+        # So twins split the installers and an empty one hides the Hermes file. One variable naming
+        # the file user_npmrc picked (a non-empty lowercase one first) replaces them.
+        env = {name: value for name, value in env.items() if name.upper() != "NPM_CONFIG_USERCONFIG"}
+        env["NPM_CONFIG_USERCONFIG"] = str(npmrc)
     # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else
     # ~/.npmrc) only for its registry and auth. npm also handed every other key to the processes it
     # spawned as npm_config_<key>; keep doing that, since it is how node-pre-gyp (run by
@@ -121,7 +127,35 @@ def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
     desktop_dir = project_root / "apps/desktop"
     desktop = _desktop_dist_exists(desktop_dir) or _desktop_packaged_executable(desktop_dir) is not None
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
+    # Someone is waiting for this launch, which falls back to the previous build when it fails:
+    # offline, pnpm's default retries spend ~70 s before failing, one retry ~10 s.
+    if not _fetch_retries_configured(project_root, env):
+        env = {**env, "pnpm_config_fetch_retries": "1"}
     prepare_source_dependencies(project_root, workspaces, env=env)
+
+
+def _fetch_retries_configured(project_root: Path, env: dict) -> bool:
+    """Whether the user chose a download retry count where pnpm 12 reads one:
+    ``pnpm_config_fetch_retries``, pnpm's global config.yaml or pnpm-workspace.yaml. pnpm 12 reads
+    no ``fetch-retries`` from an npmrc nor ``npm_config_fetch_retries``, so neither counts. A pnpm
+    that cannot answer counts as configured: the default stays."""
+    if any(key.lower() == "pnpm_config_fetch_retries" for key in env):
+        return True
+    from hermes_platform.resolver import LookupContext, locate_command
+
+    # The PATH of the env PM's ensure("pnpm") composed, never this process's.
+    found = locate_command("pnpm", LookupContext(path=env["PATH"])).command
+    if not found:
+        return True
+    pnpm = found[0]
+    try:
+        answer = subprocess.run(
+            [pnpm, "config", "get", "fetchRetries", "--json"], cwd=project_root, env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return answer.stdout.strip() != "null"
 
 
 def build_source_tui(project_root: Path, *, env: dict) -> None:

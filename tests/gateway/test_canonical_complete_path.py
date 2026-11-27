@@ -12,8 +12,8 @@ import pytest
 from gateway import session_policy
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
@@ -28,11 +28,11 @@ def rpc(tmp_path, monkeypatch):
     backend = {'TERMINAL_ENV': 'local'}
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: SimpleNamespace(
         cwd=str(project), terminal_json=json.dumps({**backend, 'TERMINAL_CWD': str(project)})))
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='current')
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='current')
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(home),
-                                     instance_id='current', db=db, epoch=epoch)
+                                     instance_id='current', persistence=db, epoch=epoch)
         authority.sessions['s'] = LiveSession(None, 'route')
         connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
 

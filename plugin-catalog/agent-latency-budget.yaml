@@ -1,0 +1,28 @@
+name: agent-latency-budget
+title: Agent Latency Budget
+repo: https://github.com/qawine/agent-latency-budget
+sha: "b72ab14bcf4e335df00e3fe2fb41c163a02d3d66"
+subdir: plugin
+description: >-
+  Per-session tool latency observability for Hermes Agent. A pre/post tool hook
+  records duration_ms, latency_budget_check returns pass/fail against a budget,
+  and latency_budget_report returns p50/p95/max plus the slowest tool. No network
+  access, no credentials, no core overrides; state is in-memory and bounded to
+  200 calls per session.
+maintainer: qawine
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/qawine/agent-latency-budget#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - latency_budget_check
+    - latency_budget_report
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

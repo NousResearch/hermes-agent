@@ -422,6 +422,10 @@ export const arChrome = {
       viewAllLogs: 'عرض كل السجلات',
       messagingPlatforms: 'منصات المراسلة'
     },
+    approvalMode: {
+      perProfile: 'حسب الملف الشخصي',
+      perProfileDescription: 'يُضبط وضع الموافقة لكل ملف شخصي على حدة. افتح بوتًا أو ملفًا شخصيًا لتغيير وضعه.'
+    },
     statusbar: {
       unknown: 'غير معروف',
       restart: 'إعادة تشغيل',

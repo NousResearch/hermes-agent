@@ -23,7 +23,10 @@ meaningful:
    self-updater lets an installed copy move to a commit nobody reviewed.
    Updates reach users only through a SHA-bump PR here plus
    `hermes plugins update <name>`. Keep the updater in the standalone
-   distribution if you want one; strip it from the catalog build.
+   distribution if you want one; strip it from the catalog build. Downloading
+   a separate third-party tool pinned by checksum is not a self-updater; a
+   maintainer allows such a file by repo, pinned sha and file hash in
+   `scripts/ci/catalog_self_updater_allowlist.json`.
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.
@@ -169,6 +172,21 @@ meaningful:
    record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
    `--allow-removed`, project and pip installs are refused, and no setting
    relaxes it.
+19. **No plugins built to reach infringing content.** A plugin whose main
+   purpose is to find, stream or download copyrighted films, shows, music, books,
+   games or software from sources that are not licensed to distribute them
+   (piracy aggregators, unofficial mirrors, cracked-release indexes) is declined,
+   however clean its code. A general-purpose tool such as a browser, downloader
+   or media player is fine; one that ships with those sources built in, or whose
+   description points users at them, is not.
+20. **No coin or token promotion.** A plugin built around one coin, token or
+   NFT collection that is not a broadly adopted asset (its price, trading,
+   launch, airdrop, holder rewards or promotion), and a plugin used to promote
+   its maker's own token, is declined. Memecoin boards, coin launchpads and
+   airdrop or free-mint farming tools fall under this rule. Fine: stablecoins
+   such as USDC, payments (x402 and similar), multi-coin wallets, exchanges and
+   markets, price tickers, safety and scam checks, and broadly adopted assets
+   such as Bitcoin, Ethereum and Solana.
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,
@@ -189,17 +207,18 @@ maintainer: OwnerName
 tier: community             # official | verified | community (default community);
                             # official and verified are set by Nous maintainers only
 category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
-                            # (default desktop) — the shelf the entry sits on at /docs/plugins
+                            # (default desktop) — used by catalog clients for grouping
 requires_hermes: ">=0.19"   # optional; enforced at install and update (also declare it in plugin.yaml)
 docs_url: ""                # optional
 version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
 image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
                             # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
-screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
-readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
+screenshots: []             # optional, up to 6 https images on a GitHub host; displayed by catalog clients
+readme: true                # optional, default true; include the README at the PINNED SHA
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 title: ""                   # optional human name on cards ("NVIDIA App"); default = name
 onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
+default: false              # optional; installed and enabled once in every home (official or verified entries only)
 known_issues: []            # optional strings shown at the install prompt; informational, never blocks
 capabilities:
   provides_tools: []
@@ -215,6 +234,39 @@ the plugin integrates into Hermes, and that company is well known or reputable.
 `verified`; a contributor PR that sets either is changed to `community` in
 review (maintainer review is the gate; no CI check inspects the tier value).
 
+`default: true` ships an entry to every Hermes home at its pinned commit and
+enables it automatically:
+
+- **Foreground preflight before first backend/gateway start:** Docker
+  (`docker/stage2-hook.sh`, default 300 s timeout), Desktop (DMG, MSIX,
+  AppImage, and local source backends, default 120 s timeout), and
+  `hermes profile create` (120 s timeout)
+  run `python -m hermes_cli.default_plugins ensure` in the foreground before
+  starting the local backend/gateway so default plugins and their Python
+  dependencies are live for the very first session. If the deadline is reached,
+  startup continues while the detached installer child finishes in the
+  background.
+- **Updates and CLI rechecks:** Source installs and `hermes update` install
+  defaults in the foreground across all profile homes. On CLI starts (including
+  Nix, Termux, and already-maintained revisions), boot bootstrap rechecks the
+  live catalog using local state only (zero network wait) and spawns the
+  detached installer child whenever the revision, cache, or default set needs a
+  pass.
+- **User choices stick:** Each home records automatic installs under
+  `_default_plugins_installed` in `config.yaml`, so a user who removes or
+  disables a default plugin keeps that choice through every later start and
+  update.
+- **Offline fail-open and retry:** When offline or if an install fails,
+  preflight fails open without stalling startup. Exponential retry backoff
+  applies to the background/CLI boot step (reopening Desktop or restarting a
+  container retries the foreground preflight immediately, failing open quickly
+  if still offline); an interrupted install leaves an in-progress marker so the
+  next pass reinstalls it cleanly.
+- **Tier and opt-out gates:** Only `official` and `verified` entries may set
+  `default: true` (the validator refuses it elsewhere and Hermes ignores it on
+  any other tier). Homes with `security.allow_lazy_installs: false` (or
+  `HERMES_DISABLE_LAZY_INSTALLS=1`) fetch nothing.
+
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the
 same PR that bumps `sha` so the label on the card matches the code. Images must
@@ -223,14 +275,12 @@ so the Desktop catalog and the docs site never fetch from third-party hosts;
 pin the raw URL to the entry's commit and the picture is as immutable as the
 code.
 
-Every entry gets a page at `https://hermes-agent.nousresearch.com/docs/plugins/<name>`
-and every maintainer a page at `/docs/plugins/by/<maintainer>`, both generated
-from these files at docs build time. `screenshots:` fills the page's gallery;
-the build fetches the README (from `subdir` if set, else the repo root) **at the
-pinned sha** — GitHub and GitLab repos, on by default, `readme: false` opts out — and renders it
-through an allowlist (raw HTML dropped, links and images resolved against the
-pinned tree). The page therefore shows the README the reviewer read, and it
-changes only when a reviewed re-pin lands.
+Every entry gets a page on the Hermes Marketplace at
+`https://hermes-agent.nousresearch.com/marketplace/<name>`, built from these files. Catalog clients can display `screenshots`
+and the README (from `subdir` if set, else the repo root) **at the pinned sha**. README rendering supports GitHub and
+GitLab repositories, is on by default, and accepts `readme: false` to opt out.
+Raw HTML is dropped, and links and images resolve against the pinned tree, so
+the displayed README is the one the reviewer read.
 
 ## removed.yaml — the blocklist
 
@@ -248,6 +298,10 @@ file removal, users who already installed it are unaffected). It is welcome back
 problem is fixed; a name squatter comes back under a distinct name. When a new rule affects
 entries that are already listed, their authors get an issue on their repository explaining
 the change and time to update before anything is delisted.
+
+Entries whose repository was deleted, or whose pinned commit no longer exists (force-pushed
+away), are delisted automatically: `.github/workflows/catalog-dead-repos.yml` checks every entry
+each week and opens one PR deleting the dead ones, for a maintainer to review.
 
 ## Names
 

@@ -3,14 +3,22 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
+import { preserveLocalAssistantErrors, reconcileLocalAssistantTimeline } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { adoptPendingRuntimeTabs, rekeyPreviewTabsSession } from '@/store/preview'
 import {
   $activeSessionId,
+  $currentFastMode,
+  $currentModel,
+  $currentPersonality,
+  $currentProvider,
+  $currentReasoningEffort,
+  $currentReasoningEffortWire,
+  $currentServiceTier,
   $messages,
+  $yoloActive,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModelTransient,
@@ -52,6 +60,26 @@ interface TranscriptViewGate {
   token: symbol
 }
 
+/** Same rows by reference. The live fold keeps unchanged rows' identity, so
+ *  this is exact there and costs one pointer compare per row. */
+function sameMessageRows(next: readonly ChatMessage[], current: readonly ChatMessage[]): boolean {
+  if (next === current) {
+    return true
+  }
+
+  if (next.length !== current.length) {
+    return false
+  }
+
+  for (let index = 0; index < next.length; index += 1) {
+    if (next[index] !== current[index]) {
+      return false
+    }
+  }
+
+  return true
+}
+
 interface SessionStateCacheOptions {
   activeSessionId: string | null
   busyRef: MutableRefObject<boolean>
@@ -67,14 +95,61 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
   // resolved identity (e.g. the generic `custom` billing class), not a user
   // pick. The persisting setters would silently overwrite the composer's
   // sticky localStorage selection with that runtime value (#102793).
-  setCurrentModelTransient(state.model ?? '')
-  setCurrentProviderTransient(state.provider ?? '')
-  setCurrentReasoningEffort(state.reasoningEffort ?? '')
-  setCurrentReasoningEffortWire(state.reasoningEffortWire ?? '')
-  setCurrentServiceTier(state.serviceTier ?? '')
-  setCurrentFastMode(state.fast ?? false)
-  setYoloActive(state.yolo ?? false)
-  setCurrentPersonality(state.personality ?? '')
+  //
+  // This is called twice per published state (staging + flush) and on every
+  // streamed delta, while its inputs almost never change. Each persisting
+  // setter does a localStorage read+write, so compare against the live atom
+  // first: the value is mirrored only when it actually differs.
+  const model = state.model ?? ''
+
+  if ($currentModel.get() !== model) {
+    setCurrentModelTransient(model)
+  }
+
+  const provider = state.provider ?? ''
+
+  if ($currentProvider.get() !== provider) {
+    setCurrentProviderTransient(provider)
+  }
+
+  const reasoningEffort = state.reasoningEffort ?? ''
+
+  // The effort setter also clears the wire level (an optimistic pick invalidates
+  // the gateway-stamped value). Only take that path when the effort itself
+  // moved; an unchanged effort must not flicker the wire atom.
+  if ($currentReasoningEffort.get() !== reasoningEffort) {
+    setCurrentReasoningEffort(reasoningEffort)
+  }
+
+  const reasoningEffortWire = state.reasoningEffortWire ?? ''
+
+  if ($currentReasoningEffortWire.get() !== reasoningEffortWire) {
+    setCurrentReasoningEffortWire(reasoningEffortWire)
+  }
+
+  const serviceTier = state.serviceTier ?? ''
+
+  if ($currentServiceTier.get() !== serviceTier) {
+    setCurrentServiceTier(serviceTier)
+  }
+
+  const fast = state.fast ?? false
+
+  if ($currentFastMode.get() !== fast) {
+    setCurrentFastMode(fast)
+  }
+
+  const yolo = state.yolo ?? false
+
+  if ($yoloActive.get() !== yolo) {
+    setYoloActive(yolo)
+  }
+
+  const personality = state.personality ?? ''
+
+  if ($currentPersonality.get() !== personality) {
+    setCurrentPersonality(personality)
+  }
 }
 
 export function useSessionStateCache({
@@ -159,7 +234,7 @@ export function useSessionStateCache({
   }
 
   const sessionStateCache = sessionStateByRuntimeIdRef.current
-  const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
+  const pendingViewStateRef = useRef<{ live: boolean; sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
   const transcriptViewGateByRuntimeIdRef = useRef(new Map<string, TranscriptViewGate>())
   // Runtime id whose transcript currently occupies `$messages` — lets the
@@ -315,12 +390,52 @@ export function useSessionStateCache({
     // an out-of-funds error) onto this one — then cascade it everywhere as the
     // polluted view becomes the next switch's baseline. Only carry errors
     // across a same-session refresh; our cached state already keeps its own.
-    const nextMessages =
-      viewSessionIdRef.current === pending.sessionId
+    //
+    // A live stream delta is the projection path: the cached state is already
+    // the authoritative messages for this session (the delta mutated it), and
+    // its settled rows keep object identity. It still folds the view's live
+    // timing (completion stamps hydration does not carry) through the
+    // identity-preserving timeline reconciler, but skips the error splice and
+    // the whole-transcript deep compare. The one exception is a view-only local
+    // error row (a hydration merge that exists only in `$messages`): keep the
+    // full preserve+compare path there so a failed turn is never dropped
+    // mid-stream.
+    const sameSession = viewSessionIdRef.current === pending.sessionId
+    // Only an error the CACHE lacks can be lost by publishing it directly. A
+    // settled failure both sides carry (any session that has ever errored) must
+    // not disable the fast path for the rest of the conversation. Build the id
+    // set only when the view actually holds an error: most flushes have none.
+    let viewOnlyError = false
+
+    if (sameSession && pending.live && currentMessages.some(message => message.role === 'assistant' && message.error)) {
+      const cachedErrorIds = new Set(
+        pending.state.messages
+          .filter(message => message.role === 'assistant' && message.error)
+          .map(message => message.id)
+      )
+
+      viewOnlyError = currentMessages.some(
+        message => message.role === 'assistant' && message.error && !cachedErrorIds.has(message.id)
+      )
+    }
+
+    const liveDelta = sameSession && pending.live && !viewOnlyError
+
+    const nextMessages = liveDelta
+      ? reconcileLocalAssistantTimeline(pending.state.messages, currentMessages)
+      : sameSession
         ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
         : pending.state.messages
 
-    if (!chatMessageArraysEquivalent(nextMessages, currentMessages)) {
+    // The live fold keeps every unchanged row's identity, so a row-wise
+    // reference compare is exact there and avoids the O(transcript) deep
+    // compare. Refresh/resume keeps it: those rebuild message objects without
+    // changing content and must not re-paint.
+    if (
+      liveDelta
+        ? !sameMessageRows(nextMessages, currentMessages)
+        : !chatMessageArraysEquivalent(nextMessages, currentMessages)
+    ) {
       setMessages(nextMessages)
     }
 
@@ -340,7 +455,7 @@ export function useSessionStateCache({
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
-    (sessionId: string, state: ClientSessionState) => {
+    (sessionId: string, state: ClientSessionState, liveDelta = false) => {
       // Only the currently-viewed session may stage into the shared `$messages`
       // view. A background session (e.g. one still busy and emitting stream /
       // error updates after the user toggled away) must update its own cache
@@ -358,7 +473,7 @@ export function useSessionStateCache({
       const viewState = suppressTranscriptForView(state, gate ?? null)
 
       syncRuntimeMetadataToView(viewState)
-      pendingViewStateRef.current = { sessionId, state: viewState }
+      pendingViewStateRef.current = { live: liveDelta, sessionId, state: viewState }
 
       // Terminal / attention transitions (turn finished, error, or the agent is
       // now waiting on the user) MUST reach the view immediately. Electron
@@ -418,7 +533,8 @@ export function useSessionStateCache({
     (
       sessionId: string,
       updater: (state: ClientSessionState) => ClientSessionState,
-      storedSessionId?: string | null
+      storedSessionId?: string | null,
+      liveDelta = false
     ) => {
       const previous = ensureSessionState(sessionId, storedSessionId)
       // Give the updater the raw previous state so it can return the same
@@ -447,7 +563,7 @@ export function useSessionStateCache({
       // publishSessionState — no manual transition call needed.
       publishSessionState(sessionId, next)
       sessionStateCache.prune()
-      syncSessionStateToView(sessionId, next)
+      syncSessionStateToView(sessionId, next, liveDelta)
 
       return next
     },

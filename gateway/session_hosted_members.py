@@ -10,7 +10,7 @@ member naming it is refused, so one bad entry never takes the rest of the roster
 import logging
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def refuse_unseatable(members, refused):
             continue
         if isinstance(profile, str) and profile in refused:
             reason, field, detail = refused[profile]
-            raise RuntimeStoreError(reason, field=field, detail=f"member {index} profile '{profile}': {detail}")
+            raise AuthorityRefusal(reason, field=field, detail=f"member {index} profile '{profile}': {detail}")
 
 
 def _served(authority):

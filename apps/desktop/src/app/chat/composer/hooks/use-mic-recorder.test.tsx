@@ -118,6 +118,7 @@ class FakeMediaRecorder {
 
   stop() {
     this.state = 'inactive'
+
     const deliver = () => {
       this.ondataavailable?.({ data: new Blob(['clip'], { type: 'audio/webm' }) })
       this.onstop?.()
@@ -291,6 +292,7 @@ describe('useMicRecorder level meter', () => {
   it.each(['idle', 'utterance'])('drains historical %s silence before ending captured speech', async boundary => {
     const { result } = renderHook(() => useMicRecorder(copy))
     let stopped: Promise<MicRecording | null> | undefined
+
     const onSilence = vi.fn(() => {
       stopped = result.current.handle.stop()
     })
@@ -407,6 +409,7 @@ describe('useMicRecorder level meter', () => {
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
     const onSilence = vi.fn()
     let renders = 0
+
     const { result } = renderHook(() => {
       renders++
 
@@ -421,12 +424,33 @@ describe('useMicRecorder level meter', () => {
     expect(renders).toBe(before)
     visibility.mockReturnValue('visible')
     act(() => meter.onLevel?.(0.3, 40_033))
-    expect(result.current.level).toBe(0.3)
+    expect(result.current.levelStore.get()).toBe(0.3)
     visibility.mockReturnValue('hidden')
     act(() => {
       meter.onLevel?.(0, 40_050)
       meter.onLevel?.(0, 41_300)
     })
     expect(onSilence).toHaveBeenCalledOnce()
+  })
+  it('publishes the meter level without re-rendering the recorder consumer', async () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    let renders = 0
+
+    const { result } = renderHook(() => {
+      renders += 1
+
+      return useMicRecorder(copy)
+    })
+
+    await act(async () => {
+      await result.current.handle.start()
+    })
+    const before = renders
+
+    act(() => meter.onLevel?.(0.4, 40_017))
+
+    expect(result.current.levelStore.get()).toBe(0.4)
+    expect(renders).toBe(before)
+    visibility.mockRestore()
   })
 })

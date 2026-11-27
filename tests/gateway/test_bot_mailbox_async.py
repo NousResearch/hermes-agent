@@ -87,22 +87,21 @@ async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(
     never a terminal ``failed`` receipt that no later wake re-reads."""
     from gateway import session_bot, session_results
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import claim_session_input, settle_session_input
     from tools.bot_live_delivery import read_delivery_result
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
     key = 'f' * 32
     receipt = await session_bot.deliver(bot.connection, dict(id=key, profile='default', message='straddle'))
     bot.authority._pause(SessionRef(bot.authority.profile_id, receipt['session_id']), 'unknown_execution')
     await asyncio.wait_for(asyncio.gather(*list(bot.authority._bot_receipt_tasks)), 5)
-    row = claim_session_input(bot.authority.db, epoch=bot.authority.epoch, session_id=receipt['session_id'])
+    row = bot.authority.persistence.admissions.claim(epoch=bot.authority.epoch, session_id=receipt['session_id'])
     read, settled = session_results.admission_result, []
 
-    def commit_then_read(db, admission_id):
-        if admission_id == row['admission_id'] and not settled:
-            settled.append(settle_session_input(db, epoch=bot.authority.epoch, admission_id=admission_id,
-                generation=row['generation'], outcome='completed',
+    def commit_then_read(store, admission_id):
+        if admission_id == row.admission_id and not settled:
+            settled.append(bot.authority.persistence.admissions.settle(epoch=bot.authority.epoch, admission_id=admission_id,
+                generation=row.generation, outcome='completed',
                 result={'result': {'final_response': 'pong'}, 'usage': {}}))
-        return read(db, admission_id)
+        return read(store, admission_id)
     monkeypatch.setattr(session_results, 'admission_result', commit_then_read)
     await session_bot.refresh_receipt(bot.authority, bot.home, key)
     record = await asyncio.to_thread(read_delivery_result, bot.home, key)
@@ -114,19 +113,18 @@ async def test_receipt_read_straddling_the_settlement_commit_projects_the_reply(
 async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeypatch):
     from gateway import session_bot
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import (begin_runtime_epoch, claim_session_input, recover_session_inputs,
-        register_worker_execution, adopt_worker_execution, settle_session_input)
+    from persistence.workers.executions import WorkerKind
     from tools.bot_live_delivery import read_delivery_result
     monkeypatch.setattr(bot.authority, '_schedule', lambda ref: None)
     key = 'd' * 32
     receipt = await session_bot.deliver(bot.connection, dict(id=key, profile='default', message='unknown'))
     ref = SessionRef(bot.authority.profile_id, receipt['session_id'])
-    row = claim_session_input(bot.authority.db, epoch=bot.authority.epoch, session_id=ref.session_id)
-    assignment = dict(execution_id='recovered-worker', session_id=ref.session_id, generation=row['generation'])
-    register_worker_execution(bot.authority.db, epoch=bot.authority.epoch, **assignment,
-                              kind='compute', adoption_secret='owned-worker')
-    bot.authority.epoch = begin_runtime_epoch(bot.authority.db, instance_id='recovery')
-    recover_session_inputs(bot.authority.db, epoch=bot.authority.epoch)
+    row = bot.authority.persistence.admissions.claim(epoch=bot.authority.epoch, session_id=ref.session_id)
+    assignment = dict(execution_id='recovered-worker', session_id=ref.session_id, generation=row.generation)
+    bot.authority.persistence.worker_executions.register(epoch=bot.authority.epoch, **assignment,
+                                                         kind=WorkerKind.COMPUTE, adoption_secret='owned-worker')
+    bot.authority.epoch = bot.authority.persistence.runtime.begin_epoch(instance_id='recovery')
+    bot.authority.persistence.admissions.recover(epoch=bot.authority.epoch)
     bot.authority._pause(ref, 'unknown_execution')
     await asyncio.wait_for(asyncio.gather(*list(bot.authority._bot_receipt_tasks)), 5)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -140,9 +138,9 @@ async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeyp
     bot.authority._publish_pending(ref)
     try:
         await asyncio.wait_for(entered.wait(), 5)
-        adopt_worker_execution(bot.authority.db, epoch=bot.authority.epoch, **assignment, adoption_secret='owned-worker')
-        settle_session_input(bot.authority.db, epoch=bot.authority.epoch, admission_id=row['admission_id'],
-            generation=row['generation'], outcome='completed', result={'result': {'final_response': 'adopted reply'}, 'usage': {}})
+        bot.authority.persistence.worker_executions.adopt(epoch=bot.authority.epoch, **assignment, adoption_secret='owned-worker')
+        bot.authority.persistence.admissions.settle(epoch=bot.authority.epoch, admission_id=row.admission_id,
+            generation=row.generation, outcome='completed', result={'result': {'final_response': 'adopted reply'}, 'usage': {}})
         bot.authority._publish_pending(ref)
         release.set()
         deadline = time.monotonic() + 5

@@ -1,0 +1,35 @@
+name: covsift
+repo: https://github.com/rodricksz4h5/covsift
+sha: 5d2ea15e76887225c7286fe884fb0a065829b3d7
+version: "1.0.0"
+title: Covsift
+description: >-
+  Exact, local analysis of code coverage reports: LCOV (c8, nyc, Jest, Vitest,
+  cargo-llvm-cov, lcov), Cobertura XML (coverage.py, Jest/Vitest, coverlet,
+  gcovr, PHPUnit), JaCoCo XML, Clover XML, SonarQube generic XML, coverage.py,
+  gcovr and Coveralls JSON, and Go cover profiles, from one file or a
+  directory of them. coverage_diff takes a unified diff (git diff) and
+  returns the added lines no test ran, per file, with diff coverage and an
+  optional fail_under gate; coverage_summary gives exact line, branch and Go
+  statement coverage, the least covered files with their uncovered lines and
+  a per-directory rollup; coverage_file lists one file's uncovered lines and
+  partial branches; coverage_compare shows which files lost coverage between
+  two runs. Standard library only: no network, no credentials, no subprocess
+  (never runs git or tests; the diff is passed in), no third-party
+  dependencies, no self-update; XML entity declarations are refused.
+  Disclosure: reads the local report and diff paths you pass it (read-only),
+  only regular files, and honours Hermes' core read denylist.
+maintainer: rodricksz4h5
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/rodricksz4h5/covsift/tree/5d2ea15e76887225c7286fe884fb0a065829b3d7
+capabilities:
+  provides_tools:
+    - coverage_summary
+    - coverage_file
+    - coverage_diff
+    - coverage_compare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

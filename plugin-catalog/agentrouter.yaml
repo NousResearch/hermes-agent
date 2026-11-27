@@ -1,0 +1,15 @@
+name: agentrouter
+repo: https://github.com/PageOneLab/agentrouter-hermes
+sha: "c3d706ff121c9b575d2eaae92f347231e1995962"
+description: "Research competitors, verify job openings, trace growth channels, and analyze short videos. The four skills use a separately configured AgentRouter MCP connection. Approved calls send queries to AgentRouter and its providers and can spend the user's AgentRouter balance. Disclosure — the four skills use a separately configured AgentRouter MCP connection. Approved calls send queries to AgentRouter and its providers and can spend the user's AgentRouter balance."
+maintainer: charly-jingan
+tier: community
+category: tools
+docs_url: https://docs.agentrouter.to/integrations/mcp
+version: "0.2.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

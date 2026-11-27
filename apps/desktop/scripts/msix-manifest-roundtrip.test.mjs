@@ -82,14 +82,14 @@ test('stable tag: the build-time quad round-trips into the manifest Version', ()
 
 test('canary tag: the build-time quad round-trips into the manifest Version', () => {
   const app = makeFakeDesktop('0.27.1')
-  const { version, xml } = buildManifest(app, 'v0.27.1+canary.20260829T010203Z')
+  const { version, xml } = buildManifest(app, 'canary.20260829T010203Z-v0.27.1')
   assert.equal(version, '26.829.1.203')
   assert.equal(identityVersion(xml), version)
 })
 
 test('manifest Version components are 16-bit (makeappx rejects anything larger)', () => {
   const app = makeFakeDesktop('0.27.1')
-  const { xml } = buildManifest(app, 'v0.27.1+canary.20260829T010203Z')
+  const { xml } = buildManifest(app, 'canary.20260829T010203Z-v0.27.1')
   for (const part of identityVersion(xml).split('.')) {
     const n = Number(part)
     assert.ok(Number.isInteger(n) && n >= 0 && n <= 65535, `component ${part} outside 16 bits`)
@@ -98,7 +98,7 @@ test('manifest Version components are 16-bit (makeappx rejects anything larger)'
 
 test('a later build stamps a strictly larger quad than an earlier one', () => {
   const app = makeFakeDesktop('0.27.1')
-  const early = Number(buildManifest(app, 'v0.27.1+canary.20260815T080000Z').version.split('.')[1])
-  const late = Number(buildManifest(app, 'v0.27.1+canary.20260829T010203Z').version.split('.')[1])
+  const early = Number(buildManifest(app, 'canary.20260815T080000Z-v0.27.1').version.split('.')[1])
+  const late = Number(buildManifest(app, 'canary.20260829T010203Z-v0.27.1').version.split('.')[1])
   assert.ok(late > early, `${late} must exceed ${early}`)
 })

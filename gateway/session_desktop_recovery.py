@@ -10,11 +10,11 @@ session id, exactly what ``restore_api_session`` validates real API rows against
 plain store entry under the generated session key, and the same admission/conflict guards apply.
 Rows of any other source label are never touched here.
 """
-import json
 import logging
 
 from gateway.config import Platform
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,13 @@ logger = logging.getLogger(__name__)
 def _row_source(session_id, row):
     """The API-family source the row's own columns stand for; None when they name another family."""
     from gateway.session import SessionSource
-    origin = row.get('origin_json')
+    # SessionRecord.origin is the parsed ``origin_json`` (a mapping, or None).
+    origin = row.origin
     if origin:
+        # from_dict indexes a mapping: a JSON list/string parses to a non-dict but has no fields
+        # — that is the same refusal as unparseable origin_json.
         try:
-            origin_data = json.loads(origin)
-            # from_dict indexes a mapping: a JSON list/string parses fine but has no fields
-            # (AttributeError/TypeError) — that is the same refusal as unparseable origin_json.
-            source = SessionSource.from_dict(origin_data) if isinstance(origin_data, dict) else None
+            source = SessionSource.from_dict(origin) if isinstance(origin, dict) else None
         except (TypeError, ValueError, KeyError, AttributeError):
             source = None
         # from_dict stringifies a null chat_id into 'None' (session.py:159): a truthy shared key
@@ -36,48 +36,55 @@ def _row_source(session_id, row):
         if source is not None and source.chat_id and source.chat_id != 'None':
             return source
     return SessionSource(platform=Platform.API_SERVER, chat_id=session_id,
-                         user_id=row.get('user_id'), chat_type=row.get('chat_type') or 'dm',
-                         profile=row.get('profile_name') or None)
+                         user_id=row.user_id, chat_type=row.chat_type or 'dm',
+                         profile=row.profile_name or None)
 
 
-def restore_desktop_session(authority, session_id):
+def restore_desktop_session(authority, session_id, actor=None):
     """Publish *session_id* as a cold Desktop row; raises ``not_found`` when the row is gone and
-    ``admission_conflict`` when the generated route already names another conversation."""
+    ``admission_conflict`` when the generated route already names another conversation.
+
+    NOTE (merge 27.11): the stamp is NOT ownership-checked here, in parity with the production
+    port. Upstream's tightened adoption rules (#140183 F1) refuse a foreign-stamped row at legacy
+    adoption and upstream's test_legacy_session_migration expects the row to stay unmounted, while
+    this family mounts ANY desktop row for the authorize chain's fall-through — the two
+    expectations conflict; the owner must pick a side (gate vs upstream test)."""
     from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionRef
-    row = authority.db.get_session(session_id)
-    if row is None or row.get('source') != 'desktop':
-        raise RuntimeStoreError('not_found')
+    persistence = authority_persistence(authority)
+    row = persistence.sessions.get(session_id)
+    if row is None or row.source != 'desktop':
+        raise AuthorityRefusal('not_found')
     # A compression continuation mounts as its lineage root or not at all — the routed family's
     # own policy for children (``_mount_plan`` refuses them; resume maps to the root): the
     # conversation's admission identity is the root, so mounting the child would fork its FIFO
     # off it. Resuming the root mounts live and executes on the tip.
-    lineage = authority.db.get_compression_lineage(session_id)
+    lineage = persistence.lineage.lineage(session_id)
     if lineage and lineage[0] != session_id:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     source = _row_source(session_id, row)
     store = authority.runner.session_store
     route = store._generate_session_key(source)
     from gateway.session import SessionEntry
     from datetime import datetime
     started = datetime.now()
-    if row.get('started_at'):
+    if row.started_at:
         try:
-            started = datetime.fromtimestamp(row['started_at'])
+            started = datetime.fromtimestamp(row.started_at)
         except (TypeError, ValueError, OSError, OverflowError):
             pass  # a corrupt durable timestamp must not 500 the mount (session_recovery's _ts policy)
     entry = SessionEntry(session_key=route, session_id=session_id, created_at=started, updated_at=started,
                          origin=source, platform=source.platform, chat_type=source.chat_type,
-                         transport_profile=row.get('transport_profile'))
+                         transport_profile=row.transport_profile)
     from gateway.session_api import _pin_api_identity
-    _pin_api_identity(authority.runner, source, transport_profile=row.get('transport_profile'))
+    _pin_api_identity(authority.runner, source, transport_profile=row.transport_profile)
     target = authority.physical_target(SessionRef(authority.profile_id, session_id))
     entry.session_id = target
     with store._lock:
         store._ensure_loaded_locked()
         current = store._entries.get(entry.session_key)
-        if current is not None and current.session_id not in authority.db.get_compression_lineage(session_id):
-            raise RuntimeStoreError('admission_conflict')
+        if current is not None and current.session_id not in persistence.lineage.lineage(session_id):
+            raise AuthorityRefusal('admission_conflict')
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
     authority.sessions.setdefault(session_id, LiveSession(source, entry.session_key))
     logger.info('Mounted cold Desktop session %s under %s', session_id, entry.session_key)

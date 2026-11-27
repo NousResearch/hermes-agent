@@ -83,7 +83,7 @@ async def _gateway(tmp_path, instance, extra):
             finally:
                 await adapter.disconnect()
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 def _actions(outgoing):

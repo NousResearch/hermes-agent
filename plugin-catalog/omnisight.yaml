@@ -1,0 +1,10 @@
+name: omnisight
+repo: https://github.com/arjunbagga-xyz/hermes-omnisight
+sha: 2254dcb49aa0c2597499adb8aa83274c11dd638c
+title: OmniSight
+description: "Spatial multi-surface visual perception, AST-to-pixel bi-directional linking, and closed-loop UI self-healing engine with interactive Before/After transcript sliders. Disclosure — live browser inspection is not implemented yet; the inspect, pixel-to-source and verify tools work only on a built-in synthetic demo scene (`scene='demo'`)."
+maintainer: arjunbagga-xyz
+tier: community
+category: desktop
+version: 0.1.0
+docs_url: https://github.com/arjunbagga-xyz/hermes-omnisight#readme

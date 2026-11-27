@@ -17,10 +17,10 @@ def mount_authority(app, adapter):
         # directory in the test home must not flip the runner into (unreserved) multiplex mode.
         runner.config.multiplex_profiles = False
         runner.session_store = SessionStore(sessions_dir=get_hermes_home() / "sessions", config=runner.config)
-        from hermes_state import SessionDB
-        runner.session_store._db = SessionDB(db_path=get_hermes_home() / "state.db")
-        runner._session_db = runner.session_store._db
-        authority = await initialize_session_authority(runner, profile_id='default', instance_id='route-test')
+        from persistence_assembly import open_persistence, profile_scope
+        authority = await initialize_session_authority(
+            runner, profile_id='default', instance_id='route-test',
+            persistence=open_persistence(profile_scope()))
         runner.adapters[Platform.WEBHOOK] = adapter
         runner._wire_adapter_handlers(adapter)
         # These tests inspect routing/rendering, not inference. Leave the actual
@@ -36,11 +36,13 @@ def mount_authority(app, adapter):
         authority.admit_native = capture
 
     async def cleanup(app):
+        from persistence_assembly import close_stores_under
         for task in list(adapter._background_tasks):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-        authority.db.close()
+        authority.persistence.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
     app.on_startup.append(start)
     app.on_cleanup.append(cleanup)

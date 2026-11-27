@@ -2,13 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
 import { getSession } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft } from '@/store/composer'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { approvalKindFields, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $connection, $gatewayState, $sessions, setSessions } from '@/store/session'
-import { $sessionTiles, openSessionTile, reopenLastClosedTile, type SessionTile } from '@/store/session-states'
+import {
+  $sessionStates,
+  $sessionTiles,
+  openSessionTile,
+  publishSessionState,
+  reopenLastClosedTile,
+  type SessionTile
+} from '@/store/session-states'
 
 import {
+  requestCloseSessionTile,
   sessionTileResumeFailure,
   shouldResumeSessionTile,
   startTileBackendIdentityGuard,
@@ -289,5 +299,41 @@ describe('startUnrestoredTileTitleBackfill retires dead tiles (#125678)', () => 
     await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(rungs))
     await new Promise(resolve => setTimeout(resolve, 0))
     expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['dead-chat'])
+  })
+})
+describe('requestCloseSessionTile', () => {
+  const open = () => {
+    $sessionTiles.set([{ runtimeId: 'rt-1', storedSessionId: 'stored-1' }])
+    publishSessionState('rt-1', createClientSessionState('stored-1'))
+  }
+
+  afterEach(() => {
+    clearAllPrompts()
+    $sessionTiles.set([])
+    $sessionStates.set({})
+  })
+
+  it('closes the tab of a settled chat at once', () => {
+    open()
+
+    requestCloseSessionTile('stored-1')
+
+    expect($sessionTiles.get()).toEqual([])
+  })
+
+  it('keeps the tab of a chat that waits on a folder or site card open until the person confirms', () => {
+    // Such a card outlives its turn: the chat is settled and the person still owes it an answer.
+    open()
+    setApprovalRequest({
+      sessionId: 'rt-1',
+      command: '',
+      description: '',
+      requestId: 'card-1',
+      ...approvalKindFields({ host: 'example.com', kind: 'network' })
+    })
+
+    requestCloseSessionTile('stored-1')
+
+    expect($sessionTiles.get()).toEqual([{ runtimeId: 'rt-1', storedSessionId: 'stored-1' }])
   })
 })

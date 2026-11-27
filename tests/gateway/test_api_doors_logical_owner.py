@@ -4,14 +4,16 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.session_api_turn import admit_api_turn
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
 
 KEY = 'logical-owner-key-long-enough'
 
 
 def _compressed(api, owner):
     admit_api_turn(api, session_id='root', request_id='first', user_message='hello', conversation_history=[])
-    owner.db.publish_compression_child(parent_session_id='root', child_session_id='tip', source='api_server',
-        messages=[{'role': 'assistant', 'content': 'summary'}], require_compression_lease=False)
+    owner.persistence.lineage.publish_compression_child('root', CompressionChild(session_id='tip', source='api_server'),
+        [NewMessage.from_live({'role': 'assistant', 'content': 'summary'})], require_compression_lease=False)
     owner.runner.session_store.advance_compression_session(owner.sessions['root'].route, 'root', 'tip')
 
 
@@ -34,7 +36,6 @@ def _session_chat(client):
 @pytest.mark.parametrize('door,expected', [(_chat, 200), (_runs, 202), (_session_chat, 200)])
 async def test_api_doors_admit_a_continuation_on_its_root(api, owner, monkeypatch, door, expected):
     from gateway.platforms import api_server_runs
-    from hermes_state_runtime import list_session_admissions
 
     async def handle(event):
         from gateway.session_results import execution_result
@@ -54,6 +55,6 @@ async def test_api_doors_admit_a_continuation_on_its_root(api, owner, monkeypatc
     async with TestClient(TestServer(app)) as client:
         response = await door(client)
         assert response.status == expected, await response.text()
-    rows = list_session_admissions(owner.db, session_id='root', pending_only=False)
-    assert [row['payload']['text'] for row in rows] == ['hello', 'next']
-    assert not list_session_admissions(owner.db, session_id='tip', pending_only=False)
+    rows = owner.persistence.admissions.list(session_id='root', pending_only=False)
+    assert [row.payload['text'] for row in rows] == ['hello', 'next']
+    assert not owner.persistence.admissions.list(session_id='tip', pending_only=False)

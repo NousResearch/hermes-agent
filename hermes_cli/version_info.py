@@ -20,6 +20,7 @@ from typing import Literal, cast
 
 from hermes_cli.steward import UPDATE_MECHANISMS
 from hermes_cli.update_channel import STABLE_TAG_RE
+from hermes_cli._startup_fast import project_root_str
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,16 @@ def _derived_version(
     return base_version
 
 
+def _git_unusable() -> bool:
+    """Missing git, or macOS's uninstalled CLT stub (any launch opens Apple's install dialog)."""
+    from hermes_cli._subprocess_compat import _git_argv0_unusable
+
+    return _git_argv0_unusable(["git"])
+
+
 def _run_git(repo_dir: Path, *args: str) -> str | None:
+    if _git_unusable():
+        return None
     try:
         result = subprocess.run(
             ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
@@ -72,7 +82,7 @@ def _run_git(repo_dir: Path, *args: str) -> str | None:
 
 def _resolve_repo_dir() -> Path | None:
     """Use the executing checkout before a profile's optional clone."""
-    repo_dir = Path(__file__).parent.parent.resolve()
+    repo_dir = Path(project_root_str())
     if (repo_dir / ".git").exists():
         return repo_dir
     # The PROCESS home: this is the running code's identity and is cached
@@ -225,15 +235,17 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
         if not include_untracked:
             status_command.append("-uno")
-        dirty_result = subprocess.run(
-            status_command,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=3,
-            cwd=str(repo_dir),
-            check=False,
-        )
-        dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
+        dirty = False
+        if not _git_unusable():
+            dirty_result = subprocess.run(
+                status_command,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=3,
+                cwd=str(repo_dir),
+                check=False,
+            )
+            dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
     except (OSError, subprocess.SubprocessError):
         dirty = False
 

@@ -127,13 +127,14 @@ async def test_unserve_keeps_ownership_without_aborting_the_reconcile(tmp_path, 
     released, closed = [], []
     monkeypatch.setattr(run_runtime, 'unserve_profile_runtime', unserve)
     monkeypatch.setattr(run_runtime, 'release_profile_home', lambda runner, home: released.append(home))
-    monkeypatch.setattr('hermes_state_registry.close_all_under', lambda home: closed.append(home))
+    monkeypatch.setattr('persistence_assembly.close_stores_under', lambda home: closed.append(home))
     runner = SimpleNamespace(session_authorities=object(), _profile_failed_platforms={}, _profile_adapters={},
         _served_profile_homes={'stuck': stuck, 'gone': gone}, _served_profile_signatures={}, _agent_cache={},
         _evict_cached_agent=lambda key: None, served_profile_names=lambda: sorted(runner._served_profile_homes),
         _live_resource_claims=lambda active: {}, _record_served_profiles=lambda active, homes: None)
     monkeypatch.setattr('hermes_cli.profiles.profiles_to_serve', lambda **kwargs: [])
-    runner._unserve_profile = GatewayProfileReconcileMixin._unserve_profile.__get__(runner)
+    for method in ("_unserve_profile", "_apply_profile_diff", "_open_profile_receipts", "_close_profile_receipts"):
+        setattr(runner, method, getattr(GatewayProfileReconcileMixin, method).__get__(runner))
     result = await GatewayProfileReconcileMixin._apply_profile_changes(
         runner, {}, [], ['stuck', 'gone'], [], reason='watcher')
     assert result['removed'] == ['stuck', 'gone']

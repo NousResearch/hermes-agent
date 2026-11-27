@@ -120,14 +120,19 @@ class BuildRequest:
                 raise ValueError("bundle defaults conflict with channel request")
             commit = channel_request["commit"]
             bundle_env = channel_request["bundleEnv"]
-        if variant == "store" and (commit or not tag or channel_for_tag(tag) != "stable"):
+        # A canary builds the Store package as stable does (it runs every lane); it never submits it.
+        if variant == "store" and (commit or not tag or channel_for_tag(tag) not in ("stable", "canary")):
             raise ValueError("Store packaging requires a stable release tag")
         if variant not in {"bundled", "store", "light"}:
             raise ValueError("invalid desktop variant")
         if bool(tag) == bool(commit):
             raise ValueError("exactly one of --tag or --commit is required")
         bundle_env = validate(bundle_env)
-        if bundle_env and tag:
+        from hermes_cli.update_channel import is_commit_tag
+
+        # A commit build bakes its defaults whether it is tagless or runs the release pipeline on
+        # its claim (commit.<stamp>-vX.Y.Z); a stable or canary release never does.
+        if bundle_env and tag and not is_commit_tag(tag):
             raise ValueError("Bundle environment defaults require a commit build")
         source, work, cache = source.resolve(), work.resolve(), cache.resolve()
         require_output_roots(source)
@@ -147,9 +152,12 @@ class BuildRequest:
                 git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         release_epoch = None
         if tag:
-            canary = re.fullmatch(r"v\d+\.\d+\.\d+\+canary\.(20\d{6}T\d{6}Z)", tag)
+            from hermes_cli.update_channel import canary_timestamp, commit_timestamp
+
+            # A canary's or commit build's claim carries its build time.
+            canary = canary_timestamp(tag) or commit_timestamp(tag)
             if canary:
-                release_epoch = int(datetime.strptime(canary.group(1), "%Y%m%dT%H%M%SZ")
+                release_epoch = int(datetime.strptime(canary, "%Y%m%dT%H%M%SZ")
                                     .replace(tzinfo=UTC).timestamp())
             else:
                 claim_tag = os.environ.get("RELEASE_CLAIM_TAG", "")

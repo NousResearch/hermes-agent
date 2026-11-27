@@ -12,10 +12,9 @@ _registry = HandlerRegistry()
 # ── session.branch ───────────────────────────────────────────────────
 def _branch_title(db, parent_key: str) -> str:
     """Next title in the parent's lineage (mirrors the TUI /branch naming)."""
-    current = db.get_session_title(parent_key) or "branch"
-    if hasattr(db, "get_next_title_in_lineage"):
-        return db.get_next_title_in_lineage(current)
-    return f"{current} (branch)"
+    with _persistence_for(db) as persistence:
+        current = persistence.sessions.get_title(parent_key) or "branch"
+        return persistence.sessions.next_title_in_lineage(current)
 
 
 def _visible_branch_history(messages) -> list:
@@ -31,9 +30,11 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     parent_home = session.get("profile_home")
     parent_user_id = _session_auth_user_id(session)
     branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
+    branch_persistence = _persistence_beside(branch_db)
     try:
         with _profile_build_scope(parent_home):
-            agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
+            agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, persistence=branch_persistence,
+                                           platform_override=source,
                                            cwd_override=_session_cwd(session),
                                            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session),
                                            auth_user_id=parent_user_id)
@@ -41,7 +42,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
                           cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
                           explicit_cwd=bool(session.get("explicit_cwd")))
             _transfer_db_to_agent(agent, branch_db)
-            branch_owns_db = False
+            branch_owns_db, branch_persistence = False, None
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
             _sessions[new_sid]["auth_user_id"] = parent_user_id
@@ -53,6 +54,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     finally:
         if branch_owns_db and branch_db is not None:
             _release_db(branch_db)
+        _release_persistence(branch_persistence)
 
 
 _BRANCH_COPY_FIELDS = (
@@ -72,12 +74,14 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
             dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
             if isinstance(msg, dict)]
     history = None
-    if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
-        try:
-            _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
-        except Exception:
-            logger.debug("branch display projection read failed", exc_info=True)
+    with _persistence_for(db) as persistence:
+        if persistence is not None:
+            try:
+                display_history = [m.as_openai_message()
+                                   for m in persistence.messages.read_resume_conversations(old_key).display]
+                history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            except Exception:
+                logger.debug("branch display projection read failed", exc_info=True)
     return history or _visible_branch_history(in_memory_history)
 
 
@@ -157,9 +161,9 @@ def _branch_idempotent_hit(existing_sid: str, session: dict, omit_messages: bool
 def _branch_title_for(session: dict) -> str:
     """The child's persisted title from its stored row, best-effort."""
     with contextlib.suppress(Exception):
-        with _session_db(session) as db:
-            if db is not None:
-                return db.get_session_title(session.get("session_key") or "") or ""
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is not None:
+                return persistence.sessions.get_title(session.get("session_key") or "") or ""
     return ""
 
 

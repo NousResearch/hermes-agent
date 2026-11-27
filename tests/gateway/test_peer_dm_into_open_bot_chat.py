@@ -22,7 +22,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_cli.subcommands import peer as peer_mod
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
@@ -39,16 +40,15 @@ def _app(adapter):
     [("scratch", True), ("bot-chat", True), ("bot-chat", False)],
     ids=["other-session", "bot-chat-open-in-a-viewer", "bot-chat-not-open"],
 )
-async def test_a_peer_turn_into_a_bot_chat_without_an_authority_runs_here(tmp_path, monkeypatch, target, open_in_desktop):
+async def test_a_peer_turn_into_a_bot_chat_without_an_authority_runs_here(tmp_path, monkeypatch, target, open_in_desktop, api_store):
     """Without a profile authority nothing else may execute the Bot Chat's turn: a Desktop viewer
     lease is not an owner, so the turn runs here and no mailbox delivery is admitted."""
     home = tmp_path.resolve()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 1.0)
-    db = SessionDB(home / "state.db")
-    db.create_session("bot-chat", "desktop")
-    db.set_session_title("bot-chat", "Bot Chat")
-    db.create_session("scratch", "api_server")
+    db = open_persistence(profile_scope(home=home))
+    seed_session(db, "bot-chat", "desktop", title="Bot Chat")
+    seed_session(db, "scratch", "api_server")
     lease = None
     if open_in_desktop:
         from hermes_cli.active_sessions import try_acquire_active_session
@@ -57,7 +57,8 @@ async def test_a_peer_turn_into_a_bot_chat_without_an_authority_runs_here(tmp_pa
             metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
         assert lease is not None and refusal is None
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._session_db = db
+    adapter._home_stores[str(home)] = db
+    api_store(db)
     try:
         with patch.object(adapter, "_run_agent", AsyncMock(return_value=({"final_response": "ran here"}, {}))) as run:
             async with TestClient(TestServer(_app(adapter))) as cli:
@@ -103,22 +104,22 @@ async def _poll_terminal(cli, run_id, *, tries=100):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["scratch", "bot-chat"],
                          ids=["other-session-runs-here", "bot-chat-runs-here-without-an-authority"])
-async def test_a_peer_run_into_a_bot_chat_without_an_authority_runs_here(tmp_path, monkeypatch, target):
+async def test_a_peer_run_into_a_bot_chat_without_an_authority_runs_here(tmp_path, monkeypatch, target, api_store):
     """`peer run` into the Bot Chat with no authority to hand it to runs here like any other
     session; the run keeps its run_id and `peer status` keeps working."""
     home = tmp_path.resolve()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    db = SessionDB(home / "state.db")
-    db.create_session("bot-chat", "desktop")
-    db.set_session_title("bot-chat", "Bot Chat")
-    db.create_session("scratch", "api_server")
+    db = open_persistence(profile_scope(home=home))
+    seed_session(db, "bot-chat", "desktop", title="Bot Chat")
+    seed_session(db, "scratch", "api_server")
     from hermes_cli.active_sessions import try_acquire_active_session
     lease, refusal = try_acquire_active_session(
         session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
         metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
     assert lease is not None and refusal is None
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._session_db = db
+    adapter._home_stores[str(home)] = db
+    api_store(db)
     ran_here = []
 
     def _create_agent(**kwargs):

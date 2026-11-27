@@ -113,7 +113,8 @@ def _owner_secret_mapping(home: Path) -> dict[str, str]:
     interval per home: every retry is a helper subprocess, and connect/reconnect loops are tight."""
     from agent.secret_scope import _is_process_home, build_profile_secret_scope
     from hermes_cli import env_loader
-    key = str(home.resolve())
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key(home)
     if time.monotonic() >= _hydrate_retry_after.get(key, 0.0):
         env_loader.hydrate_profile_secret_sources(home)
         if key not in env_loader._APPLIED_HOMES:
@@ -160,6 +161,10 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         # owner's fresh scope so a ref left literal before its secret source answered resolves
         # now, and refuse to send one that still does not.
         config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
+        # A ref that resolves only now (unscoped portable load, late secret source) was validated
+        # as its literal placeholder: check the command actually about to be spawned.
+        if issues := _config._suspicious_mcp_issues(name, config):
+            raise ValueError(f"Refusing suspicious MCP server '{name}': {'; '.join(issues)}")
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel
@@ -393,8 +398,14 @@ def _select_new_servers(servers: dict[str, dict]) -> dict[str, dict]:
                 _core._parallel_safe_servers.discard(own_key)
     for srv in stale_cached:
         auth_park = getattr(srv, "_auth_park", None)
-        # Parked on an OAuth failure and not re-authorized since: leave it to its timed self-probe.
-        if auth_park is None or auth_park[0].credential_stamp() != auth_park[1]:
+        if auth_park is not None:
+            # Parked on an OAuth failure: wake only once a re-authorization rewrote the credentials.
+            wake = auth_park[0].credential_stamp() != auth_park[1]
+        else:
+            # One free wake per park streak; once a revival has failed the parked backoff decides,
+            # or every cron tick / new session respawned the broken child (official-plugins#401).
+            wake = not (getattr(srv, "_park_quiet", False) or getattr(srv, "_parked_probe_failures", 0))
+        if wake:
             _loop._signal_reconnect(srv)
     return new_servers
 

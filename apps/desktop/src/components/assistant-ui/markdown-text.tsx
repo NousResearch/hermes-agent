@@ -12,9 +12,12 @@ import type { code as streamdownCode } from '@streamdown/code'
 import {
   Children,
   type ComponentProps,
+  createContext,
   isValidElement,
   memo,
   type ReactNode,
+  useContext,
+  useDeferredValue,
   useEffect,
   useMemo,
   useState
@@ -473,6 +476,11 @@ function MarkdownImageContent({
   // the w-fit container hugs it so the download button and shadow sit on the
   // image, not on the letterbox. Without a frame (a source that failed last
   // time) it lays out as a plain capped image, like before frames existed.
+  // The click target takes the frame's height so the image's max-h-full has a
+  // definite height to resolve against. Without it a portrait image ignores
+  // the cap and paints over the text below the frame (#154409). A button
+  // centres its content vertically, so it is a top-aligned flex box: a shorter
+  // image stays at the top, under the download button.
   const framed = Boolean(image.frameStyle)
 
   return (
@@ -481,6 +489,7 @@ function MarkdownImageContent({
         <ZoomableImage
           {...props}
           alt={alt}
+          buttonClassName={framed ? 'flex h-full items-start' : undefined}
           className={cn(
             'm-0 block h-auto w-auto max-w-full rounded-lg object-scale-down shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
             framed ? 'max-h-full' : 'max-h-(--image-preview-height)',
@@ -514,7 +523,6 @@ function MarkdownImageContent({
 interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
-  defer?: boolean
   /** This text is the model's private scratchpad (reasoning), so nothing in it
    *  may be promoted into app chrome: no artifact cards from fenced blocks (a
    *  draft must not register artifact versions), and no transcript directives
@@ -589,6 +597,14 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
+// Whether the surface's message is still streaming. Read through context, not
+// closed over by the `components` table: a table that changes identity when
+// the stream ends fails every Block's memo, so the whole message re-parses
+// once and every code subtree remounts. Only the consumers below re-render.
+const MarkdownStreamingContext = createContext(false)
+
+const parseSettledMarkdownIntoBlocksCached = (markdown: string) => parseMarkdownIntoBlocksCached(markdown, false)
+
 /**
  * Paragraph override. Almost always a plain `<p>` — but a paragraph that is
  * exactly one `::name{...}` directive claimed by a plugin renders as that
@@ -600,9 +616,9 @@ function MarkdownParagraph({
   children,
   className,
   scratchpad,
-  streaming,
   ...props
-}: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
+}: ComponentProps<'p'> & { scratchpad?: boolean }) {
+  const streaming = useContext(MarkdownStreamingContext)
   const plain = paragraphPlainText(children)
   const resolved = useResolvedParagraph(scratchpad ? null : plain)
   // A plugin's tool media renderer draws block content (a card, a viewer), which
@@ -663,17 +679,55 @@ function holdsMediaLink(children: ReactNode): boolean {
   })
 }
 
+interface MarkdownCodeBlockProps extends SyntaxHighlighterProps {
+  /** Fenced blocks may promote to artifact cards (assistant answers only). */
+  artifacts: boolean
+  previewOnly?: boolean
+}
+
+// ```mermaid / ```svg fences route to their lazy renderers; substantial
+// html/svg/code fences promote to an artifact card that opens in the right
+// rail; every other language falls back to the Shiki-highlighted code block,
+// which stays plain while streaming and highlights once the stream ends.
+function MarkdownCodeBlock({ artifacts, previewOnly, ...props }: MarkdownCodeBlockProps) {
+  const streaming = useContext(MarkdownStreamingContext)
+  const artifact = artifacts ? detectArtifact(props.language, props.code) : null
+
+  if (artifact) {
+    return <ArtifactCard code={props.code} detection={artifact} streaming={streaming} />
+  }
+
+  // Foreign text never draws: a ```svg or ```mermaid fence shows its source.
+  if (previewOnly) {
+    return <SyntaxHighlighter {...props} defer={streaming} />
+  }
+
+  return (
+    <RichCodeBlock
+      code={props.code}
+      fallback={<SyntaxHighlighter {...props} defer={streaming} />}
+      language={props.language}
+      streaming={streaming}
+    />
+  )
+}
+
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
   decorateText,
-  defer,
   disableArtifacts,
   previewOnly,
   scratchpad,
   textDirection
 }: MarkdownTextSurfaceProps) {
-  const { status, text } = useMessagePartText()
+  // The whole surface renders the DEFERRED part. StreamdownTextPrimitive runs
+  // `preprocess` (full-text regex passes + the remend boundary scan, O(N)) on
+  // its context part before its own `defer`, i.e. at urgent priority on every
+  // flush. Deferring the part here and republishing it below means the urgent
+  // render sees an unchanged part and bails out; all text work (preprocess,
+  // split, parse) runs only in the interruptible deferred render.
+  const { status, text } = useDeferredValue(useMessagePartText())
   // List/quote boxes resolve from content under Auto (see the ul/ol/blockquote
   // notes below); an explicit choice replaces that vote rather than nesting it.
   const boxDir = textDirection ?? 'auto'
@@ -687,8 +741,8 @@ function MarkdownTextSurface({
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by
-  // `SyntaxHighlighter` below when `isStreaming` is true, and the code plugin
-  // itself arrives async (useCodePlugin) so shiki never blocks cold start.
+  // `MarkdownCodeBlock` while the stream runs, and the code plugin itself
+  // arrives async (useCodePlugin) so shiki never blocks cold start.
   const code = useCodePlugin()
   const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
 
@@ -711,7 +765,7 @@ function MarkdownTextSurface({
           previewOnly ? (
             <p {...props}>{decorateText ? decorateText(children) : children}</p>
           ) : (
-            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming}>
+            <MarkdownParagraph {...props} scratchpad={scratchpad}>
               {decorateText ? decorateText(children) : children}
             </MarkdownParagraph>
           ),
@@ -785,34 +839,15 @@ function MarkdownTextSurface({
           </td>
         ),
         img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
-        // ```mermaid / ```svg fences route to their lazy renderers; substantial
-        // html/svg/code fences promote to an artifact card that opens in the
-        // right rail; every other language falls back to the Shiki-highlighted
-        // code block.
-        SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
-          const artifact =
-            disableArtifacts || previewOnly || scratchpad ? null : detectArtifact(props.language, props.code)
-
-          if (artifact) {
-            return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
-          }
-
-          // Foreign text never draws: a ```svg or ```mermaid fence shows its source.
-          if (previewOnly) {
-            return <SyntaxHighlighter {...props} defer={isStreaming} />
-          }
-
-          return (
-            <RichCodeBlock
-              code={props.code}
-              fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
-              language={props.language}
-              streaming={isStreaming}
-            />
-          )
-        }
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => (
+          <MarkdownCodeBlock
+            {...props}
+            artifacts={!(disableArtifacts || previewOnly || scratchpad)}
+            previewOnly={previewOnly}
+          />
+        )
       }) as StreamdownTextComponents,
-    [boxDir, decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
+    [boxDir, decorateText, disableArtifacts, previewOnly, scratchpad]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -842,24 +877,29 @@ function MarkdownTextSurface({
       fallback={() => <HugeTextFallback containerClassName={containerClassName} text={text} />}
       label="markdown-render"
     >
-      <StreamdownTextPrimitive
-        components={components}
-        containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-        containerProps={surfaceContainerProps}
-        defer={defer}
-        lineNumbers={false}
-        mode="streaming"
-        // Incomplete-markdown repair runs in preprocessWithTailRepair on the
-        // full accumulated text; the built-in tail-bounded remend is disabled
-        // because a custom parseMarkdownIntoBlocksFn is supplied, and
-        // parseIncompleteMarkdown stays false to avoid a second full-text
-        // remend pass.
-        parseIncompleteMarkdown={false}
-        parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
-        plugins={plugins}
-        preprocess={preprocessWithTailRepair}
-        remarkPlugins={REMARK_PLUGINS}
-      />
+      <MarkdownStreamingContext value={isStreaming}>
+        <TextMessagePartProvider isRunning={isStreaming} text={text}>
+          <StreamdownTextPrimitive
+            components={components}
+            containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
+            containerProps={surfaceContainerProps}
+            lineNumbers={false}
+            mode="streaming"
+            // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+            // full accumulated text; the built-in tail-bounded remend is disabled
+            // because a custom parseMarkdownIntoBlocksFn is supplied, and
+            // parseIncompleteMarkdown stays false to avoid a second full-text
+            // remend pass.
+            parseIncompleteMarkdown={false}
+            parseMarkdownIntoBlocksFn={
+              isStreaming ? parseMarkdownIntoBlocksCached : parseSettledMarkdownIntoBlocksCached
+            }
+            plugins={plugins}
+            preprocess={preprocessWithTailRepair}
+            remarkPlugins={REMARK_PLUGINS}
+          />
+        </TextMessagePartProvider>
+      </MarkdownStreamingContext>
     </ErrorBoundary>
   )
 }
@@ -908,7 +948,7 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
   // coarse summary updates too rarely to notice. Plain append matches the answer.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <MarkdownTextSurface defer {...surfaceProps} />
+      <MarkdownTextSurface {...surfaceProps} />
     </TextMessagePartProvider>
   )
 }
@@ -916,7 +956,7 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
 const MarkdownTextImpl = () => {
   const textDirection = useForcedTextDirection()
 
-  return <MarkdownTextSurface defer textDirection={textDirection} />
+  return <MarkdownTextSurface textDirection={textDirection} />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

@@ -1,0 +1,90 @@
+"""Preparation must not fall through to Jammy's unpatched system Python."""
+import os
+from pathlib import Path
+import shlex
+import subprocess
+
+import pytest
+
+from tests.ci.test_desktop_release_tag_admission import _workflow
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("target", ["linux-x64", "linux-arm64"])
+def test_linux_workflow_shell_selects_the_right_userland(tmp_path, target):
+    job = _workflow()["jobs"][f"build-{target}"]
+    # GitHub validates step shells before a matrix row exists. The runner passes
+    # the step body as a file; it does not expand matrix expressions here.
+    for step in job["steps"]:
+        assert "${{" not in step.get("shell", ""), step.get("name")
+    shell = next(step["shell"] for step in job["steps"] if step.get("name") == "Build and package")
+    step_file = tmp_path / "step with spaces.sh"
+    step_file.write_text("printf 'native arm step\\n'\nfalse | true\n", encoding="utf-8")
+    row, = job["strategy"]["matrix"]["target"]
+    env = {k: v.replace("${{ matrix.target.label }}", row["label"]) for k, v in job["env"].items()}
+    result = subprocess.run([arg.replace("{0}", str(step_file)) for arg in shlex.split(shell)],
+                            env={**os.environ, **env, "GITHUB_WORKSPACE": str(tmp_path),
+                                 "GITHUB_ENV": str(tmp_path / "env"), "GITHUB_PATH": str(tmp_path / "paths"),
+                                 "HERMES_NODE": "", "HERMES_PYTHON": "", "X64_BOOTSTRAP_PYTHON": ""},
+                            capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    if target == "linux-arm64":
+        assert result.stdout.strip() == "native arm step"
+    else:
+        assert result.stdout == "" and "Missing PM x64 bootstrap Python" in result.stderr
+
+
+@pytest.mark.platforms("linux")
+def test_build_requires_a_real_bootstrap_before_launching_docker(tmp_path):
+    script = Path(__file__).resolve().parents[2] / "scripts/ci/linux_x64_userland.sh"
+    launcher = tmp_path / "docker"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o755)
+    step = tmp_path / "prepare.sh"
+    step.touch()
+    result = subprocess.run(["bash", script, "build", step], capture_output=True, text=True, check=False,
+                            env={"GITHUB_WORKSPACE": str(tmp_path), "GITHUB_PATH": str(tmp_path / "paths"),
+                                 "GITHUB_ENV": str(tmp_path / "env"), "PATH": f"{tmp_path}:/usr/bin:/bin",
+                                 "X64_FLOOR_IMAGE": "floor", "X64_BUILDER_IMAGE": "builder",
+                                 "X64_BOOTSTRAP_PYTHON": str(tmp_path / "missing" / "python3")})
+    assert result.returncode != 0
+    assert "bootstrap" in result.stderr.lower()
+
+
+@pytest.mark.platforms("linux")
+def test_accept_forwards_appimage_digest_to_checks_worker(tmp_path):
+    import hashlib
+    import json
+    import sys
+
+    script = Path(__file__).resolve().parents[2] / "scripts/ci/linux_x64_userland.sh"
+    release = tmp_path / "apps/desktop/release"
+    release.mkdir(parents=True)
+    appimage = release / "HermesBundled-0.1.0-linux-x64.AppImage"
+    payload = b"AppImage-fixture-bytes"
+    appimage.write_bytes(payload)
+    expected_digest = hashlib.sha256(payload).hexdigest()
+
+    log = tmp_path / "docker-calls.jsonl"
+    launcher = tmp_path / "docker"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['DOCKER_LOG'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    launcher.chmod(0o755)
+    result = subprocess.run(
+        ["bash", script, "accept"], capture_output=True, text=True, check=False,
+        env={"GITHUB_WORKSPACE": str(tmp_path), "PATH": f"{tmp_path}:/usr/bin:/bin",
+             "X64_FLOOR_IMAGE": "floor-img", "X64_GPU_IMAGE": "gpu-img",
+             "DOCKER_LOG": str(log)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(calls) == 2
+    for call, ubuntu in zip(calls, ("22.04", "24.04")):
+        bash_idx = call.index("-ec")
+        inner_cmd = call[bash_idx + 1]
+        assert 'python3 -I /checks.py "$ubuntu" "$digest"' in inner_cmd
+        assert call[bash_idx + 2:bash_idx + 5] == ["bash", ubuntu, expected_digest]

@@ -9,20 +9,21 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
     from dataclasses import replace
     from types import SimpleNamespace
     from gateway.run_turn_runner import TurnRunner
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionActor, SessionRef
-    from hermes_state import SessionDB
-    from hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
-                                     claim_session_input, settle_session_input)
+    from persistence.core.errors import AuthorityRefusal
     from tools.approval import list_gateway_approvals, resolve_gateway_approval
     from tools.approval_gateway_wait import _await_gateway_decision
+    from tests.fixtures.storage_seed import seed_session
+    from tests.gateway.fixtures.storage_handles import storage_handle
 
-    db = SessionDB(tmp_path / 'controls.db')
-    db.create_session('s', source='telegram')
-    epoch = begin_runtime_epoch(db, instance_id='controls')
-    admit_session_input(db, epoch=epoch, principal_id='owner', session_id='s', request_id='first', payload={'text': 'first'})
-    row = claim_session_input(db, epoch=epoch, session_id='s')
-    authority = SessionAuthority(SimpleNamespace(), profile_id='p', instance_id='controls', db=db, epoch=epoch)
+    store = storage_handle(tmp_path)
+    seed_session(store, 's', 'telegram')
+    epoch = store.runtime.begin_epoch(instance_id='controls')
+    store.admissions.admit(epoch=epoch, principal_id='owner', session_id='s', request_id='first', payload={'text': 'first'})
+    row = admission_row(store.admissions.claim(epoch=epoch, session_id='s'))
+    authority = SessionAuthority(SimpleNamespace(), profile_id='p', instance_id='controls', epoch=epoch,
+                                 persistence=store)
     live = authority.sessions['s'] = LiveSession(None, 'boundary-route')
     ref = SessionRef('p', 's')
     actor = SessionActor('operator', 'p', frozenset({'session:read', 'session:approve'}), 'a')
@@ -78,11 +79,11 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
             (replace(actor, transport_id='unattached'), ref, row['generation'], 'permission_denied'),
             (actor, ref, row['generation'] + 1, 'stale_generation'),
         ]:
-            with pytest.raises(RuntimeStoreError) as exc:
+            with pytest.raises(AuthorityRefusal) as exc:
                 await authority.respond(bad_actor, bad_ref, gen, prompts[0]['prompt_id'], {'choice': 'once'})
             assert exc.value.reason == reason
         for answer in ({'choice': 'always'}, {'choice': 'session'}, {'answer': 'PRIVATE_SUDO_ANSWER'}, {'choice': []}):
-            with pytest.raises(RuntimeStoreError) as exc:
+            with pytest.raises(AuthorityRefusal) as exc:
                 await authority.respond(actor, ref, row['generation'], prompts[0]['prompt_id'], answer)
             assert exc.value.reason == 'invalid_params'
         await authority.detach(actor, snap.subscription_id)
@@ -120,9 +121,9 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
             turn._approval_notify_sync, {'command': 'orphaned-worker', 'pattern_keys': ['orphan']}))
         tasks.append(orphan)
         orphan_prompt = await wait_prompt()
-        settle_session_input(db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed')
+        store.admissions.settle(epoch=epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed')
         assert not (await authority.attach(actor, ref)).prompts, 'snapshot presents retired worker approval'
-        with pytest.raises(RuntimeStoreError) as exc:
+        with pytest.raises(AuthorityRefusal) as exc:
             await authority.respond(actor, ref, row['generation'], orphan_prompt['prompt_id'], {'choice': 'once'})
         assert exc.value.reason == 'stale_generation'
         resolve_gateway_approval(live.route, 'deny', request_id=orphan_prompt['prompt_id'])
@@ -131,8 +132,8 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
 
         # A delayed old worker callback must not publish a fresh actionable card
         # after a new generation has claimed the session.
-        admit_session_input(db, epoch=epoch, principal_id='owner', session_id='s', request_id='next', payload={'text': 'next'})
-        newer = claim_session_input(db, epoch=epoch, session_id='s')
+        store.admissions.admit(epoch=epoch, principal_id='owner', session_id='s', request_id='next', payload={'text': 'next'})
+        newer = admission_row(store.admissions.claim(epoch=epoch, session_id='s'))
         from tools import approval_context
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 0)
         before = live.event_stream.watermark()
@@ -141,8 +142,7 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
         assert stale.get('notify_failed'), 'retired worker registered a new shared approval'
         assert live.event_stream.watermark() == before, 'retired worker published an approval event'
         assert not (await authority.attach(actor, ref)).prompts
-        settle_session_input(db, epoch=epoch, admission_id=newer['admission_id'], generation=newer['generation'], outcome='completed')
+        store.admissions.settle(epoch=epoch, admission_id=newer['admission_id'], generation=newer['generation'], outcome='completed')
     finally:
         resolve_gateway_approval(live.route, 'deny', resolve_all=True)
         await asyncio.gather(*tasks)
-        db.close()

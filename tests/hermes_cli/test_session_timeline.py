@@ -6,7 +6,23 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
+
+
+def _append_batch(store, session_id, messages):
+    store.messages.append_batch(session_id, [NewMessage.from_live(message) for message in messages])
+
+
+def _compact(store, session_id, messages):
+    store.messages.compact(session_id, [NewMessage.from_live(message) for message in messages])
+
+
+def _write_sql(store, sql, params=()):
+    raw_holder(store)._execute_write(lambda conn: conn.execute(sql, params))
 
 
 @pytest.fixture
@@ -15,28 +31,26 @@ def timeline_store(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
-    db = SessionDB(db_path=home / "state.db")
-    db.create_session(session_id="timeline-root", source="desktop")
     from hermes_cli.web_routers.sessions import manage_router
 
     app = FastAPI()
     app.include_router(manage_router)
-    with TestClient(app) as client:
-        yield db, client, home
-    db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, "timeline-root", "desktop")
+        with TestClient(app) as client:
+            yield db, client, home
 
 
 def test_timeline_pages_project_human_prompts_without_tool_payloads(timeline_store):
     db, client, _ = timeline_store
-    db.append_messages_batch("timeline-root", [
+    _append_batch(db, "timeline-root", [
         {"role": "user", "content": " First\n  prompt ", "timestamp": 200},
         {"role": "assistant", "content": "answer", "tool_calls": [
             {"id": "tool-1", "function": {"name": "terminal", "arguments": "x" * 10000}}]},
         {"role": "tool", "content": "secret tool payload" * 1000, "tool_call_id": "tool-1"},
         {"role": "user", "content": "é" * 150, "timestamp": 100},
     ])
-    expected_ids = [row["id"] for row in db.get_messages("timeline-root") if row["role"] == "user"]
+    expected_ids = [row["id"] for row in transcript_rows(db, "timeline-root") if row["role"] == "user"]
     response = client.get("/api/sessions/timeline-root/timeline?limit=1")
     assert response.status_code == 200
     first = response.json()
@@ -61,18 +75,18 @@ def test_compacted_timeline_and_jump_share_display_order_and_visibility(timeline
 
     db, client, _ = timeline_store
     sid = "timeline-root"
-    db.append_messages_batch(sid, [
+    _append_batch(db, sid, [
         {"role": "user", "content": "old ask", "timestamp": 10},
         {"role": "assistant", "content": "old answer", "timestamp": 11},
         {"role": "user", "content": "retained ask", "timestamp": 12},
         {"role": "assistant", "content": "retained answer", "timestamp": 13},
     ])
-    retained = db.get_messages(sid)[2:]
-    db.archive_and_compact(sid, [
+    retained = transcript_rows(db, sid)[2:]
+    _compact(db, sid, [
         {"role": "user", "content": SUMMARY_PREFIX + "summary", "_compressed_summary": True},
         *retained,
     ])
-    db.append_messages_batch(sid, [
+    _append_batch(db, sid, [
         {"role": "user", "content": "hidden ask", "display_kind": "hidden"},
         {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT},
         {"role": "user", "content": "[IMPORTANT: Background process 12 completed]"},
@@ -83,10 +97,10 @@ def test_compacted_timeline_and_jump_share_display_order_and_visibility(timeline
         {"role": "assistant", "content": "live answer"},
         {"role": "user", "content": "rewound ask"},
     ])
-    rewound_id = db.get_messages(sid)[-1]["id"]
-    db._write_sql("UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", (rewound_id,))
+    rewound_id = transcript_rows(db, sid)[-1]["id"]
+    _write_sql(db, "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?", (rewound_id,))
     if legacy:
-        db._write_sql("UPDATE messages SET display_identity = NULL, display_order = NULL WHERE session_id = ?", (sid,))
+        _write_sql(db, "UPDATE messages SET display_identity = NULL, display_order = NULL WHERE session_id = ?", (sid,))
     timeline = client.get(f"/api/sessions/{sid}/timeline").json()
     assert [entry["preview"] for entry in timeline["entries"]] == ["old ask", "retained ask", "live ask"]
     anchor = timeline["entries"][1]["row_id"]
@@ -107,13 +121,13 @@ def test_compacted_timeline_and_jump_share_display_order_and_visibility(timeline
 def test_cursor_survives_compaction_between_pages(timeline_store):
     db, client, _ = timeline_store
     sid = "timeline-root"
-    db.append_messages_batch(sid, [
+    _append_batch(db, sid, [
         {"role": "user", "content": f"ask {i}", "timestamp": 100 - i} for i in range(4)
     ])
     first = client.get(f"/api/sessions/{sid}/timeline?limit=2").json()
     old_row_id = first["entries"][-1]["row_id"]
-    retained = db.get_messages(sid)[1:]
-    db.archive_and_compact(sid, retained)
+    retained = transcript_rows(db, sid)[1:]
+    _compact(db, sid, retained)
     second = client.get(f"/api/sessions/{sid}/timeline", params={
         "limit": 2, "after_row_id": first["pagination"]["next_cursor"]}).json()
     assert [r["preview"] for r in first["entries"] + second["entries"]] == [f"ask {i}" for i in range(4)]
@@ -130,18 +144,18 @@ def test_cursor_survives_compaction_between_pages(timeline_store):
 def test_exact_owner_lineage_validation_and_bounded_jump(timeline_store):
     db, client, home = timeline_store
     sid = "timeline-root"
-    db.end_session(sid, end_reason="compression")
-    db.create_session(session_id="timeline-tip", source="desktop", parent_session_id=sid)
-    db.append_messages_batch("timeline-tip", [
+    db.sessions.end(sid, "compression")
+    seed_session(db, "timeline-tip", "desktop", parent_session_id=sid)
+    _append_batch(db, "timeline-tip", [
         {"role": "user", "content": "tip ask"},
         *[{"role": "assistant", "content": f"step {i}"} for i in range(130)],
         {"role": "user", "content": "last ask"},
         {"role": "assistant", "content": "last answer"},
     ])
-    db.create_session(session_id="delegate", source="tool", parent_session_id="timeline-tip")
-    db.append_message("delegate", role="user", content="delegate ask")
-    db.create_session(session_id="foreign", source="desktop")
-    foreign = db.append_message("foreign", role="user", content="foreign ask")
+    seed_session(db, "delegate", "tool", parent_session_id="timeline-tip")
+    seed_messages(db, "delegate", {"role": "user", "content": "delegate ask"})
+    seed_session(db, "foreign", "desktop")
+    foreign, = seed_messages(db, "foreign", {"role": "user", "content": "foreign ask"})
     expected_sid = client.get(f"/api/sessions/{sid}/messages").json()["session_id"]
     first = client.get(f"/api/sessions/{sid}/timeline?limit=1").json()
     assert first["session_id"] == expected_sid == "timeline-tip"
@@ -159,14 +173,14 @@ def test_exact_owner_lineage_validation_and_bounded_jump(timeline_store):
     assert client.get("/api/sessions/absent/timeline").status_code == 404
     work = home / "profiles" / "work"
     work.mkdir(parents=True)
-    with SessionDB(db_path=work / "state.db") as other:
-        other.create_session(session_id=sid, source="desktop")
-        other.append_message(sid, role="user", content="work ask")
+    with open_persistence(profile_scope(home=work)) as other:
+        seed_session(other, sid, "desktop")
+        seed_messages(other, sid, {"role": "user", "content": "work ask"})
     for profile, expected in (("default", "tip ask"), ("work", "work ask"), ("default", "tip ask")):
         page = client.get(f"/api/sessions/{sid}/timeline?profile={profile}").json()
         assert page["profile"] == profile
         assert page["entries"][0]["preview"] == expected
-    db._write_sql("UPDATE sessions SET profile_name = 'wrong-owner' WHERE id = 'timeline-tip'")
+    _write_sql(db, "UPDATE sessions SET profile_name = 'wrong-owner' WHERE id = 'timeline-tip'")
     assert client.get(f"/api/sessions/{sid}/timeline").status_code == 404
     assert client.get(f"/api/sessions/{sid}/messages/around?row_id={row_id}").status_code == 404
 
@@ -174,41 +188,37 @@ def test_exact_owner_lineage_validation_and_bounded_jump(timeline_store):
 def test_timeline_sql_never_reads_tool_columns_or_writes(timeline_store, monkeypatch):
     import sqlite3
     from contextlib import contextmanager
-    from hermes_state_timeline import get_session_timeline
-
     db, _, home = timeline_store
-    db.append_messages_batch("timeline-root", [
+    _append_batch(db, "timeline-root", [
         {"role": "user", "content": [{"type": "text", "text": "multimodal ask"},
                                       {"type": "image_url", "image_url": {"url": "data:unused"}}]},
         {"role": "tool", "content": "unread tool result", "tool_calls": [{"unused": "payload"}]},
     ])
-    reader = SessionDB(db_path=home / "state.db", read_only=True)
-    original = reader._read_ctx
-    accesses = []
+    with open_persistence_reader(home / "state.db") as reader:
+        holder = raw_holder(reader)
+        original = holder._read_ctx
+        accesses = []
 
-    def authorize(action, table, column, *_):
-        if action == sqlite3.SQLITE_READ:
-            accesses.append((table, column))
-            if table == "messages" and column in {"tool_calls", "reasoning", "api_content", "codex_reasoning_items"}:
+        def authorize(action, table, column, *_):
+            if action == sqlite3.SQLITE_READ:
+                accesses.append((table, column))
+                if table == "messages" and column in {"tool_calls", "reasoning", "api_content", "codex_reasoning_items"}:
+                    return sqlite3.SQLITE_DENY
+            if action in {sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_INSERT, sqlite3.SQLITE_DELETE}:
                 return sqlite3.SQLITE_DENY
-        if action in {sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_INSERT, sqlite3.SQLITE_DELETE}:
-            return sqlite3.SQLITE_DENY
-        return sqlite3.SQLITE_OK
+            return sqlite3.SQLITE_OK
 
-    @contextmanager
-    def guarded():
-        with original() as conn:
-            conn.set_authorizer(authorize)
-            try:
-                yield conn
-            finally:
-                conn.set_authorizer(None)
+        @contextmanager
+        def guarded():
+            with original() as conn:
+                conn.set_authorizer(authorize)
+                try:
+                    yield conn
+                finally:
+                    conn.set_authorizer(None)
 
-    monkeypatch.setattr(reader, "_read_ctx", guarded)
-    try:
-        page = get_session_timeline(reader, "timeline-root")
-        assert page["entries"][0]["preview"] == "multimodal ask"
-        assert page["pagination"]["total"] == 1
+        monkeypatch.setattr(holder, "_read_ctx", guarded)
+        page = reader.messages.read_session_timeline("timeline-root")
+        assert page.entries[0].preview == "multimodal ask"
+        assert page.total == 1
         assert accesses
-    finally:
-        reader.close()

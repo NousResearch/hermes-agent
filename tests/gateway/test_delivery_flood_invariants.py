@@ -1,9 +1,19 @@
 """Delivery retries honor the platform deadline without crossing ownership boundaries."""
 import os
-import sqlite3
 import time
 
 from gateway import delivery_ledger as dl
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
+
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._scope().profile_dir))
+
+
+def _execute(sql, params=()):
+    _holder()._execute_write(lambda conn: conn.execute(sql, params))
 
 
 def record(oid, *, profile=None):
@@ -13,8 +23,7 @@ def record(oid, *, profile=None):
 
 
 def read(oid):
-    with sqlite3.connect(dl._db_path()) as conn:
-        conn.row_factory = sqlite3.Row
+    with _holder()._read_ctx() as conn:
         return dict(conn.execute('SELECT * FROM delivery_obligations WHERE obligation_id=?', (oid,)).fetchone())
 
 
@@ -45,8 +54,7 @@ def test_boot_adopts_waiting_rows_without_spending_or_losing_deadline():
     record('boot')
     original = read('boot')
     # No PID means a genuinely ownerless persisted row; do not patch the liveness predicate.
-    with sqlite3.connect(dl._db_path()) as conn:
-        conn.execute("UPDATE delivery_obligations SET owner_pid=NULL, owner_started_at=NULL, adapter_profile=NULL")
+    _execute("UPDATE delivery_obligations SET owner_pid=NULL, owner_started_at=NULL, adapter_profile=NULL")
     claimed = dl.sweep_recoverable(now=original['updated_at'] + 20,
                                     deliverable_targets={('telegram', None)})
     assert len(claimed) == 1 and claimed[0].get('adopted')

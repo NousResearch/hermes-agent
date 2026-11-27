@@ -1,0 +1,35 @@
+name: deapi-provider
+title: deAPI Chat
+repo: https://github.com/deapi-ai/hermes-plugin-deapi
+sha: 5032997dc19f4c6cee1667b20aa71fddeb32b3f0
+subdir: deapi-provider
+description: >-
+  deAPI as a Hermes model provider: open-source chat models (DeepSeek V4.1 Flash, Qwen 3.8, Kimi
+  K3, GLM 5.3, Seed 2.x, GPT-6 Luna, Hunyuan 3) on deAPI's OpenAI-compatible API, each with its
+  context window, tool support, reasoning and image input declared, reasoning effort sent as the
+  top-level reasoning_effort clamped to each model's levels, and the cost Hermes records taken from
+  the amount deAPI charged (usage.cost). Pick deAPI in `hermes model` or use `--provider deapi`.
+  Disclosure — registers one model provider at import and nothing else (no tools, hooks,
+  middleware, commands, background work or file access); chat requests (prompts, tool schemas and
+  results, attached images) and the model list go to https://oai.deapi.ai/v1 (or
+  DEAPI_OPENAI_BASE_URL) through Hermes's own client with DEAPI_API_KEY, which Hermes reads; usage
+  is billed to your deAPI account; the plugin itself opens no connections. The image, video,
+  speech and transcription backends are the separate `deapi` entry from the same repository.
+maintainer: deapi-ai
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/deapi-ai/hermes-plugin-deapi/tree/main/deapi-provider#readme
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "Images inside tool results (screenshots, vision_analyze) reach the model as Hermes's text summary. Images you attach to a message go to the models that accept them."
+  - "glm-5.3 always thinks: turning reasoning off sends its lowest level (low). It also answers 400 to a json_schema response format and to stop sequences."
+  - "The model list is fixed per release. A new deAPI chat model appears after a reviewed SHA bump."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEAPI_API_KEY

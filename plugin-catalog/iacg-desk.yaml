@@ -1,0 +1,42 @@
+name: iacg-desk
+repo: https://github.com/RajaRenga/iacgenius-ce
+subdir: profiles/iacgenius/plugins/iacg-desk
+sha: 7ba880ee2968adbbd80b41341d49fc69797887a5
+version: "0.1.0"
+title: IaCGenius — validated Terraform/OpenTofu missions
+description: >-
+  IaCGenius runs deterministic Terraform/OpenTofu missions on Hermes: a decision ledger asks the costly or
+  irreversible questions before spend, freezes the agreed scope as one build-sheet hash, grounds
+  every argument on the pinned binary provider schema, runs terraform validate / tflint / checkov /
+  secret scan as evidence, repairs within a bounded budget, and delivers a reviewable PR whose body
+  is the ledger. The model proposes; the toolchain decides. Disclosure — talks to a local Unix
+  socket served by the iacg_desk desk service (or runs python -m iacg_desk as a subprocess); reads
+  its own local.json + IACG_* config paths (not secrets); the desk's terraform init fetches providers
+  read-only from the public registry into a shared cache; hard-refuses terraform/tofu apply and cloud
+  write commands at pre_tool_call, and escalates approve/confirm/deliver to Hermes's human approval
+  gate so a person must grant them (never model-self-approved); model-supplied tree/out paths are
+  confined to the desk work dir; validation tools run under a secret-free allowlisted env; holds no
+  cloud credentials and never changes cloud state; GitHub delivery uses a token read through Hermes's
+  secret scope only after the gates and a human approval, then reads the commit back; the board
+  briefing is injected via pre_llm_call on the first turn; no telemetry, no self-update.
+maintainer: RajaRenga
+tier: community
+category: tools
+docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/7ba880ee2968adbbd80b41341d49fc69797887a5/profiles/iacgenius/plugins/iacg-desk#readme
+image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/7ba880ee2968adbbd80b41341d49fc69797887a5/docs/media/marketplace-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/7ba880ee2968adbbd80b41341d49fc69797887a5/docs/media/screens/01-board.png
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+known_issues:
+  - "Needs the iacg_desk desk service running on the Unix socket, or the iacg_desk CLI importable (PYTHONPATH)."
+  - "Linux only: the desk API uses AF_UNIX and /run/iacg, /data/iacg paths."
+capabilities:
+  provides_tools:
+    - iacg_mission
+    - iacg_templates
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

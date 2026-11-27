@@ -1,0 +1,18 @@
+name: ai-bot-access-checker
+title: AI Bot Access Checker
+repo: https://github.com/seopaslaugos-io/ai-bot-access-checker
+sha: 923620510a49c3bd7d02d9d73829a49182eaaedc
+version: "1.3.0"
+description: "Check whether AI crawlers and search bots can reach a web page: GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, Claude-SearchBot, Claude-User, PerplexityBot, Perplexity-User, Googlebot, Google-Extended, bingbot, Applebot-Extended and CCBot. For each bot it reports the robots.txt rule that applies (RFC 9309, including rules added by Cloudflare's managed robots.txt) and whether the server or firewall refuses that User-Agent while a normal browser gets the page. Bundles the ai-bot-access-check skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — the check_ai_bot_access tool runs on the author's hosted server at tools.seopaslaugos.io, which receives each URL you ask about, fetches it about 14 times from Cloudflare's network with crawler User-Agents, and caches the result for 10 minutes; the tool set is served at runtime and is not covered by the pinned sha."
+maintainer: Mantas Tamošaitis (seopaslaugos.io)
+tier: community
+category: tools
+docs_url: https://github.com/seopaslaugos-io/ai-bot-access-checker#hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

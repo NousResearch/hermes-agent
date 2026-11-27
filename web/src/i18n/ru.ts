@@ -799,4 +799,17 @@ export const ru: Translations = {
     logTruncated: "(показаны последние 100 KB — полный журнал в ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "Доступно для установки",
+    hint: "Платформы обмена сообщениями из каталога плагинов Hermes. Установка добавляет и включает плагин, затем открывает его настройку.",
+    badgeOfficial: "Официальный",
+    badgeVerified: "Проверенный",
+    disclosure: "Раскрытие:",
+    lazyInstallsOff: "Автоматическая установка плагинов отключена (security.allow_lazy_installs).",
+    run: "Выполните:",
+    install: "Установить",
+    installing: "Установка…",
+    installed: (title: string) => `${title} установлен. Введите учётные данные, чтобы подключить его.`,
+    installFailed: (title: string) => `Не удалось установить ${title}`,
+  },
 };

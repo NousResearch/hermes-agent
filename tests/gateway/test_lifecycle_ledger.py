@@ -252,3 +252,132 @@ def test_replace_handover_is_not_a_death_and_pid_reuse_is(tmp_path: Path, monkey
     assert detect_unclean_exit(home=tmp_path) is None
     _write_sentinel(tmp_path, {**live, "start_time": 4000.0})  # born after the claim → reuser → death
     assert detect_unclean_exit(home=tmp_path) is not None
+
+
+
+# ---------------------------------------------------------------------------
+# PSI reader and watchdog exits carried to the next boot (#148527)
+# ---------------------------------------------------------------------------
+
+def _psi_root(tmp_path: Path, memory: str, io: str | None) -> Path:
+    root = tmp_path / "pressure"
+    root.mkdir()
+    (root / "memory").write_text(memory, encoding="utf-8")
+    if io is not None:
+        (root / "io").write_text(io, encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize(("memory", "io", "expected"), [
+    pytest.param(
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=41.00 avg60=30.12 avg300=10.00 total=123\n",
+        "some avg10=90.00 avg60=80.00 avg300=50.00 total=999\nfull avg10=83.00 avg60=70.50 avg300=40.00 total=888\n",
+        {"memory": {"some_avg10": 0.0, "some_avg60": 0.0, "full_avg10": 41.0, "full_avg60": 30.12},
+         "io": {"some_avg10": 90.0, "some_avg60": 80.0, "full_avg10": 83.0, "full_avg60": 70.5}},
+        id="under-pressure"),
+    pytest.param(  # verbatim from an idle Linux test host: large totals, all averages 0
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=90071916\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=76901063\n",
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=1973171866\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=1675928183\n",
+        {resource: {"some_avg10": 0.0, "some_avg60": 0.0, "full_avg10": 0.0, "full_avg60": 0.0}
+         for resource in ("memory", "io")},
+        id="idle-real-host"),
+])
+def test_sample_pressure_stall_parses_kernel_format(tmp_path: Path, memory: str, io: str, expected: dict) -> None:
+    from gateway.lifecycle_ledger import sample_pressure_stall
+
+    assert sample_pressure_stall(_psi_root(tmp_path, memory, io)) == expected
+
+
+def test_sample_pressure_stall_degrades_without_raising(tmp_path: Path) -> None:
+    from gateway.lifecycle_ledger import sample_pressure_stall
+
+    assert sample_pressure_stall(tmp_path / "no-such-dir") == {}  # off Linux / PSI disabled
+    root = _psi_root(tmp_path, "full avg10=banana avg60=1.00\n", None)
+    assert sample_pressure_stall(root) == {}  # unparsable memory file, missing io file
+    (root / "io").write_text("\nsome avg10=5.00 avg60=4.00 avg300=1.00 total=7\n", encoding="utf-8")
+    assert sample_pressure_stall(root) == {"io": {"some_avg10": 5.0, "some_avg60": 4.0}}
+
+
+@pytest.mark.platforms("linux")
+def test_sample_pressure_stall_reads_this_hosts_psi() -> None:
+    from gateway.lifecycle_ledger import sample_pressure_stall
+
+    try:
+        Path("/proc/pressure/memory").read_text(encoding="utf-8")
+    except OSError:
+        pytest.skip("kernel without PSI, or PSI disabled for this container")
+    sample = sample_pressure_stall()
+    assert set(sample["memory"]) >= {"some_avg10", "full_avg10"}
+
+
+def test_mark_exited_stamps_host_memory_pressure_only_when_given(tmp_path: Path) -> None:
+    record_startup(home=tmp_path)
+    mark_exited(75, reason="loop_liveness_watchdog", home=tmp_path, host_memory_pressure="critical")
+    assert _read_sentinel(tmp_path)["host_memory_pressure"] == "critical"
+
+    record_startup(home=tmp_path)
+    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
+    assert "host_memory_pressure" not in _read_sentinel(tmp_path)
+
+
+def test_record_startup_carries_a_watchdog_exit_forward(tmp_path: Path) -> None:
+    _write_sentinel(tmp_path, {
+        "phase": "exited", "pid": _DEAD_PID, "exit_code": 75, "exit_reason": "loop_liveness_watchdog",
+        "exited_at": "2026-11-03T09:18:00+00:00", "host_memory_pressure": "critical",
+    })
+
+    assert record_startup(home=tmp_path) is None  # not an unclean death: no integrity scan
+
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "running" and sentinel["pid"] == os.getpid()
+    assert sentinel["prior_exit_reason"] == "loop_liveness_watchdog"
+    assert sentinel["prior_host_memory_pressure"] == "critical"
+    assert "prior_unclean_exit" not in sentinel
+    [record] = _exit_diag_records(tmp_path)
+    assert record["tag"] == "gateway.previous_watchdog_exit"
+    assert record["prior_pid"] == _DEAD_PID
+    assert record["prior_exit_code"] == 75
+    assert record["prior_exit_reason"] == "loop_liveness_watchdog"
+    assert record["prior_host_memory_pressure"] == "critical"
+
+
+def test_record_startup_carries_watchdog_exit_without_pressure(tmp_path: Path) -> None:
+    _write_sentinel(tmp_path, {"phase": "exited", "pid": _DEAD_PID, "exit_code": 1,
+                               "exit_reason": "shutdown_watchdog"})
+    record_startup(home=tmp_path)
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["prior_exit_reason"] == "shutdown_watchdog"
+    assert "prior_host_memory_pressure" not in sentinel
+    assert [r["tag"] for r in _exit_diag_records(tmp_path)] == ["gateway.previous_watchdog_exit"]
+
+
+def test_record_startup_graceful_exit_carries_no_exit_reason(tmp_path: Path) -> None:
+    _write_sentinel(tmp_path, {"phase": "exited", "pid": _DEAD_PID, "exit_code": 0,
+                               "exit_reason": "graceful_shutdown", "host_memory_pressure": "critical"})
+    record_startup(home=tmp_path)
+    sentinel = _read_sentinel(tmp_path)
+    assert "prior_exit_reason" not in sentinel
+    assert "prior_host_memory_pressure" not in sentinel
+    assert _exit_diag_records(tmp_path) == []
+
+
+def test_record_startup_unclean_death_does_not_read_as_a_watchdog_exit(tmp_path: Path) -> None:
+    # A still-running sentinel from a dead pid keeps the existing unclean path, even if it
+    # somehow carries a watchdog reason.
+    _write_sentinel(tmp_path, {"phase": "running", "pid": _DEAD_PID, "start_time": 1000.0,
+                               "started_at": "2026-07-11T04:30:00+00:00",
+                               "exit_reason": "loop_liveness_watchdog"})
+    assert record_startup(home=tmp_path) is not None
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["prior_unclean_exit"] is True
+    assert "prior_exit_reason" not in sentinel
+    assert [r["tag"] for r in _exit_diag_records(tmp_path)] == ["gateway.previous_unclean_exit"]
+
+
+def test_record_startup_ignores_a_watchdog_reason_without_an_exited_phase(tmp_path: Path) -> None:
+    # Only a completed exit stamp (phase=exited) proves the watchdog ran its exit path.
+    _write_sentinel(tmp_path, {"pid": _DEAD_PID, "exit_code": 75, "exit_reason": "loop_liveness_watchdog"})
+    record_startup(home=tmp_path)
+    assert "prior_exit_reason" not in _read_sentinel(tmp_path)
+    assert _exit_diag_records(tmp_path) == []

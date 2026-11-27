@@ -18,9 +18,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { INSTALL_ORIGIN, PACKAGE_MARKER } from '../../shared/src/desktop-plugin-files'
+
+export { INSTALL_ORIGIN, PACKAGE_MARKER }
+
 export const DESKTOP_PLUGINS_DIR = 'desktop-plugins'
-/** Marker inside a materialized desktop half: which agent package it came from. */
-export const PACKAGE_MARKER = '.hermes-package.json'
 
 export interface DesktopHalfMarker {
   /** Agent package folder name (the `plugins/<name>` key). */
@@ -135,11 +137,25 @@ async function listDirs(dir: string, followLinks = false): Promise<string[]> {
   }
 }
 
-/** Every hermes home the app knows about locally: the default plus each profile. */
-export async function localHomes(hermesHome: string): Promise<string[]> {
-  const profiles = await listDirs(path.join(hermesHome, 'profiles'))
+/** True for a profile whose backend a plugin's launcher runs (a sandbox). Its
+ *  home is writable from inside the sandbox, so nothing in it may become code
+ *  in this app's renderer. */
+export type LaunchedProfilePredicate = (profile: string) => boolean
 
-  return [hermesHome, ...profiles.map(name => path.join(hermesHome, 'profiles', name))]
+const NOT_LAUNCHED: LaunchedProfilePredicate = () => false
+
+/** Every hermes home the app knows about locally: the default plus each
+ *  profile, minus the homes of launched profiles. */
+export async function localHomes(
+  hermesHome: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<string[]> {
+  const profiles = (await listDirs(path.join(hermesHome, 'profiles'))).filter(name => !isLaunched(name.toLowerCase()))
+
+  return [
+    ...(isLaunched('default') ? [] : [hermesHome]),
+    ...profiles.map(name => path.join(hermesHome, 'profiles', name))
+  ]
 }
 
 /** Move every `profiles/<name>/desktop-plugins/<id>` folder into the app-level
@@ -147,14 +163,27 @@ export async function localHomes(hermesHome: string): Promise<string[]> {
  *  id, so a duplicate is the same plugin installed twice); the profile copy is
  *  left in place for the user to delete rather than destroyed. Emptied profile
  *  roots are removed so the migration is a no-op on the next launch. */
-export function migrateProfileScopedDesktopPlugins(hermesHome: string, appRoot: string): Promise<string[]> {
-  return withDesktopPluginsRoot(appRoot, () => migrateProfileScoped(hermesHome, appRoot))
+export function migrateProfileScopedDesktopPlugins(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<string[]> {
+  return withDesktopPluginsRoot(appRoot, () => migrateProfileScoped(hermesHome, appRoot, isLaunched))
 }
 
-async function migrateProfileScoped(hermesHome: string, appRoot: string): Promise<string[]> {
+async function migrateProfileScoped(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate
+): Promise<string[]> {
   const moved: string[] = []
 
   for (const profile of await listDirs(path.join(hermesHome, 'profiles'))) {
+    // A sandbox can write its own profile folder; never lift code out of it.
+    if (isLaunched(profile.toLowerCase())) {
+      continue
+    }
+
     const scopedRoot = path.join(hermesHome, 'profiles', profile, DESKTOP_PLUGINS_DIR)
 
     for (const entry of await listDirs(scopedRoot)) {
@@ -213,6 +242,43 @@ async function sameFile(a: string, b: string): Promise<boolean> {
  *  it, so the git installer and this reconcile cannot drift. */
 export async function writeDesktopHalfMarker(dir: string, marker: DesktopHalfMarker): Promise<void> {
   await fs.promises.writeFile(path.join(dir, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+}
+
+/** The catalog entry a standalone plugin was installed from (`INSTALL_ORIGIN`). */
+export interface InstallOrigin {
+  catalogName: string
+  repo: string
+  /** The commit checked out. */
+  sha: string
+  /** The catalog pin it satisfies when that is not `sha` itself (an annotated tag's object). */
+  pin?: string
+}
+
+/** Write (or, with no catalog entry, drop) a standalone plugin's install origin. A repository may ship
+ *  a file of that name to pose as a catalog entry, so it never survives an install. A file already
+ *  there goes first, so a link of that name is never written through. */
+export async function writeInstallOrigin(dir: string, origin: InstallOrigin | null): Promise<void> {
+  const file = path.join(dir, INSTALL_ORIGIN)
+
+  await fs.promises.rm(file, { force: true })
+
+  if (origin) {
+    await fs.promises.writeFile(file, JSON.stringify(origin, null, 2) + '\n', { flag: 'wx' })
+  }
+}
+
+/** *target* is a plain standalone folder whose `plugin.js` is byte for byte the one *sourceDir* would
+ *  publish: an install of that same tree by a build that recorded no origin, which a catalog install
+ *  adopts in place instead of asking for Force (that would replace the folder and what it keeps). */
+export async function isAdoptableStandalone(target: string, sourceDir: string): Promise<boolean> {
+  return (
+    !(await isLink(target)) &&
+    !(await fs.promises.lstat(path.join(target, PACKAGE_MARKER)).then(
+      () => true,
+      () => false
+    )) &&
+    (await sameFile(path.join(target, 'plugin.js'), path.join(sourceDir, 'plugin.js')))
+  )
 }
 
 /** Where a package's desktop plugin lives, in the order every installer and
@@ -505,9 +571,15 @@ async function sourceGone(name: string, entry: string): Promise<boolean> {
 /** Walk every local home's `plugins/` root and materialize each package's
  *  desktop half. First home wins for a name that appears in several profiles
  *  (the default home is first). Also drops root copies whose source package
- *  is gone — an uninstalled agent package must not leave a ghost pane. */
-export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot: string): Promise<string[]> {
-  return (await reconcileDesktopHalvesReport(hermesHome, appRoot)).published
+ *  is gone — an uninstalled agent package must not leave a ghost pane.
+ *  Launched profiles' homes are skipped: a sandbox could otherwise write a
+ *  `plugin.js` there and have it copied into this app's renderer. */
+export async function reconcileUnifiedDesktopHalves(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<string[]> {
+  return (await reconcileDesktopHalvesReport(hermesHome, appRoot, isLaunched)).published
 }
 
 /** A package whose desktop half this pass did not publish, and why (the plain-tree check, an unreadable folder). */
@@ -524,16 +596,24 @@ export interface DesktopReconcileReport {
 
 /** `reconcileUnifiedDesktopHalves`, also naming each package it refused, so an install that just put one
  *  down can report its desktop half as failed instead of done. */
-export function reconcileDesktopHalvesReport(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
-  return withDesktopPluginsRoot(appRoot, () => reconcilePass(hermesHome, appRoot))
+export function reconcileDesktopHalvesReport(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate = NOT_LAUNCHED
+): Promise<DesktopReconcileReport> {
+  return withDesktopPluginsRoot(appRoot, () => reconcilePass(hermesHome, appRoot, isLaunched))
 }
 
-async function reconcilePass(hermesHome: string, appRoot: string): Promise<DesktopReconcileReport> {
+async function reconcilePass(
+  hermesHome: string,
+  appRoot: string,
+  isLaunched: LaunchedProfilePredicate
+): Promise<DesktopReconcileReport> {
   const touched: string[] = []
   const refused: RefusedDesktopHalf[] = []
   const seen = new Set<string>()
 
-  for (const home of await localHomes(hermesHome)) {
+  for (const home of await localHomes(hermesHome, isLaunched)) {
     const pluginsRoot = path.join(home, 'plugins')
 
     for (const name of await listDirs(pluginsRoot, true)) {

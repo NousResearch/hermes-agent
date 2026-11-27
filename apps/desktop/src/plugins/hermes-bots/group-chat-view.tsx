@@ -81,6 +81,7 @@ import {
   $groupClarify,
   $groupNeedsYou,
   groupThreadOf,
+  persistGroupChatRooms,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
   setGroupChatHoldDetection,
@@ -89,11 +90,11 @@ import {
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { LegacyRoomTitle, LegacyWorkingRow } from './group-chat-legacy-parts'
-import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
+import { focusComposerEnd, GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { compressGroupMemberHistory } from './group-compress'
-import { gatewayGroupEngine, type GatewayGroupEngine, stickyGroupEngine } from './group-engine'
+import { gatewayGroupEngine, type GatewayGroupEngine } from './group-engine'
 import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
@@ -125,7 +126,7 @@ import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
 import { botRosterMeta, groupTranscriptSpeaker, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
-import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
+import { bumpBotOpenGeneration, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
@@ -220,29 +221,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
 
   // Persist the room map WITHOUT the disbanded room so it can't come back
   // on the next window load.
-  try {
-    const durable: Record<string, GroupChat> = {}
-
-    for (const [name, room] of Object.entries($groupChats.get())) {
-      if (name !== group && Array.isArray(room.log)) {
-        durable[name] = {
-          log: room.log,
-          watermarks: room.watermarks,
-          sessions: room.sessions || {},
-          sessionOwners: room.sessionOwners || {},
-          members: Array.isArray(room.members) ? room.members : [],
-          roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-          ...stickyGroupEngine(room),
-          image: room.image || null,
-          syncRevision: Math.max(0, Number(room.syncRevision || 0))
-        }
-      }
-    }
-
-    await Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durable))
-  } catch {
-    /* storage unavailable — the atom reset above still empties the room */
-  }
+  await persistGroupChatRooms($groupChats.get())
 
   scheduleGroupChatServerSync($groupChats.get(), {
     allowEmpty: true,
@@ -1021,6 +1000,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // view on mount and whenever the log grows — but only when the user is
   // already near the bottom, so reading history is never yanked away.
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
+  const [mainComposerInput, threadReplyInput] = [useRef<HTMLTextAreaElement>(null), useRef<HTMLTextAreaElement>(null)]
   const stickToBottomRef = useRef(true)
   // eslint-disable-next-line no-restricted-syntax -- tracks live scroll position from a DOM listener, not an atom
   useEffect(() => {
@@ -1441,15 +1421,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       current.includes(`@${tag}`) ? current : `@${tag} ${current}`.replace(/\s+$/, ' ')
 
     const thread = groupThreadOf(entry)
+    const inThread = replyThread === thread
+    focusComposerEnd(inThread ? threadReplyInput : mainComposerInput)
 
-    if (replyThread === thread) {
-      setReplyDrafts(prev => ({
-        ...prev,
-        [thread]: seed(prev[thread] || '')
-      }))
-    } else {
-      setDraft(seed)
-    }
+    if (inThread) {setReplyDrafts(prev => ({ ...prev, [thread]: seed(prev[thread] || '') }))} else {setDraft(seed)}
   }
 
   // Same appearance pipeline as the roster: custom image/pet, else the deterministic shape+color face.
@@ -1625,6 +1600,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
               onPaste={event => pasteImages(id, event)}
               onSubmitDraft={() => submitReply(id)}
               placeholder={b.group.replyInThreadPlaceholder}
+              ref={threadReplyInput}
               value={replyDrafts[id] || ''}
             />
             {attachButton(id)}
@@ -1671,10 +1647,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       onDrop={dropFiles}
     >
       {dragOver ? (
-        <div
-          className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-(--ui-accent) text-sm font-medium text-(--ui-accent)"
-          key={'dropzone'}
-        >
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-2 border-dashed border-(--ui-accent) text-sm font-medium text-(--ui-accent)" key={'dropzone'}>
           {replyThread ? b.group.dropToThread : b.group.dropToRoom}
         </div>
       ) : null}
@@ -1737,6 +1710,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           onPaste={event => pasteImages(null, event)}
           onSubmitDraft={submit}
           placeholder={b.group.newThreadPlaceholder(group)}
+          ref={mainComposerInput}
           value={draft}
         />
       </RoomComposer>
@@ -1854,6 +1828,7 @@ export function openGroupChat(group: string, origin: CanonicalGroupOrigin): void
       const title = canonicalGroupBindingFor($canonicalGroupBindings.get(), route, group, origin)?.roomName || group
 
       const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
+        approvalScope: 'per-profile',
         title,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} origin={origin} />,

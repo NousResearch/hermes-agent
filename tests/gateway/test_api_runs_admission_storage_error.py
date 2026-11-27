@@ -9,15 +9,16 @@ import pytest
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
-from hermes_state import SessionDB
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _adapter, _runs_client
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.mark.asyncio
 async def test_locked_admission_write_is_503_and_exact_retry_runs(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    db = SessionDB(tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     executed = []
 
     async def answer(event):
@@ -26,11 +27,12 @@ async def test_locked_admission_write_is_503_and_exact_retry_runs(tmp_path, monk
         execution_result.get()["result"] = {"final_response": "ACK", "messages": []}
         return "ACK"
 
-    runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False, _handle_message=answer)
+    runner = SimpleNamespace(session_store=store, _draining=False, _handle_message=answer,
+                             persistence=db)
     authority = await initialize_session_authority(runner, profile_id="default", instance_id="lock-owner")
     adapter = _adapter(runner, db)
     runner._adapter_for_source = lambda source: adapter
-    monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.3)
+    monkeypatch.setattr(raw_holder(authority.persistence), "_WRITE_PATIENCE_S", 0.3)
     client = _runs_client(adapter)
     await client.start_server()
     headers = {**_AUTH_HEADERS, "Idempotency-Key": "locked-run"}
@@ -57,5 +59,4 @@ async def test_locked_admission_write_is_503_and_exact_retry_runs(tmp_path, monk
         await client.close()
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
-        authority.db.close()
         store.close_all_db_handles()

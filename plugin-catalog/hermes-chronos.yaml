@@ -1,13 +1,13 @@
 name: hermes-chronos
 title: Hermes Chronos
 repo: "https://github.com/DevTarlow/hermes-chronos"
-sha: "1abeae16c61d9e3939c1f29c74e81fb92299ba3f"
+sha: "b6dba5fb182b076e043c68fa9da74f0c87b42faa"
 description: "Time-travel filesystem checkpoints, approval-gated rollback, and a scrubbable Desktop timeline for Hermes Agent. Disclosure — Snapshots the whole working directory, untracked files such as `.env` included, into a shadow git repo at `<workspace>/.hermes/chronos/` before each file-editing or shell tool call. Rollback overwrites workspace files and by default deletes untracked files missing from the snapshot. The model's rollback asks for approval first, but `/chronos`, the dashboard API and the Desktop pane restore without a prompt."
 maintainer: DevTarlow
 tier: community
 category: tools
 requires_hermes: ">=0.19.0"
-version: "1.0.2"
+version: "1.0.3"
 readme: true
 capabilities:
   provides_tools:

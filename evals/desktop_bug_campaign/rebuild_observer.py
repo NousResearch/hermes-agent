@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 from tui_gateway import server
-import hermes_state_registry as registry
+from persistence_assembly import live_stores, store_location
 
 
 original_target = server._config_model_target
@@ -30,8 +30,8 @@ server._config_model_target = config_target
 def ownership(rid, params):
     session = server._sessions.get(params["session_id"])
     agent = (session or {}).get("agent")
-    with registry._lock:
-        refs = {str(path): generation.refcount for path, generation in registry._generations.items()}
+    with live_stores() as stores:
+        refs = sorted(str(store_location(store.scope)) for store in stores)
     return server._ok(rid, {"agent": id(agent) if agent else None,
                             "owns_db": bool(getattr(agent, "_owns_session_db", False)),
                             "refs": refs})

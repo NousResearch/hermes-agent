@@ -127,23 +127,28 @@ def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
 
 def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
     """#85957: the delegation completion lands in the session transcript as a
-    display_kind=async_delegation_complete delivery row (real SessionDB), and
+    display_kind=async_delegation_complete delivery row (real store), and
     NO self-post / agent turn is involved."""
     from pathlib import Path
 
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=Path(tmp_path) / "state.db")
+    store = open_persistence(profile_scope(home=Path(tmp_path)))
     sid = "raw-hq-sid"
-    db.create_session(sid, source="api_server")
-    db.append_message(sid, "user", content="please confirm before writing")
-    db.append_message(sid, "assistant", content="awaiting confirmation",
-                      finish_reason="stop")
+    seed_session(store, sid, "api_server")
+    seed_messages(store, sid, {"role": "user", "content": "please confirm before writing"},
+                  {"role": "assistant", "content": "awaiting confirmation",
+                   "finish_reason": "stop"})
 
     class DbAdapter(ApiServerLikeAdapter):
-        def _ensure_session_db(self):
-            return db
+        def _ensure_store(self):
+            return store
+
+        def _store_beside(self, _db):
+            return store
 
     evt = {
         "type": "async_delegation",
@@ -151,12 +156,15 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
         "results": [{"status": "completed"}, {"status": "failed"}],
         "total_duration_seconds": 12.5,
     }
-    asyncio.run(persist_delegation_delivery(
-        DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE — deleg_x]",
-        session_id=sid, evt=evt,
-    ))
+    try:
+        asyncio.run(persist_delegation_delivery(
+            DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE — deleg_x]",
+            session_id=sid, evt=evt,
+        ))
+        rows = transcript_rows(store, sid)
+    finally:
+        store.close()
 
-    rows = db.get_messages(sid)
     assert len(rows) == 3
     delivery = rows[-1]
     assert delivery["role"] == "user"
@@ -173,7 +181,7 @@ def test_persist_delegation_delivery_raises_without_db():
     from gateway.wake import persist_delegation_delivery
 
     class NoDbAdapter(ApiServerLikeAdapter):
-        def _ensure_session_db(self):
+        def _ensure_store(self):
             return None
 
     with pytest.raises(RuntimeError, match="SessionDB unavailable"):

@@ -289,8 +289,7 @@ export MY_BACKEND_API_KEY=your-test-key
 hermes plugins enable my-backend
 
 # Pick it as the active provider
-echo "image_gen:" >> $HERMES_HOME/config.yaml
-echo "  provider: my-backend" >> $HERMES_HOME/config.yaml
+hermes config set image_gen.provider my-backend
 
 # Exercise it
 hermes -z "Generate an image of a corgi in a spacesuit"

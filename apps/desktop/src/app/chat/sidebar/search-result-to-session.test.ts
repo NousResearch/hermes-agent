@@ -53,4 +53,34 @@ describe('searchResultToSession', () => {
     expect(s.title).toBeNull()
     expect(s.preview).toBe('[{"id": "call_d632e8dc7bf740048f242bfe", "c...')
   })
+
+  // Search includes archived sessions, but the main sessions list does not, so
+  // an archived hit is always synthesized here. Dropping the flag paints it as
+  // active and its row menu offers Archive instead of Unarchive.
+  it('keeps an archived hit archived', () => {
+    const s = searchResultToSession({
+      archived: true,
+      session_id: '20261110_101007',
+      session_started: null,
+      snippet: 'Session ID: 20261110_101007',
+      role: null,
+      model: null,
+      source: 'desktop'
+    })
+
+    expect(s.archived).toBe(true)
+  })
+
+  it('treats a hit without the flag as not archived (older gateways)', () => {
+    const s = searchResultToSession({
+      session_id: '20261110_101008',
+      session_started: null,
+      snippet: 'hello',
+      role: 'user',
+      model: null,
+      source: 'desktop'
+    })
+
+    expect(s.archived).toBe(false)
+  })
 })

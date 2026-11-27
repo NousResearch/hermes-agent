@@ -1,6 +1,7 @@
 import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
+import type { ApprovalKindFields } from '@/types/hermes-approval'
 
 export type StoredToolCallLabels = Record<string, ToolLabel[]>
 
@@ -55,8 +56,6 @@ export interface AudioSttLeaseResponse {
   ok: boolean
   lease: string
   active: boolean
-  /** Live lease holders after this call (null when the backend call itself failed). */
-  leases: null | number
   /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
   action?: string
   /** Whether the configured engine was actually warmed (`noop` for cloud providers carries false). */
@@ -418,7 +417,34 @@ export interface RelayLinkCodeState {
   state: 'inactive' | 'pending' | 'refused'
 }
 
+/** A catalog messaging platform the profile has not installed (`available` on the platforms list):
+ *  picking it installs and enables the plugin, then its own card takes over. */
+export interface MessagingCatalogPlatform {
+  badge: 'official' | 'verified'
+  /** '' when a pick can install it; else a reason code (`lazy_installs_off`). */
+  blocked: string
+  blocked_reason: string
+  disclosure: string
+  /** The one command that installs it into this profile from a terminal. */
+  install_command: string
+  name: string
+  summary: string
+  title: string
+}
+
+export interface MessagingCatalogInstallResponse {
+  error?: string
+  install_command?: string
+  ok: boolean
+  /** Platform ids the installed plugin registered (its card to open). */
+  platforms?: string[]
+  plugin_name?: string
+  warnings?: string[]
+}
+
 export interface MessagingPlatformsResponse {
+  /** Absent on backends that predate catalog installs from this page. */
+  available?: MessagingCatalogPlatform[]
   platforms: MessagingPlatformInfo[]
 }
 
@@ -472,58 +498,6 @@ export interface TelegramOnboardingApplyResponse {
   needs_restart: boolean
   ok: boolean
   platform: 'telegram'
-  restart_action?: string
-  restart_error?: string
-  restart_pid?: null | number
-  restart_started?: boolean
-}
-
-// -- Webhooks (subscription CRUD) --------------------------------------------
-// Incoming HTTP event routes served by the webhook gateway platform. Backed by
-// the same JSON store the CLI/dashboard use; per-route HMAC secrets are
-// redacted on read and surfaced exactly once on create.
-
-export interface WebhookRoute {
-  created_at: null | string
-  deliver: string
-  deliver_only: boolean
-  description: string
-  enabled: boolean
-  events: string[]
-  name: string
-  prompt: string
-  secret_set: boolean
-  skills: string[]
-  url: string
-}
-
-export interface WebhooksResponse {
-  base_url: string
-  enabled: boolean
-  subscriptions: WebhookRoute[]
-}
-
-export interface WebhookCreatePayload {
-  deliver?: string
-  deliver_chat_id?: string
-  deliver_only?: boolean
-  description?: string
-  events?: string[]
-  name: string
-  prompt?: string
-  skills?: string[]
-}
-
-// Create echoes the route summary plus the one-time secret.
-export interface WebhookCreateResponse extends WebhookRoute {
-  secret: string
-}
-
-export interface WebhookEnableResponse {
-  enabled: true
-  needs_restart: boolean
-  ok: boolean
-  platform: 'webhook'
   restart_action?: string
   restart_error?: string
   restart_pid?: null | number
@@ -684,7 +658,7 @@ export interface SessionInfo {
    *  as visible. */
   hidden?: boolean
   /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
-   *  see `SessionDB.session_unread`). True when the conversation was
+   *  see `session_unread` in persistence/sqlite/conversation/_store/sessions.py). True when the conversation was
    *  explicitly marked unread or a response arrived after it was last read.
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean
@@ -860,7 +834,7 @@ export interface SessionResumeResult {
   // The oldest gateway approval still waiting for a response. This is returned
   // on resume so a reconnect can restore a prompt whose original event was
   // emitted while the client transport was detached.
-  pending_approval?: {
+  pending_approval?: ApprovalKindFields & {
     allow_permanent?: boolean
     choices?: string[]
     command?: string
@@ -1472,6 +1446,8 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Whether the matched session is archived. Older gateways may omit it. */
+  archived?: boolean
   /** Recency of the matched conversation, straight from the sessions row —
    *  present on hits backed by a rich row (the search endpoint fills it).
    *  Used to order unloaded hits honestly; falls back to session_started. */

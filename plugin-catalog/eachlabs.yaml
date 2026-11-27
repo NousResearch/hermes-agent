@@ -1,0 +1,17 @@
+name: eachlabs
+title: each::labs
+repo: https://github.com/eachlabs/plugin
+sha: 155bcd5d3480651551c1b3b1ef539993128f14b6
+description: "Generate and edit images, video, music and voice with each::labs models, and run each::labs workflows, through each::labs' hosted MCP server (Streamable HTTP, OAuth 2.1), with 12 skills bundled. Portable Agent Plugins v1 package (plugin.json + skills/). Disclosure — hosted-only connector with no local code. Every tool call goes to each::labs' MCP server at mcp.eachlabs.ai, signed in as the user. Runs are paid and billed to the organization chosen at sign-in, and the server added with `hermes mcp add` runs them without a Hermes approval prompt unless you set `trust: untrusted` on the eachlabs entry under `mcp_servers` in config.yaml. Prompts and file URLs the user passes are sent to each::labs and to the model providers it routes to. The tool list comes from each::labs' server at run time, so the pinned commit doesn't cover it. Hermes stores and refreshes the OAuth tokens. OAuth must be enabled with `hermes mcp add eachlabs --url https://mcp.eachlabs.ai/mcp --auth oauth --connect-timeout 300`, then `hermes mcp login eachlabs` if no browser opened. Needs Hermes Agent 0.23.2 or later. Hermes enables all each::labs tools, and `hermes mcp configure eachlabs` keeps only some. The package bundles no mcp.json, so the plugin alone has no server."
+maintainer: eachlabs
+tier: community
+category: tools
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/eachlabs/plugin/blob/155bcd5d3480651551c1b3b1ef539993128f14b6/README.md
+version: "0.4.3"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

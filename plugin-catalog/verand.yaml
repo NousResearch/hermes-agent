@@ -1,0 +1,19 @@
+name: verand
+title: Verand
+repo: https://github.com/verand-ai/verand-mcp
+sha: 67f58c6de07279e2375503938118f3d439ac0383
+subdir: hermes
+version: "1.1.1"
+description: "Your own website's rankings, Search Console and GA4 data, AI-answer visibility (ChatGPT, Gemini, Google AI Overviews, Google AI Mode, Perplexity and Claude), site issues and compliance checks, plus drafts and fixes you approve, through Verand's hosted MCP server (Streamable HTTP at https://app.verand.ai/mcp, OAuth sign-in, no keys in config), with one workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Verand's hosted server (app.verand.ai), which reads and writes the signed-in user's own Verand account; the tool set is served by that server at runtime and is not covered by the pinned commit. Write tools exist, including drafting, editing, research that draws on the user's Verand plan allowance, and, only when an account owner has switched it on in Verand and the user approves the exact text, publishing an article or applying a fix to their live WordPress or GitHub site; the package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs. No tool deletes content or clears a hard-tier compliance block. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+), which opens a browser and a localhost callback port on first use and stores OAuth tokens under ~/.mcp-auth. Requires a Verand paid plan or 7-day trial."
+maintainer: Verand
+tier: community
+category: tools
+docs_url: https://verand.ai/help/the-mcp-connector
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

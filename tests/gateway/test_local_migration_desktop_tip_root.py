@@ -12,23 +12,26 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
+from persistence.core.errors import AuthorityRefusal as RuntimeStoreError
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
-STAMP = 'basic:admin'
+# A stamp legacy adoption refuses (not the host's own login): under main's #140183 F1 a host-owned
+# stamp adopts through the legacy-adoption path before the desktop family is reached, so the
+# fall-through under test needs a genuinely foreign stamp to refuse at adoption.
+STAMP = 'stranger'
 
 
 def _desktop_lineage(db, root, child_ids):
     """A desktop root closed by compression with continuation children; the tip resumes it."""
-    db.create_session(root, source='desktop', user_id=STAMP, profile_name='default')
+    seed_session(db, root, 'desktop', user_id=STAMP, profile_name='default')
     prev = root
     for child in child_ids:
-        db.create_session(child, source='desktop', user_id=STAMP, profile_name='default')
-        db._write_sql("UPDATE sessions SET end_reason='compression' WHERE id=?", (prev,))
-        db._write_sql("UPDATE sessions SET parent_session_id=? WHERE id=?", (prev, child))
+        seed_session(db, child, 'desktop', user_id=STAMP, profile_name='default', parent_session_id=prev)
+        db.sessions.end(prev, 'compression')
         prev = child
     tip = child_ids[-1]
-    lineage = db.get_compression_lineage(tip)
+    lineage = list(db.lineage.lineage(tip))
     assert lineage[0] == root and lineage[-1] == tip
     return tip
 
@@ -37,10 +40,9 @@ def _desktop_lineage(db, root, child_ids):
 def authority(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     from gateway.session_authority import SessionAuthority
-    from hermes_state_runtime import begin_runtime_epoch
 
-    db = SessionDB(tmp_path / 'state.db')
-    epoch = begin_runtime_epoch(db, instance_id='owner')
+    db = storage_handle(tmp_path)
+    epoch = db.runtime.begin_epoch(instance_id='owner')
 
     class _Store:
         def __init__(self):
@@ -55,11 +57,12 @@ def authority(tmp_path, monkeypatch):
             return build_session_key(source)
 
     runner = SimpleNamespace(_draining=False, session_store=_Store())
-    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', epoch=epoch, persistence=db)
     adapter = SimpleNamespace(gateway_runner=runner)
     runner._adapter_for_source = lambda source: adapter
-    # the post-restart local native peer: authenticated subject is NOT the row's login stamp
-    actor = SimpleNamespace(profile_id=authority.profile_id, subject='local:user',
+    # the post-restart local native peer: authenticated subject is the host owner's, NOT the row's login stamp
+    from gateway.owner_identity import host_owner_subject
+    actor = SimpleNamespace(profile_id=authority.profile_id, subject=host_owner_subject(),
                             transport_id='native-1',
                             capabilities=frozenset({'session:create', 'session:read',
                                                     'session:control', 'session:operator'}))
@@ -82,7 +85,7 @@ async def test_a_login_stamped_desktop_tip_resolves_to_its_lineage_root(authorit
     from gateway.session_local_migration import resolve_local_target
 
     root = '20261030_080000_droot00'
-    tip = _desktop_lineage(authority.db, root, ['20261030_090000_dchild1',
+    tip = _desktop_lineage(authority.persistence, root, ['20261030_090000_dchild1',
                                                '20261030_100000_dchild2'])
 
     ref = resolve_local_target(authority, actor_of(authority), tip)
@@ -104,11 +107,11 @@ async def test_a_login_stamped_non_desktop_lineage_still_refuses(authority):
     from gateway.session_local_migration import resolve_local_target
 
     root = '20261030_110000_groot00'
-    db = authority.db
-    db.create_session(root, source='gui', user_id=STAMP, profile_name='default')
-    db._write_sql("UPDATE sessions SET end_reason='compression' WHERE id=?", (root,))
-    db.create_session('20261030_120000_gchild1', source='gui', user_id=STAMP, profile_name='default')
-    db._write_sql("UPDATE sessions SET parent_session_id=? WHERE id=?", (root, '20261030_120000_gchild1'))
+    db = authority.persistence
+    seed_session(db, root, 'gui', user_id=STAMP, profile_name='default')
+    seed_session(db, '20261030_120000_gchild1', 'gui', user_id=STAMP, profile_name='default',
+                 parent_session_id=root)
+    db.sessions.end(root, 'compression')
     tip = '20261030_120000_gchild1'
 
     with pytest.raises(RuntimeStoreError, match='not_found'):

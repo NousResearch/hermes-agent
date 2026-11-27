@@ -3,6 +3,8 @@
 // nudges chalk / supports-color before either package is initialized.
 import './lib/forceTruecolor.js'
 
+import { writeSync } from 'node:fs'
+
 import type { FrameEvent } from '@hermes/ink'
 
 import { setRpcErrorLogSink } from './app/userMessages.js'
@@ -14,6 +16,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import { clearProgramStatus } from './lib/programStatus.js'
 import { clearNativeTuiFrame, resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -38,6 +41,8 @@ resetTerminalModes()
 // before the process is gone. Idempotent and cheap, so layering it under the
 // graceful-exit cleanups is safe.
 process.on('exit', () => {
+  // Same rule as the classic CLI: a pane back at its shell must not keep listing Hermes as an agent.
+  clearProgramStatus(seq => writeSync(typeof process.stdout.fd === 'number' ? process.stdout.fd : 1, seq))
   resetTerminalModes()
 
   if (NATIVE_MODE) {

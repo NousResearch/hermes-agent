@@ -206,6 +206,19 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"). Hermes clamps the requested
+    # tier to it, and the prompt-cache clock declares the sent tier up to it; None leaves a 1h ask on
+    # an Anthropic-wire gateway unproven (no keep-alive, compaction or cold-return pruning).
+    # Config ``prompt_caching.route_ttl_ceilings`` overrides it per provider. Keyword-only so
+    # plugin subclasses' positional fields keep their slots.
+    prompt_cache_max_ttl: str | None = field(default=None, kw_only=True)
+
+    # The route's ``/models`` catalog says which models take explicit ``cache_control`` markers: a
+    # model priced with a cache-write rate (``input_cache_write``) gets markers (Anthropic spec, the
+    # tier asked for, up to ``prompt_cache_max_ttl``); one without caches automatically (OpenAI spec).
+    # Read from the catalog Hermes already fetches; when it is unreachable the built-in policy applies.
+    prompt_cache_markers_from_catalog: bool = field(default=False, kw_only=True)
+
     # Private replay carriers use a namespaced '<provider>.native_assistant' type
     # in reasoning_details. Only this profile may receive its matching carrier;
     # other providers (including an unregistered fallback) get ordinary details only.
@@ -221,6 +234,11 @@ class ProviderProfile:
     process_args: tuple = ()             # default argv tail, e.g. ("--mode", "acp")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
+    # The CLI's own sign-in, as an argv tail after the resolved binary, e.g. ("auth", "login"). Sign-in
+    # hints (error copy, cron notices, the Desktop card) show it; empty keeps ``hermes model``. Declared,
+    # not probed: hints are built on the gateway's event loop, so they never run ``setup_status()``.
+    # Keyword-only so a plugin subclass's own positional option keeps its slot.
+    login_args: tuple = field(default=(), kw_only=True)
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
@@ -241,6 +259,8 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # Opt-in: auxiliary calls forward an explicit max_tokens only on routes known to honor it (#139778).
+    forwards_max_tokens: bool = field(default=False, kw_only=True)
     # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
     unsupported_response_formats: tuple = ()
     default_aux_model: str = (
@@ -745,3 +765,16 @@ class ProviderProfile:
     # Registry id this provider's row sits right after, keeping its place in priority-ordered scans
     # (aux api-key chain, env auto-detect); "" or an unknown id = appended.
     registry_after: str = ""
+    # True when ``create_client`` owns this provider's native transport: a client-creation error
+    # propagates instead of falling back to the standard OpenAI client, and the auxiliary api-key
+    # auto-discovery chain consults ``create_client(..., auxiliary_chain=True)``.
+    strict_client: bool = False
+
+    def implicit_max_output_tokens(self, *, model: str | None = None, base_url: str = "") -> int | None:
+        """Default output-token budget reserved by context compaction when ``max_tokens`` is unset;
+        None = no implicit reservation."""
+        return None
+
+    def validate_setup_api_key(self, api_key: str, *, base_url: str = "") -> bool:
+        """Optional setup-time API key check (e.g. paid-tier probe); False aborts saving the provider."""
+        return True

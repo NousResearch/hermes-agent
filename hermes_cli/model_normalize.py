@@ -175,13 +175,13 @@ def _repair_prefix_from_catalogue(model_name: str, provider: str) -> str:
     if "/" in model_name:
         return model_name
     try:
-        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_cli.models import static_catalog
     except Exception:
         return model_name
     # Compare against the catalogue's own suffix, tag included: a bare ``…:free`` id must resolve to
     # the ``:free`` entry, not its paid sibling.
     needle = model_name.strip().lower()
-    catalogue = _PROVIDER_MODELS.get(provider) or []
+    catalogue = static_catalog(provider) or []
     matches = {e for e in catalogue if "/" in e and e.split("/", 1)[1].strip().lower() == needle}
     return matches.pop() if len(matches) == 1 else model_name
 

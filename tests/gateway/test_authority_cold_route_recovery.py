@@ -16,6 +16,11 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 class _Runner(GatewayAuthorizationMixin):
@@ -24,7 +29,7 @@ class _Runner(GatewayAuthorizationMixin):
         from gateway.session import SessionStore
         self.config = GatewayConfig(multiplex_profiles=multiplex)
         self.session_store = SessionStore(tmp_path / 'sessions', self.config)
-        self._session_db = self.session_store._db
+        self._session_db = self.session_store.persistence
         self.adapters = {}
         self._draining = False
 
@@ -61,10 +66,13 @@ def _seed(tmp_path, sid, source, *, routed=True, row_origin=_ROUTE, row_source=N
     route = store._generate_session_key(source)
     if row_origin is _ROUTE:
         row_origin = json.dumps(source.to_dict())
-    runner._session_db.create_session(
-        sid, source=row_source or source.platform.value, session_key=route if row_key is _ROUTE else row_key,
+    seed_session(
+        runner._session_db, sid, row_source or source.platform.value, session_key=route if row_key is _ROUTE else row_key,
         chat_id=source.chat_id, user_id=source.user_id, chat_type=source.chat_type,
-        display_name=source.chat_name, origin_json=row_origin, transport_profile=transport_profile)
+        display_name=source.chat_name, transport_profile=transport_profile)
+    if row_origin is not None:  # the stored text as written, an undecodable one included
+        raw_holder(runner._session_db)._execute_write(
+            lambda conn: conn.execute('UPDATE sessions SET origin_json = ? WHERE id = ?', (row_origin, sid)))
     if routed:
         now = datetime.now()
         entry_source = source if entry_source is None else entry_source
@@ -72,8 +80,8 @@ def _seed(tmp_path, sid, source, *, routed=True, row_origin=_ROUTE, row_source=N
                              platform=source.platform, transport_profile=transport_profile)
         # The routing index lives in the store's routing home, which is cached per process: write where
         # the cold store will read, not where this test's HERMES_HOME happens to point.
-        store._routing_db.save_gateway_routing_entry(
-            route, json.dumps(entry.to_dict()), scope=store._routing_scope())
+        store._routing_persistence.routing.upsert_routing_entry(
+            route, json.dumps(entry.to_dict()), routing_scope=store._routing_scope())
     return route
 
 
@@ -97,9 +105,9 @@ def _ref(sid, profile_id='fixture'):
 
 
 async def _refused(tmp_path, sid, reason='not_found', **cold_args):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     cold = await _cold(tmp_path, **cold_args)
-    with pytest.raises(RuntimeStoreError, match=reason):
+    with pytest.raises(AuthorityRefusal, match=reason):
         cold.authority.authorize(cold.actor, _ref(sid), 'session:read')
     assert sid not in cold.authority.sessions
 
@@ -118,7 +126,7 @@ async def test_a_routed_messaging_session_mounts_on_a_cold_authority(tmp_path):
     ref = warm.register(_source())
     cold = await _cold(tmp_path)
     assert ref.session_id not in cold.authority.sessions
-    assert cold.authority.db.get_session(ref.session_id)['source'] == 'telegram'
+    assert session_row(cold.authority.persistence, ref.session_id)['source'] == 'telegram'
 
     cold.authority.authorize(cold.actor, ref, 'session:read')
 
@@ -186,9 +194,9 @@ async def test_an_entry_without_an_origin_falls_back_to_the_row(tmp_path):
 @pytest.mark.asyncio
 async def test_a_row_with_neither_origin_nor_chat_id_cannot_be_rebuilt(tmp_path):
     cold = await _cold(tmp_path)
-    cold.authority.db.create_session('hollow', source='telegram', session_key='agent:main:telegram:dm:x')
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    seed_session(cold.authority.persistence, 'hollow', 'telegram', session_key='agent:main:telegram:dm:x')
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         cold.authority.authorize(cold.actor, _ref('hollow'), 'session:read')
     assert 'hollow' not in cold.authority.sessions
 
@@ -217,10 +225,10 @@ async def test_an_origin_that_contradicts_the_row_is_not_trusted(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_foreign_profile_ref_is_still_refused(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     _seed(tmp_path, 'lane-foreign', _source())
     cold = await _cold(tmp_path)
-    with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
+    with pytest.raises(AuthorityRefusal, match='profile_mismatch'):
         cold.authority.authorize(cold.actor, _ref('lane-foreign', 'other'), 'session:read')
     assert 'lane-foreign' not in cold.authority.sessions
 
@@ -260,11 +268,11 @@ async def test_a_lane_of_another_profile_is_not_mounted_by_this_authority(tmp_pa
 
 @pytest.mark.asyncio
 async def test_a_draining_gateway_mounts_nothing(tmp_path):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     _seed(tmp_path, 'lane-drain', _source())
     cold = await _cold(tmp_path)
     cold.authority.runner._draining = True
-    with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+    with pytest.raises(AuthorityRefusal, match='runtime_draining'):
         cold.authority.authorize(cold.actor, _ref('lane-drain'), 'session:read')
     assert 'lane-drain' not in cold.authority.sessions
 
@@ -353,15 +361,15 @@ def _compressed_lane(tmp_path):
     runner = _Runner(tmp_path)
     db = runner._session_db
     source = _source()
-    db.create_session('lane-tip', source='telegram', session_key=route, chat_id=source.chat_id,
-                      user_id=source.user_id, chat_type='dm', origin_json=json.dumps(source.to_dict()),
-                      parent_session_id='lane-root')
-    db.end_session('lane-root', 'compression')
+    seed_session(db, 'lane-tip', 'telegram', session_key=route, chat_id=source.chat_id,
+                 user_id=source.user_id, chat_type='dm', origin_json=json.dumps(source.to_dict()),
+                 parent_session_id='lane-root')
+    db.sessions.end('lane-root', 'compression')
     from gateway.session import SessionEntry
     now = datetime.now()
     entry = SessionEntry(route, 'lane-tip', now, now, origin=source, platform=source.platform)
-    runner.session_store._routing_db.save_gateway_routing_entry(
-        route, json.dumps(entry.to_dict()), scope=runner.session_store._routing_scope())
+    runner.session_store._routing_persistence.routing.upsert_routing_entry(
+        route, json.dumps(entry.to_dict()), routing_scope=runner.session_store._routing_scope())
     return route
 
 
@@ -402,14 +410,13 @@ async def test_resume_by_a_messaging_segment_shares_the_lanes_next_inbound_mount
     source = _source()
     root = warm.register(source).session_id
     route = warm_runner.session_store._generate_session_key(source)
-    db = warm.db
-    db.append_message(root, 'user', 'first')
-    db.append_message(root, 'assistant', 'ok')
-    db.publish_compression_child(parent_session_id=root, child_session_id='seg-1', source='telegram',
-                                 messages=[{'role': 'user', 'content': 'summary'}],
-                                 require_compression_lease=False)
+    db = warm.persistence
+    seed_messages(db, root, {'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'ok'})
+    db.lineage.publish_compression_child(root, CompressionChild(session_id='seg-1', source='telegram'),
+                                         [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                         require_compression_lease=False)
     assert warm_runner.session_store.advance_compression_session(route, root, 'seg-1') is not None
-    db.record_gateway_session_peer('seg-1', source='telegram', user_id=source.user_id, session_key=route,
+    db.routing.record_session_peer('seg-1', source='telegram', user_id=source.user_id, session_key=route,
                                    chat_id=source.chat_id, chat_type=source.chat_type,
                                    origin_json=_json.dumps(source.to_dict()))
     cold = await _cold(tmp_path)

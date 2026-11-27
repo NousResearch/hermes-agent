@@ -61,7 +61,7 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
     """
     from hermes_cli import plugins_cmd as pc
     from hermes_cli.runtime_state import _bytes
-    from pm.plugin_declarations import read_python_declaration
+    from pm.plugin_declarations import needs_workspace_member, read_python_declaration, unsatisfied_requirements
     from pm.workspace import enabled_plugin_dirs, install_node_sidecar
 
     if (target / "node_modules").is_dir() and (staged / "package.json").is_file() and (
@@ -75,8 +75,12 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
     if target.resolve() not in enabled_plugin_dirs(installing=target):
         return  # a disabled plugin's deps are admitted (and consented) by `hermes plugins enable`
     before, after = read_python_declaration(target), read_python_declaration(staged)
-    added = tuple(spec for spec in after.install_requirements if spec not in before.install_requirements)
-    if not added and not (after.installs_packages and not before.installs_packages):
+    after_needs = needs_workspace_member(after)
+    if not after_needs:
+        return
+    before_needs = needs_workspace_member(before)
+    added = tuple(spec for spec in unsatisfied_requirements(after) if spec not in before.install_requirements)
+    if not added and before_needs:
         return
     if not interactive:
         raise pc.PluginOperationError(
@@ -113,6 +117,7 @@ def update_plugin(
 
     from hermes_cli import plugins_cmd as pc
     from hermes_cli.plugins_cmd_catalog import RepinConsentRequired, refuse_if_installed_removed
+    from hermes_cli.plugins_cmd_git import _refuse_foreign_checkout
     from pm.store import tree_digest
 
     target = target.resolve()
@@ -171,6 +176,7 @@ def update_plugin(
                 shutil.copytree(target, staged, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
                 if feed_revision:
                     git = pc._resolve_git_executable()
+                    _refuse_foreign_checkout(git, target)
                     status = pc._git_or_raise(git, target, "status", "--porcelain", failure_prefix="Could not inspect plugin edits: ")
                     if status.stdout.strip():
                         raise pc.PluginOperationError("Pinned feed update has local changes; save them before updating.")

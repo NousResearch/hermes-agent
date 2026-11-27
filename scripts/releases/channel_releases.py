@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-from datetime import datetime, timezone, UTC
 
 from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
@@ -19,13 +18,6 @@ from scripts.releases.desktop_targets import MANIFEST_PLATFORM, MANIFEST_TARGETS
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 from scripts.releases.progress import log
 from scripts.releases.versioning import parse_attempt_ref
-
-CANARY_NEEDS = ("validate", "build-win32-x64", "build-win32-arm64",
-                "build-darwin-arm64",
-                "build-linux-x64", "build-linux-arm64", "builds-table",
-                "assemble-win32-bundle", "smoke-darwin-arm64",
-                "smoke-win32-arm64", "smoke-win32-x64",
-                "publish-win32-updater", "publish-darwin-updater")
 
 
 def select_channel(publisher: ChannelPublisher, policy: str) -> str:
@@ -109,13 +101,16 @@ def match_accepted_packages(manifest: dict, accepted: dict) -> None:
 
 
 def canary_windows_version(tag: str) -> str:
-    from hermes_cli.update_channel import canary_timestamp
+    try:
+        return stable.canary_windows_version(tag)
+    except ValueError as error:
+        raise ChannelError("Invalid canary release identity") from error
 
-    stamp = canary_timestamp(tag)
-    if stamp is None:
-        raise ChannelError("Invalid canary release identity")
-    instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
-    return f"{instant.year % 100}.{int(f'{instant.month:02d}{instant.day:02d}')}.{instant.hour}.{int(f'{instant.minute:02d}{instant.second:02d}')}"
+
+# The canary's controller is stable-release.yml: its publish-canary job runs after the accepted
+# candidate manifest, so only admission and that manifest stand between the build and the head.
+# Every other suite still runs in the same run and turns it red; a canary does not wait for them.
+CANARY_CONTROLLER_NEEDS = ("admit", "candidate-manifest")
 
 
 def admit_transaction(policy: str, env: dict, *, require_published: bool = False,
@@ -123,7 +118,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
     """A callable CLI is not permission to bypass the existing workflow gate."""
     from scripts.releases.semver import is_release_version
     from hermes_cli.release_channels import require_commit, validate_repository
-    from hermes_cli.update_channel import is_canary_tag
+    from hermes_cli.update_channel import is_canary_tag, release_version
 
     repository = validate_repository(env.get("GITHUB_REPOSITORY"))
     tag = env.get("RELEASE_TAG", "")
@@ -132,7 +127,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         if parse_attempt_ref(tag) is None:
             raise ChannelError("Invalid protected release tag")
     else:
-        if not tag.startswith("v") or not is_release_version(tag[1:]):
+        if release_version(tag) is None or not is_release_version(release_version(tag)):
             raise ChannelError("Invalid protected release tag")
         if (policy == "canary-release") != is_canary_tag(tag):
             raise ChannelError("Protected release policy/tag mismatch")
@@ -160,8 +155,14 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         if env.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
             raise ChannelError("Protected heads require the accepted release workflow")
         default = run(["gh", "api", f"repos/{repository}", "--jq", ".default_branch"])
-        expected = f"{repository}/.github/workflows/desktop-bundled-release.yml@refs/heads/{default}"
-        required = CANARY_NEEDS
+        # A canary publishes only from the Stable Release controller, after its accepted candidate:
+        # the one pipeline. The direct desktop-bundled-release dispatch refuses canary tags.
+        expected = f"{repository}/.github/workflows/{stable.CONTROLLER_WORKFLOW}@refs/heads/{default}"
+        required = CANARY_CONTROLLER_NEEDS
+        # A claim that requires green publishes only once every suite passed (admission's
+        # require-green output; stable-release.yml publish-canary gates on the same flag).
+        if env.get("REQUIRE_GREEN", "true") != "false":
+            required = (*required, "acceptance")
     else:
         raise ChannelError("Invalid protected release policy")
     if env.get("GITHUB_WORKFLOW_REF") != expected:
@@ -364,19 +365,26 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     if final_claim is not None and not lane_set.advances_desktop(final_claim["lanes"]):
         raise ChannelError("A release that did not build every desktop package the channel serves "
                            "cannot advance a protected head")
-    release_epoch = final_claim["claim_epoch"] if final_claim is not None else None
-    accepted = accepted_stable(publisher, env, tag, commit, release_epoch,
-                               lanes=final_claim["lanes"]) \
-        if final_claim is not None else None
+    # A canary publishes the accepted candidate exactly as stable does: its claim's lanes, its
+    # tag stamp as its epoch, and the feeds promoted from that manifest.
+    if final_claim is not None:
+        release_epoch, accepted_lanes = final_claim["claim_epoch"], final_claim["lanes"]
+    else:
+        # admit_transaction pinned this tag object; its message is the claim admission read.
+        canary_lanes = stable.canary_claim(stable.output(["git", "tag", "-l", tag, "--format=%(contents)"]),
+                                           tag=tag, commit=commit)["lanes"]
+        if not lane_set.advances_desktop(canary_lanes):
+            raise ChannelError("A canary that did not build every desktop package the channel serves "
+                               "cannot advance a protected head")
+        release_epoch, accepted_lanes = stable.canary_epoch(tag), canary_lanes
+    accepted = accepted_stable(publisher, env, tag, commit, release_epoch, lanes=accepted_lanes)
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
-    # Stable trusts the receipt sha256s of an accepted candidate: only metadata and
+    # Both kinds trust the receipt sha256s of the accepted candidate: only metadata and
     # the per-arch feed legs are downloaded, never the multi-GB packages.
-    local_bytes = accepted is None
-    includes = (["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"] if local_bytes
-                else ["metadata-*.json", "*-mac.yml"])
+    includes = ["metadata-*.json", "*-mac.yml"]
     log(f"Fetching native handoffs for {', '.join(NATIVE_LEGS)} from releases/tag/{tag}/ "
-        f"({'packages' if local_bytes else 'metadata and feed legs only'})")
+        "(metadata and feed legs only)")
     handoff.fetch(tag, commit, list(NATIVE_LEGS), root, includes, public_base=publisher.public_base)
     native = read_native_receipts(root, tag, commit, payload_tag=payload_tag)
     log(f"Native receipts verified: {len(native['packages'])} packages, {len(native['files'])} files")
@@ -394,24 +402,23 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     def release_gate(request: dict) -> bool:
         if admit_transaction(policy, env, require_published=True) != (tag, commit):
             return False
-        if policy == "stable-release":
-            if release_epoch is None:
-                raise ChannelError("Stable release epoch is unavailable")
-            return accepted_stable(publisher, env, tag, commit, release_epoch,
-                                   lanes=final_claim["lanes"]) == accepted
-        return True
+        return accepted_stable(publisher, env, tag, commit, release_epoch,
+                               lanes=accepted_lanes) == accepted
 
-    source_version = payload_tag[1:].split("+", 1)[0]
-    log(f"Allocating a protected build on {name} for {payload_tag[1:]} "
+    from hermes_cli.update_channel import release_version, tag_core
+
+    source_version, version = tag_core(payload_tag), release_version(payload_tag)
+    if source_version is None or version is None:
+        raise ChannelError("Invalid protected release tag")
+    log(f"Allocating a protected build on {name} for {version} "
         f"(windows {windows['version']})")
     request = publisher.allocate_protected(name, commit, source_version, release_tag=payload_tag,
-                                           version=payload_tag[1:], windows_version=windows["version"],
+                                           version=version, windows_version=windows["version"],
                                            identity=identity, policy=policy, release_gate=release_gate,
                                            archive_ref=tag if parsed else None)
     manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/",
-                               local_bytes=local_bytes)
-    if accepted is not None:
-        match_accepted_packages(manifest, accepted)
+                               local_bytes=False)
+    match_accepted_packages(manifest, accepted)
     prefix = build_prefix(request["buildId"])
     log(f"Build {request['buildId']}: writing {len(feeds)} immutable feeds under {prefix}")
     for file in feeds:
@@ -424,39 +431,53 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     def qualified(pinned: dict, actual: dict) -> bool:
         # Rehash local receipt-bound bytes rather than trusting caller-supplied claims.
         expected, _ = assemble(pinned, read_native_receipts(root, tag, commit, payload_tag=payload_tag), root,
-                               artifact_prefix=f"releases/tag/{tag}/", local_bytes=local_bytes)
-        if accepted is not None:
-            match_accepted_packages(expected, accepted)
+                               artifact_prefix=f"releases/tag/{tag}/", local_bytes=False)
+        match_accepted_packages(expected, accepted)
 
         return pinned == request and actual == expected
 
     publisher.verify_build = qualified
-    if accepted is not None:
-        log("Writing releases/stable/release-candidates.json and promoting the stable feeds")
-        # The head already names the previous release after the first bundled one: replace it
-        # under its current ETag, since a create-only write refuses an existing object.
-        head = publisher.store.get("releases/stable/release-candidates.json")
-        publisher._write("releases/stable/release-candidates.json", accepted, head[1] if head else None)
-        if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
-            raise ChannelError("Stable candidate pointer read-back differs")
-        promote_stable_feeds(accepted, root, publisher.public_base)
+    # Stable's pointer is the next release's upgrade baseline (stable._published_baseline); the
+    # canary's names the live canary, whose objects the R2 pruner keeps however old.
+    channel = "canary" if policy == "canary-release" else "stable"
+    pointer = f"releases/{channel}/release-candidates.json"
+    # A release the head update would refuse must not advance feeds or overwrite the retention
+    # pointer, so the head's own ordering check runs before the first feed write.
+    publisher.require_protected_successor(request, policy=policy)
+    log(f"Promoting the {channel} feeds")
+    promote_stable_feeds(accepted, root, publisher.public_base)
     log(f"Promoting build {request['buildId']} to the {name} head")
     result = publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)
     log(f"Channel {name} head is build {request['buildId']}")
+    # Write the candidate retention pointer only after the head actually advances:
+    # a failed feed promotion or head CAS must leave the still-live release protected.
+    # The head already names the previous release after the first bundled one: replace it
+    # under its current ETag, since a create-only write refuses an existing object.
+    # Retrying the same promoted build converges here because promote_protected is idempotent.
+    expected_pointer = canonical_json(accepted)
+    head = publisher.store.get(pointer)
+    if head is None or head[0] != expected_pointer:
+        log(f"Writing {pointer}")
+        publisher._write(pointer, accepted, head[1] if head else None)
+        if publisher.reader.read_bytes(pointer) != expected_pointer:
+            raise ChannelError(f"{channel.capitalize()} candidate pointer read-back differs")
     return result
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("role", choices=("stable", "canary"), help="Protected release policy, not a channel name")
+    parser.add_argument("role", choices=("canary",),
+                        help="Protected release policy, not a channel name. Stable publication runs only "
+                             "through the Stable Release Publication workflow, which holds the "
+                             "stable-release lock and checks the final release receipt")
 
     parser.add_argument("--root", type=Path)
     args = parser.parse_args(argv)
     if args.root:
-        result = publish_release(args.role + "-release", dict(os.environ), args.root)
+        result = publish_release("canary-release", dict(os.environ), args.root)
     else:
         with tempfile.TemporaryDirectory() as directory:
-            result = publish_release(args.role + "-release", dict(os.environ), Path(directory))
+            result = publish_release("canary-release", dict(os.environ), Path(directory))
     print(json.dumps(result, sort_keys=True))
 
 

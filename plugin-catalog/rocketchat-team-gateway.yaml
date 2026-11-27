@@ -1,0 +1,28 @@
+name: rocketchat-team-gateway
+repo: https://github.com/csabatatrai-ulx/hermes-rocketchat-team-gateway
+sha: 1f9c11170838e190e3b5c64197a5a563ec4cf6d7
+description: "Rocket.Chat gateway adapter for Hermes Agent, built for shared team rooms. Per-person sessions with room context since the asker's previous mention, a default-deny guard for Hermes commands, approval buttons, restart catch-up and duplicate suppression that survive a restart. Supports Rocket.Chat 8.7 - 9.x. Disclosure — By default each @mention sends up to 50 recent room messages from other room members to your model provider as context (`ROCKETCHAT_TEAM_HISTORY_LIMIT=0` turns this off), and the optional webhook transport opens an HTTP listener on 127.0.0.1:8645 that requires `ROCKETCHAT_TEAM_WEBHOOK_SECRET`."
+maintainer: csabatatrai-ulx
+tier: community
+category: platform
+requires_hermes: ">=0.22.3"
+docs_url: https://csabatatrai-ulx.github.io/hermes-rocketchat-team-gateway/
+version: "2.0.0"
+title: Rocket.Chat Team Gateway
+image: https://raw.githubusercontent.com/csabatatrai-ulx/hermes-rocketchat-team-gateway/1f9c11170838e190e3b5c64197a5a563ec4cf6d7/docs/images/catalog-card.png
+screenshots:
+  - https://raw.githubusercontent.com/csabatatrai-ulx/hermes-rocketchat-team-gateway/1f9c11170838e190e3b5c64197a5a563ec4cf6d7/docs/images/shared-room.png
+  - https://raw.githubusercontent.com/csabatatrai-ulx/hermes-rocketchat-team-gateway/1f9c11170838e190e3b5c64197a5a563ec4cf6d7/docs/images/catalog/approval-buttons.png
+  - https://raw.githubusercontent.com/csabatatrai-ulx/hermes-rocketchat-team-gateway/1f9c11170838e190e3b5c64197a5a563ec4cf6d7/docs/images/catalog/chatops-fixed.png
+  - https://raw.githubusercontent.com/csabatatrai-ulx/hermes-rocketchat-team-gateway/1f9c11170838e190e3b5c64197a5a563ec4cf6d7/docs/images/catalog/personal-assistant.png
+  - https://raw.githubusercontent.com/csabatatrai-ulx/hermes-rocketchat-team-gateway/1f9c11170838e190e3b5c64197a5a563ec4cf6d7/docs/images/catalog/command-guard.png
+  - https://raw.githubusercontent.com/csabatatrai-ulx/hermes-rocketchat-team-gateway/1f9c11170838e190e3b5c64197a5a563ec4cf6d7/docs/images/catalog/docs-site.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ROCKETCHAT_TEAM_URL
+    - ROCKETCHAT_TEAM_TOKEN
+    - ROCKETCHAT_TEAM_USER_ID
+    - ROCKETCHAT_TEAM_BOT_USERNAME

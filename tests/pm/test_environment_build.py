@@ -192,6 +192,29 @@ def test_public_dependency_only_build_needs_no_application_source(installable_pr
     assert not Path(env["HERMES_HOME"]).exists()
 
 
+
+@pytest.mark.platforms("posix")
+def test_a_checkout_venv_built_on_an_external_python_is_not_a_pre_pm_install(installable_project, tmp_path):
+    """`pm.build_env --python <system python> --out .venv`: the env's ``home`` is outside PM's tool
+    store, yet PM built it, so a data root with no recorded selection never carries its extras."""
+    from pm import build_environment
+    from pm.environments import site_packages
+    from pm.extras import pre_pm_baseline
+
+    source, _uv, env = installable_project
+    external = tmp_path / "system-python" / "bin"
+    external.mkdir(parents=True)
+    (external / "python3").symlink_to(Path(sys.executable).resolve())
+    executable = build_environment(explicit=True, source=source, python=external / "python3",
+                                   out=source / ".venv", cache=tmp_path / "cache", env=env, offline=True)
+    venv = executable.parent.parent
+    assert f"home = {external}" in (venv / "pyvenv.cfg").read_text(encoding="utf-8")
+    # Hermes installed into it, as a contributor's checkout `.venv` holds it.
+    (site_packages(venv) / "hermes_agent-0.0.0.dist-info").mkdir()
+
+    assert pre_pm_baseline(source) == []
+
+
 def test_all_extras_build_leaves_out_opt_in_extras(installable_project, tmp_path):
     source, _uv, env = installable_project
     manifest = source / "pyproject.toml"

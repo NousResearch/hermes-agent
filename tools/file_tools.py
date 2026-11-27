@@ -16,20 +16,22 @@ import stat
 import threading
 import time
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from agent.file_safety import get_nt_namespace_error, get_read_block_error
+from agent.file_safety import get_nt_namespace_error, get_read_block_error, is_blocked_device_path
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
-from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
+from tools.file_operations_common import (
+    DEFAULT_READ_LIMIT, cell_read_fields, count_conflict_blocks, directory_listing, settle_tail, tail_offset,
+    tail_request, tail_start)
 from tools import file_state
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
+    _expand_tilde, _hosted_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
     _resolve_path_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
@@ -37,11 +39,11 @@ from tools.file_tools_write_guards import (
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
-    _check_not_found_cache, _known_full_content_sha256,
-    _file_metadata, _file_version,
-    _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
+    _check_not_found_cache, _dedup_lookup, _known_full_content_sha256,
+    _file_metadata, _file_version, _on_host,
+    _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
-    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp, is_programmatic_read)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
 _DEFAULT_MAX_READ_CHARS = 100_000
+_ARCHIVE_GUTTER_CHARS = 16  # '<n>|' line-number gutter plus newline, generously
 def _get_max_read_chars() -> int:
     """Return ``file_read_max_chars`` from config.yaml (default on missing/invalid). No module
     cache: ``load_config_readonly`` is already mtime+path cached, and a process-lifetime slot
@@ -118,21 +121,6 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
 # Above this size, a wide read (limit > 200) gets a hint toward targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000
 
-# Device/fd paths whose reads hang the process. Checked by path only — no I/O.
-_BLOCKED_DEVICE_PATHS = frozenset({
-    "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",     # never reach EOF
-    "/dev/stdin", "/dev/tty", "/dev/console",                    # block on input
-    "/dev/stdout", "/dev/stderr",                                # nonsensical to read
-    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",                       # fd aliases
-})
-# /proc/<pid>/... (and /proc/<pid>/task/<tid>/...) files that leak secrets,
-# argv, memory layout (ASLR oracle: maps family, auxv, pagemap) or raw memory.
-_BLOCKED_PROC_SUFFIXES = (
-    "/fd/0", "/fd/1", "/fd/2",  # stdio aliases
-    "/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps",
-    "/mem", "/auxv", "/pagemap")
-
-
 def _file_ops_uses_host_paths(file_ops) -> bool:
     """True when *file_ops* targets the host filesystem (only then may we stat paths
     or rewrite V4A headers to host-absolute paths; sandboxes have their own namespace)."""
@@ -152,33 +140,37 @@ _V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$
 
 
 def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_to_entry: dict,
-                                      file_ops) -> str:
+                                      file_ops, task_id: str = "default") -> str:
     """Rewrite V4A file headers to the resolved host paths (host backends only).
 
     The shell layer must patch the SAME files ``patch_tool`` resolved for
     locking/staleness, not re-resolve a relative header against its own cwd
     (which can differ — the git-worktree cwd bug). Delete and Move headers take
     ``path_to_entry``: they act on a symlink itself, never on its target.
+
+    In a hosted scope only a ``~`` header changes, to the sandbox's home; every other header is the
+    sandbox's to anchor and is sent as written.
     """
-    if not _file_ops_uses_host_paths(file_ops):
+    from tools.environments.sandbox_scope import hosted_scope
+    hosted = hosted_scope() is not None
+    if not _file_ops_uses_host_paths(file_ops) and not hosted:
         return patch
 
     def _res(raw: str, entry: bool = False) -> str:
         raw = raw.strip()
+        if hosted:
+            return _hosted_tilde(raw, task_id) if raw.startswith("~") else raw
         return (path_to_entry if entry else path_to_resolved).get(raw) or raw
 
+    def _as_written(m: re.Match) -> bool:
+        return hosted and not any(g.strip().startswith("~") for g in m.groups()[1:])
+
     patch = _V4A_SINGLE_HEADER_RE.sub(
-        lambda m: f"{m.group(1)}{_res(m.group(3), entry=m.group(2) == 'Delete')}", patch)
+        lambda m: m.group(0) if _as_written(m) else f"{m.group(1)}{_res(m.group(3), entry=m.group(2) == 'Delete')}",
+        patch)
     return _V4A_MOVE_HEADER_RE.sub(
-        lambda m: f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
-
-
-def _is_blocked_device_path(path: str) -> bool:
-    """Return True for concrete device/fd/proc paths that can hang reads or leak process state."""
-    normalized = os.path.normpath(_expand_tilde(path))
-    if normalized in _BLOCKED_DEVICE_PATHS:
-        return True
-    return normalized.startswith("/proc/") and normalized.endswith(_BLOCKED_PROC_SUFFIXES)
+        lambda m: m.group(0) if _as_written(m)
+        else f"{m.group(1)}{_res(m.group(2), entry=True)} -> {_res(m.group(3), entry=True)}", patch)
 
 
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
@@ -187,12 +179,15 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     Literal first so /dev/stdin is caught before resolving to a terminal path;
     every symlink hop is checked so an alias cannot bypass the guard.
     """
+    from tools.environments.sandbox_scope import hosted_scope
     expanded = _expand_tilde(filepath)
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
-    if _is_blocked_device_path(normalized):
+    if is_blocked_device_path(normalized):
         return True
+    if hosted_scope() is not None:
+        return False  # a sandbox path: its symlinks are not this host's to follow
 
     seen: set[str] = set()
     current = normalized
@@ -204,7 +199,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
         if not os.path.isabs(target):
             target = os.path.join(os.path.dirname(current), target)
         target = os.path.normpath(target)
-        if _is_blocked_device_path(target):
+        if is_blocked_device_path(target):
             return True
         if target in seen:
             break
@@ -215,7 +210,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
         resolved = os.path.normpath(os.path.realpath(normalized))
     except (OSError, ValueError):
         return False
-    return _is_blocked_device_path(resolved)
+    return is_blocked_device_path(resolved)
 
 
 def _resolved_match_path(path: str, task_id: str) -> str:
@@ -315,8 +310,10 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Uses terminal_tool's per-task creation locks (no duplicate sandboxes).
     Subagent task_ids collapse to "default" (``_resolve_container_task_id``) so
     delegate_task children share the parent's container; RL/benchmark task_ids
-    with a registered env override keep their isolation.
+    with a registered env override keep their isolation. In a hosted scope every
+    task id resolves to the agent's sandbox, so these operations run there.
     """
+    from tools.environments.sandbox_scope import admit_env
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _resolve_container_task_id,
@@ -357,7 +354,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     with task_lock:
         # Double-check: another thread may have created it while we waited.
         with _env_lock:
-            terminal_env = _active_environments.get(task_id)
+            terminal_env = admit_env(_active_environments.get(task_id))
             if terminal_env is not None:
                 _last_activity[task_id] = time.time()
         if terminal_env is None:
@@ -424,26 +421,53 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str,
+                             tail: int | None = None) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
     (size cap, encrypted, malformed), or ``None`` to fall through to the normal
     read path. Runs BEFORE the binary-extension guard.
     """
+    from tools.environments.sandbox_scope import hosted_scope
     from tools.read_extract import (
         ANYDOC_EXTENSIONS, EXTRACTABLE_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError,
         extract_document_bytes, is_extractable_document)
+    from tools.tool_output_limits import get_max_line_length
+    from tools.tool_result_storage import is_pruned_archive, pageable_archive_text
+    if hosted_scope() is not None:
+        return None  # extraction parses the bytes in host temp files and host tools; the binary guard answers
 
-    if not is_extractable_document(str(_resolved)):
+    # A pruned tool result is archived byte-exact, so JSON output (or any one-line output) is a line the
+    # per-line cap would cut with no way to continue: page its text, long lines wrapped at the cap.
+    archived = is_pruned_archive(str(_resolved))
+    wrapped, wrap_width = False, 0
+    if not (archived or is_extractable_document(str(_resolved))):
         return None
     file_ops = _get_file_ops(task_id)
+    if archived and (sync_manager := getattr(getattr(file_ops, "env", None), "_sync_manager", None)) is not None:
+        # A file-synced sandbox gets new cache files on its next (rate-limited) sync; an archive written since
+        # must be there before this read, or the model is told it expired.
+        try:
+            sync_manager.sync(force=True)
+        except Exception:  # health: allow BLE001 -- a failed push leaves the read to report what the sandbox has
+            logger.debug("Archive sync before read failed for %s", path, exc_info=True)
+    # The sandbox resolves its own ``~`` and cwd: _resolved expanded them with the host's, so a sandbox
+    # gets the path as the model gave it, like the ordinary read in read_file_tool.
+    byte_path = str(_resolved) if _file_ops_uses_host_paths(file_ops) else path
     try:
-        binary = file_ops.read_file_bytes(str(_resolved), max_bytes=MAX_DOCUMENT_BYTES)
+        binary = file_ops.read_file_bytes(byte_path, max_bytes=MAX_DOCUMENT_BYTES)
         if binary.error or binary.base64_content is None:
             raise ExtractionError(binary.error or "Document bytes unavailable")
         document_bytes = base64.b64decode(binary.base64_content, validate=True)
-        extracted_text = extract_document_bytes(document_bytes, str(_resolved))
+        if archived:
+            # Each wrapped line, gutter included, must also fit the read budget: a line the budget cuts
+            # mid-way advances next_offset past its remainder.
+            wrap_width = max(1, min(get_max_line_length(), _get_max_read_chars() - _ARCHIVE_GUTTER_CHARS))
+            extracted_text, wrapped = pageable_archive_text(
+                document_bytes.decode("utf-8", errors="replace"), str(_resolved), wrap_width)
+        else:
+            extracted_text = extract_document_bytes(document_bytes, str(_resolved))
     except (ExtractionError, ValueError, base64.binascii.Error) as exc:
         logger.debug("document extraction failed for %s", path, exc_info=True)
         # Binary formats surface the specific failure (fallthrough would only
@@ -461,9 +485,9 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
 
     lines = extracted_text.splitlines()
     total_lines = len(lines)
+    offset = tail_start(total_lines, tail, offset)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
-    from tools.tool_output_limits import get_max_line_length
     max_line_length = get_max_line_length()
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
@@ -472,12 +496,14 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
         "extracted_document": True}
+    if wrapped:  # the archive file itself is byte-exact; only this view splits its long lines
+        result_dict["long_lines_wrapped_at"] = wrap_width
     if result_dict["truncated"]:
         result_dict["hint"] = (
             f"Use offset={end_line + 1} to continue reading "
             f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)")
     max_chars = _get_max_read_chars()
-    if len(result_dict["content"]) > max_chars:
+    if len(result_dict["content"]) > max_chars and not is_programmatic_read():
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
         rendered = result_dict["content"]
@@ -487,6 +513,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
+    result_dict.update(cell_read_fields(result_dict["content"], is_programmatic_read()))
     if (offset == 1 and not result_dict["truncated"] and not redacted
             and not truncated_lines and not result_dict.get("truncated_lines")):
         # The whole document was shown, so a text-authorable format (.ipynb)
@@ -551,18 +578,17 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
     complete = False
     with _read_tracker_lock:
-        task_data["dedup_hits"].pop(dedup_key, None)
-        task_data["dedup_generation_reads"].add(dedup_key)
+        count, dedup = _note_read_served(task_data, dedup_key, path, offset, limit)
         task_data["read_history"].add((path, offset, limit))
-        count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
-            _mtime_now = os.path.getmtime(resolved_str)
-            task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            if _on_host(resolved_str):
+                _mtime_now = os.path.getmtime(resolved_str)
+                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]
         if stable and version is not None and count < 4:
-            task_data["dedup"][dedup_key] = version_before
+            dedup[dedup_key] = version_before
             # A narrower view does not undo knowledge of these same bytes. Do
             # not revive a baseline after a partial read of a different version.
             complete = baselines.get(resolved_str) == version
@@ -602,6 +628,31 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
+def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | None, bool]:
+    """The base the device check anchors a relative read on, and whether the read is unanchored. In a hosted scope
+    with no known sandbox cwd the relative path is the sandbox's to anchor, sent as written (as search does)."""
+    try:
+        return (None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)), False
+    except ValueError:
+        from tools.environments.sandbox_scope import hosted_scope
+        if hosted_scope() is None:
+            raise
+        return None, True
+
+
+def _denied_or_directory_listing(resolved, task_id: str) -> str | None:
+    """The denylist refusal for a read, else a host directory's listing (``ls -la``), else None.
+    The denylist runs first so a protected directory is never listed."""
+    block_error = get_read_block_error(str(resolved))
+    if block_error:
+        return tool_error(block_error)
+    if _file_ops_uses_host_paths(_get_file_ops(task_id)) and os.path.isdir(resolved):
+        cell = is_programmatic_read()  # a cell gets every entry; the model's table keeps to the read budget
+        listing = directory_listing(str(resolved), structured=cell, max_chars=None if cell else _get_max_read_chars())
+        return json.dumps(listing, ensure_ascii=False)
+    return None
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
@@ -611,7 +662,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     → negative-result cache → dedup stub → real read.
     """
     try:
+        raw_offset = offset
         offset, limit = normalize_read_pagination(offset, limit)
+        tail, limit = tail_request(raw_offset, limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
         # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
@@ -620,14 +673,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         nt_err = get_nt_namespace_error(path, verb="Read")
         if nt_err:
             return tool_error(nt_err)
+        path = _hosted_tilde(path, task_id)  # a hosted read sends the path as given: ``~`` is the sandbox's home
 
-        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        device_base, unanchored = _read_device_base(path, task_id)
         if _is_blocked_device(path, base_dir=device_base):
             return tool_error(
                 f"Cannot read '{path}': this is a device file that would "
                 "block or produce infinite output.")
 
-        _resolved = _resolve_path_for_task(path, task_id)
+        _resolved = PurePosixPath(path) if unanchored else _resolve_path_for_task(path, task_id)
 
         # A read on a FIFO/socket blocks until the exec timeout: a self-shipped DoS.
         if _file_ops_uses_host_paths(_get_file_ops(task_id)):
@@ -645,11 +699,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # credential stores). Runs BEFORE document extraction so a
         # protected SQLite store (state.db) cannot be read through the extractor. Pass the RESOLVED path: the denylist's own
         # resolve() uses the process cwd and would miss a relative "auth.json".
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
+        refused_or_listed = _denied_or_directory_listing(_resolved, task_id)
+        if refused_or_listed is not None:
+            return refused_or_listed
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, tail=tail)
         if extracted is not None:
             return extracted
 
@@ -664,25 +718,24 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
         if cached_not_found is not None:
             return cached_not_found
+        file_ops = _get_file_ops(task_id)
+        read_path = resolved_str if _file_ops_uses_host_paths(file_ops) else path
+        offset = tail_offset(file_ops, read_path, tail, offset)
 
         # Dedup: identical (path, offset, limit) on an unchanged file returns a
         # lightweight stub instead of re-sending the content.
         dedup_key = (resolved_str, offset, limit)
-        with _read_tracker_lock:
-            task_data = _task_data(task_id)
-            cached_version = task_data["dedup"].get(dedup_key)
-            # First unchanged read after a compaction boundary serves full content
-            # (the summary may have dropped exact bytes); later ones get the stub.
-            content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
+        task_data, cached_version, content_served_in_generation = _dedup_lookup(task_id, dedup_key)
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
-        file_ops = _get_file_ops(task_id)
         version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
         if (cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        offset, result = settle_tail(file_ops, read_path, tail, offset, limit,
+                                     file_ops.read_file(read_path, offset, limit))
+        dedup_key = (resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -699,7 +752,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # with a next_offset instead of rejecting.
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
-        if len(result.content or "") > max_chars:
+        # A cell's read is consumed by code (only what it prints enters context): no char budget.
+        if len(result.content or "") > max_chars and not is_programmatic_read():
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
@@ -710,6 +764,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
+        result_dict.update(cell_read_fields(result.content, is_programmatic_read()))
 
         if result.content:
             conflicts = count_conflict_blocks(result.content)
@@ -1006,7 +1061,7 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if not patch:
                     return tool_error("patch content required")
                 result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
+                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops, task_id))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1081,6 +1136,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         nt_err = get_nt_namespace_error(path, verb="Search")
         if nt_err:
             return tool_error(nt_err)
+        path = _hosted_tilde(path, task_id)
         try:
             resolved_search_path = str(_resolve_path_for_task(path, task_id))
         except (OSError, ValueError, RuntimeError) as exc:
@@ -1108,7 +1164,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
+        # The path-grouped text block saves the model tokens; a cell also gets the match dicts, always
+        # present for a content search (an empty list when nothing matched) so code can iterate them,
+        # beside the grouped keys existing cells already read.
         result_dict = result.to_dict(densify=True)
+        if is_programmatic_read() and not result_dict.get("error"):
+            if target == "files":
+                result_dict.setdefault("files", [])
+            elif target == "content" and output_mode == "content":
+                result_dict["matches"] = result.to_dict().get("matches", [])
 
         if omitted:
             result_dict["_omitted"] = (
@@ -1133,9 +1197,50 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"Results truncated. Use offset={offset + limit} to see more, "
                 "or narrow with a more specific pattern or file_glob."
             )
+        elif target == "content" and offset == 0 and not is_programmatic_read():
+            _note_search_complete(_get_file_ops(task_id), result, result_dict,
+                                  pattern=pattern, path=path, file_glob=file_glob, output_mode=output_mode,
+                                  task_id=task_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, path: str,
+                          file_glob: str | None, output_mode: str, task_id: str) -> None:
+    """State that a first-page, untruncated content search is the whole answer, and whether the
+    hidden/gitignored files it skips hold more: in the live routing eval Opus re-ran every
+    correct search with grep for exactly that reason. A warning means paths were skipped or
+    errored, so no claim is made then; a failed hidden-file probe leaves that part unverified."""
+    if result_dict.get("error") or result_dict.get("warning") or result_dict.get("_omitted"):
+        return
+    if output_mode == "count":
+        # Highest first, so the per-file counts read as the ranking they are asked for.
+        result_dict["counts"] = dict(sorted(result.counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        visible = {p for p, n in result.counts.items() if n > 0}  # grep -c also prints zero rows
+        shown = f"{result.total_count} matching lines in "
+    elif output_mode == "files_only":
+        visible, shown = set(result.files), ""
+    else:
+        visible = {m.path for m in result.matches}
+        shown = f"{result.total_count} result rows in "  # context rows count as rows
+    note = f"Complete: {shown}{len(visible)} files in the requested search scope under {path}"
+    try:
+        everywhere = file_ops.hidden_match_counts(pattern, path, file_glob)
+    except (OSError, RuntimeError):  # optional check: the primary result still stands
+        everywhere = None
+    if everywhere is None:
+        note += ". Hidden and gitignored files were not verified."
+    else:
+        if any(get_read_block_error(_resolved_match_path(p, task_id)) for p in everywhere):
+            return  # same policy as the primary rows: an omitted match means no completeness claim
+        skipped = sorted(p for p in everywhere if p not in visible)
+        note += (" (hidden and gitignored files checked too, except dependency/build trees such as "
+                 ".git, node_modules, .venv, build, dist, vendor): "
+                 + ("none match among the additional files checked." if not skipped else
+                    f"{len(skipped)} more file(s) match there, not shown: "
+                    + ", ".join(skipped[:5]) + (" (+more)" if len(skipped) > 5 else "")))
+    result_dict["complete"] = note
 
 
 # ---------------------------------------------------------------------------
@@ -1159,12 +1264,12 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination, or list a directory. Use this instead of cat/head/tail/ls in terminal. Output format: 'LINE_NUM|CONTENT'. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
+            "path": {"type": "string", "description": "File to read, or a directory to list with each entry's type and size (absolute, relative, or ~/path)"},
+            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1); negative reads the last N lines", "default": 1},
             "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
         },
         "required": ["path"]
@@ -1294,19 +1399,19 @@ _MACOS_SEARCH_NOTE = (" On macOS, broad searches above the user home automatical
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents." + _MACOS_SEARCH_NOTE + "\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls. Discovery order is the fast bounded default; exact global newest-first order is an explicit opt-in and may scan the full tree.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents." + _MACOS_SEARCH_NOTE,
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex pattern for content search, or glob pattern (e.g., '*.py') for file search"},
-            "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside file contents, 'files' searches for files by name", "default": "content"},
-            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
-            "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
-            "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
-            "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
-            "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File-search order: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree; ignored for content", "default": "discovery"},
-            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "pattern": {"type": "string", "description": "Regex for content search; glob (e.g. '*.py', '*config*') for file search."},
+            "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside files, 'files' finds files by name.", "default": "content"},
+            "path": {"type": "string", "description": "Directory or file to search in.", "default": "."},
+            "file_glob": {"type": "string", "description": "Content search only: filter files by pattern (e.g. '*.py')."},
+            "limit": {"type": "integer", "description": "Maximum number of results.", "default": 50},
+            "offset": {"type": "integer", "description": "Skip first N results for pagination.", "default": 0},
+            "order": {"type": "string", "enum": ["discovery", "modified"], "description": "File search only: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree.", "default": "discovery"},
+            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Content search only: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file.", "default": "content"},
+            "context": {"type": "integer", "description": "Content search only: lines of context before and after each match.", "default": 0}
         },
         "required": ["pattern"]
     }
@@ -1379,8 +1484,14 @@ def _handle_search_files(args, **kw):
     path = args.get("path", ".")
     if path is None or (isinstance(path, str) and not path.strip()):
         path = "."
+    pattern = args.get("pattern") or ""
+    if target != "files" and not pattern:
+        # Every line matches an empty pattern: the model gets the whole tree back as "results".
+        # Whitespace is a real search (a tab, trailing spaces), so only emptiness is refused.
+        return tool_error("search_files is missing required argument(s): pattern. The tool was NOT invoked. "
+                          "A content search needs text or a regex to look for; to list files use target='files'.")
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=path,
+        pattern=pattern, target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
         order=args.get("order", "discovery"), task_id=tid)
@@ -1408,7 +1519,8 @@ def _read_file_schema_overrides():
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000, dynamic_schema_overrides=_read_file_schema_overrides)
-registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
+registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000,
+                  compat_args=("cross_profile",), self_checked_args=("path", "content"))
 def _patch_schema_overrides():
     """Layer the V4A patch mode onto the base replace-only schema for
     OpenAI-family mains (see PATCH_SCHEMA comment). Config/context probe
@@ -1431,5 +1543,7 @@ def _patch_schema_overrides():
         return {}
 
 
-registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides)
-registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides,
+                  compat_args=("mode", "patch", "cross_profile"))
+registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000,
+                  self_checked_args=("pattern",))  # a files listing takes none; the handler refuses a content search without one

@@ -1,0 +1,27 @@
+name: hermes-officecraft
+repo: https://github.com/KosmGit/hermes-officecraft
+sha: f6ebe2a24dc818da4d851d5174a0fb13727812d3
+title: Officecraft
+description: "The pixel-art office & kanban control room for Hermes Agent: see what your agents and kanban chains are doing, and act on them. Disclosure — reads the kanban boards, the profile list, each profile's cron delivery targets, and session metadata and token usage from each profile's state.db (read-only); on a confirmed user action it creates, comments on, unblocks and launches kanban cards and campaign boards, creates or edits a profile, and answers pending approvals (an \"always\" answer adds the command pattern to that profile's permanent allowlist); optional notifications go through Hermes messaging to recipients Hermes already knows; optional LLM functions use the Officecraft auxiliary model with a monthly cap; all of these are off by default. No third-party network, no telemetry."
+maintainer: KosmGit
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/KosmGit/hermes-officecraft#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/KosmGit/hermes-officecraft/f6ebe2a24dc818da4d851d5174a0fb13727812d3/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/KosmGit/hermes-officecraft/f6ebe2a24dc818da4d851d5174a0fb13727812d3/docs/images/scene-day.webp
+  - https://raw.githubusercontent.com/KosmGit/hermes-officecraft/f6ebe2a24dc818da4d851d5174a0fb13727812d3/docs/images/scene-queue.webp
+  - https://raw.githubusercontent.com/KosmGit/hermes-officecraft/f6ebe2a24dc818da4d851d5174a0fb13727812d3/docs/images/scene-night.webp
+  - https://raw.githubusercontent.com/KosmGit/hermes-officecraft/f6ebe2a24dc818da4d851d5174a0fb13727812d3/docs/images/campaign.webp
+  - https://raw.githubusercontent.com/KosmGit/hermes-officecraft/f6ebe2a24dc818da4d851d5174a0fb13727812d3/docs/images/recruit.webp
+  - https://raw.githubusercontent.com/KosmGit/hermes-officecraft/f6ebe2a24dc818da4d851d5174a0fb13727812d3/docs/images/trophies.webp
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_kanban_dispatch_tick
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

@@ -26,6 +26,7 @@
     "./json-rpc-channel": "./src/json-rpc-channel.ts",
     "./model-search-text": "./src/model-search-text.ts",
     "./plan-usage": "./src/plan-usage.ts",
+    "./profile-id": "./src/profile-id.ts",
     "./prompt-history": "./src/node/prompt-history.ts",
     "./provider-names": "./src/provider-names.ts",
     "./reasoning-effort": "./src/reasoning-effort.ts",

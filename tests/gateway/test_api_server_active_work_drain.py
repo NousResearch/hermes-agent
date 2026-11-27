@@ -22,7 +22,9 @@ from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
-from hermes_state import SessionDB
+from hermes_constants import get_hermes_home
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.restart_test_helpers import make_restart_runner
 from tools import browser_session_lifecycle as bt_lifecycle
 
@@ -360,7 +362,7 @@ class TestRunAgentRegistersForShutdownInterrupt:
         """Cancelling the ``_run_agent`` handler task must not drop the worker count (#116535).
 
         The handler-side ``_inflight_agent_runs`` legitimately drops in the handler's
-        ``finally``; the shutdown SessionDB-close gate reads the worker-scoped count instead,
+        ``finally``; the shutdown store-close gate reads the worker-scoped count instead,
         which the real ``_run_agent`` call site must hold until the executor thread exits.
         """
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -555,15 +557,16 @@ class TestShutdownInterruptReachesEveryApiTurn:
         assert api._shutdown_interruptible_agents == {}
 
     @pytest.mark.asyncio
-    async def test_session_chat_sse_turn_is_interrupted(self, tmp_path):
+    async def test_session_chat_sse_turn_is_interrupted(self, tmp_path, api_store):
         """The SSE session-chat route is a second, differently shaped caller."""
         runner, _adapter = make_restart_runner()
         api = APIServerAdapter(PlatformConfig(enabled=True))
-        session_db = SessionDB(tmp_path / "state.db")
-        api._session_db = session_db
+        session_db = storage_handle(tmp_path)
+        api._home_stores[str(get_hermes_home())] = session_db
+        api_store(session_db)
         runner.adapters = {Platform.API_SERVER: api}
         app = _make_admission_app(api)
-        session_id = session_db.create_session("sse-session", "api_server")
+        session_id = seed_session(session_db, "sse-session", "api_server")
 
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
@@ -713,7 +716,7 @@ class TestShutdownSettleWindow:
 async def test_failed_executor_submission_releases_the_worker_count():
     """A request that reaches ``run_in_executor`` after ``shutdown_default_executor()`` raises
     RuntimeError and never runs a worker; the worker-scoped count must not stay elevated for the
-    process lifetime, or the shutdown SessionDB-close gate skips the close forever (#116535)."""
+    process lifetime, or the shutdown store-close gate skips the close forever (#116535)."""
     baseline = _api_runs.api_worker_live_count()
 
     class _ShutExecutorLoop:

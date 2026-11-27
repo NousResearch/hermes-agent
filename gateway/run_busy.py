@@ -394,6 +394,13 @@ class GatewayBusySessionMixin:
         logger.info("Discarding stale goal continuation for session %s", current)
         return True
 
+    @staticmethod
+    def _consume_goal_drain() -> None:
+        """The selected adapter event has started directly or finished handing off to the FIFO."""
+        task = asyncio.current_task()
+        if task is not None and getattr(task, "_goal_drain", None) is not None:
+            task._goal_drain = None
+
     def _goal_continuation_waiting(self, source: Any, session_id: str, generation: float | str | None = None) -> bool:
         """Whether this chat already holds a /goal continuation of the goal ``generation`` for
         ``session_id`` that has not started: in the adapter's pending slot/overflow, or as a queued

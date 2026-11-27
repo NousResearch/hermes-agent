@@ -167,7 +167,8 @@ def test_a_named_profile_rescan_leaves_its_restart_for_the_next_answer(tmp_path)
     closed = _closed_port()
     env.update(HOME=str(user), HERMES_HOME=str(root), PYTHONPATH=str(Path(__file__).resolve().parents[2]),
                PYTHONUNBUFFERED="1", HERMES_GATEWAY_LOCK_DIR=str(tmp_path / "locks"), HTTPS_PROXY=closed,
-               HTTP_PROXY=closed, https_proxy=closed, http_proxy=closed, NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
+               HTTP_PROXY=closed, https_proxy=closed, http_proxy=closed, NO_PROXY="127.0.0.1", no_proxy="127.0.0.1",
+               **_default_listener_env())
     mux = {"root": root, "env": env, "log": tmp_path / "gateway.log"}
     proc, _desc = start_daemon(mux)
     try:
@@ -656,7 +657,7 @@ def test_racing_reconciles_report_each_change_to_exactly_one_ask(tmp_path, monke
     assert gw.settled_ask()["started"] == []  # taken: asked again about the same files, nothing is new
 
 
-_NAMED_FRESH = [p.value.upper() for p in (Platform.FEISHU, Platform.WHATSAPP_CLOUD, Platform.WECOM, Platform.BLUEBUBBLES,
+_NAMED_FRESH = [p.value.upper() for p in (Platform.FEISHU, Platform.WHATSAPP_CLOUD, Platform.SMS, Platform.BLUEBUBBLES,
                                           Platform.QQBOT, Platform.WHATSAPP)]
 
 

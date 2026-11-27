@@ -43,7 +43,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
@@ -60,9 +60,34 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_live_status_text_is_a_lifecycle_state_on_agent_sessions(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        assert a._app is not None
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a.set_status_text("C123", "is running tests…")
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="processing",
+        )
+
+    @pytest.mark.asyncio
+    async def test_legacy_api_preserves_free_form_and_empty_clear(self):
+        a = self._adapter()
+        assert a._app is not None
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        a.set_status_text("C123", "is running tests…")
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        assert [call.kwargs["status"] for call in
+                a._app.client.assistant_threads_setStatus.await_args_list] == [
+                    "is running tests…", "",
+                ]
 
     @pytest.mark.asyncio
     async def test_thread_title_uses_agents_sessions_rename(self):

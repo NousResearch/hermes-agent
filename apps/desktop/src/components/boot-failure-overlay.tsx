@@ -476,7 +476,7 @@ export function BootFailureOverlay() {
             {copy.back}
           </button>
           <div className="min-h-0 flex-1 pt-4">
-            <Suspense fallback={<Loader className="mx-auto my-16 size-6 text-(--ui-text-tertiary)" />}>
+            <Suspense fallback={<Loader className="mx-auto my-16 grid size-6 text-(--ui-text-tertiary)" />}>
               <GatewaySettings embedded />
             </Suspense>
           </div>

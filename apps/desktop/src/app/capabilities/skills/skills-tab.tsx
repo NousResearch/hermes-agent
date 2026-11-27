@@ -234,7 +234,7 @@ function ScopedSkillsTab({
       {installedError instanceof Error ? installedError.message : null}
     </CatalogAlert>
   ) : installedPending && !redesign ? (
-    <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.skills.loading} type="rose-curve" />
+    <Loader className="mx-auto my-2 grid size-6 text-(--ui-text-tertiary)" label={t.skills.loading} type="rose-curve" />
   ) : null
 
   return (

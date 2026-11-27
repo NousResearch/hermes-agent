@@ -594,7 +594,9 @@ export function ConnectionsRegistrySection({ advanced, advancedCount = 0 }: Conn
   )
 
   const connectionRows = loading ? (
-    <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
+    <div className="flex justify-center py-4">
+      <Loader className="size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
+    </div>
   ) : !registry || registry.connections.length === 0 ? (
     <ConnectionsEmpty title={s.empty} />
   ) : displayedConnections.length === 0 ? (

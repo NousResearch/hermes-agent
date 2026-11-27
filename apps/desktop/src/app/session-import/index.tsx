@@ -187,7 +187,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
               )}
             </div>
             <div className="session-import-list min-h-0 flex-1 overflow-y-auto px-3 pb-5">
-              {sessions.isPending && <Loader className="mx-auto my-12" label={copy.scanning} />}
+              {sessions.isPending && <Loader className="mx-auto my-12 grid" label={copy.scanning} />}
               {sessions.isError && (
                 <ErrorState className="p-5" description={copy.scanHelp} title={copy.scanError}>
                   <Button onClick={() => void sessions.refetch()} variant="secondary">
@@ -278,7 +278,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
                   </p>
                 </div>
                 <div aria-live="polite" className="session-import-preview min-h-0 flex-1 overflow-y-auto px-8 pb-8" key={current.id}>
-                  {preview.isPending && <Loader className="mx-auto my-12" label={copy.previewLoading} />}
+                  {preview.isPending && <Loader className="mx-auto my-12 grid" label={copy.previewLoading} />}
                   {preview.isError && (
                     <ErrorState description={copy.previewHelp} title={copy.previewError}>
                       <Button onClick={() => void preview.refetch()} variant="secondary">

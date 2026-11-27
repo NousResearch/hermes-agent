@@ -113,19 +113,23 @@ _SHAPES = ["{p}", "{p}:chat-1", "{p}:chat-2", "{p}:chat-1:t9", "{p}:oc_chat", "{
            "{p}:oc_chat:omt_other", "origin", "all"]
 _ORIGINS = [None, {"chat_id": "chat-1"}, {"chat_id": "chat-2"}, {"chat_id": "oc_chat", "thread_id": "omt_topic"}]
 _ROUTES = {"routed": [{"chat_id": "chat-1"}, {"chat_id": "oc_chat", "thread_id": "omt_topic"}], "unrouted": []}
-_CORPUS = [(shape, origin, routes, loaded, primary_parser)
+# ``own_bot``: the satellite runs a bot of its own on another platform, so cron sends through its own
+# adapters and never borrows the primary's.
+_CORPUS = [(shape, origin, routes, loaded, primary_parser, False)
            for shape in _SHAPES for origin in _ORIGINS for routes in _ROUTES
-           for loaded in (False, True) for primary_parser in (False, True)]
+           for loaded in (False, True) for primary_parser in (False, True)] + [
+           (shape, origin, routes, False, False, True) for shape in _SHAPES for origin in _ORIGINS for routes in _ROUTES]
 
 
-def _run_case(root, feature, shape, origin, routes, loaded, primary_parser):
-    """``(preflight error, delivery error, [(chat, thread)] the primary's bot sent)`` for one corpus case: a
-    credentialless ``fitness`` profile the primary's bot serves through ``profile_routes``."""
+def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_bot=False):
+    """``(preflight error, delivery error, [(chat, thread)] the primary's bot sent, origin read as absent)`` for
+    one corpus case: a credentialless ``fitness`` profile the primary's bot serves through ``profile_routes``."""
     import asyncio
     from concurrent.futures import Future
     from unittest.mock import MagicMock
 
     import hermes_yaml as yaml
+    from cron.scheduler_delivery import _origin_unresolved
     from cron.scheduler_preflight import _preflight_check_delivery, shared_route_adapters_for_current_home
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
@@ -165,18 +169,18 @@ def _run_case(root, feature, shape, origin, routes, loaded, primary_parser):
     reset_hermes_home_override(token)
     token = set_hermes_home_override(str(home))
     try:
-        with patch("gateway.config.load_gateway_config", return_value=_config()):
-            preflight = _preflight_check_delivery(job)
+        with patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)):
+            preflight, unresolved = _preflight_check_delivery(job), _origin_unresolved(job)
         with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("gateway.config.load_gateway_config", return_value=_config()), \
+             patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
-            delivered = _deliver_result(job, "the report", adapters=shared_route_adapters_for_current_home(
-                primary_adapters), loop=loop)
+            delivered = _deliver_result(job, "the report", adapters={Platform.TELEGRAM: MagicMock()} if own_bot else (
+                shared_route_adapters_for_current_home(primary_adapters)), loop=loop)
     finally:
         reset_hermes_home_override(token)
         for scope in scopes:
             platform_registry.unregister(feature.platform, scope=scope)
-    return preflight, delivered, sent
+    return preflight, delivered, sent, unresolved
 
 
 @pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
@@ -191,14 +195,16 @@ def test_preflight_is_a_dry_run_of_delivery_for_a_moved_platform(tmp_path, monke
     counterexamples, outcomes = [], set()
     for index, case in enumerate(_CORPUS):
         root_dir["root"] = tmp_path / f"case{index}"
-        preflight, delivered, sent = _run_case(root_dir["root"], feature, *case)
+        preflight, delivered, sent, unresolved = _run_case(root_dir["root"], feature, *case)
         verdict = "install" if preflight and install in preflight else ("pass" if preflight is None else "blocked")
         outcome = ("install" if delivered and install in delivered else
                    "reached" if sent and delivered is None else "other")
         outcomes.add((verdict, outcome, case[3]))
-        # Unloaded, a pass must not hide a failure to reach this platform (``all`` with no home addresses none).
+        # Unloaded, a pass must not hide a failure to reach this platform (``all`` with no home addresses none),
+        # and a run with preflight off must not file an origin delivery names the install as "no origin".
         if (verdict == "install") != (outcome == "install") or (outcome == "reached" and verdict != "pass") or (
-                not case[3] and verdict == "pass" and outcome != "reached" and feature.platform in (delivered or "")):
+                not case[3] and verdict == "pass" and outcome != "reached" and feature.platform in (delivered or "")
+        ) or (outcome == "install" and unresolved):
             counterexamples.append((case, preflight, delivered, sent))
     assert counterexamples == []
     # The corpus exercises both verdicts on the unloaded side, and the loaded side never names the install.
@@ -212,6 +218,6 @@ def test_satellite_topic_rides_the_primarys_bot_without_the_plugin(tmp_path, mon
     """``<platform>:oc_chat:omt_topic`` on a satellite without the plugin reaches the routed topic through the
     primary's bot: the ref is parsed into chat + thread before the exact route lookup, not matched whole."""
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
-    preflight, delivered, sent = _run_case(
+    preflight, delivered, sent, _unresolved = _run_case(
         tmp_path, feature, "{p}:oc_chat:omt_topic", None, "routed", False, primary_parser)
     assert (preflight, delivered, sent) == (None, None, [("oc_chat", "omt_topic")])

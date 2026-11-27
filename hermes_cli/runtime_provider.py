@@ -1051,7 +1051,24 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: dict[str, Any], t
             raise AuthError(_NO_AZURE_KEY)
     else:
         token = _anthropic_token_or_raise(model=target_model)
-    return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider)
+    # Foundry: main attaches only rows bound to that origin (_resolve_from_pool); the full pool would reach api.anthropic.com rows.
+    return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider,
+                    credential_pool=None if base_url_host_matches(base_url, "azure.com") else env_key_pool("anthropic", token, base_url))
+
+
+def env_key_pool(provider: str, api_key: str, base_url: str) -> Optional[CredentialPool]:
+    """The provider's pool when the resolved env/config key is one of its members, else None.
+    Without it, a session that starts while every pool entry is in cooldown (``_resolve_from_pool``
+    -> ``pool.select()`` returned None) runs on a bare env key and can never rotate on a
+    quota/billing exhaustion or an auth failure (an Anthropic 429 is per-model and does not rotate)."""
+    try:
+        pool = load_pool(provider)
+    except Exception:  # health: allow BLE001 -- best-effort like _resolve_from_pool: an unreadable pool keeps the bare env-key runtime
+        return None
+    if (pool is not None and pool.has_credentials() and credential_pool_matches_provider(pool, provider, base_url=base_url)
+            and any(entry.runtime_api_key == api_key for entry in pool.entries())):
+        return pool
+    return None
 
 
 def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model) -> dict[str, Any]:
@@ -1080,7 +1097,9 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
     api_key = _actual_local_key(provider, creds.get("api_key", ""), base_url)
-    return _runtime(provider, api_mode, base_url, api_key, source=creds.get("source", "env"), requested_provider=requested_provider)
+    return _runtime(provider, api_mode, base_url, api_key, source=creds.get("source", "env"),
+                    requested_provider=requested_provider,
+                    credential_pool=None if declared else env_key_pool(provider, api_key, base_url))
 
 
 # ── the resolution ladder ──────────────────────────────────────────────────────────────────

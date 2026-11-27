@@ -495,8 +495,8 @@ def test_aux_auth_failure_on_the_entry_never_rotates_the_builtin_pool(tmp_path, 
     pool_provider = ac._recoverable_pool_provider("custom:deepseek", SimpleNamespace(base_url=ENDPOINT, api_key=ENTRY_KEY))
     assert pool_provider
     err = type("AuthError", (Exception,), {"status_code": 401})("Error code: 401")
-    assert ac._recover_provider_pool(pool_provider, err, failed_api_key=ENTRY_KEY) is False
-    assert ac._recover_provider_pool(pool_provider, err) is False
+    assert ac._recover_provider_pool(pool_provider, err, failed_api_key=ENTRY_KEY) is None
+    assert ac._recover_provider_pool(pool_provider, err) is None
     builtin = [e for e in load_pool("deepseek").entries() if e.source == "env:DEEPSEEK_API_KEY"]
     assert builtin and all(e.last_status != "exhausted" for e in builtin)
 

@@ -27,14 +27,14 @@ def _agent():
     return agent
 
 
-def _mint(tool_calls):
+def _mint(tool_calls, messages=None):
     """Run the real mint path and return the rows that would be stored and replayed."""
     from agent.turn_tool_validation import validate_tool_calls
 
     agent = _agent()
     verdict = validate_tool_calls(
         agent, SimpleNamespace(content="", tool_calls=tool_calls), "tool_calls",
-        messages=[], conversation_history=[], api_call_count=1, effective_task_id="t1",
+        messages=messages or [], conversation_history=[], api_call_count=1, effective_task_id="t1",
     )
     assert verdict.action == "ok"
     stored = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(tool_calls)]
@@ -58,6 +58,16 @@ def test_parallel_provider_ids_are_rewritten_stably():
     assert len(set(ids)) == 2
     # Byte-stable across a re-mint of the same turn.
     assert [row["id"] for row in _mint([_tool_call(i, n) for n, i in enumerate(raw)])] == ids
+
+
+def test_reused_provider_ids_are_uniquified_after_normalization():
+    raw = ["chatcmpl-tool-aaa", "chatcmpl-tool-bbb"]
+    first = _mint([_tool_call(i, n) for n, i in enumerate(raw)])
+    history = [{"role": "assistant", "content": "", "tool_calls": first}]
+
+    second = _mint([_tool_call(i, n) for n, i in enumerate(raw)], messages=history)
+
+    assert [row["id"] for row in second] == [f"{row['id']}_d2" for row in first]
 
 
 @pytest.mark.parametrize("raw", [

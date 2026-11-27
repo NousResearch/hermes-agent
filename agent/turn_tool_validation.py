@@ -122,6 +122,9 @@ def validate_tool_calls(
     }
     agent._uniquify_tool_call_ids(tool_calls, taken=taken)
     normalize_provider_tool_call_ids(tool_calls)
+    # Normalization can turn a provider id into a digest already used by an
+    # earlier turn. Repair against persisted history again in that namespace.
+    agent._uniquify_tool_call_ids(tool_calls, taken=taken)
 
     # Repair mismatched tool names before validating (model hallucinations).
     repaired_ids = set()

@@ -166,9 +166,47 @@ def test_sanitized_entry_config_strips_forbidden_keys_at_any_depth():
         "rules": [{"name": "r1", "auth_token": "t"}],
         "voice": "nova",
     }}}}
-    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+    with mock.patch("hermes_cli.config.read_raw_config_readonly", return_value=fake_cfg):
         assert real_sanitized_entry_config("tts") == {
             "smtp": {"host": "mail.example"}, "rules": [{"name": "r1"}], "voice": "nova"}
+
+
+def test_sanitized_entry_config_reads_raw_unexpanded_config():
+    """A ${VAR} reference must export as the literal reference, never the .env value it
+    resolves to — the sanitizer reads the raw file, not the env-expanded merged config."""
+    fake_cfg = {"plugins": {"entries": {"demo": {
+        "endpoint": "https://svc.example.com/hook?t=${MY_SVC_TOKEN}",
+        "headers": {"X-Service": "${MY_SVC_TOKEN}"},
+    }}}}
+    with mock.patch("hermes_cli.config.read_raw_config_readonly", return_value=fake_cfg):
+        assert real_sanitized_entry_config("demo") == {
+            "endpoint": "https://svc.example.com/hook?t=${MY_SVC_TOKEN}",
+            "headers": {"X-Service": "${MY_SVC_TOKEN}"},
+        }
+
+
+def test_sanitized_entry_config_redacts_credential_bearing_values():
+    """A secret hardcoded in a non-secret-named key (e.g. a DSN) is force-redacted even though
+    its key name doesn't match the secret-key pattern."""
+    fake_cfg = {"plugins": {"entries": {"demo": {
+        "dsn": "postgres://admin:hunter2@db.example.com/app",
+    }}}}
+    with mock.patch("hermes_cli.config.read_raw_config_readonly", return_value=fake_cfg):
+        result = real_sanitized_entry_config("demo")
+    assert "hunter2" not in result["dsn"]
+    assert result["dsn"] == "postgres://admin:***@db.example.com/app"
+
+
+def test_sanitized_entry_config_redacts_even_when_redaction_is_disabled(monkeypatch):
+    """``security.redact_secrets: false`` relaxes tool-output redaction, not the pack export: a
+    pack is shared with other people, so the export boundary redacts regardless (force=True)."""
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    fake_cfg = {"plugins": {"entries": {"demo": {
+        "dsn": "postgres://admin:hunter2@db.example.com/app",
+    }}}}
+    with mock.patch("hermes_cli.config.read_raw_config_readonly", return_value=fake_cfg):
+        result = real_sanitized_entry_config("demo")
+    assert result["dsn"] == "postgres://admin:***@db.example.com/app"
 
 
 def test_parse_pack_validates_config_section():
@@ -525,7 +563,7 @@ def test_export_strips_secret_and_capability_config_keys(tmp_path, monkeypatch):
             }
         }
     }
-    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+    with mock.patch("hermes_cli.config.read_raw_config_readonly", return_value=fake_cfg):
         text, _warnings = export_pack()
     assert "sk-super-secret" not in text
     assert "api_key" not in text

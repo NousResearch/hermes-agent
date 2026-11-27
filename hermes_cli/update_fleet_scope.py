@@ -15,8 +15,8 @@ outage.
 
 A runtime is also owned only when it runs the CHECKOUT this update is updating: a worktree's
 update shares the account's homes and units, and used to repoint the live unit at the worktree's
-launcher and restart the gateway another checkout serves. A runtime whose code root is provably
-another checkout is left alone; an unreadable code root falls back to the home rule.
+launcher and restart the gateway another checkout serves. A runtime whose code root is not
+provably this checkout is left alone; a shared home is not proof of code ownership.
 """
 
 from __future__ import annotations
@@ -161,16 +161,31 @@ def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> st
     this update's — labels are account-global, so root B's default profile derives the same bare
     ``ai.hermes.gateway`` root A installed. ``None`` = ours, or no/unreadable plist (the locate step
     decides whether a job exists; only a proven foreign home is refused)."""
-    import plistlib
-    with suppress(Exception):
+    pinned = launchd_label_hermes_home(label)
+    return None if pinned is None or home_in_update_scope(pinned, scope) else pinned
+
+
+def _launchd_label_details(label: str) -> tuple[str | None, set[Path]]:
+    """The pinned home and launched checkout from a label's installed plist."""
+    try:
         from hermes_cli.gateway import get_launchd_plist_path
-        plist_path = get_launchd_plist_path().with_name(f"{label}.plist")
-        if not plist_path.exists():
-            return None
-        data = plistlib.loads(plist_path.read_bytes())
-        pinned = str(data["EnvironmentVariables"]["HERMES_HOME"])
-        return None if home_in_update_scope(pinned, scope) else pinned
-    return None
+        path = get_launchd_plist_path().with_name(f"{label}.plist")
+        data = plistlib.loads(path.read_bytes())
+        env = data.get("EnvironmentVariables")
+        home = env.get("HERMES_HOME") if isinstance(env, dict) else None
+        return (str(home) if home else None), definition_checkout_roots(path)
+    except (OSError, ValueError, KeyError, TypeError, plistlib.InvalidFileException):
+        return None, set()
+
+
+def launchd_label_hermes_home(label: str) -> str | None:
+    """The pinned Hermes home for a loaded launchd label, or None when it is unproven."""
+    return _launchd_label_details(label)[0]
+
+
+def launchd_label_checkout_roots(label: str) -> set[Path]:
+    """The checkout(s) a launchd label's installed plist launches."""
+    return _launchd_label_details(label)[1]
 
 
 # A path inside an argument that is code (``python -I -c "...sys.path.insert(0, '<root>')..."``):
@@ -213,6 +228,11 @@ def _foreign_of(roots: set[Path]) -> str | None:
 
 def gateway_pid_foreign_checkout(pid: int) -> str | None:
     """The other checkout gateway *pid* runs, or None (this update's, or unreadable)."""
+    return _foreign_of(gateway_pid_checkout_roots(pid))
+
+
+def gateway_pid_checkout_roots(pid: int) -> set[Path]:
+    """The Hermes checkout(s) whose code a live gateway process runs, or an empty set if unknown."""
     argv: list[str] = []
     interpreter: list[str] = []
     with suppress(Exception):
@@ -229,54 +249,93 @@ def gateway_pid_foreign_checkout(pid: int) -> str | None:
             if record.get("pid") == pid:
                 # sys.argv: its first item is the resolved module path, i.e. source evidence.
                 argv.extend(str(arg) for arg in record.get("argv") or [])
-    return _foreign_of(_source_checkouts(argv, interpreter))
+    return _source_checkouts(argv, interpreter)
 
 
 def _definition_command(path: Path) -> list[str]:
     if path.suffix == ".plist":
-        args = plistlib.loads(path.read_bytes()).get("ProgramArguments")
-        return [str(arg) for arg in args] if isinstance(args, list) else []
+        data = plistlib.loads(path.read_bytes())
+        args = data.get("ProgramArguments")
+        command = [str(arg) for arg in args] if isinstance(args, list) else []
+        if working_directory := data.get("WorkingDirectory"):
+            command.append(str(working_directory))
+        return command
+    command: list[str] = []
+    working_directory = None
     for line in path.read_text(encoding="utf-8-sig").splitlines():
-        if line.startswith("ExecStart="):
-            return shlex.split(line[len("ExecStart="):].lstrip("-@:+!"))
-    return []
+        if line.startswith("ExecStart=") and not command:
+            command.extend(shlex.split(line[len("ExecStart="):].lstrip("-@:+!")))
+        elif line.startswith("WorkingDirectory="):
+            working_directory = line[len("WorkingDirectory="):].strip()
+    if working_directory:
+        command.append(working_directory)
+    return command
 
 
 def definition_foreign_checkout(path) -> str | None:
     """The other checkout a systemd unit or launchd plist at *path* launches, or None (this
     update's, absent, unreadable, or a command naming no checkout)."""
+    return _foreign_of(definition_checkout_roots(path))
+
+
+def definition_checkout_roots(path) -> set[Path]:
+    """The Hermes checkout(s) a systemd unit or launchd plist at *path* launches."""
     try:
         argv = _definition_command(Path(path))
     except (OSError, ValueError, plistlib.InvalidFileException):
-        return None
-    return _foreign_of(_source_checkouts(argv))
+        return set()
+    return _source_checkouts(argv)
+
+
+def systemd_unit_checkout_roots(scope_cmd: list, svc_name: str) -> set[Path]:
+    """Both the live process and the effective (including drop-ins) launch command must agree."""
+    from hermes_cli.gateway_migrate_backends_host import exec_start_argv
+    from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
+
+    pid = _unit_main_pid(scope_cmd, svc_name)
+    live_roots = gateway_pid_checkout_roots(pid) if pid > 0 else None
+    try:
+        shown = _systemctl(list(scope_cmd) + ["show", svc_name, "--property=ExecStart", "--value"], timeout=10)
+    except Exception:  # health: allow BLE001 -- an unreadable effective definition cannot confer ownership
+        return set()
+    value = (shown.stdout or "").strip() if shown.returncode == 0 else ""
+    if not value.startswith("{ path=") or value.count("argv[]=") != 1:
+        return set()
+    executable = value.removeprefix("{ path=").split(" ;", 1)[0]
+    # The separate path field preserves a launcher path containing spaces. argv supplies the
+    # script path when the executable is Python rather than a launcher belonging to the checkout.
+    definition_roots = _source_checkouts([executable, *exec_start_argv(value)[1:]])
+    if live_roots is None:
+        return definition_roots
+    roots = live_roots | definition_roots
+    if live_roots and definition_roots:
+        return roots
+    from hermes_cli.update_receipt import _updater_code_root
+    # A known foreign checkout vetoes even when the other witness is unavailable.
+    return roots - {_updater_code_root()}
 
 
 def systemd_unit_foreign_checkout(scope_cmd: list, svc_name: str) -> str | None:
     """The other checkout unit *svc_name* runs (its MainPID) or would start (its unit file)."""
-    from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
-
-    pid = _unit_main_pid(scope_cmd, svc_name)
-    if pid > 0 and (foreign := gateway_pid_foreign_checkout(pid)) is not None:
-        return foreign
-    try:
-        shown = _systemctl(list(scope_cmd) + ["show", svc_name, "--property=FragmentPath", "--value"], timeout=10)
-    except Exception:  # health: allow BLE001 -- tri-state probe: unreadable is "unknown", the home rule decides
-        return None
-    fragment = (getattr(shown, "stdout", "") or "").strip() if getattr(shown, "returncode", 1) == 0 else ""
-    return definition_foreign_checkout(fragment) if fragment else None
+    return _foreign_of(systemd_unit_checkout_roots(scope_cmd, svc_name))
 
 
 def launchd_label_skip_notice(label: str, scope: set[Path] | None = None) -> str | None:
     """The left-alone notice for launchd job *label* when this update does not own it (its plist pins
     another home, or launches another checkout), else None. The one ownership decision every launchd
     restart and pause path shares."""
-    if (home := launchd_label_foreign_home(label, scope)) is not None:
+    home = launchd_label_hermes_home(label)
+    if home is None:
+        return describe_skipped_runtime("launchd job", label, None)
+    if not home_in_update_scope(home, scope):
         return describe_skipped_runtime("launchd job", label, home)
-    with suppress(Exception):
-        from hermes_cli.gateway import get_launchd_plist_path
-        if (checkout := definition_foreign_checkout(get_launchd_plist_path().with_name(f"{label}.plist"))) is not None:
-            return describe_skipped_runtime("launchd job", label, None, checkout=checkout)
+    from hermes_cli.update_receipt import _updater_code_root
+    mine = _resolved(_updater_code_root())
+    roots = launchd_label_checkout_roots(label)
+    if mine is None or roots != {mine}:
+        foreign = sorted(roots - ({mine} if mine is not None else set()))
+        return describe_skipped_runtime("launchd job", label, None,
+                                        checkout=str(foreign[0]) if foreign else None)
     return None
 
 
@@ -286,7 +345,7 @@ def describe_skipped_runtime(kind: str, name: str, home: str | None, *, checkout
     if checkout is not None:
         return f"  ↷ {name}: {kind} of another Hermes checkout ({checkout}) — left alone (not restarted)"
     if home is None:
-        return f"  ↷ {name}: {kind} whose Hermes home could not be read — left alone (not restarted)"
+        return f"  ↷ {name}: {kind} ownership could not be proved — left alone (not restarted)"
     return f"  ↷ {name}: {kind} of another Hermes home ({home}) — left alone (not restarted)"
 
 

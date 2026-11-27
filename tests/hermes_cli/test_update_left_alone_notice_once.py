@@ -17,8 +17,9 @@ def test_left_alone_notice_prints_once_across_the_completion_handoff(monkeypatch
     from hermes_cli.update_completion import _resume_receipt
 
     homes = {101: "/srv/other-a/.hermes", 102: "/srv/other-b/.hermes", 103: "/srv/other-c/.hermes"}
-    monkeypatch.setattr(update_fleet_scope, "partition_gateway_pids_by_scope",
-                        lambda pids, scope=None: ([], [(pid, homes[pid]) for pid in pids]))
+    monkeypatch.setattr(update_fleet_scope, "gateway_pid_home", lambda pid: homes[pid])
+    monkeypatch.setattr(update_fleet_scope, "gateway_pid_checkout_roots", lambda _pid: set())
+    monkeypatch.setattr(update_fleet_scope, "home_in_update_scope", lambda *_: False)
 
     update_receipt.begin_update_receipt()
     assert fleet._scoped_manual_gateway_pids([101, 102]) == []  # pause discovery, pre-swap process

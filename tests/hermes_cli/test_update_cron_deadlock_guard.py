@@ -110,8 +110,13 @@ class TestDrainOrSignalTriage:
 
     def _patched(self, monkeypatch, *, ancestor, wedged):
         from hermes_cli import gateway as gw
+        from hermes_cli import update_fleet_scope
+        from hermes_cli.update_receipt import _updater_code_root
 
         calls = {"self_restart": [], "escalate": [], "drain": []}
+        monkeypatch.setattr(update_fleet_scope, "gateway_pid_checkout_roots", lambda _pid: {_updater_code_root()})
+        monkeypatch.setattr(update_fleet_scope, "gateway_pid_home", lambda _pid: "/srv/current/.hermes")
+        monkeypatch.setattr(update_fleet_scope, "home_in_update_scope", lambda *_: True)
         monkeypatch.setattr(
             gw, "_is_pid_ancestor_of_current_process", lambda pid: ancestor
         )

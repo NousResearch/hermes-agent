@@ -707,8 +707,8 @@ def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: 
     return run_unit_job(manage_cmd, scope_cmd, "restart", svc_name, timeout=timeout)
 
 
-def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
-    """Gate a unit restart on the unit's home being one this update owns (#93349).
+def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str, *, announce: bool = True) -> bool:
+    """Gate a unit restart on its home and code both belonging to this update (#93349).
 
     ``hermes-gateway*`` is an account-wide namespace: a second install's ``hermes update`` used
     to drain and restart the account's real ``hermes-gateway.service`` because the unit was
@@ -716,32 +716,44 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
     and leaves the unit alone; it is not a failed restart.
     """
     from hermes_cli.update_fleet_scope import (
-        announce_skipped_runtime, home_in_update_scope, systemd_unit_foreign_checkout, systemd_unit_hermes_home,
+        announce_skipped_runtime, home_in_update_scope, systemd_unit_checkout_roots, systemd_unit_hermes_home,
     )
+    from hermes_cli.update_receipt import _updater_code_root
     home = systemd_unit_hermes_home(scope_cmd, svc_name)
-    checkout = systemd_unit_foreign_checkout(scope_cmd, svc_name) if home is not None else None
-    if home is not None and checkout is None and home_in_update_scope(home):
+    mine = _updater_code_root()
+    roots = systemd_unit_checkout_roots(scope_cmd, svc_name)
+    if home is not None and home_in_update_scope(home) and mine is not None and roots == {mine}:
         return True
-    announce_skipped_runtime("systemd unit", svc_name, home, checkout=checkout)
+    foreign = sorted(roots - ({mine} if mine is not None else set()))
+    foreign_home = home if home is not None and not home_in_update_scope(home) else None
+    if announce:
+        announce_skipped_runtime("systemd unit", svc_name, foreign_home,
+                                 checkout=str(foreign[0]) if foreign else None)
     return False
 
 
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
-    """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
-    install's profile PID files); every other gateway process is named and left running."""
+    """*pids* whose live home and code this update owns; every other gateway is left running."""
     from hermes_cli.update_fleet_scope import (
-        announce_skipped_runtime, gateway_pid_foreign_checkout, partition_gateway_pids_by_scope,
+        announce_skipped_runtime, gateway_pid_checkout_roots, gateway_pid_home, home_in_update_scope,
     )
+    from hermes_cli.update_receipt import _updater_code_root
     keep = set(keep)
-    owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
-    # Same home is not same install: a gateway running another checkout is not this update's.
-    other_checkout = {pid: root for pid in [*keep, *owned] if (root := gateway_pid_foreign_checkout(pid))}
-    if not quiet:
-        for pid, home in foreign:
-            announce_skipped_runtime("gateway process", f"PID {pid}", home)
-        for pid, root in other_checkout.items():
-            announce_skipped_runtime("gateway process", f"PID {pid}", None, checkout=root)
-    return [pid for pid in pids if (pid in keep or pid in owned) and pid not in other_checkout]
+    mine = _updater_code_root()
+    owned: list[int] = []
+    for pid in pids:
+        home = gateway_pid_home(pid)
+        roots = gateway_pid_checkout_roots(pid)
+        home_owned = (home is not None and home_in_update_scope(home)) or (pid in keep and home is None)
+        if home_owned and mine is not None and roots == {mine}:
+            owned.append(pid)
+            continue
+        foreign = sorted(roots - ({mine} if mine is not None else set()))
+        foreign_home = home if home is not None and not home_in_update_scope(home) else None
+        if not quiet:
+            announce_skipped_runtime("gateway process", f"PID {pid}", foreign_home,
+                                     checkout=str(foreign[0]) if foreign else None)
+    return owned
 
 
 def _is_serve_or_dashboard_unit(unit: str) -> bool:
@@ -1152,11 +1164,20 @@ def _drain_or_signal_gateway_for_update(
         GATEWAY_LOOP_WEDGED, _escalate_wedged_gateway, _graceful_restart_via_sigusr1,
         _is_pid_ancestor_of_current_process, _request_gateway_self_restart, probe_gateway_loop_liveness,
     )
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, gateway_pid_foreign_checkout
-    if (checkout := gateway_pid_foreign_checkout(pid)) is not None:
-        # Every caller funnels here, the ancestor case included: an update from a worktree whose shell
-        # descends from the live gateway used to SIGUSR1 a gateway serving another checkout.
-        announce_skipped_runtime("gateway process", label, None, checkout=checkout)
+    from hermes_cli.update_fleet_scope import (
+        announce_skipped_runtime, gateway_pid_checkout_roots, gateway_pid_home, home_in_update_scope,
+    )
+    from hermes_cli.update_receipt import _updater_code_root
+    roots = gateway_pid_checkout_roots(pid)
+    mine = _updater_code_root()
+    home = gateway_pid_home(pid)
+    if mine is None or roots != {mine} or home is None or not home_in_update_scope(home):
+        # Every caller funnels here, the ancestor case included: home alone must not let a worktree
+        # drain or signal a gateway running another checkout (or one whose checkout is unknown).
+        foreign = sorted(roots - ({mine} if mine is not None else set()))
+        foreign_home = home if home is not None and not home_in_update_scope(home) else None
+        announce_skipped_runtime("gateway process", label, foreign_home,
+                                 checkout=str(foreign[0]) if foreign else None)
         return False
     if _is_pid_ancestor_of_current_process(pid):
         print(

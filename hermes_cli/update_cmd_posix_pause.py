@@ -142,6 +142,8 @@ def _discover_systemd() -> list[dict]:
         _for_each_systemd_gateway_unit, _systemd_gateway_unit_listings, _systemd_unit_owned_by_update,
         _unit_main_pid,
     )
+    from hermes_cli.update_fleet_scope import systemd_unit_hermes_home
+    from hermes_cli.update_receipt import _updater_code_root
     if not supports_systemd_services():
         return []
     with suppress(Exception):
@@ -160,7 +162,8 @@ def _discover_systemd() -> list[dict]:
                 continue
             seen_pids.add(pid)  # a legacy per-profile unit sharing the multiplexer's PID is one process
             units.append({"kind": "systemd", "scope": scope, "unit": name, "pid": pid,
-                          "cgroup": _unit_cgroup(scope_cmd, name), "home": _home_of(pid)})
+                          "cgroup": _unit_cgroup(scope_cmd, name), "home": systemd_unit_hermes_home(scope_cmd, name),
+                          "checkout_root": str(_updater_code_root())})
     return units
 
 
@@ -172,7 +175,8 @@ def _discover_launchd() -> list[dict]:
         _locate_launchd_gateway_service, get_launchd_plist_path, launchd_gateway_labels_for_install,
         legacy_launchd_labels_for_install,
     )
-    from hermes_cli.update_fleet_scope import launchd_label_skip_notice
+    from hermes_cli.update_fleet_scope import launchd_label_hermes_home, launchd_label_skip_notice
+    from hermes_cli.update_receipt import _updater_code_root
     derived = launchd_gateway_labels_for_install()
     jobs = []
     for label in derived + legacy_launchd_labels_for_install(exclude=set(derived)):
@@ -183,7 +187,7 @@ def _discover_launchd() -> list[dict]:
             continue
         plist = get_launchd_plist_path().with_name(f"{label}.plist")
         jobs.append({"kind": "launchd", "label": label, "domain": domain, "plist": str(plist), "pid": int(pid),
-                     "home": _home_of(int(pid))})
+                     "home": launchd_label_hermes_home(label), "checkout_root": str(_updater_code_root())})
     return jobs
 
 
@@ -245,6 +249,7 @@ def _discover_bare(service_pids: set[int]) -> tuple[list[dict], list[str]]:
     from hermes_cli.gateway import _capture_gateway_argv, _get_service_pids, find_gateway_pids
     from hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
     from hermes_cli.update_fleet_scope import gateway_pid_home
+    from hermes_cli.update_receipt import _updater_code_root
     exclude = set(service_pids) | set(_get_service_pids(all_profiles=True))
     pids = _scoped_manual_gateway_pids(find_gateway_pids(exclude_pids=exclude, all_profiles=True))
     bare, notices = [], []
@@ -257,7 +262,8 @@ def _discover_bare(service_pids: set[int]) -> tuple[list[dict], list[str]]:
                 else "its Hermes home could not be proved"
             notices.append(f"  ↷ gateway PID {pid} keeps running until after the update ({why})")
             continue
-        bare.append({"pid": pid, "argv": list(argv), "home": str(home), "ct": get_process_start_time(pid)})
+        bare.append({"pid": pid, "argv": list(argv), "home": str(home), "ct": get_process_start_time(pid),
+                     "checkout_root": str(_updater_code_root())})
     return bare, notices
 
 
@@ -736,14 +742,123 @@ def _abort_unsettled(token: dict, why: str) -> str:
 
 # --------------------------------------------------------------------------- resume
 
+def _same_resolved_path(left, right) -> bool:
+    try:
+        return Path(str(left)).expanduser().resolve() == Path(str(right)).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _foreign_checkout(roots, mine) -> str | None:
+    foreign = sorted(roots - ({mine} if mine is not None else set()))
+    return str(foreign[0]) if foreign else None
+
+
+def _systemd_resume_ownership(entry: dict) -> tuple[bool, str | None, str | None]:
+    """Return whether a paused unit is still ours, plus any provable foreign identity."""
+    from hermes_cli.update_cmd_fleet import _systemd_unit_owned_by_update
+    from hermes_cli.update_fleet_scope import (
+        home_in_update_scope, systemd_unit_checkout_roots, systemd_unit_hermes_home,
+    )
+    from hermes_cli.update_receipt import _updater_code_root
+
+    scope_cmd = _scope_cmd(entry)
+    name = entry.get("unit", "")
+    home = systemd_unit_hermes_home(scope_cmd, name)
+    roots = systemd_unit_checkout_roots(scope_cmd, name)
+    mine = _updater_code_root()
+    if home is None:
+        return False, None, _foreign_checkout(roots, mine)
+    if not home_in_update_scope(home):
+        return False, home, None
+    if entry.get("checkout_root") is not None:
+        if mine is None or not _same_resolved_path(entry["checkout_root"], mine):
+            return False, None, entry.get("checkout_root")
+        if not entry.get("home") or not _same_resolved_path(entry["home"], home):
+            return False, None, _foreign_checkout(roots, mine)
+        if roots != {mine}:
+            return False, None, _foreign_checkout(roots, mine)
+        return True, None, None
+    if _systemd_unit_owned_by_update(scope_cmd, name, announce=False):
+        return True, None, None
+    return False, None, _foreign_checkout(roots, mine)
+
+
+def _launchd_resume_ownership(entry: dict) -> tuple[bool, str | None, str | None]:
+    """Return whether a paused launchd job is still ours, plus any provable foreign identity."""
+    from hermes_cli.update_fleet_scope import (
+        home_in_update_scope, launchd_label_checkout_roots, launchd_label_hermes_home,
+        launchd_label_skip_notice,
+    )
+    from hermes_cli.update_receipt import _updater_code_root
+
+    label = entry.get("label", "")
+    home = launchd_label_hermes_home(label)
+    roots = launchd_label_checkout_roots(label)
+    mine = _updater_code_root()
+    if home is None:
+        return False, None, _foreign_checkout(roots, mine)
+    if not home_in_update_scope(home):
+        return False, home, None
+    if entry.get("checkout_root") is not None:
+        if mine is None or not _same_resolved_path(entry["checkout_root"], mine):
+            return False, None, entry.get("checkout_root")
+        if not entry.get("home") or not _same_resolved_path(entry["home"], home):
+            return False, None, _foreign_checkout(roots, mine)
+        if roots != {mine}:
+            return False, None, _foreign_checkout(roots, mine)
+        return True, None, None
+    if launchd_label_skip_notice(label) is None:
+        return True, None, None
+    return False, None, _foreign_checkout(roots, mine)
+
+
+def _bare_resume_ownership(entry: dict) -> tuple[bool, str | None, str | None]:
+    """A bare gateway is replayed only from a recorded argv for this checkout and home."""
+    from hermes_cli.update_fleet_scope import _source_checkouts, home_in_update_scope
+    from hermes_cli.update_receipt import _updater_code_root
+
+    home = entry.get("home")
+    mine = _updater_code_root()
+    roots = _source_checkouts(entry.get("argv") or [])
+    if home is not None and not home_in_update_scope(home):
+        return False, str(home), None
+    if mine is None:
+        return False, None, _foreign_checkout(roots, mine)
+    if entry.get("checkout_root") is not None and not _same_resolved_path(entry["checkout_root"], mine):
+        return False, None, str(entry["checkout_root"])
+    if roots != {mine}:
+        return False, None, _foreign_checkout(roots, mine)
+    if home is None or not roots and entry.get("checkout_root") is None:
+        return False, None, None
+    return True, None, None
+
+
 def resume_paused_set(token: dict) -> None:
-    """Start every paused runtime again; each leaves *token* only on its own verified start."""
+    """Resume only paused runtimes proven to belong to this checkout."""
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime
+
     failures: list[str] = []
     restarted: list[str] = []
     kept_units = []
     for entry in token.get("posix_units") or []:
+        kind = entry.get("kind")
+        if kind == "launchd":
+            name = entry.get("label", "unknown launchd job")
+            owned, home, checkout = _launchd_resume_ownership(entry)
+            runtime_kind = "launchd job"
+        else:
+            name = entry.get("unit", "unknown systemd unit")
+            owned, home, checkout = _systemd_resume_ownership(entry)
+            runtime_kind = "systemd unit"
+        if not owned:
+            announce_skipped_runtime(runtime_kind, name, home, checkout=checkout)
+            if home is None and checkout is None:
+                failures.append(f"{name}: ownership could not be proved; pause evidence remains open")
+                kept_units.append(entry)
+            continue
         try:
-            if entry.get("kind") == "launchd":
+            if kind == "launchd":
                 _start_job(entry)
                 _RESTARTED["labels"].add(entry["label"])
                 name = entry["label"]
@@ -760,6 +875,14 @@ def resume_paused_set(token: dict) -> None:
     kept_bare = []
     for entry in token.get("unmapped") or []:
         if not entry.get("argv"):
+            continue
+        name = f"gateway PID {entry.get('pid', 'unknown')}"
+        owned, home, checkout = _bare_resume_ownership(entry)
+        if not owned:
+            announce_skipped_runtime("gateway process", name, home, checkout=checkout)
+            if home is None and checkout is None:
+                failures.append(f"{name}: ownership could not be proved; pause evidence remains open")
+                kept_bare.append(entry)
             continue
         try:
             new_pid = _relaunch_bare(entry)

@@ -26,6 +26,7 @@ import pytest
 
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import update_cmd
+from hermes_cli import update_fleet_scope, update_receipt
 
 LABEL = "ai.hermes.gateway"
 
@@ -173,6 +174,13 @@ def _patch_launchd_env(
     monkeypatch.setattr(
         gateway_cli, "launchd_gateway_labels_for_install", lambda: [LABEL]
     )
+    # This file tests restart verification, not ownership discovery; its own-checkout control
+    # is exercised with the same contract as the real label helpers.
+    mine = update_receipt._updater_code_root()
+    assert mine is not None
+    monkeypatch.setattr(update_fleet_scope, "launchd_label_hermes_home", lambda _label: "/home/test/.hermes")
+    monkeypatch.setattr(update_fleet_scope, "launchd_label_checkout_roots", lambda _label: {mine})
+    monkeypatch.setattr(update_fleet_scope, "home_in_update_scope", lambda *_args: True)
     # The gateway under test is never this updater's ancestor; a real ancestry walk would make it one
     # whenever a fake pid (4242) happens to be a live ancestor of the worker on the host.
     monkeypatch.setattr(

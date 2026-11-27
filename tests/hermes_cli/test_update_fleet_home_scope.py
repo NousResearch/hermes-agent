@@ -17,6 +17,8 @@ import pytest
 
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import dashboard_procs
+from hermes_cli import update_fleet_scope as fleet_scope
+from hermes_cli.update_receipt import _updater_code_root
 
 FOREIGN_HOME = "/srv/other-account-home/.hermes"
 
@@ -41,6 +43,11 @@ def test_systemd_unit_of_another_home_is_left_alone(monkeypatch, own_home):
     homes = {4242: FOREIGN_HOME, 4343: str(own_home)}
     _pid_homes(monkeypatch, homes)
     main_pid = {"value": 4242}
+    mine = _updater_code_root()
+    assert mine is not None
+    other = own_home.parent / "other-checkout"
+    monkeypatch.setattr(fleet_scope, "systemd_unit_checkout_roots",
+                        lambda _cmd, _name: {mine} if main_pid["value"] == 4343 else {other})
     write_verbs: list[list[str]] = []
 
     def fake_systemctl(cmd, *, timeout):
@@ -79,6 +86,11 @@ def test_manual_gateway_of_another_home_is_not_stopped(monkeypatch, own_home):
     """Of two ``gateway run`` processes on the host, only the one on the updating home is SIGTERMed;
     a process whose home cannot be read is spared as well."""
     _pid_homes(monkeypatch, {111: str(own_home), 222: FOREIGN_HOME, 333: None})
+    mine = _updater_code_root()
+    assert mine is not None
+    other = own_home.parent / "other-checkout"
+    monkeypatch.setattr(fleet_scope, "gateway_pid_checkout_roots",
+                        lambda pid: {111: {mine}, 222: {other}, 333: set()}[pid])
     monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda **k: set())
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [111, 222, 333])
     monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda **k: [])

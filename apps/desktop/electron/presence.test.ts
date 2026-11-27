@@ -36,7 +36,11 @@ function harness({ supported = true, windows = [new FakeWindow()], platform = 'l
   attachPresenceSource({
     app,
     ipc: { handle: (channel: string, handler: () => unknown) => void handlers.set(channel, handler) } as never,
-    monitor: { getSystemIdleState: () => idleState, getSystemIdleTime, on: (event, listener) => power.on(event, listener) },
+    monitor: {
+      getSystemIdleState: () => idleState,
+      getSystemIdleTime,
+      on: (event, listener) => power.on(event, listener)
+    },
     platform,
     supported: supported === 'platform' ? undefined : supported,
     windows
@@ -83,7 +87,9 @@ describe('attachPresenceSource', () => {
     presence.idleFor(120)
     presence.tick(30)
     presence.tick(15, { input: true })
-    expect(window.sent).toEqual([expect.objectContaining({ system: true, idleSeconds: 0, locked: false, suspended: false })])
+    expect(window.sent).toEqual([
+      expect.objectContaining({ system: true, idleSeconds: 0, locked: false, suspended: false })
+    ])
 
     presence.tick(30, { input: true })
     expect(window.sent).toHaveLength(1)

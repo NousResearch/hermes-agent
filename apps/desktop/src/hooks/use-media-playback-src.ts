@@ -31,7 +31,8 @@ export function useMediaPlaybackSrc(path: string) {
 
   // A transcript in a background tile streams through the tile's owner, not the foreground.
   const owner = useMemo(
-    () => (scope.connectionId || scope.profile ? { connectionId: scope.connectionId, profile: scope.profile } : undefined),
+    () =>
+      scope.connectionId || scope.profile ? { connectionId: scope.connectionId, profile: scope.profile } : undefined,
     [scope.connectionId, scope.profile]
   )
 
@@ -148,8 +149,7 @@ export function useMediaPlaybackSrc(path: string) {
         forgetPlaybackSrc(cacheKey)
       }
 
-      const realFailure =
-        neverLoaded && !reused && (element.preload !== 'none' || retriedSrc.current === failing)
+      const realFailure = neverLoaded && !reused && (element.preload !== 'none' || retriedSrc.current === failing)
 
       if (failing.startsWith('blob:') || realFailure) {
         fail()

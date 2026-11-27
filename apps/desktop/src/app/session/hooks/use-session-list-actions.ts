@@ -541,11 +541,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // a newer switch owns its wipe-raised barrier. Switch generation, not
         // activation epoch, preserves release after a failed source activation;
         // an explicit owner predicate can still revoke that right.
-        if (
-          shouldPublish() &&
-          refreshSessionsRequestRef.current === requestId &&
-          isCurrentGatewaySwitch(switchToken)
-        ) {
+        if (shouldPublish() && refreshSessionsRequestRef.current === requestId && isCurrentGatewaySwitch(switchToken)) {
           setSessionsLoading(false)
         }
       }

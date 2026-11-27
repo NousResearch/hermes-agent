@@ -931,7 +931,14 @@ export function useComposerActions({
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles, copy.dropFilesMore]
+    [
+      attachContextFilePath,
+      attachContextFolderPath,
+      attachImageBlob,
+      attachImagePath,
+      copy.dropFiles,
+      copy.dropFilesMore
+    ]
   )
 
   const removeAttachment = useCallback(

@@ -23,11 +23,13 @@ async function setup() {
   let token = 0
   let waits = 0
   const capture = vi.fn(() => captured.promise)
+
   const rendered = render(
     <PreviewPane
       target={{ kind: 'url', label: 'Preview', source: 'https://example.com', url: 'https://example.com' }}
     />
   )
+
   const webview = rendered.container.querySelector('webview')!
   Object.assign(webview, {
     getWebContentsId: () => 42,

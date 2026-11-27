@@ -100,11 +100,7 @@ function openGatedWindow(target: URL): Promise<{ ok: true }> {
  * until the handoff expires: a window that starts late, or one the user opens from the browser's
  * blocked-popup prompt, still signs in.
  */
-function openLaunchLinkWindow(
-  target: URL,
-  api: BrowserWindowOptions['api'],
-  basePath: string
-): Promise<{ ok: true }> {
+function openLaunchLinkWindow(target: URL, api: BrowserWindowOptions['api'], basePath: string): Promise<{ ok: true }> {
   const id = randomUuid()
   const channel = new BroadcastChannel(WINDOW_CHANNEL_PREFIX + id)
   const launch = new URL(`${basePath}/webapp/window`, window.location.origin)
@@ -119,7 +115,11 @@ function openLaunchLinkWindow(
     const settle = (error?: Error) => {
       window.clearTimeout(deadline)
 
-      if (error) {reject(error)} else {resolve({ ok: true })}
+      if (error) {
+        reject(error)
+      } else {
+        resolve({ ok: true })
+      }
     }
 
     const close = (error?: Error) => {
@@ -133,20 +133,30 @@ function openLaunchLinkWindow(
     const expiry = window.setTimeout(() => close(blocked), LATE_WINDOW_MS)
 
     channel.onmessage = event => {
-      if (closed) {return}
+      if (closed) {
+        return
+      }
 
       if (event.data?.type === 'ready' && !minting) {
         minting = true
         window.clearTimeout(deadline)
         dismissNotification(blocked.notificationId)
-        void api<{ ticket: string }>({ method: 'POST', path: '/api/webapp/window-ticket' }).then(({ ticket }) => {
-          if (closed) {return}
-          channel.postMessage({ ticket })
-        }).catch(error => {
-          if (closed) {return}
-          channel.postMessage({ error: 'Could not authorize this window. Try opening it again from the original tab.' })
-          close(asError(error))
-        })
+        void api<{ ticket: string }>({ method: 'POST', path: '/api/webapp/window-ticket' })
+          .then(({ ticket }) => {
+            if (closed) {
+              return
+            }
+            channel.postMessage({ ticket })
+          })
+          .catch(error => {
+            if (closed) {
+              return
+            }
+            channel.postMessage({
+              error: 'Could not authorize this window. Try opening it again from the original tab.'
+            })
+            close(asError(error))
+          })
       } else if (event.data?.type === 'done') {
         close()
       } else if (event.data?.type === 'error') {
@@ -171,11 +181,15 @@ export function announceWebappWindow(): void {
   const url = new URL(window.location.href)
   const id = url.searchParams.get(HELLO_PARAM)
 
-  if (id === null) {return}
+  if (id === null) {
+    return
+  }
   url.searchParams.delete(HELLO_PARAM)
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
 
-  if (!UUID_PATTERN.test(id)) {return}
+  if (!UUID_PATTERN.test(id)) {
+    return
+  }
   const channel = new BroadcastChannel(HELLO_CHANNEL_PREFIX + id)
   channel.postMessage({ type: 'ready' })
   channel.close()
@@ -189,7 +203,9 @@ export function sessionWindowTarget(
 ): URL | null {
   const id = sessionId.trim()
 
-  if (!id) {return null}
+  if (!id) {
+    return null
+  }
   const target = new URL(currentHref)
   target.searchParams.set('win', 'secondary')
 

@@ -85,7 +85,7 @@ it('/save renders through session.export and Ink writes the file itself (T10)', 
   }
 })
 
-it('/save resolves a relative name in the user\'s folder, not the install cwd Node runs in', async () => {
+it("/save resolves a relative name in the user's folder, not the install cwd Node runs in", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'ink-save-cwd-'))
 
   try {
@@ -154,7 +154,7 @@ it('/reload calls reload.env for this session on the shared gateway and reports 
   expect(notices(sys)).toContain('reloaded .env (2 vars updated)')
 })
 
-it('/agents pause and resume call delegation.pause on the shared gateway with main\'s notices', async () => {
+it("/agents pause and resume call delegation.pause on the shared gateway with main's notices", async () => {
   const { request, slash, sys } = harness({ 'delegation.pause': { paused: true } })
 
   slash('/agents pause')
@@ -170,9 +170,12 @@ it('/agents pause and resume call delegation.pause on the shared gateway with ma
   expect(notices(sys)).toEqual(['delegation · paused', 'delegation · resumed'])
 })
 
-it('/rollback list, diff and restore call the owner\'s rollback verbs with main\'s rendering', async () => {
+it("/rollback list, diff and restore call the owner's rollback verbs with main's rendering", async () => {
   const { page, panel, request, setHistoryItems, slash, sys } = harness({
-    'rollback.list': { enabled: true, checkpoints: [{ hash: 'abcdef1234567', timestamp: 't1', message: 'before write_file' }] },
+    'rollback.list': {
+      enabled: true,
+      checkpoints: [{ hash: 'abcdef1234567', timestamp: 't1', message: 'before write_file' }]
+    },
     'rollback.diff': { stat: ' a.txt | 2 +-', diff: '-old\n+new' },
     'rollback.restore': { success: true, reason: 'before write_file', history_removed: 2 }
   })
@@ -210,7 +213,7 @@ it('/rollback list, diff and restore call the owner\'s rollback verbs with main\
   expect(setHistoryItems).toHaveBeenCalled()
 })
 
-it('/rollback restore names the hand-edits it kept, oversize skips and failed deletions, as main\'s CLI does', async () => {
+it("/rollback restore names the hand-edits it kept, oversize skips and failed deletions, as main's CLI does", async () => {
   const { slash, sys } = harness({
     'rollback.restore': {
       failed_deletes: ['locked.txt'],

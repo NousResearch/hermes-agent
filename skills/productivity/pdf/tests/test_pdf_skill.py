@@ -88,6 +88,57 @@ def test_extract_tables(report_pdf: Path, workdir: Path):
     assert csv_files and "Region" in csv_files[0].read_text(encoding="utf-8")
 
 
+def _first_table_column_gaps(pdf_path: Path) -> list[float]:
+    """Column widths of the first table on page 1, from vertical grid lines."""
+    import re
+    from pypdf import PdfReader
+
+    content = PdfReader(str(pdf_path)).pages[0].get_contents().get_data().decode("latin-1")
+    xs = sorted(
+        {
+            float(x)
+            for x, y0, x1, y1 in re.findall(r"([\d.]+) ([\d.]+) m ([\d.]+) ([\d.]+) l", content)
+            if x == x1 and abs(float(y1) - float(y0)) > 5
+        }
+    )
+    from itertools import pairwise
+
+    return [round(b - a, 1) for a, b in pairwise(xs)]
+
+
+def test_create_table_col_widths(workdir: Path):
+    spec = {
+        "title": "Column widths",
+        "elements": [
+            {"type": "table", "header": True, "col_widths": [40, 200, 60],
+             "rows": [["Pos", "Description", "Qty"], ["1", "filter cartridge", "2"]]},
+        ],
+    }
+    spec_path = workdir / "colwidths_spec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    out = workdir / "colwidths.pdf"
+    run("pdf_create.py", str(spec_path), "-o", str(out))
+    assert out.exists() and out.stat().st_size > 500
+    assert _first_table_column_gaps(out) == [40.0, 200.0, 60.0]
+
+
+def test_create_table_col_widths_invalid_falls_back(workdir: Path):
+    spec = {
+        "title": "Too wide",
+        "elements": [
+            {"type": "table", "header": True, "col_widths": [200, 200, 200],
+             "rows": [["A", "B", "C"], ["1", "2", "3"]]},
+        ],
+    }
+    spec_path = workdir / "colwidths_wide_spec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    out = workdir / "colwidths_wide.pdf"
+    proc = run("pdf_create.py", str(spec_path), "-o", str(out))
+    assert "col_widths" in proc.stderr and "printable width" in proc.stderr
+    gaps = _first_table_column_gaps(out)
+    assert gaps and all(g < 200 for g in gaps)  # fell back to automatic widths
+
+
 @pytest.fixture(scope="module")
 def form_pdf(workdir: Path) -> Path:
     from reportlab.lib.pagesizes import A4

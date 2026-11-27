@@ -150,6 +150,16 @@ def catalog_platform_names() -> frozenset[str]:
     return frozenset(e.name for e in load_catalog() if e.category == "platform" and e.tier in CATALOG_TIERS)
 
 
+@functools.cache
+def left_core_platform_names() -> frozenset[str]:
+    """Catalog plugins that took over a platform core shipped (``LEFT_CORE`` rows): their names stay public
+    whichever lands first, the core removal or the plugin's in-tree catalog entry, so rows an older release
+    saved still package and the migrated plugin is still named."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+
+    return frozenset(feature.plugin for feature in LEFT_CORE if feature.platform)
+
+
 def platform_metric_name(raw: object, core: frozenset[str]) -> str:
     """A messaging platform's public name: a core or bundled platform's own name, the catalog entry
     name of the installed catalog plugin that registered it, else ``plugin``. ``core`` is the
@@ -187,7 +197,7 @@ def _catalog_platform_owner(home: str, platform: str) -> str | None:
         row = row if isinstance(row, dict) else {}
         block = row.get("catalog")
         name = _norm(block.get("name") if isinstance(block, dict) else row.get("catalog_name"))
-        return name if name in _safe(catalog_platform_names) else None
+        return name if name in _safe(catalog_platform_names) | _safe(left_core_platform_names) else None
     except Exception:
         logger.debug("Shared-metrics platform provenance unavailable", exc_info=True)
         return None

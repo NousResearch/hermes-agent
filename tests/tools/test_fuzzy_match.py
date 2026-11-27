@@ -94,6 +94,43 @@ class TestWhitespaceDifference:
         assert "XY" in new and "bar" in new
 
 
+class TestWrappedProse:
+    """Regression for #160567: hard wrapping must not hide a precise prose match."""
+
+    @pytest.mark.parametrize("separator", ["\n    ", "\r\n\t", " \n  \t"])
+    @pytest.mark.parametrize("boundary_spaces", [False, True])
+    def test_replacement_preserves_text_outside_wrapped_span(self, separator, boundary_spaces):
+        prefix = "# Notes\r\n\r\n- \t "
+        suffix = "  \t remains unchanged.\r\n\r\nEnd.\r\n"
+        region = "Keep the original" + separator + "sentence intact."
+        old = "Keep the original sentence intact."
+        if boundary_spaces:
+            prefix += "["
+            suffix = "]" + suffix
+            region = "  " + region + "\t "
+            old = " " + old + " "
+        content = prefix + region + suffix
+        out, count, _, err = fuzzy_find_and_replace(content, old, "Updated sentence.")
+        assert err is None
+        assert count == 1
+        assert out.encode() == (prefix + "Updated sentence." + suffix).encode()
+
+    def test_repeated_wrapped_sentences_require_explicit_replace_all(self):
+        first = "Keep the original\n    sentence intact."
+        second = "Keep the\r\n\toriginal sentence intact."
+        prefix, middle, suffix = "- ", "\n\n- ", "  tail\n"
+        content = prefix + first + middle + second + suffix
+        old = "Keep the original sentence intact."
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, "Updated.")
+        assert out == content
+        assert count == 0 and strategy is None
+        assert err is not None and "Found 2 matches" in err
+
+        out, count, _, err = fuzzy_find_and_replace(content, old, "Updated.", replace_all=True)
+        assert err is None and count == 2
+        assert out == prefix + "Updated." + middle + "Updated." + suffix
+
+
 class TestIndentDifference:
     def test_different_indentation(self):
         content = "    def foo():\n        pass"

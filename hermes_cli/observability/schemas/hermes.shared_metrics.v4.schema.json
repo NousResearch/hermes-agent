@@ -3076,6 +3076,7 @@
                 "none",
                 "trimmed_boundary",
                 "unicode_normalized",
+                "whitespace_collapsed",
                 "whitespace_normalized"
               ]
             },

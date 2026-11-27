@@ -90,6 +90,75 @@ def test_a_fresh_home_installs_nothing(tmp_path):
     assert calls == []
 
 
+_ENABLED_ONLY = "platforms:\n  wecom:\n    enabled: true\n"
+
+
+def _migrate_config(home: Path) -> None:
+    from hermes_cli.config import migrate_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        migrate_config(interactive=False, quiet=True)
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.parametrize(("env", "config"), [(_BOT_ENV, ""), (_CALLBACK_ENV, ""), ("", _ENABLED_ONLY)],
+                         ids=["bot", "callback", "enabled-only"])
+def test_an_upgrade_crossing_v55_still_installs_the_plugin(tmp_path, monkeypatch, env, config):
+    """`hermes update` migrates config.yaml past v55 before the left-core pass: the shared v55 step records that
+    the home ran WeCom (either mode) in core, so the pass still installs the plugin once."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    home = _home(tmp_path, env=env, config="_config_version: 54\n" + config)
+    _migrate_config(home)
+    import hermes_yaml as yaml
+    stamped = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert stamped["_config_version"] >= 55 and stamped["_left_core_used"] == ["wecom"]
+    installed = lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True)
+                                 or {"ok": True}, say=lambda _m: None)
+    assert installed == ["wecom"]
+
+
+@pytest.mark.parametrize(("env", "config"), [("", _ENABLED_ONLY), (_BOT_ENV, ""), (_CALLBACK_ENV, ""),
+                                             (_BOT_ENV + _CALLBACK_ENV, "")],
+                         ids=["enabled-only", "bot", "callback", "both-modes"])
+def test_a_home_from_v55_on_that_sets_wecom_up_is_told_the_install_command(tmp_path, env, config):
+    """Labs code is installed only when asked: a home that never ran core's WeCom gets one line naming
+    `hermes plugins install wecom` (one, even with both modes set up), and nothing is installed or written."""
+    home = _home(tmp_path, env=env, config="_config_version: 55\n" + config)
+    before = (home / "config.yaml").read_bytes()
+    said = []
+    assert lcm.migrate_home(home, install=lambda name: pytest.fail("Labs code is installed only when asked"),
+                            say=said.append) == []
+    assert len(said) == 1 and "hermes plugins install wecom" in said[0]
+    assert (home / "config.yaml").read_bytes() == before
+
+
+def test_the_wecom_card_installs_the_labs_plugin_once_wecom_is_set_up(monkeypatch):
+    """The explicit choice besides the command: the platform card's install route takes the Labs entry once
+    this home has WeCom (here callback mode) set up, and refuses it before."""
+    import hermes_cli.plugins_cmd_install as pci
+    from hermes_cli import plugin_catalog
+    from hermes_cli.catalog_platform_listing import install_catalog_platform
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    from hermes_constants import get_hermes_home
+
+    entry = PluginCatalogEntry(name="wecom", repo="https://github.com/NousResearch/hermes-labs-plugins",
+                               sha="1" * 40, description="WeCom.", maintainer="Nous Research", tier="community",
+                               category="platform")
+    monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: [entry])
+    monkeypatch.setattr(plugin_catalog, "load_catalog", lambda *a, **k: [entry])
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    asked = []
+    monkeypatch.setattr(pci, "dashboard_install_plugin",
+                        lambda *a, **k: asked.append(k["catalog_name"]) or {"ok": True, "plugin_name": "wecom"})
+    home = get_hermes_home()
+    (home / "config.yaml").write_text("_config_version: 55\n", encoding="utf-8")
+    assert install_catalog_platform("wecom")["ok"] is False and asked == []
+    (home / ".env").write_text(_CALLBACK_ENV, encoding="utf-8")
+    assert install_catalog_platform("wecom")["ok"] is True and asked == ["wecom"]
+
+
 @pytest.fixture
 def _plugin_platform():
     """A throwaway plugin PlatformEntry, removed after the test."""

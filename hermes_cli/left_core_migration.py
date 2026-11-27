@@ -814,7 +814,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         left_at=55, labs=True,  # a home that cannot prove it ran core's DingTalk is told the install command
     ),
     # One plugin ships both WeCom platforms, so two rows share ``plugin``: whichever a home uses installs
-    # it once (the install marker is per plugin). ``hermes-wecom`` / ``hermes-wecom-callback`` carried
+    # it once (the install and v55 use markers are per plugin). ``hermes-wecom`` / ``hermes-wecom-callback`` carried
     # only core tools, so there is no toolset scope to keep.
     LeftCoreFeature(
         plugin="wecom", label="WeCom", in_use=wecom_in_use, plugin_key="platforms/wecom",
@@ -823,6 +823,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         secret_env=("WECOM_SECRET",),
         private_env=("WECOM_BOT_ID", "WECOM_WEBSOCKET_URL", "WECOM_ALLOWED_USERS", "WECOM_HOME_CHANNEL"),
         platform="wecom", enable_env=("WECOM_BOT_ID", "WECOM_SECRET"), notice=_wecom_notice,
+        left_at=55,  # as DingTalk: a home from v55 on that sets WeCom up is told the install command
     ),
     LeftCoreFeature(
         plugin="wecom", label="WeCom callback", in_use=wecom_callback_in_use, plugin_key="platforms/wecom",
@@ -831,7 +832,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         secret_env=("WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY"),
         private_env=("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_AGENT_ID"),
         platform="wecom_callback", enable_env=("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
-        notice=_wecom_notice,
+        notice=_wecom_notice, left_at=55,
     ),
 )
 
@@ -1352,6 +1353,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
     *backoff* (startup) skips a row whose last attempt failed recently, before any network."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
+    told: set[str] = set()
     for feature in LEFT_CORE:
         config = _read_config(home)
         if _marked(config, _INSTALLED_KEY, feature) or any(f.plugin == feature.plugin for f in out):
@@ -1363,7 +1365,8 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         # toolset scope is still kept below, so only the install and the "not installed" notice are skipped.
         placed_by_default = _marked(config, _DEFAULT_INSTALLED_KEY, feature)
         if not _predates_split(home, feature):
-            if not placed_by_default:
+            if not placed_by_default and feature.plugin not in told:  # one line per plugin, not per row
+                told.add(feature.plugin)
                 _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
             continue
         present = _installed_for_good(home, feature.plugin)

@@ -297,11 +297,21 @@ def _pareto_score(raw: Any) -> float | None:
     return score if score is not None and 0.0 <= score <= 1.0 else None
 
 
-def _swap_developer_role(sanitized: list, model_lower: str) -> list:
-    """GPT-5/Codex models take a ``developer`` role instead of ``system``."""
+# Hosts known to honour the ``developer`` role. Any other named OpenAI-compatible relay serving a
+# gpt-5* name may 400 on it or silently drop the message, losing the whole system prompt (#81278).
+_DEVELOPER_ROLE_HOSTS = ("api.openai.com", "openai.azure.com", "openrouter.ai", "nousresearch.com")
+
+
+def _swap_developer_role(sanitized: list, model_lower: str, base_url: Any = None) -> list:
+    """GPT-5/Codex models take a ``developer`` role instead of ``system`` on hosts that honour it."""
+    try:
+        host = (urlparse(str(base_url or "").strip()).hostname or "").lower()
+    except ValueError:
+        host = ""
     if (
         sanitized and isinstance(sanitized[0], dict) and sanitized[0].get("role") == "system"
         and any(p in model_lower for p in DEVELOPER_ROLE_MODELS)
+        and (not host or any(host == h or host.endswith("." + h) for h in _DEVELOPER_ROLE_HOSTS))
     ):
         return [{**sanitized[0], "role": "developer"}, *sanitized[1:]]
     return sanitized
@@ -514,7 +524,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 
-        sanitized = _swap_developer_role(sanitized, params.get("model_lower", (model or "").lower()))
+        sanitized = _swap_developer_role(sanitized, params.get("model_lower", (model or "").lower()), params.get("base_url"))
         api_kwargs = _base_kwargs(model, sanitized, tools, params)
 
         is_kimi = params.get("is_kimi", False)
@@ -584,7 +594,9 @@ class ChatCompletionsTransport(ProviderTransport):
 
     def _build_kwargs_from_profile(self, profile, model, sanitized, tools, params):
         """Build API kwargs from a ProviderProfile — every quirk comes from the profile object."""
-        sanitized = _swap_developer_role(profile.prepare_messages(sanitized), (model or "").lower())
+        sanitized = _swap_developer_role(
+            profile.prepare_messages(sanitized), (model or "").lower(), params.get("base_url") or profile.base_url
+        )
         api_kwargs = _base_kwargs(model, sanitized, tools, params, profile=profile)
 
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"), params.get("base_url"))

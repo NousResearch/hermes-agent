@@ -305,7 +305,8 @@ class _EvictingUpdate:
     def __init__(self, package, facts, fact: dict, selection: dict, *, base: list[str], explicit: bool, configs,
                  entries: list[Entry], recorded: dict[Entry, dict], reasons: dict[Path, str],
                  waiting: dict[Path, str]):
-        from pm.workspace import _is_member_candidate
+        from pm.plugin_declarations import read_python_declaration
+        from pm.workspace import select_workspace_members
 
         self.package, self.facts, self.fact, self.selection = package, facts, fact, selection
         self.explicit, self.configs, self.entries, self.reasons = explicit, configs, entries, reasons
@@ -317,16 +318,24 @@ class _EvictingUpdate:
         def fits(plugin_dir: Path) -> bool:
             return plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting
 
-        self.kept = list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries
-                                       if fits(plugin_dir) and _is_member_candidate(plugin_dir)))
+        fitting_enabled = list(dict.fromkeys(
+            plugin_dir for _plugins_dir, _name, plugin_dir in entries if fits(plugin_dir)
+        ))
+        self.kept = select_workspace_members(fitting_enabled)
+
+        def _needs_trial(plugin_dir: Path) -> bool:
+            if not read_python_declaration(plugin_dir).installs_packages:
+                return False
+            return bool(self.kept) or bool(select_workspace_members([plugin_dir]))
+
         # A plugin with nothing to build rejoins on its static verdict; one with dependencies is
         # due only when core's inputs, its own or the enabled plugins beside it changed since the
         # attempt that failed.
-        self.joined = [entry for entry in recorded if fits(entry[2]) and not _is_member_candidate(entry[2])]
+        self.joined = [entry for entry in recorded if fits(entry[2]) and not _needs_trial(entry[2])]
         # Those whose last failure was no verdict on the plugin (a download failure, a static
         # misfit since fixed) go first: they fitted beside the rest before.
         self.due = sorted((entry for entry, record in recorded.items()
-                           if fits(entry[2]) and _is_member_candidate(entry[2])
+                           if fits(entry[2]) and _needs_trial(entry[2])
                            and record.get("tried") != self.fingerprint(entry[2], self.kept)),
                           key=lambda entry: "tried" in recorded[entry])
 
@@ -337,8 +346,9 @@ class _EvictingUpdate:
     def commit(self, members: list[Path]) -> None:
         from pm import receipt
         from pm.install import _commit_selection, _runtime_state_matches, _target_selection
+        from pm.workspace import select_workspace_members
 
-        members = list(dict.fromkeys(members))
+        members = select_workspace_members(list(dict.fromkeys(members)))
         # Fingerprinted against the members this update leaves enabled: the next update compares there.
         self.tried = {member.resolve(): self.fingerprint(member, members) for member in self.verdicts}
         enabled, stamp, inputs = _target_selection(self.package, self.fact, inputs={"plugin_dirs": members},

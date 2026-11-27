@@ -110,6 +110,23 @@ def test_windows_only_unsatisfied_dep_is_caught_on_linux_ci(tmp_path):
     assert result.unsatisfied_requirements == ["win-only-third-party>=1; sys_platform == 'win32'"]
 
 
+def test_ci_default_check_uses_real_pinned_python_version_from_lock_json(tmp_path):
+    """Finding #5: CI check uses the pinned Python version from ``pm/lock.json`` (e.g. 3.14.9),
+    not hardcoded 3.14.0, so ``python_full_version >= '3.14.1'`` triggers on Windows."""
+    plugin = _write_plugin(
+        tmp_path / "win-py314-patch",
+        pyproject=(
+            '[project]\nname = "win-py314-patch"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+            'dependencies = ["fixturedep>=1; sys_platform == \'win32\' and python_full_version >= \'3.14.1\'"]\n'
+        ),
+    )
+    result = check_default_plugin_venv_rebuild(plugin, project_root=ROOT, platforms=["windows"])
+    assert result.triggers_rebuild is True
+    assert result.unsatisfied_requirements == [
+        "fixturedep>=1; sys_platform == 'win32' and python_full_version >= '3.14.1'"
+    ]
+
+
 # ── End-to-end catalog_validate_pinned_entries.py gate tests ─────────────────
 
 
@@ -254,3 +271,45 @@ def test_ci_non_default_entry_with_unsatisfied_dep_emits_no_default_rebuild_warn
     assert res.returncode == 0, combined
     assert f"PASS: {entry}" in res.stdout
     assert "::warning" not in combined
+
+
+@pytest.mark.platforms("posix")
+def test_ci_default_rebuild_warning_escapes_gha_property_and_data_chars(tmp_path):
+    """Finding #6: ``::warning`` escapes ``%``, ``\\r``, ``\\n``, ``:``, ``,`` in ``file=`` and
+    ``%``, ``\\r``, ``\\n`` in the message body per GitHub Actions workflow-command syntax."""
+    origin, sha = _make_origin(
+        tmp_path,
+        '[project]\nname = "obs"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
+        'dependencies = ["langfuse==4.15.2"]\n',
+    )
+    entry = tmp_path / "heavy,v2.yaml"
+    entry.write_text(
+        yaml.safe_dump({"name": "heavy", "repo": REPO_URL, "sha": sha, "subdir": "plugin", "tier": "official", "default": True}),
+        encoding="utf-8",
+    )
+    res = _run_pinned_gate(tmp_path, origin, entry)
+    combined = res.stdout + res.stderr
+    assert res.returncode == 0, combined
+    escaped_file = (
+        str(entry)
+        .replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(":", "%3A")
+        .replace(",", "%2C")
+    )
+    warning_lines = [line for line in res.stdout.splitlines() if line.startswith("::warning ")]
+    assert len(warning_lines) == 1, combined
+    assert warning_lines[0].startswith(f"::warning file={escaped_file}::"), warning_lines[0]
+    assert "heavy%2Cv2.yaml" in warning_lines[0]
+    assert "heavy,v2.yaml" not in warning_lines[0].split("::", 2)[1]
+
+    # Verify all required GitHub Actions workflow-command escape sequences directly.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_catalog_validate_pinned_entries", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod._escape_gha_property("a%b:c,d\re\nf") == "a%25b%3Ac%2Cd%0De%0Af"
+    assert mod._escape_gha_data("100%\r\nline:two,ok") == "100%25%0D%0Aline:two,ok"

@@ -212,23 +212,74 @@ def _root_project_name(project_root: Path) -> str | None:
     return canonicalize_name(name) if isinstance(name, str) and name.strip() else None
 
 
+def _is_generation_workspace(path: Path) -> bool:
+    """True when *path* is a PM generation snapshot (``.../environments/<gen>/workspace``)."""
+    resolved = path.resolve()
+    return (
+        resolved.name == "workspace"
+        and len(resolved.parents) >= 2
+        and resolved.parents[1].name == "environments"
+    )
+
+
+def _generation_workspace_owner(workspace: Path) -> Path | None:
+    """Recover the canonical core root recorded for a PM generation workspace, or ``None``."""
+    from pm.environments import install_key
+
+    resolved = workspace.resolve()
+    if not _is_generation_workspace(resolved) or len(resolved.parents) < 3:
+        return None
+    state = resolved.parents[2]
+    try:
+        recorded = (state / "inputs" / ".project-root").read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if not recorded:
+        return None
+    owner = Path(recorded).resolve()
+    if install_key(owner) != state.name or _is_generation_workspace(owner):
+        return None
+    return owner
+
+
+def _canonical_core_root(project_root: Path | None = None) -> Path | None:
+    """Resolve the canonical Hermes core root (source checkout or sealed payload), never a generation workspace."""
+    from pm import paths
+
+    root = paths.install_root().resolve() if project_root is None else Path(project_root).resolve()
+    if _is_generation_workspace(root):
+        owner = _generation_workspace_owner(root)
+        if owner is not None:
+            return owner
+        if project_root is not None:
+            installed = paths.install_root().resolve()
+            if not _is_generation_workspace(installed):
+                return installed
+        return None
+    return root
+
+
 def read_core_base_closure(
-    project_root: Path,
+    project_root: Path | None = None,
     *,
     target_env: Mapping[str, str] | None = None,
 ) -> CoreBaseClosure | None:
-    """Resolve Hermes core's guaranteed base dependency closure from ``project_root / 'uv.lock'``.
+    """Resolve Hermes core's guaranteed base dependency closure from ``<core_root> / 'uv.lock'``.
 
     Walks ONLY the root package's base ``dependencies`` (never ``optional-dependencies``,
     ``dev-dependencies``, or any plugin generation), evaluating PEP 508 markers against
-    *target_env*. Returns ``None`` if the lockfile is missing, unreadable, malformed, or does
-    not cover *target_env*, so callers fail conservatively.
+    *target_env*. Defaults *project_root* to the canonical core root (never a generation
+    ``workspace/``). Returns ``None`` if the root or lockfile is missing, unreadable, malformed,
+    or does not cover *target_env*, so callers fail conservatively.
     """
     from packaging.markers import default_environment
     from packaging.utils import canonicalize_name
     from packaging.version import InvalidVersion, Version
 
-    lock_path = Path(project_root).resolve() / "uv.lock"
+    root = _canonical_core_root(project_root)
+    if root is None:
+        return None
+    lock_path = root / "uv.lock"
     try:
         stat = lock_path.stat()
     except OSError:
@@ -238,7 +289,7 @@ def read_core_base_closure(
     if cache_key in _CORE_LOCK_CLOSURE_CACHE:
         return _CORE_LOCK_CLOSURE_CACHE[cache_key]
 
-    result = _parse_core_base_closure(lock_path, Path(project_root).resolve(), env, canonicalize_name, Version, InvalidVersion)
+    result = _parse_core_base_closure(lock_path, root, env, canonicalize_name, Version, InvalidVersion)
     if len(_CORE_LOCK_CLOSURE_CACHE) >= 32:
         _CORE_LOCK_CLOSURE_CACHE.clear()
     _CORE_LOCK_CLOSURE_CACHE[cache_key] = result
@@ -454,10 +505,11 @@ def _resolve_base_closure(
             return _intersect_closure_with_site(lock_closure, site_dists)
         return CoreBaseClosure(versions=site_dists, extras=frozenset(), extra_targets={})
 
-    from pm import paths
     from pm.environments import payload_venv, site_packages
 
-    root = paths.repo_root() if project_root is None else Path(project_root)
+    root = _canonical_core_root(project_root)
+    if root is None:
+        return None
     lock_closure = read_core_base_closure(root, target_env=target_env)
     if lock_closure is None:
         return None
@@ -518,17 +570,20 @@ def unsatisfied_requirements(
     project_root: Path | None = None,
     base_site_packages: Path | None = None,
     target_env: Mapping[str, str] | None = None,
+    allow_marker_skip: bool = True,
 ) -> tuple[str, ...]:
-    """Return declared install requirements NOT guaranteed by Hermes core's base environment.
+    """Return declared requirements NOT guaranteed by Hermes core's base environment.
 
-    Fails conservatively: unparseable specs, direct URLs, ``[tool.uv.sources]`` overrides,
-    unverified extras, missing/incompatible versions, unevaluable markers, or an unreadable base
-    environment all keep the requirement unsatisfied so PM still resolves it in a workspace.
+    Inspects ``declaration.requirements`` (before URL stripping) so applicable direct URLs
+    are never bypassed. Fails conservatively: unparseable specs, applicable direct URLs,
+    any non-empty ``[tool.uv.sources]`` override (direct or transitive), unverified extras,
+    missing/incompatible versions, unevaluable markers, or an unreadable base environment
+    all keep requirements unsatisfied so PM still resolves them in a workspace.
     """
     if declaration.external:
         return ()
-    specs = declaration.install_requirements
-    if not specs:
+    raw_specs = declaration.requirements
+    if not raw_specs:
         return ()
 
     from packaging.markers import UndefinedComparison, UndefinedEnvironmentName, default_environment
@@ -542,32 +597,30 @@ def unsatisfied_requirements(
         base_site_packages=base_site_packages,
         target_env=env,
     )
-    if closure is None:
-        return specs
-
     uv_sources = _pyproject_uv_sources(declaration.pyproject)
-    if uv_sources is None:
-        return specs
+    has_uv_sources = uv_sources is None or bool(uv_sources)
 
     unsatisfied: list[str] = []
-    for spec in specs:
+    for spec in raw_specs:
         try:
             req = Requirement(spec)
         except InvalidRequirement:
             unsatisfied.append(spec)
             continue
-        if req.url:
-            unsatisfied.append(spec)
-            continue
-        if req.marker is not None:
+        if req.marker is not None and allow_marker_skip:
             try:
                 if not req.marker.evaluate(env):
                     continue
             except (UndefinedComparison, UndefinedEnvironmentName):
                 unsatisfied.append(spec)
                 continue
+        if req.url:
+            unsatisfied.append(spec)
+            continue
         name = canonicalize_name(req.name)
-        if name in uv_sources:
+        if name == "hermes-agent":
+            continue
+        if closure is None or has_uv_sources:
             unsatisfied.append(spec)
             continue
         installed_versions = closure.versions.get(name)
@@ -591,18 +644,25 @@ def needs_workspace_member(
     project_root: Path | None = None,
     base_site_packages: Path | None = None,
     target_env: Mapping[str, str] | None = None,
+    allow_marker_skip: bool = True,
 ) -> bool:
     """Whether *declaration* requires PM to add the plugin as a uv workspace member.
 
     False for external plugins and for pure-metadata plugins whose declared requirements are
     already guaranteed by Hermes core's base environment (no build-system/extras/groups,
-    compatible ``requires-python``, and zero unsatisfied dependencies).
+    no ``[tool.uv.sources]`` overrides, compatible ``requires-python``, and zero unsatisfied
+    or direct-URL dependencies).
     """
-    if declaration.external or not declaration.installs_packages:
+    if declaration.external:
+        return False
+    if not declaration.installs_packages and not declaration.requirements:
         return False
     if declaration.pyproject_installs:
         return True
-    if declaration.requires_python:
+    uv_sources = _pyproject_uv_sources(declaration.pyproject)
+    if uv_sources is None or bool(uv_sources):
+        return True
+    if declaration.requires_python and declaration.installs_packages:
         from packaging.markers import default_environment
         from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
@@ -611,62 +671,94 @@ def needs_workspace_member(
         if not py_version:
             return True
         try:
-            if not SpecifierSet(declaration.requires_python).contains(py_version, prereleases=True):
-                return True
+            spec = SpecifierSet(declaration.requires_python)
         except InvalidSpecifier:
             return True
+        if not spec.contains(py_version, prereleases=True):
+            return True
+        if not allow_marker_skip and target_env is None:
+            pinned_full, _ = _pinned_python_version(project_root)
+            if not spec.contains(pinned_full, prereleases=True):
+                return True
     return bool(unsatisfied_requirements(
         declaration,
         project_root=project_root,
         base_site_packages=base_site_packages,
         target_env=target_env,
+        allow_marker_skip=allow_marker_skip,
     ))
 
 
-# Representative desktop targets (Python 3.14, Hermes's pinned runtime) used when linting
-# default: true catalog entries on a single CI host so platform-gated deps on Windows/macOS
-# are caught alongside Linux.
-_DEFAULT_PLUGIN_CHECK_TARGETS: tuple[tuple[str, str, dict[str, str]], ...] = (
-    ("linux", "linux-x64", {
-        "implementation_name": "cpython",
-        "implementation_version": "3.14.0",
-        "os_name": "posix",
-        "platform_machine": "x86_64",
-        "platform_python_implementation": "CPython",
-        "platform_release": "6.8.0",
-        "platform_system": "Linux",
-        "platform_version": "",
-        "python_full_version": "3.14.0",
-        "python_version": "3.14",
-        "sys_platform": "linux",
-    }),
-    ("macos", "darwin-arm64", {
-        "implementation_name": "cpython",
-        "implementation_version": "3.14.0",
-        "os_name": "posix",
-        "platform_machine": "arm64",
-        "platform_python_implementation": "CPython",
-        "platform_release": "24.0.0",
-        "platform_system": "Darwin",
-        "platform_version": "",
-        "python_full_version": "3.14.0",
-        "python_version": "3.14",
-        "sys_platform": "darwin",
-    }),
-    ("windows", "win32-x64", {
-        "implementation_name": "cpython",
-        "implementation_version": "3.14.0",
-        "os_name": "nt",
-        "platform_machine": "AMD64",
-        "platform_python_implementation": "CPython",
-        "platform_release": "11",
-        "platform_system": "Windows",
-        "platform_version": "10.0.26100",
-        "python_full_version": "3.14.0",
-        "python_version": "3.14",
-        "sys_platform": "win32",
-    }),
-)
+def _pinned_python_version(project_root: Path | None = None) -> tuple[str, str]:
+    """Return ``(python_full_version, python_version)`` from ``pm/lock.json``, defaulting to ``3.14.0``/``3.14``."""
+    import json
+    from pm import paths
+
+    candidates: list[Path] = []
+    if project_root is not None:
+        candidates.append(Path(project_root) / "pm" / "lock.json")
+    candidates.append(paths.lockfile_path())
+    for lock_path in candidates:
+        try:
+            data = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        raw = data.get("packages", {}).get("python", {}).get("version") if isinstance(data, dict) else None
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        full = raw.partition("+")[0].strip()
+        parts = full.split(".")
+        if len(parts) >= 2 and all(part.isdigit() for part in parts[:2]):
+            return full, f"{parts[0]}.{parts[1]}"
+    return "3.14.0", "3.14"
+
+
+def _default_plugin_check_targets(
+    project_root: Path | None = None,
+) -> tuple[tuple[str, str, dict[str, str]], ...]:
+    """Representative desktop targets using Hermes's pinned Python version from ``pm/lock.json``."""
+    full_ver, minor_ver = _pinned_python_version(project_root)
+    return (
+        ("linux", "linux-x64", {
+            "implementation_name": "cpython",
+            "implementation_version": full_ver,
+            "os_name": "posix",
+            "platform_machine": "x86_64",
+            "platform_python_implementation": "CPython",
+            "platform_release": "6.8.0",
+            "platform_system": "Linux",
+            "platform_version": "",
+            "python_full_version": full_ver,
+            "python_version": minor_ver,
+            "sys_platform": "linux",
+        }),
+        ("macos", "darwin-arm64", {
+            "implementation_name": "cpython",
+            "implementation_version": full_ver,
+            "os_name": "posix",
+            "platform_machine": "arm64",
+            "platform_python_implementation": "CPython",
+            "platform_release": "24.0.0",
+            "platform_system": "Darwin",
+            "platform_version": "",
+            "python_full_version": full_ver,
+            "python_version": minor_ver,
+            "sys_platform": "darwin",
+        }),
+        ("windows", "win32-x64", {
+            "implementation_name": "cpython",
+            "implementation_version": full_ver,
+            "os_name": "nt",
+            "platform_machine": "AMD64",
+            "platform_python_implementation": "CPython",
+            "platform_release": "11",
+            "platform_system": "Windows",
+            "platform_version": "10.0.26100",
+            "python_full_version": full_ver,
+            "python_version": minor_ver,
+            "sys_platform": "win32",
+        }),
+    )
 
 _DEFAULT_REBUILD_GUIDANCE = (
     "default: true plugins install automatically on first launch and updates; triggering a venv "
@@ -707,7 +799,7 @@ def check_default_plugin_venv_rebuild(
     if provided) so platform-specific rebuild triggers are caught in single-OS CI.
     """
     declaration = read_python_declaration(Path(plugin_dir))
-    if declaration.external or not declaration.installs_packages:
+    if declaration.external or (not declaration.installs_packages and not declaration.requirements):
         return DefaultPluginRebuildCheck(
             triggers_rebuild=False,
             reason="",
@@ -722,14 +814,15 @@ def check_default_plugin_venv_rebuild(
         env = dict(default_environment()) if target_env is None else dict(target_env)
         targets: list[tuple[str, Mapping[str, str]]] = [("host", env)]
     else:
+        check_targets = _default_plugin_check_targets(project_root)
         allowed = set(platforms) if platforms else None
         targets = [
             (label, env)
-            for plat, label, env in _DEFAULT_PLUGIN_CHECK_TARGETS
+            for plat, label, env in check_targets
             if not allowed or plat in allowed
         ]
         if not targets:
-            targets = [(label, env) for _plat, label, env in _DEFAULT_PLUGIN_CHECK_TARGETS]
+            targets = [(label, env) for _plat, label, env in check_targets]
 
     unsat_ordered: list[str] = []
     unsat_seen: set[str] = set()

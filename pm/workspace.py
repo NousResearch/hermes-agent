@@ -164,8 +164,12 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     declaring = {identity: entry for identity, entry in sources_map.items()
                  if read_python_declaration(entry).installs_packages}
     target = _target_environment(python) if declaring else {}
-    candidates = {identity: entry for identity, entry in declaring.items()
-                  if _is_member_candidate(entry, project_root=core_source, target_env=target)}
+    candidates = (
+        declaring
+        if any(_is_member_candidate(entry, project_root=core_source, target_env=target)
+               for entry in declaring.values())
+        else {}
+    )
     members = [_workspace_member(entry, root, identity=identity, extras=extras, target=target)
                .relative_to(root).as_posix() for identity, entry in candidates.items()]
 
@@ -261,9 +265,77 @@ def _solve_only_for(uv_policy: dict, target: Mapping[str, str]) -> None:
 
 
 def _is_member_candidate(plugin_dir: Path, *, project_root: Path | None = None,
-                         target_env: Mapping[str, str] | None = None) -> bool:
-    return needs_workspace_member(read_python_declaration(plugin_dir),
-                                  project_root=project_root, target_env=target_env)
+                         target_env: Mapping[str, str] | None = None,
+                         allow_marker_skip: bool = True) -> bool:
+    return needs_workspace_member(
+        read_python_declaration(plugin_dir),
+        project_root=project_root,
+        target_env=target_env,
+        allow_marker_skip=allow_marker_skip,
+    )
+
+
+def _resolve_target_environment(
+    python: Path | None = None,
+    target_env: Mapping[str, str] | None = None,
+) -> tuple[Mapping[str, str] | None, bool]:
+    """Resolve the PEP 508 marker environment for the target managed Python.
+
+    Returns ``(env, target_known)``. When neither *target_env* nor *python* is passed,
+    probes PM's pinned installed interpreter read-only via ``pm._uv._toolchain(realize=False)``.
+    If no target interpreter can be determined, returns ``(None, False)`` so callers treat
+    marker-sensitive requirements conservatively instead of dropping them on the worker's Python.
+    """
+    if target_env is not None:
+        return target_env, True
+    if python is not None:
+        return _target_environment(python), True
+    import subprocess
+    from pm._uv import _toolchain  # noqa: TID251
+
+    try:
+        tools = _toolchain(realize=False)
+    except (InstallError, OSError, RuntimeError, ValueError, KeyError):
+        tools = None
+    if tools is not None:
+        try:
+            return _target_environment(tools[1]), True
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    return None, False
+
+
+def select_workspace_members(
+    plugin_dirs: Iterable[Path],
+    *,
+    project_root: Path | None = None,
+    python: Path | None = None,
+    target_env: Mapping[str, str] | None = None,
+) -> list[Path]:
+    """Keep ALL package-declaring plugins if ANY needs a workspace solve, else ``[]``.
+
+    When no plugin needs a workspace member, returning ``[]`` skips venv rebuilds and
+    ``uv-cache`` seeding completely. When any plugin forces a shared ``uv`` solve, every
+    package-declaring plugin stays in the workspace so ``uv`` enforces all of their
+    constraints together (preventing an unsatisfied plugin from downgrading a package
+    pinned by a core-satisfied plugin).
+    """
+    declaring = [(path, decl) for path in plugin_dirs
+                 if (decl := read_python_declaration(path)).installs_packages]
+    if not declaring:
+        return []
+    resolved_env, target_known = _resolve_target_environment(python=python, target_env=target_env)
+    if not any(
+        needs_workspace_member(
+            decl,
+            project_root=project_root,
+            target_env=resolved_env,
+            allow_marker_skip=target_known,
+        )
+        for _path, decl in declaring
+    ):
+        return []
+    return [path for path, _decl in declaring]
 
 
 def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
@@ -312,6 +384,7 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
 
 
 def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None,
+                        python: Path | None = None,
                         target_env: Mapping[str, str] | None = None) -> list[Path]:
     """Keep every selected member or refuse an incompatible selection.
 
@@ -323,7 +396,7 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None,
     """
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
-    members = []
+    valid: list[Path] = []
     for path in selected:
         declaration = read_python_declaration(path)
         if hermes_fit_error(declaration, ()):
@@ -331,9 +404,8 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None,
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
             raise InstallError("venv", reason)
-        if needs_workspace_member(declaration, target_env=target_env):
-            members.append(path)
-    return members
+        valid.append(path)
+    return select_workspace_members(valid, python=python, target_env=target_env)
 
 
 def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list[Path]:
@@ -348,8 +420,11 @@ def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list
         if any(read_python_declaration(path).installs_packages for path in selected):
             target = _target_environment(python)
     members = enabled_member_dirs() if target is None else enabled_member_dirs(target_env=target)
-    return [path for path in members
+    kept = [path for path in members
             if not core_requirement_error(read_python_declaration(path), extras, target)]
+    if len(kept) == len(members):
+        return kept
+    return select_workspace_members(kept, python=python, target_env=target)
 
 
 def _member_key(identity: Path) -> str:

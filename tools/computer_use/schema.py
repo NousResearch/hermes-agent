@@ -188,7 +188,7 @@ _PROPERTIES: dict[str, Any] = {
 COMPUTER_USE_SCHEMA: dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
+        "Drive the desktop via cua-driver: screenshots, mouse, keyboard, scroll, drag. macOS, "
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
         "routes to the target window without stealing the user's cursor or focus (works even on "
         "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "
@@ -202,7 +202,3 @@ COMPUTER_USE_SCHEMA: dict[str, Any] = {
     ),
     "parameters": {"type": "object", "properties": _PROPERTIES, "required": ["action"]},
 }
-
-def get_computer_use_schema() -> dict[str, Any]:
-    """Return the generic OpenAI function-calling schema."""
-    return COMPUTER_USE_SCHEMA

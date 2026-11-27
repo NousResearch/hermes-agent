@@ -115,14 +115,38 @@ export const en: Translations = {
     dismiss: "Dismiss",
     sharedMetricsTitle: "Help improve Hermes?",
     sharedMetricsBody:
-      "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.",
+      "Shared metrics are bounded counters, never prompts, files, paths or error text. Sharing sends them to Nous once a day.",
     sharedMetricsReaskBody:
       "Asking once more: an earlier version could save \"No thanks\" before you saw this question.",
-    sharedMetricsShare: "Send to Nous",
-    sharedMetricsLocal: "Local only",
+    sharedMetricsShare: "Share with Nous",
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
     sharedMetricsSaveFailed: "Couldn't save your choice",
+    dashboardMovingMeta: "Legacy dashboard / Retirement",
+    dashboardMovingNotice: "This dashboard moves to the Hermes web app on {date}.",
+    dashboardMovingTitle: "Your dashboard is moving",
+    dashboardMovingBody:
+      "Your agents, chats, skills and routines come with you. Use the same sign-in.",
+    dashboardMovingMachineTitle: "Your cloud machine",
+    dashboardMovingMachineDetail: "Keep working in the new app",
+    dashboardMovingMachineReady: "Ready",
+    dashboardMovingMachineStarting: "Starting",
+    dashboardMovingMachineDown: "Offline",
+    dashboardMovingMachineNotAvailable: "Not available yet",
+    dashboardMovingMachineNotAvailableDetail:
+      "The web app is not on this machine yet",
+    dashboardMovingSettingsTitle: "Advanced settings",
+    dashboardMovingSettingsDetail: "Available in Agent settings",
+    dashboardMovingOpen: "Open in web app",
+    dashboardMovingLater: "Later",
+  },
+
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Active memory provider",
+    noProvider: "none — built-in only",
+    builtinLayer: "Built-in layer",
+    builtinNote: "MEMORY.md and USER.md are Hermes's own memory, separate from any external provider. Both load into sessions by default; the config toggles (memory.memory_enabled / memory.user_profile_enabled) turn each off. A provider adds to them; it never replaces them.",
   },
 
   status: {
@@ -449,8 +473,19 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    updateAll: "Update all",
+    updatingAll: "Updating plugins…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Updated ${updated}, needs review ${needsReview}, failed ${failed}`,
+    autoUpdate: "Auto-update",
+    autoUpdateDesc: (hours: number) =>
+      `Apply plugin updates automatically when the gateway checks (every ${hours} h). Updated code loads in new sessions.`,
     updateConsentBody: (name: string, sha: string) =>
       `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
+    updateScanBody: (name: string, count: number) =>
+      `The security scan flagged ${count} finding${count === 1 ? "" : "s"} in the new code of ${name}. Update anyway only if you trust the source:`,
+    updateScanBlocked: (name: string) =>
+      `The security scan rated the new code of ${name} dangerous. The update was not applied.`,
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
@@ -465,8 +500,7 @@ export const en: Translations = {
     catalogUpdateBtn: "Update available",
     catalogRemovedBadge: "Removed",
     catalogConfirmTitle: "Install this plugin?",
-    catalogConfirmInstallNote:
-      "Plugins install disabled; enable it after install to activate.",
+    catalogConfirmInstallNote: "The plugin turns on right away after install.",
     catalogRequiresEnv: "Requires env",
     removedFromCatalog: "Removed from catalog",
   },
@@ -930,5 +964,18 @@ export const en: Translations = {
       confirmTitle: "Delete task?",
       confirmManyTitle: "Delete {n} tasks?",
     },
+  },
+  channelsCatalog: {
+    title: "Available to install",
+    hint: "Messaging platforms from the Hermes plugin catalog. Installing one adds and enables its plugin, then opens its setup.",
+    badgeOfficial: "Official",
+    badgeVerified: "Verified",
+    disclosure: "Disclosure:",
+    lazyInstallsOff: "Automatic plugin installs are off (security.allow_lazy_installs).",
+    run: "Run:",
+    install: "Install",
+    installing: "Installing…",
+    installed: (title: string) => `${title} installed. Enter its credentials to connect it.`,
+    installFailed: (title: string) => `Could not install ${title}`,
   },
 };

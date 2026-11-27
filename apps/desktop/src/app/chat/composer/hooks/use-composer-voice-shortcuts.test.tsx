@@ -16,7 +16,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./use-voice-recorder', () => ({
   useVoiceRecorder: () => ({
     dictate: mocks.dictate,
-    voiceActivityState: { elapsedSeconds: 0, level: 0, status: 'idle' },
+    voiceActivityState: {
+      elapsedSeconds: 0,
+      levelStore: { get: () => 0, listen: () => () => {}, set: () => {} },
+      status: 'idle'
+    },
     voiceStatus: 'idle'
   })
 }))

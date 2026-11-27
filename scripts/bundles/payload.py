@@ -16,18 +16,55 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-# Snapshot dirs the sealed agent payload never reads. Tests, docs and CI
-# definitions never ship; the frontend/desktop sources and build scripts are
-# prebuilt by CI into staged products (AgentInputs.frontends) — a sealed
-# payload never re-enters the source-build graph (is_bundled_payload routes
-# updates to the channel updater), and linux_desktop_entry degrades to the
-# themed icon when apps/desktop/assets is absent. Excluded here means:
-# not packaged, not compiled, not baked. Frontend product staging
-# (scripts/bundles/stage.py) needs its full tree and passes no exclusions.
+# Snapshot dirs the sealed agent payload never reads, except
+# SNAPSHOT_RUNTIME_TREES. Tests, docs and CI definitions never ship; the
+# frontend/desktop sources and build scripts are prebuilt by CI into staged
+# products (AgentInputs.frontends) — a sealed payload never re-enters the
+# source-build graph (is_bundled_payload routes updates to the channel
+# updater), and linux_desktop_entry degrades to the themed icon when
+# apps/desktop/assets is absent. Excluded here means: not packaged, not
+# compiled, not baked. Frontend product staging (scripts/bundles/stage.py)
+# needs its full tree and passes no exclusions.
 INERT_SNAPSHOT_DIRS = (
     "tests", "tests-js", "website", "evals", ".github", "nix", "docker",
     "apps", "ui-tui", "web", "scripts",
 )
+# The WhatsApp adapter reads scripts/whatsapp-bridge/bridge.js at runtime.
+# The rest of scripts/ stays out; this tree is archived back in after the exclude.
+SNAPSHOT_RUNTIME_TREES = ("scripts/whatsapp-bridge",)
+
+
+def _runtime_trees_hidden_by(exclude: tuple[str, ...]) -> tuple[str, ...]:
+    hidden = []
+    for tree in SNAPSHOT_RUNTIME_TREES:
+        top = tree.split("/", 1)[0]
+        if top in exclude or tree in exclude:
+            hidden.append(tree)
+    return tuple(hidden)
+
+
+def _revision_has_path(repo: Path, ref: str, path: str) -> bool:
+    probe = subprocess.run(
+        ["git", "cat-file", "-e", f"{ref}:{path}"],
+        cwd=repo, check=False, timeout=60,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return probe.returncode == 0
+
+
+def _write_git_archive(repo: Path, ref: str, archive: Path, paths: list[str]) -> None:
+    # git archive applies checkout eol conversion. Git for Windows sets
+    # core.autocrlf=true system-wide, which would rewrite every text file
+    # lacking an eol attribute to CRLF: the payload must carry the
+    # revision's bytes (plus .gitattributes rules), not builder config.
+    subprocess.run(
+        ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+         "archive", "--format=tar", "--output", str(archive), ref, "--", *paths],
+        cwd=repo, check=True, timeout=600)
+
+
+def _extract_archive(archive: Path, destination: Path) -> None:
+    with tarfile.open(archive) as source:
+        source.extractall(destination, filter="data")
 
 
 def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] = ()) -> None:
@@ -36,16 +73,19 @@ def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] =
     if repo == destination or repo.is_relative_to(destination):
         raise ValueError("the snapshot destination must not contain the source checkout")
     with tempfile.TemporaryDirectory(prefix="hermes-archive-") as temp:
-        archive = Path(temp) / "source.tar"
-        pathspecs = [f":(exclude){name}" for name in exclude]
-        subprocess.run(
-            ["git", "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
-            cwd=repo, check=True)
+        temp_dir = Path(temp)
+        archive = temp_dir / "source.tar"
+        _write_git_archive(repo, ref, archive, [f":(exclude){name}" for name in exclude])
         if destination.exists():
             shutil.rmtree(destination)
         destination.mkdir(parents=True)
-        with tarfile.open(archive) as source:
-            source.extractall(destination, filter="data")
+        _extract_archive(archive, destination)
+        for index, tree in enumerate(_runtime_trees_hidden_by(exclude)):
+            if not _revision_has_path(repo, ref, tree):
+                continue
+            runtime = temp_dir / f"runtime-{index}.tar"
+            _write_git_archive(repo, ref, runtime, [tree])
+            _extract_archive(runtime, destination)
 
 
 def _payload_file(root: Path, relative: str) -> Path:

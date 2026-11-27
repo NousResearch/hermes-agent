@@ -16,9 +16,12 @@ import { clearSessionDraft, type ComposerAttachment, createComposerAttachmentSco
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  clearQueuedPrompts,
   enqueueQueuedPrompt,
   getQueuedPrompts,
-  parkQueuedPrompts
+  parkQueuedPrompts,
+  queuedSubmissionId,
+  unparkQueuedPrompts
 } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import { $onboardingPhase } from '@/store/onboarding-phase'
@@ -38,14 +41,16 @@ import { ChatBar } from './index'
 // Keep the real editor, AUI runtime, busy-policy hook, draft/submit/queue hooks,
 // queue stores, parked-card routing, controls, help and tooltips. Only peripheral
 // media, layout and status work is inert; no handler is reproduced by the test.
+const silentVoiceLevel = atom(0)
+
 vi.mock('./hooks/use-composer-voice', () => ({
   useComposerVoice: () => ({
-    conversation: { level: 0, muted: false, status: 'idle', stopTurn() {}, toggleMute() {} },
+    conversation: { levelStore: silentVoiceLevel, muted: false, status: 'idle', stopTurn() {}, toggleMute() {} },
     dictate() {},
     endConversation() {},
     handleToggleAutoSpeak() {},
     startConversation() {},
-    voiceActivityState: { elapsedSeconds: 0, level: 0, status: 'idle' },
+    voiceActivityState: { elapsedSeconds: 0, levelStore: silentVoiceLevel, status: 'idle' },
     voiceConversationActive: false,
     voiceStatus: 'idle'
   })
@@ -116,6 +121,7 @@ function mountChatBar(mode: BusyInputMode | null, overrides: Partial<ChatBarProp
   } else {
     setMode(mode)
   }
+
   const attachments = createComposerAttachmentScope()
   const scope = { ...MAIN_COMPOSER_SCOPE, attachments, $awaitingInput: atom(false) }
   const onCancel = vi.fn<ChatBarProps['onCancel']>()
@@ -451,7 +457,10 @@ describe('real ChatBar priority and availability boundaries', () => {
     expect(composerPlainText(view.editor)).toBe(EXISTING.text)
     await writeDraft(view, 'revised queued message', false)
     await press(view, init)
-    expect(getQueuedPrompts(SESSION)).toEqual([{ ...before, text: 'revised queued message' }])
+    expect(getQueuedPrompts(SESSION)).toEqual([
+      { ...before, text: 'revised queued message', submissionId: expect.any(String) }
+    ])
+    expect(queuedSubmissionId(getQueuedPrompts(SESSION)[0])).not.toBe(queuedSubmissionId(before))
     expectNoDispatch(view)
     expectOtherQueueUntouched()
     expect(composerPlainText(view.editor)).toBe('')
@@ -477,25 +486,41 @@ describe('real ChatBar correction fallbacks', () => {
     expect($compactingSessions.get()[RUNTIME]).toBe(true)
   })
 
-  it.each(CHORDS)('$name queues during compaction before the busy policy loads', async ({ init }) => {
+  it.each([...CHORDS, { name: 'Send click', init: null }])('$name queues during compaction before the busy policy loads', async ({ init }) => {
+    clearQueuedPrompts(SESSION)
+    unparkQueuedPrompts(SESSION)
     setSessionCompacting(RUNTIME, true)
     const view = mountChatBar(null)
     await writeDraft(view)
     expect($busyInputConfig.get()).toBeNull()
-    expect(screen.getByRole('button', { name: en.composer.queueMessage })).toHaveProperty('disabled', false)
-    await press(view, init)
-    expectAction(view, 'queue')
-  })
-
-  it('clicking Send queues during compaction before the busy policy loads', async () => {
-    setSessionCompacting(RUNTIME, true)
-    const view = mountChatBar(null)
-    await writeDraft(view)
-    expect($busyInputConfig.get()).toBeNull()
-    const button = screen.getByRole('button', { name: en.composer.queueMessage })
+    const button = view.container.querySelector<HTMLButtonElement>('button[type="submit"]')!
     expect(button).toHaveProperty('disabled', false)
-    await act(async () => { fireEvent.click(button) })
-    expectAction(view, 'queue')
+    const label = button.getAttribute('aria-label')
+
+    if (init) {
+      await press(view, init)
+    } else {
+      await act(async () => { fireEvent.click(button) })
+    }
+
+    expectNoDispatch(view)
+    const queued = getQueuedPrompts(SESSION)
+    expect(queued).toHaveLength(1)
+    expect(queued[0].text).toBe(PAYLOAD)
+    expect(composerPlainText(view.editor)).toBe('')
+    expect(label).toBe(en.composer.queueMessage)
+
+    await act(async () => {
+      setSessionCompacting(RUNTIME, false)
+      view.update({ busy: false })
+    })
+
+    await waitFor(() => expect(getQueuedPrompts(SESSION)).toHaveLength(0))
+    expect(view.onSubmit).toHaveBeenCalledExactlyOnceWith(PAYLOAD, expect.objectContaining({
+      fromQueue: true,
+      submission_id: queuedSubmissionId(queued[0])
+    }))
+    expectOtherQueueUntouched()
   })
 
   it.each(corrections)('$mode / $name queues attachments with the text', async ({ mode, init }) => {

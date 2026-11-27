@@ -55,6 +55,7 @@ class GatewayRuntimeInitMixin:
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
+        self._profile_bot_platforms: Dict[str, set[Platform]] = {}
         self._systemd_watchdog = None
         # External (NAS-driven) drain, distinct from one-way ``_draining``: set while ``.drain_request.json``
         # exists — NEW turns refused, process stays up, removing the marker reverts to ``running``.
@@ -156,9 +157,10 @@ class GatewayRuntimeInitMixin:
         # Strong refs to detached fatal-error handler tasks so the loop can't GC them mid-run.
         self._fatal_handler_tasks: set = set()
         # Slash-confirm state lives in tools.slash_confirm (module-level) so adapters resolve callbacks
-        # without a runner backref; local counter keeps confirm_ids compact (64-byte callback_data caps).
-        import itertools
-        self._slash_confirm_counter = itertools.count(1)
+        # without a runner backref; a counter keeps confirm_ids compact (64-byte callback_data caps)
+        # and its random start keeps a pre-restart card from answering a new confirmation.
+        from gateway.platforms.helpers import prompt_id_counter
+        self._slash_confirm_counter = prompt_id_counter()
 
     def _init_session_db(self) -> None:
         """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""
@@ -203,6 +205,19 @@ class GatewayRuntimeInitMixin:
         # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
         # here it ran before the control socket, adapters and the code_sha stamp — so the first
         # restart of the day (the ``hermes update`` one) looked hung and failed fleet verification.
+
+    @property
+    def persistence(self):
+        """The storage interface handle for the active profile scope, borrowed from ``session_store`` as
+        ``_session_db`` is (the store closes it); without a session store, the runner's own handle on the scope's
+        store, as ``_session_db`` opens it. None while ``_session_db`` is pinned."""
+        from gateway.run import _SESSION_DB_UNPINNED
+        if getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED) is not _SESSION_DB_UNPINNED:
+            return None
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return self._open_session_db_for_active_scope()
+        return getattr(store, "persistence", None)
 
     def _init_registries_and_clocks(self) -> None:
         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""

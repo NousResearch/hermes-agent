@@ -31,7 +31,7 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
     Bookkeeping lands in ``restart.killed_pids`` so the receipt and the survivor sweep see them.
     Never raises: verification must still finalize the receipt (with an owed restart).
     """
-    from hermes_cli.update_cmd_fleet import _drain_or_signal_gateway_for_update
+    from hermes_cli.update_cmd_fleet import _drain_or_signal_gateway_for_update, _restart_left_pending, _signalled_identity
 
     pids = stale_fleet_survivor_pids(fleet, set(restart.killed_pids))
     if not pids:
@@ -49,11 +49,15 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
     for pid in pids:
         label = f"{labels.get(pid, 'gateway')} (PID {pid})"
         try:
+            born = _signalled_identity(pid)
             if _drain_or_signal_gateway_for_update(pid, drain_budget, label):
                 signalled.append(pid)
                 restart.killed_pids.add(pid)
                 if pid not in service_pids:
                     manual.append(pid)
+            else:
+                # Still running live work past the wait: it restarts itself once idle; never stopped.
+                _restart_left_pending(pid, label, None, born, supervised=pid in service_pids)
         except Exception as exc:
             logger.warning("Could not signal stale gateway PID %s: %s", pid, exc)
             print(f"  ⚠ {label}: could not be signalled ({exc}) — restart it by hand")

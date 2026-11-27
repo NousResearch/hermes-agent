@@ -10,8 +10,8 @@ from websockets.asyncio.client import connect
 async def test_runtime_preserves_browser_ticket_gate(tmp_path):
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
-    from gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
-                                     publish_gateway_runtime_ready)
+    from gateway.run_runtime import initialize_gateway_runtime, publish_gateway_runtime_ready
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     from gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
     from hermes_cli.dashboard_auth import register_provider, clear_providers
@@ -97,6 +97,87 @@ async def test_drain_withdraws_native_admission_before_listener_close(tmp_path):
             platform=Platform.TELEGRAM, chat_id='another-owned-route', user_id='owned'))
         await adapter.handle_message(later)
         assert not later._gateway_accepted
+    finally:
+        await runner.stop()
+        process_ownership.close()
+
+
+@pytest.mark.asyncio
+async def test_drain_stops_adapter_inbound_before_withdrawing_handlers(tmp_path):
+    """The drain closes the inbound window FIRST: stop_inbound runs while the handler is still
+    installed, so an update fetched just before the stop is admitted instead of hitting the
+    handler-less drop in the disconnect gap."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from gateway.run import GatewayRunner
+    from gateway.run_runtime import initialize_gateway_runtime, drain_gateway_runtime
+    from gateway.runtime_ownership import process_ownership
+    from hermes_constants import get_hermes_home
+
+    class SequencedAdapter(BasePlatformAdapter):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.calls: list[str] = []
+            self.stop_inbound_error: Exception | None = None
+
+        async def connect(self, *, is_reconnect=False):
+            return True
+
+        async def disconnect(self):
+            pass
+
+        async def get_chat_info(self, chat_id):
+            return {'id': chat_id}
+
+        async def send(self, *args, **kwargs):
+            return SendResult(success=True)
+
+        async def stop_inbound(self):
+            self.calls.append('stop_inbound')
+            if self.stop_inbound_error is not None:
+                raise self.stop_inbound_error
+
+        def set_message_handler(self, handler):
+            self.calls.append(f'set_message_handler={handler is not None}')
+            super().set_message_handler(handler)
+
+    home = get_hermes_home()
+    process_ownership.reserve([home])
+    runner = GatewayRunner(GatewayConfig())
+    primary = SequencedAdapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
+    secondary = SequencedAdapter(PlatformConfig(enabled=True), Platform.DISCORD)
+    try:
+        await initialize_gateway_runtime(runner)
+        runner.adapters[Platform.TELEGRAM] = primary
+        runner._profile_adapters['secondary'] = {Platform.DISCORD: secondary}
+        await drain_gateway_runtime(runner)
+        assert primary.calls == ['stop_inbound', 'set_message_handler=False']
+        assert secondary.calls == ['stop_inbound', 'set_message_handler=False']
+        # A failing stop_inbound cannot block the drain: handlers are still withdrawn.
+        tertiary = SequencedAdapter(PlatformConfig(enabled=True), Platform.WEIXIN)
+        tertiary.stop_inbound_error = RuntimeError('wedge')
+        runner.adapters[Platform.WEIXIN] = tertiary
+        primary.calls.clear()
+        secondary.calls.clear()
+        await drain_gateway_runtime(runner)
+        assert tertiary.calls == ['stop_inbound', 'set_message_handler=False']
+        assert primary.calls == ['stop_inbound', 'set_message_handler=False']
+        assert secondary.calls == ['stop_inbound', 'set_message_handler=False']
+        # Wedged fetchers share one bound and stop together, leaving the settle its leash.
+        import asyncio
+        import time
+        from unittest.mock import patch
+
+        tertiary.stop_inbound_error = None
+        never = asyncio.Event()
+        for adapter in (primary, secondary, tertiary):
+            adapter.stop_inbound = never.wait
+        started = time.monotonic()
+        with patch('gateway.run_runtime.INBOUND_STOP_SECONDS', 0.2):
+            await drain_gateway_runtime(runner)
+        assert time.monotonic() - started < 2.0
+        for adapter in (primary, secondary, tertiary):
+            del adapter.stop_inbound
     finally:
         await runner.stop()
         process_ownership.close()

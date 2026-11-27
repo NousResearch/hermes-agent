@@ -1,0 +1,19 @@
+name: pepbank-peptide-research
+title: PepBank Peptide Research
+repo: https://github.com/pepbank/peptide-research-mcp
+sha: a998c0264b42ef2d0d870b767a03ccca25ae24be
+subdir: plugins/hermes
+version: "1.0.0"
+description: "Peptide research for your agent through the PepBank MCP server (https://pepbank.io/mcp/apps): study findings with the source sentence and PMID or DOI for each, the evidence class (human, animal, laboratory, predicted), registered clinical trials and approval status for 160+ peptides. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no local code. Disclosure — every tool call goes to pepbank.io, which keeps usage records with a one-way code of the network address and the searches run; search_live_sources sends the search words on to Europe PMC. No tool changes data, and no tool names a seller or links to products. The bundled skill tells the agent to answer peptide use and dose questions with community-reported doses alongside doses studied in trials, labelled as not personal doses. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: PepBank
+tier: community
+category: tools
+docs_url: https://pepbank.io/developers
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -116,6 +116,7 @@ def agent():
     a.save_trajectories = False
     a.compression_enabled = True
     a.context_compressor = _quiet_compressor()
+    a.context_compressor._session_db = MagicMock()  # the prune only runs where its store archives originals
     return a
 
 
@@ -194,6 +195,30 @@ class TestProactivePruneLoopWiring:
         assert result["completed"] is True
         assert len(calls) == 3  # one shot per tool iteration
         assert all(t == 120_000 for t in calls)  # fed the real usage reading
+
+    def test_armed_checkpoint_gate_withholds_the_prune(self, agent):
+        """compression.checkpoint_required: no checkpoint precedes the prune's durable
+        rewrite, so the loop never consults it (the control is the test above)."""
+        calls = []
+        agent.compression_checkpoint_required = True
+        # The suppression counter is shared with the on_turn_complete gate; a declared observer
+        # keeps this test about the prune.
+        agent.context_compressor.compacts_outside_compress = False
+        agent.context_compressor.prune_tool_results_only = (
+            lambda messages, current_tokens=None: (calls.append(current_tokens), (messages[:-1], 1))[1]
+        )
+        result = _run_tool_loop(agent, n_tool_iterations=3)
+        assert result["completed"] is True
+        assert calls == []
+        assert agent._checkpoint_gate_suppression_count == 3
+
+    def test_prune_not_consulted_without_a_session_store(self, agent):
+        """Batch runs keep no store: demoted bodies would exist nowhere else."""
+        calls = []
+        agent.context_compressor.prune_tool_results_only = lambda m, current_tokens=None: (calls.append(1), (m, 0))[1]
+        agent.context_compressor._session_db = None
+        assert _run_tool_loop(agent, n_tool_iterations=2)["completed"] is True
+        assert calls == []
 
     def test_committed_prune_replaces_messages(self, agent):
         marker = "[old tool output pruned]"

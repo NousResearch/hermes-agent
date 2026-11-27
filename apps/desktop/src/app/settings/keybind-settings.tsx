@@ -13,16 +13,14 @@ import {
   allKeybindActions,
   KEYBIND_CATEGORIES,
   KEYBIND_PANEL_ACTION,
-  readonlyKeybindsFor,
   type KeybindActionMeta,
   type KeybindReadonly,
-  KEYBINDS_AREA
+  KEYBINDS_AREA,
+  readonlyKeybindsFor
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
 import { $busyInputConfig, configuredBusyInputMode } from '@/store/busy-input-mode'
-import { $activeGatewayProfile } from '@/store/profile'
-import { $connection } from '@/store/session'
 import {
   $bindings,
   $capture,
@@ -34,6 +32,8 @@ import {
   resetAllBindings,
   resetBinding
 } from '@/store/keybinds'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
@@ -268,7 +268,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
       <Tip label={k.rebind}>
         <button
           aria-label={k.rebind}
-          className="flex shrink-0 items-center gap-1 rounded-lg outline-none"
+          className="flex shrink-0 items-center gap-1 rounded-lg"
           onClick={() => (capturing ? endCapture() : beginCapture(action.id))}
           type="button"
         >

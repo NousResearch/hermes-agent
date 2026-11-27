@@ -26,6 +26,23 @@ function runFinishedProc(id: string, chunks = 6): void {
 }
 
 describe('agent terminal retention is bounded', () => {
+  it('enforces the cold budget when mounted writers close without another output event', () => {
+    const stops = Array.from({ length: 40 }, (_, index) => registerAgentTerminalWriter(`closed-${index}`, () => {}))
+
+    for (let index = 0; index < stops.length; index++) {
+      runFinishedProc(`closed-${index}`)
+    }
+
+    for (const stop of stops) {
+      stop()
+    }
+
+    const retained = stops.map((_, index) => replay(`closed-${index}`))
+
+    expect(retained.reduce((chars, output) => chars + output.length, 0)).toBeLessThanOrEqual(2_000_000)
+    expect(retained.at(-1)).toBe(CHUNK.repeat(4))
+  })
+
   it('a finished process does not pin its backlog for the life of the renderer', () => {
     // 200 background commands, none mounted — the shape that grew to ~93 MB.
     for (let i = 0; i < 200; i++) {
@@ -194,5 +211,30 @@ describe('agent terminal retention is bounded', () => {
     syncAgentTerminalSnapshot('reseed-0', 'recovered output')
     stop()
     expect(screen).toContain('recovered output')
+  })
+  it('keeps only the newest cap when one chunk alone exceeds it', () => {
+    const proc = 'oversized-chunk'
+    writeAgentTerminalChunk(proc, 'a'.repeat(300_000))
+    writeAgentTerminalChunk(proc, 'TAIL\n')
+
+    const retained = replay(proc)
+
+    expect(retained).toHaveLength(256_000)
+    expect(retained.endsWith('TAIL\n')).toBe(true)
+  })
+
+  it('trims the oldest chunk overhang so the cap stays exact across chunk sizes', () => {
+    const proc = 'chunk-overhang'
+
+    for (let i = 0; i < 4; i += 1) {
+      writeAgentTerminalChunk(proc, CHUNK)
+    }
+
+    writeAgentTerminalChunk(proc, 'TAIL\n')
+
+    const retained = replay(proc)
+
+    expect(retained).toHaveLength(256_000)
+    expect(retained.endsWith('TAIL\n')).toBe(true)
   })
 })

@@ -1,0 +1,17 @@
+name: theta-edge-node
+repo: https://github.com/bonesnasty/hermes-theta-edge-node
+sha: "3634cd8b2496db84ae8a2f771e7c3e1e51973023"
+version: "0.3.0"
+description: "Run and monitor a Theta Edge Node from Hermes Desktop: install, launch, stop, track TFUEL rewards and node-wallet value, and export the node wallet locally. Disclosure — Windows only. First-run setup and Reinstall/Update download Theta's official Edge Node installer from theta-mkt-api.thetatoken.org (via assets.thetatoken.org or its S3 bucket) and run it silently after checking it against a SHA-256 and Theta Labs signing certificate pinned in the plugin, so a newer Theta build installs only after a catalog update. The pane launches and stops the node and, when Auto-launch is on, relaunches it at Desktop start if it was running when Desktop last closed. Wallet values come from eth-rpc-api.thetatoken.org and api.coingecko.com. The wallet export decrypts the node's keystore with your node password and shows the private key in the local pane only; the agent tools read status and the wallet address, never key material."
+maintainer: bonesnasty
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/bonesnasty/hermes-theta-edge-node#readme
+platforms: [windows]
+readme: true
+capabilities:
+  provides_tools: [theta_node_status, theta_wallet_address]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

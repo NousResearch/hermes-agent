@@ -6,7 +6,7 @@ ordered after it is admitted; tickets ordered before it, and pins whose admissio
 never hold the queue."""
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.gateway.test_bot_receipt_refusal import _refuse
 from tests.gateway.test_bot_receipt_stale_pin import HOUR, KEY, OTHER, _age, _legacy, _pin, _rows
 
@@ -29,7 +29,7 @@ async def test_a_ticket_queued_after_an_unresolved_pin_waits_for_it(bot, monkeyp
     path = _legacy(bot, KEY, 1, 'first')
     _legacy(bot, OTHER, 2, 'second')
     refusing = _refuse(monkeypatch, 'runtime_draining')
-    with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+    with pytest.raises(AuthorityRefusal, match='runtime_draining'):
         await recover_bot_deliveries(bot.authority)
     refusing.clear()
     await recover_bot_deliveries(bot.authority)
@@ -61,12 +61,12 @@ async def test_a_pin_whose_admission_committed_does_not_hold_the_queue(bot, monk
     async def committed_then_refused(self, *args):
         receipt = await real(self, *args)
         if failing:
-            raise RuntimeStoreError('stale_epoch')
+            raise AuthorityRefusal('stale_epoch')
         return receipt
     monkeypatch.setattr(type(bot.authority), 'admit_automation', committed_then_refused)
     _legacy(bot, KEY, 1, 'first')
     _legacy(bot, OTHER, 2, 'second')
-    with pytest.raises(RuntimeStoreError, match='stale_epoch'):
+    with pytest.raises(AuthorityRefusal, match='stale_epoch'):
         await recover_bot_deliveries(bot.authority)
     assert _status(bot, KEY) == 'ambiguous'
     failing.clear()
@@ -82,13 +82,13 @@ async def test_an_owner_state_refusal_mid_pass_stops_the_pass(bot, monkeypatch):
     real, refusing = type(bot.authority).admit_automation, [True]
     async def full_for_other(self, adapter, event, identity):
         if refusing and identity == 'bot:' + OTHER:
-            raise RuntimeStoreError('queue_full')
+            raise AuthorityRefusal('queue_full')
         return await real(self, adapter, event, identity)
     monkeypatch.setattr(type(bot.authority), 'admit_automation', full_for_other)
     _legacy(bot, KEY, 1, 'first')
     path = _legacy(bot, OTHER, 2, 'second')
     _legacy(bot, THIRD, 3, 'third')
-    with pytest.raises(RuntimeStoreError, match='queue_full'):
+    with pytest.raises(AuthorityRefusal, match='queue_full'):
         await recover_bot_deliveries(bot.authority)
     assert _rows(bot) == ['bot:' + KEY]
     assert (_status(bot, OTHER), _status(bot, THIRD)) == ('ambiguous', 'queued')
@@ -108,7 +108,7 @@ async def test_a_delivery_waits_behind_an_unresolved_legacy_pin(bot, monkeypatch
     _legacy(bot, KEY, 1, 'first')
     _legacy(bot, OTHER, 2, 'second')
     refusing = _refuse(monkeypatch, 'runtime_draining')
-    with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+    with pytest.raises(AuthorityRefusal, match='runtime_draining'):
         await recover_bot_deliveries(bot.authority)
     refusing.clear()
     await deliver(bot.connection, dict(id=THIRD, profile='default', message='fresh'))

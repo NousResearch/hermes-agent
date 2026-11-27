@@ -9,7 +9,7 @@ sidebar_position: 3
 
 Hermes 可在 Windows 10 和 Windows 11 上原生运行——无需 WSL、Cygwin 或 Docker。本页是深度指南：原生支持哪些功能、哪些仅限 WSL、安装程序实际做了什么，以及你可能需要调整的 Windows 专属配置项。
 
-如果你只是想安装，[首页](../index.mdx) 或[安装页面](../getting-started/installation#windows原生powershell)上的一行命令就够了。遇到意外情况时再回来查阅本页。
+如果你只是想安装，[首页](../index.mdx) 或[安装页面](../getting-started/installation#windows-native)上的一行命令就够了。遇到意外情况时再回来查阅本页。
 
 :::tip 想用 WSL？
 如果你更倾向于真正的 POSIX 环境（用于 dashboard 内嵌终端、`fork` 语义、Linux 风格文件监视器等），请参阅 **[Windows（WSL2）指南](./windows-wsl-quickstart.md)**。两者可以干净共存：原生数据存放在 `%LOCALAPPDATA%\hermes`，WSL 数据存放在 `~/.hermes`。
@@ -47,9 +47,9 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 ### MSIX / App Installer 和 Microsoft Store
 
-自包含 MSIX 要求 Windows 11 22H2 或更新版本。
-Windows 10 源码安装支持不代表 MSIX 支持 Windows 10。
-打开 `.appinstaller` 文件，Windows 会安装签名包并记录更新源。
+自包含桌面软件包（包括 Microsoft Store 版本和侧载 `.appinstaller` MSIX，支持 x64 和 ARM64）要求 **Windows 11 22H2 或更新版本（`10.0.22621.0`）**。
+Windows 10 源码安装支持不代表 MSIX 支持 Windows 10：在 Windows 10 或低于 22H2 的 Windows 11 上，请使用上方的源码安装脚本（`install.ps1`）或 [WSL2](./windows-wsl-quickstart.md)。
+可从 Microsoft Store 安装，或打开 `.appinstaller` 文件，Windows 会安装签名包并记录更新源。
 软件包包含 Python、Node 和基础依赖，首次启动无需克隆或编译源码。
 
 执行别名提供 `hermes`、`hermes-agent` 和 `hermes-acp`。
@@ -59,6 +59,7 @@ Windows 10 源码安装支持不代表 MSIX 支持 Windows 10。
 侧载版通过桌面 Update 控件交给 App Installer 更新。
 Hermes 先下载本地描述文件，再停止自己的后端、退出并等待包替换。
 它不依赖 `ms-appinstaller:` URL 协议。商店版本由 Microsoft Store 更新。
+软件包体积与更新耗时见 [捆绑桌面应用更新](../getting-started/updating.md#bundled-desktop-updates)。
 
 `Hermes-Setup.exe` 是另一种引导安装程序，会下载并配置源码安装。
 不要把它与自包含 MSIX 混为一谈。
@@ -205,9 +206,9 @@ hermes gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pid
 
 ## 浏览器工具
 
-内置浏览器后端使用 PM 管理的 `agent-browser` 和 Chromium。
-Browser Use 则通过 `hermes tools` 配置自己的 CLI。
-ARM64 Windows 上的 Chromium/agent-browser 可以使用 x64 模拟，这与原生 Python 不同。
+浏览器工具（`browser_exec`）是 Hermes Python 环境的一部分。
+本地浏览时，Hermes 启动 PM 安装的固定版本 Chromium（缺失时运行 `hermes pm install chromium`）；设置 `browser.executable_path` 可使用其他 Chromium 系程序。云端浏览器在 `hermes tools` 中选择。
+ARM64 Windows 上固定的 Chromium 是 x64 构建，通过 Windows 的 x64 模拟运行，这与原生 Python 不同。
 详见 [浏览器自动化](./features/browser.md)。
 
 ## 在 Windows 上运行 Hermes — 实用说明
@@ -290,10 +291,7 @@ hermes uninstall
 你只在当前进程中设置了它；请关闭并重新打开 shell，或在系统属性 → 环境变量中以用户作用域设置。在新 PowerShell 窗口中用 `echo $env:EDITOR` 验证。
 
 **浏览器工具启动了，但工具调用超时。**
-运行 `hermes doctor` 和 `hermes pm doctor`，并通过 `hermes tools` 检查所选浏览器后端。不要向签名包写入另一个 Playwright 版本。
-
-**`agent-browser` 报奇怪的 Node 版本错误。**
-运行 `hermes pm doctor` 并检查当前 Hermes 入口。PM 提供固定的 Node 版本，不要为了修复 Hermes 而删除其他程序使用的系统 Node。
+运行 `hermes doctor` 和 `hermes pm doctor`，并通过 `hermes tools` 检查所选浏览器提供商。首次启动 Chromium 较慢时，可通过 `browser.command_timeout`（启动超时下限，单位秒）放宽时间。不要向签名包写入另一个 Playwright 版本。
 
 **CLI 中中文/日文/阿拉伯文字符显示为 `?`。**
 UTF-8 stdio 垫片未激活。检查 `HERMES_DISABLE_WINDOWS_UTF8` 是否**未**设置（`Get-ChildItem env:HERMES_DISABLE_WINDOWS_UTF8`）。如果该变量为空但仍然看到 `?`，控制台宿主（非常旧的 `cmd.exe`）可能完全不支持 UTF-8——请切换到 Windows Terminal。

@@ -15,17 +15,25 @@ History:
 
 from __future__ import annotations
 
+import contextlib
+from pathlib import Path
+from types import SimpleNamespace
+
 from tui_gateway import server
 
 
-class _StubDB:
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls: list[dict] = []
+class _StubStore:
+    """Storage handle double: ``sessions.list_sessions`` answers ``rows`` as listing entries."""
 
-    def list_sessions_rich(self, **kwargs):
-        self.calls.append(kwargs)
-        return list(self.rows)
+    def __init__(self, rows, home: Path):
+        self.rows = rows
+        self.calls: list[tuple] = []
+        self.scope = SimpleNamespace(profile_dir=home)
+        self.sessions = SimpleNamespace(list_sessions=self._list_sessions)
+
+    def _list_sessions(self, query, window, *, compact_rows=False):
+        self.calls.append((query, window, compact_rows))
+        return tuple(SimpleNamespace(as_list_row=lambda row=row: dict(row)) for row in self.rows)
 
 
 def _call(limit: int | None = None):
@@ -39,7 +47,7 @@ def _call(limit: int | None = None):
     })
 
 
-def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
+def test_session_list_surfaces_all_user_facing_sources(monkeypatch, tmp_path):
     """acp / webhook / custom sources should all appear; only ``tool`` is hidden."""
     rows = [
         {"id": "tui-1", "source": "tui", "started_at": 9},
@@ -50,8 +58,9 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
         {"id": "webhook-1", "source": "webhook", "started_at": 4},
         {"id": "custom-1", "source": "my-custom-source", "started_at": 3},
     ]
-    db = _StubDB(rows)
-    monkeypatch.setattr(server, "_get_db", lambda: db)
+    store = _StubStore(rows, tmp_path)
+    monkeypatch.setattr(server, "_get_db", lambda: store)
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(store))
 
     resp = _call(limit=10)
     ids = [s["id"] for s in resp["result"]["sessions"]]

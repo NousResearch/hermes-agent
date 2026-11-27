@@ -1,3 +1,4 @@
+import { arCronControl } from './ar_cron_control'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCommandCenter = {
@@ -163,9 +164,28 @@ export const arCommandCenter = {
     noModelUsage: 'لا يوجد استخدام نماذج',
     topSkills: 'أكثر المهارات استخداما',
     noSkillActivity: 'لا يوجد نشاط مهارات',
-    actions: count => `${count} إجراء`
+    actions: count => `${count} إجراء`,
+    maintenance: {
+      debugShareConfirm: 'رفع تقرير التصحيح إلى خدمة لصق عامة؟',
+      debugShareConfirmDesc:
+        'يرفع ملخصا إلى خدمة لصق عامة: إصدارات Hermes وPython ونظام التشغيل، وأسماء المنصات المتصلة ومجموعات الأدوات، وأسماء مفاتيح الإعداد (دون قيمها)، وأعداد التحذيرات والأخطاء. لا يحتوي على أي أسطر من السجلات أو نصوص الرسائل. تُحذف اللصقات تلقائيا بعد 6 ساعات؛ وإذا تعذّر الوصول إلى paste.rs فإن البديل dpaste.com يبقيها عامة ليوم واحد ولا يمكن حذفها قبل ذلك.'
+    }
   },
   messaging: {
+    catalog: {
+      sectionTitle: 'متاح للتثبيت',
+      badges: { official: 'رسمي', verified: 'موثّق' },
+      notInstalled: 'غير مثبّت',
+      intro: (name: string) => `${name} إضافة من كتالوج Hermes. يفعّلها التثبيت، ثم يمكنك إدخال بيانات اعتمادها هنا.`,
+      disclosure: 'إفصاح:',
+      install: 'تثبيت',
+      installing: 'جارٍ التثبيت…',
+      installed: (name: string) => `تم تثبيت ${name}`,
+      installedDetail: 'أدخل بيانات الاعتماد لربطها.',
+      installFailed: (name: string) => `تعذّر تثبيت ${name}`,
+      lazyOff: 'التثبيت التلقائي للإضافات متوقف (security.allow_lazy_installs)، لذا لا يثبّتها Hermes من هنا.',
+      runCommand: 'ثبّتها من الطرفية:',
+    },
     search: 'بحث',
     statusFilter: {
       all: 'الكل',
@@ -195,6 +215,32 @@ export const arCommandCenter = {
     restartNow: 'إعادة التشغيل الآن',
     restarting: 'جارٍ إعادة التشغيل…',
     restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'لا حاجة لرمز بوت',
+      intro: (platform: string) => `يصل ${platform} إلى هذا الوكيل عبر بوت Hermes المشترك. اربط حسابك في ${platform} ثم راسل البوت للتحدث مع وكيلك.`,
+      link: (platform: string) => `ربط ${platform}`,
+      linkAnother: (platform: string) => `ربط حساب ${platform} آخر`,
+      linkedAccounts: 'الحسابات المرتبطة',
+      unlink: 'إلغاء الربط',
+      unlinkFailed: 'تعذر إلغاء ربط هذا الحساب',
+      stepOpen: (platform: string) => `1. امسح الرمز بهاتفك، أو افتح البوت في ${platform}.`,
+      stepSend: '2. أرسل هذه الرسالة إلى البوت من الحساب الذي تريد ربطه:',
+      open: (platform: string) => `فتح ${platform}`,
+      copy: 'نسخ الرسالة',
+      copied: 'تم النسخ',
+      copyFailed: (command: string) => `تعذر النسخ. اكتب ${command} بدلًا من ذلك.`,
+      waiting: 'بانتظار وصول رسالتك إلى البوت. الرمز يعمل مرة واحدة.',
+      linked: (platform: string) => `تم ربط حساب ${platform}. راسل البوت للتحدث مع وكيلك.`,
+      expired: 'انتهت صلاحية الرمز قبل استخدامه. احصل على رمز جديد وحاول مرة أخرى.',
+      refused: (platform: string) => `رفض ${platform} الربط. احصل على رمز جديد وحاول مرة أخرى.`,
+      qrAlt: (platform: string) => `رمز QR لبوت ${platform} المشترك`,
+      managed: 'تتم إدارته عبر Team Gateway',
+      managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`,
+      managedIntro: 'تُربط حسابات هذا الوكيل من Nous Portal.',
+      openPortal: 'اربط الحسابات في Nous Portal',
+      noNewAccount: (platform: string) => `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
+    },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',
       subtitle: 'كلا الخيارين يربط بوتًا تتحكم به ويحفظ بياناته في هذا التثبيت من Hermes فقط.',
@@ -397,18 +443,17 @@ export const arCommandCenter = {
     exported: 'تم تصدير الملف الشخصي',
     failedImport: 'فشل استيراد الملف الشخصي',
     failedExport: 'فشل تصدير الملف الشخصي',
+    exportNeedsHost: name => `لا يمكن للمتصفح حفظ أرشيف الملف الشخصي. على مضيف Hermes، شغّل: hermes profile export ${name}`,
     allProfiles: 'كل الملفات الشخصية',
     showAllProfiles: 'إظهار كل الملفات الشخصية',
+    notServedHere: 'غير متاح هنا',
     switchToProfile: name => `التبديل إلى ${name}`,
     switchToConnection: name => `التبديل إلى ${name}`,
     switchConnectionFailed: name => `تعذّر الاتصال بـ ${name}`,
     manageProfiles: 'إدارة الملفات الشخصية',
     fleet: {
       localDevice: 'هذا الجهاز (خلفية محلية — تثبّت Hermes إن كان مفقودًا، وإلا تفتح جلسة جديدة)',
-      switchDeviceTitle: 'التبديل إلى هذا الجهاز؟',
-      switchDeviceDesc: 'يفتح هذا جلسة جديدة على هذا الحاسوب. تبقى المحادثة الحالية على البوابة الأخرى.',
-      switchDeviceConfirm: 'تبديل',
-      installDeviceTitle: 'التبديل إلى هذا الجهاز؟',
+      installDeviceTitle: 'تثبيت Hermes على هذا الجهاز؟',
       installDeviceDesc: 'سيُثبَّت Hermes محليًا ثم تُفتح جلسة جديدة على هذا الحاسوب. لا يبدأ التثبيت قبل التأكيد.',
       installDeviceConfirm: 'تثبيت محليًا',
       connectExistingInstead: 'الاتصال بموجود بدلًا من ذلك'
@@ -416,6 +461,8 @@ export const arCommandCenter = {
     remoteOverride: {
       menuItem: 'الاتصال بمضيف بعيد…',
       badge: (host: string) => `يعمل على ${host}`,
+      runHere: 'التشغيل على هذا الحاسوب…',
+      sandboxed: 'معزول',
       title: (profile: string) => `ربط ${profile} بمضيف بعيد`,
       description: 'ستعمل جلسات هذا الملف الشخصي على خادم Hermes البعيد الذي تحدده، بدلاً من هذا الجهاز.',
       urlLabel: 'العنوان البعيد',
@@ -518,6 +565,7 @@ export const arCommandCenter = {
     failedRename: 'فشل إعادة التسمية'
   },
   cron: {
+    control: arCronControl,
     close: 'إغلاق',
     search: 'بحث',
     loading: 'جار التحميل...',

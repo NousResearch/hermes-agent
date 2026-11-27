@@ -19,6 +19,7 @@ export {
 export type { ProfileScope, ResolvedOwner } from './api/client'
 export * from './api/config'
 export * from './api/cron'
+export * from './api/delegation'
 export * from './api/local-models'
 export * from './api/mcp'
 export * from './api/messaging'
@@ -29,6 +30,7 @@ export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
 export * from './api/toolsets'
+export * from './api/webapp-access'
 
 export type {
   ActionResponse,
@@ -76,6 +78,8 @@ export type {
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
+  MessagingCatalogInstallResponse,
+  MessagingCatalogPlatform,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -99,6 +103,10 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
   SessionCreateResponse,
   SessionInfo,
   SessionMessage,
@@ -124,10 +132,13 @@ export type {
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,
-  ToolsetModelsResponse,
+  ToolsetModelsResponse
+} from '@/types/hermes'
+export type {
   WebhookCreatePayload,
   WebhookCreateResponse,
   WebhookEnableResponse,
   WebhookRoute,
+  WebhookSignature,
   WebhooksResponse
-} from '@/types/hermes'
+} from '@/types/webhooks'

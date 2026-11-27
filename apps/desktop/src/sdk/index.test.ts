@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ackComposerInsert } from '@/app/chat/composer/focus'
+import { registry } from '@/contrib/registry'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
 import { $selectedStoredSessionId, setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
@@ -419,5 +420,27 @@ describe('host.sessions session-list mutations', () => {
 
     host.sessions.setColor('row-1', null)
     expect($sessionColorOverrides.get()).toEqual({})
+  })
+})
+
+describe('host.openWorkspace approval scope', () => {
+  const paneData = (id: string) =>
+    registry.getArea('panes').find(pane => pane.id === `plugin-workspace:${id}`)?.data as
+      undefined | { approvalScope?: string }
+
+  it('records a declared per-profile scope and drops it when the same id reopens without one', () => {
+    const render = () => null
+    const close = host.openWorkspace('scope-probe', { approvalScope: 'per-profile', render })
+
+    try {
+      expect(paneData('scope-probe')?.approvalScope).toBe('per-profile')
+      host.openWorkspace('scope-probe', { render })
+      expect(paneData('scope-probe')).toBeDefined()
+      expect(paneData('scope-probe')?.approvalScope).toBeUndefined()
+    } finally {
+      close()
+    }
+
+    expect(paneData('scope-probe')).toBeUndefined()
   })
 })

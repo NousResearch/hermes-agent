@@ -1,10 +1,11 @@
 """Responses retries observe their original admission before resolving mutable conversation names."""
+from dataclasses import asdict
 from functools import partial
 import hashlib
 import logging
 import uuid
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence import AuthorityRefusal
 
 
 def request_binding(adapter, request, durable_key):
@@ -14,54 +15,66 @@ def request_binding(adapter, request, durable_key):
         keys=('request', 'declared_session_key'))
 
 
-def _request_admission_rows(db, request_id):
-    """A lost derivative pointer cannot erase accepted identity on retirement."""
-    from hermes_state_terminal import terminal_api_admissions
-    with db._read_ctx() as conn:
-        rows = [dict(row) for row in conn.execute(
-            "SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (request_id,))]
-        rows.extend(terminal_api_admissions(conn, request_id))
-    return rows
-
-
-def find_admission(adapter, durable_key, request_id):
+def _lookup_admission(authority, store, durable_key, request_id):
     """Scope comes from authenticated profile/key identity, never a caller-supplied session id.
+    -> ``(authority, ref, row)`` or None. Store and state.db reads only (plus the pointer repair):
+    run it under ``store.atomically`` in a worker, never on the loop, whose wait on the store lock
+    would last for a concurrent response's whole persistence.
 
     The compact pointer survives response-cache eviction and transcript retirement. A process
     loss between the authority commit and pointer commit is repaired from that exact request id.
     """
-    from gateway.session_authorities import require_active_authority
+    from gateway.platforms.api_server_store import authority_store
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import get_session_admission, _row
-    authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_session_db())
-    store = adapter._current_response_store()
+    admissions = authority_store(authority).admissions
     admission_id = store.request_admission(durable_key[0])
     if admission_id:
-        row = get_session_admission(authority.db, admission_id=admission_id)
-        if row is None:
+        record = admissions.get(admission_id=admission_id)
+        if record is None:
             # The admission's deletion tombstone aged out: the key is spent, never a new request.
-            raise RuntimeStoreError('admission_conflict')
+            raise AuthorityRefusal('admission_conflict')
     else:
-        rows = _request_admission_rows(authority.db, request_id)
-        if len(rows) > 1:
-            raise RuntimeStoreError('admission_conflict')
-        if not rows:
+        # A lost derivative pointer cannot erase accepted identity on retirement.
+        records = admissions.match(principal_id='api', request_id=request_id, include_retired=True)
+        if len(records) > 1:
+            raise AuthorityRefusal('admission_conflict')
+        if not records:
             return None
-        row = _row(rows[0])
+        record = records[0]
+    row = asdict(record)
     if row['principal_id'] != 'api' or row['request_id'] != request_id:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if store.request_created_at(durable_key[0]) is None:
         # An older admission with no wire fingerprint cannot authorize a changed request just
         # because its caller reused the same key. Existing completed cache records still replay.
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     store.bind_request_admission(durable_key[0], row['admission_id'])
-    ref = SessionRef(authority.profile_id, row['target_session_id'])
-    if row['status'] in {'queued', 'started'}:
+    return authority, SessionRef(authority.profile_id, row['target_session_id']), row
+
+
+def _restore_admitted(found):
+    """The owner-loop half of a found admission: a live one's session is restored and checked."""
+    if found is not None and found[2]['status'] in {'queued', 'started'}:
         from gateway.session_api import restore_api_session
         from gateway.session_api_turn import check_api_turn
+        authority, ref, row = found
         restore_api_session(authority, ref.session_id)
         check_api_turn(authority, ref, row['payload'])
-    return authority, ref, row
+    return found
+
+
+def _lookup_call(adapter, durable_key, request_id):
+    """-> ``(store, call)``: ``store.atomically(*call)`` is one ``_lookup_admission`` unit."""
+    from gateway.session_authorities import require_active_authority
+    authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_store())
+    store = adapter._current_response_store()
+    return store, (_lookup_admission, authority, store, durable_key, request_id)
+
+
+async def find_admission(adapter, durable_key, request_id):
+    """``_lookup_admission`` off the loop, then the session restore on it."""
+    store, call = _lookup_call(adapter, durable_key, request_id)
+    return _restore_admitted(await store.off_loop(*call))
 
 
 def admitted_context(admitted, *, replay=False):
@@ -79,12 +92,13 @@ def admitted_context(admitted, *, replay=False):
 
 def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
     """The final lookup and the admission are one API admission drive (``run_steps_off_loop``
-    serializes them per authority): simultaneous observers converge on one admission."""
+    serializes them per authority): simultaneous observers converge on one admission. Every
+    store call is a yielded step, so a worker runs it: only the session restore stays on the loop."""
     from gateway.session_api_turn import admit_api_steps
-    store = adapter._current_response_store()
-    if not store.bind_request_key(durable_key[0], binding, model=model):
-        raise RuntimeStoreError('admission_conflict')
-    admitted = find_admission(adapter, durable_key, request_id)
+    store, lookup = _lookup_call(adapter, durable_key, request_id)
+    if not (yield partial(store.bind_request_key, durable_key[0], binding, model=model)):
+        raise AuthorityRefusal('admission_conflict')
+    admitted = _restore_admitted((yield partial(store.atomically, *lookup)))
     if admitted is not None:
         return (*admitted, True)
     try:
@@ -94,10 +108,10 @@ def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
     except Exception:
         # A definite pre-admission refusal does not reserve a poisoned identity. If storage
         # cannot prove absence, leave the binding intact for later recovery.
-        if find_admission(adapter, durable_key, request_id) is None:
-            store.forget_unadmitted_request(durable_key[0])
+        if _restore_admitted((yield partial(store.atomically, *lookup))) is None:
+            yield partial(store.forget_unadmitted_request, durable_key[0])
         raise
-    store.bind_request_admission(durable_key[0], admitted[2]['admission_id'])
+    yield partial(store.bind_request_admission, durable_key[0], admitted[2]['admission_id'])
     return (*admitted, False)
 
 
@@ -130,13 +144,13 @@ async def _bind_successor(adapter, session_id, run_kwargs):
             await run_steps_off_loop(authority, bind_api_steps(
                 authority, session_id, walked_from=run_kwargs['walked_from'],
                 caller_key=run_kwargs['gateway_session_key']))
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             raise
         except Exception as exc:
             # A busy writer or I/O error: the caller maps store refusals only, and anything else
             # would reach the client as aiohttp's bare 500 instead of the retryable 503.
             logging.getLogger(__name__).warning('pre-stream bind of %s failed', session_id, exc_info=True)
-            raise RuntimeStoreError('storage_unavailable') from exc
+            raise AuthorityRefusal('storage_unavailable') from exc
 
 
 async def prepare_context(adapter, request, body, gateway_session_key, durable_key, scope, key):
@@ -147,12 +161,13 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
     from gateway.platforms.api_server_openai_routes import _parse_responses_input, _parse_conversation_history
     request_id = f'responses:{scope}:{key}' if durable_key else None
     if durable_key:
-        admitted = find_admission(adapter, durable_key, request_id)
+        admitted = await find_admission(adapter, durable_key, request_id)
         if admitted is not None:
             return admitted_context(admitted, replay=True), None
     previous = body.get('previous_response_id')
+    response_store = adapter._current_response_store()
     if body.get('conversation'):
-        previous = adapter._current_response_store().get_conversation(body['conversation'])
+        previous = await response_store.off_loop(response_store.get_conversation, body['conversation'])
     messages, error = _parse_responses_input(body['input'])
     if error is not None:
         return None, error
@@ -164,7 +179,7 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
     stored_session_id = chain_root = None
     instructions = body.get('instructions')
     if not history and previous:
-        stored = adapter._current_response_store().get(previous)
+        stored = await response_store.off_loop(response_store.get, previous)
         if stored is None:
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))

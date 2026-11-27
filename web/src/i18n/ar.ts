@@ -92,6 +92,14 @@ export const ar = defineLocale({
     webUi: "واجهة الويب",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "مزوّد الذاكرة النشط",
+    noProvider: "لا يوجد — المدمجة فقط",
+    builtinLayer: "الطبقة المدمجة",
+    builtinNote: "MEMORY.md وUSER.md هما ذاكرة Hermes الخاصة، مستقلتان عن أي مزوّد خارجي. يُحمَّل كلاهما في الجلسات افتراضيًا؛ ويعطّل مفتاحا الإعداد (memory.memory_enabled / memory.user_profile_enabled) كلًّا منهما. يضيف المزوّد إليهما ولا يستبدلهما أبدًا.",
+  },
+
   status: {
     actionFailed: "فشلت الإجراء",
     actionFinished: "انتهى",
@@ -302,6 +310,13 @@ export const ar = defineLocale({
     authRequired: "مصادقة مطلوبة",
     authRequiredHint: "شغِّل هذا الأمر للمصادقة:",
     updateGit: "سحب من Git",
+    updateAll: "تحديث الكل",
+    updatingAll: "جارٍ تحديث المكوِّنات…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `تم التحديث ${updated}، يحتاج مراجعة ${needsReview}، فشل ${failed}`,
+    autoUpdate: "التحديث التلقائي",
+    autoUpdateDesc: (hours: number) =>
+      `طبّق تحديثات المكوِّنات تلقائيًا عند فحص البوابة (كل ${hours} ساعة). تُحمَّل الشيفرة المحدّثة في الجلسات الجديدة.`,
     versionBadge: "الإصدار",
     showInSidebar: "إظهار في الشريط الجانبي",
     hideFromSidebar: "إخفاء من الشريط الجانبي",
@@ -712,5 +727,18 @@ export const ar = defineLocale({
       "مسار مساحة العمل (اختياري، مستنتج من المكلَّف إذا كان فارغًا)",
     logTruncated: "(عرض آخر 100 كيلوبايت — السجل الكامل في ",
     logAt: ")",
+  },
+  channelsCatalog: {
+    title: "متاح للتثبيت",
+    hint: "منصات مراسلة من كتالوج إضافات Hermes. يؤدي التثبيت إلى إضافة الإضافة وتفعيلها ثم فتح إعدادها.",
+    badgeOfficial: "رسمي",
+    badgeVerified: "موثّق",
+    disclosure: "إفصاح:",
+    lazyInstallsOff: "التثبيت التلقائي للإضافات متوقف (security.allow_lazy_installs).",
+    run: "شغّل:",
+    install: "تثبيت",
+    installing: "جارٍ التثبيت…",
+    installed: (title: string) => `تم تثبيت ${title}. أدخل بيانات الاعتماد الخاصة بها لربطها.`,
+    installFailed: (title: string) => `تعذّر تثبيت ${title}`,
   },
 });

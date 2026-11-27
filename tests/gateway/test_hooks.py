@@ -20,20 +20,13 @@ def _create_hook(hooks_dir, hook_name, events, handler_code):
     return hook_dir
 
 
-
-
-def _patch_no_builtins(reg):
-    """Suppress built-in hook registration so tests only exercise user-hook discovery."""
-    return patch.object(reg, "_register_builtin_hooks")
-
-
 class TestDiscoverAndLoad:
     def test_loads_valid_hook(self, tmp_path):
         _create_hook(tmp_path, "my-hook", '["agent:start"]',
                       "def handle(event_type, context):\n    pass\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 1
@@ -48,7 +41,7 @@ class TestDiscoverAndLoad:
         (hook_dir / "handler.py").write_text("def handle(e, c): pass\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0

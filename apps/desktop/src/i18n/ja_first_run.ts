@@ -28,6 +28,8 @@ export const jaFirstRun: FirstRunCopy = {
   skip: 'セットアップをスキップ',
   skipTip: 'ガイド付きセットアップを終了し、新しいチャットを開きます。',
   skipFailed: 'セットアップをスキップできませんでした',
+  slashOffTitle: 'セットアップ中はスラッシュコマンドを使えません',
+  slashOffBody: 'セットアップが終わると通常どおり使えます。',
   localModel: {
     title: 'このコンピューターはモデルをローカルで実行できます',
     text: (model, size) =>

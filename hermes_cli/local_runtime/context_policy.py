@@ -305,7 +305,9 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
     else:
         args += ["-b", str(PREFILL_UBATCH), "-ub", str(PREFILL_UBATCH)]
     if flash_attention:
-        args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
+        # q8_0 blocks are 32 elements and cannot serve head dims that 32 does not divide.
+        kv_type = "q8_0" if profile.kv_q8_ok else "f16"
+        args += ["-ctk", kv_type, "-ctv", kv_type, "-fa", "on"]
     if decision.spilled and not uma:
         args += spill_overrides(profile, decision.spill_bytes)
     return args

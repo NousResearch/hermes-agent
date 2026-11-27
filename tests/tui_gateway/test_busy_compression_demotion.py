@@ -36,17 +36,18 @@ def _session(agent=None, **extra):
 # ── _session_compression_in_flight ────────────────────────────────────────
 
 def _patch_db(monkeypatch, holder):
-    class _Db:
-        def get_compression_lock_holder(self, sid):
+    class _Coordination:
+        def get_compression_lock_holder(self, *, session_id):
             return holder
 
     import contextlib
 
     @contextlib.contextmanager
     def _fake_db(session):
-        yield _Db()
+        yield types.SimpleNamespace(coordination=_Coordination())
 
     monkeypatch.setattr(server, "_session_db", _fake_db)
+    monkeypatch.setattr(server, "_persistence_for", contextlib.nullcontext)
 
 
 def test_compression_in_flight_true_when_lock_held(monkeypatch):

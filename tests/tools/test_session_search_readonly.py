@@ -8,7 +8,8 @@ import sqlite3
 
 def test_search_does_not_create_current_storage_for_empty_or_foreign_reads(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     import tools.session_search_tool
     from tools.registry import registry
 
@@ -24,10 +25,10 @@ def test_search_does_not_create_current_storage_for_empty_or_foreign_reads(tmp_p
         assert empty["success"] is False
         other = home / "profiles" / "reader-target"
         other.mkdir(parents=True)
-        db = SessionDB(other / "state.db")
+        db = open_persistence(profile_scope(home=other))
         try:
-            db.create_session("foreign-read", source="cli")
-            db.append_message("foreign-read", role="user", content="owned target marker")
+            seed_session(db, "foreign-read", "cli")
+            seed_messages(db, "foreign-read", {"role": "user", "content": "owned target marker"})
         finally:
             db.close()
         for args in [
@@ -44,7 +45,8 @@ def test_search_does_not_create_current_storage_for_empty_or_foreign_reads(tmp_p
 
 def test_search_reads_live_storage_without_a_write_commit(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     import tools.session_search_tool
     from tools.registry import registry
 
@@ -52,11 +54,11 @@ def test_search_reads_live_storage_without_a_write_commit(tmp_path, monkeypatch)
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     token = set_hermes_home_override(home)
-    owner = SessionDB(home / "state.db")
+    owner = open_persistence(profile_scope(home=home), eager=True)
     observer = sqlite3.connect(home / "state.db")
     try:
-        owner.create_session("live-read", source="cli")
-        owner.append_message("live-read", role="user", content="live reader marker")
+        seed_session(owner, "live-read", "cli")
+        seed_messages(owner, "live-read", {"role": "user", "content": "live reader marker"})
         before = observer.execute("PRAGMA data_version").fetchone()[0]
         result = json.loads(registry.get_entry("session_search").handler({"session_id": "live-read"}))
         assert result["success"] is True, result

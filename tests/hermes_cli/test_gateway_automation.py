@@ -25,17 +25,17 @@ class _Conn:
 def cli(tmp_path, monkeypatch):
     from hermes_cli import goals
     from hermes_cli.gateway_session_store import GatewaySessionStore
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=tmp_path / 'owner.db')
-    monkeypatch.setattr(goals, '_get_session_db', lambda: db)  # the "gateway's" store
+    from persistence_assembly import open_persistence, profile_scope
+    store_handle = open_persistence(profile_scope(home=tmp_path))
+    monkeypatch.setattr(goals, '_get_session_db', lambda: store_handle)  # the "gateway's" store
     conn = _Conn()
     store = GatewaySessionStore.__new__(GatewaySessionStore)
     store.connection = conn
     from hermes_cli.cli_loops_mixin import CLILoopsMixin
     obj = CLILoopsMixin.__new__(CLILoopsMixin)
     obj._session_db, obj._gateway_session_open, obj.session_id = store, True, 'sid-1'
-    yield SimpleNamespace(cli=obj, conn=conn, db=db)
-    db.close()
+    yield SimpleNamespace(cli=obj, conn=conn, db=store_handle)
+    store_handle.close()
 
 
 def test_goal_manager_is_the_gateways(cli):
@@ -45,7 +45,7 @@ def test_goal_manager_is_the_gateways(cli):
     state = mgr.set('ship it')
     assert state.goal == 'ship it' and mgr.is_active()
     assert mgr.status_line() == '⊙ Goal (active, 0/20 turns): ship it'
-    assert json.loads(cli.db.get_meta('goal:sid-1'))['goal'] == 'ship it'
+    assert json.loads(cli.db.state_meta.get('goal:sid-1'))['goal'] == 'ship it'
     with pytest.raises(IndexError, match='index out of range'):
         mgr.remove_subgoal(4)
     assert cli.cli._get_goal_manager() is mgr  # cached per session id, like main
@@ -79,6 +79,31 @@ def test_idle_polls_cost_no_round_trip(cli):
     loop.set('check', interval_seconds=60, times=1)
     assert loop.is_due() and loop.fire_tick().startswith('[/loop wakeup #1')
     assert loop.complete_tick('done')['message'] == '✓ Loop finished — ran 1/1 times.'
+
+
+def test_the_watchdog_fires_a_heartbeat_another_viewer_resumed(cli, monkeypatch):
+    """The poller stands down for a CLI running its watchdog, so the watchdog must see a resume made elsewhere."""
+    import queue
+    import time
+    from hermes_cli import cli_loops_mixin
+    from hermes_cli.gateway_automation import GatewayHeartbeatManager
+    from hermes_cli.heartbeat import load_heartbeat, save_heartbeat
+    from tests.waiting import wait_until
+    hb = cli.cli._get_heartbeat_manager()
+    hb.set('pulse', 60)
+    hb.pause()  # /heartbeat pause in this CLI
+    GatewayHeartbeatManager('sid-1', cli.conn).resume()  # Desktop resumes it
+    state = load_heartbeat('sid-1')
+    state.last_fired_at -= 120  # and an interval passes
+    save_heartbeat('sid-1', state)
+
+    cli.cli._pending_input, cli.cli._agent_running = queue.Queue(), False
+    # One poll: the sleep before the tick asks the loop to exit after it.
+    monkeypatch.setattr(cli_loops_mixin, 'time', SimpleNamespace(
+        sleep=lambda _s: setattr(cli.cli, '_should_exit', True), time=time.time))
+    cli.cli._start_heartbeat_watchdog()
+    wait_until(lambda: not cli.cli._heartbeat_watchdog_started, what='the watchdog exited')
+    assert [p for p in cli.cli._pending_input.queue if 'pulse' in p]
 
 
 def test_goal_draft_drafts_on_the_gateway(cli, monkeypatch):

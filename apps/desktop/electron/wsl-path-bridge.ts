@@ -13,11 +13,101 @@ const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/
 // `/mnt/c` and `/mnt/c/...` (drvfs default automount root).
 const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
 
-// `/c/...`, `/cygdrive/c/...`, `/mnt/c/...` (Git Bash, Cygwin, drvfs).
-const SHELL_DRIVE_RE = /^\/(?:cygdrive\/|mnt\/)?([a-z])(?:\/|$)/i
+// `/c/...`, `/cygdrive/c/...`, `/mnt/c/...` (Git Bash, Cygwin, drvfs) and the
+// `/E:/...` spelling some shells emit for `E:\...` — without the `:` branch a
+// perfectly valid Windows path fell through to the WSL branch below and became
+// `\\wsl.localhost\<distro>\E:\...`.
+//
+// The colon form is its own alternative so it can only follow a bare letter,
+// and it must be followed by a separator (or end the string). `/E:Users` is a
+// valid POSIX filename under WSL, and `/mnt/c:/notes.md` is a POSIX path whose
+// directory is literally `c:` — neither is the `C:` drive.
+const SHELL_DRIVE_RE = /^\/(?:(?:cygdrive\/|mnt\/)?([a-z])|([a-z]):)(?:\/+|$)/i
 
 let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
+let cachedWslAvailability: null | boolean = null
+let wslAvailabilityRecheckAt = 0
+
+// A registry read that timed out or failed to start is not an answer: ask again
+// after this long instead of keeping "no WSL" for the whole run.
+const WSL_AVAILABILITY_RETRY_MS = 30_000
+
+const LXSS_ROOTS = [
+  ['HKCU', 'HKEY_CURRENT_USER'],
+  ['HKLM', 'HKEY_LOCAL_MACHINE']
+].map(([short, long]) => ({
+  long: `${long}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss`,
+  short: `${short}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss`
+}))
+
+/**
+ * True when `reg.exe query <Lxss root> /s` output holds a registered
+ * distribution: a non-empty `DistributionName` under an immediate `{guid}`
+ * subkey. An empty Lxss shell or a stale `DefaultDistribution` on the root is
+ * not a registration. reg.exe prints full HKEY_* names even when queried with
+ * the abbreviated hive, so both spellings are accepted.
+ */
+export function hasRegisteredWslDistribution(output: string, root: { long: string; short: string }): boolean {
+  const prefixes = [root.short, root.long].map(prefix => `${prefix.toLowerCase()}\\`)
+  let inDistribution = false
+
+  for (const line of output.split(/\r?\n/)) {
+    const key = line.trim().toLowerCase()
+
+    if (key.startsWith('hkey_') || key.startsWith('hkcu\\') || key.startsWith('hklm\\')) {
+      const prefix = prefixes.find(candidate => key.startsWith(candidate))
+      const tail = prefix ? key.slice(prefix.length) : ''
+      inDistribution = Boolean(tail) && !tail.includes('\\')
+    } else if (inDistribution && /^\s*DistributionName\s+REG_SZ\s+\S/i.test(line)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
+ * Whether this Windows host has WSL with at least one distribution. Reads the
+ * registry only (HKCU first, HKLM fallback): launching the wsl.exe stub or
+ * touching a \\\\wsl$ share on a WSL-less host pops the "install WSL" console
+ * (#128770). A missing key or an access error is a definite "no" for the run;
+ * a timeout or a failed start counts as "no" until it is checked again.
+ */
+function isWslAvailable(): boolean {
+  if (cachedWslAvailability !== null && (!wslAvailabilityRecheckAt || Date.now() < wslAvailabilityRecheckAt)) {
+    return cachedWslAvailability
+  }
+
+  if (!IS_WINDOWS) {
+    cachedWslAvailability = true
+
+    return true
+  }
+
+  let uncertain = false
+
+  cachedWslAvailability = LXSS_ROOTS.some(root => {
+    try {
+      const output = execFileSync('reg.exe', ['query', root.short, '/s'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 1000,
+        windowsHide: true
+      })
+
+      return hasRegisteredWslDistribution(output, root)
+    } catch (error) {
+      // reg.exe ran and exited non-zero (missing key, access denied) only when an exit status is present.
+      uncertain ||= !(error instanceof Error && 'status' in error && typeof error.status === 'number')
+
+      return false
+    }
+  })
+  wslAvailabilityRecheckAt = !cachedWslAvailability && uncertain ? Date.now() + WSL_AVAILABILITY_RETRY_MS : 0
+
+  return cachedWslAvailability
+}
 
 /**
  * WSL path eligibility belongs to the backend profile that produced the path.
@@ -49,10 +139,17 @@ export function setWslBridgeActive(active: boolean): void {
   setWslBridgeProfileState(activeWslBridgeProfile, active)
 }
 
-export function isWslBridgeActive(profile?: null | string): boolean {
+/** Whether this profile's backend is local, so its POSIX paths belong to this host. */
+function isWslBridgeLocal(profile?: null | string): boolean {
   const key = profile == null ? activeWslBridgeProfile : normalizeWslBridgeProfile(profile)
 
   return wslBridgeProfiles.get(key) ?? true
+}
+
+export function isWslBridgeActive(profile?: null | string): boolean {
+  // A local backend doesn't imply this Windows host has WSL; remote
+  // profiles short-circuit before the registry query.
+  return isWslBridgeLocal(profile) && isWslAvailable()
 }
 
 /**
@@ -174,13 +271,21 @@ export function resolvePickerDefaultPath(
   // Remote-gateway POSIX paths can't be opened via wsl.exe — no-op the bridge
   // so the native dialog gets the raw path (it falls back gracefully) instead
   // of triggering a wsl.exe spawn / install prompt. (#66433)
-  if (!isWslBridgeActive(profile)) {
+  if (!isWslBridgeLocal(profile)) {
     return defaultPath
   }
 
   const value = String(defaultPath).trim()
 
-  return value.startsWith('/') && !WIN_DRIVE_RE.test(value) ? wslPosixToWindowsAccessible(value, distro) : defaultPath
+  if (!value.startsWith('/') || WIN_DRIVE_RE.test(value)) {
+    return defaultPath
+  }
+
+  // `/mnt/<drive>` maps to the drive itself and needs no WSL; any other POSIX
+  // path waits on a registered distribution.
+  return WSL_MOUNT_RE.test(value.replace(/\\/g, '/')) || isWslAvailable()
+    ? wslPosixToWindowsAccessible(value, distro)
+    : defaultPath
 }
 
 /**
@@ -198,7 +303,11 @@ export function shellDriveToNativePath(value: string, exists: (path: string) => 
     return null
   }
 
-  const nativePath = `${drive[1].toUpperCase()}:/${value.slice(drive[0].length)}`
+  // Group 1 is the slash spelling at any prefix depth; group 2 is the bare
+  // `C:` colon spelling, which has no prefix.
+  const letter = drive[1] ?? drive[2]
+
+  const nativePath = `${letter.toUpperCase()}:/${value.slice(drive[0].length)}`
 
   return exists(nativePath) ? nativePath : null
 }

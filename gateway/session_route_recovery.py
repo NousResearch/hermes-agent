@@ -12,11 +12,10 @@ every cold row of this profile that carries a ``session_key`` and a messaging-pl
   else its columns, rebuild the source.
 
 Either way the source is revived through ``_restored_source``, so delivery stays pinned to the
-persisted receiving bot. A row the lane moved past mounts READ-ONLY (``LiveSession.superseded``): its
-only route is the lane's current key, which names the newer conversation, so a Stop, an agent lookup
-or a turn through it would act on that conversation. One gateway owns every session and never
-crosses them, so writes are refused by name (``session_superseded``) rather than given a private
-route that no adapter would deliver to (#140183 review F2). A compression continuation is never
+persisted receiving bot. A row the lane moved past mounts DETACHED (gateway/session_detached.py): the
+lane's current key names the newer conversation, so the row runs on a key of its own instead, its
+turns and Stop act on it alone and its replies reach its app viewers only, never the chat
+(Teknium's ruling: a chat's ``/new`` never locks the apps out of its old conversation). A compression continuation is never
 mounted under its physical id: the lane's turns publish to the lineage root (``logical_owner``), so
 ``session.resume`` maps it to that root, as normal admission does. Rows without a ``session_key`` (subagents) have nothing to rebuild a lane
 from. LOCAL rows (cron, CLI, TUI) restore from their private receipt and API rows from their binding
@@ -24,10 +23,11 @@ from. LOCAL rows (cron, CLI, TUI) restore from their private receipt and API row
 ``_publish_route``: a row that ended for a recoverable reason (``agent_close``, ``ws_orphan_reap``,
 ...) is mounted live too, as the lane's next message would reopen it.
 """
-import json
 from datetime import datetime
 
 from gateway.config import Platform
+from gateway.session_persistence import authority_persistence, owner_rule
+from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
 
 
 def _messaging_platform(label):
@@ -55,15 +55,15 @@ def _row_source(row, platform, profile):
     """The row's persisted origin, else its columns (``channel_directory`` reads rows the same way)."""
     from gateway.session import SessionSource
     try:
-        return SessionSource.from_dict(json.loads(row['origin_json']))
+        return SessionSource.from_dict(dict(row.origin))
     except (TypeError, ValueError, KeyError):
         pass
-    if row.get('chat_id') is None:
+    if row.chat_id is None:
         return None
     source = SessionSource(
-        platform=platform, chat_id=str(row['chat_id']), user_id=row.get('user_id'),
-        chat_type=row.get('chat_type') or 'dm', thread_id=row.get('thread_id'),
-        chat_name=row.get('display_name'))
+        platform=platform, chat_id=str(row.chat_id), user_id=row.user_id,
+        chat_type=row.chat_type or 'dm', thread_id=row.thread_id,
+        chat_name=row.display_name)
     if profile is not None:
         source.profile = profile
     return source
@@ -83,18 +83,18 @@ def _row_entry(row, platform, route, profile):
     source = _row_source(row, platform, profile)
     if source is None or source.platform != platform:
         return None
-    started = datetime.fromtimestamp(row['started_at']) if row.get('started_at') else datetime.now()
-    return SessionEntry(session_key=route, session_id=row['id'], created_at=started, updated_at=started,
+    started = datetime.fromtimestamp(row.started_at) if row.started_at else datetime.now()
+    return SessionEntry(session_key=route, session_id=row.session_id, created_at=started, updated_at=started,
                         origin=source, platform=platform, chat_type=source.chat_type,
-                        transport_profile=row.get('transport_profile'))
+                        transport_profile=row.transport_profile)
 
 
 def _mount_plan(authority, sid):
     """``(route, entry, routed)`` for a row a route or a messaging-platform row can stand for, else
     None. Reads only: ``restore_routed_session`` mounts it, the stored picker lists it."""
-    row = authority.db.get_session(sid)
-    route = row.get('session_key') if row is not None else None
-    platform = _messaging_platform(row['source']) if route else None
+    row = authority_persistence(authority).sessions.get(sid)
+    route = row.session_key if row is not None else None
+    platform = _messaging_platform(row.source) if route else None
     if platform is None or authority.logical_owner(sid) != sid:
         return None  # a compression continuation: its lineage root is the mount (session.resume maps it)
     store = authority.runner.session_store
@@ -116,12 +116,15 @@ def restore_routed_session(authority, sid):
     if plan is None:
         return None
     route, entry, routed = plan
-    superseded = routed is None and _names_another_conversation(authority, sid, route)
     authority._require_admission_open()
     # Re-pin the persisted receiving bot so delivery after a restart goes through it or nowhere,
     # never the default bot by heuristic (gateway/AGENTS.md § Identity survives the process).
     source = authority.runner._restored_source(entry)
-    authority.sessions.setdefault(sid, LiveSession(source, route, superseded=superseded, history_mount=True))
+    if sid not in authority.sessions:
+        live = authority.sessions[sid] = LiveSession(source, route)
+        if routed is None and _names_another_conversation(authority, sid, route):
+            from gateway.session_detached import detach
+            detach(authority, live, sid)  # the lane moved past it: its turns stay off the chat
     return SessionRef(authority.profile_id, sid)
 
 
@@ -133,9 +136,71 @@ def mountable(authority, sid):
 def messaging_owner_ref(authority, ref):
     """The mount a messaging row resumes on: its compression lineage root, where the lane's turns
     publish their events (``logical_owner``). Any other row keeps *ref*."""
-    row = authority.db.get_session(ref.session_id)
-    if row is None or not row.get('session_key') or _messaging_platform(row['source']) is None:
+    row = authority_persistence(authority).sessions.get(ref.session_id)
+    if row is None or not row.session_key or _messaging_platform(row.source) is None:
         return ref
     from gateway.session_contract import SessionRef
     owner = authority.logical_owner(ref.session_id)
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
+
+
+def handed_off_ref(authority, session_id):
+    """The mount of *session_id* when it is a local conversation a messaging lane took over
+    (``/handoff``, a platform ``/resume``): created by a local surface, now routed on a lane this
+    authority mounts. Its title stays the conversation's, so ``/resume <title>`` and the Bots roster's
+    registry lookup open it on that lane (#143286). None for any other row."""
+    from gateway.session_contract import SessionRef
+    from session_rules.legacy_local import client_label
+    ref = messaging_owner_ref(authority, SessionRef(authority.profile_id, session_id))
+    row = authority_persistence(authority).sessions.get(ref.session_id)
+    created = row.created_source if row is not None else None
+    # An adopted phone-app chat keeps the app's label as its created_source (bind_legacy_target).
+    if (created not in LEGACY_LOCAL_SOURCES and not client_label(created, owner_rule())) or not mountable(authority, ref.session_id):
+        return None
+    return ref
+
+
+def superseded_hand_off(authority, ref):
+    """Whether the lane that took over *ref* (a ``handed_off_ref``) has since moved on to another
+    conversation (``/new``, a reset): the chat is history now, read-only on that lane."""
+    live = authority.sessions.get(ref.session_id)
+    row = authority_persistence(authority).sessions.get(ref.session_id)
+    route = row.session_key if row is not None else None
+    # The routing entry moves at the platform's /new; the lane publishes its new conversation (and so
+    # supersedes a mounted one) only at its next inbound.
+    return bool(live is not None and live.detached) or _names_another_conversation(authority, ref.session_id, route)
+
+
+async def conversation_head(runner, session_id):
+    """``(authority, local owner or None, row id)`` a repoint of *session_id* onto a messaging lane
+    carries (``/handoff``, a platform ``/resume``): a local conversation's current head
+    (``bindings.handoff_head``), never an earlier ``/new`` segment, which would move that
+    history onto the lane while the live conversation stays local, its receipt released (#143286)."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    store = authority_persistence(authority) if authority is not None else runner.persistence
+    if store is None:
+        return authority, None, session_id
+    return (authority, *await store.aio.bindings.handoff_head(session_id))
+
+
+async def settled_handoff_db(runner, authority, session_id):
+    """Refuse the watcher's repoint while durable work still owns *session_id*
+    (``check_handoff_settled``), on the store ``conversation_head`` reads."""
+    from gateway.session_handoff import check_settled
+    store = authority_persistence(authority) if authority is not None else runner.persistence
+    await check_settled(store, session_id)
+
+
+def follow_hand_off(authority, source, route, owner, local_owner):
+    """After ``/handoff`` repointed *route* at *owner* (the lane's logical id of the conversation's
+    head): the local mount a viewer still holds (*local_owner*, the Desktop that ran it) moves onto
+    the lane, as its receipt did. When the head is a later ``/new`` segment, that mount is the
+    conversation's earlier history there, superseded once the head publishes (#143286)."""
+    held = authority.sessions.get(local_owner) if local_owner else None
+    if held is None or held.source is None or held.source.platform != Platform.LOCAL:
+        held = None
+    elif local_owner != owner:
+        held.source, held.route = source, route
+    if held is not None or owner in authority.sessions:
+        authority._publish_route(source, owner, route)

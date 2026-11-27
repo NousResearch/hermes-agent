@@ -1,0 +1,17 @@
+name: dial
+title: Dial
+repo: https://github.com/GENWAY-AI/hermes-plugin-dial
+sha: 1ab2cc1e3c6dfbdef9c3783a42230aaa232d62a0
+description: "Real phone numbers for AI agents: SMS, iMessage, WhatsApp, AI voice calls, and inbound events. Disclosure — hosted-only connector: every tool call and its arguments go to getdial.ai, and results (phone numbers, message bodies, call transcripts, contacts) come back into the model's context; tools can send SMS/iMessage/WhatsApp messages, place voice calls, buy phone numbers and change inbound-call policies on your Dial account, some of which incur charges; the package marks the server untrusted so Hermes asks before every tool the server does not annotate as read-only; the tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Dial
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/GENWAY-AI/hermes-plugin-dial/blob/1ab2cc1e3c6dfbdef9c3783a42230aaa232d62a0/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

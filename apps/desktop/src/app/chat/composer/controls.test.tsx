@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
@@ -26,7 +27,7 @@ function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerC
         canSubmit={true}
         conversation={{
           active: false,
-          level: 0,
+          levelStore: atom(0),
           muted: false,
           onEnd: vi.fn(),
           onStart: vi.fn(),
@@ -149,10 +150,27 @@ describe('ComposerControls shortcut tooltips', () => {
 
   it('does not advertise Enter when a session is still loading its busy policy', async () => {
     renderControls({ busy: true, busyAction: 'queue', canSubmit: false })
-    fireEvent.pointerMove(screen.getByLabelText('Queue message'), { pointerType: 'mouse' })
+    expect(screen.getByLabelText('Queue message')).toHaveProperty('disabled', false)
+    const send = screen.getByLabelText('Send')
+    expect(send).toHaveProperty('disabled', true)
+    fireEvent.pointerMove(send, { pointerType: 'mouse' })
     const tooltip = await screen.findByRole('tooltip')
-    expect(tooltip.textContent).toContain('Queue message')
+    expect(tooltip.textContent).toContain('Send')
     expect(tooltip.textContent).not.toContain('↵')
+  })
+
+  // A reply paused for its continuation holds a send in the queue, even while the
+  // backend restarts and the composer is otherwise disabled.
+  it('keeps Send usable while disabled when a send would be held for a paused reply', () => {
+    renderControls({ disabled: true, sendWhileDisabled: true })
+
+    expect((screen.getByLabelText('Send') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('disables Send while disabled otherwise', () => {
+    renderControls({ disabled: true })
+
+    expect((screen.getByLabelText('Send') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('shows Stop only when the composer is empty mid-turn', async () => {
@@ -232,7 +250,7 @@ describe('wake-word ear visibility', () => {
     renderControls({
       conversation: {
         active: true,
-        level: 0,
+        levelStore: atom(0),
         muted: false,
         onEnd: vi.fn(),
         onStart: vi.fn(),

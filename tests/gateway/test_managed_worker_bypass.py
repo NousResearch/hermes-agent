@@ -19,7 +19,7 @@ def test_bypass_policy_routes_to_managed_worker_and_bootstrap_carries_flags(tmp_
     from gateway import session_managed_worker as smw
     from gateway.session_policy import build_policy
     from agent.managed_worker import validate_bootstrap
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     safe = _policy(tmp_path, safe_mode=True)
     config_only = _policy(tmp_path, ignore_user_config=True)

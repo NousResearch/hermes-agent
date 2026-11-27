@@ -1,0 +1,64 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+import { describe, expect, it, vi } from 'vitest'
+
+// Every Electron profile-id gate takes its grammar from the shared PROFILE_ID_ARG_RE owner
+// (state-24, #155595). Swapping the owner for a different grammar shows each gate follows it; a
+// re-declared copy of `^[a-z0-9][a-z0-9_-]{0,63}$` keeps accepting `work` and fails here.
+vi.mock('../../shared/src/profile-id', () => ({ PROFILE_ID_ARG_RE: /^zz\.[a-z]+$/ }))
+
+const OLD_ONLY = 'work'
+const NEW_ONLY = 'zz.custom'
+
+describe('profile-id gates follow PROFILE_ID_ARG_RE', () => {
+  it('desktop routes and the launch flag', async () => {
+    const { DESKTOP_PROFILE_NAME_RE } = await import('./desktop-profile')
+    const { parseLaunchProfile } = await import('./launch-profile')
+
+    expect(DESKTOP_PROFILE_NAME_RE.test(NEW_ONLY)).toBe(true)
+    expect(DESKTOP_PROFILE_NAME_RE.test(OLD_ONLY)).toBe(false)
+    expect(parseLaunchProfile(['--profile', NEW_ONLY])).toBe(NEW_ONLY)
+    expect(parseLaunchProfile(['--profile', OLD_ONLY])).toBeNull()
+  })
+
+  it('local skin profile key', async () => {
+    const { localSkinProfileKey } = await import('./local-skin')
+
+    expect(localSkinProfileKey(NEW_ONLY)).toBe(NEW_ONLY)
+    expect(localSkinProfileKey(OLD_ONLY)).toBe('default')
+  })
+
+  it('boot preference writer', async () => {
+    const { writeDesktopProfile } = await import('./desktop-boot-preference')
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-id-guard-'))
+    const file = path.join(directory, 'boot.json')
+
+    try {
+      expect(writeDesktopProfile(file, NEW_ONLY)).toBe(NEW_ONLY)
+      expect(() => writeDesktopProfile(file, OLD_ONLY)).toThrow('Invalid profile name')
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('saved SSH and URL-remote profile mappings', async () => {
+    const { normalizeRemoteProfileName, normalizeSshConfig } = await import('./connection-config')
+
+    expect(normalizeSshConfig({ mode: 'ssh', host: 'h', remoteProfile: NEW_ONLY })?.remoteProfile).toBe(NEW_ONLY)
+    expect(normalizeSshConfig({ mode: 'ssh', host: 'h', remoteProfile: OLD_ONLY })?.remoteProfile).toBeUndefined()
+    expect(normalizeRemoteProfileName(NEW_ONLY)).toEqual({ remoteProfile: NEW_ONLY })
+    expect(normalizeRemoteProfileName(OLD_ONLY)).toBeNull()
+  })
+})
+
+describe('backendProfileArg follows the owner', () => {
+  it('keeps `default`, normalizes, and pins only owner-accepted ids', async () => {
+    const { backendProfileArg } = await import('./profile-id-guard')
+
+    expect(backendProfileArg(' ZZ.Custom ')).toBe(NEW_ONLY)
+    expect(backendProfileArg(OLD_ONLY)).toBeNull()
+    expect(backendProfileArg('default')).toBe('default')
+  })
+})

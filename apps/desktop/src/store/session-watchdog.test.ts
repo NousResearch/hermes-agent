@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { errorRecoveryPlan } from '@/lib/error-surface'
+import { errorCardOffers } from '@/lib/error-surface'
 import { requestGatewayForAgent } from '@/store/gateway'
 
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
@@ -76,6 +76,20 @@ describe('session watchdog', () => {
     vi.advanceTimersByTime(WATCHDOG_MS - 1)
     expect($stalledSessionIds.get()).not.toContain('s2')
     expect($workingSessionIds.get()).toContain('s2')
+  })
+
+  it('extends the busy deadline when activity arrives before the first timeout', () => {
+    const working = state({ busy: true })
+    publishSessionState('rt1', working)
+    const elapsed = Math.floor(WATCHDOG_MS / 2)
+    vi.advanceTimersByTime(elapsed)
+    publishSessionState('rt1', { ...working, awaitingResponse: true })
+
+    vi.advanceTimersByTime(WATCHDOG_MS - elapsed)
+    expect($stalledSessionIds.get()).not.toContain('s1')
+    vi.advanceTimersByTime(elapsed)
+    expect($stalledSessionIds.get()).toContain('s1')
+    expect($workingSessionIds.get()).toContain('s1')
   })
 
   it('clears both running and stalled on an authoritative terminal transition', () => {
@@ -226,6 +240,29 @@ describe('live turn event silence', () => {
     expect(card('rt-quiet')).toBeUndefined()
   })
 
+  it('waits a full silence window after the latest event before probing', async () => {
+    vi.setSystemTime(new Date('2026-11-10T12:00:00Z'))
+    publishSessionState('rt-active', partial('still streaming', { storedSessionId: 's-active' }))
+    const request = backend(async () => listing('rt-active', 'working'))
+    noteSessionEvent('rt-active')
+
+    await vi.advanceTimersByTimeAsync(SILENCE_MS - 5_000)
+    noteSessionEvent('rt-active')
+
+    // The original timer fires only five seconds after the latest event.
+    // Its re-armed remainder must use the same clock as the activity stamp.
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(request).not.toHaveBeenCalled()
+    expect($workingSessionIds.get()).toContain('s-active')
+
+    await vi.advanceTimersByTimeAsync(SILENCE_MS - 5_001)
+    expect(request).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledWith('session.active_list', {}, LIVE_TURN_PROBE_TIMEOUT_MS)
+  })
+
   it('keeps the turn when the check fails, and asks again next window', async () => {
     publishSessionState('rt-down', partial('partial', { storedSessionId: 's-down' }))
 
@@ -294,7 +331,7 @@ describe('live turn event silence', () => {
     const failed = card('rt-empty')
     expect($workingSessionIds.get()).not.toContain('s-empty')
     expect(failed?.errorSurface?.code).toBe('no_reply')
-    expect(errorRecoveryPlan(failed?.errorSurface).retry).toBe(true)
+    expect(errorCardOffers(failed?.errorSurface, 'retry')).toBe(true)
     expect(failed?.error).not.toMatch(/connection/i)
   })
 

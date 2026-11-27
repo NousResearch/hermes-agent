@@ -1,20 +1,22 @@
 name: print-job-watch
 repo: https://github.com/TakeshiTGAL/hermes-plugin-print-job-watch
-sha: d5c8ec85ecfd48e970a274368ff32ec75c7575df
-description: "Reads one OctoPrint printer. A cron watch reports printer_disconnected (not a pause); error; complete after Printing, Printing from SD, Pausing, Paused, Resuming, or Finishing; paused after Printing, Printing from SD, Pausing, or Resuming; cancelled; and stalled. This plugin can be used with OctoPrint. OctoPrint is a registered trademark owned by Gina Häußge (https://octoprint.org). Disclosure — Talks to the one OctoPrint origin you set in OCTOPRINT_URL with your OCTOPRINT_API_KEY, plus an optional webcam still from the same host, fetched without the key when it is on another port. Over plain http, that key is sent unencrypted. Pause, resume, and cancel ask for Hermes approval every time and are refused under cron, yolo, approvals off, single-query, unattended sessions and plugins.isolation: host, and when those checks cannot run. The plugin has no user list of its own: anyone you allow on your Hermes gateway can ask for a move and approve it. Running hermes tools does not remove the slash command. Answering \"always\" adds one unused line to config.yaml, and that line does not approve the next move. The optional watch is a cron job you create from the CLI (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule. At that default it is 288 runs a day with no daily cap. The watch needs plugins.isolation: in_process; under host it only posts a notice that it cannot run, on every run. Not tested on a physical printer, with access control off, or with the stock webcam."
+sha: 61cf86ed8c1a348c2d9956368e1abf7f51bb40fa
+description: "Each watch run costs 0 tokens, and the unmanned run holds no tools. Reads one OctoPrint printer. A cron watch reports printer_disconnected (not a pause); error; complete after Printing, Printing from SD, Pausing, Paused, Resuming, or Finishing; paused after Printing, Printing from SD, Pausing, or Resuming; cancelled; and stalled. This plugin can be used with OctoPrint. OctoPrint is a registered trademark owned by Gina Häußge (https://octoprint.org). Disclosure — Talks to the one OctoPrint origin you set in OCTOPRINT_URL with your OCTOPRINT_API_KEY, plus an optional webcam still from the same host, fetched without the key when it is on another port. Over plain http, that key is sent unencrypted. Pause, resume, and cancel return one pre_tool_call approve line. Hermes shows it. yolo and approvals off skip the prompt while a person is present. cron, hermes -q, webhook, and unattended sessions refuse the move, including after always. plugins.isolation: host still refuses the move. The plugin has no user list of its own: anyone you allow on your Hermes gateway can ask for a move and approve it. Running hermes tools does not remove the slash command. Answering \"always\" on pause or resume adds a permanent allowlist line to config.yaml, so a later pause or resume of that same action at the same origin runs without asking while a person is present, until you remove that line. Each cancel asks again. Answering always on cancel does not cover the next cancel. cron, hermes -q, and webhook do not use that line. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off. hermes print-job-watch schedule writes HERMES_HOME/scripts/print-job-watch.py and creates one cron job with hermes cron create --no-agent --script. This is the same when HERMES_HOME is HOME/.hermes and when HERMES_HOME points somewhere else. unschedule removes that job and that script in both places. The job does not call a model. Empty script output sends nothing. The script binds the profile secret scope and then reads the URL and API key, and it does not print the key. The default schedule is every 5 minutes. At that default it is 288 runs a day with no daily cap. Running schedule again switches an existing job in place with hermes cron edit --script --no-agent. A job made by 0.1.x keeps its model turn until the next schedule. The create command cannot set a tool list, which does not matter because the unmanned run holds no tools. Under plugins.isolation: host, the print_job_watch tool cannot watch the printer. Set plugins.isolation to in_process. The scheduled script is not that form, so that setting does not stop the watch. The job and the script stay after uninstall until you run unschedule, which removes both. Not tested on a physical printer, with access control off, or with the stock webcam. A request that sent the API key is not followed on a redirect, including one that stays on the same origin."
 maintainer: TakeshiTGAL
 tier: community
 category: tools
-requires_hermes: ">=0.21.4"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-print-job-watch#readme
-version: "0.1.0"
+version: "0.2.1"
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-print-job-watch/61cf86ed8c1a348c2d9956368e1abf7f51bb40fa/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:
   - print_job_status
   - print_job_control
   - print_job_watch
-  provides_hooks: []
+  provides_hooks:
+  - pre_tool_call
   provides_middleware: []
   requires_env:
   - OCTOPRINT_URL

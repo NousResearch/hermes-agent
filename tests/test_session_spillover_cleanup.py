@@ -4,16 +4,20 @@ stays available exactly as long as that session does.
 Two halves under test:
 - the age sweep (``cleanup_spillover_cache``) never deletes a referenced archive, and fails
   closed (keeps files) when the reference set is unreadable;
-- ``delete_session`` / ``delete_sessions`` / ``prune_sessions`` capture the doomed messages'
-  pointers inside the delete transaction and unlink the archives afterwards — but only once no
-  SURVIVING session references them (branch/compression siblings may share the pointer)."""
+- ``sessions.delete`` / ``sessions.delete_many`` / ``maintenance.prune_sessions`` capture the doomed
+  messages' pointers inside the delete transaction and the post-commit collection unlinks the archives,
+  but only once no SURVIVING session references them (branch/compression siblings may share the pointer)."""
 
 import os
 import time
 
 import pytest
 
-from hermes_state import SessionDB
+from gateway.session_ingress_media import native_inputs_root
+from persistence_assembly import open_persistence, profile_scope
+from session_retention import collect_retired_media
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tools.tool_result_storage import (
     _build_persisted_message,
     cleanup_spillover_cache,
@@ -50,30 +54,36 @@ def _pointer(home, name, size=150_000):
         file_path=str(home / "cache" / "spillover" / name))
 
 
+def _media_root():
+    return str(native_inputs_root())
+
+
 def _aged_session(db, sid, name, ended=True):
-    db.create_session(sid, "cli")
-    db.append_message(sid, "tool", _pointer(db.db_path.parent, name), timestamp=time.time() - THREE_DAYS_S)
+    seed_session(db, sid, "cli")
+    seed_messages(db, sid, {"role": "tool", "content": _pointer(db.scope.profile_dir, name),
+                            "timestamp": time.time() - THREE_DAYS_S})
     if ended:
-        db.end_session(sid, "completed")
-    db._write_sql(
+        db.sessions.end(sid, "completed")
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
-        (time.time() - THREE_DAYS_S, time.time() - THREE_DAYS_S, sid))
+        (time.time() - THREE_DAYS_S, time.time() - THREE_DAYS_S, sid)))
 
 
 def test_retained_sessions_spill_survives_the_age_sweep(_home):
     """The blocking scenario from the review: ``retention_days: 2`` (48h window), the spill is
     49h old, yet the session that references it was active an hour ago and is retained — the
     sweep must not strand the transcript pointer."""
-    db = SessionDB(db_path=_home / "state.db")
+    db = open_persistence(profile_scope(home=_home))
     try:
-        db.create_session("s_recent", "cli")
-        db.append_message("s_recent", "tool", _pointer(_home, "recent.txt"))
-        db.end_session("s_recent", "completed")  # ended, unpinned, active 1h ago: not prunable
-        db._write_sql("UPDATE sessions SET last_activity_at = ? WHERE id = ?",
-                      (time.time() - 3600, "s_recent"))
+        seed_session(db, "s_recent", "cli")
+        seed_messages(db, "s_recent", {"role": "tool", "content": _pointer(_home, "recent.txt")})
+        db.sessions.end("s_recent", "completed")  # ended, unpinned, active 1h ago: not prunable
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET last_activity_at = ? WHERE id = ?", (time.time() - 3600, "s_recent")))
         aged = _spill(_home, "recent.txt", age_hours=49)
 
-        assert db.prune_sessions(older_than_days=2) == 0  # session retained...
+        assert db.maintenance.prune_sessions(older_than_days=2, media_root=_media_root()).count == 0  # session retained...
+        collect_retired_media(db, _home)
         assert cleanup_spillover_cache(max_age_hours=48) == 0  # ...so the sweep keeps the archive
         assert aged.exists()
     finally:
@@ -84,55 +94,60 @@ def test_structured_and_backslashed_pointers_are_owned(_home):
     """A pointer inside multimodal content (stored behind the NUL sentinel, invisible to LIKE)
     and a backslashed Windows host path both count as references, and both leave with their
     session."""
-    db = SessionDB(db_path=_home / "state.db")
+    db = open_persistence(profile_scope(home=_home))
     try:
-        db.create_session("s", "cli")
-        db.append_message("s", "tool", [{"type": "text", "text": _pointer(_home, "parts.txt")},
-                                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}])
-        db.append_message("s", "tool", "Full output saved to: C:\\h\\cache\\spillover\\win.txt")
+        seed_session(db, "s", "cli")
+        seed_messages(db, "s", {"role": "tool", "content": [
+            {"type": "text", "text": _pointer(_home, "parts.txt")},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]})
+        seed_messages(db, "s", {"role": "tool", "content": "Full output saved to: C:\\h\\cache\\spillover\\win.txt"})
         files = [_spill(_home, "parts.txt", age_hours=200 * 24), _spill(_home, "win.txt", age_hours=200 * 24)]
 
         assert cleanup_spillover_cache(max_age_hours=24) == 0
         assert all(f.exists() for f in files)
-        db.delete_session("s")
+        db.sessions.delete("s", media_root=_media_root())
+        collect_retired_media(db, _home)
         assert not any(f.exists() for f in files)
     finally:
         db.close()
 
 
 def test_prune_sessions_unlinks_the_spill_with_its_session(_home):
-    db = SessionDB(db_path=_home / "state.db")
+    db = open_persistence(profile_scope(home=_home))
     try:
         _aged_session(db, "s_old", "dead.txt")
         aged = _spill(_home, "dead.txt", age_hours=72)
 
-        assert db.prune_sessions(older_than_days=2) == 1
+        assert db.maintenance.prune_sessions(older_than_days=2, media_root=_media_root()).count == 1
+        collect_retired_media(db, _home)
         assert not aged.exists()
     finally:
         db.close()
 
 
 def test_delete_session_unlinks_the_spill(_home):
-    db = SessionDB(db_path=_home / "state.db")
+    db = open_persistence(profile_scope(home=_home))
     try:
         _aged_session(db, "s_del", "del.txt")
         spill = _spill(_home, "del.txt")
 
-        assert db.delete_session("s_del") is True
+        assert db.sessions.delete("s_del", media_root=_media_root()) == ("s_del",)
+        collect_retired_media(db, _home)
         assert not spill.exists()
     finally:
         db.close()
 
 
 def test_delete_sessions_bulk_unlinks_the_spill(_home):
-    db = SessionDB(db_path=_home / "state.db")
+    db = open_persistence(profile_scope(home=_home))
     try:
         _aged_session(db, "s_a", "bulk_a.txt")
         _aged_session(db, "s_b", "bulk_b.txt")
         a = _spill(_home, "bulk_a.txt")
         b = _spill(_home, "bulk_b.txt")
 
-        assert db.delete_sessions(["s_a", "s_b"]) == 2
+        assert db.sessions.delete_many(["s_a", "s_b"], media_root=_media_root()).deleted == 2
+        collect_retired_media(db, _home)
         assert not a.exists() and not b.exists()
     finally:
         db.close()
@@ -141,45 +156,46 @@ def test_delete_sessions_bulk_unlinks_the_spill(_home):
 def test_shared_pointer_survives_until_the_last_session_dies(_home):
     """Branch/compression siblings can share one archive: deleting one holder must not
     strand the other's pointer."""
-    db = SessionDB(db_path=_home / "state.db")
+    db = open_persistence(profile_scope(home=_home))
     try:
         _aged_session(db, "s_first", "shared.txt")
         _aged_session(db, "s_second", "shared.txt")
         shared = _spill(_home, "shared.txt")
 
-        db.delete_session("s_first")
+        db.sessions.delete("s_first", media_root=_media_root())
+        collect_retired_media(db, _home)
         assert shared.exists()  # s_second still references it
 
-        db.delete_session("s_second")
+        db.sessions.delete("s_second", media_root=_media_root())
+        collect_retired_media(db, _home)
         assert not shared.exists()
     finally:
         db.close()
 
 
 def test_canonical_delete_retires_the_spill_for_collection(_home):
-    """The web/gateway DELETE goes through ``mutate_runtime_session(operation='delete')``, not
-    ``delete_session``: the deletion fence records the pointer, the owner's post-delete
+    """The web/gateway DELETE goes through ``runtime.mutate`` with a delete command, not
+    ``sessions.delete``: the deletion fence records the pointer, the owner's post-delete
     collection unlinks it."""
-    import hermes_state_runtime as rt
-    from hermes_state_media import collect_retired_media
-    db = SessionDB(db_path=_home / "state.db")
+    from persistence.authority.runtime import parse_mutation
+    db = open_persistence(profile_scope(home=_home))
     try:
         _aged_session(db, "s_web", "web.txt")
         spill = _spill(_home, "web.txt")
-        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
-        rt.mutate_runtime_session(db, epoch=epoch, principal_id="human", session_id="s_web", request_id="del",
-                                  expected_revision=0, expected_generation=0, operation="delete", payload={})
+        epoch = db.runtime.begin_epoch(instance_id="owner")
+        db.runtime.mutate(epoch, principal_id="human", session_id="s_web", request_id="del",
+                          expected_revision=0, expected_generation=0, command=parse_mutation("delete", {}), owner=None)
         assert spill.exists()  # the transaction only records the candidate
-        collect_retired_media(db)  # gateway/session_mutations.py runs this after every delete
+        collect_retired_media(db, _home)  # gateway/session_mutations.py runs this after every delete
         assert not spill.exists()
     finally:
         db.close()
 
 
 def test_unreferenced_spill_still_sweeps_by_age(_home):
-    db = SessionDB(db_path=_home / "state.db")
+    db = open_persistence(profile_scope(home=_home))
     try:
-        db.create_session("s_alive", "cli")  # a live db with no spillover references
+        seed_session(db, "s_alive", "cli")  # a live db with no spillover references
         orphan = _spill(_home, "orphan.txt", age_hours=49)
 
         assert cleanup_spillover_cache(max_age_hours=48) == 1

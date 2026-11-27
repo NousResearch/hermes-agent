@@ -15,16 +15,18 @@ def child(repo, case, account):
     os.environ['HOME'] = str(account)
     os.environ['HERMES_HOME'] = str(home)
     sys.path.insert(0, str(repo))
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
     import tools.session_search_tool as search
     from tools.registry import registry
 
     target = home / 'profiles' / 'reader-target' if case == 'foreign' else home
     if case != 'empty':
         target.mkdir(parents=True, exist_ok=True)
-        owner = SessionDB(target / 'state.db')
-        owner.create_session('probe-session', source='cli')
-        owner.append_message('probe-session', role='user', content='owned probe marker')
+        owner = open_persistence(profile_scope(home=target), eager=True)
+        owner.sessions.create(NewSession(session_id='probe-session', source='cli'))
+        owner.messages.append('probe-session', NewMessage(role='user', content='owned probe marker'))
         owner.close()
     params = {} if case == 'empty' else {'session_id': 'probe-session'}
     if case == 'foreign':

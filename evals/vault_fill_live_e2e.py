@@ -83,12 +83,13 @@ def main() -> int:
         raw = bvt.browser_vault_fill(login.id, task_id=TASK)
         out = json.loads(raw)
         print("login fill:", out)
-        assert out["success"] and out["filled_fields"] == 1, out
+        assert out["success"] and out["filled_fields"] == 2, out  # the identifier and the password
         assert "pw-E2E-8842" not in raw
-        dom = sup.evaluate_runtime("location.pathname + ' ' + document.querySelector('input[name=pw]').value")
-        assert dom["result"] == "/login pw-E2E-8842", dom  # raw supervisor read (not a model surface): the write landed in the login tab
+        dom = sup.evaluate_runtime("[location.pathname, ...['email', 'pw'].map((n) => "
+                                   "document.querySelector('input[name=' + n + ']').value)].join(' ')")
+        assert dom["result"] == "/login a@b.c pw-E2E-8842", dom  # raw supervisor read (not a model surface): both landed in the login tab
         assert "pw-E2E-8842" not in json.dumps(_redact_cdp_output({"result": {"value": dom["result"]}}))
-        print("login: password landed in the /login tab; model-facing read is scrubbed")
+        print("login: identifier and password landed in the /login tab; model-facing read is scrubbed")
 
         ap.request_elicitation_consent = lambda *a, **k: "decline"
         out = json.loads(bvt.browser_vault_fill(card.id, task_id=TASK))
@@ -132,11 +133,8 @@ def main() -> int:
         return 0
     finally:
         SUPERVISOR_REGISTRY.stop_all()
-        try:
-            from tools.browser_tool_lifecycle import cleanup_all_browsers
-            cleanup_all_browsers()
-        except Exception:
-            pass
+        from tools.browser_session_lifecycle import cleanup_all_browsers
+        cleanup_all_browsers()
         srv.shutdown()
 
 

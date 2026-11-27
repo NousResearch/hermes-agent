@@ -8,6 +8,9 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from tests.gateway.test_api_server import _create_app, _make_adapter
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 def _approval_agent(decisions):
@@ -66,7 +69,7 @@ def _canonical_approval_turn(owner, decisions):
         from gateway.session_results import execution_result
         from tools.approval_gateway_wait import _await_gateway_decision
         sid = event.source.chat_id
-        live, generation = owner.sessions[sid], owner.db.get_session(sid)['runtime_generation']
+        live, generation = owner.sessions[sid], session_row(owner.persistence, sid)['runtime_generation']
 
         def notify(data):
             owner.register_approval(sid, generation, live.route, data)
@@ -105,7 +108,7 @@ async def test_canonical_streamed_approval_reaches_sse_and_resolves_via_runs_end
                 "model": "hermes-agent", "stream": True, "messages": [{"role": "user", "content": "hi"}]})
             prefix = "chatcmpl"
         else:
-            owner.db.create_session("api-stream", source="api_server")
+            seed_session(owner.persistence, "api-stream", "api_server")
             resp = await cli.post("/api/sessions/api-stream/chat/stream", json={"message": "hi"})
             prefix = "run_"
         assert resp.status == 200, await resp.text()
@@ -160,6 +163,6 @@ async def test_exact_streamed_retry_replays_the_already_pending_approval(api, ow
         text = await asyncio.wait_for(retry.text(), 10)
     assert "[DONE]" in text and text.count("event: approval.request") == 0  # replayed exactly once
     assert [d["choice"] for d in decisions] == ["once"]
-    with owner.db._read_ctx() as conn:
+    with raw_holder(owner.persistence)._read_ctx() as conn:
         rows = conn.execute("SELECT status FROM session_admissions WHERE principal_id='api'").fetchall()
     assert [r[0] for r in rows] == ["terminal"]

@@ -16,7 +16,7 @@ import threading
 import uuid
 
 from gateway.session_busy_controls import authorize
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -35,20 +35,20 @@ def _admit(connection, ref, params, prefix, required='text', optional=()):
     if (set(params) - {'session_id', 'profile', required, *optional} or not isinstance(ref.session_id, str)
             or not ref.session_id or not isinstance(text, str) or not text.strip()
             or any(params.get(key) is not None and not isinstance(params[key], str) for key in optional)):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     authority = connection.authority
     if ref.session_id not in authority.sessions:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     authorize(connection, ref, params, 'session:submit')
     # The answer rides this connection's event subscription, like a submit's reply.
     if ref.session_id not in connection.subscriptions:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     authority._require_admission_open()
     from gateway.session_policy import policy_for_source
     live = authority.sessions[ref.session_id]
     policy = policy_for_source(authority.runner, live.source)
     if policy is None:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     return live, policy, text, f'{prefix}_{uuid.uuid4().hex[:6]}'
 
 
@@ -66,7 +66,10 @@ def _side_scope(authority, policy, task_id):
     home = authority.profile_id
     profile = served_profile_name(home) if _is_routed_home(home) else ''
     with owner_scope(authority, hydrate_secrets=True), policy_scope(policy, authority=authority):
-        tokens = set_session_vars(session_key=task_id, session_id=task_id, cwd=policy.cwd, profile=profile)
+        # async_delivery=False: the side agent's answer is one ``*.complete`` event, and its bg_* session
+        # has no later turn to wake, so a background delegate_task joins in this run (#140569).
+        tokens = set_session_vars(session_key=task_id, session_id=task_id, cwd=policy.cwd, profile=profile,
+                                  async_delivery=False)
         try:
             # The session's workspace, as its own turns get it (#140665): mounted at /workspace in a
             # per-task container, or the session's own persistent workspace container (same digest).
@@ -107,7 +110,7 @@ def _side_agent(authority, policy, live, task_id, **overrides):
         provider_sort=pr.get('sort'), provider_require_parameters=pr.get('require_parameters', False),
         provider_data_collection=pr.get('data_collection'),
         # Its own session in the owning profile's store, like the sidecar's ``bg_*`` rows.
-        session_id=task_id, platform=policy.platform, session_db=authority.db,
+        session_id=task_id, platform=policy.platform, persistence=authority.persistence,
         fallback_model=refresh_fallback() if callable(refresh_fallback) else None,
         load_soul_identity=not policy.ignore_rules, skip_memory=policy.ignore_rules,
         side_agent=True)
@@ -145,7 +148,10 @@ def _spawn(authority, ref, task_id, event_type, body, extra=None, holder=None):
                 text = body()
             except Exception as exc:
                 logger.warning('Side agent %s failed', task_id, exc_info=True)
-                text = f'error: {getattr(exc, "reason", None) or exc}'
+                # A refusal names the check that fired (``workspace_unavailable (cwd: <path>)``).
+                field, detail = getattr(exc, 'field', None), getattr(exc, 'detail', None)
+                named = f' ({field}: {detail})' if field and detail else ''
+                text = f'error: {getattr(exc, "reason", None) or exc}{named}'
             live = authority.sessions.get(ref.session_id)
             if live is not None and not _abandoned(holder):
                 live.event_stream.publish(ref.session_id, {'task_id': task_id, **extra, 'text': str(text or '')},
@@ -205,7 +211,9 @@ async def btw(connection, ref, params):
 
     def body():
         from agent.side_question import answer_side_question
-        history = snapshot or authority.db.get_messages_as_conversation(target)
+        from gateway.session_persistence import authority_persistence
+        history = snapshot or [m.as_openai_message() for m in
+                               authority_persistence(authority).messages.read_conversation(target)]
         with _side_scope(authority, policy, task_id):
             model, runtime = _resolve_runtime(authority, policy)
             main_runtime = {'model': model, 'session_id': ref.session_id,
@@ -268,8 +276,10 @@ async def preview_restart(connection, ref, params):
         from tui_gateway.agent_callbacks import _preview_restart_history
         from tui_gateway.methods_prompt import (_final_response_text, _preview_restart_prompt,
                                                 _validated_preview_cwd)
+        from gateway.session_persistence import authority_persistence
         preview_cwd = _validated_preview_cwd(cwd)
-        history = _preview_restart_history(authority.db.get_messages_as_conversation(target) if target else [])
+        history = _preview_restart_history([m.as_openai_message() for m in authority_persistence(
+            authority).messages.read_conversation(target)] if target else [])
         prompt = _preview_restart_prompt(url, cwd, context, bool(history))
         with _side_scope(authority, policy, task_id):
             if preview_cwd:

@@ -16,8 +16,10 @@ from __future__ import annotations
 import json
 import re
 import os
+import shutil
 import stat
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,6 +45,11 @@ from agent.vault_store import (
 @pytest.fixture()
 def store(tmp_path):
     return VaultStore(base_dir=tmp_path / "vault")
+
+
+# The identifier box of an identifier-first step: the trusted-typing tests drive their keystrokes
+# through it, since the password never goes through Input.insertText.
+_EMAIL_BOX = {"autocomplete": "email", "formIndex": 0, "index": 1, "label": "", "name": "email", "type": "email"}
 
 
 def _add_login(store, origin="https://example.com", password="s3cret-pw"):
@@ -184,6 +191,17 @@ class TestClassifier:
         for label in ("New password", "Confirm Password", "create-password", "Repeat  password"):
             assert classify_login_control(_ctrl(type="password", label=label)) is None, label
 
+    def test_a_declared_login_token_outranks_the_label_exclusion(self):
+        # The label regex excludes controls that declare nothing; a page's own autocomplete token wins.
+        for label in ("Confirm password", "Password  Forgot it? Set a new password"):
+            res = classify_login_control(_ctrl(type="password", autocomplete="current-password", label=label))
+            assert res is not None and (res.token, res.score) == ("current-password", 100), label
+
+    def test_an_excluded_autocomplete_token_wins_over_a_declared_login_token(self):
+        # one-time-code / new-password are checked before any login token the same attribute declares.
+        for autocomplete in ("tel one-time-code", "current-password new-password"):
+            assert classify_login_control(_ctrl(type="tel", autocomplete=autocomplete)) is None, autocomplete
+
     def test_password_type_maps_current_password(self):
         res = classify_login_control(_ctrl(type="password"))
         assert res.token == "current-password"
@@ -233,9 +251,23 @@ class TestClassifier:
         assert "vaultSecret" not in js
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
-        assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
+        assert '"data-hermes-vault-slot-" + nonce' in js and """'="' + f.index""" in js
         assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
-        assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
+        # unmasking moved to build_fill_verify_js: the fill cannot know what the page kept
+        assert "removeAttribute(" not in js
+
+    def test_build_fill_js_carries_the_value_in_the_input_event(self):
+        # A framework-controlled input (React/Vue/MUI) reverts a value written without an `input`
+        # event that carries `data`: React reads `event.data` and treats an event without it as
+        # irrelevant. Without this the field reads filled in the DOM and empty to the page.
+        js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            expected_origin="https://example.com",
+        )
+        assert 'new InputEvent("input", { bubbles: true, composed: true, data: f.value, inputType: "insertText" })' in js
+
+    # The read-back and focus scripts are executed against a synthetic DOM in
+    # tests/agent/test_vault_fill_scripts.py.
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before
@@ -262,14 +294,14 @@ class TestBrowserVaultTools:
 
         empty = VaultStore(base_dir=tmp_path / "empty-vault")
         with patch("agent.vault_store.get_vault_store", return_value=empty), \
-             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
-            with patch("tools.browser_tool_install.check_browser_requirements", return_value=True):
+             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""):
+            with patch("tools.browser_use_cli.browser_exec_available", return_value=True):
                 assert browser_vault_tool._check_vault_available() is True
-            with patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
+            with patch("tools.browser_use_cli.browser_exec_available", return_value=False):
                 assert browser_vault_tool._check_vault_available() is False
-        # Browser Use mode: check_browser_requirements() is False by design, the vault must still ride along
-        with patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=True), \
-             patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
+        # A configured CDP endpoint is a browser too: the vault rides along even without browser-harness
+        with patch("tools.browser_use_cli.browser_exec_available", return_value=False), \
+             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value="ws://127.0.0.1:9222/devtools/browser/x"):
             assert browser_vault_tool._check_vault_available() is True
 
     def test_list_returns_identifier_never_password(self, store):
@@ -323,6 +355,9 @@ class TestBrowserVaultTools:
             def get_meta(self, handle):
                 return meta if handle == meta.id else None
 
+            def fill_context(self):
+                return nullcontext()
+
             def resolve_password(self, handle):
                 return "s3cret-pw"
 
@@ -337,13 +372,15 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
+            if "reverted" in expression:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://www.amazon.co.uk"), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
-            raw = browser_vault_tool.browser_vault_fill("op:multi")
+            raw = browser_vault_tool.browser_vault_fill("op:multi", with_identifier=False)
         out = json.loads(raw)
         assert out["success"] is True
         assert out["origin"] == "https://www.amazon.co.uk"
@@ -403,12 +440,14 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
+            if "reverted" in expression:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
-            raw = browser_vault_tool.browser_vault_fill(meta.id)
+            raw = browser_vault_tool.browser_vault_fill(meta.id, with_identifier=False)
         out = json.loads(raw)
         # Password-only fill: exactly one field.
         out.pop("next", None)  # workflow hint, not data
@@ -418,14 +457,954 @@ class TestBrowserVaultTools:
             "backend": "local",
             "kind": "login",
             "origin": "https://example.com",
+            "identifier_filled": False,
         }
         assert "s3cret-pw" not in raw
         # The secret expression only ever goes through the secret eval path,
         # and it targets only the password field (index 1).
-        assert len(secret_exprs) == 1
+        # the fill, then the read-back that proves the page kept the value
         assert "s3cret-pw" in secret_exprs[0]
+        assert secret_exprs[1:] and all("reverted" in e for e in secret_exprs[1:])
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
+
+    def _trusted_harness(self, controls, *, focus_result, verify_result, typed, secret_exprs):
+        """Patch set for the trusted-typing path: a supervisor that records keystrokes."""
+        from tools import browser_vault_tool
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
+                return {"success": True, "result": json.dumps({"ok": True})}          # in-page origin assert
+            if 'refused: "focus_lost"' in expression:
+                return {"success": True, "result": json.dumps(focus_result)}          # focus assert
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(verify_result)}         # read-back
+            if "unstamped" in expression:
+                return {"success": True, "result": json.dumps({"unstamped": True})}   # cleanup
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        class _Sup:
+            def current_page_session(self):
+                return "S1"
+
+            def insert_text(self, text, **kwargs):
+                typed.append(text)
+                return {"ok": True}
+
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
+
+        return [
+            patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
+            patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret),
+            patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()),
+            patch.object(browser_vault_tool, "_page_backend", return_value=None),
+        ]
+
+    def test_trusted_typing_types_the_secret_once_when_focus_holds(self, store):
+        """A controlled input accepts a TRUSTED keystroke: the identifier goes in through the browser,
+        not through a JS value write, and the read-back is what reports the fill."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
+        typed, secret_exprs = [], []
+        patches = self._trusted_harness(controls, focus_result={"focused": 1},
+                                        verify_result={"landed": 1, "reverted": 0, "missing": []},
+                                        typed=typed, secret_exprs=secret_exprs)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patches[0], patches[1], patches[2], patches[3]:
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True and out["filled_fields"] == 1
+        assert typed == ["user@example.com"]  # one keystroke per text field
+        assert "s3cret-pw" not in raw
+
+    def test_trusted_typing_aborts_on_focus_drift_and_types_nothing(self, store):
+        """Input.insertText hits whatever holds focus. If the target does not hold it, the value is
+        never typed — the fill refuses instead of gambling on the focused element."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
+        typed, secret_exprs = [], []
+        patches = self._trusted_harness(controls,
+                                        focus_result={"refused": "focus_lost", "tag": "INPUT", "found": "BODY"},
+                                        verify_result={"landed": 1, "reverted": 0, "missing": []},
+                                        typed=typed, secret_exprs=secret_exprs)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patches[0], patches[1], patches[2], patches[3]:
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is False and out["error_type"] == "focus_lost"
+        assert typed == []             # not one keystroke reached the page
+        assert "s3cret-pw" not in raw
+
+    def test_trusted_typing_reports_a_reverted_value_as_failure(self, store):
+        """A trusted keystroke the page still rejects must not be reported as a fill."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
+        typed, secret_exprs = [], []
+        patches = self._trusted_harness(controls, focus_result={"focused": 1},
+                                        verify_result={"landed": 0, "reverted": 1, "missing": []},
+                                        typed=typed, secret_exprs=secret_exprs)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patches[0], patches[1], patches[2], patches[3]:
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is False and out["error_type"] == "fill_reverted"
+        # The bulk insert, then one retype key by key: still rejected, so the fill aborts
+        assert typed[0] == "user@example.com"
+        assert typed[1:] == list("user@example.com")
+
+    def _per_key_harness(self, store, sup, *, focus_answers, verify_answers):
+        """An identifier step whose bulk insert reads back wrong, so the fill retypes key by key.
+        ``focus_answers`` / ``verify_answers`` are consumed one per check (the last repeats); a callable
+        focus answer gets the supervisor and the focus script."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [_EMAIL_BOX]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def take(answers):
+            return answers.pop(0) if len(answers) > 1 else answers[0]
+
+        def fake_eval_secret(task_id, expression):
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
+                return {"success": True, "result": json.dumps({"ok": True})}
+            if 'refused: "focus_lost"' in expression:
+                answer = take(focus_answers)
+                return {"success": True, "result": json.dumps(answer(sup, expression) if callable(answer) else answer)}
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(take(verify_answers))}
+            if "cleared" in expression:
+                return {"success": True, "result": json.dumps({"cleared": 1})}
+            return {"success": True, "result": json.dumps({"unstamped": True})}
+
+        patches = (patch("agent.vault_store.get_vault_store", return_value=store),
+                   patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
+                   patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret),
+                   patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup),
+                   patch.object(browser_vault_tool, "_page_backend", return_value=None),
+                   patch.object(browser_vault_tool, "_TYPE_PER_KEY_DELAY_S", 0))
+        return meta, patches
+
+    class _SessionSup:
+        """A supervisor whose page session another tool can move. ``insert_text`` behaves like the
+        real one: a ``session_id`` that is no longer current is refused."""
+
+        def __init__(self):
+            self.sid = "S1"
+            self.typed: list[tuple[str, str]] = []
+
+        def current_page_session(self):
+            return self.sid
+
+        def insert_text(self, text, *, session_id, **kwargs):
+            if session_id != self.sid:
+                return {"ok": False, "error": "page session changed"}
+            self.typed.append((text, self.sid))
+            return {"ok": True}
+
+        def focus_page(self, origin, accept=None):
+            return {"ok": True, "url": "https://example.com/login", "session_id": self.sid}
+
+    def test_focus_is_reasserted_before_every_retyped_key(self, store):
+        """On the key-by-key retype the page can move focus after the first character; the next
+        character must not follow it into another input."""
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        lost = {"refused": "focus_lost", "tag": "INPUT", "found": "INPUT"}
+        meta, patches = self._per_key_harness(
+            store, sup,
+            focus_answers=[{"focused": 1}, {"focused": 1}, lost],
+            verify_answers=[{"landed": 0, "reverted": 1, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False and out["error_type"] == "focus_lost"
+        # the bulk insert, then the first retyped key; focus was gone before the second
+        assert [t for t, _ in sup.typed] == ["user@example.com", "u"]
+
+    def test_keystrokes_never_follow_the_supervisor_to_another_session(self, store):
+        """The focus check validated the page on session S1; when another tool retargets the
+        supervisor before the keystroke, the value is not typed into the new session."""
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+
+        def focused_then_retargeted(s, _expression):
+            s.sid = "S2"  # e.g. focus_page from a concurrent browser call
+            return {"focused": 1}
+
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[focused_then_retargeted, {"focused": 1}],
+            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False
+        assert [sid for _, sid in sup.typed if sid == "S2"] == []
+
+    def test_only_the_first_retyped_key_may_pull_focus_back(self, store):
+        """A page that steals focus after every key is refused on the second key: the between-keys
+        check asserts and does not re-focus, or it would hide the theft and keep typing into a page
+        that redirects input."""
+        from agent.vault_login_classifier import build_focus_js
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        page = {"focused": True}
+        steal = sup.insert_text
+
+        def insert_and_steal(text, *, session_id, **kwargs):
+            page["focused"] = False  # the page moves focus away after each keystroke
+            return steal(text, session_id=session_id, **kwargs)
+
+        sup.insert_text = insert_and_steal
+
+        def focus_check(_sup, expression):
+            nonce = re.search(r'const nonce = "([0-9a-f]+)"', expression).group(1)
+            fill = [{"index": 1, "token": "email"}]
+            if expression == build_focus_js(fill, nonce, expected_origin="https://example.com"):
+                page["focused"] = True  # this check focuses the field first
+            return {"focused": 1} if page["focused"] else {"refused": "focus_lost", "tag": "INPUT", "found": "INPUT"}
+
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[focus_check],
+            verify_answers=[{"landed": 0, "reverted": 1, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False and out["error_type"] == "focus_lost"
+        assert [t for t, _ in sup.typed] == ["user@example.com", "u"]
+
+    def test_every_secret_script_is_pinned_to_the_session_the_fill_started_on(self, store):
+        """The read-back carries the expected values and runs while the page may move on: it, the
+        write and every focus/clear check go to the page session the fill validated, never to
+        whatever page the supervisor points at by then."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        sessions = []
+
+        class _Sup:  # the JS write path: no trusted typing
+            sid = "S1"
+
+            def current_page_session(self):
+                return self.sid
+
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login", "session_id": self.sid}
+
+            def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
+                if "location.href" in expression:
+                    return {"ok": True, "result": "https://example.com/login"}
+                if "s3cret-pw" not in expression:
+                    return {"ok": True, "result": json.dumps(controls)}
+                sessions.append(session_id)
+                if session_id is not None and session_id != self.sid:
+                    return {"ok": False, "error": "the page session changed since it was validated"}
+                if "reverted" in expression:
+                    return {"ok": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
+                self.sid = "S2"  # another tool retargets the supervisor right after the write
+                return {"ok": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()), \
+             patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+             patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False
+        assert sessions and all(s == "S1" for s in sessions)
+
+    class _RecordingSup:
+        """A JS-path supervisor (no ``insert_text``) that refuses a pinned session it no longer holds,
+        as the real ``evaluate_runtime`` does, and records the session of every script it is sent."""
+
+        def __init__(self, controls, sid="S1"):
+            self.sid, self.controls, self.sent = sid, controls, []
+
+        def current_page_session(self):
+            return self.sid
+
+        def focus_page(self, origin, accept=None):
+            return {"ok": True, "url": origin + "/login", "session_id": self.sid}
+
+        def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
+            self.sent.append((expression, session_id))
+            if self.sid is None or (session_id is not None and session_id != self.sid):
+                return {"ok": False, "error": "the page session changed since it was validated"}
+            if "location.href" in expression:
+                return {"ok": True, "result": "https://example.com/login"}
+            if "unstamped" in expression:
+                return {"ok": True, "result": json.dumps({"unstamped": True})}
+            if "reverted" in expression:
+                return {"ok": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
+            if "filled" in expression:
+                return {"ok": True, "result": json.dumps({"filled": expression.count('"index"')})}
+            return {"ok": True, "result": json.dumps(self.controls)}
+
+    def _supervised(self, store, sup):
+        from tools import browser_vault_tool
+
+        return (patch("agent.vault_store.get_vault_store", return_value=store),
+                patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup),
+                patch.object(browser_vault_tool, "_page_backend", return_value=None),
+                patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False))
+
+    def test_inspection_and_cleanup_go_to_the_pinned_session_too(self, store):
+        """Not only the secret-bearing scripts: the inspection that picks the fields and the unstamp
+        that clears them run on the session the fill pinned, never on whatever is current."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = self._RecordingSup([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                   "label": "", "name": "pw", "type": "password"}])
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is True
+        inspection = [sid for expr, sid in sup.sent if 'setAttribute("data-hermes-vault-slot-" + nonce' in expr]
+        unstamp = [sid for expr, sid in sup.sent if "unstamped" in expr]
+        assert inspection == ["S1"] and unstamp == ["S1"]
+
+    def test_a_supervisor_without_a_page_session_refuses_the_fill(self, store):
+        """A supervisor that is reconnecting has no page session to pin. The fill refuses instead of
+        running unpinned, where every script would follow whichever tab the reconnect lands on."""
+        from tools import browser_vault_tool
+
+        class _Reconnecting(self._RecordingSup):
+            def evaluate_runtime(self, expression, **kwargs):
+                self.sid = self.sid or "S2"  # the reconnect lands on some tab once the fill is underway
+                return super().evaluate_runtime(expression, **kwargs)
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = _Reconnecting([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                              "label": "", "name": "pw", "type": "password"}], sid=None)
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3], \
+             patch.object(browser_vault_tool, "_bound_page_origin",
+                          return_value=browser_vault_tool._CheckedPage("https://example.com")):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == []
+
+    def test_a_reconnect_after_the_origin_check_does_not_move_the_fill(self, store):
+        """The origin was checked on the tab ``focus_page`` attached. When the supervisor moves to
+        another tab before the fill starts (a reconnect lands on the first page target), the fill
+        stays on the checked session and is refused there, rather than running on the new tab."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = self._RecordingSup([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                   "label": "", "name": "pw", "type": "password"}])
+        checked = browser_vault_tool._bound_page_origin
+
+        def checked_then_reconnected(*args, **kwargs):
+            out = checked(*args, **kwargs)
+            sup.sid = "S2"
+            return out
+
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3], \
+             patch.object(browser_vault_tool, "_bound_page_origin", side_effect=checked_then_reconnected):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == []  # nothing, not even the inspection, reaches the new tab
+
+    def test_a_current_page_check_pins_the_session_it_read(self, store):
+        """No tab was focused, so the origin came from reading the current page. The fill pins the
+        session that read answered on, not whichever one the supervisor holds once the fill starts."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+
+        class _NoFocus(self._RecordingSup):
+            def focus_page(self, origin, accept=None):
+                return {"ok": False, "error": "no open page"}
+
+            def evaluate_runtime(self, expression, **kwargs):
+                out = super().evaluate_runtime(expression, **kwargs)
+                if "location.href" in expression:
+                    self.sid = "S2"  # the reconnect lands right after the origin read
+                return out
+
+        sup = _NoFocus([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                         "label": "", "name": "pw", "type": "password"}])
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert [(expr, sid) for expr, sid in sup.sent if "location.href" not in expr] == []
+        assert [sid for _expr, sid in sup.sent] == ["S1"]  # the origin read itself was pinned
+
+    def test_the_fill_pins_the_session_focus_page_attached_not_a_later_read(self, store):
+        """``focus_page`` probed and attached S1, then something moved the supervisor to S2 before
+        the fill read it again (a concurrent focus, a reconnect's first attach). The fill pins S1,
+        the tab that was probed, so it is refused rather than run on S2."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+
+        class _MovedAfterFocus(self._RecordingSup):
+            def focus_page(self, origin, accept=None):
+                out = super().focus_page(origin, accept)
+                self.sid = "S2"
+                return out
+
+        sup = _MovedAfterFocus([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                 "label": "", "name": "pw", "type": "password"}])
+        p = self._supervised(store, sup)
+        with p[0], p[1], p[2], p[3]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == []
+
+    def test_a_supervisor_that_vanished_after_the_origin_check_refuses_the_fill(self, store):
+        """The origin was checked on a supervisor that is gone from the registry by the time the fill
+        starts. A fresh supervisor that turns up later never inherits the fill unpinned."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        sup = self._RecordingSup([{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                                   "label": "", "name": "pw", "type": "password"}])
+        fresh = self._RecordingSup(sup.controls, sid="S9")
+        answers = iter([sup, None])
+
+        p = self._supervised(store, sup)
+        with p[0], p[2], p[3], \
+             patch.object(browser_vault_tool, "_ensure_supervisor", side_effect=lambda t: next(answers, fresh)):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t", with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert [e for e, _sid in sup.sent + fresh.sent if "s3cret-pw" in e] == []
+
+    def test_a_read_back_on_another_origin_stops_at_once(self):
+        """The read-back carries the values: once the page has left the bound origin, it is not
+        polled again until the ceiling, and the result names the cause."""
+        from tools import browser_vault_tool
+
+        sent = []
+
+        def page(_task_id, expression):
+            sent.append(expression)
+            return {"success": True, "result": json.dumps({"refused": "origin_changed", "found": "https://evil.test"})}
+
+        with patch.object(browser_vault_tool, "_eval_js_secret", side_effect=page), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={"success": True}), \
+             patch.object(browser_vault_tool.time, "sleep"):
+            out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
+        assert out["success"] is False and out["error_type"] == "origin_changed"
+        assert "https://evil.test" in out["error"] and len(sent) == 1
+
+    def test_a_focus_check_on_another_origin_is_origin_changed_not_focus_lost(self, store):
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[{"refused": "origin_changed", "found": "https://evil.test"}],
+            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is False and out["error_type"] == "origin_changed"
+        assert "https://evil.test" in out["error"] and sup.typed == []
+
+    def test_a_value_reverted_after_the_first_good_read_is_not_a_fill(self, store):
+        """The read-back is a claim the page KEPT the value: a framework that accepts it for one
+        frame and reverts it on the next commit must fail the fill, not pass on the first sample."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        samples = [{"landed": 1, "reverted": 0, "missing": []}]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                answer = samples[0]
+                samples[0] = {"landed": 0, "reverted": 1, "missing": []}  # reverted from now on
+                return {"success": True, "result": json.dumps(answer)}
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, with_identifier=False))
+        assert out["success"] is False and out["error_type"] == "fill_reverted"
+
+    def test_a_revert_lasting_a_frame_or_two_is_seen(self):
+        """The read-back samples; a revert shorter than its sampling gap passes unseen. A framework
+        that reverts for a frame or two (20 ms) in every 200 ms must not read as a kept value. The
+        clock is simulated: each sample reads the page at the read-back's own sleep schedule."""
+        from tools import browser_vault_tool
+
+        clock = {"now": 0.0}
+        ms = lambda: round(clock["now"] * 1000)
+
+        def page(_task_id, _expression):
+            kept = not 10 <= ms() % 200 < 30  # reverted 10-30 ms into every 200 ms
+            return {"success": True, "result": json.dumps(
+                {"landed": int(kept), "reverted": int(not kept), "missing": []})}
+
+        def sleep(seconds):
+            clock["now"] += seconds
+
+        with patch.object(browser_vault_tool, "_eval_js_secret", side_effect=page), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={"success": True}), \
+             patch.object(browser_vault_tool.time, "sleep", side_effect=sleep), \
+             patch.object(browser_vault_tool.time, "monotonic", side_effect=lambda: clock["now"]):
+            out = browser_vault_tool._read_back("t", [{"index": 1, "value": "x"}], "n", "https://example.com")
+        assert out["success"] is False and out["error_type"] == "fill_reverted"
+
+    def test_a_value_that_settles_after_a_mask_rewrite_is_a_fill(self, store):
+        """The other half of stability: a mask that writes twice reads wrong first, then holds."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        reads = []
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                reads.append(1)
+                ok = len(reads) > 1
+                return {"success": True, "result": json.dumps(
+                    {"landed": int(ok), "reverted": int(not ok), "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, with_identifier=False))
+        assert out["success"] is True and out["filled_fields"] == 1
+
+    @pytest.mark.parametrize("failing", ["fill", "read-back"])
+    def test_a_transport_error_quoting_the_script_never_carries_the_secret_out(self, store, caplog, failing):
+        """Every secret-bearing script (the write AND the read-back, which carries the expected
+        values) goes over the supervisor. A transport that raises with the expression in its message
+        must not surface it in the tool result or the logs."""
+        from tools import browser_vault_tool
+        from tools.registry import registry
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+
+        class _Sup:  # no insert_text: the JS write path
+            def current_page_session(self):
+                return "S1"
+
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
+
+            def evaluate_runtime(self, expression, *, session_id=None, **kwargs):
+                if "location.href" in expression:
+                    return {"ok": True, "result": "https://example.com/login"}
+                if "s3cret-pw" not in expression:
+                    return {"ok": True, "result": json.dumps(controls)}
+                if ("reverted" in expression) == (failing == "read-back"):
+                    raise RuntimeError(f"socket closed while sending {expression}")
+                return {"ok": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()), \
+             patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+             patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+             patch.object(browser_vault_tool, "_fenced_page_op", lambda tid, fn: fn()), \
+             caplog.at_level("DEBUG"):
+            raw = registry.dispatch("browser_vault", {"action": "fill", "handle": meta.id}, task_id="t")
+        assert json.loads(raw)["success"] is False
+        assert "s3cret-pw" not in raw
+        assert "s3cret-pw" not in caplog.text
+
+    def test_identifier_falls_back_to_a_single_unlabelled_text_box(self, store):
+        """A framework login form can expose a phone box with no autocomplete, name, id, label or
+        placeholder — nothing to classify. When the password's form holds exactly one other text
+        box, that is the identifier; when it holds several, the fill writes none of them."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"formIndex": 0, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            if "cleared" in expression:
+                return {"success": True, "result": json.dumps({"cleared": 1})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True and out["filled_fields"] == 2
+        assert '"index": 0' in secret_exprs[0]      # the unlabelled box was included
+        assert "user@example.com" in secret_exprs[0]
+
+    @pytest.mark.parametrize("autocomplete", ["one-time-code", "new-password", "off one-time-code"])
+    def test_the_identifier_fallback_never_takes_a_box_the_classifier_excludes(self, store, autocomplete):
+        """A password step with a code box and no username box: the single other text box is the
+        one-time code (or a new-password box), which the login classifier excludes outright. The
+        fallback must not undo that and write the identifier over the code."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"formIndex": 0, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": autocomplete,
+             "maxLength": 6},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True and out["filled_fields"] == 1, out
+        assert any("s3cret-pw" in e for e in secret_exprs)
+        assert not any("user@example.com" in e or '"index": 0' in e for e in secret_exprs)
+
+    @pytest.mark.parametrize("box, expected", [
+        ({"label": "", "name": "verification_code", "type": "text"}, None),
+        ({"label": "Security code", "name": "token", "type": "tel"}, 2),
+        ({"label": "Enter your phone number to receive a verification code", "name": "phone", "type": "tel",
+          "autocomplete": "tel"}, 0),
+    ], ids=["fallback-code-name", "classified-tel-code", "declared-tel-identifier"])
+    def test_a_code_box_the_otp_classifier_claims_is_never_the_identifier(self, store, box, expected):
+        """A password step with a code box that carries no autocomplete: enter_code's classifier knows it
+        by its name or label, so the identifier must not land there (a type=tel box would otherwise be
+        classified as a phone identifier and outscore a labelled username box). A box the page declares
+        as a login field keeps the identifier whatever its label says."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"formIndex": 0, "index": 0, "autocomplete": "", "maxLength": 6, **box},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+        if expected == 2:
+            controls.append({"autocomplete": "", "formIndex": 0, "index": 2, "label": "Username", "name": "user",
+                             "type": "text"})
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True, out
+        written = {i for i in (0, 2) if any(f'"index": {i}' in e and "user@example.com" in e for e in secret_exprs)}
+        assert written == ({expected} if expected is not None else set()), (written, out)
+        assert out["filled_fields"] == (1 if expected is None else 2)
+
+    @pytest.mark.parametrize("form", [0, None], ids=["in-a-form", "formless"])
+    def test_the_identifier_stays_in_the_password_form(self, store, form):
+        """An unlabelled username box beside the password and a newsletter email box elsewhere: the
+        newsletter box is classified (type=email) and the username box is not, but only a box in the
+        password's form (formless beside formless) is the identifier, so the fallback takes it."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"formIndex": form, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
+            {"autocomplete": "current-password", "formIndex": form, "index": 1, "label": "", "name": "pw",
+             "type": "password"},
+            {"autocomplete": "", "formIndex": 1, "index": 2, "label": "Get our newsletter", "name": "news",
+             "type": "email"},
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True and out["filled_fields"] == 2, out
+        assert not any('"index": 2' in e for e in secret_exprs)
+        assert any('"index": 0' in e and "user@example.com" in e for e in secret_exprs)
+
+    @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+    @pytest.mark.parametrize("box", [{"label": "", "name": ""}, {"label": "Login", "name": "login"}],
+                             ids=["unlabelled-fallback", "classified-username"])
+    def test_a_phone_in_a_masked_box_reads_back_as_a_phone(self, store, box):
+        """A saved phone number goes into the box beside the password (unlabelled: the fallback; or
+        labelled "Login": classified as a username), whose mask shows it as "+48 600 100 200". The
+        real read-back script (run in node) accepts that only for a phone (tel), so the fill must
+        carry the login's identifier type, not the box's guess or ``username``."""
+        from tests.agent.test_vault_fill_scripts import NONCE, _run
+        from tools import browser_vault_tool
+
+        meta = store.add_item(kind="login", label="Phone login", origin="https://example.com",
+                              secret={"identifier_type": "phone", "identifier": "+48600100200", "password": "s3cret-pw"})
+        controls = [
+            {"formIndex": 0, "index": 0, "type": "text", "autocomplete": "", **box},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+        page = ('stamp(add(document, "input", { type: "text", value: "+48 600 100 200" }), 0);'
+                'stamp(add(document, "input", { type: "password", value: "s3cret-pw" }), 1);')
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(_run(page, expression))}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool.secrets, "token_hex", return_value=NONCE), \
+             patch.object(browser_vault_tool, "_FILL_VERIFY_STABLE_S", 0), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True and out["filled_fields"] == 2, out
+
+    @pytest.mark.parametrize("boxes, filled", [
+        ([{"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"}], True),
+        ([{"autocomplete": "", "formIndex": 0, "index": i, "label": "", "name": "", "type": "text"} for i in (0, 2)],
+         False),
+    ], ids=["identifier-filled", "identifier-skipped"])
+    def test_the_result_says_whether_the_identifier_was_filled(self, store, boxes, filled):
+        """Two unlabelled boxes beside the password are ambiguous, so the fill skips the identifier.
+        The model must then type it itself: the result says so, and ``next`` asks for it instead of
+        telling the model to submit a form with an empty username."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = boxes + [{"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "",
+                             "name": "pw", "type": "password"}]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True and out["identifier_filled"] is filled, out
+        assert out["filled_fields"] == (2 if filled else 1)
+        asks = "type the identifier" in out["next"].lower()
+        assert asks is not filled, out["next"]
+        assert "user@example.com" not in out["next"]
+
+    def test_an_unlabelled_identifier_box_is_typed_not_written_by_js(self, store):
+        """The fallback's box is unclassified, but it is a text field: with a working supervisor it
+        is typed (trusted input), not written by the JS path a controlled form re-renders empty."""
+        from tools import browser_vault_tool
+
+        sup = self._SessionSup()
+        meta, patches = self._per_key_harness(
+            store, sup, focus_answers=[lambda _s, e: {"focused": int(re.search(r'"index": (\d+)', e).group(1))}],
+            verify_answers=[{"landed": 1, "reverted": 0, "missing": []}, {"landed": 2, "reverted": 0, "missing": []}])
+        controls = [{"formIndex": 0, "index": 0, "label": "", "name": "", "type": "text", "autocomplete": ""},
+                    {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw",
+                     "type": "password"}]
+
+        def fake_eval(_task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        with patches[0], patches[2], patches[3], patches[4], patches[5], \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
+            out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
+        assert out["success"] is True, out
+        assert [t for t, _ in sup.typed] == ["user@example.com"]  # the password goes by the JS write
+
+    def test_fill_writes_the_identifier_by_default(self, store):
+        """A login fill covers both fields of a login. The identifier is typed as trusted input (the
+        password goes by the guarded JS write): a normal input tool writes the value into the DOM without the
+        framework accepting it, and a controlled form then re-renders the field empty."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
+            {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
+        ]
+        typed, secret_exprs = [], []
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
+                return {"success": True, "result": json.dumps({"ok": True})}
+            if 'refused: "focus_lost"' in expression:
+                match = re.search(r'"index":\s*(\d+)', expression)
+                index = int(match.group(1)) if match else -1
+                return {"success": True, "result": json.dumps({"focused": index})}
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(
+                    {"landed": expression.count('"index"'), "reverted": 0, "missing": []})}
+            if "cleared" in expression:
+                return {"success": True, "result": json.dumps({"cleared": 1})}
+            return {"success": True, "result": json.dumps({"filled": expression.count('"index"')})}
+
+        class _Sup:
+            def current_page_session(self):
+                return "S1"
+
+            def insert_text(self, text, **kwargs):
+                typed.append(text)
+                return {"ok": True}
+
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()), \
+             patch.object(browser_vault_tool, "_page_backend", return_value=None):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert typed == ["user@example.com"]
+        assert any("s3cret-pw" in e and "filled }" in e for e in secret_exprs)
+        assert out["filled_fields"] == 2
+        assert "s3cret-pw" not in raw
+
+    def test_a_masked_field_is_retyped_key_by_key(self, store):
+        """A bulk insert loses characters in a masked field (a phone number, a date). The fill reads
+        the mismatch, clears the field, retypes it one character at a time, and only then reports
+        success — the value that survives is the value that was verified."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [_EMAIL_BOX]  # an identifier step: the identifier is the only typed value
+        typed = []
+        verifies = []
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            if "ok: true" in expression:  # the in-page origin assert (build_origin_check_js)
+                return {"success": True, "result": json.dumps({"ok": True})}
+            if 'refused: "focus_lost"' in expression:
+                return {"success": True, "result": json.dumps({"focused": 1})}
+            if "reverted" in expression:
+                verifies.append(expression)
+                first = len(verifies) == 1
+                return {"success": True, "result": json.dumps(
+                    {"landed": 0, "reverted": 1, "missing": []} if first
+                    else {"landed": 1, "reverted": 0, "missing": []})}
+            if "cleared" in expression:
+                return {"success": True, "result": json.dumps({"cleared": 1})}
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        class _Sup:
+            def current_page_session(self):
+                return "S1"
+
+            def insert_text(self, text, **kwargs):
+                typed.append(text)
+                return {"ok": True}
+
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login", "session_id": "S1"}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()), \
+             patch.object(browser_vault_tool, "_page_backend", return_value=None):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert typed[0] == "user@example.com"              # the bulk insert
+        assert typed[1:] == list("user@example.com")       # the retype, one key at a time
+        assert out["filled_fields"] == 1
 
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,
@@ -481,20 +1460,20 @@ class TestBrowserVaultTools:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
 
-        # No supervisor registered and the local daemon exposes no CDP endpoint → the fill refuses.
-        # The daemon may be asked for its endpoint (`get cdp-url`, no secret) but NEVER handed an
-        # `eval` carrying the password: that is the argv exposure this test pins.
+        # No supervisor registered and the task's session exposes no CDP endpoint → the fill refuses.
+        # There is no other path the password could take (argv, a subprocess eval): nothing is attached
+        # and nothing evaluates the secret-bearing script.
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
-             patch("tools.browser_tool_session._run_browser_command", return_value={"success": False}) as run_cmd:
+             patch("tools.browser_session.session_for_task", return_value={}), \
+             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg:
             reg.get.return_value = None
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         assert out["success"] is False
         assert out["error_type"] == "supervisor_required"
-        assert all(call.args[1] == "get" for call in run_cmd.call_args_list), run_cmd.call_args_list
-        assert "s3cret-pw" not in json.dumps([str(c) for c in run_cmd.call_args_list]) and "s3cret-pw" not in raw
+        reg.get_or_start.assert_not_called()
+        assert "s3cret-pw" not in json.dumps([str(c) for c in reg.mock_calls]) and "s3cret-pw" not in raw
 
 
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):
@@ -517,6 +1496,8 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps(controls)}
 
         def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         try:
@@ -566,6 +1547,8 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
+            if "reverted" in expression:  # read-back pass
+                return {"success": True, "result": json.dumps({"landed": 3, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 3})}
 
         try:
@@ -585,7 +1568,9 @@ class TestBrowserVaultTools:
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
             assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
-            assert len(secret_exprs) == 1 and _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
+            # the fill, then the read-back that proves the page kept it
+            assert _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
+            assert secret_exprs[1:] and all("reverted" in e for e in secret_exprs[1:])
             assert '"index": 3' not in secret_exprs[0]  # the email box is never a card target
             assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
         finally:
@@ -683,6 +1668,35 @@ class TestSaveLoginPrompt:
         [meta] = store.list_items()
         assert meta.origin == "https://acme.test" and meta.identifier == "tek@acme.test"
 
+    @pytest.mark.parametrize("fill", [
+        {"success": True, "filled_fields": 2, "identifier_filled": True, "next": "Submit."},
+        {"success": True, "filled_fields": 1, "identifier_filled": False,
+         "next": "Type the identifier into the username field if the form has one, then submit."},
+        {"success": False, "error_type": "focus_lost", "filled_fields": 0, "error": "focus moved"},
+    ], ids=["filled", "identifier-skipped", "not-filled"])
+    def test_next_follows_the_fill(self, store, monkeypatch, fill):
+        """The fill knows whether it typed the identifier: a model told to type it again would write it a
+        second time into a field the vault just filled, and one told only to submit would leave a skipped
+        username empty. A failed fill says the login is saved and how to retry."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        unlock_mod.set_save_login_prompt_callback(lambda origin, site: {"identifier": "tek@acme.test", "password": "pw-x"})
+        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        monkeypatch.setattr(browser_vault_tool, "browser_vault_fill", lambda handle, task_id=None: json.dumps(fill))
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
+        finally:
+            unlock_mod.set_save_login_prompt_callback(None)
+        assert out["success"] is True and out["fill"] == fill
+        if fill["success"]:
+            assert out["next"] == fill["next"]
+        else:
+            assert "saved" in out["next"] and "handle" in out["next"] and "action=fill" in out["next"]
+            assert "Type the identifier" not in out["next"]
+
     def test_declined_or_headless_stores_nothing(self, store, monkeypatch):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool
@@ -761,6 +1775,8 @@ class TestTwoFactor:
 
         def fake_secret(task_id, expr):
             seen["expr"] = expr
+            if "reverted" in expr:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
@@ -773,6 +1789,53 @@ class TestTwoFactor:
         assert out["success"] and out["source"] == "local" and asked == []
         code = re.search(r'"value": "(\d{6})"', seen["expr"]).group(1)
         assert code not in raw  # the code went to the page, not to the model
+
+    @pytest.mark.parametrize("path", ["enter_code", "fill_not_written"])
+    def test_no_inspection_stamp_is_left_on_the_page(self, store, path):
+        """The fill script leaves its stamps for a read-back. enter_code has no read-back, and a fill no
+        field accepted stops before it: both must still remove the stamps, or a later model-driven
+        read can address the very control the vault targeted."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        page = {"stamped": False}
+        if path == "enter_code":
+            controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        else:
+            controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw",
+                         "type": "password"}]
+
+        def run(expression):
+            if 'setAttribute("data-hermes-vault-slot-"' in expression:
+                page["stamped"] = True
+                return {"success": True, "result": json.dumps(controls)}
+            if "removeAttribute(slot)" in expression and "unstamped" in expression:
+                page["stamped"] = False
+                return {"success": True, "result": {"unstamped": True}}
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            if "filled }" in expression:
+                return {"success": True, "result": {"filled": 1 if path == "enter_code" else 0}}
+            return {"success": True, "result": False}
+
+        meta = _add_login(store, origin="https://example.com")
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246810")
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+                 patch.object(browser_vault_tool, "_eval_js", side_effect=lambda t, e: run(e)), \
+                 patch.object(browser_vault_tool, "_eval_js_secret", side_effect=lambda t, e: run(e)):
+                if path == "enter_code":
+                    out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+                else:
+                    out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is (path == "enter_code"), out
+        if path == "fill_not_written":
+            assert out["error_type"] == "fill_not_written"
+        assert page["stamped"] is False
 
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
         from agent.vault_backends import unlock as unlock_mod
@@ -799,6 +1862,96 @@ class TestTwoFactor:
         assert out["success"] and out["source"] == "user" and out["filled_fields"] == 6
         assert re.findall(r'"value": "(\d)"', seen["expr"]) == list("246810")
         assert declined["error_type"] == "code_declined"
+
+    def test_the_code_goes_to_the_session_its_field_was_found_on(self, store):
+        """enter_code pins the page session like a password fill: when another tool moves the
+        supervisor between the inspection and the write, the code is not typed into the new page."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        sup = TestBrowserVaultTools._RecordingSup(controls)
+        inspect = sup.evaluate_runtime
+
+        def retarget_after_inspection(expression, **kw):
+            out = inspect(expression, **kw)
+            if 'setAttribute("data-hermes-vault-slot-" + nonce' in expression:
+                sup.sid = "S2"  # e.g. focus_page from a concurrent browser call
+            return out
+
+        sup.evaluate_runtime = retarget_after_inspection
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246810")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+                 patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+                 patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is False
+        writes = [sid for expr, sid in sup.sent if "246810" in expr]
+        assert writes == ["S1"]
+
+    def test_a_reconnecting_supervisor_refuses_the_code(self, store):
+        """enter_code with no page session to pin refuses before the inspection and before anyone is
+        asked for a code: an unpinned write would follow whichever tab the reconnect lands on."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        sup = TestBrowserVaultTools._RecordingSup(controls, sid=None)
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "246810")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+                 patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+                 patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+                 patch.object(browser_vault_tool, "_current_page_origin", return_value="https://acme.test"):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert sup.sent == [] and asked == []
+
+    @pytest.mark.parametrize("with_handle", [True, False])
+    def test_a_reconnect_after_the_origin_check_does_not_move_the_code(self, store, with_handle):
+        """The code's origin was checked on S1 (a saved login's bound-origin check, or the current
+        page read). When the supervisor moves to S2 before the code is entered, enter_code is
+        refused on the checked session: nothing reaches S2 and nobody is asked for a code."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        handle = ""
+        if with_handle:
+            handle = store.add_item("login", "ex", {"identifier_type": "username", "identifier": "u", "password": "pw",
+                                                    "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://example.com").id
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Code", "autocomplete": "one-time-code"}]
+        sup = TestBrowserVaultTools._RecordingSup(controls)
+        check = "_bound_page_origin" if with_handle else "_current_page_check"
+        checked = getattr(browser_vault_tool, check)
+
+        def checked_then_reconnected(*args, **kwargs):
+            out = checked(*args, **kwargs)
+            sup.sid = "S2"
+            return out
+
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "246810")
+        try:
+            with patch("agent.vault_store.get_vault_store", return_value=store), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=sup), \
+                 patch.object(browser_vault_tool, "_page_backend", return_value=None), \
+                 patch.object(browser_vault_tool, "_bot_desktop_browser_session", return_value=False), \
+                 patch.object(browser_vault_tool, check, side_effect=checked_then_reconnected):
+                out = json.loads(browser_vault_tool.browser_vault_enter_code(handle, task_id="t"))
+        finally:
+            unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] is False and out["error_type"] == "supervisor_required"
+        assert [sid for _expr, sid in sup.sent if sid != "S1"] == [] and asked == []
+        assert [e for e, _sid in sup.sent if "location.href" not in e] == []
 
     def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
         """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never

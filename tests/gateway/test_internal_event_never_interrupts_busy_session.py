@@ -66,9 +66,7 @@ def _make_internal_event(text: str = "[async delegation completed]") -> MessageE
 def _make_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner.adapters = {}
     runner.config = MagicMock()

@@ -17,21 +17,20 @@ from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
+from gateway.session_authority import admission_row, initialize_session_authority
 from gateway.session_ingress_burst import holds_busy_burst
 from gateway.session_results import execution_result
-from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
 
 def _rows(authority):
-    return [row for sid in list(authority.sessions)
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+    return [admission_row(row) for sid in list(authority.sessions)
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
-async def _busy_owner(monkeypatch, adapter, source, **wiring):
+async def _busy_owner(monkeypatch, adapter, source, config=None, **wiring):
     """Wire ``adapter`` to a real runner and authority, then start turn 'A' and hold it running."""
-    runner = GatewayRunner(GatewayConfig())
+    runner = GatewayRunner(config or GatewayConfig())
 
     async def send(chat_id, content, reply_to=None, metadata=None):
         return SendResult(success=True, message_id='sent')
@@ -59,7 +58,7 @@ async def _busy_owner(monkeypatch, adapter, source, **wiring):
         finish.set()
         await async_wait_until(lambda: not holds_busy_burst(adapter, key) and len(executed) >= turns and all(
             row['status'] == 'terminal' for row in _rows(authority)), timeout=15, what='the follow-ups to settle')
-        await asyncio.to_thread(authority.db.close)
+        await asyncio.to_thread(runner.session_store.close_all_db_handles)
         return executed[1:]
     return SimpleNamespace(runner=runner, authority=authority, key=key, settle=settle)
 
@@ -157,6 +156,27 @@ async def test_new_waits_for_a_burst_still_committing(monkeypatch, tmp_path):
     assert await owner.settle(1) == []
 
 
+@pytest.mark.parametrize('sender, runs', [('+155****0002', [('B', 0)]), ('+155****0001', [])])
+@pytest.mark.asyncio
+async def test_held_burst_survives_a_refused_stop_in_a_shared_group(monkeypatch, sender, runs):
+    """A shared Signal group: the owner's held follow-up B, then /stop. A stranger's /stop is refused
+    by the runner and must not drop B (#136759); the owner's /stop still cancels it."""
+    from plugins.platforms.signal.adapter import SignalAdapter
+    monkeypatch.setenv('SIGNAL_ALLOWED_USERS', '+155****0001')
+    monkeypatch.setenv('SIGNAL_GROUP_ALLOWED_USERS', '*')
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={'account': '+155****9999',
+                                                                'group_sessions_per_user': False}))
+
+    def member(user_id):
+        return adapter.build_source(chat_id='group:g1', chat_type='group', user_id=user_id)
+    owner = await _busy_owner(monkeypatch, adapter, member('+155****0001'),
+                              GatewayConfig(group_sessions_per_user=False), busy_text_mode='queue')
+    await adapter.handle_message(MessageEvent(text='B', source=member('+155****0001'), message_id='B'))
+    assert owner.key in adapter._shared_bursts
+    await adapter.handle_message(MessageEvent(text='/stop', source=member(sender), message_id='S'))
+    assert await owner.settle(1 + len(runs)) == runs
+
+
 @pytest.mark.asyncio
 async def test_next_burst_waits_while_the_chats_last_one_commits(monkeypatch, tmp_path):
     """The chat's first burst is still committing: the reader waits before holding another one,
@@ -218,10 +238,18 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
         release.set()
     await asyncio.wait_for(restart, 15)
     assert sorted(row['request_id'] for row in _rows(authority)) == ['B', 'V'], _rows(authority)
+    # The stand-in for the next owner. Whether V's drain claims before or after /restart closes
+    # admission is scheduling: once closed, its claim is refused and it pauses (runtime_draining),
+    # leaving the rows queued. So let this owner's drains finish, then run the startup recovery
+    # the next owner runs, rather than hoping a drain was still in flight when the flag flips.
+    await async_wait_until(lambda: all(live.task is None or live.task.done() for live in authority.sessions.values()),
+                           timeout=15, what="the draining owner's drains to exit")
     runner._draining = False
+    from gateway.run_runtime import recover_profile_native_sessions
+    assert set((await recover_profile_native_sessions(runner, authority)).values()) <= {'ready'}
     await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
                            what='both turns to run')
-    await asyncio.to_thread(authority.db.close)
+    await asyncio.to_thread(runner.session_store.close_all_db_handles)
 
 
 @pytest.mark.asyncio
@@ -275,3 +303,84 @@ async def test_restart_waits_for_a_direct_busy_input_queued_behind_a_slow_captur
         await adapter.cancel_background_tasks()
         await async_wait_until(lambda: not mutation_tasks(authority), timeout=10)
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_buzz_split_text_merges_through_the_reader(monkeypatch):
+    """Buzz was left out of the #140973 serial-reader sweep: both the WS listener and the poll
+    sweep await ``_handle_events`` before reading the next batch (#141378)."""
+    adapter, state, source = _buzz(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    # as both readers do: the next batch only after the previous _handle_events returned
+    await adapter._handle_events('chan', state, [_buzz_event(1, 'first half')])
+    await adapter._handle_events('chan', state, [_buzz_event(2, 'second half')])
+    assert await owner.settle(2) == [('first half\nsecond half', 0)]
+
+
+def _buzz(monkeypatch):
+    from collections import OrderedDict
+
+    from plugins.platforms.buzz.adapter import BuzzAdapter
+
+    monkeypatch.setenv('BUZZ_ALLOWED_USERS', 'aa11bb22')
+    adapter = BuzzAdapter(PlatformConfig(enabled=True))
+    async def _name(pubkey):
+        return pubkey[:8]
+    adapter._resolve_user_name = _name  # the CLI-backed resolver has no place in a unit test
+    state = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict()}
+    adapter._channel_state['chan'] = state
+    return adapter, state, adapter.build_source(chat_id='chan', chat_type='dm', user_id='aa11bb22')
+
+
+def _buzz_event(i, text):
+    return {'id': f'e{i}', 'kind': 9, 'pubkey': 'aa11bb22', 'content': text, 'created_at': i}
+
+
+@pytest.mark.asyncio
+async def test_buzz_cursor_never_passes_an_uncommitted_input(monkeypatch):
+    """Buzz saves its receive cursor after ``_handle_events`` returns, deferred while a busy burst is
+    held. The reader marks the next event seen before dispatching it, so a write that lands in that gap
+    must still name only committed inputs: a restart restores the saved cursor and skips the rest."""
+    adapter, state, source = _buzz(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    saved = []
+    monkeypatch.setattr(type(adapter), '_write_cursors', staticmethod(lambda path, payload: saved.append(
+        (payload['channels']['chan']['last_ts'], {row['request_id'] for row in _rows(owner.authority)}))))
+    await adapter._handle_events('chan', state, [_buzz_event(1, 'held')])
+    assert owner.key in adapter._shared_bursts and saved == []  # returned with the input only held
+    gate, real_name = asyncio.Event(), adapter._resolve_user_name
+
+    async def slow_name(pubkey):  # e2 is marked seen, not yet dispatched, while the burst commits
+        await gate.wait()
+        return await real_name(pubkey)
+    adapter._resolve_user_name = slow_name
+    second = asyncio.create_task(adapter._handle_events('chan', state, [_buzz_event(2, 'next')]))
+    await async_wait_until(lambda: saved, timeout=15, what='the deferred cursor write')
+    gate.set()
+    await asyncio.wait_for(second, 10)
+    assert await owner.settle(3) == [('held', 0), ('next', 0)]
+    assert saved[0][0] == 1, saved
+    # Every saved cursor names only events that had an admission row when it was written.
+    assert all(f'e{n}' in rows for last_ts, rows in saved for n in range(1, last_ts + 1)), saved
+
+
+@pytest.mark.asyncio
+async def test_buzz_cursor_write_waiting_on_disk_skips_a_newer_held_burst(monkeypatch):
+    """e1's deferred write is due but waits behind a slow earlier write; meanwhile e2 arrives and is
+    held. The waiting write must still land the cursor as it was when e1 committed, not e2's."""
+    adapter, state, source = _buzz(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    saved = []
+    monkeypatch.setattr(type(adapter), '_write_cursors', staticmethod(lambda path, payload: saved.append(
+        (payload['channels']['chan']['last_ts'], {row['request_id'] for row in _rows(owner.authority)}))))
+    await adapter._cursor_write_lock.acquire()  # the earlier write, still in its fsync
+    await adapter._handle_events('chan', state, [_buzz_event(1, 'held')])
+    await async_wait_until(lambda: adapter._cursor_write_lock._waiters, timeout=15,
+                           what="e1's committed write to queue on the lock")
+    await adapter._handle_events('chan', state, [_buzz_event(2, 'next')])
+    assert owner.key in adapter._shared_bursts  # e2 is held, not committed
+    adapter._cursor_write_lock.release()
+    await async_wait_until(lambda: saved, timeout=15, what='the waiting cursor write')
+    assert saved[0][0] == 1, saved
+    assert await owner.settle(3) == [('held', 0), ('next', 0)]
+    assert all(f'e{n}' in rows for last_ts, rows in saved for n in range(1, last_ts + 1)), saved

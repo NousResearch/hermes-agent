@@ -128,12 +128,12 @@ The web playground is also fast: <https://ast-grep.github.io/playground.html>.
 
 ## When ast-grep is the wrong tool
 
-If your pattern is fundamentally text-shaped, switch to `grep` / `rg`:
+If your pattern is fundamentally text-shaped, switch to `search_files`:
 
-- Match across multiple files **for any text** → `rg`
-- Cross-language regex with alternation → `rg -e foo -e bar`
-- Match comments only → `rg --type ts '^\s*//.*TODO'`
-- Match URLs, emails, license headers → `rg`
+- Match across multiple files **for any text** → `search_files`
+- Cross-language regex with alternation → `search_files` with `pattern="foo|bar"`
+- Match comments only → `search_files` with `pattern="^\s*//.*TODO"`, `file_glob="*.ts"`
+- Match URLs, emails, license headers → `search_files`
 
 ast-grep is for **code structure**: function shapes, call patterns, control flow, type annotations, imports, error handling. If your "pattern" only depends on the bytes of the file and not on the syntax, regex is the right tool.
 

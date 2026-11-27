@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_cli.doctor_report import Finding
 from hermes_cli.doctor_state import _state_db_wal
@@ -57,13 +58,12 @@ def test_doctor_names_retired_wal_holders_instead_of_healthy_state_db(tmp_path, 
     health probe is another opener) nor checkpoint under --fix."""
     from hermes_cli import doctor
     from hermes_cli import doctor_state
-    import hermes_state_dbfile
 
     db = tmp_path / "state.db"
     db.write_bytes(b"")
     monkeypatch.setattr(doctor, "HERMES_HOME", tmp_path)
-    monkeypatch.setattr(hermes_state_dbfile, "iter_deleted_sqlite_sidecar_holders",
-                        lambda path: [(4242, f"{path}-wal"), (4242, f"{path}-shm")])
+    monkeypatch.setattr(doctor_state, "open_store_admin", lambda path, **_kw: SimpleNamespace(
+        deleted_sidecar_holders=lambda: [(4242, f"{path}-wal"), (4242, f"{path}-shm")]))
     probed = []
     monkeypatch.setattr(doctor_state, "_state_db_health", lambda *a, **k: probed.append(a))
     monkeypatch.setattr(doctor_state, "_state_db_stats", lambda *a, **k: probed.append(a))

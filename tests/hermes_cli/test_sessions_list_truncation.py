@@ -13,17 +13,20 @@ from hermes_cli import sessions_cmd
 
 @pytest.fixture
 def db(tmp_path):
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=tmp_path / "state.db")
-    for i in range(6):
-        db.create_session(f"sess_{i}", "cli")
-        db.append_message(f"sess_{i}", "user", f"hello {i}")
-    yield db
-    db.close()
+    """The seeded store's file."""
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        for i in range(6):
+            seed_session(store, f"sess_{i}", "cli")
+            seed_messages(store, f"sess_{i}", {"role": "user", "content": f"hello {i}"})
+        yield tmp_path / "state.db"
 
 
 def _list(db, limit, capsys):
-    sessions_cmd._cmd_list(db, Namespace(limit=limit, source=None, workspace=None))
+    from persistence_assembly import open_persistence_reader
+    with open_persistence_reader(db) as store:
+        sessions_cmd._cmd_list(Namespace(limit=limit, source=None, workspace=None), persistence=store)
     return capsys.readouterr().out
 
 

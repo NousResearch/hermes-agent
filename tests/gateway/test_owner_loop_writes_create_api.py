@@ -9,7 +9,10 @@ import threading
 
 import pytest
 
+from tests.fixtures.storage_holder import holder_type, policy_key
 from tests.gateway.test_owner_loop_writes_class import _owner
+
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
 
 
 async def _create(authority, owner, tmp_path, api):
@@ -22,8 +25,7 @@ async def _api_turn(authority, owner, tmp_path, api):
     from gateway.session_api_turn import admit_api_turn_async
     _, ref, row = await admit_api_turn_async(api, session_id='api', user_message='hi', conversation_history=[])
     await authority._drain(ref)
-    from hermes_state_runtime import get_session_admission
-    assert get_session_admission(authority.db, admission_id=row['admission_id'])['status'] == 'terminal'
+    assert authority.persistence.admissions.get(admission_id=row['admission_id']).status == 'terminal'
 
 
 def _writes_state_meta(prefix, threads):
@@ -43,12 +45,11 @@ def _writes_state_meta(prefix, threads):
 
 
 def _record(monkeypatch, prefix):
-    from hermes_state import SessionDB
     threads = []
     wrap = _writes_state_meta(prefix, threads)
-    real = SessionDB._execute_write
-    monkeypatch.setattr(SessionDB, '_execute_write',
-                        lambda self, fn, *a, **k: real(self, lambda conn: fn(wrap(conn)), *a, **k))
+    writer = holder_type()
+    monkeypatch.setattr(writer, '_execute_write', lambda self, fn, *a, real=writer._execute_write, **k:
+                        real(self, lambda conn: fn(wrap(conn)), *a, **k))
     return threads
 
 
@@ -60,9 +61,8 @@ async def _handle(event):
 
 @pytest.mark.asyncio
 async def test_session_create_commit_never_runs_on_the_owner_loop_thread(tmp_path, monkeypatch):
-    from hermes_state_local import POLICY_PREFIX
     store, authority, owner = _owner(tmp_path, monkeypatch, _handle)
-    threads = _record(monkeypatch, POLICY_PREFIX)
+    threads = _record(monkeypatch, policy_key())
     try:
         async with asyncio.timeout(20):
             await _create(authority, owner, tmp_path, None)

@@ -50,7 +50,7 @@ def test_classic_browser_connect_is_the_gateways_browser_manage(gateway_cli, mon
     monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
     cli, conn = gateway_cli(**{"browser.manage": lambda p: (
         {"connected": True, "url": p.get("url"), "messages": ["Chrome is already listening"]}
-        if p["action"] == "connect" else {"connected": True, "url": "http://127.0.0.1:9333", "browser_use": False})})
+        if p["action"] == "connect" else {"connected": True, "url": "http://127.0.0.1:9333"})})
     assert cli.process_command("/browser connect http://127.0.0.1:9333") is True
     assert _browser_calls(conn) == [{"action": "connect", "session_id": "local-s", "url": "http://127.0.0.1:9333"}]
     out = capsys.readouterr().out
@@ -64,11 +64,12 @@ def test_classic_browser_connect_is_the_gateways_browser_manage(gateway_cli, mon
     assert _browser_calls(conn)[-1] == {"action": "disconnect", "session_id": "local-s"}
 
 
-def test_classic_browser_use_goes_to_the_gateway(gateway_cli, monkeypatch):
-    cli, conn = gateway_cli(**{"browser.manage": {"connected": False, "browser_use": True}})
-    monkeypatch.setattr(HermesCLI, "new_session", lambda self, *a, **k: None, raising=False)
+def test_classic_browser_use_is_gone_and_prints_usage(gateway_cli, capsys):
+    """``/browser use [on|off]`` was removed with the built-in browser tools: usage, no gateway call."""
+    cli, conn = gateway_cli(**{"browser.manage": {"connected": False}})
     cli.process_command("/browser use off")
-    assert _browser_calls(conn) == [{"action": "use", "session_id": "local-s", "enabled": False}]
+    assert _browser_calls(conn) == []
+    assert "/browser" in capsys.readouterr().out
 
 
 def test_classic_browser_connect_against_a_remote_gateway_is_refused(gateway_cli, monkeypatch, capsys):
@@ -104,9 +105,9 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    import tools.browser_tool_lifecycle as lifecycle
-    from tools import browser_tool_cdp
-    monkeypatch.setattr(browser_tool_cdp, "_live_overrides", {})
+    import tools.browser_session_lifecycle as lifecycle
+    from tools import browser_session_cdp
+    monkeypatch.setattr(browser_session_cdp, "_live_overrides", {})
     reaps = []
     monkeypatch.setattr(lifecycle, "cleanup_profile_browsers", reaps.append)
     monkeypatch.setattr(lifecycle, "cleanup_all_browsers", lambda: reaps.append("ALL"))
@@ -144,9 +145,9 @@ def _registry(launch, *homes):
 
 def _resolved(home):
     from gateway.run import _profile_runtime_scope
-    from tools.browser_tool_cdp import _get_cdp_override_raw
+    from tools.browser_session_cdp import get_cdp_override_raw
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        return _get_cdp_override_raw()
+        return get_cdp_override_raw()
 
 
 def test_a_browser_one_profile_connects_never_reaches_another_profiles_session(homes, monkeypatch):

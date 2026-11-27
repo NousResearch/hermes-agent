@@ -294,6 +294,9 @@ def _normalize_type_array(value: list, out: dict) -> None:
         out.setdefault("nullable", True)
 
 
+normalize_type_array = _normalize_type_array
+
+
 def _sanitize_node(node: Any, path: str) -> Any:
     """Recursively sanitize a JSON-Schema fragment: bare-string schemas → ``{"type": <value>}``
     (unknown strings → permissive object); object nodes gain ``properties: {}``; ``type`` arrays
@@ -325,7 +328,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
     for key, value in node.items():
         # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common in MCP tool schemas) are
         # rejected by several tool-call backends: * llama.cpp's grammar generator only accepts a singular
-        # string type. * Gemini (including OpenAI-compatible transports such as GitHub Copilot proxying to
+        # string type. * Gemini (including OpenAI-compatible gateways proxying to
         # Gemini) rejects the array form outright — plain @ai-sdk/google rewrites it, but the
         # OpenAI-compatible path forwards it verbatim and the backend 400s. Normalize per the SDK's
         # behavior: * single non-null type → ``type: X`` (+ ``nullable: true`` if the array also contained

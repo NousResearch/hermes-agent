@@ -1,91 +1,66 @@
 import { readFileSync } from 'node:fs'
+import { posix } from 'node:path'
 import { load } from 'js-yaml'
 import { expect, it } from 'vitest'
 
 const action = path => load(readFileSync(new URL(path, import.meta.url), 'utf8'))
 const setup = action('../.github/actions/setup-pm/action.yml')
-const save = action('../.github/actions/save-pm-cache/action.yml')
 
 // Evaluates the Actions expression subset these gates use, so the tests pin
 // how a gate behaves rather than how it is spelled. Status functions default
 // to a healthy, uncancelled run; `status` overrides them.
-const evaluate = (expression, { status = {}, ...context } = {}) => {
+const functions = {
+  // Actions compares case-insensitively.
+  startsWith: (text, prefix) => String(text).toLowerCase().startsWith(String(prefix).toLowerCase()),
+}
+const value = (expression, { status = {}, ...context } = {}) => {
   const lookup = path => path.split('.').reduce(
     (value, key) => (value !== null && typeof value === 'object' ? value[key] : undefined), context) ?? ''
   const statuses = { always: true, success: true, failure: false, cancelled: false, ...status }
   const body = String(expression).trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')
     .replace(/\b(?:inputs|steps|needs|github)(?:\.[\w-]+)+/g, path => JSON.stringify(lookup(path)))
     .replace(/\b(always|success|failure|cancelled)\(\)/g, (_, name) => String(statuses[name]))
-  return Boolean(Function(`"use strict"; return (${body})`)())
+  return Function(...Object.keys(functions), `"use strict"; return (${body})`)(...Object.values(functions))
 }
+const evaluate = (expression, context) => Boolean(value(expression, context))
 
-it('restores compatible wheels without freezing a partial build under its dependency key', () => {
-  const cached = setup.runs.steps.find(step => step.id === 'python-cache')
-  const restored = setup.runs.steps.find(step => step.id === 'python-cache-restore')
-  const prefixes = restored.with['restore-keys'].trim().split('\n')
-  // Prefer this dependency set before falling back across dependency changes.
-  const rollingPrefix = prefixes[0]
-  expect(restored.with.key).toBe(`${rollingPrefix}\${{ github.run_id }}-\${{ github.run_attempt }}-\${{ github.job }}`)
-  expect(rollingPrefix).toBe(`${cached.with.key}-`)
-  expect(prefixes[1].trim()).toBe(cached.with['restore-keys'])
-  for (const boundary of ['target', 'os-version', 'python-version']) {
-    expect(prefixes[1]).toContain(`steps.prepare.outputs.${boundary}`)
+it('pull requests restore the caches main saves and never write their own', () => {
+  const step = id => setup.runs.steps.find(candidate => candidate.id === id)
+  const base = { toolchain: 'all', cache: 'true', 'cache-python': 'true', 'cache-node': 'true', 'test-environment': 'false', extras: 'voice' }
+  for (const [kind, saving, restoring] of [
+    ['tools', 'tools-cache', 'tools-cache-restore'],
+    ['python', 'python-cache', 'python-cache-restore'],
+    ['node', 'node-cache', 'node-cache-restore'],
+  ]) {
+    const input = `save-${kind}-cache`
+    const save = step(saving)
+    const restore = step(restoring)
+    // A PR-scoped entry is restorable only by that PR, so PRs never save.
+    for (const [event_name, saves] of [['pull_request', false], ['push', true], ['workflow_dispatch', true]]) {
+      const inputs = { ...base, [input]: value(setup.inputs[input].default, { github: { event_name } }) }
+      expect(evaluate(save.if, { inputs }), `${kind} on ${event_name}`).toBe(saves)
+      expect(evaluate(restore.if, { inputs }), `${kind} on ${event_name}`).toBe(!saves)
+    }
+    // Restore-only reads exactly what the saving step writes on main.
+    expect(restore.uses.split('@')[0]).toBe('actions/cache/restore')
+    expect(restore.with.key).toBe(save.with.key)
+    expect(restore.with['restore-keys']).toBe(save.with['restore-keys'])
+    expect(restore.with.path).toBe(save.with.path)
   }
-  expect(prefixes[1]).toContain("inputs.cache-suffix == ''")
-  expect(prefixes[1]).not.toContain('hashFiles')
-  // Only dependency-carrying callers save; tool-only jobs must not freeze an
-  // empty cache under the production key (a stub exact-hit blocks real saves).
+})
+
+it('only dependency-carrying callers touch the uv cache', () => {
+  const cached = setup.runs.steps.find(step => step.id === 'python-cache')
+  // Tool-only jobs must not freeze an empty cache under the production key
+  // (a stub exact-hit blocks real saves).
   const saving = { toolchain: 'all', 'cache-python': 'true', 'save-python-cache': 'true', 'test-environment': 'false' }
   expect(evaluate(cached.if, { inputs: { ...saving, extras: '' } })).toBe(false)
   expect(evaluate(cached.if, { inputs: { ...saving, extras: 'voice' } })).toBe(true)
   expect(evaluate(cached.if, { inputs: { ...saving, extras: '', 'test-environment': 'true' } })).toBe(true)
-  // A caller either saves the exact key or restores the rolling one, never both.
-  for (const saveCache of ['true', 'false']) {
-    const inputs = { ...saving, extras: 'voice', 'save-python-cache': saveCache }
-    expect(evaluate(restored.if, { inputs })).toBe(!evaluate(cached.if, { inputs }))
-  }
-  expect(setup.outputs['python-cache-key'].value).toContain('steps.python-cache-restore.outputs.cache-primary-key')
-
-  // A suffix-only namespace isolates smoke reads but still lets production
-  // restore smoke writes through its broad dependency fallback.
+  // A suffix-only namespace isolates smoke runs from production's prefix.
   const namespace = "${{ inputs.cache-suffix || 'production' }}"
-  for (const template of [cached.with.key, restored.with.key, rollingPrefix]) {
-    const production = template.replace(namespace, 'production')
-    const smoke = template.replace(namespace, 'smoke-42-1')
-    expect(production.startsWith('setup-pm-uv-v3-production-')).toBe(true)
-    expect(smoke.startsWith('setup-pm-uv-v3-smoke-42-1-')).toBe(true)
-    expect(smoke.startsWith('setup-pm-uv-v3-production-')).toBe(false)
-    expect(production.startsWith('setup-pm-uv-v3-smoke-42-1-')).toBe(false)
-  }
-})
-
-it('explicit PM saves prune to the lock and do not prune during cancellation', () => {
-  const [prune, upload] = save.runs.steps
-  expect(evaluate(prune.if)).toBe(true)
-  expect(evaluate(prune.if, { status: { failure: true, success: false } })).toBe(true)
-  expect(evaluate(prune.if, { status: { cancelled: true, success: false } })).toBe(false)
-  expect(prune.run.split(/\s+/)).toEqual(expect.arrayContaining(['pm.build_env', '--exact-lock', '--cache', '--lock-source']))
-  expect(prune.env.PM_PYTHON).toBe('${{ inputs.python }}')
-  expect(prune.env.PM_CACHE).toBe('${{ inputs.path }}')
-  expect(prune.env.PM_LOCK_SOURCE).toBe('${{ github.workspace }}')
-  const pruned = outcome => ({ steps: { [prune.id]: { outcome } } })
-  expect(evaluate(upload.if, pruned('success'))).toBe(true)
-  expect(evaluate(upload.if, pruned('failure'))).toBe(false)
-  expect(evaluate(upload.if, { ...pruned('success'), status: { cancelled: true, success: false } })).toBe(false)
-  expect(upload.uses.split('@')[0]).toBe('actions/cache/save')
-  expect(upload.with).toEqual({ path: '${{ inputs.path }}', key: '${{ inputs.key }}' })
-})
-
-it('explicit npm snapshots remain replaceable and isolated from toolchain-only producers', () => {
-  const restored = setup.runs.steps.find(step => step.id === 'node-cache-restore')
-  expect(restored).toBeDefined()
-  const prefix = restored.with['restore-keys'].trim()
-  expect(restored.with.key).toBe(`${prefix}\${{ github.run_id }}-\${{ github.run_attempt }}`)
-  // A toolchain-only job must not shadow the desktop consumer's warm snapshot.
-  for (const boundary of ['github.job', 'node-cache-dependency-path', 'cache-suffix', 'target', 'npm-version']) {
-    expect(prefix).toContain(boundary)
-  }
-  expect(setup.outputs['node-cache-key'].value).toContain('steps.node-cache-restore.outputs.cache-primary-key')
+  expect(cached.with.key.replace(namespace, 'smoke-42-1').startsWith('setup-pm-uv-v3-production-')).toBe(false)
+  expect(cached.with['restore-keys']).toContain("inputs.cache-suffix == ''")
 })
 
 // Key isolation, offline wheel/receipt relocation and the transport action are
@@ -102,10 +77,14 @@ const targetOf = job => job.strategy.matrix.target.map(row => row.label)
 const desktopLegs = cacheUsers(desktop)
 
 const SHA = 'a'.repeat(40)
+// A release leg builds only for Stable Release's candidate phase (stable-release.yml passes
+// release-phase: candidate and no upload_release); a direct tag dispatch is refused at validate.
 const dispatches = {
-  tag: { build_commit: '', channel: '', 'release-phase': '', upload_release: true },
+  candidate: { build_commit: '', channel: '', 'release-phase': 'candidate', upload_release: false },
   commit: { build_commit: SHA, channel: '', 'release-phase': '', upload_release: false },
   channel: { build_commit: SHA, channel: 'preview', 'release-phase': '', upload_release: false },
+  // Stable Release claiming an unreviewed commit build in its candidate phase.
+  claim: { build_commit: '', channel: '', 'release-phase': 'candidate', upload_release: false, tag: 'commit.20261026T180000Z-v0.33.0' },
 }
 const admitted = labels => ({
   validate: { result: 'success', outputs: Object.fromEntries(labels.map(label => [label, 'true'])) },
@@ -117,10 +96,12 @@ const payloadEvents = {
   branch: { event_name: 'push', ref: 'refs/heads/feature', sha: SHA },
 }
 
-it('finds a release and a commit leg for every native target, and the payload producer', () => {
+it('finds a release and a commit leg for every native target, a release leg per Linux target, and the payload producer', () => {
   const legs = desktopLegs.map(([, job]) => `${targetOf(job)}:${job['cache-mode']}`).sort()
-  const targets = ['darwin-arm64', 'darwin-x64', 'win32-arm64', 'win32-x64']
-  expect(legs).toEqual(targets.flatMap(target => [`${target}:read`, `${target}:write`]).sort())
+  const targets = ['darwin-arm64', 'win32-arm64', 'win32-x64']
+  // Linux builds only on tag builds, so it has no read-only commit leg.
+  expect(legs).toEqual([...targets.flatMap(target => [`${target}:read`, `${target}:write`]),
+    'linux-arm64:write', 'linux-x64:write'].sort())
   expect(cacheUsers(payload)).toHaveLength(1)
 })
 
@@ -134,9 +115,10 @@ it.each([
     // Only the release branch writes the shared cache; commit and channel
     // builds of unreviewed inputs run the read-only leg.
     const needs = admitted(targetOf(job))
-    expect(evaluate(job.if, { inputs: dispatches.tag, needs })).toBe(cacheMode === 'write')
+    expect(evaluate(job.if, { inputs: dispatches.candidate, needs })).toBe(cacheMode === 'write')
     expect(evaluate(job.if, { inputs: dispatches.commit, needs })).toBe(cacheMode === 'read')
     expect(evaluate(job.if, { inputs: dispatches.channel, needs })).toBe(cacheMode === 'read')
+    expect(evaluate(job.if, { inputs: dispatches.claim, needs })).toBe(cacheMode === 'read')
   }
   const cacheSteps = job.steps.filter(step => step.uses === BUILD_CACHE)
   expect(cacheSteps.map(step => step.with.phase)).toEqual(['restore', 'save'])
@@ -159,7 +141,13 @@ it.each([
     expect(build.run).not.toContain('--prepare-only')
   }
   expect(restore.with.producer).toBe(producer)
-  expect(restore.with.source).toBe('${{ github.workspace }}')
+  // The cache action must see the checkout in its own filesystem. On the host
+  // both the relative checkout and github.workspace work; in a job container
+  // the latter names a host path that isn't mounted there (actions/runner#2185).
+  const hostCheckout = '/runner/work/project/project'
+  const checkout = job.container ? '/__w/project/project' : hostCheckout
+  const source = restore.with.source.replace('${{ github.workspace }}', hostCheckout)
+  expect(posix.resolve(checkout, source)).toBe(checkout)
   expect(upload.with).toEqual({
     ...restore.with,
     phase: 'save',
@@ -172,7 +160,7 @@ it.each([
     ...context, steps: { prepare: { outcome } }, status: { failure: outcome !== 'success' },
   })
   const trusted = cacheMode
-    ? { inputs: dispatches.tag }
+    ? { inputs: dispatches.candidate }
     : { inputs: { ref: '' }, github: payloadEvents.trusted }
   expect(saves(trusted)).toBe(true)
   expect(saves(trusted, 'failure')).toBe(false)
@@ -191,20 +179,48 @@ it.each([
 })
 
 it('each selection gate joins exactly one target\'s two trust branches after admission', () => {
-  const legs = Object.fromEntries(desktopLegs.map(([id, job]) => [id, job]))
+  // Trust branches are the admitted build legs that declare a cache mode. They
+  // are found by mode, not by cache action: Termux's legs use no desktop cache.
+  const legs = Object.fromEntries(Object.entries(desktop.jobs)
+    .filter(([, job]) => job['cache-mode'] && String(job.needs) === 'validate'))
   const gates = Object.values(desktop.jobs).filter(job => job.env?.SELECTED_BUILD_SUCCEEDED)
-  expect(gates).toHaveLength(4)
+  // A read-only branch reaches the rest of the release only through its gate.
+  const joined = gates.flatMap(gate => gate.needs)
+  for (const id of Object.keys(legs).filter(id => legs[id]['cache-mode'] === 'read')) {
+    expect(joined.filter(other => other === id), id).toHaveLength(1)
+  }
+  const switches = Object.keys(desktop.jobs.validate.outputs)
   for (const gate of gates) {
-    const [admission, ...branches] = gate.needs
+    const [admission, ...rest] = gate.needs
     expect(admission).toBe('validate')
+    const branches = rest.filter(id => id in legs)
+    const stagers = rest.filter(id => !(id in legs))
     expect(branches.map(id => legs[id]?.['cache-mode']).sort()).toEqual(['read', 'write'])
-    const [label] = new Set(branches.flatMap(id => targetOf(legs[id])))
-    expect(new Set(branches.flatMap(id => targetOf(legs[id]))).size).toBe(1)
+    expect(stagers).toHaveLength(1)
+    const [stagerId] = stagers
+    const stager = desktop.jobs[stagerId]
+    const commitLeg = branches.find(id => legs[id]['cache-mode'] === 'read')
+    expect(stager['cache-mode']).toBe('read')
+    expect(stager.needs).toEqual(['validate', commitLeg])
+    // One admission switch opens the gate, and both branches run on it alone.
+    const [label, ...others] = switches.filter(output =>
+      evaluate(gate.if, { inputs: dispatches.candidate, needs: admitted([output]) }))
+    expect(label).toBeDefined()
+    expect(others).toEqual([])
+    for (const id of branches) {
+      const inputs = legs[id]['cache-mode'] === 'write' ? dispatches.candidate : dispatches.commit
+      expect(evaluate(legs[id].if, { inputs, needs: admitted([label]) }), id).toBe(true)
+      expect(evaluate(legs[id].if, { inputs, needs: admitted([]) }), id).toBe(false)
+    }
+    // Commit claims require the fresh controller-only staging job; other modes skip it.
+    const stagerNeeds = { ...admitted([label]), [commitLeg]: { result: 'success' } }
+    expect(evaluate(stager.if, { inputs: dispatches.claim, needs: stagerNeeds }), stagerId).toBe(true)
+    expect(evaluate(stager.if, { inputs: dispatches.candidate, needs: stagerNeeds }), stagerId).toBe(false)
+    expect(evaluate(stager.if, { inputs: dispatches.commit, needs: stagerNeeds }), stagerId).toBe(false)
     // The gate runs always() to judge a skipped branch, so it must still
     // refuse a failed admission itself.
     const needs = admitted([label])
-    expect(evaluate(gate.if, { inputs: dispatches.tag, needs })).toBe(true)
-    expect(evaluate(gate.if, { inputs: dispatches.tag,
+    expect(evaluate(gate.if, { inputs: dispatches.candidate,
       needs: { validate: { ...needs.validate, result: 'failure' } } })).toBe(false)
   }
 })

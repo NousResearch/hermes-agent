@@ -1,4 +1,5 @@
-import type { WakeStartResponse, WakeStatusResponse, WakeStopResponse } from '../../../gatewayTypes.js'
+import type { WakeStartResponse, WakeStatusResponse, WakeStopResponse } from '@hermes/shared/gateway-types'
+
 import { t } from '../../../i18n/runtime.js'
 import type { TranslationKey } from '../../../i18n/types.js'
 import { setWakeUserDisabled } from '../../wakeState.js'

@@ -26,17 +26,45 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
     from hermes_cli.sessions_discard import add_discard_parser
     add_discard_parser(sessions_subparsers)
+    from hermes_cli.sessions_adopt import add_adopt_parser
+    add_adopt_parser(sessions_subparsers)
+
+
+def _add_refresh_prompts(sessions_subparsers) -> None:
+    refresh = sessions_subparsers.add_parser(
+        "refresh-prompts", help="Make continuing sessions rebuild their system prompt on their next turn",
+        description="After updating SOUL.md, skills or context files in this profile, ask every "
+            "continuing session (or one with --session) to rebuild its stored system prompt once, "
+            "on its next turn, from the current sources. Conversation history and session ids are "
+            "kept; each refreshed session pays one prompt-cache miss. Works while the gateway runs "
+            "and across restarts. Use -p/--profile to target another profile.")
+    refresh.add_argument("--session", default=None, metavar="SESSION_ID",
+        help="Refresh only this session (id or unique prefix)")
+    _flag(refresh, "--json", help="Machine-readable output")
+
+
+_ALL_HELP = "Show every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages"
+
+
+def _add_browse(sessions_subparsers) -> None:
+    browse = sessions_subparsers.add_parser(
+        "browse", help="Interactive session picker — browse, search, and resume sessions")
+    browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    browse.add_argument("--limit", type=int, default=500, help="Max sessions to load (default: 500)")
+    _flag(browse, "--all", help=_ALL_HELP)
 
 
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
         "sessions", help="Manage session history (list, rename, export, prune, delete)",
-        description="View and manage the SQLite session store")
+        description="View and manage the SQLite session store; with no subcommand, pick a recent "
+            "conversation to resume (prints the list when not on a terminal)")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    _flag(sessions_list, "--all", help=_ALL_HELP)
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
@@ -169,16 +197,16 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "external-content layout. On large databases this reclaims a "
             "large fraction of state.db (the old layout stored duplicate "
             "copies of every message and indexed tool output). Runs "
-            "foreground with a progress bar, throttles so a running gateway "
-            "stays responsive, and VACUUMs at the end. Safe to interrupt and "
-            "re-run — it resumes where it left off. No conversation data is "
+            "foreground with progress for every phase (refusing while a gateway "
+            "or other Hermes process holds state.db, pacing itself if one opens it mid-run) and "
+            "VACUUMs at the end. Safe to interrupt and re-run — it resumes where it left off. No conversation data is "
             "changed; only the search index is rebuilt.")
     _flag(sessions_optimize_storage, "--no-vacuum", default=False,
         help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)")
     _flag(sessions_optimize_storage, "--yes", "-y", default=False,
         help="Skip the disk-space confirmation prompt")
     _flag(sessions_optimize_storage, "--force",
-        help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped")
+        help="Run even while another Hermes process (gateway, Desktop, dashboard, cron) holds state.db — rewriting the store under a live writer can leave every agent refusing turns until all writers are stopped; the rebuild then paces itself so that process stays responsive (much slower)")
 
     sessions_repair = sessions_subparsers.add_parser(
         "repair", help="Repair a malformed state.db schema so hidden sessions reappear",
@@ -241,7 +269,6 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "switched on), 'move' them to the default store (a default chat that leaked in), or "
             "'report' (default) — the rows themselves cannot tell the two cases apart")
 
-
     sessions_repair_prompts = sessions_subparsers.add_parser(
         "repair-prompts", help="Report or clear stored system prompts degraded to a reduced-toolset build",
         description="Repair session rows degraded by the pre-#122822 gateway hygiene/compress bug. "
@@ -254,6 +281,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Machine-readable output; with --apply, apply without an interactive confirmation")
     sessions_repair_prompts.add_argument("session_id", nargs="?", default=None,
         help="Destructive override: clear this session even when its stored prompt is healthy")
+    _add_refresh_prompts(sessions_subparsers)
 
     sessions_recover = sessions_subparsers.add_parser(
         "recover", help="Rebuild canonical session data into a separate clean database",
@@ -309,11 +337,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_retitle.add_argument(
         "--limit", type=int, default=200, help="Maximum sessions to examine (default: 200)")
 
-    sessions_browse = sessions_subparsers.add_parser(
-        "browse", help="Interactive session picker — browse, search, and resume sessions")
-    sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_browse.add_argument(
-        "--limit", type=int, default=500, help="Max sessions to load (default: 500)")
+    _add_browse(sessions_subparsers)
 
     sessions_import = sessions_subparsers.add_parser(
         "import", help="Import a Claude Code or Codex CLI session into Hermes",

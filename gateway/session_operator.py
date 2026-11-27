@@ -5,7 +5,8 @@ It never claims unowned legacy history: that still requires the native migration
 path. Only SessionAuthority.submit writes this envelope after authorization;
 public submission parameters cannot supply it.
 """
-from hermes_state_runtime import RuntimeStoreError
+from gateway.owner_identity import same_owner
+from persistence.core.errors import AuthorityRefusal
 
 # Fields ``SessionAuthority.submit`` commits for a local session's input; producers commit their own envelope.
 LOCAL_INPUT_FIELDS = frozenset({'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1',
@@ -28,10 +29,10 @@ def check_local_input(authority, ref, row, *, source=None):
         if payload['local_operator_v1'] != {
                 'profile_id': authority.profile_id, 'session_id': ref.session_id,
                 'principal_id': row['principal_id']}:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
     else:
         source = source or authority.sessions[ref.session_id].source
-        if row['principal_id'] != source.user_id:
-            raise RuntimeStoreError('permission_denied')
+        if not same_owner(source.user_id, row['principal_id']):  # the rule submit() stamped by
+            raise AuthorityRefusal('permission_denied')
     if not {'text'} <= set(payload) <= allowed:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')

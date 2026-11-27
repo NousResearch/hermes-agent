@@ -4,12 +4,12 @@ import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useStat
 
 import { Button } from '@/components/ui/button'
 import { DialogCloseButton } from '@/components/ui/dialog'
-import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig, DesktopOauthLoginResult } from '@/global'
 import { useI18n } from '@/i18n'
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
 import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { openExternalLink } from '@/lib/external-link'
@@ -19,6 +19,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import { classifyLocalBootFailure, type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
+import { BootFailureModal } from './boot-failure-modal'
 import type { RemoteReauth } from './boot-failure-reauth'
 import {
   deriveProviderShape,
@@ -45,46 +46,33 @@ type RecoveryView = 'connect' | 'recovery'
 // re-establish the remote session. The detection + copy helpers live in
 // ./boot-failure-reauth so they're unit-testable without a React render.
 
-// Recovery surface for a hard boot failure (gateway never came up, backend
-// exited during startup, bootstrap latched, …). Without this the app shell
-// renders dead — "gateway offline", no composer, only a toast — with no way
-// to retry, repair the install, switch the gateway, or find the logs.
-function BootFailureModal({
-  children,
-  onDismiss,
-  title
-}: {
-  children: ReactNode
-  onDismiss: () => void
-  title?: string
-}) {
-  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null)
+/** What the app shows over a failed startup: sign-in instructions for a signed-out Webapp tab,
+ * recovery steps for everything else. */
+export function StartupOverlay() {
+  const error = useStore($desktopBoot).error
+
+  return error?.includes(WEBAPP_LAUNCH_REQUIRED) ? <WebappSignInOverlay /> : <BootFailureOverlay />
+}
+
+/** A Webapp tab without a valid sign-in. The service is running, so there is nothing to recover or
+ * dismiss: only hermes webapp signs the tab in. */
+function WebappSignInOverlay() {
+  const copy = useI18n().t.boot.failure
 
   return (
-    <DialogPrimitive.Root
-      onOpenChange={open => {
-        if (!open) {
-          onDismiss()
-        }
-      }}
-      open
-    >
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Content aria-describedby={undefined} aria-modal="true" asChild ref={setContentNode}>
-          <div
-            className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
-            // Masks the whole app on boot failure — must stay filled under window
-            // glass. Contract: `[data-glass-opaque]` in styles.css.
-            data-glass-opaque=""
-          >
-            <DialogPortalContainerContext.Provider value={contentNode}>
-              {title ? <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title> : null}
-              {children}
-            </DialogPortalContainerContext.Provider>
+    <BootFailureModal onDismiss={() => undefined}>
+      <div className="relative w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+        <div className="flex items-start gap-3 px-5 py-4">
+          <LogIn className="mt-0.5 size-5" />
+          <div>
+            <DialogPrimitive.Title asChild>
+              <h2 className="text-[0.9375rem] font-semibold tracking-tight">{copy.webappTitle}</h2>
+            </DialogPrimitive.Title>
+            <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">{copy.webappDescription}</p>
           </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
+        </div>
+      </div>
+    </BootFailureModal>
   )
 }
 

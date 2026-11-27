@@ -86,10 +86,14 @@ def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess
 
 
 def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
-    """Cheap directory size via ``du -sm`` — best-effort, None on failure."""
+    """Cheap directory size via ``du -sm`` — best-effort, None on failure or timeout. Not
+    ``subprocess.run``: its post-kill ``wait()`` never returns for a ``du`` stuck in uninterruptible
+    disk I/O, so the caller (a ``hermes -w`` launch, the cron prune thread) would hang with it."""
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
     try:
-        result = _run(["du", "-sm", str(path)], timeout)
-        return int(result.stdout.split()[0]) if result.returncode == 0 and result.stdout.strip() else None
+        result = bounded_probe_run(["du", "-sm", str(path)], timeout=timeout)
+        return int(result.stdout.split()[0]) if result and result.returncode == 0 and result.stdout.strip() else None
     except Exception:
         return None
 
@@ -422,8 +426,10 @@ def reclaim_branches(
     return actions
 
 
-def worktrees_summary(repo_root: str) -> tuple[int, Optional[int]]:
-    """(tree_count, total_size_mb) for the escalation notice; size is best-effort with a timeout."""
+def worktrees_summary(repo_root: str, *, size_below_count: Optional[int] = None) -> tuple[int, Optional[int]]:
+    """(tree_count, total_size_mb) for the escalation notice; size is best-effort with a timeout,
+    and skipped (None) once the count reaches *size_below_count*: sizing walks every file of every
+    tree, node_modules included."""
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
         return 0, None
@@ -431,4 +437,6 @@ def worktrees_summary(repo_root: str) -> tuple[int, Optional[int]]:
         count = sum(1 for e in worktrees_dir.iterdir() if e.is_dir())
     except Exception:
         return 0, None
+    if size_below_count is not None and count >= size_below_count:
+        return count, None
     return count, _tree_size_mb(worktrees_dir, timeout=20)

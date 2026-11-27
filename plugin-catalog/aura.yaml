@@ -1,0 +1,37 @@
+name: aura
+repo: https://github.com/KeyArgo/hermes-aura
+sha: 6a87c2fb9f6133ae7255c94b1e05628cf5598c42
+title: Aura
+description: "A film pane and an audio-reactive visualiser for Hermes Desktop: YouTube videos, playlists and direct MP4/WebM in the Right panel, on the Aura page or in a floating watch window, plus internet radio, and a MilkDrop-compatible visualiser (140 presets) driven by what the machine is already playing, with agent moods for thinking, tools, approvals, errors and streaming. Disclosure — audio comes from system loopback only, never the microphone, and is analysed in memory, never recorded or uploaded. Aura starts a token-protected HTTP server on 127.0.0.1 while Hermes runs. Films and radio stations are fetched from the URLs the user or the agent chooses (films may be on the local network); keyless search and playlists read YouTube's public pages and are cached for five minutes, and the station directory is radio-browser.info. The optional Desktop window launches a local Chrome/Chromium with its own private profile. No account, no telemetry, no self-updater."
+maintainer: KeyArgo
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+docs_url: https://github.com/KeyArgo/hermes-aura/blob/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/README.md
+screenshots:
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/assets/visualiser-tokamak-witchery.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/assets/visualiser-spiral-movement.jpg
+  - https://raw.githubusercontent.com/KeyArgo/hermes-aura/6a87c2fb9f6133ae7255c94b1e05628cf5598c42/assets/visualiser-skylight.jpg
+platforms: []
+known_issues:
+  - macOS audio capture needs a virtual audio device (such as BlackHole).
+capabilities:
+  provides_tools:
+    - aura_control
+    - aura_listen
+    - aura_watch
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_tool_call
+    - post_tool_call
+    - pre_approval_request
+    - post_approval_response
+    - api_request_error
+    - on_stream_start
+    - on_stream_end
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

@@ -4,6 +4,8 @@ import base64
 from types import SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -12,6 +14,8 @@ from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress import execute_admission
 from tests.waiting import async_wait_until
+from tests.gateway.session_claims import claim
+from tests.fixtures.storage_seed import seed_session
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 
@@ -20,7 +24,7 @@ def _turn_runner(owner, ref):
     from gateway.run_turn_runner import TurnRunner
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(_native_slack_task_cards=False, _voice_ack_guild=[None], progress_mode='off')
-    turn._approval_owner = (owner, ref.session_id, owner.db.get_session(ref.session_id)['runtime_generation'])
+    turn._approval_owner = (owner, ref.session_id, owner.persistence.sessions.get(ref.session_id).runtime_generation)
     return turn
 
 
@@ -29,8 +33,7 @@ def _launch(api, admitted, run_id='run_test'):
     api._run_streams[run_id] = queue
     api._run_statuses[run_id] = {}
     launch = _RunLaunch(api, run_id, queue, admitted[1].session_id, None, False, 'hello', [], False,
-                        agent_kwargs={}, request_profile=None, browser_control_principal=None,
-                        browser_control_transport_family=None, admission=admitted)
+                        agent_kwargs={}, request_profile=None, admission=admitted)
     return launch, queue
 
 
@@ -63,7 +66,7 @@ async def test_api_images_are_committed_media_in_canonical_history(api, owner):
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
     owner.runner._handle_message = handle
-    await execute_admission(owner, ref, row)
+    await execute_admission(owner, ref, claim(owner, ref, row))
     committed = media[0]['path']
     assert f'[Image attached at: {committed}]' in seen['text']
     assert seen['content'][0]['text'].endswith(f'[Image attached at: {committed}]')
@@ -77,7 +80,7 @@ async def test_initialization_failure_is_a_failed_receipt_not_completed(api, own
     async def handle(event):
         return 'Sorry, I encountered an unexpected error.'  # handler apology, no TurnRunner result
     owner.runner._handle_message = handle
-    await execute_admission(owner, ref, row)
+    await execute_admission(owner, ref, claim(owner, ref, row))
     result = owner.pending_results[row['admission_id']]['result']
     assert result['failed'] is True and result['completed'] is False
     assert result['final_response'] == '' and 'unexpected error' in result['error']
@@ -171,7 +174,7 @@ async def _session_stream_tool_frames(api, owner, produce):
         return 'done'
     owner.runner._handle_message = handle
     api._api_key = 'request-scope-key-long-enough'
-    owner.db.create_session('stream-tools', source='api_server')
+    seed_session(owner.persistence, 'stream-tools', 'api_server')
     app = web.Application()
     app.router.add_post('/api/sessions/{session_id}/chat/stream', api._handle_session_chat_stream)
     async with TestClient(TestServer(app)) as client:
@@ -300,7 +303,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         target_install_id=hosted_rooms.local_authority_gateway_id(), target_profile='default',
         issued_at=now, ttl_seconds=300, status_expires_at=now + 1000)
     claims = decode_room_grant(api._room_grant_secret(), grant, permission='status')
-    hosted_rooms.reserve_peer_room(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+    hosted_rooms.reserve_peer_room(storage_handle(get_hermes_home()), placement="shared", claims=claims, expires_at=now + 1000)
     headers = {'Authorization': f'HermesRoom {grant}'}
     admitted = admit_api_turn(api, session_id='room-clarify', request_id='run_room', user_message='hello',
                               conversation_history=[])
@@ -331,7 +334,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         assert (await answered.json())['status'] == 'resolved'
         await asyncio.wait_for(run, timeout=10)
         assert api._run_statuses['run_room']['output'] == 'b'
-        hosted_rooms.revoke_room_grant_scope(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+        hosted_rooms.revoke_room_grant_scope(storage_handle(get_hermes_home()), placement="shared", claims=claims, expires_at=now + 1000)
         denied = await client.post('/v1/runs/run_room/clarify', json=body, headers=headers)
         assert denied.status == 403
         assert (await denied.json())['error']['code'] == 'room_reauthorization_required'
@@ -341,13 +344,12 @@ def test_run_status_reports_waiting_for_approval_while_a_prompt_is_pending(api, 
     """GET /v1/runs/{id} said `running` while an approval was pending; the documented run state
     (and main's in-memory run store) is `waiting_for_approval`, which UIs key their prompt on."""
     from gateway.platforms.api_server_authority_runs import run_projection
-    from hermes_state_runtime import claim_session_input
     _, ref, _ = admit_api_turn(api, session_id='approval-status', request_id='run_wait', user_message='hello',
                                conversation_history=[])
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
+    row = owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id)
     assert run_projection(api, 'run_wait')['status'] == 'running'
     live = owner.sessions[ref.session_id]
-    owner.register_approval(ref.session_id, row['generation'], live.route, {'request_id': 'approve-me', 'command': 'x'})
+    owner.register_approval(ref.session_id, row.generation, live.route, {'request_id': 'approve-me', 'command': 'x'})
     live.controls.remote_responders['approve-me'] = lambda *answer: None
     projected = run_projection(api, 'run_wait')
     assert [p['prompt_id'] for p in projected['pending_controls']] == ['approve-me']
@@ -402,54 +404,3 @@ async def test_canonical_sse_projects_the_turn_reasoning(api, owner, path, body,
         text = await response.text()
     assert response.status == 200, text
     assert marker in text and 'THINKING' in text, text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('path', ['legacy', 'canonical'])
-async def test_api_turn_selects_the_requests_registered_browser_controller(api, owner, monkeypatch, path):
-    """The extension controller registered for the API session's server-derived principal is the
-    one the turn selects, on the legacy executor and under the authority alike."""
-    from gateway import browser_control_broker as broker_mod
-    from gateway.config import PlatformConfig
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionContext
-    from gateway.session_context import clear_session_vars
-    from tools.browser_extension_router import extension_controller_available
-    monkeypatch.setattr(broker_mod, 'browser_control_enabled', lambda *a: True)
-    adapter = api if path == 'canonical' else _api_server.APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._api_key = 'controller-selection-key'
-    broker = broker_mod.get_browser_control_broker()
-    broker.attach(broker_mod.ControllerScope(
-        principal_id=adapter._derive_browser_control_principal('default'), profile_id='default',
-        session_id='browser-sel', controller_id='ext-1', transport_family='local-api',
-        capabilities=frozenset({'browser_navigate'})), lambda frame: None)
-    selected = []
-    if path == 'canonical':
-        async def handle(event):
-            from gateway.session_results import execution_result
-            context = SessionContext(source=event.source, connected_platforms=[], home_channels={},
-                                     session_key='k', session_id=event.source.chat_id)
-            tokens = GatewayRunner._set_session_env(owner.runner, context)
-            try:
-                selected.append(extension_controller_available('browser_navigate'))
-            finally:
-                clear_session_vars(tokens)
-            execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
-            return 'ok'
-        owner.runner._handle_message = handle
-    else:
-        def run_conversation(**kwargs):
-            selected.append(extension_controller_available('browser_navigate'))
-            return {'final_response': 'ok', 'messages': []}
-        monkeypatch.setattr(adapter, '_create_agent', lambda **kw: SimpleNamespace(run_conversation=run_conversation))
-    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
-    app.router.add_post('/v1/chat/completions', adapter._handle_chat_completions)
-    try:
-        async with TestClient(TestServer(app)) as client:
-            response = await client.post('/v1/chat/completions', json={'messages': [{'role': 'user', 'content': 'hi'}]},
-                                         headers={'Authorization': 'Bearer controller-selection-key',
-                                                  'X-Hermes-Session-Id': 'browser-sel'})
-            assert response.status == 200, await response.text()
-    finally:
-        broker.reset()
-    assert selected == [True]

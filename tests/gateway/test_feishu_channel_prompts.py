@@ -28,7 +28,6 @@ def _build_adapter(extra=None):
     adapter._resolve_sender_profile = AsyncMock(
         return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
     )
-    adapter._resolve_source_chat_type = Mock(return_value="group")
     adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
     adapter._dispatch_inbound_event = AsyncMock()
     return adapter

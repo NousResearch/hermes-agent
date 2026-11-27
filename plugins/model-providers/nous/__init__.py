@@ -20,7 +20,9 @@ class NousProfile(ProviderProfile):
         except Exception:
             return ""
 
-    def build_extra_body(self, *, session_id: str | None = None, **context) -> dict[str, Any]:
+    def build_extra_body(
+        self, *, session_id: str | None = None, data_use: frozenset[str] = frozenset(), **context,
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {"tags": nous_portal_tags(session_id=session_id)}
         # Top-level session_id = sticky routing key, so Anthropic-style cache
         # breakpoints stay warm on one upstream instance. Resolved like the
@@ -29,10 +31,10 @@ class NousProfile(ProviderProfile):
         sticky_key = _cache_scope_from_session_id(get_affinity_scope() or get_conversation_context() or session_id)
         if sticky_key:
             body["session_id"] = sticky_key
-        # Nous Portal inference rejects caller-supplied provider routing prefs
-        # (only/ignore/order/sort/data_collection/zdr/require_parameters) with
-        # HTTP 400 — routing is decided centrally per model. provider_routing
-        # from config.yaml is OpenRouter-only, so it is not forwarded here.
+        # The Portal routes centrally and 400s on caller routing fields, except data_collection and
+        # zdr: sent only when an outgoing connector result requires them (``data_use``), never from config.
+        if data_use:
+            body["provider"] = {"data_collection": "deny", **({"zdr": True} if "zero_retention" in data_use else {})}
         return body
 
     @staticmethod
@@ -71,6 +73,12 @@ nous = NousProfile(
     display_name="Nous Research", description="Nous Research — Hermes model family",
     signup_url="https://nousresearch.com/", fallback_models=("hermes-3-405b", "hermes-3-70b"),
     base_url="https://inference-api.nousresearch.com/v1", auth_type="oauth_device_code",
+    # The Portal keeps (and bills) Claude's 1h tier: a 1h entry still read back after 25 idle minutes,
+    # its write billed at 2x. Declaring it lets the prompt-cache clock trust the 1h it asks for.
+    prompt_cache_max_ttl="1h",
+    # Measured: Qwen 3.7 Max with markers kept its 1h entry 13 idle minutes (without markers its
+    # automatic cache was gone at 4); the catalog lists a cache-write rate for every such model.
+    prompt_cache_markers_from_catalog=True,
 )
 
 register_provider(nous)

@@ -61,6 +61,19 @@ def _project_root() -> Path:
     return get_project_root()
 
 
+def detect_client_install_method() -> str:
+    """``detect_install_method()``, except the Microsoft Store build, which the stamp names and
+    that function's update-gating vocabulary has no word for (it would read ``unknown``).
+    Kept out of ``detect_install_method`` on purpose: update and uninstall branch on its result."""
+    from hermes_cli.config import detect_install_method
+    from hermes_cli.steward import read_install_stamp
+
+    root = _project_root()
+    if read_install_stamp(root).get("updateMechanism") == "microsoft-store":
+        return "microsoft-store"
+    return detect_install_method(root)
+
+
 def release_channel(config: dict[str, Any]) -> str:
     """The channel this install follows: a package's baked channel, a source install's channel
     record, else the checkout's branch (``main`` for main/master, ``dev`` for any other)."""
@@ -127,12 +140,12 @@ def gpu_class() -> str:
     return value if value in contract.GPU_CLASSES else "unknown"
 
 
-def _is_local_endpoint(base_url: Any) -> bool:
+def _is_local_endpoint(base_url: Any, provider: str) -> bool:
     if not isinstance(base_url, str) or not base_url.strip():
         return False
-    from agent.model_metadata import is_local_endpoint
+    from agent.process_transport import is_local_server
 
-    return is_local_endpoint(base_url)
+    return is_local_server(base_url, provider)
 
 
 def _custom_base_url(provider: str) -> Any:
@@ -148,13 +161,13 @@ def _slot_is_local(slot: Any) -> bool:
     provider = _norm(_sub(slot, "provider"))
     if provider in _LOCAL_PROVIDER_ALIASES:
         return True
-    if _is_local_endpoint(_sub(slot, "base_url")):
+    if _is_local_endpoint(_sub(slot, "base_url"), provider):
         return True
     from .shared_metrics_catalog import CUSTOM, _safe as catalog_safe, user_named_model_providers
 
     if provider in catalog_safe(user_named_model_providers) - {CUSTOM}:
         return True
-    return provider not in _INHERITS_MAIN and _is_local_endpoint(_custom_base_url(provider))
+    return provider not in _INHERITS_MAIN and _is_local_endpoint(_custom_base_url(provider), provider)
 
 
 def _aux_slot_routes_itself(slot: dict[str, Any]) -> bool:
@@ -174,6 +187,17 @@ def local_model_provider_used(config: dict[str, Any]) -> str:
     if isinstance(auxiliary, dict):
         slots += [s for s in auxiliary.values() if isinstance(s, dict) and _aux_slot_routes_itself(s)]
     return "yes" if any(_slot_is_local(slot) for slot in slots) else "no"
+
+
+def install_hosting() -> str:
+    """``nous_cloud`` when the hosting platform says so (``HERMES_HOSTING``), else ``self_hosted``.
+    The variable's raw value is never recorded."""
+    import os
+
+    # Set by the hosting platform as container env (like HERMES_ENVIRONMENT_HINT): a fact about the
+    # machine, not a user setting, and config.yaml travels with a profile when it moves hosts.
+    value = _norm(os.environ.get("HERMES_HOSTING"))  # health: allow HX002 -- host-set machine fact, see above
+    return value if value in contract.HOSTINGS else "self_hosted"
 
 
 def install_v4_snapshot_fields(config: dict[str, Any]) -> dict[str, str]:

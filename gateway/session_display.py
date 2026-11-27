@@ -9,12 +9,13 @@ was admitted, and bound to that admission's own event, never to a later turn on 
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 HIDDEN = 'hidden'
 _TITLE_PREVIEW_LIMIT = 1000
 _SUBMIT_FIELDS = ('display_kind', 'title_preview')
 _display_turn: ContextVar[tuple | None] = ContextVar('display_turn', default=None)
+_submission_turn: ContextVar[tuple | None] = ContextVar('submission_turn', default=None)
 
 
 def submit_display_fields(params):
@@ -29,9 +30,9 @@ def admit_display(params):
     so a typo can never turn machine text into a visible user row."""
     kind, preview = params.get('display_kind'), params.get('title_preview')
     if kind is not None and kind != HIDDEN:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if preview is not None and not isinstance(preview, str):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     committed = {}
     if kind:
         committed['kind'] = HIDDEN
@@ -44,10 +45,10 @@ def restore_display(committed):
     """A committed ``display_v1`` arriving across a process boundary (managed worker), re-checked by the
     admission validator: only an object admission itself could have committed is accepted."""
     if not isinstance(committed, dict) or not committed or set(committed) - {'kind', 'title_preview'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     wire = {'display_kind': committed.get('kind'), 'title_preview': committed.get('title_preview')}
     if admit_display(wire).get('display_v1') != committed:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return committed
 
 
@@ -58,6 +59,27 @@ def display_turn_scope(admission_id, committed):
         yield
     finally:
         _display_turn.reset(token)
+
+
+@contextmanager
+def submission_turn_scope(admission_id, submission_id):
+    """Bind the client's ``submission_id`` (the admission's ``request_id``) to the admission's own event.
+
+    The user row this turn persists carries it, so a client whose window closed before the submit ack
+    came back can read the stored transcript and tell a send that landed from one that never did."""
+    token = _submission_turn.set((admission_id, submission_id) if submission_id else None)
+    try:
+        yield
+    finally:
+        _submission_turn.reset(token)
+
+
+def admission_submission(event):
+    """``{'submission_id': ...}`` for the admission ``event`` executes, ``{}`` for any other event."""
+    bound = _submission_turn.get()
+    if bound is None or event is None or getattr(event, 'message_id', None) != bound[0]:
+        return {}
+    return {'submission_id': bound[1]}
 
 
 def admission_display(event):

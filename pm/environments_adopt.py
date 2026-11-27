@@ -15,7 +15,8 @@ import site
 import sys
 from pathlib import Path
 
-from pm.environments import install_state_dir, selected_venv, site_packages, venv_bin_dir
+from pm.environments import (
+    install_state_dir, payload_venv, selected_venv, site_packages, venv_bin_dir, venv_python_version)
 
 
 def running_environment(project_root: Path) -> Path | None:
@@ -29,10 +30,24 @@ def running_environment(project_root: Path) -> Path | None:
         selected = selected_venv(project_root)
     except (OSError, RuntimeError, ValueError):
         return None
-    for environment in (selected, *sorted((install_state_dir(project_root) / "environments").glob("*/venv"))):
+    shipped = _shipped_environment(project_root)
+    for environment in (selected, *([shipped] if shipped else []),
+                        *sorted((install_state_dir(project_root) / "environments").glob("*/venv"))):
         if site_packages(environment).resolve() in entries:
             return environment
     return None
+
+
+def _shipped_environment(project_root: Path) -> Path | None:
+    """The environment the install carries in its own tree: a sealed payload's, or the checkout's
+    ``venv``/``.venv`` (a container image's). A process boots from it until PM commits a generation,
+    and the next boot after one is committed loads that generation, so it is this install's too.
+    Never the running interpreter's own venv elsewhere (a developer or test venv is not the install's)."""
+    root = Path(project_root).resolve()
+    payload = payload_venv(root)
+    if payload is not None:
+        return payload
+    return next((root / name for name in ("venv", ".venv") if (root / name / "pyvenv.cfg").is_file()), None)
 
 
 def _distributions(environment: Path) -> dict[str, importlib.metadata.Distribution]:
@@ -69,6 +84,8 @@ def adopt(previous: Path, selected: Path, running: Path) -> bool:
         return False  # An update landed under this process; its code no longer matches the selection.
     if selected.resolve() == previous.resolve():
         return True
+    if venv_python_version(previous) != venv_python_version(selected):
+        return False  # built for another interpreter: its compiled modules would not load here
     if _loaded_from_changed(previous, selected):
         return False
     lease_generation(selected)  # The old lease stays: loaded modules keep reading from it.
@@ -110,8 +127,34 @@ def restart_needed(project_root: Path) -> str | None:
             f"loaded {running.parent.name}")
 
 
+_restart_pending: str | None = None
+
+
+def note_restart_pending(reason: str) -> None:
+    """Record that an install this process ran can only load in a new process.
+
+    An auto-started gateway that nothing restarts reads it (``gateway.run_idle_exit``) and retires,
+    so the next client starts one that boots the new generation instead of reattaching to this one.
+    """
+    global _restart_pending
+    _restart_pending = reason
+
+
+def restart_pending() -> str | None:
+    return _restart_pending
+
+
 def adopt_selected(project_root: Path) -> bool:
     """Move this process onto the selected generation. True when it already runs it, adopted it,
     or runs from no generation of this install at all (there is nothing to adopt)."""
     pair = _running_and_selected(project_root)
     return pair is None or adopt(pair[0], pair[1], pair[0])
+
+
+def adopt_published(project_root: Path) -> bool:
+    """Move this process onto a generation published after it booted (a plugin's dependencies installed
+    by another process or by this one). True only when this process now imports from a generation it did
+    not before; False when nothing was published since, when it runs from no generation of this install,
+    or when :func:`adopt` refuses (something already loaded would change: only a restart loads that)."""
+    return restart_needed(project_root) is not None and adopt_selected(project_root) \
+        and restart_needed(project_root) is None

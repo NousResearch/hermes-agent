@@ -74,12 +74,20 @@ def _same_provider_override(monkeypatch, provider, model, api_mode, base_url, se
 
 
 def test_same_provider_override_runs_on_the_targets_wire(monkeypatch):
-    """Copilot serves GPT-5 on the Responses API and Claude on chat completions."""
+    """A provider serving GPT-5 on the Responses API and Claude on chat completions (``api_mode_for_model``)."""
+    from providers.base import ProviderProfile
+
+    class _PerModelWire(ProviderProfile):
+        def api_mode_for_model(self, model, *, api_key=None):
+            return "codex_responses" if model.startswith("gpt-5") else "chat_completions"
+
+    acme = _PerModelWire(name="acme-wire", base_url="https://api.acme-wire.test")
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: acme if name == "acme-wire" else None)
     runtime = _same_provider_override(
-        monkeypatch, "copilot", "gpt-5.4", "codex_responses", "https://api.githubcopilot.com",
-        {"base_url": "https://api.githubcopilot.com", "api_mode": "chat_completions"})
+        monkeypatch, "acme-wire", "gpt-5.4", "codex_responses", "https://api.acme-wire.test",
+        {"base_url": "https://api.acme-wire.test", "api_mode": "chat_completions"})
     assert runtime["api_mode"] == "codex_responses"
-    assert (runtime["base_url"], runtime["api_key"]) == ("https://api.githubcopilot.com", "tok-session")
+    assert (runtime["base_url"], runtime["api_key"]) == ("https://api.acme-wire.test", "tok-session")
 
 
 def test_same_provider_override_reshapes_the_opencode_endpoint_for_its_wire(monkeypatch):
@@ -330,10 +338,10 @@ def test_an_alias_runs_on_the_endpoint_the_switch_resolved_when_the_config_chang
 
 def test_a_one_turn_override_carries_its_reasoning_level_for_that_admission_only():
     from gateway.session_cli_turn import admit_cli_turn, one_turn_reasoning
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     committed = admit_cli_turn({"model_override": {"model": "m", "provider": "p", "reasoning": "high"}})
     assert committed["cli_turn_v1"]["model_override"] == {"model": "m", "provider": "p", "reasoning": "high"}
-    with pytest.raises(RuntimeStoreError):
+    with pytest.raises(AuthorityRefusal):
         admit_cli_turn({"model_override": {"model": "m", "reasoning": "hgih"}})
     session_level = {"enabled": True, "effort": "low"}
     turn = SimpleNamespace(_ctx=SimpleNamespace(inbound_message_id="adm"))

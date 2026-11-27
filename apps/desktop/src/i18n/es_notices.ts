@@ -21,9 +21,10 @@ export const esNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'Este servidor no pudo confirmar el envío anterior de este mensaje, así que es posible que ya se haya ejecutado. Revisa la conversación antes de volver a enviarlo.',
+    restoredDraftAttachmentsDropped:
+      'Los adjuntos de tu mensaje no enviado no se restauraron. Vuelve a adjuntarlos antes de enviarlo.',
     mcpReloadDeferred:
       'Este chat está ocupado: el cambio de MCP se aplica cuando termine su turno y MCP se recargue de nuevo, o al volver a abrir el chat',
-    mcpReloadNotInChat: server => `${server} no está activado en este chat`,
     mcpReloadUnavailable: servers => `No se conectó: ${servers}`,
     compactedTurnUnavailable:
       'Ese mensaje se resumió al comprimir el chat, así que ya no se puede restaurar ni editar.',
@@ -36,5 +37,16 @@ export const esNotices = {
     message:
       'Hermes puede mantener tu equipo activo mientras se ejecuta una tarea. La pantalla se sigue apagando, y con batería el equipo aún puede entrar en suspensión.',
     action: 'Mantener activo mientras trabaja'
+  },
+  billingBlock: {
+    titleNous: 'Sin créditos de Nous',
+    titleProvider: provider => `Sin créditos — ${provider}`,
+    fallbackMessage: 'Tu cuenta se quedó sin créditos. Añade créditos para continuar.',
+    openBilling: 'Abrir facturación',
+    addCredits: 'Añadir créditos',
+    dismiss: 'Descartar'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+>

@@ -22,6 +22,9 @@ const delta = (text: string) =>
 const completeWithError = (payload: Record<string, unknown>) =>
   act(() => stream.handleEvent({ payload: { status: 'error', ...payload }, session_id: SID, type: 'message.complete' }))
 
+const complete = (payload: Record<string, unknown>) =>
+  act(() => stream.handleEvent({ payload, session_id: SID, type: 'message.complete' }))
+
 function getState(): ClientSessionState {
   return stream.state()
 }
@@ -111,5 +114,28 @@ describe('terminal error message.complete frames', () => {
     const bubble = lastAssistant()
     expect(bubble?.error).toBe('kaput')
     expect(bubble?.errorSurface).toBeUndefined()
+  })
+
+  it('settles a reply the gateway reports complete as an answer, even when it reads like an HTTP error', async () => {
+    mountStream()
+    await start()
+    await delta('HTTP 200 OK')
+
+    await complete({ status: 'complete', text: 'HTTP 200 OK' })
+
+    const bubble = lastAssistant()
+    expect(bubble?.error).toBeUndefined()
+    expect(chatMessageText(bubble!)).toBe('HTTP 200 OK')
+    expect(bubble?.pending).toBe(false)
+  })
+
+  it('still reads a provider failure from the text when the frame carries no status', async () => {
+    mountStream()
+    await start()
+    await delta('…')
+
+    await complete({ text: 'HTTP 500 upstream' })
+
+    expect(lastAssistant()?.error).toBe('HTTP 500 upstream')
   })
 })

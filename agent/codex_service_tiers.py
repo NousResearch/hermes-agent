@@ -1,7 +1,8 @@
-"""Account-scoped speed metadata from the existing authenticated Codex catalogue.
+"""Account-scoped speed and Daybreak metadata from the existing authenticated Codex catalogue.
 
 Unknown discovery preserves the requested tier. Only an explicit advertised tier
 list permits a downgrade; response echoes never drive selection or retries.
+Daybreak is the opposite: it is requested only when the catalog explicitly lists it.
 """
 from __future__ import annotations
 
@@ -12,9 +13,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 # Token fingerprints include the origin; token refresh/account changes cannot reuse
 # an old entitlement. No raw credentials or identities are retained in this cache.
-_catalogs: dict[str, tuple[dict[str, frozenset[str]], float]] = {}
+# Value: (speed tiers per model, fetched-at, ``available_access_programs.cyber`` per model). One
+# record, published by one assignment, so a reader never pairs a fresh timestamp with stale programs.
+_catalogs: dict[str, tuple[dict[str, frozenset[str]], float, dict[str, frozenset[str]]]] = {}
 _TTL = 3600
 _MAX_CATALOGS = 128
+DAYBREAK_PROGRAM = "daybreak_blue"
 
 
 def _advertised_tiers(entry: dict[str, Any]) -> frozenset[str] | None:
@@ -30,21 +34,34 @@ def _advertised_tiers(entry: dict[str, Any]) -> frozenset[str] | None:
     return frozenset() if tiers == [] else None
 
 
+def _advertised_cyber_programs(entry: dict[str, Any]) -> frozenset[str] | None:
+    programs = entry.get("available_access_programs")
+    cyber = programs.get("cyber") if isinstance(programs, dict) else None
+    if isinstance(cyber, list) and all(isinstance(item, str) for item in cyber):
+        return frozenset(cyber)
+    return None
+
+
 def remember_catalog(cache_key: str, entries: list[Any]) -> None:
-    """Retain only speed metadata, even when a model omits its context window."""
-    models = {}
+    """Retain only speed and access-program metadata, even when a model omits its context window."""
+    models, programs = {}, {}
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("slug"), str):
             continue
+        slug = entry["slug"].strip()
         tiers = _advertised_tiers(entry)
         if tiers is not None:
-            models[entry["slug"].strip()] = tiers
+            models[slug] = tiers
+        cyber = _advertised_cyber_programs(entry)
+        if cyber is not None:
+            programs[slug] = cyber
     if cache_key not in _catalogs and len(_catalogs) >= _MAX_CATALOGS:
         del _catalogs[min(_catalogs, key=lambda key: _catalogs[key][1])]
-    _catalogs[cache_key] = (models, time.time())
+    _catalogs[cache_key] = (models, time.time(), programs)
 
 
-def _tiers_for_model(access_token: str, base_url: str, model: str) -> frozenset[str] | None:
+def _fresh_catalog(access_token: str, base_url: str) -> tuple | None:
+    """This credential's catalog record once it is fresh, else None."""
     from agent import model_metadata as metadata
     key = metadata._codex_oauth_token_fingerprint(access_token, base_url)
     cached = _catalogs.get(key)
@@ -55,8 +72,34 @@ def _tiers_for_model(access_token: str, base_url: str, model: str) -> frozenset[
         cached = _catalogs.get(key)
     if cached is None or time.time() - cached[1] >= _TTL:
         return None
-    wire_model = metadata.strip_codex_context_variant_suffix(model)
-    return cached[0].get(wire_model)
+    return cached
+
+
+def _tiers_for_model(access_token: str, base_url: str, model: str) -> frozenset[str] | None:
+    from agent import model_metadata as metadata
+    cached = _fresh_catalog(access_token, base_url)
+    return None if cached is None else cached[0].get(metadata.strip_codex_context_variant_suffix(model))
+
+
+def _cyber_programs_for_model(access_token: str, base_url: str, model: str) -> frozenset[str] | None:
+    from agent import model_metadata as metadata
+    cached = _fresh_catalog(access_token, base_url)
+    return None if cached is None else cached[2].get(metadata.strip_codex_context_variant_suffix(model))
+
+
+def _account_catalog_token(access_token: Any) -> str | None:
+    """The ChatGPT OAuth JWT that reads this account's Codex catalog, or None."""
+    from hermes_cli.auth_constants import AuthError, _decode_jwt_claims
+    # Only a ChatGPT OAuth JWT reads this catalog; a caller's pre-init key (an OpenAI API key on a
+    # profile that also has one) is not this account's credential, so use the stored Codex login.
+    token = access_token if isinstance(access_token, str) and _decode_jwt_claims(access_token) else None
+    if not token:
+        try:
+            from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+            token = resolve_codex_runtime_credentials(read_only=True).get("api_key")
+        except AuthError:  # no Codex login on this profile: unknown, never a refusal
+            return None
+    return token if isinstance(token, str) and token else None
 
 
 def codex_account_offers_tier(
@@ -70,21 +113,53 @@ def codex_account_offers_tier(
     base = str(base_url or "").strip() or CODEX_AUX_BASE_URL
     if not is_official_codex_base_url(base):
         return None
-    from hermes_cli.auth_constants import AuthError, _decode_jwt_claims
-    # Only a ChatGPT OAuth JWT reads this catalog; a caller's pre-init key (an OpenAI API key on a
-    # profile that also has one) is not this account's credential, so use the stored Codex login.
-    token = access_token if isinstance(access_token, str) and _decode_jwt_claims(access_token) else None
-    if not token:
-        try:
-            from hermes_cli.auth_codex import resolve_codex_runtime_credentials
-            token = resolve_codex_runtime_credentials(read_only=True).get("api_key")
-        except AuthError:  # no Codex login on this profile: unknown, never a refusal
-            return None
-    if not isinstance(token, str) or not token:
+    token = _account_catalog_token(access_token)
+    if token is None:
         return None
     from agent.model_metadata import _bare_codex_slug
     supported = _tiers_for_model(token, base, _bare_codex_slug(str(model or "")))
     return None if supported is None else tier in supported
+
+
+def daybreak_offered(model: Any, *, provider: Any = None, base_url: Any = None, access_token: Any = None) -> bool:
+    """Whether the Daybreak switch is offered for ``model``: the ChatGPT/Codex subscription route, and
+    this account's own Codex catalog lists ``daybreak_blue`` for the model. Unknown is False, so the
+    switch stays hidden rather than offering something the account may not have."""
+    from agent.codex_headers import CODEX_AUX_BASE_URL, is_official_codex_base_url
+    from hermes_cli.models import normalize_provider
+    if not provider or normalize_provider(provider) != "openai-codex":
+        return False
+    base = str(base_url or "").strip() or CODEX_AUX_BASE_URL
+    if not is_official_codex_base_url(base):
+        return False
+    token = _account_catalog_token(access_token)
+    if token is None:
+        return False
+    from agent.model_metadata import _bare_codex_slug
+    programs = _cyber_programs_for_model(token, base, _bare_codex_slug(str(model or "")))
+    return bool(programs) and DAYBREAK_PROGRAM in programs
+
+
+def apply_daybreak(agent: Any, overrides: dict[str, Any]) -> None:
+    """Add ``access_programs.cyber: daybreak_blue`` when the user turned Daybreak on and this request's
+    credential and model are listed for it. Checked per request, so a model switch, credential rotation
+    or expired catalog never carries the program to a model or account without it."""
+    from agent.codex_headers import is_official_codex_base_url
+    base_url = str(getattr(agent, "base_url", "") or "")
+    if (getattr(agent, "daybreak", False) is not True
+            or getattr(agent, "api_mode", None) != "codex_responses"
+            or getattr(agent, "provider", None) != "openai-codex"
+            or not is_official_codex_base_url(base_url)):
+        return
+    token = getattr(agent, "api_key", None)
+    if not isinstance(token, str) or not token:
+        return
+    programs = _cyber_programs_for_model(token, base_url, overrides.get("model", getattr(agent, "model", "")))
+    if not programs or DAYBREAK_PROGRAM not in programs:
+        return
+    extra_body = dict(overrides.get("extra_body") or {})
+    extra_body["access_programs"] = {**dict(extra_body.get("access_programs") or {}), "cyber": DAYBREAK_PROGRAM}
+    overrides["extra_body"] = extra_body
 
 
 def ultrafast_offered(model: Any, *, provider: Any = None, base_url: Any = None, access_token: Any = None) -> bool:

@@ -1,13 +1,16 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AppInfo } from 'app-builder-lib'
 import { afterEach, expect, test, vi } from 'vitest'
 import { appIdentity, storeManifestTemplate, storePackageVersion, storePackageVersionAt } from '../../../scripts/msix-shared.mjs'
 import { stageReleaseManifest, stageStoreManifest } from './before-build.mjs'
-import { AppInfo } from '../../../node_modules/app-builder-lib/dist/appInfo.js'
-import { substituteManifestMacros } from '../../../node_modules/app-builder-lib/dist/targets/win/winAppUtil.js'
+
+const require = createRequire(import.meta.url)
+const { substituteManifestMacros } = require(path.join(path.dirname(require.resolve('app-builder-lib')), 'targets', 'win', 'winAppUtil.js'))
 
 const roots = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
@@ -52,12 +55,12 @@ test('Store manifest and envelope agree while executable app semver and sideload
 
 })
 
-test.each(['v0.27.1', 'v0.27.1+canary.20260907T001800Z'])(
+test.each(['v0.27.1', 'canary.20260907T001800Z-v0.27.1'])(
   'ordinary release manifest %s carries the admitted native quad',
   tag => {
     const { app } = fixture()
     const identity = appIdentity(app, tag)
-    if (tag.includes('+canary.')) {
+    if (tag.startsWith('canary.')) {
       fs.mkdirSync(path.join(app, 'build'), { recursive: true })
       fs.copyFileSync(path.join(app, 'assets/msix-manifest.xml'), path.join(app, 'build/msix-manifest.xml'))
     }
@@ -83,7 +86,7 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
   expect(() => storeManifestTemplate('${version}', '0.27.1.32863')).toThrow()
   expect(() => storeManifestTemplate('${version}', '0.27.1.0')).toThrow()
   expect(() => storePackageVersionAt(NaN)).toThrow()
-  expect(() => storePackageVersion('v0.27.1+canary.20260231T000000Z', '.')).toThrow('Invalid canary')
+  expect(() => storePackageVersion('canary.20260231T000000Z-v0.27.1', '.')).toThrow('Invalid canary')
 })
 
 test('stable candidate identity uses the admitted claim epoch before the final tag exists', () => {

@@ -1,6 +1,6 @@
 name: livetalk
 repo: https://github.com/cruzlxyz/livetalk
-sha: d86f517ceafe87b9c345f38b07667b5480f4c839
+sha: 9a342b2eeb0413be3a1518a2511c9b59f15d53ea
 description: >-
   Realtime duplex voice chat with the Hermes agent — a composer mini-bar for the Hermes
   desktop app with three interchangeable speech providers: Gemini Live, ElevenLabs Realtime
@@ -22,11 +22,11 @@ description: >-
   provider-neutral roadmap; the old repository URL redirects.
 maintainer: cruzlxyz
 tier: community
-version: "2.3.0"
+version: "2.3.1"
 requires_hermes: ">=0.23.0"
 category: voice
 docs_url: https://github.com/cruzlxyz/livetalk#readme
-image: https://raw.githubusercontent.com/cruzlxyz/livetalk/d86f517ceafe87b9c345f38b07667b5480f4c839/assets/cover.jpg
+image: https://raw.githubusercontent.com/cruzlxyz/livetalk/9a342b2eeb0413be3a1518a2511c9b59f15d53ea/assets/cover.jpg
 platforms: []
 capabilities:
   provides_tools: []

@@ -82,6 +82,22 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     assert getattr(state, "mode", None) == "accept_edits"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("high", {"enabled": True, "effort": "high"}),
+        ("none", {"enabled": False}),
+        ("bogus", None),
+    ],
+)
+async def test_set_config_option_applies_reasoning_effort_to_agent(agent, value, expected):
+    resp = await agent.new_session(cwd="/tmp")
+    await agent.set_config_option("reasoning_effort", resp.session_id, value)
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert state.agent.reasoning_config == expected
+
 # ---------------------------------------------------------------------------
 # initialize
 # ---------------------------------------------------------------------------

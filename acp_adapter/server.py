@@ -2036,6 +2036,21 @@ class HermesACPAgent(acp.Agent):
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
 
+    _REASONING_EFFORT_CONFIG_IDS = ("reasoning_effort", "effort")
+
+    @staticmethod
+    def _apply_reasoning_effort(state: Any, value: str) -> None:
+        """Apply an ACP reasoning-effort option to the session's live agent.
+
+        An empty or unknown value resets the agent to its default.
+        """
+        from hermes_constants import parse_reasoning_effort
+
+        agent = getattr(state, "agent", None)
+        if agent is None:
+            return
+        agent.reasoning_config = parse_reasoning_effort(value)
+
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
@@ -2054,6 +2069,8 @@ class HermesACPAgent(acp.Agent):
                 options = {}
             options[str(config_id)] = value
             setattr(state, "config_options", options)
+            if str(config_id) in self._REASONING_EFFORT_CONFIG_IDS:
+                self._apply_reasoning_effort(state, str(value))
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])

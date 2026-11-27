@@ -1,13 +1,6 @@
 name: ruse
-version: 2.0.1
+version: "2.0.1"
 title: Ruse — Bounded Browser Authority for Hermes
-summary: |
-  Ruse grants Hermes a temporary, owner-approved capability lease over a
-  dedicated authenticated browser profile: one origin, exact pages, one frozen
-  write, commit budget, expiry, and instant revocation. Every outbound browser
-  request is checked at the network boundary; denied requests never reach the
-  application. The model gets structured tools only — no arbitrary code, JS
-  evaluation, or raw CDP.
 description: |
   **The gap**: Hermes can drive a real browser using the user's authenticated
   sessions. That gives an agent everything the account can do — not just what
@@ -33,9 +26,36 @@ description: |
   tests, including a hostile page script (destructive DELETE, wrong-record write,
   cross-origin exfiltration) that is fully contained — the application's own
   audit log shows zero mutating requests arrived.
+
+  **Disclosure**: launches a dedicated headless Chrome profile owned by Ruse
+  under its plugin data dir (never the user's everyday browser profile); the
+  profile persists the owner's sign-in session so auto-login can be skipped on
+  later runs. Network access is limited to origins the owner lists in the lease;
+  Playwright may download Chromium from its official CDN on first use and the
+  declared `playwright` dependency is installed on enable. The broker runs as a
+  daemon thread for the life of the session. No telemetry, no self-update, no
+  shell commands from the plugin. The login password is read only through
+  Hermes' secret scope (`RUSE_CRM_PASSWORD`), never from a file.
 repo: https://github.com/HillaryIkhais/Ruse.git
-sha: 25868c6c202c82a4f8e4dad81c6ecf10a9029b03
+sha: df34949ec5e16eef7c078690a01eb8d0114a7c22
+maintainer: HillaryIkhais
 tier: community
-category: security
+category: tools
 requires_hermes: ">=0.23.0"
-manifest_version: v2
+docs_url: https://github.com/HillaryIkhais/Ruse/blob/df34949ec5e16eef7c078690a01eb8d0114a7c22/README.md
+platforms: []
+capabilities:
+  provides_tools:
+    - ruse_connect
+    - ruse_inspect
+    - ruse_navigate
+    - ruse_fill
+    - ruse_prepare
+    - ruse_commit
+    - ruse_verify
+    - ruse_revoke
+    - ruse_status
+    - ruse_receipts
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

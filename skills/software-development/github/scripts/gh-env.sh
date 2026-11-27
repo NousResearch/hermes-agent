@@ -37,9 +37,11 @@ fi
 
 # Resolve username for curl method
 if [ "$GH_AUTH_METHOD" = "curl" ] && [ -z "$GH_USER" ]; then
-    GH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        https://api.github.com/user 2>/dev/null \
-        | python3 -c "import sys,json; print(json.load(sys.stdin).get('login',''))" 2>/dev/null)
+    GH_AUTH="Authorization: token $GITHUB_TOKEN"
+    _GH_USER_JSON="/tmp/gh-env-user.$$.json"
+    curl -s -H "$GH_AUTH" https://api.github.com/user -o "$_GH_USER_JSON" 2>/dev/null
+    GH_USER=$(python3 -c "import json; print(json.load(open(\"$_GH_USER_JSON\")).get('login',''))" 2>/dev/null)
+    rm -f "$_GH_USER_JSON"
 fi
 
 # --- Repo detection (if inside a git repo with a GitHub remote) ---

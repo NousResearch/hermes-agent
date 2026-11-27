@@ -8,6 +8,7 @@ are marked ``platforms("windows")`` (they mock only dependencies such as
 from __future__ import annotations
 
 import asyncio
+import ntpath
 import os
 import signal
 import subprocess
@@ -65,6 +66,22 @@ class TestConfigureWindowsStdio:
         buf = io.StringIO()
         # Must not raise
         stdio._reconfigure_stream(buf)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"c:\users\alice\appdata\local\HERMES\HERMES-AGENT\VENV\sCRIPTS",
+            "C:\\Users\\Alice\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\",
+            "C:/Users/Alice/AppData/Local/hermes/hermes-agent/venv/Scripts",
+        ],
+    )
+    def test_windows_path_comparison_key_collapses_equivalent_spellings(self, path):
+        from hermes_cli.stdio import _windows_path_comparison_key
+
+        canonical = ntpath.join(
+            r"C:\Users\Alice\AppData\Local", "hermes", "hermes-agent", "venv", "Scripts"
+        )
+        assert _windows_path_comparison_key(path) == _windows_path_comparison_key(canonical)
 
 
 # ---------------------------------------------------------------------------

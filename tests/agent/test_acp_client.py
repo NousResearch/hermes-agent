@@ -186,3 +186,139 @@ def test_deprecated_alias_keeps_a_frozen_out_of_tree_subclass_working(tmp_path):
     assert result["is_acp_client"] and result["base_url"] == "acp://frozen"
     assert result["models"] == ["open-model", "policy-blocked"]  # the alias keeps its enablement filter
     assert result["reply"] == "HELLO"
+
+
+def _acp_session_recording(
+    *,
+    session_config_options=None,
+    model_set_config_options=None,
+    tier_error: Exception | None = None,
+):
+    """Fake ACP session that records every request in order."""
+    from contextlib import contextmanager
+
+    recorded: list[tuple[str, dict]] = []
+
+    @contextmanager
+    def _fake_session(timeout_seconds, *, allow_file_requests=True):
+        def _request(method, params, *, text_parts=None, reasoning_parts=None):
+            recorded.append((method, params))
+            if method == "session/set_config_option":
+                if params.get("configId") == "model":
+                    return {"configOptions": model_set_config_options} if model_set_config_options is not None else {}
+                if params.get("configId") == "contextTier":
+                    if tier_error is not None:
+                        raise tier_error
+                    return {}
+            if method == "session/prompt":
+                text_parts.append("ok")
+                return {"stopReason": "end_turn"}
+            return {}
+
+        session = {"sessionId": "s1"}
+        if session_config_options is not None:
+            session["configOptions"] = session_config_options
+        yield session, _request
+
+    return _fake_session, recorded
+
+
+def test_context_tier_switches_to_long_context_after_model_selection():
+    from unittest.mock import patch
+
+    model_opt = {"id": "model", "category": "model", "options": [{"value": "gemini-4-neon"}]}
+    tier_opt = {
+        "id": "contextTier",
+        "currentValue": "default",
+        "options": [{"value": "default"}, {"value": "long_context"}],
+    }
+    fake_session, recorded = _acp_session_recording(
+        session_config_options=[model_opt],
+        model_set_config_options=[model_opt, tier_opt],
+    )
+    client = ACPClient()
+    with patch.object(client, "_session", fake_session):
+        completion = client._create_chat_completion(
+            model="gemini-4-neon", messages=[{"role": "user", "content": "hi"}],
+        )
+    assert completion.choices[0].message.content == "ok"
+    assert [(m, p.get("configId"), p.get("value")) for m, p in recorded] == [
+        ("session/set_config_option", "model", "gemini-4-neon"),
+        ("session/set_config_option", "contextTier", "long_context"),
+        ("session/prompt", None, None),
+    ]
+
+
+def test_context_tier_noop_when_absent_or_already_long_context():
+    from unittest.mock import patch
+
+    model_opt = {"id": "model", "category": "model", "options": [{"value": "gemini-4-hydrogen"}, {"value": "claude-haiku-5.5"}]}
+    # Absent contextTier (e.g., gemini-4-hydrogen)
+    fake_session, recorded = _acp_session_recording(
+        session_config_options=[model_opt],
+        model_set_config_options=[model_opt],
+    )
+    client = ACPClient()
+    with patch.object(client, "_session", fake_session):
+        client._create_chat_completion(model="gemini-4-hydrogen", messages=[{"role": "user", "content": "hi"}])
+    assert [m for m, _ in recorded] == ["session/set_config_option", "session/prompt"]
+
+    # Already on long_context (e.g., claude-haiku-5.5)
+    already_long = {
+        "id": "contextTier",
+        "currentValue": "long_context",
+        "options": [{"value": "default"}, {"value": "long_context"}],
+    }
+    fake_session2, recorded2 = _acp_session_recording(
+        session_config_options=[model_opt],
+        model_set_config_options=[model_opt, already_long],
+    )
+    with patch.object(client, "_session", fake_session2):
+        client._create_chat_completion(model="claude-haiku-5.5", messages=[{"role": "user", "content": "hi"}])
+    assert [m for m, _ in recorded2] == ["session/set_config_option", "session/prompt"]
+
+
+def test_context_tier_error_falls_back_gracefully():
+    from unittest.mock import patch
+
+    model_opt = {"id": "model", "category": "model", "options": [{"value": "gemini-4-neon"}]}
+    tier_opt = {
+        "id": "contextTier",
+        "currentValue": "default",
+        "options": [{"value": "default"}, {"value": "long_context"}],
+    }
+    fake_session, recorded = _acp_session_recording(
+        session_config_options=[model_opt],
+        model_set_config_options=[model_opt, tier_opt],
+        tier_error=RuntimeError("contextTier unsupported"),
+    )
+    client = ACPClient()
+    with patch.object(client, "_session", fake_session):
+        completion = client._create_chat_completion(
+            model="gemini-4-neon", messages=[{"role": "user", "content": "hi"}],
+        )
+    assert completion.choices[0].message.content == "ok"
+    assert [(m, p.get("configId")) for m, p in recorded] == [
+        ("session/set_config_option", "model"),
+        ("session/set_config_option", "contextTier"),
+        ("session/prompt", None),
+    ]
+
+
+def test_context_tier_from_initial_session_when_no_model_selected():
+    from unittest.mock import patch
+
+    tier_opt = {
+        "id": "contextTier",
+        "currentValue": "default",
+        "options": [{"value": "default"}, {"value": "long_context"}],
+    }
+    fake_session, recorded = _acp_session_recording(session_config_options=[tier_opt])
+    client = ACPClient()
+    with patch.object(client, "_session", fake_session):
+        completion = client._create_chat_completion(model=None, messages=[{"role": "user", "content": "hi"}])
+    assert completion.choices[0].message.content == "ok"
+    assert [(m, p.get("configId"), p.get("value")) for m, p in recorded] == [
+        ("session/set_config_option", "contextTier", "long_context"),
+        ("session/prompt", None, None),
+    ]

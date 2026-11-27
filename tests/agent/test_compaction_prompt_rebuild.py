@@ -233,7 +233,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         from pathlib import Path
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
 
-        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-bind-"))
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-bind-")).resolve()
         old_cwd = os.getcwd()
         try:
             repo = _init_repo(tmp / "proj", "init commit")
@@ -260,7 +260,10 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         from pathlib import Path
         from agent.system_prompt import build_system_prompt
 
-        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-resume-"))
+        # Compare in the resolved spelling: the prompt's workspace snapshot reports
+        # git-resolved roots, and macOS's /var -> /private/var symlink would else
+        # make every "- Root:" assertion disagree with the raw mkdtemp path.
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-resume-")).resolve()
         try:
             repo, other = _init_repo(tmp / "proj", "init commit"), _init_repo(tmp / "other", "init other")
 
@@ -290,7 +293,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         from pathlib import Path
         from agent.system_prompt import build_system_prompt
 
-        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-"))
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-")).resolve()
         try:
             repo = _init_repo(tmp / "proj", "init commit")
             stored = f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}\n\nBODY"

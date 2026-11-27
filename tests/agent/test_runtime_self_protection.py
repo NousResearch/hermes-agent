@@ -94,6 +94,29 @@ def test_find_delete_over_own_venv_is_detected(fake_runtime):
     assert rsp.command_deletes_runtime("find /tmp -name __pycache__ -delete") is None
 
 
+def test_flag_between_wrapper_and_rm_is_detected(fake_runtime):
+    # A wrapper's own option (and the value it consumes) must not hide the
+    # delete: `sudo -u root rm` deletes just as surely as `sudo rm`.
+    venv = fake_runtime["venv"]
+    for command in (
+        f'sudo -u root rm -rf "{venv}"',
+        f'sudo --user root rm -rf "{venv}"',
+        f'command -p rm -rf "{venv}"',
+        f'nice -n 5 rm -rf "{venv}"',
+        f'env -i rm -rf "{venv}"',
+        f'time -p rm -rf "{venv}"',
+    ):
+        assert rsp.command_deletes_runtime(command) is not None, command
+
+
+def test_wrapper_options_do_not_hide_a_harmless_command(fake_runtime):
+    # Skipping a wrapper's options must stop at the real command word — a
+    # non-deleting command after the flag is not a delete.
+    venv = fake_runtime["venv"]
+    assert rsp.command_deletes_runtime(f'sudo -u root ls -la "{venv}"') is None
+    assert rsp.command_deletes_runtime(f'nice -n 5 echo rm -rf "{venv}"') is None
+
+
 def test_rm_of_unrelated_venv_is_allowed(fake_runtime, tmp_path):
     other = tmp_path / "project" / ".venv"
     other.mkdir(parents=True)

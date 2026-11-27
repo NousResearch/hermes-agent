@@ -50,9 +50,9 @@ describe('btw.complete event', () => {
     expect(stream.text(OTHER_SID)).toContain('for the other chat')
   })
 
-  it('drops an empty completion instead of appending a blank line', () => {
+  it('shows a retryable diagnostic when the completion is empty', () => {
     emit('btw.complete', { task_id: 'btw_1', question: 'q', text: '   ' })
 
-    expect(lastMessage()).toBeUndefined()
+    expect(stream.text()).toContain('No answer was returned. Please try /btw again.')
   })
 })

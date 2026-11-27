@@ -246,3 +246,25 @@ def test_a_present_plugin_the_home_disables_is_said_off_once_and_stays_disabled(
     assert read_user_config_raw(home / "config.yaml")["plugins"]["disabled"] == ["yuanbao"]
     off = [line for line in said if "plugins.disabled lists 'yuanbao'" in line]
     assert len(off) == 1 and "so it is installed but off: run `hermes plugins enable yuanbao`" in off[0], said
+
+
+def test_a_failed_config_write_reports_one_outcome_once(tmp_path, monkeypatch):
+    """Greptile #159640: the config write that marks the row fails on a readable config. The start says one
+    line (the scope could not be kept, and the disable that keeps the plugin off), and the next start, whose
+    write fails again, says nothing new."""
+    import hermes_cli.config as config_mod
+    home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n", config="plugins:\n  disabled: [yuanbao]\n")
+    (home / "plugins" / "yuanbao").mkdir(parents=True)
+
+    def refuse(*_a, **_k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(config_mod, "atomic_config_write", refuse)
+    starts = []
+    for _ in range(2):
+        said = []
+        lcm.migrate_home(home, install=lambda name: {"ok": True}, say=said.append)
+        starts.append([line for line in said if "'yuanbao' plugin" in line])
+    assert len(starts[0]) == 1 and "could not be kept" in starts[0][0], starts
+    assert "plugins.disabled lists 'yuanbao'" in starts[0][0]
+    assert starts[1] == []

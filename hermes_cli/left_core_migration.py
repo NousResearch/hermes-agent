@@ -1322,28 +1322,31 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         # toolset scope is still kept below, so only the install is skipped. A home that ran the feature in
         # core removed an idle copy, not the feature: without the plugin it is told the feature is off.
         placed_by_default = _marked(config, _DEFAULT_INSTALLED_KEY, feature)
-        if placed_by_default and _predates_split(home, feature):
+        predates = _predates_split(home, feature)
+        if placed_by_default and predates:
             _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
-        kept_off = _predates_split(home, feature) and _installed_for_good(home, feature.plugin) and _plugins_listed(
-            home, (feature.plugin, *legacy_plugin_keys(feature.plugin)))[1]
-        if kept_off:
-            # Core ran the feature despite that entry; the plugin the home has honours it, so the upgrade turns
-            # it off. The disable stays; this pass marks the row installed, so the home is told once.
-            say(_noticed(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
-                         f"profile has, but {kept_off_sentence(feature.plugin, home)}", home, feature, process_env))
-        if not _predates_split(home, feature):
+        if not predates:
             if not placed_by_default:
                 _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
             continue
         present = _installed_for_good(home, feature.plugin)
         converting = not _scope_kept(config, feature)
+        # Core ran the feature despite that entry; the plugin the home has honours it, so the upgrade turns
+        # it off. The disable stays.
+        kept_off = present and _plugins_listed(home, (feature.plugin, *legacy_plugin_keys(feature.plugin)))[1]
         try:
             _record_migration(home, feature)
         except Exception as exc:
-            say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin: its per-platform "
-                f"toolset selection could not be kept ({exc}). Check `hermes tools`"
-                + ("." if present else f" and run `{_install_command(feature.plugin, home)}`."))
+            _say_once(home, feature, "unscoped", say, f"  ⚠ {feature.label} moved out of core into the "
+                      f"'{feature.plugin}' plugin: its per-platform toolset selection could not be kept ({exc}). "
+                      "Check `hermes tools`" + (f"; {kept_off_sentence(feature.plugin, home)}" if kept_off else
+                                                "." if present else
+                                                f" and run `{_install_command(feature.plugin, home)}`."))
             continue
+        if kept_off:  # the row is marked installed now, so the home is told once
+            say(_noticed(
+                f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this profile has, "
+                f"but {kept_off_sentence(feature.plugin, home)}", home, feature, process_env))
         if converting and (once := feature.converted_notice(home, process_env=process_env)):
             say(f"  ⚠ {once}")
         if present or placed_by_default:
@@ -1365,6 +1368,27 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue
         out.append(feature)
     return out
+
+
+def _said(home: Path, plugin: str) -> Path:
+    """The last one-time outcome :func:`_pending` reported for *plugin*: the row's config mark says it once
+    when the config write lands, this says it once when that write is what fails."""
+    return home / "cache" / f"left-core.said-{plugin}"
+
+
+def _say_once(home: Path, feature: LeftCoreFeature, outcome: str, say: Callable[[str], None], message: str) -> None:
+    marker = _said(home, feature.plugin)
+    try:
+        if marker.read_text(encoding="utf-8") == outcome:
+            return
+    except OSError:
+        pass  # never said
+    say(message)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(outcome, encoding="utf-8")
+    except OSError as exc:
+        logger.debug("left-core notice marker not written for %s: %s", home, exc)
 
 
 def _say_post_split(home: Path, feature: LeftCoreFeature, *, say: Callable[[str], None], backoff: bool,

@@ -331,3 +331,13 @@ def test_the_default_installer_skips_a_plugin_the_left_core_migration_placed(tmp
     home = _home(tmp_path, config="_left_core_installed: [qqbot]\n")
     assert "qqbot" in default_plugins._recorded(home)
     assert default_plugins._recorded(home, own_only=True) == set()
+
+
+def test_one_qqbot_check_merges_the_home_s_platform_block_once(tmp_path, monkeypatch):
+    # Split credentials take the predicate past its on/off check to the per-field read: the whole check
+    # still merges gateway.json + config.yaml for the platform one time, not once per step.
+    home = _home(tmp_path, env="QQ_CLIENT_SECRET=s\n", config="platforms:\n  qqbot:\n    extra: {app_id: a}\n")
+    merges, real = [], lcm._merged_platform_block
+    monkeypatch.setattr(lcm, "_merged_platform_block", lambda *a, **k: merges.append(a) or real(*a, **k))
+    assert _qqbot_in_use(home) is True
+    assert len(merges) == 1

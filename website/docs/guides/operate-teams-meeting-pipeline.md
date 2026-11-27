@@ -154,6 +154,11 @@ hermes teams-pipeline show <job-id>
 hermes teams-pipeline run <job-id>
 ```
 
+`run` re-fetches the meeting artifacts and re-summarizes the stored job into
+the job store, with an empty pipeline config and no sinks: it does not deliver
+the summary anywhere. It has no automated test and has not been run against a
+real tenant.
+
 ### Dry-run meeting artifact fetches
 
 ```bash

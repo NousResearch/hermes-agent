@@ -173,6 +173,22 @@ the `hermes meet` and `hermes teams-pipeline` commands, the `HERMES_MEET_*` and
 and the stored data (`workspace/meetings/`, `teams_pipeline_store.json`) are
 unchanged.
 
+What the `google-meet` plugin sends off the machine: the bot opens the Meet
+URL in Playwright's Chromium (Google Meet sees the guest name and the bot's
+camera and microphone, which are Chromium's fake devices in transcribe mode);
+captions are scraped from the page into a local `transcript.txt` and reach
+your model provider only as `meet_transcript` tool output. Realtime mode sends
+the `meet_say` text (plus the session instructions and voice) to the OpenAI
+Realtime API and plays the returned speech into the call; meeting audio is
+never sent to OpenAI. A remote node is reached over a plain WebSocket with a
+shared token. The plugin's README has the full list with code references.
+
+Known limitation: Hermes runs `on_session_end` after every agent turn, and the
+plugin's hook stops a running bot, so a meeting joined with `meet_join` is left
+when that turn ends
+([hermes-official-plugins#518](https://github.com/NousResearch/hermes-official-plugins/issues/518)).
+Remote nodes run transcribe mode only.
+
 The `hermes-agent[google-meet]` extra is gone: `hermes plugins install
 google-meet` installs Playwright and `websockets` itself, and `hermes meet
 install` still installs Chromium and the audio tools. The

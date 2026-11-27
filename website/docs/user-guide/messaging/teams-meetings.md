@@ -27,7 +27,15 @@ The pipeline:
 2. resolves the meeting and prefers transcript artifacts first
 3. falls back to recording download plus STT when no usable transcript is available
 4. stores durable job state and sink records locally
-5. can write summaries to Notion, Linear, and Microsoft Teams
+5. sends the summary to Microsoft Teams
+
+The `notion` and `linear` settings below are read but not delivered yet: the
+plugin has Notion and Linear writers, but its gateway runtime builds the
+pipeline with the Teams sender only. `hermes teams-pipeline run <job-id>`
+re-fetches and re-summarizes a stored job without any sink. The plugin's tests
+run against stand-ins (stubbed Graph responses, a stand-in summarizer and
+sender); no real Microsoft 365 tenant has been exercised. The plugin's README
+lists what each test covers.
 
 The pipeline ships as the official [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) catalog plugin (opt-in, not installed by default). Install it first; it registers the `teams-pipeline` CLI and binds itself to the core `msgraph_webhook` adapter:
 

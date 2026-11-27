@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 import uuid
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
@@ -135,7 +136,13 @@ def invoke_approval_transport(
         finally:
             _transport_worker_slots.release()
 
-    worker = threading.Thread(target=_run, name=f"approval-transport-{request.request_id[:8]}", daemon=True)
+    caller_context = copy_context()
+    worker = threading.Thread(
+        target=caller_context.run,
+        args=(_run,),
+        name=f"approval-transport-{request.request_id[:8]}",
+        daemon=True,
+    )
     try:
         worker.start()
     except BaseException:

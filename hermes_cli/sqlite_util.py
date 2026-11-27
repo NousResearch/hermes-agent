@@ -85,6 +85,13 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl
 
     ``column`` is the human-readable name for the call site; ``ddl`` carries the actual definition. See
     #21708.
+
+    CAUTION — this is a raw ``ALTER TABLE`` pass-through: the only guard is swallowing the
+    concurrent-migrator duplicate-column error. A ``DEFAULT`` in ``ddl`` is applied to EVERY
+    EXISTING row, so a default quietly attests its value about all pre-migration history (e.g.
+    ``... NOT NULL DEFAULT 0`` makes unmeasured rows read "zero"). When old rows must read as
+    unmeasured, pass a nullable ``ddl`` with NO DEFAULT and set values explicitly on the write
+    path; the review gate is the ddl string at the call site, not this function's name.
     """
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")

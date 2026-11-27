@@ -748,17 +748,20 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
                 config[section_key].pop("use_gateway", None)
 
 
-def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
+def apply_provider_selection(
+    ts_key: str, provider_name: str, config: dict, *, features: Optional[NousSubscriptionFeatures] = None,
+) -> None:
     """Non-interactively persist a provider selection for a toolset (config keys only — API keys, post-setup
     hooks, auth gating and model pickers are separate GUI endpoints). ``provider_name`` is resolved among
-    :func:`_visible_providers` rows; raises ``KeyError`` for an unknown toolset or provider."""
+    :func:`_visible_providers` rows; raises ``KeyError`` for an unknown toolset or provider.
+    Pass already-fetched ``features`` to keep the Portal request outside a caller's write locks."""
     from hermes_cli.tools_config import TOOL_CATEGORIES
 
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat is None:
         raise KeyError(f"Toolset has no configurable category: {ts_key}")
 
-    providers = _visible_providers(cat, config, force_fresh=True)
+    providers = _visible_providers(cat, config, force_fresh=True, features=features)
     provider = next((p for p in providers if p.get("name") == provider_name), None)
     if provider is None:
         raise KeyError(f"Unknown provider {provider_name!r} for toolset {ts_key!r}")

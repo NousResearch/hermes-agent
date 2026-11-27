@@ -391,7 +391,7 @@ class GatewayGoalsMixin:
         try:
             return await admit_route_wake(
                 self, self._delivery_adapter_for(source), source, prompt, "goal-continuation",
-                metadata={"gateway_session_id": session_id}, generation=generation,
+                metadata={"gateway_session_id": session_id, "goal_generation": generation},
             )
         except Exception:  # health: allow BLE001 -- refusal must not fail the completed turn
             logger.debug("goal continuation: authority admission failed", exc_info=True)

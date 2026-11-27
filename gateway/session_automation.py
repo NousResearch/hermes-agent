@@ -860,6 +860,37 @@ async def _reset_and_retarget_local(authority, runner, session_key, old_session_
     return entry
 
 
+def queued_route_wake(runner, source, producer, generation=None):
+    """Whether ``source``'s route already holds a ``producer`` wake (``admit_route_wake``) that is
+    still queued, i.e. not yet claimed, and was admitted for ``generation`` when one is given.
+    Blocking store read: call off the event loop."""
+    from gateway.session_authorities import active_authority
+    from gateway.session_detached import route_entry
+    authority = active_authority(runner)
+    entry = route_entry(authority, runner._session_key_for_source(source)) if authority is not None else None
+    if entry is None:
+        return False
+    for row in authority_persistence(authority).admissions.list(session_id=_route_owner(authority, entry)):
+        if row.status != 'queued':
+            continue
+        try:
+            identity = json.loads(row.request_id)
+        except ValueError:
+            continue
+        if isinstance(identity, list) and identity[:1] == [producer] and (
+                generation is None or identity[3:] == [generation]):
+            return True
+    return False
+
+
+def _goal_wake_identity(identity, producer, metadata):
+    # Restoring a queued row retains the admission identity, not the event metadata.
+    generation = (metadata or {}).get('goal_generation') if producer == 'goal-continuation' else None
+    if generation is None:
+        return identity
+    return json.dumps([*json.loads(identity), generation], separators=(',', ':'))
+
+
 async def reset_and_rehome_messages(runner, session_key, old_session_id):
     """The compression-exhaustion auto-reset: rotate the route to a fresh session and move the old
     owner's still-queued native ``messaging:*`` rows onto it, same order and request ids. Left
@@ -947,40 +978,14 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     return entry, release
 
 
-def queued_route_wake(runner, source, producer, generation=None):
-    """Whether ``source``'s route already holds a ``producer`` wake (``admit_route_wake``) that is
-    still queued, i.e. not yet claimed, and was admitted for ``generation`` when one is given.
-    Blocking store read: call off the event loop."""
-    from gateway.session_authorities import active_authority
-    from gateway.session_detached import route_entry
-    authority = active_authority(runner)
-    entry = route_entry(authority, runner._session_key_for_source(source)) if authority is not None else None
-    if entry is None:
-        return False
-    for row in authority_persistence(authority).admissions.list(session_id=_route_owner(authority, entry)):
-        if row.status != 'queued':
-            continue
-        try:
-            identity = json.loads(row.request_id)
-        except ValueError:
-            continue
-        if isinstance(identity, list) and identity[:1] == [producer] and (
-                generation is None or identity[3:] == [generation]):
-            return True
-    return False
-
-
-async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *,
-                           request_id=None, replay=None, generation=None):
+async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *, request_id=None, replay=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
     interrupts or races the admitted one. ``False`` when no authority serves the scope or the
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
     path (nothing is queued there either). Raises ``AuthorityRefusal`` on a refusal. A producer
     that names its own ``request_id`` (a plugin card's id) gets the admission's replay dedupe and
-    reads created-versus-existing from the ``AdmissionReplay`` it passes as ``replay``.
-    A Goal wake also carries its run's ``generation`` as the fourth item of the durable identity:
-    ``[producer, route, id, generation]``. Restoring the row preserves that identity."""
+    reads created-versus-existing from the ``AdmissionReplay`` it passes as ``replay``."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
     from gateway.session_detached import detached_live, detached_route_of, route_entry
@@ -991,8 +996,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     if authority is None or entry is None:
         return False
     import uuid
-    identity = json.dumps([producer, key, request_id or uuid.uuid4().hex] +
-                          ([generation] if generation is not None else []), separators=(',', ':'))
+    identity = json.dumps([producer, key, request_id or uuid.uuid4().hex], separators=(',', ':'))
     if source.platform == Platform.LOCAL or detached_route_of(source):
         # A local route (or a conversation its chat moved past, answered by its app viewers) has no
         # messaging provenance to borrow: its wake rides local_automation_v1 on the live session's own
@@ -1001,6 +1005,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
         live = found[1] if found is not None else authority.sessions.get(source.chat_id)
         if live is None or live.route != key:
             return False
+        identity = _goal_wake_identity(identity, producer, metadata)
         event = MessageEvent(text=text, message_type=MessageType.TEXT, source=live.source, internal=True,
                              message_id=identity, metadata={'gateway_session_key': key,
                                                             'gateway_session_id': entry.session_id,
@@ -1014,6 +1019,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     # The route's committed source, which ``snapshot_automation`` re-derives and compares.
     restored = restore_native({'text': text, 'native_text_v1': {
         k: v for k, v in envelope.items() if k != 'media'}}, runner)
+    identity = _goal_wake_identity(identity, producer, metadata)
     event = MessageEvent(text=text, message_type=MessageType.TEXT, source=restored.source, internal=True,
                          message_id=identity, metadata={'gateway_session_key': key,
                                                         'gateway_session_id': entry.session_id,

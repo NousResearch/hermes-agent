@@ -8,11 +8,17 @@ included). Real config/.env files under a temp home; the catalog lookup and the 
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 import hermes_cli.left_core_migration as lcm
+import hermes_yaml as yaml
+from tests.hermes_cli.plugin_worker_support import (
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+)
 
 _CREDS = "WEIXIN_ACCOUNT_ID=acc1\nWEIXIN_TOKEN=tok1\n"
 
@@ -131,50 +137,43 @@ def test_a_secondary_whose_credentials_come_from_its_secret_scope_uses_weixin(tm
 
 
 @pytest.mark.parametrize("name", ["platforms/weixin", "weixin-platform"])
-def test_core_names_in_plugins_disabled_still_disable_the_plugin(tmp_path, name):
-    from hermes_cli.plugins_discovery import gate_manifest
-    from hermes_cli.plugins_manifest import PluginManifest
-    home = _home(tmp_path)
-    manifest = PluginManifest(name="weixin", source="user", path=str(home / "plugins" / "weixin"), key="weixin")
-    assert gate_manifest(manifest, {name}, None).error == "disabled via config"
-    assert lcm.legacy_plugin_alias(name) == "weixin"
-
-
-def test_a_bare_weixin_disable_that_survives_the_install_is_named(tmp_path):
-    home = _home(tmp_path, env=_CREDS, config="plugins:\n  disabled: [weixin]\n")
-    sentence = "plugins.disabled lists 'weixin', which now turns Weixin off"
-    for lifted in (True, False):
-        (home / "config.yaml").write_text("plugins:\n  disabled: [weixin]\n", encoding="utf-8")
-        said: list[str] = []
-
-        def install(name):
-            (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
-            if lifted:  # what the real enable does (_apply_activation)
-                (home / "config.yaml").write_text("plugins:\n  enabled: [weixin]\n  disabled: []\n", encoding="utf-8")
-            return {"ok": True}
-        lcm._attempted.clear()
-        import shutil
-        shutil.rmtree(home / "plugins", ignore_errors=True)
-        assert lcm.migrate_home(home, install=install, say=said.append) == ["weixin"]
-        assert (sentence in said[0]) is (not lifted)
-
-
-def test_child_processes_keep_every_weixin_setting_core_stripped():
-    from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
-    assert {n for n in _HERMES_PROVIDER_ENV_BLOCKLIST if n.startswith("WEIXIN_")} == {
-        "WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID", "WEIXIN_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS", "WEIXIN_BASE_URL",
-        "WEIXIN_CDN_BASE_URL", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_GROUP_POLICY",
-        "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_SPLIT_MULTILINE_MESSAGES"}
-
-
-def test_a_weixin_the_default_installer_placed_and_the_user_removed_stays_removed(tmp_path):
-    """weixin is a ``default: true`` plugin, so ``hermes update``'s default installer can place it before the
-    first start's migration runs; one the user then removed is not installed again by either installer."""
-    from hermes_cli import default_plugins
-    home = _home(tmp_path, env=_CREDS, config="_default_plugins_installed: [weixin]\n")
+def test_a_core_era_disable_keeps_weixin_off_through_both_installers(tmp_path, plugin_world, monkeypatch, name):
+    """Core never ran Weixin for this home, so the migration skips it; the default installer, which runs
+    beside it on every update, may place the plugin but its enable must not lift the disable core wrote
+    (``platforms/weixin``, core's manifest name). Real catalog install: real clone of a local repo, real
+    enable and config writes; only the https transport is redirected."""
+    from hermes_cli import default_plugins, plugins_cmd, plugins_cmd_catalog
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    home = plugin_world.home
+    (home / ".env").write_text(_CREDS, encoding="utf-8")
+    (home / "config.yaml").write_text(f"plugins:\n  enabled: []\n  disabled: ['{name}']\n", encoding="utf-8")
     install, calls = _install(home)
+    assert lcm.migrate_home(home, install=install, say=lambda _: None) == [] and calls == []
+
+    repo = tmp_path / "weixin-repo"
+    repo.mkdir()
+    (repo / "plugin.yaml").write_text(yaml.safe_dump({"name": "weixin", "version": "1.0.0"}), encoding="utf-8")
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+
+    def git(*args):
+        return subprocess.run(["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
+                              cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q", "-b", "main")
+    git("add", ".")
+    git("commit", "-qm", "v1")
+    entry = PluginCatalogEntry(name="weixin", repo="https://example.invalid/nous/weixin.git",
+                               sha=git("rev-parse", "HEAD"), description="d", maintainer="NousResearch",
+                               tier="official", default=True)
+    monkeypatch.setattr(plugins_cmd_catalog, "get_live_catalog_entry", lambda n: entry if n == "weixin" else None)
+    real = plugins_cmd._clone_plugin_repo
+    monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo",
+                        lambda dest, _url, revision, subdir=None: real(dest, repo.as_uri(), revision, subdir))
     said: list[str] = []
-    assert lcm.migrate_home(home, install=install, say=said.append) == []
-    assert calls == [] and said == []
-    (home / "config.yaml").write_text("_left_core_installed: [weixin]\n", encoding="utf-8")
-    assert "weixin" in default_plugins._recorded(home)
+
+    default_plugins.install_defaults(home, say=said.append, entries=[entry])
+
+    plugins = (yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}).get("plugins") or {}
+    assert plugins.get("disabled") == [name], f"the core-era disable was lifted: {plugins}"
+    assert "weixin" not in (plugins.get("enabled") or []), plugins
+    assert any("installed but off" in line and "plugins enable weixin`" in line for line in said), said

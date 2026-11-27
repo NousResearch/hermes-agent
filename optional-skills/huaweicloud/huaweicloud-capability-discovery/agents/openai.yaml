@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Huawei Cloud Capability Discovery'
+  short_description: 'Find the right Huawei Cloud capability path for a developer task.'
+  default_prompt: 'Use $huaweicloud-capability-discovery to route this scenario to Huawei Cloud capabilities.'

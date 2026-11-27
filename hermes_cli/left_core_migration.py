@@ -1267,8 +1267,11 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue
         # One automatic install per plugin and home, by either installer: a default plugin
         # (``default_plugins``) the user removed after it installed stays removed. Its core-era
-        # toolset scope is still kept below, so only the install and the "not installed" notice are skipped.
+        # toolset scope is still kept below, so only the install is skipped. A home that ran the feature in
+        # core removed an idle copy, not the feature: without the plugin it is told the feature is off.
         placed_by_default = _marked(config, _DEFAULT_INSTALLED_KEY, feature)
+        if placed_by_default and _predates_split(home, feature):
+            _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
         if not _predates_split(home, feature):
             if not placed_by_default:
                 _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
@@ -1300,8 +1303,9 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
 def _say_post_split(home: Path, feature: LeftCoreFeature, *, say: Callable[[str], None], backoff: bool,
                     process_env: bool = False) -> None:
     """*home* uses *feature* while its stamp says it never ran it in core (a newer home, or a Nix-managed
-    config.yaml stamped at activation): nothing is converted or installed, but a home without the plugin is
-    told where the feature went. Starts repeat it on the install backoff (``_note_failure``)."""
+    config.yaml stamped at activation), or ran it in core and removed the idle copy the default installer
+    placed: nothing is installed, but a home without the plugin is told where the feature went. Starts
+    repeat it on the install backoff (``_note_failure``)."""
     if plugin_present(feature.plugin, home) or (backoff and _failed_recently(home, feature.plugin)):
         return
     _note_failure(home, feature.plugin)

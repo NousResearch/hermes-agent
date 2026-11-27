@@ -365,6 +365,7 @@ block in `config.yaml` that `hermes mcp` reads from.
 - **Add** — register an HTTP/SSE server (URL) or a stdio server (command + args), with optional `KEY=VALUE` environment variables for stdio servers
 - **Enable / disable** — toggle a server on or off without deleting it. A disabled server stays in config so you can re-enable it later. Takes effect on the next gateway restart.
 - **Test** — connect to a server, list its tools, and disconnect — verifies the connection before the agent depends on it
+- **Edit** — select the pencil next to Test to update a profile-owned server's connection settings in the Add Server dialog. Saved bearer tokens and environment values appear blank. Leave them blank to keep them.
 - **Remove** — delete a server from the config
 - Secret-shaped env values are redacted in the list view
 
@@ -926,6 +927,7 @@ same auth gate as the rest of `/api/`.
 |---------------|---------|
 | `GET /api/mcp/servers` | List configured MCP servers (env values redacted) |
 | `POST /api/mcp/servers` | Add a server. Body: `{name, url?, command?, args?, env?, auth?}` |
+| `PATCH /api/mcp/servers/{name}` | Update the supplied connection fields of a profile-owned server. Use `null` to remove an individual `env` entry. |
 | `POST /api/mcp/servers/{name}/test` | Connect, list tools, disconnect |
 | `PUT /api/mcp/servers/{name}/enabled` | Enable / disable a server |
 | `DELETE /api/mcp/servers/{name}` | Remove a server |

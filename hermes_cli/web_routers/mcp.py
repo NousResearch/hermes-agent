@@ -7,7 +7,7 @@ web_server — reached via the late-binding seam so tests that mutate
 
 import asyncio
 import hashlib
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import re
 import secrets
 import threading
@@ -18,10 +18,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, normalize_mcp_server_create
-from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
+from hermes_cli.web_server_mcp import (
+    _mcp_oauth_flows, _mcp_server_summary, edit_mcp_server_config, normalize_mcp_server_create,
+)
+from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServerEdit, MCPServersReplace
 from hermes_cli.web_routers._common import (
-    _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, http_failure,
+    _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, destructive_profile, http_failure,
     log as _log, scoped_to_thread,
 )
 
@@ -180,6 +182,71 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
     return {"ok": True}
 
 
+def _save_mcp_server_edit(
+    name: str, config: dict[str, Any], current: dict[str, Any], updated: dict[str, Any], body: MCPServerEdit,
+) -> None:
+    from hermes_cli.config import load_env, remove_env_value, require_env_writable
+    from hermes_cli.mcp_config import _env_key_for_server, _save_bearer_auth_token
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import get_manager
+
+    with ExitStack() as rollback:
+        if body.bearer_token is not None:
+            key = _env_key_for_server(name)
+            require_env_writable(key, "set")
+            previous = load_env().get(key)
+            _save_bearer_auth_token(name, body.bearer_token.get_secret_value())
+            if previous is None:
+                rollback.callback(remove_env_value, key)
+            else:
+                rollback.callback(save_env_value, key, previous)
+        if current.get("auth") == "oauth" and (
+            current.get("url") != updated.get("url") or updated.get("auth") != "oauth"
+        ):
+            storage = HermesTokenStorage(name)
+            snapshot = storage.snapshot()
+            manager = get_manager()
+            entry = manager.remove(name)
+            rollback.callback(manager.restore_entry, name, entry)
+            rollback.callback(storage.restore, snapshot, only_if_absent=True)
+        config["mcp_servers"][name] = updated
+        save_config(config)
+        rollback.pop_all()
+
+
+@router.patch("/api/mcp/servers/{name:path}")
+async def edit_mcp_server(name: str, body: MCPServerEdit, profile: Optional[str] = None):
+    from hermes_cli.mcp_config import _get_mcp_servers
+    from hermes_constants import get_hermes_home
+    from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+    target = destructive_profile(profile, "Editing an MCP server")
+
+    def _run():
+        with config_write_scope(target):
+            config = load_config()
+            servers, plugins = server_configs_with_sources(_get_mcp_servers(config))
+            if plugin := plugins.get(name):
+                raise HTTPException(status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified")
+            if name not in servers:
+                raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+            home = str(get_hermes_home().resolve())
+            with _mcp_oauth_flows_lock:
+                if any(f.server_name == name and f.hermes_home == home and not f.worker_done for f in _mcp_oauth_flows.values()):
+                    raise HTTPException(status_code=409, detail="Finish OAuth authentication before editing this server")
+            current = servers[name]
+            try:
+                updated = edit_mcp_server_config(name, current, body)
+                if updated != current or body.bearer_token is not None:
+                    _save_mcp_server_edit(name, config, current, updated, body)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return _mcp_server_summary(name, updated)
+
+    with http_failure("MCP server edit failed", 500, detail="Could not save the MCP server"):
+        return await asyncio.to_thread(_run)
+
+
 @router.delete("/api/mcp/servers/{name}")
 async def remove_mcp_server(name: str, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers, _remove_mcp_server
@@ -266,41 +333,44 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
 
     process_home = _home()
 
-    def _read():
-        with _profile_secret_scope(profile):
+    def _start():
+        # Register the flow under the same config lock used by edits. The
+        # worker may save this snapshot after OAuth completes.
+        with config_write_scope(profile):
             config_servers = _get_mcp_servers()
             from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
 
             servers, plugins = server_configs_with_sources(config_servers)
-            return servers, plugins, _home()
+            if name not in servers:
+                raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+            if plugin := plugins.get(name):
+                raise HTTPException(status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified")
+            cfg = servers[name]
+            if not cfg.get("url"):
+                raise HTTPException(status_code=400, detail="stdio servers authenticate via env keys, not OAuth")
+            if cfg.get("headers") and cfg.get("auth") != "oauth":
+                raise HTTPException(status_code=400, detail="This server uses header/API-key auth, not OAuth")
+            cfg["auth"] = "oauth"
 
-    servers, plugins, flow_home = await asyncio.to_thread(_read)
-    if name not in servers:
-        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
-    if plugin := plugins.get(name):
-        raise HTTPException(status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified")
-    cfg = dict(servers[name])
-    if not cfg.get("url"):
-        raise HTTPException(status_code=400, detail="stdio servers authenticate via env keys, not OAuth")
-    if cfg.get("headers") and cfg.get("auth") != "oauth":
-        raise HTTPException(status_code=400, detail="This server uses header/API-key auth, not OAuth")
-    cfg["auth"] = "oauth"
+            flow_home = _home()
+            flow_id = secrets.token_urlsafe(24)
+            flow = DashboardOAuthFlow(
+                flow_id=flow_id,
+                server_name=name,
+                hermes_home=flow_home,
+                redirect_uri=(cfg.get("oauth") or {}).get("redirect_uri") or _mcp_oauth_callback_url(request, name),
+                reconnect_live=flow_home == process_home,
+            )
+            with _mcp_oauth_flows_lock:
+                live = [f for f in _mcp_oauth_flows.values() if not f.worker_done]
+                if len(live) >= _MAX_PENDING_MCP_OAUTH_FLOWS:
+                    raise HTTPException(status_code=429, detail="Too many MCP OAuth flows are already in progress")
+                if any(f.server_name == name and f.hermes_home == flow_home for f in live):
+                    raise HTTPException(status_code=409, detail=f"MCP OAuth for '{name}' is already in progress")
+                _mcp_oauth_flows[flow_id] = flow
+            return flow, cfg
 
-    flow_id = secrets.token_urlsafe(24)
-    flow = DashboardOAuthFlow(
-        flow_id=flow_id,
-        server_name=name,
-        hermes_home=flow_home,
-        redirect_uri=(cfg.get("oauth") or {}).get("redirect_uri") or _mcp_oauth_callback_url(request, name),
-        reconnect_live=flow_home == process_home,
-    )
-    with _mcp_oauth_flows_lock:
-        live = [f for f in _mcp_oauth_flows.values() if not f.worker_done]
-        if len(live) >= _MAX_PENDING_MCP_OAUTH_FLOWS:
-            raise HTTPException(status_code=429, detail="Too many MCP OAuth flows are already in progress")
-        if any(f.server_name == name and f.hermes_home == flow_home for f in live):
-            raise HTTPException(status_code=409, detail=f"MCP OAuth for '{name}' is already in progress")
-        _mcp_oauth_flows[flow_id] = flow
+    flow, cfg = await asyncio.to_thread(_start)
     threading.Thread(target=_run_dashboard_mcp_oauth, args=(flow, cfg), daemon=True, name=f"mcp-oauth-{name}").start()
     try:
         await flow.wait_for_authorization_url(timeout=30)

@@ -1,3 +1,4 @@
+import type { McpHttpAuth, McpServerCreate } from "@/lib/mcp-server-types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { PROFILE_ID_ARG_RE } from "@hermes/shared/profile-id";
@@ -12,8 +13,6 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
 import type {
-  McpHttpAuth,
-  McpServerCreate,
   SkillInfo,
   SkillHubResult,
 } from "@/lib/api";

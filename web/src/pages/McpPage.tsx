@@ -1,18 +1,17 @@
+import type { McpServer } from "@/lib/mcp-server-types";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { KeyRound, Package, Power, Server, Trash2, X, Zap } from "lucide-react";
+import { KeyRound, Package, Pencil, Power, Server, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type {
   McpCatalogDiagnostic,
   McpCatalogEntry,
-  McpHttpAuth,
-  McpServer,
   McpTestResult,
 } from "@/lib/api";
+import { McpServerDialog } from "@/components/McpServerDialog";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -25,7 +24,8 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import {
   buildMcpServerCreate,
-  type McpTransport,
+  buildMcpServerEdit,
+  type McpServerDraft,
 } from "@/lib/mcp-server-create";
 import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
 import { errorMessage } from "@/lib/api-error";
@@ -44,6 +44,29 @@ const TRANSPORT_TONE: Record<string, "success" | "warning" | "secondary"> = {
   unknown: "secondary",
 };
 
+interface EditServerButtonProps {
+  server: McpServer;
+  disabled: boolean;
+  onClick: () => void;
+}
+
+function EditServerButton({ server, disabled, onClick }: EditServerButtonProps) {
+  if (server.source !== "config" || server.transport === "unknown") return null;
+
+  return (
+    <Button
+      ghost
+      size="icon"
+      title="Edit MCP server"
+      aria-label={`Edit ${server.name}`}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      <Pencil />
+    </Button>
+  );
+}
+
 export default function McpPage() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
@@ -52,25 +75,11 @@ export default function McpPage() {
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
 
-  // Add server modal state
-  const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [transport, setTransport] = useState<McpTransport>("http");
-  const [url, setUrl] = useState("");
-  const [httpAuth, setHttpAuth] = useState<McpHttpAuth>("none");
-  const [bearerToken, setBearerToken] = useState("");
-  const [command, setCommand] = useState("");
-  const [args, setArgs] = useState("");
-  const [env, setEnv] = useState("");
-  const [creating, setCreating] = useState(false);
-  const closeCreateModal = useCallback(() => {
-    setBearerToken("");
-    setCreateModalOpen(false);
-  }, []);
-  const createModalRef = useModalBehavior({
-    open: createModalOpen,
-    onClose: closeCreateModal,
-  });
+  const [serverDialog, setServerDialog] = useState<
+    { mode: "create" } | { mode: "edit"; server: McpServer } | null
+  >(null);
+  const [savingServer, setSavingServer] = useState(false);
+  const closeServerDialog = useCallback(() => setServerDialog(null), []);
 
   // Test results keyed by server name
   const [testing, setTesting] = useState<string | null>(null);
@@ -118,50 +127,34 @@ export default function McpPage() {
     );
   }, [loadServers, loadCatalog]);
 
-  const handleCreate = async () => {
-    let body;
+  const handleSaveServer = async (draft: McpServerDraft) => {
+    if (!serverDialog) return;
+    const editing = serverDialog.mode === "edit";
+    setSavingServer(true);
     try {
-      body = buildMcpServerCreate({
-        name,
-        transport,
-        url,
-        httpAuth,
-        bearerToken,
-        command,
-        args,
-        env,
-      });
-    } catch (error) {
-      showToast(
-        error instanceof Error ? error.message : "Invalid MCP server",
-        "error",
-      );
-      return;
-    }
-
-    setCreating(true);
-    try {
-      await api.addMcpServer(body);
-      showToast(
-        transport === "http" && httpAuth === "oauth"
+      if (editing) {
+        const { server } = serverDialog;
+        const changes = buildMcpServerEdit(draft, server);
+        await api.editMcpServer(server.name, changes);
+        setTestResults((previous) => {
+          const next = { ...previous };
+          delete next[server.name];
+          return next;
+        });
+        showToast("MCP server updated", "success");
+      } else {
+        await api.addMcpServer(buildMcpServerCreate(draft));
+        showToast(draft.httpAuth === "oauth" && draft.transport === "http"
           ? "Added — authenticate with OAuth"
-          : "Add ✓",
-        "success",
-      );
-      setName("");
-      setUrl("");
-      setHttpAuth("none");
-      setBearerToken("");
-      setCommand("");
-      setArgs("");
-      setEnv("");
-      setTransport("http");
-      setCreateModalOpen(false);
-      loadServers();
+          : "Add ✓", "success");
+      }
+      closeServerDialog();
+      void loadServers();
     } catch (e) {
-      showToast(`Could not add MCP server: ${errorMessage(e)}`, "error");
+      const action = editing ? "update" : "add";
+      showToast(`Could not ${action} MCP server: ${errorMessage(e)}`, "error");
     } finally {
-      setCreating(false);
+      setSavingServer(false);
     }
   };
 
@@ -300,7 +293,7 @@ export default function McpPage() {
       <Button
         className="uppercase"
         size="sm"
-        onClick={() => setCreateModalOpen(true)}
+        onClick={() => setServerDialog({ mode: "create" })}
       >
         Add Server
       </Button>,
@@ -340,170 +333,13 @@ export default function McpPage() {
         loading={serverDelete.isDeleting}
       />
 
-      {/* Add server modal */}
-      {createModalOpen && (
-        <div
-          ref={createModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={(e) => e.target === e.currentTarget && closeCreateModal()}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="create-mcp-title"
-        >
-          <div
-            className={cn(
-              themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col",
-            )}
-          >
-            <Button
-              ghost
-              size="icon"
-              onClick={closeCreateModal}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
-            >
-              <X />
-            </Button>
-
-            <header className="p-5 pb-3 border-b border-border">
-              <h2
-                id="create-mcp-title"
-                className="font-mondwest text-display text-base tracking-wider"
-              >
-                Add MCP server
-              </h2>
-            </header>
-
-            <div className="p-5 grid gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="mcp-name">Name</Label>
-                <Input
-                  id="mcp-name"
-                  autoFocus
-                  placeholder="my-server"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="mcp-transport">Transport</Label>
-                <Select
-                  id="mcp-transport"
-                  value={transport}
-                  onValueChange={(value) => {
-                    const nextTransport = value as McpTransport;
-                    setTransport(nextTransport);
-                    if (nextTransport === "stdio") setBearerToken("");
-                  }}
-                >
-                  <SelectOption value="http">HTTP/SSE</SelectOption>
-                  <SelectOption value="stdio">stdio</SelectOption>
-                </Select>
-              </div>
-
-              {transport === "http" ? (
-                <>
-                  <div className="grid gap-2">
-                    <Label htmlFor="mcp-url">URL</Label>
-                    <Input
-                      id="mcp-url"
-                      placeholder="https://example.com/mcp"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="mcp-auth">Authentication</Label>
-                    <Select
-                      id="mcp-auth"
-                      value={httpAuth}
-                      onValueChange={(value) => {
-                        const nextAuth = value as McpHttpAuth;
-                        setHttpAuth(nextAuth);
-                        if (nextAuth !== "header") setBearerToken("");
-                      }}
-                    >
-                      <SelectOption value="none">None</SelectOption>
-                      <SelectOption value="header">Bearer token</SelectOption>
-                      <SelectOption value="oauth">OAuth</SelectOption>
-                    </Select>
-                  </div>
-                  {httpAuth === "header" && (
-                    <div className="grid gap-2">
-                      <Label htmlFor="mcp-bearer-token">Bearer token</Label>
-                      <Input
-                        id="mcp-bearer-token"
-                        type="password"
-                        autoComplete="new-password"
-                        placeholder="Token or Bearer token"
-                        value={bearerToken}
-                        onChange={(e) => setBearerToken(e.target.value)}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Stored in this profile&apos;s .env; config.yaml keeps
-                        only an environment-variable reference.
-                      </p>
-                    </div>
-                  )}
-                  {httpAuth === "oauth" && (
-                    <p className="text-xs text-muted-foreground">
-                      Add the server, then use Authenticate. Hermes opens the
-                      OAuth browser on the machine running the Dashboard
-                      backend.
-                    </p>
-                  )}
-                </>
-              ) : (
-                <>
-                  <div className="grid gap-2">
-                    <Label htmlFor="mcp-command">Command</Label>
-                    <Input
-                      id="mcp-command"
-                      placeholder="npx"
-                      value={command}
-                      onChange={(e) => setCommand(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="mcp-args">Args</Label>
-                    <Input
-                      id="mcp-args"
-                      placeholder="-y @modelcontextprotocol/server-foo"
-                      value={args}
-                      onChange={(e) => setArgs(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="mcp-env">
-                      Environment (KEY=VALUE per line)
-                    </Label>
-                    <textarea
-                      id="mcp-env"
-                      className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-                      placeholder={"API_KEY=secret\nDEBUG=1"}
-                      value={env}
-                      onChange={(e) => setEnv(e.target.value)}
-                    />
-                  </div>
-                </>
-              )}
-
-              <div className="flex justify-end">
-                <Button
-                  className="uppercase"
-                  size="sm"
-                  onClick={handleCreate}
-                  disabled={creating}
-                  prefix={creating ? <Spinner /> : undefined}
-                >
-                  {creating ? "Adding..." : "Add"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {serverDialog && (
+        <McpServerDialog
+          server={serverDialog.mode === "edit" ? serverDialog.server : undefined}
+          saving={savingServer}
+          onClose={closeServerDialog}
+          onSave={handleSaveServer}
+        />
       )}
 
       {/* Catalog install modal (required env vars) */}
@@ -736,6 +572,12 @@ export default function McpPage() {
                   >
                     {testing === server.name ? <Spinner /> : <Zap />}
                   </Button>
+
+                  <EditServerButton
+                    server={server}
+                    onClick={() => setServerDialog({ mode: "edit", server })}
+                    disabled={[testing, authenticating].includes(server.name)}
+                  />
 
                   <Button
                     ghost

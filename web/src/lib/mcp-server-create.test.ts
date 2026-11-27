@@ -1,6 +1,38 @@
 import { describe, expect, it } from "vitest";
 
-import { buildMcpServerCreate, emptyMcpServerDraft } from "./mcp-server-create";
+import type { McpServer } from "./mcp-server-types";
+import { buildMcpServerCreate, buildMcpServerEdit, emptyMcpServerDraft, mcpServerEditDraft } from "./mcp-server-create";
+
+describe("editing an MCP server", () => {
+  const server: McpServer = {
+    name: "local", transport: "stdio", url: null, command: "uvx", args: ["package", "two words", ""],
+    env: { API_KEY: "secr...cret", DEBUG: "***" }, auth: null, enabled: false, tools: null, source: "config",
+  };
+
+  it("preserves argument boundaries and leaves saved values blank", () => {
+    const draft = mcpServerEditDraft(server);
+    expect(JSON.parse(draft.args)).toEqual(server.args);
+    expect(draft.env).toBe("API_KEY=\nDEBUG=");
+    expect(buildMcpServerEdit(draft, server)).toEqual({});
+    expect(buildMcpServerEdit({
+      ...draft, args: '["next", "two words"]', env: "API_KEY=\nPORT=8080",
+    }, server)).toEqual({ args: ["next", "two words"], env: { DEBUG: null, PORT: "8080" } });
+  });
+
+  it("only includes a bearer token when a replacement is entered", () => {
+    const remote: McpServer = {
+      ...server, transport: "http", url: "https://example.com/mcp", command: null, args: [], env: {}, auth: "header",
+    };
+    const draft = mcpServerEditDraft(remote);
+    expect(draft.bearerToken).toBe("");
+    expect(buildMcpServerEdit({ ...draft, url: "https://example.com/next" }, remote)).toEqual({
+      url: "https://example.com/next",
+    });
+    expect(buildMcpServerEdit({ ...draft, bearerToken: "new-token" }, remote)).toEqual({
+      auth: "header", bearer_token: "new-token",
+    });
+  });
+});
 
 describe("buildMcpServerCreate", () => {
   it("builds an HTTP Bearer request without stdio fields", () => {

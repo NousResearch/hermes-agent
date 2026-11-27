@@ -233,6 +233,7 @@ for activation, daily use, dependency changes, and leaving the environment.
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 🔌 [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) — Record a Hermes run and replay it offline with the network off, from the terminal or through its MCP server. Nothing is installed into Hermes. TLS interception is opt-in and off by default; when it is enabled the project documents the ephemeral per-run CA in its [security policy](https://github.com/Continuum-AI-Corp/OrcaReplay/blob/main/SECURITY.md#tls-interception).
 
 ---
 

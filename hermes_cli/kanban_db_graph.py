@@ -115,7 +115,10 @@ def decompose_triage_task(
     now = int(time.time())
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            # EAGLECLAW LOCAL PATCH 2026-09-14: carry max_runtime_seconds so
+            # decomposed children inherit the root's runtime ceiling.
+            "SELECT id, status, tenant, workspace_kind, workspace_path, "
+            "       max_runtime_seconds "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
@@ -196,15 +199,27 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    # EAGLECLAW LOCAL PATCH 2026-09-14: inherit the root's runtime ceiling.
+    # Children are created by this raw INSERT, not through kanban_add, so the
+    # kanban-deadline pre_tool_call hook never sees them. Without this they are
+    # born with max_runtime_seconds NULL and enforce_max_runtime() ignores them
+    # -- which would leave the cards that do the actual work unbounded, exactly
+    # the hole the hook exists to close. A per-child override still wins.
+    child_runtime = child.get("max_runtime_seconds")
+    if child_runtime is None:
+        try:
+            child_runtime = root_row["max_runtime_seconds"]
+        except (IndexError, KeyError):
+            child_runtime = None
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, created_at, created_by, max_runtime_seconds) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
-            root_row["tenant"], now, (author or "decomposer"),
+            root_row["tenant"], now, (author or "decomposer"), child_runtime,
         ),
     )
     _append_event(

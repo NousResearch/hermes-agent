@@ -31,9 +31,9 @@ _USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reac
 
 def record_plan_window(context: dict[str, Any], headers: Any) -> None:
     """Record the Claude plan window a rejected response names as ``subscription_window``, and the
-    window's ``anthropic-ratelimit-unified-reset`` as ``reset_at``. An account-wide window's future
-    reset replaces a shorter request-level one (``retry-after``): the credential is benched until
-    the window reopens, not until the next retry."""
+    window's ``anthropic-ratelimit-unified-reset`` as ``reset_at`` when nothing earlier set one. For an
+    account-wide window a future unified reset is authoritative and replaces any earlier value
+    (``retry-after`` times the next request, not the window)."""
     if str(headers.get("anthropic-ratelimit-unified-status") or "").strip().lower() != "rejected":
         return
     claim = str(headers.get("anthropic-ratelimit-unified-representative-claim") or "").strip().lower()
@@ -51,9 +51,9 @@ def account_window_spent(error_context: Optional[dict[str, Any]]) -> bool:
 
 
 def usage_allowance_spent(error_context: Optional[dict[str, Any]]) -> bool:
-    """The 429 says an allowance is spent, so retrying the same credential cannot succeed before the
-    reset: rotate on the first one. Any rejected Claude plan window counts; its scope (whole credential
-    or one model) is decided by ``account_window_spent``."""
+    """The error says an allowance is spent, so the caller rotates on the first 429 instead of retrying
+    the same credential. Any rejected Claude plan window counts; ``account_window_spent`` decides its
+    scope (whole credential or one model)."""
     reason = str((error_context or {}).get("reason") or "").lower()
     message = str((error_context or {}).get("message") or "").lower()
     return bool((error_context or {}).get("subscription_window")) or any(

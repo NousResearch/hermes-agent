@@ -2,9 +2,10 @@
 
 Anthropic names the window that refused a subscription request in its unified rate-limit headers.
 ``five_hour`` and ``seven_day`` cover the whole account: the pool must bench that credential for
-every model until the window resets, and the first such 429 must rotate instead of retrying the
-spent account after up to ``RETRY_AFTER_CAP_S``. A family claim (``seven_day_opus``) and a 429
-without the headers (API-key per-model limits) keep the per-model cooldown of #111769.
+every model until the window's unified reset. Any rejected window, a family claim
+(``seven_day_opus``) included, rotates on its first 429 instead of retrying the spent seat after up to
+``RETRY_AFTER_CAP_S``; a family claim and a 429 without the headers (API-key per-model limits) keep the
+per-model cooldown of #111769, and the headerless 429 keeps its one retry.
 
 Real ``agent.credential_pool`` against a temp auth store; the 429 is a real ``anthropic`` error.
 """
@@ -74,7 +75,7 @@ def _bench_end(pool) -> float:
 @pytest.mark.parametrize("claim, account_wide", [
     ("seven_day", True), ("five_hour", True), ("seven_day_opus", False),
 ])
-def test_spent_plan_window_benches_every_model_until_its_reset(pool, claim, account_wide):
+def test_spent_plan_window_bench_scope_follows_the_claim(pool, claim, account_wide):
     from agent.agent_runtime_helpers import extract_api_error_context
     from agent.credential_pool import load_pool
 
@@ -85,9 +86,10 @@ def test_spent_plan_window_benches_every_model_until_its_reset(pool, claim, acco
     )
 
     assert rotated.id == "spare"
-    # The next request for ANOTHER model: fill_first must skip a spent account, here and in
-    # every other process reading the store; a family claim leaves the account to other models.
+    # In this pool and in a fresh load of the store: the refused model never goes back to the spent
+    # seat; another model does only when the claim is a model family.
     for view in (pool, load_pool("anthropic")):
+        assert view.select(model=FABLE).id == "spare"
         assert view.select(model=OPUS).id == ("spare" if account_wide else "spent")
     if account_wide:
         assert abs(_bench_end(pool) - reset) < 5  # benched until the window resets, not one hour
@@ -115,7 +117,8 @@ def test_first_spent_window_429_rotates_instead_of_waiting(pool, claim, rotates_
 
 
 def test_auxiliary_429_keeps_the_plan_window_and_its_reset(pool, monkeypatch):
-    """Titles and compression recover through the auxiliary client; its bench must match the main loop's."""
+    """Titles and compression recover through the auxiliary client: a spent window benches the whole
+    credential until its reset there too."""
     from agent import auxiliary_client as ac
     from agent.auxiliary_error_policy import classify_attempt
 
@@ -133,7 +136,8 @@ def test_auxiliary_429_keeps_the_plan_window_and_its_reset(pool, monkeypatch):
 
 
 def test_account_window_reset_beats_a_shorter_retry_after():
-    """The bench lasts until the window reopens, not until the next request-level retry."""
+    """An account-wide window's future unified reset replaces a shorter retry-after; a family claim and a
+    stale unified reset leave it."""
     from agent.agent_runtime_helpers import extract_api_error_context
     from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
@@ -152,17 +156,17 @@ def test_account_window_reset_beats_a_shorter_retry_after():
 
 
 def test_spent_window_holds_env_tokens_and_is_reported_as_a_cooldown(tmp_path, monkeypatch):
-    """``ANTHROPIC_API_KEY`` and borrowed tokens skip pool selection: the bench must still hold them for
-    every model, and a fully benched pool is a cooldown, not "No Anthropic credentials found"."""
+    """An ``ANTHROPIC_API_KEY`` token skips pool selection: the bench must still hold it for every model,
+    and a fully benched pool is a cooldown, not "No Anthropic credentials found"."""
     from agent.agent_runtime_helpers import extract_api_error_context
     from agent.anthropic_credentials import resolve_anthropic_token
     from agent.credential_pool import load_pool
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.runtime_provider import _anthropic_token_or_raise
 
     _isolated_home(tmp_path, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", SPENT)
-    # Control: only a 429 bench holds an env token; an auth bench leaves the user's own key to fail visibly.
+    # Control: a 401 bench does not hold an env token; the user's own key is left to fail visibly.
     load_pool("anthropic").mark_exhausted_and_rotate(status_code=401, api_key_hint=SPENT, model=FABLE)
     assert resolve_anthropic_token(model=OPUS) == SPENT
     load_pool("anthropic").mark_exhausted_and_rotate(
@@ -176,4 +180,19 @@ def test_spent_window_holds_env_tokens_and_is_reported_as_a_cooldown(tmp_path, m
     with pytest.raises(AuthError) as excinfo:
         _anthropic_token_or_raise(model=OPUS)
     assert excinfo.value.code == "model_rate_limited"
+    assert is_rate_limited_auth_error(excinfo.value)  # gateway / Kanban / fallback treat it as quota, not login
     assert "cooling down" in str(excinfo.value) and "No Anthropic credentials" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("status", [401, 402])
+def test_an_auth_or_billing_bench_is_not_reported_as_a_rate_limit(pool, status):
+    """Only a 429 bench is a cooldown; a fully benched pool after a 401/402 keeps the sign-in diagnostic."""
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.runtime_provider import _anthropic_token_or_raise
+
+    for key in (SPENT, SPARE):
+        pool.mark_exhausted_and_rotate(status_code=status, api_key_hint=key, model=FABLE)
+    with pytest.raises(AuthError) as excinfo:
+        _anthropic_token_or_raise(model=OPUS)
+    assert not is_rate_limited_auth_error(excinfo.value)
+    assert "cooling down" not in str(excinfo.value)

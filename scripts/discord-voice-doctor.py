@@ -12,6 +12,7 @@ Usage:
 import os
 import sys
 import shutil
+import json
 from pathlib import Path
 
 # Resolve project root
@@ -278,6 +279,113 @@ def check_config(groq_key, eleven_key):
         check("Voice mode state", True, "no saved state (fresh)")
 
 
+def _extract_discord_channel_id(value):
+    if value is None:
+        return None
+
+    channel_id = str(value).strip()
+    if channel_id.startswith("discord:"):
+        channel_id = channel_id.split(":", 1)[1].strip()
+    if channel_id.isdigit():
+        return channel_id
+    return None
+
+
+def configured_discord_channel_ids():
+    """Return Discord channel IDs configured for Hermes Drive Mode."""
+    channel_ids = set()
+
+    config_path = HERMES_HOME / "config.yaml"
+    if config_path.exists():
+        try:
+            import yaml
+
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+
+            discord_cfg = cfg.get("discord", {}) if isinstance(cfg, dict) else {}
+            channel_prompts = discord_cfg.get("channel_prompts", {})
+            if isinstance(channel_prompts, dict):
+                for raw_channel_id in channel_prompts:
+                    channel_id = _extract_discord_channel_id(raw_channel_id)
+                    if channel_id:
+                        channel_ids.add(channel_id)
+            elif channel_prompts:
+                warn("Configured Discord channels", "discord.channel_prompts is not a mapping")
+        except Exception as e:
+            warn("Configured Discord channels", f"could not read config.yaml: {e}")
+
+    voice_mode_path = HERMES_HOME / "gateway_voice_mode.json"
+    if voice_mode_path.exists():
+        try:
+            modes = json.loads(voice_mode_path.read_text(encoding="utf-8"))
+            if isinstance(modes, dict):
+                for raw_key in modes:
+                    channel_id = _extract_discord_channel_id(raw_key)
+                    if channel_id:
+                        channel_ids.add(channel_id)
+            else:
+                warn("Configured Discord channels", "gateway_voice_mode.json is not a mapping")
+        except Exception as e:
+            warn("Configured Discord channels", f"could not read gateway_voice_mode.json: {e}")
+
+    return sorted(channel_ids, key=int)
+
+
+def check_configured_discord_channel_access(requests_module, headers):
+    """Verify direct bot REST access to every configured Discord channel ID."""
+    channel_ids = configured_discord_channel_ids()
+    if not channel_ids:
+        warn("Configured Discord channels", "none found in config/state")
+        return True
+
+    ok = True
+    for channel_id in channel_ids:
+        label = f"Configured channel {channel_id}"
+        try:
+            r = requests_module.get(
+                f"https://discord.com/api/v10/channels/{channel_id}",
+                headers=headers,
+                timeout=5,
+            )
+        except requests_module.exceptions.Timeout:
+            check(label, False, "Discord API timeout — could not verify channel access")
+            ok = False
+            continue
+        except requests_module.exceptions.ConnectionError:
+            check(label, False, "cannot reach Discord API — could not verify channel access")
+            ok = False
+            continue
+        except Exception as e:
+            check(label, False, f"check failed: {type(e).__name__}")
+            ok = False
+            continue
+
+        if r.status_code == 200:
+            try:
+                payload = r.json()
+            except Exception:
+                payload = {}
+            name = payload.get("name") if isinstance(payload, dict) else ""
+            detail = f"accessible: #{name}" if name else "accessible"
+            check(label, True, detail)
+        elif r.status_code == 403:
+            check(
+                label,
+                False,
+                "Missing Access — add the Alfred Drive bot role to this private channel or update config/state",
+            )
+            ok = False
+        elif r.status_code == 404:
+            check(label, False, "Not Found — channel ID is stale; update config/state")
+            ok = False
+        else:
+            check(label, False, f"HTTP {r.status_code} — could not verify channel access")
+            ok = False
+
+    return ok
+
+
 def check_bot_permissions(token):
     """Check bot permissions via Discord API. Returns True if all OK."""
     section("Bot Permissions")
@@ -289,8 +397,8 @@ def check_bot_permissions(token):
     try:
         import requests
     except ImportError:
-        warn("Bot permissions", "requests not installed — skipping")
-        return True
+        check("Bot permissions", False, "requests not installed — cannot verify Discord access")
+        return False
 
     VOICE_PERMS = {
         "Priority Speaker":      8,
@@ -329,10 +437,18 @@ def check_bot_permissions(token):
         # Check guilds
         r2 = requests.get("https://discord.com/api/v10/users/@me/guilds", headers=headers, timeout=5)
         if r2.status_code != 200:
-            warn("Guilds", f"HTTP {r2.status_code}")
-            return ok
+            check("Guilds", False, f"HTTP {r2.status_code}")
+            return False
 
         guilds = r2.json()
+        if not guilds:
+            check(
+                "Guilds",
+                False,
+                "0 guild(s) — bot is not in any server; invite it before voice testing",
+            )
+            return False
+
         check("Guilds", True, f"{len(guilds)} guild(s)")
 
         for g in guilds[:5]:
@@ -357,17 +473,22 @@ def check_bot_permissions(token):
             else:
                 print(f"    {OK} {g['name']}: {', '.join(has)}")
 
+        ok &= check_configured_discord_channel_access(requests, headers)
+
     except requests.exceptions.Timeout:
-        warn("Bot permissions", "Discord API timeout")
+        check("Bot permissions", False, "Discord API timeout")
+        return False
     except requests.exceptions.ConnectionError:
-        warn("Bot permissions", "cannot reach Discord API")
+        check("Bot permissions", False, "cannot reach Discord API")
+        return False
     except Exception as e:
-        warn("Bot permissions", f"check failed: {e}")
+        check("Bot permissions", False, f"check failed: {type(e).__name__}")
+        return False
 
     return ok
 
 
-def main():
+def main() -> int:
     print()
     print("\033[1m" + "=" * 50 + "\033[0m")
     print("\033[1m  Discord Voice Doctor\033[0m")
@@ -387,10 +508,13 @@ def main():
     print("\033[1m" + "-" * 50 + "\033[0m")
     if all_ok:
         print(f"  {OK} \033[92mAll checks passed — voice mode ready!\033[0m")
+        exit_code = 0
     else:
         print(f"  {FAIL} \033[91mSome checks failed — fix issues above.\033[0m")
+        exit_code = 1
     print()
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

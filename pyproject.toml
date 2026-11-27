@@ -17,7 +17,9 @@ authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-  # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
+  # Core — most direct deps are exact-pinned to ==X.Y.Z; a few carry a
+  # bounded range (>=floor,<next_major, e.g. urllib3/fastapi/uvicorn)
+  # where an exact pin is impractical — never an unbounded `>=`.
   # Rationale: ranges allow PyPI to ship a fresh version of a transitive
   # at any time without a code review on our side. Exact pins mean the
   # only way a new package version reaches a user is via an intentional
@@ -28,8 +30,9 @@ dependencies = [
   # install in the hours before the quarantine would have pulled it.
   #
   # After a pin change, run `hermes pm lock` so the transitive resolution
-  # stays consistent. Do not introduce ranges
-  # without a written justification.
+  # stays consistent. When ADDING a new PyPI dependency, follow the
+  # `>=floor,<next_major` rule in CONTRIBUTING.md ("Dependency pinning
+  # policy"); uv.lock stays the exact, reproducible resolution.
   #
   # Scope rule: only packages used by EVERY hermes session belong here.
   # Anything that's provider-specific (`anthropic`, `firecrawl-py`,

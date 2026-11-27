@@ -196,6 +196,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**stripe-link-cli**](../user-guide/skills/optional/payments/payments-stripe-link-cli.md) | Agent payments via Stripe Link — cards, SPT, approvals. |
 | [**stripe-projects**](../user-guide/skills/optional/payments/payments-stripe-projects.md) | Provision SaaS services + sync creds via Stripe Projects. |
+| [**x402-reader**](../user-guide/skills/optional/payments/payments-x402-reader.md) | Pay x402 to read a public URL as markdown. |
 
 ## productivity
 

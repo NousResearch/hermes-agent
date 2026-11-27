@@ -255,6 +255,10 @@ export async function cutSelection(
 }
 
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+  if (env.VTE_VERSION) {
+    return true
+  }
+
   if (env.WT_SESSION) {
     return true
   }

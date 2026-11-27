@@ -89,6 +89,8 @@ def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash
         assert painter.generate("cat") == {"success": True, "image": f"cat@{host_pid}"}
         # Live-object ctx surfaces fail the plugin with the boundary's reason, not a crash.
         assert "register_platform" in str(manager._plugins["platformprobe"].error)
+        # ...and the error names the setting that loads it (gateway start logs it on every start).
+        assert "plugins.isolation: in_process" in str(manager._plugins["platformprobe"].error)
 
         # A plugin killing its host costs one tool error; Hermes keeps running and the host restarts.
         crashed = registry.dispatch("hostprobe_crash", {}, scope=manager.scope_key)

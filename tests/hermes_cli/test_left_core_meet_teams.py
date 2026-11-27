@@ -84,3 +84,45 @@ def test_catalog_lookup_prefers_an_exact_entry_to_its_legacy_alias(monkeypatch, 
     exact_entry = SimpleNamespace(name=legacy)
     monkeypatch.setattr(plugin_catalog, "load_catalog_live", lambda: [alias_entry, exact_entry])
     assert plugin_catalog.find_catalog_entry_for_user(legacy) is exact_entry
+
+
+@pytest.mark.parametrize("isolation", ["host", "in_process", None])
+def test_a_host_isolated_home_is_told_what_the_catalog_plugins_lose(tmp_path, monkeypatch, isolation):
+    """Core's bundled pipeline ran in-process even under ``plugins.isolation: host``; the catalog plugins
+    run in the plugin host, where platform handlers and CLI commands do not. The migration says so and
+    names the setting instead of silently losing the webhook handler; other homes hear nothing new."""
+    import hermes_cli.memory_provider_migration as mpm
+    monkeypatch.setattr(lcm, "_attempted", set())
+    monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
+    config = "plugins:\n  enabled: [teams_pipeline, google_meet]\n"
+    if isolation:
+        config += f"  isolation: {isolation}\n"
+    home = _home(tmp_path, config=config)
+    said: list[str] = []
+
+    def install(name):
+        (home / "plugins" / name).mkdir(parents=True)
+        return {"ok": True}
+
+    assert sorted(lcm.migrate_home(home, install=install, say=said.append)) == ["google-meet", "teams-pipeline"]
+    teams = next(line for line in said if "Teams meeting pipeline" in line)
+    meet = next(line for line in said if "Google Meet" in line)
+    if isolation == "host":
+        assert "msgraph_webhook" in teams and "set plugins.isolation: in_process" in teams
+        assert "`hermes meet` is not available" in meet and "set plugins.isolation: in_process" in meet
+    else:
+        assert "plugins.isolation" not in teams + meet
+
+
+@pytest.mark.parametrize("isolation", ["host", "in_process"])
+def test_a_missing_plugin_command_under_host_isolation_names_the_setting(tmp_path, monkeypatch, isolation):
+    """The plugin host registers no CLI commands, so `hermes meet` is unknown there with the plugin installed and
+    enabled; "enable it" would change nothing. In-process, the plugin is simply not loaded."""
+    home = _home(tmp_path, config=f"plugins:\n  enabled: [google-meet]\n  isolation: {isolation}\n")
+    (home / "plugins" / "google-meet").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    hint = lcm.moved_command_hint("hermes", "meet")
+    if isolation == "host":
+        assert "set plugins.isolation: in_process" in hint and "Enable it" not in hint
+    else:
+        assert "which is not loaded" in hint and "plugins.isolation" not in hint

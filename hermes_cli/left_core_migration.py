@@ -57,6 +57,23 @@ logger = logging.getLogger(__name__)
 LEFT_CORE_TERMINAL_KEYS = {"terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE"}
 
 
+def _host_isolated(home: Path) -> bool:
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    return isolation_mode(_read_config(home)) == ISOLATION_HOST
+
+
+def _isolation_notice(lost: str) -> Callable[..., str]:
+    """Core ran its bundled plugins in-process under ``plugins.isolation: host``; a catalog plugin runs in the
+    profile's plugin host, where *lost* is not available. Said on every migration outcome, never weakened
+    away: the profile chose to keep non-bundled code out of the Hermes process."""
+    def notice(home: Path, *, process_env: bool = False) -> str:
+        if not _host_isolated(home):
+            return ""
+        return (f"This profile sets plugins.isolation: host, where {lost}; set plugins.isolation: in_process "
+                "to keep it.")
+    return notice
+
+
 def _read_config(home: Path) -> dict:
     from hermes_cli.config_backend import read_config_doc
     try:
@@ -677,7 +694,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         plugin="google-meet", label="Google Meet", in_use=google_meet_in_use, plugin_key="google_meet",
         unchanged="the meet_* tools, `hermes meet`, HERMES_MEET_* settings and your meeting files are unchanged; "
                   "the plugin is now `google-meet` (was google_meet)",
-        command="meet",
+        command="meet", notice=_isolation_notice("the meet_* tools work but `hermes meet` is not available"),
     ),
     LeftCoreFeature(
         # MSGRAPH_CLIENT_SECRET / MSGRAPH_WEBHOOK_CLIENT_STATE stay on local_env_policy's static secret list.
@@ -686,6 +703,9 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="`hermes teams-pipeline`, MSGRAPH_* settings, platforms.teams.extra.meeting_pipeline and "
                   "teams_pipeline_store.json are unchanged; the plugin is now `teams-pipeline` (was teams_pipeline)",
         command="teams-pipeline",
+        notice=_isolation_notice("the plugin cannot attach to the msgraph_webhook platform (platform handlers "
+                                 "run only in-process), so Teams meeting notifications are not processed and "
+                                 "`hermes teams-pipeline` is not available"),
     ),
     LeftCoreFeature(
         # MCP clients that launch `hermes mcp serve` are configured outside Hermes, so no home shows the
@@ -920,6 +940,10 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
         return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: `{old}` is now "
                 f"`hermes {value} {action or 'login'}`.{get}")
     label = f"`hermes {value}`" if value in feature.old_cli else feature.label
+    if plugin_present(feature.plugin, home) and _host_isolated(home):
+        # The plugin loads in the plugin host, which registers no CLI commands: enabling changes nothing.
+        return (f"{label} moved out of core into the '{feature.plugin}' plugin, whose commands are not available "
+                "with plugins.isolation: host; set plugins.isolation: in_process to use them.")
     return f"{label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
 
 

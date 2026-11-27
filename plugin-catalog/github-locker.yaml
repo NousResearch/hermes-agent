@@ -1,0 +1,26 @@
+name: github-locker
+title: GitHub.Locker
+repo: https://github.com/zer0person/github-locker-mcp
+sha: cfdbe54c9760b85c3eb1253a80f33ceb5d574baf
+version: "1.0.0"
+description: >-
+  Find open-source GitHub projects by what they do, see which repositories gained the most stars
+  in a day, week or month, and read a plain-language summary of any project (questions and answers,
+  license, similar projects, start of the README) from the GitHub.Locker catalog of 8,000+ public
+  repositories. Portable Agent Plugins v1 package with the hosted MCP server (remote streamable-http,
+  stateless, no sign-in and no keys) and one skill; no code, no executables, no stored credentials.
+  Disclosure: every tool call goes to github.locker; the search words and repository names you look
+  up are sent there. All three tools are annotated read-only and the package marks its server
+  untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha.
+maintainer: GitHub.Locker
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/zer0person/github-locker-mcp#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

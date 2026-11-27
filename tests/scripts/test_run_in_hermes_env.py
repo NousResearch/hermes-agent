@@ -80,10 +80,11 @@ def checkout(tmp_path: Path) -> Path:
     )
     (root / "pm" / "__init__.py").touch()
     (root / "pm" / "environments.py").write_text(
-        "import sys\n"
+        "import os, shlex, sys\n"
         "assert sys.argv[1:] == ['--format', 'sh'], sys.argv\n"
         f"print(\"export __HERMES_ACTIVATED='{posix(root)}/state/facts.json'\")\n"
-        f"print('export PATH=\"{posix(root)}/shim:$PATH\"')\n",
+        f"print('export PATH=\"{posix(root)}/shim:$PATH\"')\n"
+        "print('export HERMES_HOME=' + shlex.quote(os.environ['HERMES_HOME']))\n",
         encoding="utf-8",
     )
     return root
@@ -95,9 +96,15 @@ def _record(root: Path, *, test_environment: bool = True) -> None:
                              test_environment=test_environment)
 
 
-def _run_in(root: Path, *command: str, sentinel: str | None = "{root}/state/facts.json"):
+def _run_in(
+    root: Path,
+    *command: str,
+    sentinel: str | None = "{root}/state/facts.json",
+    env_overrides: dict[str, str] | None = None,
+):
     """Drive the runner as a caller would; the shim dir is on PATH like any tool dir."""
     env = {**os.environ, "PATH": f"{posix(root / 'shim')}{os.pathsep}{os.environ.get('PATH', '')}"}
+    env.update(env_overrides or {})
     env.pop("__HERMES_ACTIVATED", None)
     if sentinel is not None:
         env["__HERMES_ACTIVATED"] = sentinel.replace("{root}", posix(root))
@@ -164,6 +171,23 @@ def test_command_runs_in_the_environment_with_its_arguments_and_exit_status(chec
                   sentinel=None)
     assert run.returncode == 7, run.stderr
     assert run.stdout.strip() == f"{posix(checkout)}/state/facts.json|zero|b c|d"
+
+
+def test_unicode_home_survives_legacy_python_stdout_encoding(checkout: Path):
+    unicode_home = str(checkout.parent / "Hermes Ω 空間")
+    run = _run_in(
+        checkout,
+        "bash",
+        "-c",
+        'printf %s "$HERMES_HOME"',
+        sentinel=None,
+        env_overrides={
+            "HERMES_HOME": unicode_home,
+            "PYTHONIOENCODING": "cp1252:strict",
+        },
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout == unicode_home
 
 
 def test_failed_sync_runs_nothing(checkout: Path):

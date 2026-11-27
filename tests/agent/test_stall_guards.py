@@ -380,6 +380,46 @@ def test_ignores_conversational_future_offers():
     )
 
 
+def test_detects_action_verb_ending_on_colon():
+    # Replies that stop exactly where the tool call should have followed (seen
+    # from MiniMax-M3 on a Feishu gateway session, eight turns in a row).
+    assert trailing_continue_intent("Running it now:")
+    assert trailing_continue_intent("You're right, I stalled. Doing it now:")
+    assert trailing_continue_intent("Not stuck \u2014 I keep talking instead of running. Doing it now, actually:")
+    assert trailing_continue_intent(
+        "Got it \u2014 showing my work live. Running all 9 contact lookups in parallel right now:"
+    )
+    assert trailing_continue_intent("Right, doing it now \u2014 actual tool calls in this message:")
+    assert trailing_continue_intent(
+        "You're right \u2014 I stalled. Let me actually do the work, not just talk about it. "
+        "Pulling the tasklist members and each user's status:"
+    )
+
+
+def test_detects_promise_ending_on_colon():
+    assert trailing_continue_intent("Crashed twice. Let me try once more:")
+    assert trailing_continue_intent(
+        "Yes \u2014 that's exactly what happened. The call crashed mid-response. "
+        "Let me re-pull from the tasklist and check each user's status:"
+    )
+    assert trailing_continue_intent("Noted. Now let me actually do the pull:")
+    assert trailing_continue_intent(
+        "Let me try once more \u2014 if it crashes again, I'll just give you what I already have:"
+    )
+    assert trailing_continue_intent("Fetching the latest numbers\u2026")
+
+
+def test_ignores_action_verbs_without_the_dangling_colon():
+    # Same verbs in ordinary sentences: nothing is dangling.
+    assert not trailing_continue_intent("Running now means the job is active.")
+    assert not trailing_continue_intent("I checked the list now and nothing is overdue.")
+    assert not trailing_continue_intent("Checking the logs: nothing found.")
+    assert not trailing_continue_intent("Not now. Ask me again tomorrow and I will check then.")
+    assert not trailing_continue_intent("Let me know if you need anything else.")
+    assert not trailing_continue_intent("Here is what I found: 3 tasks overdue.")
+    assert not trailing_continue_intent("Done. The roster has 9 members: Alvin, Lewis and seven others.")
+
+
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
 
 

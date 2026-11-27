@@ -15,6 +15,7 @@ import re
 import shlex
 import signal
 import stat
+import subprocess
 import sys
 from itertools import pairwise
 from pathlib import Path
@@ -304,6 +305,9 @@ _PIPE_TO_INTERPRETER = re.compile(
 
 # Bytes sniffed before reading a referenced file in full (see _BINARY_MAGICS).
 _BINARY_SNIFF_BYTES = 4096
+
+# The worker's only nonzero status deemed safe; Python uses 1 for uncaught exceptions.
+_WORKER_SKIP_EXIT_CODE = 3
 
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
@@ -608,7 +612,7 @@ def _unreadable_reason(path: Path) -> str:
         return f"`{path}` could not be read"
     if not stat.S_ISREG(metadata.st_mode):
         return f"`{path}` is not a regular file"
-    return f"`{path}` is larger than the scan cap ({_MAX_REFERENCED_SCRIPT_BYTES} bytes) or the remaining walk budget"
+    return f"`{path}` could not be read within the scan budget (size or time limit)"
 
 
 def _refuse_unreadable(budget: _LifecycleScanBudget, path: Path, reason: str) -> bool:
@@ -1289,38 +1293,51 @@ def _has_binary_magic(data: bytes) -> bool:
 def _read_referenced_script(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
-    """Read a referenced script without racing SQLite connection lifecycle.
-
-    The registry check must cover the complete ``open``/``read``/``close``
-    sequence. A separate ``has_live_connection`` check would leave a race in
-    which another thread opens SQLite after the check but before this function
-    closes its descriptor, cancelling that connection's POSIX locks.
-    """
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    """Refuse live SQLite paths, then scan in a process with independent POSIX locks."""
+    from hermes_cli.sqlite_safe_read import has_live_connection
 
     try:
-        with offline_file_access(path, what="read referenced script"):
-            return _read_referenced_script_unlocked(path, max_bytes=max_bytes)
-    except LiveConnectionError:
-        return None, True
-    except (OSError, ValueError):
-        # Invalid path values, including embedded NULs, are not scripts.
-        return None, False
+        if _on_cloud_path(path) or has_live_connection(path):
+            return None, True
+        # Avoid spawning a reader for missing paths or directories. The reader still checks its
+        # actual descriptor: the path can change between here and open().
+        try:
+            if stat.S_ISDIR(path.stat().st_mode):
+                return None, False
+        except (FileNotFoundError, NotADirectoryError):
+            return None, False
+        except OSError:
+            pass  # Let the bounded reader try; a metadata lookup and an open can differ.
+    except ValueError:
+        return None, False  # Invalid paths (including embedded NULs) are not scripts.
+    return _read_referenced_script_isolated(path, max_bytes=max_bytes)
 
 
-def _read_referenced_script_unlocked(
+def _read_referenced_script_isolated(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
-    """Return ``(text, unsafe)`` using bounded, regular-file-only reads.
+    # A point-in-time registry check alone is not safe for an in-process open/read/close.
+    # The child's close cannot drop this process's SQLite locks even if a connection opens
+    # during the read. No potentially stalled file syscall holds the shared registry lock.
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-B", str(Path(__file__).absolute()),
+             str(path), str(_capped_read_limit(max_bytes))],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=5.0, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, True
+    if result.returncode == 0:
+        return result.stdout.decode("utf-8", errors="replace"), False
+    return None, result.returncode != _WORKER_SKIP_EXIT_CODE
 
-    Shared choke point for every local script read, so the cloud-placeholder refusal lives here: a
-    FileProvider path is never opened — not even to check hydration — because an evicted
-    placeholder's ``open()`` can hang preflight. Lexical check: direct paths; resolved: symlinks.
-    ``max_bytes`` lowers the per-file cap to what the calling walk can still afford.
 
-    See #88052.
+def _read_script_in_worker(path: Path, byte_limit: int) -> tuple[Optional[bytes], bool]:
+    """Read only bounded regular-file content, rechecking cloud paths before opening.
+
+    FileProvider ``open()`` can hang preflight even with ``O_NONBLOCK`` (#88052).
     """
-    byte_limit = _capped_read_limit(max_bytes)
     if _on_cloud_path(path):
         return None, True
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
@@ -1371,7 +1388,7 @@ def _read_referenced_script_unlocked(
         return None, True
     if b"\x00" in data:
         data = data.replace(b"\x00", b"")
-    return data.decode("utf-8", errors="replace"), False
+    return data, False
 
 
 def _sanitize_remote_script_text(
@@ -1649,3 +1666,11 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
             "(#30719). Run `hermes gateway restart` from a shell outside "
             "the running gateway instead."
         )
+
+
+if __name__ == "__main__":
+    # Private isolated reader protocol: stdout contains script bytes only on success.
+    text, unsafe = _read_script_in_worker(Path(sys.argv[1]), int(sys.argv[2]))
+    if text is None:
+        sys.exit(2 if unsafe else _WORKER_SKIP_EXIT_CODE)
+    sys.stdout.buffer.write(text)

@@ -1,0 +1,24 @@
+name: org-files
+title: Org Files
+repo: https://github.com/nftpoetrist/hermes-org-files
+sha: 6411846bbc5c32696bc593e742d50f927b329eaa
+description: "Lets the agent search and read your Org mode (.org) files and answer from their agenda, without Emacs running. org_files lists the files under plugins.entries.org-files.settings.paths, org_search finds headings by words, TODO keyword (each file's #+TODO, or your own org-todo-keywords), tags (inherited and #+FILETAGS included) and priority, org_agenda returns the entries for a span of days by org-agenda-list's default rules (SCHEDULED, overdue items on today, DEADLINE warnings, appointments, +1w/++1m/.+1d repeaters with Org's month arithmetic, date ranges; blocks, COMMENT and ARCHIVE subtrees skipped), checked against Org's own agenda tests, and org_read returns an entry or a file as Org text with its properties and subheadings. Standard library only. Not affiliated with the Org mode project or GNU Emacs. Disclosure — reads only the .org files under the paths you configure (hidden folders, symlinks and Emacs lock and auto-save files skipped), and what the agent reads goes to your model provider like the rest of the conversation; opens files read-only and writes nothing; makes no network calls, needs no credentials and runs no commands, Emacs included."
+maintainer: nftpoetrist
+tier: community
+category: tools
+requires_hermes: ">=0.23.4"
+version: "0.1.0"
+docs_url: https://github.com/nftpoetrist/hermes-org-files#readme
+readme: true
+known_issues:
+  - "Agenda settings changed in your Emacs configuration (org-deadline-warning-days and the like) are not read; Org's defaults apply. Diary sexps, #+SETUPFILE and habits are not supported."
+  - "Files must be UTF-8; encrypted files (.org.gpg) and org-crypt entries are not decrypted."
+capabilities:
+  provides_tools:
+    - org_files
+    - org_search
+    - org_agenda
+    - org_read
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

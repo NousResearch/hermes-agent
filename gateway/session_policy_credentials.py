@@ -65,7 +65,7 @@ def policy_identity(policy, unhashed=()):
         data.pop('editor_mcp_json', None)
     if not data.get('coding_posture'):
         data.pop('coding_posture', None)
-    for name in ('client_env_json', 'client_env_rules_json'):
+    for name in ('client_env_json', 'client_env_rules_json', 'paperclip_context_json'):
         if data.get(name) is None:
             data.pop(name, None)
     if not data.get('client_env_remote'):

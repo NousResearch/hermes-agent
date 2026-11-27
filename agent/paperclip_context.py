@@ -5,11 +5,13 @@ local.py's ``_make_run_env``, tools/code_execution_env.py's ``_build_child_env``
 inherited PAPERCLIP_* names before applying that copy last, so neither the daemon's own ambient
 environment nor any ``env_passthrough``/``client_env`` allowlist can smuggle or shadow it.
 
-Binding this ContextVar once per Paperclip-run session, across the CLI process -> shared gateway
-RPC boundary (``session.create``/``session.resume`` -> ``gateway.session_policy.LocalSessionPolicy``
--> ``policy_scope``, mirroring the existing ``client_env`` mechanism) is tracked separately and not
-yet wired: today this module only guarantees that whatever IS bound for the current turn reaches
-terminal/execute_code children intact, and that nothing else leaks in its place.
+This ContextVar is bound once per Paperclip-run session, across the CLI process -> shared gateway
+RPC boundary (``hermes_cli.gateway_chat.paperclip_context_policy`` sends ``collect_context()`` as
+``session.create``'s ``paperclip_context``; ``gateway.session_policy.build_policy`` validates and
+freezes it as ``LocalSessionPolicy.paperclip_context_json``; ``gateway.session_policy.policy_scope``
+binds it for every turn via ``LocalSessionPolicy.paperclip_scope``), mirroring the existing
+``client_env`` mechanism. A session a Paperclip wake did not launch (TUI, Desktop, ACP, bot rooms,
+messaging/cron) sends or stores none, so its turns run exactly as before this module existed.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar

@@ -54,6 +54,10 @@ class CanonicalCreateParams(ProfileParams):
     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
     # applied to this session only; never echoed in ``launch_request``.
     client_env: dict[str, str] | None = None
+    # A Paperclip-launched CLI process's own PAPERCLIP_* run identity (``agent.paperclip_context``),
+    # bound to this session's turns only so its terminal/execute_code subprocesses see it; never echoed
+    # in ``launch_request``. Every other surface (TUI, Desktop, ACP, bot rooms) sends none.
+    paperclip_context: dict[str, str] | None = None
     # The creating client's self-declared label, echoed as ``session.info.client``; no policy reads it.
     client: CanonicalClientIdentity | None = None
 

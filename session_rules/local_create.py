@@ -48,12 +48,15 @@ def normalise_client_env(value, rules) -> dict[str, str]:
 
 
 def retry_matches(committed: dict, request: dict) -> bool:
-    """Whether a retried ``session.create`` (``request``: its params) carries the client environment the
-    committed session (``committed``: its stored policy) froze. The complete retried map, normalised by
-    the rules frozen with the session, must equal the stored one: an added name those rules keep, a
-    missing stored name or a changed value is a different request; one they drop never counts. Staging
-    and the transactional commit both judge by this. A session committed without a map (Desktop, one
-    from before the field) still matches only a retry that sends none."""
+    """Whether a retried ``session.create`` (``request``: its params) carries the client environment and
+    Paperclip run identity (``agent.paperclip_context``) the committed session (``committed``: its stored
+    policy) froze. The complete retried map, normalised by the rules frozen with the session, must equal
+    the stored one: an added name those rules keep, a missing stored name or a changed value is a
+    different request; one they drop never counts. Staging and the transactional commit both judge by
+    this. A session committed without a map (Desktop, one from before the field) still matches only a
+    retry that sends none."""
+    if not _paperclip_context_matches(committed, request):
+        return False
     stored = committed.get('client_env_json')
     if stored is None or 'client_env' not in request:
         return stored is None and 'client_env' not in request
@@ -63,6 +66,19 @@ def retry_matches(committed: dict, request: dict) -> bool:
     except ValueError:
         return False
     return sent == json.loads(stored)
+
+
+def _paperclip_context_matches(committed: dict, request: dict) -> bool:
+    """Whether a retried ``session.create`` carries the Paperclip run identity the committed session froze.
+    The sent map, already validated and canonically sorted by the time a candidate policy built from
+    *request* reaches here, must equal the stored one byte-for-byte: this is a run's own identity, not a
+    client preference, so a mismatch is a conflicting request, never a silent keep of the original.
+    A session committed without one (every surface but a Paperclip-launched run) matches only a retry
+    that sends none either."""
+    stored = committed.get('paperclip_context_json')
+    if stored is None or 'paperclip_context' not in request:
+        return stored is None and 'paperclip_context' not in request
+    return json.dumps(request['paperclip_context'], sort_keys=True) == stored
 
 
 def client_request(request_json, derived=None):

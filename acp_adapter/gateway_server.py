@@ -517,6 +517,18 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         confirm = self._model_confirmer(session_id)
         try:
             if confirm is None or not await confirm(ask):
+                token = ask.get("confirm")
+                if confirm is not None and isinstance(token, str) and token:
+                    # Same drop the desktop decline sends: otherwise the slot stays awaiting_confirm.
+                    try:
+                        client = await self._client()
+                        snapshot = await client.rpc("session.resume", session_id=session_id)
+                        await client.rpc("session.mutate", session_id=session_id, operation="model",
+                                         request_id=uuid.uuid4().hex, expected_revision=snapshot["revision"],
+                                         expected_generation=snapshot["execution_generation"],
+                                         payload={"decline": token})
+                    except GatewayClientError as exc:
+                        logger.info("Deferred model pick on %s not dropped after decline: %s", session_id, exc)
                 await say(refused_pick_text({**committed, "reason": "not confirmed"}))
                 return
             client = await self._client()

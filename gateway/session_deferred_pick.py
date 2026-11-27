@@ -39,6 +39,28 @@ def defer_pick(authority, actor, ref, params):
     return result
 
 
+async def decline_deferred_pick(authority, actor, ref, confirm):
+    """Forget a guarded deferred pick the user declined (``awaiting_confirm`` equals *confirm*).
+
+    A missing slot is already dropped. A different token is a newer ask and stays, so the next
+    attach still re-asks that one. The declined token is not re-prepared.
+    """
+    import asyncio
+    from gateway.session_persistence import authority_persistence
+    authority.authorize(actor, ref, 'session:control')
+    runtime = authority_persistence(authority).runtime
+    stored = await asyncio.to_thread(runtime.deferred_pick, ref.session_id)
+    if stored is not None and stored.pick.get('awaiting_confirm') == confirm:
+        await asyncio.to_thread(runtime.forget_deferred_pick, ref.session_id, stored=stored.stored)
+        stored = await asyncio.to_thread(runtime.deferred_pick, ref.session_id)
+    live = authority.sessions.get(ref.session_id)
+    if live is not None and stored is None:
+        live.reask_pick = False
+    row = await asyncio.to_thread(authority_persistence(authority).sessions.get, ref.session_id)
+    return {'session_id': ref.session_id, 'operation': 'model', 'status': 'declined',
+            'revision': None if row is None else row.runtime_revision}
+
+
 async def reask_on_attach(authority, ref, live):
     """A guarded pick asked only the viewers present at its boundary (and an owner restart drops
     the stream): a newly attached viewer gets the ask again, re-checked at the next boundary."""

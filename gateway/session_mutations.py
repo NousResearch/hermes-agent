@@ -104,7 +104,24 @@ def _owner_ref(authority, ref, params):
     return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
 
 
+def _deferred_decline(params):
+    """A model mutation whose only payload is the token of a declined guarded pick, else None."""
+    if not isinstance(params, dict):
+        return None
+    payload = params.get('payload')
+    if params.get('operation') != 'model' or not isinstance(payload, dict) or set(payload) != {'decline'}:
+        return None
+    confirm = payload.get('decline')
+    return confirm if isinstance(confirm, str) and confirm.strip() else None
+
+
 async def mutate_session(authority, actor, ref, params):
+    confirm = _deferred_decline(params)
+    if confirm is not None:
+        # Declining keeps the committed model. It must not parse as a model pick (that refuses
+        # ``invalid_params`` and leaves the slot) and must not defer again while a turn runs.
+        from gateway.session_deferred_pick import decline_deferred_pick
+        return await decline_deferred_pick(authority, actor, ref, confirm)
     from gateway.session_runtime_workers import track_mutation
     authority._require_admission_open()
     # A request socket can disappear while its writer is inside to_thread. The owner task keeps

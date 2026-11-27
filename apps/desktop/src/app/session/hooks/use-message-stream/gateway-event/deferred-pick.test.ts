@@ -83,6 +83,22 @@ describe('handleDeferredPickEvent', () => {
     expect(states.s).toMatchObject({ model: 'frozen', provider: 'openrouter' })
   })
 
+  it('declining a guarded next-turn pick tells the owner to drop the deferred slot', async () => {
+    surfaceModelSwitchConfirm.mockImplementationOnce(async (options: { onDecline?: () => void }) => {
+      options.onDecline?.()
+
+      return false
+    })
+
+    const { ctx } = context({ confirm: 'token', operation: 'model', payload: { model: 'guarded' },
+      session_id: 's', status: 'confirmation_required', target_model: 'guarded' })
+
+    expect(handleDeferredPickEvent(ctx)).toBe(true)
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalled())
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(null, 'default', 'session.model', {
+      confirm: 'token', decline: true, session_id: 's' })
+  })
+
   it('a decline never rewinds a newer pick or another session', async () => {
     setCurrentModelTransient('guarded')
     let answer: (value: boolean) => void = () => undefined

@@ -2,6 +2,19 @@ import { expect, test, vi } from 'vitest'
 
 import { CanonicalDesktopProtocol, slashMutation } from './canonical-protocol'
 
+test('a declined guarded model pick is a one-shot drop, not a retained model mutation', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 4, execution_generation: 2 })
+  const kept = protocol.prepare('session.model', { session_id: 's', payload: { model: 'newer' } })
+  const decline = protocol.prepare('session.model', { session_id: 's', decline: true, confirm: 'tok' })
+
+  expect(decline).toMatchObject({
+    session_id: 's', expected_revision: 4, expected_generation: 2, operation: 'model', payload: { decline: 'tok' }
+  })
+  expect(protocol.wire('session.model', decline)).toBe('session.mutate')
+  expect(protocol.prepare('session.model', { session_id: 's', payload: { model: 'newer' } })).toEqual(kept)
+})
+
 test('sibling routes survive every rebuilt control and compression follow-up', async () => {
   const protocol = new CanonicalDesktopProtocol()
   protocol.result('session.resume', { session_id: 's', profile: 'sibling' }, {

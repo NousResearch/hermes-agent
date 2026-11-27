@@ -97,6 +97,12 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
       model: target,
       // The whole selection the owner asked about (its reasoning level included) with the owner's
       // token: the same canonical model mutation the TUI resends.
+      onDecline: () => {
+        // The dialog is local. Without this the owner keeps the pick awaiting_confirm and re-asks on every attach.
+        void requestGatewayForAgent(connectionId, profile, 'session.model', {
+          confirm: update.confirm, decline: true, session_id: sessionId
+        }).catch(() => undefined)
+      },
       requestConfirmed: () =>
         requestGatewayForAgent(connectionId, profile, 'session.model', { confirm: update.confirm, payload: pick, session_id: sessionId }),
       finish: invalidate

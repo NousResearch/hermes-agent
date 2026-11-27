@@ -453,6 +453,26 @@ export class CanonicalDesktopProtocol {
 
     if (fenced) { return this.fencedMutation(method, params, fenced) }
 
+    if (method === 'session.model' && params.decline === true) {
+      // One shot: dropping a declined guarded pick must not retire a newer retained model mutation.
+      if (typeof params.confirm !== 'string' || !params.confirm) {
+        throw new Error('Declined model pick is missing its confirmation token')
+      }
+
+      const owner = canonicalSessionKey(params.session_id, params.profile)
+      const revision = this.revisions.get(owner)
+      const generation = this.generations.get(owner)
+
+      if (revision === undefined || generation === undefined) {
+        throw new Error('Session revision unavailable; reopen the session before editing metadata')
+      }
+
+      return {
+        session_id: params.session_id, request_id: randomUuid(), expected_revision: revision,
+        expected_generation: generation, operation: 'model', payload: { decline: params.confirm }
+      }
+    }
+
     if (method === 'session.model') {
       const payload = { ...(params.payload as Record<string, unknown>), ...(typeof params.confirm === 'string' ? { confirm: params.confirm } : {}) }
 

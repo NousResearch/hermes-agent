@@ -27,6 +27,8 @@ export interface SurfaceModelSwitchConfirmOptions<T extends GuardedModelSwitchRe
   model?: string
   /** Optimistically repaint the pending selection before the resend. */
   repaint?: () => void
+  /** The user chose "keep current model". Not called when the dialog went stale or the resend failed. */
+  onDecline?: () => void
   /** Resend the switch WITH `confirm_expensive_model: true`. */
   requestConfirmed: () => Promise<T | undefined>
   /** Undo the optimistic repaint when the confirmed resend fails. */
@@ -65,6 +67,8 @@ export async function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResu
   })
 
   if (!accepted) {
+    options.onDecline?.()
+
     return false
   }
 

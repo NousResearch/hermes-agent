@@ -426,6 +426,17 @@ def test_tui_plugin_toggle_of_an_installed_recalled_plugin_is_refused(world, tmp
     assert "killed" not in pc._get_enabled_set()
 
 
+@pytest.mark.parametrize("surface", ["dashboard", "cli"])
+def test_enable_of_a_recalled_plugin_never_runs_its_native_setup(world, tmp_path, monkeypatch, surface):
+    """Setup runs plugin code, so the kill list is judged before it, not only at the enable write."""
+    from hermes_cli import plugins_setup
+    _recall_after_install(world, tmp_path, monkeypatch)
+    ran = []
+    monkeypatch.setattr(plugins_setup, "prepare_plugin_setup", lambda entry, **_kw: ran.append(entry[5]))
+    assert _enabled_via(surface, "killed") is False
+    assert ran == [] and "killed" not in pc._get_enabled_set()
+
+
 def test_enable_of_a_recalled_plugin_installed_with_allow_removed_still_works(world, tmp_path, monkeypatch):
     _recall_after_install(world, tmp_path, monkeypatch)
     pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)

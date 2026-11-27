@@ -93,14 +93,25 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty, persist_on_release: bool = False, allow_cwd_fallback: bool = False):
+           session_key, effective_pty, persist_on_release: bool = False, allow_cwd_fallback: bool = False,
+           notify_on_complete=False, watch_patterns=None):
+    from gateway.session_context import async_delivery_supported
+    from tools.environments.sandbox_scope import hosted_scope
+
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key,
                   persist_on_release=persist_on_release)
+    # Arm the contract and routing before a reader can publish its first hit/exit.
+    # Keep the post-spawn helper for result notes and gateway watcher registration.
+    # A hosted agent's process gets no notification consumer (``_apply_async_support``): never arm it.
+    if async_delivery_supported() and hosted_scope() is None and (notify_on_complete or watch_patterns):
+        common.update(notify_on_complete=bool(notify_on_complete),
+                      watch_patterns=None if notify_on_complete else watch_patterns)
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
-            restore_login_path=True, **common)
+            restore_login_path=True,
+            **({"execution_context": env.execution_context} if getattr(env, "execution_context", None) else {}), **common)
     return process_registry.spawn_via_env(env=env, allow_cwd_fallback=allow_cwd_fallback, **common)
 
 
@@ -155,7 +166,8 @@ def spawn_background_process(
     cwd_key: Optional[str] = None,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
-    pty_disabled_reason: Optional[str],
+    pty_disabled_reason: Optional[str], routed: bool = False,
+    cwd_record_key: Optional[str] = None,
     heartbeat_seconds: int = 0,
     persist_on_release: bool = False,
     mounted_host: Optional[str] = None,
@@ -175,7 +187,9 @@ def spawn_background_process(
     )
 
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=cwd_key or session_key, env_type=env_type,
+        workdir=workdir, default_cwd=cwd,
+        session_key=cwd_record_key if cwd_record_key is not None else (cwd_key or session_key), env_type=env_type,
+        routed=routed,
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
@@ -184,6 +198,7 @@ def spawn_background_process(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
+            notify_on_complete=notify_on_complete, watch_patterns=watch_patterns,
             allow_cwd_fallback=not workdir,  # a named workdir is refused, never swapped for a parent
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,

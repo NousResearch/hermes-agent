@@ -110,6 +110,18 @@ def _failure_version(path: Path) -> tuple:
         return (*config_version(path), None)
 
 
+def parse_failure_still_current(path: Path) -> bool:
+    """True while ``path`` is byte-identical to a file whose parse failure is recorded."""
+    record = _CONFIG_PARSE_FAILURES.get(str(path))
+    if not record:
+        return False
+    try:
+        sig = _failure_version(path)
+    except OSError:
+        return False
+    return record[:len(sig)] == sig
+
+
 def get_active_config_parse_failure() -> Optional[str]:
     """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
     (``file_cache_version`` with its content digest) to the file that failed to parse; else None."""

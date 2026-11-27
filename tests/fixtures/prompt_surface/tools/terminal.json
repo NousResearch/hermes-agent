@@ -41,6 +41,10 @@
         "description": "With background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
         "type": "boolean"
       },
+      "target": {
+        "description": "Optional exact name of a configured session-owned execution target. Omit for the ordinary terminal. Unknown/unavailable targets are refused; never fall back. Target cwd is separate and reported as target_cwd, not cwd.",
+        "type": "string"
+      },
       "timeout": {
         "description": "Max seconds (default 180, foreground max 600). Finishing early returns at once, so set it generously. Above 600s the command runs as a tracked background process with notify_on_complete=true (the result says so; do not re-run it).",
         "minimum": 1,

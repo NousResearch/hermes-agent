@@ -611,6 +611,9 @@ guard is active only for the dispatcher-spawned worker itself (`HERMES_KANBAN_TA
 set and the run owns that task) — `delegate_task` children and cron jobs run inside
 the worker inherit the variable but are never nudged, since they have no board tools —
 and can be disabled with `HERMES_KANBAN_STOP_NUDGE=0`.
+For a worker in Goal mode, an intermediate result goes to the Goal controller
+instead: the judge can ask for another turn in the same attempt. A terminal
+board action still settles the attempt.
 
 **Dispatcher-side recovery:** If the nudges are exhausted or the worker crashes
 before reaching the nudge, the dispatcher gives the violation a **bounded retry**

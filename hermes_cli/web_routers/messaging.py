@@ -25,9 +25,14 @@ from fastapi import APIRouter, HTTPException
 from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.catalog_platform_listing import (
+    available_catalog_platforms,
+    install_catalog_platform,
+    platform_list_signature,
+)
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from hermes_constants import get_process_hermes_home
+from hermes_constants import get_hermes_home, get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_whatsapp_session import _backup_whatsapp_session
@@ -39,7 +44,7 @@ from hermes_cli.web_routers._common import (
     redacted_credential_preview,
 )
 from hermes_cli.web_models import (
-    MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
+    MessagingCatalogInstall, MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
 
@@ -136,8 +141,10 @@ def _validate_messaging_env_value(rules: dict[str, tuple[Any, str]], key: str, v
 _ALLOWLIST_KEY_RE = re.compile(r"_ALLOWED(?:_[A-Z]+)?$")
 
 
-def _messaging_env_info(key: str) -> dict[str, Any]:
-    info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+def _messaging_env_info(key: str, declared: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Field copy and secrecy for *key*: ``declared`` is the card's own declaration (its plugin
+    manifest, read when the card was built), so a plugin installed mid-run is labelled and masked."""
+    info = declared or OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
     is_password = bool(info.get("password", False))
     return {
         "description": info.get("description", ""),
@@ -256,7 +263,7 @@ def _messaging_platform_payload(
 
     env_vars = []
     for key in entry["env_vars"]:
-        value, info = env_value(key), _messaging_env_info(key)
+        value, info = env_value(key), _messaging_env_info(key, entry.get("env_info", {}).get(key))
         env_vars.append({
             "key": key, "required": key in entry["required_env"], "is_set": bool(value) or key in source_keys,
             "redacted_value": redacted_credential_preview(value),
@@ -995,11 +1002,44 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
         with _profile_scope(profile) as scoped_dir:
+            # Taken before the list is built: a move while it builds shows up as a changed signature on
+            # the page's next poll instead of being lost.
+            signature = platform_list_signature(get_hermes_home())
             return {
+                "signature": signature,
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
                 "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                # Catalog platforms this profile can add: picking one installs it (POST below).
+                "available": [row.to_dict() for row in available_catalog_platforms()],
             }
+
+    return await asyncio.to_thread(_run)
+
+
+@router.get("/api/messaging/platforms/signature")
+async def get_messaging_platforms_signature(profile: Optional[str] = None):
+    """The digest ``GET /api/messaging/platforms`` returns as ``signature``, without building the list:
+    the Channels page polls it while visible and reloads when it moves (a platform plugin the background
+    default install or another terminal added, the gateway coming up), the dashboard's twin of Desktop's
+    ``platforms.changed``. Stat-cheap, so it skips ``_profile_scope``'s process-wide lock."""
+    def _run():
+        with _config_profile_scope(profile):
+            return {"signature": platform_list_signature(get_hermes_home())}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.post("/api/messaging/catalog/{name}/install")
+async def install_messaging_catalog_platform(name: str, body: MessagingCatalogInstall, profile: Optional[str] = None):
+    """Install and enable one catalog platform into the target profile, through the catalog install
+    every surface uses (pinned commit, kill list, scan). A refusal is ``ok: false`` with the reason and
+    the one command that installs it; the card's platforms are the ids it registered. The install
+    clones and resolves dependencies, so it runs outside ``_profile_scope``'s process-wide lock (the
+    installer serializes its own config writes), like the Plugins page's installs."""
+    def _run():
+        with _config_profile_scope(body.profile or profile):
+            return install_catalog_platform(name)
 
     return await asyncio.to_thread(_run)
 

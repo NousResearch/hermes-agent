@@ -17,6 +17,7 @@ import {
   approvePairing,
   getMessagingPlatforms,
   getPairing,
+  type MessagingCatalogPlatform,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
@@ -49,6 +50,14 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
+import {
+  type CatalogInstallHandlers,
+  CatalogPlatformDetail,
+  CatalogPlatformList,
+  catalogRowId,
+  catalogRowsWithKept,
+  visibleCatalogRows
+} from './catalog-platforms'
 import { appliedLive, needsCredentials, optimisticToggleState, restartPendingAfter, restartReason } from './live-apply'
 import { PlatformAvatar } from './platform-icon'
 import { RelayLinkSetup } from './relay-link'
@@ -157,6 +166,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // the active profile; the API helpers treat null as "target primary").
   const scopeProfile = useStore($settingsRequestProfile)
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+  // Catalog platforms this profile has not installed: picking one installs it, then its card takes over.
+  const [available, setAvailable] = useState<MessagingCatalogPlatform[]>([])
+  // A catalog row stays listed only while this page's install of it runs: the plugin lands on disk (and the
+  // platforms.changed refresh drops the row) before the install call returns with the card to open. A row
+  // installed elsewhere (background default install, another terminal) leaves with the refreshed list.
+  const [keptCatalog, setKeptCatalog] = useState<MessagingCatalogPlatform | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
   // actually happens (dashboard parity). Cleared on a completed restart.
@@ -177,7 +192,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [statusFilter, setStatusFilter] = useState<'all' | StatusTone>('all')
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
-  const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
+
+  const platformIds = useMemo(() => {
+    const catalogIds = catalogRowsWithKept(available, keptCatalog).map(catalogRowId)
+
+    return [...(platforms?.map(p => p.id) ?? []), ...new Set(catalogIds)]
+  }, [available, keptCatalog, platforms])
+
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
   const restartGatewayNow = useCallback(async () => {
@@ -221,6 +242,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
         if (scopeRef.current === scopeProfile) {
           setPlatforms(result.platforms)
+          setAvailable(result.available ?? [])
         }
       } catch (err) {
         if (!silent) {
@@ -285,6 +307,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   if (prevScope !== scopeProfile) {
     setPrevScope(scopeProfile)
     setPlatforms(null)
+    setAvailable([])
+    setKeptCatalog(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
   }
@@ -338,13 +362,19 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [changeEventsAvailable, refreshAll])
 
+  const selectedCatalog = useMemo(
+    () =>
+      catalogRowsWithKept(available, keptCatalog).find(row => catalogRowId(row) === selectedId) ?? null,
+    [available, keptCatalog, selectedId]
+  )
+
   const selected = useMemo(() => {
-    if (!platforms) {
+    if (!platforms || selectedCatalog) {
       return null
     }
 
     return platforms.find(platform => platform.id === selectedId) || platforms[0] || null
-  }, [platforms, selectedId])
+  }, [platforms, selectedCatalog, selectedId])
 
   const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
   const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
@@ -362,6 +392,46 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     () => platforms?.filter(platform => platformMatches(platform, activeStatusFilter, query)) ?? [],
     [activeStatusFilter, platforms, query]
   )
+
+  const visibleAvailable = useMemo(
+    () => visibleCatalogRows(available, query, activeStatusFilter),
+    [activeStatusFilter, available, query]
+  )
+
+  // An install from this page: re-read the list (the plugin's card replaces its catalog row) and open
+  // the card it registered, whose credential form is what the user picked the row for. Only while the
+  // page still shows that row under the same profile: a newer pick, a profile switch or leaving
+  // Messaging wins over an install that finishes late. One owner object per mount, updated in place, so
+  // the unmount below marks the very object a late completion reads.
+  const ownerRef = useRef({ mounted: true, profile: scopeProfile, selectedId })
+  ownerRef.current.profile = scopeProfile
+  ownerRef.current.selectedId = selectedId
+  useEffect(() => {
+    const owner = ownerRef.current
+    owner.mounted = true
+
+    return () => {
+      owner.mounted = false
+    }
+  }, [])
+
+  const catalogInstall: CatalogInstallHandlers = {
+    onInstallStart: row => setKeptCatalog(row),
+    onInstallEnd: row => setKeptCatalog(kept => (kept?.name === row.name ? null : kept)),
+    onInstalled: async (row, platformIdsAdded, profile) => {
+      const samePage = () => ownerRef.current.mounted && ownerRef.current.profile === profile
+
+      if (!samePage()) {
+        return
+      }
+
+      await refreshPlatforms(true)
+
+      if (platformIdsAdded[0] && samePage() && ownerRef.current.selectedId === catalogRowId(row)) {
+        setSelectedId(platformIdsAdded[0])
+      }
+    }
+  }
 
   // Picking a filter moves the detail pane into it. Only on that click: a
   // platform that leaves the filter because you just enabled it stays open.
@@ -604,6 +674,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     </li>
                   ))}
                 </ul>
+                <CatalogPlatformList
+                  activeName={selectedCatalog?.name}
+                  onSelect={row => setSelectedId(catalogRowId(row))}
+                  rows={visibleAvailable}
+                  title={<SectionTitle>{m.catalog.sectionTitle}</SectionTitle>}
+                />
               </ListColumn>
 
               <DetailColumn
@@ -635,6 +711,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       </Button>
                     </AlertDescription>
                   </Alert>
+                )}
+                {selectedCatalog && (
+                  <CatalogPlatformDetail
+                    {...catalogInstall}
+                    row={selectedCatalog}
+                    scopeProfile={scopeProfile}
+                  />
                 )}
                 {selected && (
                   <PlatformDetail

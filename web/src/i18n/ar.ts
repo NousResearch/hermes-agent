@@ -728,4 +728,17 @@ export const ar = defineLocale({
     logTruncated: "(عرض آخر 100 كيلوبايت — السجل الكامل في ",
     logAt: ")",
   },
+  channelsCatalog: {
+    title: "متاح للتثبيت",
+    hint: "منصات مراسلة من كتالوج إضافات Hermes. يؤدي التثبيت إلى إضافة الإضافة وتفعيلها ثم فتح إعدادها.",
+    badgeOfficial: "رسمي",
+    badgeVerified: "موثّق",
+    disclosure: "إفصاح:",
+    lazyInstallsOff: "التثبيت التلقائي للإضافات متوقف (security.allow_lazy_installs).",
+    run: "شغّل:",
+    install: "تثبيت",
+    installing: "جارٍ التثبيت…",
+    installed: (title: string) => `تم تثبيت ${title}. أدخل بيانات الاعتماد الخاصة بها لربطها.`,
+    installFailed: (title: string) => `تعذّر تثبيت ${title}`,
+  },
 });

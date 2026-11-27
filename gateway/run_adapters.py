@@ -1139,7 +1139,9 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         # A platform that left core for a catalog plugin is installed before discovery below.
         from gateway.run_startup import recover_left_core_in
-        await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
+        installed = await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
+        if installed:
+            self._note_profile_installs(profile_name, installed)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins, get_plugin_manager

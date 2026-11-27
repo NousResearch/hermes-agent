@@ -1,19 +1,20 @@
 name: igni
 repo: https://github.com/LangerSword/hermes-igni
-sha: 60e82f9a62c9d5f4a9b793aa65437d8e5aed727a
+sha: 75ef49b2da1ce852923ed10d1e95b52f2b88a03b
 title: Igni
 description: "Two complete card games inside Hermes Agent: a Gwent-style row war and an Arena mana duel, with 21 pixel-art cards, a hidden-hand rule-based opponent, a TUI scoreboard and a playable desktop page. Disclosure: no network calls, no telemetry, no credentials; reads and writes one active table plus a hand-free scoreboard snapshot under the profile's plugin data and $HERMES_HOME/igni/board.json; installs its optional TUI widget into $HERMES_HOME/tui-widgets; the desktop half is enabled by default and can be disabled in Capabilities."
 maintainer: LangerSword
 tier: community
 category: tools
 version: "0.3.1"
+image: "https://raw.githubusercontent.com/LangerSword/hermes-igni/75ef49b2da1ce852923ed10d1e95b52f2b88a03b/docs/banner.png"
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/LangerSword/hermes-igni
 platforms: [linux, macos]
 screenshots:
-  - https://raw.githubusercontent.com/LangerSword/hermes-igni/60e82f9a62c9d5f4a9b793aa65437d8e5aed727a/docs/desktop.png
-  - https://raw.githubusercontent.com/LangerSword/hermes-igni/60e82f9a62c9d5f4a9b793aa65437d8e5aed727a/docs/card-art-grid.png
-  - https://raw.githubusercontent.com/LangerSword/hermes-igni/60e82f9a62c9d5f4a9b793aa65437d8e5aed727a/docs/cover.png
+  - https://raw.githubusercontent.com/LangerSword/hermes-igni/75ef49b2da1ce852923ed10d1e95b52f2b88a03b/docs/desktop.png
+  - https://raw.githubusercontent.com/LangerSword/hermes-igni/75ef49b2da1ce852923ed10d1e95b52f2b88a03b/docs/card-art-grid.png
+  - https://raw.githubusercontent.com/LangerSword/hermes-igni/75ef49b2da1ce852923ed10d1e95b52f2b88a03b/docs/cover.png
 readme: true
 capabilities:
   provides_tools:

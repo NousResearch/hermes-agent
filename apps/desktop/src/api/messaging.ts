@@ -1,4 +1,5 @@
 import type {
+  MessagingCatalogInstallResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -24,6 +25,24 @@ export function getMessagingPlatforms(profile?: null | string): Promise<Messagin
   return hermesApi<MessagingPlatformsResponse>({
     ...profileScoped(profile),
     path: '/api/messaging/platforms'
+  })
+}
+
+// Clones the plugin and resolves its Python dependencies on the backend: minutes, not the default deadline.
+const CATALOG_INSTALL_TIMEOUT_MS = 300_000
+
+/** Install and enable catalog platform `name` into the profile (the catalog install every surface uses).
+ *  A refusal resolves `ok: false` with the reason and the terminal command. */
+export function installMessagingCatalogPlatform(
+  name: string,
+  profile?: null | string
+): Promise<MessagingCatalogInstallResponse> {
+  return hermesApi<MessagingCatalogInstallResponse>({
+    ...profileScoped(profile),
+    path: `/api/messaging/catalog/${encodeURIComponent(name)}/install`,
+    method: 'POST',
+    body: {},
+    timeoutMs: CATALOG_INSTALL_TIMEOUT_MS
   })
 }
 

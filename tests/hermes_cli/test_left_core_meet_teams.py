@@ -144,3 +144,14 @@ def test_an_administrator_pinned_host_isolation_is_named_as_theirs(tmp_path, mon
 
     assert lcm.migrate_home(home, install=install, say=said.append) == ["teams-pipeline"]
     assert "msgraph_webhook" in said[0] and "your administrator pins plugins.isolation: host" in said[0]
+
+
+def test_a_malformed_profile_config_still_honours_a_pinned_host_isolation(tmp_path, monkeypatch, _no_managed_overlay):
+    """The loader applies the managed overlay even when the profile's own YAML does not parse, so the command
+    hint must not tell the user to enable a plugin whose command still will not load."""
+    (_no_managed_overlay / "config.yaml").write_text("plugins:\n  isolation: host\n", encoding="utf-8")
+    home = _home(tmp_path, config="plugins: [unclosed\n")
+    (home / "plugins" / "google-meet").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    hint = lcm.moved_command_hint("hermes", "meet")
+    assert "your administrator pins plugins.isolation: host" in hint and "Enable it" not in hint

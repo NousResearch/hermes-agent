@@ -310,3 +310,39 @@ class TestMSGraphUnboundMeetingPipeline:
         assert len(turns) == 2 * admitted
         warned = [r for r in caplog.records if "Teams meeting pipeline is enabled" in r.getMessage()]
         assert len(warned) == (1 - admitted)  # said once, not once per notification
+
+    @pytest.mark.anyio
+    async def test_disabling_the_pipeline_on_a_running_listener_restores_agent_turns(self, tmp_path, monkeypatch):
+        """The selection is read per unbound notification, so `hermes plugins disable teams-pipeline` takes effect
+        without a reconnect."""
+        if not AIOHTTP_AVAILABLE:
+            pytest.skip("aiohttp not installed")
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "config.yaml").write_text("plugins:\n  enabled: [teams-pipeline]\n", encoding="utf-8")
+        managed = tmp_path / "managed"
+        managed.mkdir()
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        adapter = _make_adapter(port=0, allowed_source_cidrs=[])
+        turns = []
+
+        async def _admit(event):
+            turns.append(event)
+
+        monkeypatch.setattr(adapter, "_admit_notification", _admit)
+
+        def payload(i):
+            return {"value": [{"id": f"notif-d{i}", "subscriptionId": "sub-1", "changeType": "updated",
+                               "resource": f"communications/onlineMeetings/m-{i}",
+                               "clientState": "expected-client-state"}]}
+        try:
+            assert await adapter.connect() is True
+            await adapter._handle_notification(_FakeRequest(json_payload=payload(0)))
+            assert turns == []
+            (home / "config.yaml").write_text("plugins:\n  enabled: [teams-pipeline]\n  disabled: [teams-pipeline]\n",
+                                              encoding="utf-8")
+            await adapter._handle_notification(_FakeRequest(json_payload=payload(1)))
+        finally:
+            await adapter.disconnect()
+        assert len(turns) == 1

@@ -63,9 +63,10 @@ def _host_isolated(home: Path) -> bool:
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
     try:
         config = config_loader.read_yaml_layers(home)
-    except Exception:  # malformed config.yaml: the loader falls back to in-process defaults too
+    except Exception:  # malformed config.yaml: the loader still applies the administrator's overlay
         logger.debug("left-core: unreadable config for %s", home, exc_info=True)
-        return False
+        from hermes_cli.managed_scope import apply_managed_overlay
+        config = apply_managed_overlay({})
     return isolation_mode(config) == ISOLATION_HOST
 
 

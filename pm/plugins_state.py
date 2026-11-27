@@ -92,7 +92,8 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     return config
 
 
-def _enabled_from_config(config: dict[str, Any]) -> list[str]:
+def _enabled_from_config(config: dict[str, Any], plugins_dir: Path | None = None, *,
+                         installing: Path | None = None) -> list[str]:
     """plugins.enabled from an already-parsed config, ORDER-PRESERVING."""
     plugins_cfg = config.get("plugins")
     if not isinstance(plugins_cfg, dict):
@@ -104,19 +105,31 @@ def _enabled_from_config(config: dict[str, Any]) -> list[str]:
     disabled = set(disabled) if isinstance(disabled, list) else set()
     out: list[str] = []
     for name in enabled:
-        if isinstance(name, str) and name and name not in out and not _spellings(name) & disabled:
+        if (isinstance(name, str) and name and name not in out
+                and not _disable_spellings(name, plugins_dir, installing) & disabled):
             out.append(name)
     return out
 
 
-def _spellings(name: str) -> set[str]:
-    """The names in ``plugins.disabled`` that turn off the plugin *name* selects, as the loader's gate reads
-    them: the key and its bare leaf, plus a left-core plugin's catalog name and its old bundled keys
-    (``google_meet`` <-> ``google-meet``), so a disable under either spelling keeps its dependencies out."""
+def _disable_spellings(name: str, plugins_dir: Path | None, installing: Path | None) -> set[str]:
+    """The ``plugins.disabled`` names that turn off the plugin *name* selects, as the loader's gate reads them:
+    the key and its bare leaf, plus, when the tree it selects is a left-core catalog plugin, that plugin's
+    name and old bundled keys (``google_meet`` <-> ``google-meet``). Resolved like ``selected_plugin_dir``
+    (the home's own ``<name>`` dir first), so a local plugin that happens to use an old key keeps its own."""
+    spellings = {name, name.rsplit("/", 1)[-1]}
+    if plugins_dir is None:
+        return spellings
     from hermes_cli.left_core_migration import legacy_plugin_alias, legacy_plugin_keys
 
+    def selected(path: Path) -> bool:
+        return _is_directory(path) or (installing is not None and path.resolve() == installing.resolve())
+
+    if selected(plugins_dir / name):
+        return spellings | legacy_plugin_keys(name)
     alias = legacy_plugin_alias(name)
-    return {name, name.rsplit("/", 1)[-1], *([alias] if alias else []), *legacy_plugin_keys(alias or name)}
+    if alias and selected(plugins_dir / alias):
+        return spellings | {alias} | legacy_plugin_keys(alias)
+    return spellings
 
 
 def _is_directory(path: Path) -> bool:
@@ -180,7 +193,7 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None,
         config = config or {}
         if proposed_home is not None and home.resolve() == Path(proposed_home).resolve():
             config = {**config, "plugins": {"enabled": list(enabled or ()), "disabled": list(disabled or ())}}
-        names = _enabled_from_config(config)
+        names = _enabled_from_config(config, home / "plugins", installing=installing)
         provider = _provider_from_config(home, config, installing=installing)
         if provider and provider not in names:
             names.append(provider)

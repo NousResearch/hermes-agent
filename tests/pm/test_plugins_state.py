@@ -251,3 +251,17 @@ def test_a_left_core_plugin_disabled_under_either_name_adds_no_dependencies(home
     with (home / "config.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump({"plugins": {"enabled": enabled, "disabled": disabled}}, f)
     assert enabled_member_dirs() == []
+
+
+def test_a_local_plugin_under_an_old_bundled_key_keeps_its_own_dependencies(homes):
+    """A home's own ``plugins/google_meet`` is its own plugin to the loader: a disable of the catalog name
+    ``google-meet`` does not turn it off, so PM keeps its dependencies too."""
+    import hermes_yaml as yaml
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    local = home / "plugins" / "google_meet"
+    local.mkdir(parents=True)
+    (local / "pyproject.toml").write_text('[project]\ndependencies = ["requests==2.32.3"]\n')
+    with (home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump({"plugins": {"enabled": ["google_meet"], "disabled": ["google-meet"]}}, f)
+    assert enabled_member_dirs() == [local]

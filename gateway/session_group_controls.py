@@ -240,7 +240,10 @@ def _group(authority, actor, method, params, *, host_scope=False):
         homes, refused = member_roster(authority, siblings=host_scope)
         refuse_unseatable(params.get('members'), refused)
         try:
-            members = validate_roster(params.get('members'), local_profiles=homes)
+            from tui_gateway.hosted_room_service import room_member_limit
+            limits = getattr(service, 'discussion_limits', None)
+            limit = limits.max_members if limits is not None else room_member_limit()
+            members = validate_roster(params.get('members'), local_profiles=homes, max_members=limit)
             if service is not None:
                 return {'room': service.create_room(**params, owner=owner)}
         except DiscussionValidationError as exc:

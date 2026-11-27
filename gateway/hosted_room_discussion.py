@@ -27,7 +27,11 @@ from gateway.hosted_rooms_common import compact_json
 from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
-MAX_DISCUSSION_MEMBERS = 6
+# The most Bots a hosted room can ever hold: stored rooms and replays validate against this, so lowering
+# ``hosted_rooms.max_members`` never takes an existing room offline.
+MAX_DISCUSSION_MEMBERS = 24
+# How many Bots a new room or a membership edit may seat unless ``hosted_rooms.max_members`` says otherwise.
+DEFAULT_MAX_MEMBERS = 6
 MIN_DISCUSSION_MEMBERS = 2
 MAX_DISCUSSION_ROUNDS = 3
 MAX_DISCUSSION_MESSAGES = 10
@@ -104,10 +108,16 @@ class DiscussionLimits:
 
     max_rounds: int = MAX_DISCUSSION_ROUNDS
     max_messages: int = MAX_DISCUSSION_MESSAGES
+    # Seats a create or membership edit may fill (``hosted_rooms.max_members``); never above the hard ceiling.
+    max_members: int = DEFAULT_MAX_MEMBERS
 
     def __post_init__(self) -> None:
         _positive_int(self.max_rounds, label="hosted_rooms.discussion.max_rounds")
         _positive_int(self.max_messages, label="hosted_rooms.discussion.max_messages")
+        _positive_int(self.max_members, label="hosted_rooms.max_members")
+        if not MIN_DISCUSSION_MEMBERS <= self.max_members <= MAX_DISCUSSION_MEMBERS:
+            raise DiscussionValidationError(
+                f"hosted_rooms.max_members must be between {MIN_DISCUSSION_MEMBERS} and {MAX_DISCUSSION_MEMBERS}")
 
 
 @dataclass(frozen=True)
@@ -296,13 +306,17 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
     return DiscussionMember(member_id, profile, handle, display_name, target)
 
 
-def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[DiscussionMember, ...]:
-    """Validate a frozen 2-6 member roster of profiles on this gateway."""
+def validate_roster(
+    value: Any, *, local_profiles: Iterable[str], max_members: int = MAX_DISCUSSION_MEMBERS
+) -> tuple[DiscussionMember, ...]:
+    """Validate a roster of profiles on this gateway. A stored room checks against the hard ceiling; a create or
+    membership edit passes the configured ``hosted_rooms.max_members``."""
     if not isinstance(value, list):
         raise DiscussionValidationError("members must be a list")
-    if not MIN_DISCUSSION_MEMBERS <= len(value) <= MAX_DISCUSSION_MEMBERS:
+    if not MIN_DISCUSSION_MEMBERS <= len(value) <= max_members:
+        hint = "" if max_members >= MAX_DISCUSSION_MEMBERS else " (raise hosted_rooms.max_members in config.yaml for more)"
         raise DiscussionValidationError(
-            f"members must contain between {MIN_DISCUSSION_MEMBERS} and {MAX_DISCUSSION_MEMBERS} entries")
+            f"members must contain between {MIN_DISCUSSION_MEMBERS} and {max_members} entries{hint}")
     known_profiles = {_identifier(profile, label="local profile") for profile in local_profiles}
     members: list[DiscussionMember] = []
     targets: set[str] = set()

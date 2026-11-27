@@ -115,10 +115,19 @@ def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
             raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
         return discussion.DiscussionLimits(
             max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
-            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES),
+            max_members=rooms.get("max_members", discussion.DEFAULT_MAX_MEMBERS))
     except discussion.DiscussionValidationError as exc:
         logger.warning("ignoring hosted_rooms.discussion in %s/config.yaml: %s", root, exc)
         return discussion.DiscussionLimits()
+
+
+def room_member_limit(root: Path | None = None) -> int:
+    """How many Bots a new room or a membership edit may seat, from the room owner's ``hosted_rooms.max_members``."""
+    if root is None:
+        from hermes_constants import get_default_hermes_root
+        root = Path(get_default_hermes_root())
+    return _discussion_limits(Path(root)).max_members
 
 
 def _hosted_room_turn_timeout_seconds() -> float:
@@ -208,7 +217,8 @@ class HostedRoomService:
         self._state_lock = threading.Lock()
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(
             self.store, placement=self.placement,
-            # Every Continue grants one more budget, so one discussion's projection holds up to that many.
+            # Every Continue grants one more budget, so one discussion's projection holds up to that many. Sized by
+            # the hard ceiling, not hosted_rooms.max_members: a room seated before that setting was lowered still fits.
             max_active_events=(1 + 2 * discussion.MAX_DISCUSSION_MEMBERS * self.discussion_limits.max_rounds + 2)
             * (router.MAX_DISCUSSION_CONTINUES + 1))
         self.rpc = self._make_rpc(server)
@@ -929,7 +939,8 @@ class HostedRoomService:
         self.runtime.wakeup()
 
     def create_room(self, *, room_id: str, name: str, members: Any) -> dict[str, Any]:
-        normalized = discussion.validate_roster(members, local_profiles=self.local_profiles())
+        normalized = discussion.validate_roster(
+            members, local_profiles=self.local_profiles(), max_members=self.discussion_limits.max_members)
         room = hosted_rooms.create_room(
             self.store, placement=self.placement, room_id=room_id, name=name,
             members=[
@@ -965,7 +976,9 @@ class HostedRoomService:
             # The authenticated caller's roster applies to new seats. Existing seats can be kept
             # when their profile is offline. An exact replay can also name a since-retired Bot.
             eligible = set(self.local_profiles() if eligible_profiles is None else eligible_profiles)
-            normalized = discussion.validate_roster(members, local_profiles=eligible | known_local_profiles)
+            normalized = discussion.validate_roster(
+                members, local_profiles=eligible | known_local_profiles,
+                max_members=self.discussion_limits.max_members)
             roster = [{"member_id": m.member_id, "profile": m.profile, "handle": m.handle, "target": dict(m.target),
                        **({"display_name": m.display_name} if m.display_name else {})} for m in normalized]
             ready = False
@@ -1291,6 +1304,7 @@ class HostedRoomService:
             "member_activity": member_activity,
             "last_error": self._prepare_stalls.last_error(room_id),
             "max_rounds": self.discussion_limits.max_rounds,
+            "max_members": self.discussion_limits.max_members,
             "max_continues": router.MAX_DISCUSSION_CONTINUES,
             "routing_modes": list(ROUTING_MODES),
             "peer_routes": routes}

@@ -2042,10 +2042,10 @@ DEFAULT_CONFIG = {
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
-    # Native hosted-room Discussion ceilings, shared by all members per discussion.
-    # Positive integers only (no unlimited/0). Read from the root owner's config at service
-    # startup for all hosted rooms; restart the owning service after changing them.
+    # Native hosted-room ceilings: positive integers only (no unlimited/0), read from the root
+    # owner's config at service startup for all hosted rooms; restart the owning service after changing them.
     "hosted_rooms": {
+        "max_members": 6,  # Bots a new room or a membership edit may seat (2-24); existing rooms keep theirs
         "discussion": {
             "max_rounds": 3,
             "max_messages": 10,

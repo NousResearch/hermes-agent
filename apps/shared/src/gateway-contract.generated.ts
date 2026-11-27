@@ -1673,6 +1673,7 @@ export interface RoomDriverStatus {
   member_activity?: RoomMemberActivity[]
   last_error?: string | null
   max_rounds?: number | null
+  max_members?: number | null
   max_continues?: number | null
   routing_modes?: string[] | null
   peer_routes: PeerRouteStatus[]

@@ -36142,6 +36142,18 @@
             "default": null,
             "title": "Max Rounds"
           },
+          "max_members": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Members"
+          },
           "max_continues": {
             "anyOf": [
               {

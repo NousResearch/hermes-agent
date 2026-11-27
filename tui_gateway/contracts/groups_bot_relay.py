@@ -256,6 +256,8 @@ class RoomDriverStatus(Result):
     member_activity: list[RoomMemberActivity] = Field(default_factory=list)
     last_error: str | None = None
     max_rounds: int | None = None
+    #: Bots a new room or a membership edit may seat, hosted_rooms.max_members (absent from older gateways).
+    max_members: int | None = None
     #: How many times one discussion paused at its cap may Continue (absent from older gateways).
     max_continues: int | None = None
     #: Room routing modes this gateway accepts (absent from older gateways: everyone and lead).

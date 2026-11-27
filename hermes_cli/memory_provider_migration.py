@@ -37,7 +37,7 @@ _attempt_claim = threading.Lock()  # check-and-add on _attempted: parallel start
 # When a start last found the installer lock held, by home and provider: a later start in this process
 # retries after BUSY_RETRY_SECONDS without the long wait, so a long-held lock costs one wait per process
 # and at most a one-second try per interval, not a wait per gateway message.
-_lock_busy: dict[tuple[str, str], float] = {}
+_lock_busy: dict[tuple[str, str], tuple[float, bool]] = {}  # -> (when, a watched start was told)
 BUSY_RETRY_SECONDS = 60.0
 
 # Providers that shipped bundled in core. Unattended consent covers only these: their users already
@@ -99,14 +99,19 @@ def _note_success(home: Path, plugin: str) -> None:
 
 
 def _plugin_choice(home: Path):
-    """*home*'s ``memory.provider`` and plugin lists as the agent sees them (user config with the managed
-    overlay applied), in one side-effect-free read: this scans every profile on ``hermes update``, and
-    the CLI config loader would set a profile up (directories, ``SOUL.md``) just to be read. A config
-    that does not parse selects, enables and disables nothing, as in the memory loader."""
+    """*home*'s ``memory.provider`` and plugin lists as the agent sees them, in one side-effect-free
+    read: the loader's YAML layers (user config, ``${VAR}`` expansion, managed overlay; no defaults)
+    under *home*'s own profile scope, so a reference resolves against that profile's environment, not
+    the launch profile's. This scans every profile on ``hermes update``; the CLI config loader would
+    set a profile up (directories, ``SOUL.md``) and the cached effective reader keeps a config backup,
+    just to be read. A config that does not parse selects,
+    enables and disables nothing, as in the memory loader."""
+    from agent.runtime_scope import bind_profile_scope
     from gateway.config_loader import read_yaml_layers
     from plugins.plugin_loader import PluginChoice
     try:
-        config = read_yaml_layers(home)
+        with bind_profile_scope(home):
+            config = read_yaml_layers(home)
     except Exception:  # health: allow BLE001 -- malformed config.yaml: the loader turns nothing on from it either
         logger.debug("memory provider migration: unreadable config for %s", home, exc_info=True)
         return PluginChoice()
@@ -242,8 +247,7 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                 return _Outcome.BACKED_OFF
             return _Outcome.PRESENT if _install_locked(home, name, install=install, say=say) else _Outcome.FAILED
     except TimeoutError:  # nothing was tried, so no failure is stamped
-        aside(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its "
-              f"plugin was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+        aside(_busy_line(name, home))
         return _Outcome.BUSY
     except OSError as exc:  # the lock file cannot be opened or locked: report it, never end the update loop
         aside(f"  ⚠ Memory provider '{name}': the plugin installer lock could not be taken ({exc}), so its "
@@ -389,6 +393,11 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     return installed
 
 
+def _busy_line(name: str, home: Path) -> str:
+    return (f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its "
+            f"plugin was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+
+
 def _failed_recently_line(name: str, home: Path) -> str:
     return (f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
             f"Its automatic install failed recently: run `{_install_command(name, home)}`.")
@@ -454,10 +463,13 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
         return False
     if say is None and not _claim_attempt(key):
         return False
-    busy_since = _lock_busy.get(key)
+    busy_since, told = _lock_busy.get(key, (None, False))
     if busy_since is not None and time.monotonic() - busy_since < BUSY_RETRY_SECONDS:
         logger.info("memory provider '%s': the installer lock was busy %.0fs ago; retrying later", name,
                     time.monotonic() - busy_since)
+        if say is not None and not told:  # only a cron run met the lock: the first watched start is told why
+            report(_busy_line(name, home).lstrip())
+            _lock_busy[key] = (busy_since, True)
         _attempted.discard(key)
         return False
     # Only an install's own outcome is kept for an unattended start; lines about an install that did not run
@@ -466,10 +478,10 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
     outcome = _install_pending(home, name, install=_install_into(home, consent=True),
                                say=report if say is not None else defer_startup_notice,
                                wait=0.0 if busy_since is not None else startup_lock_wait(gateway_start=False),
-                               backoff=True,
-                               aside=logger.info if say is None or busy_since is not None else report)
+                               backoff=True, aside=logger.info if say is None or told else report)
     if outcome is _Outcome.BUSY:  # nothing ran: a later start in this process (a gateway, Desktop) tries again
-        _lock_busy[key] = time.monotonic()  # before the claim is released, so no start slips into the long wait
+        # Recorded before the claim is released, so no start slips into the long wait.
+        _lock_busy[key] = (time.monotonic(), told or say is not None)
         _attempted.discard(key)
     else:
         _lock_busy.pop(key, None)

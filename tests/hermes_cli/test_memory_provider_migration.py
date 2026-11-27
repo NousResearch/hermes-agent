@@ -744,3 +744,45 @@ def test_scanning_a_profile_for_a_missing_provider_writes_nothing_into_it(tmp_pa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     assert mig.migrate_home(other, install=lambda n: pytest.fail("must not install"), say=lambda s: None) is None
     assert sorted(p.name for p in other.iterdir()) == ["config.yaml"]
+
+
+def test_a_provider_reference_resolves_in_the_profile_being_migrated(tmp_path, monkeypatch):
+    """`memory.provider: ${MEMORY_BACKEND}` in a named profile resolves against that profile's `.env`,
+    as its agent does, not the environment of the process running `hermes update`."""
+    profile = tmp_path / "launch" / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("memory:\n  provider: ${MEMORY_BACKEND}\n", encoding="utf-8")
+    (profile / ".env").write_text("MEMORY_BACKEND=retaindb\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setenv("MEMORY_BACKEND", "byterover")
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    installs: list[str] = []
+    assert mig.migrate_home(profile, install=lambda n: installs.append(n) or (profile / "plugins" / n).mkdir(
+        parents=True) or {"ok": True}, say=lambda s: None) == "retaindb"
+    assert installs == ["retaindb"]
+
+
+def test_a_busy_lock_met_by_cron_is_explained_to_the_next_watched_start(tmp_path, monkeypatch):
+    """A cron run meets another installer's lock and only logs it. A chat started in the same process
+    inside the retry interval skips the install too, and is told why external memory is off, once."""
+    from contextlib import contextmanager
+    from hermes_cli import default_plugins
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+
+    @contextmanager
+    def busy(wait):
+        raise TimeoutError("another default plugin install is running")
+        yield
+
+    monkeypatch.setattr(default_plugins, "installer_lock", busy)
+    assert mig.recover_at_startup("retaindb", say=None) is False
+    said: list[str] = []
+    for _session in range(2):
+        assert mig.recover_at_startup("retaindb", say=said.append) is False
+    assert len(said) == 1 and "still installing plugins" in said[0]

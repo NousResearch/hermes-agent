@@ -278,10 +278,11 @@ def _check_default_venv_rebuild(
 ) -> None:
     """Warn (or fail when *fail_on_rebuild* is set) if a ``default: true`` plugin triggers a PM venv rebuild."""
     root = _workspace_root()
-    root_str = str(root)
-    if root_str not in sys.path:
-        sys.path.append(root_str)
-    from pm.plugin_declarations import check_default_plugin_venv_rebuild
+    ci_dir = str(Path(__file__).resolve().parent)
+    for path_entry in (str(root), ci_dir):
+        if path_entry not in sys.path:
+            sys.path.append(path_entry)
+    from catalog_default_plugin_lint import check_default_plugin_venv_rebuild
 
     try:
         result = check_default_plugin_venv_rebuild(

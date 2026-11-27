@@ -10,11 +10,13 @@ from pathlib import Path
 import hermes_yaml as yaml
 import pytest
 
-from pm.plugin_declarations import check_default_plugin_venv_rebuild
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ci" / "catalog_validate_pinned_entries.py"
 REPO_URL = "https://fixture.invalid/repo"
+
+sys.path.insert(0, str(ROOT / "scripts" / "ci"))
+from catalog_default_plugin_lint import check_default_plugin_venv_rebuild
+import catalog_validate_pinned_entries as pinned_gate
 
 
 def _write_plugin(plugin_dir: Path, *, pyproject: str | None = None, manifest: str | None = None) -> Path:
@@ -127,7 +129,15 @@ def test_ci_default_check_uses_real_pinned_python_version_from_lock_json(tmp_pat
     ]
 
 
-# ── End-to-end catalog_validate_pinned_entries.py gate tests ─────────────────
+def test_gha_escape_helpers():
+    """GitHub Actions workflow-command property and data escaping runs on every platform."""
+    assert pinned_gate._escape_gha_property("a%b:c,d\re\nf") == "a%25b%3Ac%2Cd%0De%0Af"
+    assert pinned_gate._escape_gha_data("100%\r\nline:two,ok") == "100%25%0D%0Aline:two,ok"
+
+
+# ── End-to-end catalog_validate_pinned_entries.py gate tests (Linux CI only) ─
+# catalog_validate_pinned_entries.py runs on ubuntu-latest and invokes GNU
+# `timeout`, `grep -rlZE`, and `xargs -r0` (matching test_plugin_catalog_ci_confinement.py).
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -201,7 +211,7 @@ def _write_catalog_entry(tmp_path: Path, name: str, sha: str, **extra) -> Path:
     return path
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("linux")
 def test_ci_default_entry_with_core_satisfied_deps_passes_with_zero_warnings(tmp_path):
     origin, sha = _make_origin(
         tmp_path,
@@ -216,7 +226,7 @@ def test_ci_default_entry_with_core_satisfied_deps_passes_with_zero_warnings(tmp
     assert "::warning" not in combined
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("pyproject, expected_trigger", [
     (
         '[project]\nname = "obs"\nversion = "1.0.0"\nrequires-python = ">=3.11"\n'
@@ -255,7 +265,7 @@ def test_ci_default_entry_triggering_rebuild_emits_actionable_warning(
     assert expected_trigger in strict.stdout
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("default_fields", [{}, {"default": False}], ids=["omitted", "default-false"])
 def test_ci_non_default_entry_with_unsatisfied_dep_emits_no_default_rebuild_warning(
     tmp_path, default_fields
@@ -273,7 +283,7 @@ def test_ci_non_default_entry_with_unsatisfied_dep_emits_no_default_rebuild_warn
     assert "::warning" not in combined
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("linux")
 def test_ci_default_rebuild_warning_escapes_gha_property_and_data_chars(tmp_path):
     """Finding #6: ``::warning`` escapes ``%``, ``\\r``, ``\\n``, ``:``, ``,`` in ``file=`` and
     ``%``, ``\\r``, ``\\n`` in the message body per GitHub Actions workflow-command syntax."""
@@ -303,13 +313,3 @@ def test_ci_default_rebuild_warning_escapes_gha_property_and_data_chars(tmp_path
     assert warning_lines[0].startswith(f"::warning file={escaped_file}::"), warning_lines[0]
     assert "heavy%2Cv2.yaml" in warning_lines[0]
     assert "heavy,v2.yaml" not in warning_lines[0].split("::", 2)[1]
-
-    # Verify all required GitHub Actions workflow-command escape sequences directly.
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("_catalog_validate_pinned_entries", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert mod._escape_gha_property("a%b:c,d\re\nf") == "a%25b%3Ac%2Cd%0De%0Af"
-    assert mod._escape_gha_data("100%\r\nline:two,ok") == "100%25%0D%0Aline:two,ok"

@@ -65,6 +65,182 @@ def test_looks_like_path():
     assert not _looks_like_path("hey_jarvis")
 
 
+def test_sherpa_tokenization_args_select_documented_layouts(tmp_path):
+    from tools.wake_word_engines import _sherpa_tokenization_args
+
+    bpe = tmp_path / "bpe"
+    bpe.mkdir()
+    (bpe / "bpe.model").write_bytes(b"x")
+
+    phone = tmp_path / "phone"
+    phone.mkdir()
+    (phone / "en.phone").write_text("A AH0", encoding="utf-8")
+
+    wenetspeech = tmp_path / "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+    wenetspeech.mkdir()
+
+    assert _sherpa_tokenization_args(bpe) == {
+        "tokens_type": "bpe",
+        "bpe_model": str(bpe / "bpe.model"),
+    }
+    assert _sherpa_tokenization_args(phone) == {
+        "tokens_type": "phone+ppinyin",
+        "lexicon": str(phone / "en.phone"),
+    }
+    assert _sherpa_tokenization_args(wenetspeech) == {"tokens_type": "ppinyin"}
+
+
+@pytest.mark.parametrize(
+    "name,assets",
+    [
+        ("unverified-character-model", ()),
+        ("sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01-renamed", ()),
+        ("ambiguous-bpe-phone", ("bpe.model", "en.phone")),
+        ("ambiguous-many-phone", ("en.phone", "zh.phone")),
+    ],
+)
+def test_sherpa_tokenization_args_reject_unverified_or_ambiguous_layouts(tmp_path, name, assets):
+    from tools.wake_word_engines import _sherpa_tokenization_args
+
+    model_dir = tmp_path / name
+    model_dir.mkdir()
+    for asset in assets:
+        (model_dir / asset).write_text("x", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="supported layouts"):
+        _sherpa_tokenization_args(model_dir)
+
+
+def test_sherpa_tokenization_args_reject_assets_that_conflict_with_wenetspeech(tmp_path):
+    from tools.wake_word_engines import _sherpa_tokenization_args
+
+    model_dir = tmp_path / "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+    model_dir.mkdir()
+    (model_dir / "bpe.model").write_bytes(b"x")
+
+    with pytest.raises(RuntimeError, match="conflicts with its documented ppinyin layout"):
+        _sherpa_tokenization_args(model_dir)
+
+
+def _install_fake_sherpa(monkeypatch, tmp_path, *, layout, error=None):
+    from tools import wake_word_engines as engines
+
+    model_dir = tmp_path / (
+        "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+        if layout == "wenetspeech" else layout
+    )
+    model_dir.mkdir()
+    (model_dir / "tokens.txt").write_text("<blk> 0", encoding="utf-8")
+    for part in ("encoder", "decoder", "joiner"):
+        (model_dir / f"{part}-epoch-1.onnx").write_bytes(b"x")
+    if layout == "bpe":
+        (model_dir / "bpe.model").write_bytes(b"x")
+    elif layout == "phone":
+        (model_dir / "en.phone").write_text("A AH0", encoding="utf-8")
+    elif layout == "ambiguous":
+        (model_dir / "bpe.model").write_bytes(b"x")
+        (model_dir / "en.phone").write_text("A AH0", encoding="utf-8")
+
+    calls = {"text2token": [], "spotter": []}
+    sherpa = types.ModuleType("sherpa_onnx")
+
+    def text2token(phrases, **kwargs):
+        calls["text2token"].append(kwargs)
+        if error:
+            raise error
+        return [["token"] for _ in phrases]
+
+    class Spotter:
+        def __init__(self, **kwargs):
+            calls["spotter"].append(kwargs)
+
+        @staticmethod
+        def create_stream():
+            return object()
+
+    sherpa.text2token = text2token
+    sherpa.KeywordSpotter = Spotter
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", sherpa)
+    monkeypatch.setattr(engines, "_ensure_dep", lambda *args: None)
+    monkeypatch.setattr(
+        engines,
+        "_ww",
+        lambda: types.SimpleNamespace(
+            _get=lambda cfg, key: cfg.get(key),
+            _active_profile_name=lambda: "default",
+            enrolled_profile_phrases=lambda: {},
+            _sensitivity=lambda cfg: 0.5,
+        ),
+    )
+    return calls, model_dir
+
+
+@pytest.mark.parametrize(
+    "layout,expected",
+    [
+        ("bpe", {"tokens_type": "bpe"}),
+        ("phone", {"tokens_type": "phone+ppinyin"}),
+        ("wenetspeech", {"tokens_type": "ppinyin"}),
+    ],
+)
+def test_sherpa_engine_uses_resolved_tokenizer_layout(monkeypatch, tmp_path, layout, expected):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path, layout=layout)
+
+    engine = ww._SherpaKwsEngine({"phrase": "hey hermes", "sherpa": {"model_dir": str(model_dir)}})
+    try:
+        assert calls["text2token"][0].items() >= expected.items()
+        assert bool(calls["spotter"]) is True
+    finally:
+        engine.close()
+
+
+def test_sherpa_engine_explains_missing_pypinyin(monkeypatch, tmp_path):
+    missing = ModuleNotFoundError("No module named 'pypinyin'")
+    missing.name = "pypinyin"
+    calls, model_dir = _install_fake_sherpa(
+        monkeypatch, tmp_path, layout="wenetspeech", error=missing
+    )
+
+    with pytest.raises(RuntimeError, match=r"pypinyin.*wake-sherpa"):
+        ww._SherpaKwsEngine({"phrase": "你好", "sherpa": {"model_dir": str(model_dir)}})
+    assert calls["spotter"] == []
+
+
+def test_sherpa_engine_preserves_non_pypinyin_import_errors(monkeypatch, tmp_path):
+    missing = ModuleNotFoundError("No module named 'unrelated_tokenizer_dependency'")
+    missing.name = "unrelated_tokenizer_dependency"
+    _, model_dir = _install_fake_sherpa(
+        monkeypatch, tmp_path, layout="wenetspeech", error=missing
+    )
+
+    with pytest.raises(ModuleNotFoundError, match="unrelated_tokenizer_dependency"):
+        ww._SherpaKwsEngine({"phrase": "你好", "sherpa": {"model_dir": str(model_dir)}})
+
+
+def test_sherpa_engine_rejects_unknown_layout_before_creating_spotter(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path, layout="ambiguous")
+
+    with pytest.raises(RuntimeError, match="supported layouts"):
+        ww._SherpaKwsEngine({"phrase": "hey hermes", "sherpa": {"model_dir": str(model_dir)}})
+    assert calls["spotter"] == []
+
+
+def test_ppinyin_tokens_are_accepted_by_wenetspeech_fixture(tmp_path):
+    sherpa_onnx = pytest.importorskip("sherpa_onnx")
+    tokens_path = tmp_path / "tokens.txt"
+    tokens_path.write_text("<blk> 0\nn 1\nǐ 2\nh 3\nǎo 4\n", encoding="utf-8")
+
+    tokenized = sherpa_onnx.text2token(
+        ["你好"], tokens=str(tokens_path), tokens_type="ppinyin"
+    )
+
+    vocabulary = {
+        line.rsplit(maxsplit=1)[0]
+        for line in tokens_path.read_text(encoding="utf-8").splitlines()
+    }
+    assert set(tokenized[0]).issubset(vocabulary)
+
+
 @pytest.mark.parametrize("system,machine,expected", [
     ("win32", "ARM64", "sherpa"),
     ("win32", "AMD64", "openwakeword"),

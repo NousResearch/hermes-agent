@@ -341,3 +341,24 @@ def test_one_qqbot_check_merges_the_home_s_platform_block_once(tmp_path, monkeyp
     monkeypatch.setattr(lcm, "_merged_platform_block", lambda *a, **k: merges.append(a) or real(*a, **k))
     assert _qqbot_in_use(home) is True
     assert len(merges) == 1
+
+
+@pytest.mark.parametrize("recorded", ["_default_plugins_installed: [qqbot]\n", ""], ids=["default-placed", "user-placed"])
+def test_a_present_qqbot_the_home_disables_is_said_off_once_and_stays_disabled(tmp_path, recorded):
+    # Core ran QQ Bot despite a bare ``qqbot`` in plugins.disabled; the plugin already in the home honours it, so
+    # the upgrade turns QQ Bot off. The disable stays (nothing installs or enables) and the home is told, once.
+    home = _home(tmp_path, env=_CREDS, config=recorded + "plugins:\n  disabled: [qqbot]\n")
+    (home / "plugins" / "qqbot").mkdir(parents=True)
+    calls, said = [], []
+
+    def install(name):
+        calls.append(name)
+        return {"ok": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert lcm.migrate_home(home, install=install, say=said.append) == []
+    assert calls == []
+    from hermes_cli.config import read_user_config_raw
+    assert read_user_config_raw(home / "config.yaml")["plugins"]["disabled"] == ["qqbot"]
+    off = [line for line in said if "which now turns QQ Bot off" in line]
+    assert len(off) == 1 and "`hermes plugins enable qqbot` turns it on" in off[0], said

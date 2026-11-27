@@ -107,6 +107,16 @@ DEFAULT_EXCLUDES = [
     "*.pyc",
     "*.pyo",
     ".cache/",
+    # Hermes runtime cache and disposable E2E sandboxes: regenerable, often
+    # huge, and never project source. ANCHORED (leading "/") on purpose: an
+    # unanchored "cache/" matches ANY cache/ directory in the tree, including
+    # a user's src/cache/, silently dropping their source from snapshots.
+    "/cache/",
+    "/e2e-sandboxes/",
+    "/hermes-e2e/",
+    # Electron desktop build output inside the Hermes source tree (~429 MB here).
+    # Not excluded by "dist/" and it made `git add -A` time out at 60s.
+    "/apps/desktop/release/",
     ".pytest_cache/",
     ".mypy_cache/",
     ".ruff_cache/",

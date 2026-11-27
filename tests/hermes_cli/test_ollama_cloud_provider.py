@@ -172,6 +172,70 @@ class TestOllamaCloudMergedDiscovery:
 
         assert result == ["glm-5"]
 
+    def test_fresh_cache_includes_new_models_dev_entries(self, tmp_path, monkeypatch):
+        """A fresh live cache must not hide newer models.dev entries such as Nemotron Ultra."""
+        import json
+        import time
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+        cache = tmp_path / "ollama_cloud_models_cache.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "models": ["live-only", "nemotron-3-super"],
+                    "cached_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "nemotron-3-super": {"tool_call": True},
+                    "nemotron-3-ultra": {"tool_call": True},
+                }
+            }
+        }
+        with (
+            patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev),
+            patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("live probe ran")),
+        ):
+            result = fetch_ollama_cloud_models()
+
+        assert result == ["live-only", "nemotron-3-super", "nemotron-3-ultra"]
+
+    def test_stale_cache_includes_models_dev_additions_when_live_probe_fails(self, tmp_path, monkeypatch):
+        """Stale fallback preserves cached live IDs while adding current models.dev entries."""
+        import json
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+        cache = tmp_path / "ollama_cloud_models_cache.json"
+        cache.write_text(
+            json.dumps({"models": ["live-only", "nemotron-3-super"], "cached_at": 0}),
+            encoding="utf-8",
+        )
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "nemotron-3-super": {"tool_call": True},
+                    "nemotron-3-ultra": {"tool_call": True},
+                }
+            }
+        }
+        with (
+            patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev),
+            patch("hermes_cli.models.fetch_api_models", return_value=None),
+        ):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["live-only", "nemotron-3-super", "nemotron-3-ultra"]
+
     def test_cache_only_serves_stale_cache_without_rewriting_disk(self, tmp_path, monkeypatch):
         """cache_only (GUI read path) must not persist a live-less list: that stamps it fresh, drops the
         live-only ids, and makes the next probing call serve the trimmed list for an hour."""
@@ -190,7 +254,7 @@ class TestOllamaCloudMergedDiscovery:
              patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("network probe ran")):
             result = fetch_ollama_cloud_models(cache_only=True)
 
-        assert result == ["live-only", "shared"]
+        assert result == ["live-only", "shared", "mdev-only"]
         assert (cache.read_text(), cache.stat().st_mtime_ns) == before
 
         with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev), \

@@ -1,17 +1,21 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
 import { getProfiles } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
+import { $lastRoster } from '@/plugins/hermes-bots/data'
+import type { RosterRow } from '@/plugins/hermes-bots/types'
 import { $activeConnectionId } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notifyError } from '@/store/notifications'
 import { profileLabel, refreshProfiles } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
 
+import { useBotModeLoaded } from '../chat/sidebar/simplified-bot-chat-row'
 import { CreateProfileDialog } from '../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../profiles/rename-profile-dialog'
@@ -20,7 +24,12 @@ import { PROFILES_ROUTE } from '../routes'
 import { type AgentRouteOwner, agentSettingsKey } from './data'
 import { agentMachine, forgetViewedAgent } from './landing'
 import { useOverviewActionsCopy } from './overview-actions-copy'
-
+const LazyCreateBotDialog = lazy(async () => ({
+  default: (await import('@/plugins/hermes-bots/create-dialog')).CreateAgentDialog
+}))
+const LazyEditBotDialog = lazy(async () => ({
+  default: (await import('@/plugins/hermes-bots/edit-profile-dialog')).EditProfileDialog
+}))
 /** A create names only the machine (and, duplicating, the agent copied); a rename or delete names
  *  the agent it acts on. */
 export type AgentDialogTarget =
@@ -101,7 +110,39 @@ export function AgentDialog({ target, onClose, onRenamed }: AgentDialogProps) {
     await refresh()
   }
 
+  const botMode = useBotModeLoaded()
+  const roster = useStore($lastRoster)
+  const [editingBot, setEditingBot] = useState<RosterRow | null>(null)
+  const activeMachine = agentMachine($apiRequestScope.get().connectionId ?? $activeConnectionId.get())
+
   if (!('profile' in target)) {
+    if (target.kind === 'create' && botMode && owner.connectionId === activeMachine) {
+      return (
+        <Suspense fallback={null}>
+          <LazyCreateBotDialog
+            onClose={() => {
+              onClose()
+              void refresh()
+            }}
+            onConfigureModel={bot => setEditingBot(bot)}
+            open={!editingBot}
+            roster={roster}
+          />
+          {editingBot ? (
+            <LazyEditBotDialog
+              bot={editingBot}
+              onClose={() => {
+                setEditingBot(null)
+                onClose()
+                void refresh()
+              }}
+              open
+            />
+          ) : null}
+        </Suspense>
+      )
+    }
+
     return (
       <CreateProfileDialog
         initialCloneFrom={target.kind === 'duplicate' ? owner.profile : undefined}

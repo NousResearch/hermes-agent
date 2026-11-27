@@ -29,6 +29,47 @@ function sheetFocusTarget(sheet: OpenSheet): HTMLElement | null {
   return surface
 }
 
+const FOCUSABLE_SELECTOR =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+
+function visibleFocusables(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
+    el => !el.closest('[hidden],[inert]') && el.offsetParent !== null
+  )
+}
+
+function trapSheetTabKey(event: KeyboardEvent, surface: HTMLElement) {
+  const focusables = visibleFocusables(surface)
+
+  if (focusables.length === 0) {
+    event.preventDefault()
+    surface.focus({ preventScroll: true })
+
+    return
+  }
+
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+  if (event.shiftKey) {
+    if (!active || active === first || !surface.contains(active)) {
+      event.preventDefault()
+      last.focus()
+    }
+  } else if (!active || active === last || !surface.contains(active)) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+function restoreAttr(el: HTMLElement, name: string, prev: string | null) {
+  if (prev === null) {
+    el.removeAttribute(name)
+  } else {
+    el.setAttribute(name, prev)
+  }
+}
 /** Behaviour every redesign sheet shares (DESIGN.md › Responsive), mounted once by the redesigned
  *  shell: choosing a destination (any navigation) closes the sheet; focus moves into a sheet when it
  *  opens and returns to what opened it when it closes; Esc closes the band's own sheets (the pane
@@ -69,11 +110,21 @@ export function ShellSheetController() {
     }
 
     const release = pushEscapeLayer(ESCAPE_PRIORITY.sheet)
+    const surface = document.querySelector<HTMLElement>(SHEET_SURFACE[shellSheet])
+    const prevRole = surface?.getAttribute('role') ?? null
+    const prevModal = surface?.getAttribute('aria-modal') ?? null
+
+    if (surface) {
+      surface.setAttribute('role', 'dialog')
+      surface.setAttribute('aria-modal', 'true')
+    }
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented && isTopEscapeLayer(ESCAPE_PRIORITY.sheet)) {
         event.preventDefault()
         closeOpenSheet()
+      } else if (event.key === 'Tab' && surface) {
+        trapSheetTabKey(event, surface)
       }
     }
 
@@ -82,9 +133,13 @@ export function ShellSheetController() {
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       release()
+
+      if (surface) {
+        restoreAttr(surface, 'role', prevRole)
+        restoreAttr(surface, 'aria-modal', prevModal)
+      }
     }
   }, [shellSheet])
-
   return null
 }
 

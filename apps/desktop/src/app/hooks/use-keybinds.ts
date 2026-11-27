@@ -56,6 +56,7 @@ import {
 } from '@/store/layout'
 import { requestNewAgent } from '@/store/new-agent-request'
 import { notifyError } from '@/store/notifications'
+import { togglePortalStatusBarOpen } from '@/store/portal-status-bar'
 import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -91,6 +92,7 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { $portalShell } from '@/store/shell-variant'
 import { requestSimplifiedNewSession } from '@/store/simplified-new-session'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestThreadPageScroll } from '@/store/thread-scroll'
@@ -376,7 +378,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleRightSidebar': () =>
       toggleDeveloperToolPanel() || (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
-    'view.toggleStatusbar': toggleStatusbarVisible,
+    'view.toggleStatusbar': () => ($portalShell.get() ? togglePortalStatusBarOpen() : toggleStatusbarVisible()),
     'view.toggleProfileRail': toggleProfileRailVisible,
     'view.toggleSimpleMode': toggleSimpleMode,
     'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),

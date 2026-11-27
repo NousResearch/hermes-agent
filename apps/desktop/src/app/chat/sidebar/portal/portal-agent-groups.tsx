@@ -10,6 +10,7 @@ import { useContributions } from '@/contrib'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ChevronDown, Plus } from '@/lib/icons'
+import { $botMeta } from '@/plugins/hermes-bots/data'
 import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
@@ -30,7 +31,7 @@ import { agentKey, agentOwner, type SimplifiedAgent, type useSimplifiedAgents } 
 
 import { type AgentChatCount, agentChatCount } from './agent-chat-cap'
 import type { NewAgentOffer } from './new-agent-offers'
-import { PortalAgentMenu } from './portal-agent-menu'
+import { PortalAgentContextMenu, PortalAgentMenu } from './portal-agent-menu'
 import { AgentScreenRow } from './portal-agent-screen'
 import { PortalHiddenAgents } from './portal-hidden-agents'
 
@@ -106,10 +107,11 @@ function AgentCard({
       data-slot="agent-group"
       role="group"
     >
-      <div data-active-agent={selected ? '' : undefined} data-slot="agent-heading">
-        <SimplifiedBotChatRow agent={agent} fallbackSummary={summary} />
-        <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
-        <Tip label={c.newChat}>
+      <PortalAgentContextMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null}>
+        <div data-active-agent={selected ? '' : undefined} data-slot="agent-heading">
+          <SimplifiedBotChatRow agent={agent} fallbackSummary={summary} />
+          <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
+          <Tip label={c.newChat}>
           <Button
             aria-label={`${c.newChat}: ${agent.label}`}
             className="portal-agent-new"
@@ -143,7 +145,8 @@ function AgentCard({
             </Button>
           </Tip>
         )}
-      </div>
+        </div>
+      </PortalAgentContextMenu>
       {open && (
         <ProfileGroupHeaderSlot
           className="portal-agent-header-slot"
@@ -162,6 +165,7 @@ export const agentMatches = (list: PortalAgentGroupsProps['agents'], agent: Simp
 
 export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const botMode = useBotModeLoaded()
+  const botMeta = useStore($botMeta)
   const hidden = new Set(useStore($hiddenSidebarAgents))
   const allProjects = useStore($portalAgentProjects)
   const activeConnection = useStore($activeConnectionId)
@@ -202,6 +206,17 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const isHidden = (agent: SimplifiedAgent) => hidden.has(agentKey(agent))
 
   const hiddenAgents = agents.filter(isHidden)
+  const isPinnedAgent = (agent: SimplifiedAgent) => {
+    if (!botMode) {
+      return false
+    }
+
+    const profile = agent.targetProfile || agent.profile
+    const scopedKey = agent.connectionId ? `${agent.connectionId}:${profile}` : profile
+
+    return Boolean(botMeta[scopedKey]?.pinned || botMeta[profile]?.pinned)
+  }
+
   const groups = new Map<string | null, SimplifiedAgent[]>()
 
   for (const agent of agents) {
@@ -214,6 +229,11 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
     groups.set(agent.connectionId, group)
   }
 
+  if (botMode) {
+    for (const group of groups.values()) {
+      group.sort((a, b) => Number(isPinnedAgent(b)) - Number(isPinnedAgent(a)))
+    }
+  }
   return (
     <>
       <FadeScroll className="portal-section-scroll" maxHeight="none" ref={props.scrollRef}>

@@ -731,7 +731,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // The optimistic bubble is gone, so its blob: previews die with it —
         // unless a rejected-submit restore already re-loaded the attachments
         // into the composer, which re-owns those URLs (#63682 handoff).
-        revokeDiscardedAttachmentPreviews(attachments, usingComposerAttachments ? $composerAttachments.get() : [])
+        revokeDiscardedAttachmentPreviews(attachments, $composerAttachments.get())
 
         if (!sid) {
           if (targetIsCurrentView()) {

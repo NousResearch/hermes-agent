@@ -11,14 +11,15 @@ const listed = (id: string) => allKeybindActions().some(action => action.id === 
 
 afterEach(() => $shellChoice.set(null))
 
-// ⌘⇧S toggles the classic statusbar; the redesign has no strip, so there the row would do nothing.
+// Both shells have a status bar (classic's strip and the redesign's bar), so ⌘⇧S stays available;
+// the profile rail is classic-only and tracks shell flips.
 describe('shell-dependent shortcuts', () => {
-  it('lists the statusbar toggle only in the shell that has a statusbar', () => {
+  it('lists the statusbar toggle in both classic and redesign shells', () => {
     $shellChoice.set(false)
     expect(listed('view.toggleStatusbar')).toBe(true)
 
-    $shellChoice.set(null)
-    expect(listed('view.toggleStatusbar')).toBe(false)
+    $shellChoice.set(true)
+    expect(listed('view.toggleStatusbar')).toBe(true)
   })
 
   it('lists the profile rail toggle only in the shell that has a profile rail', () => {
@@ -34,7 +35,7 @@ describe('shell-dependent shortcuts', () => {
 
     // Other shell-dependent rows (Back/Forward) re-emit the list on the same flip; count changes only.
     const stop = $offeredKeybindActions.subscribe(actions => {
-      const listedNow = actions.some(action => action.id === 'view.toggleStatusbar')
+      const listedNow = actions.some(action => action.id === 'view.toggleProfileRail')
 
       if (seen.at(-1) !== listedNow) {
         seen.push(listedNow)
@@ -48,7 +49,7 @@ describe('shell-dependent shortcuts', () => {
     expect(seen).toEqual([false, true, false])
   })
 
-  it('keeps its binding while unlisted, so a flip back to classic finds the chord where it was', () => {
+  it('keeps the statusbar default chord in both shells', () => {
     $shellChoice.set(null)
 
     expect(defaultBindings()['view.toggleStatusbar']).toEqual(['mod+shift+s'])

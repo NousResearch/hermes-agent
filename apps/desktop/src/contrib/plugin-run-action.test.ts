@@ -126,13 +126,13 @@ describe('ctx.runAction — plugins run built-in app actions', () => {
     expect(toggleBrowserTab).not.toHaveBeenCalled()
   })
 
-  it('reports unavailable for an action this window’s shell has nothing to do with', () => {
+  it('routes statusbar toggle to the active shell without mutating classic visibility in portal', () => {
     const ctx = createPluginContext('statusbar-toggle')
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
-    // The redesigned shell has no status bar: the toggle must not claim it ran.
+    // In portal mode, toggling the status bar acts on the portal bar, leaving classic's atom intact.
     $shellChoice.set(true)
-    expect(ctx.runAction('view.toggleStatusbar')).toMatchObject({ ok: false, reason: 'unavailable' })
+    expect(ctx.runAction('view.toggleStatusbar')).toEqual({ ok: true })
     expect($statusbarVisible.get()).toBe(true)
 
     $shellChoice.set(false)

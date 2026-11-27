@@ -1057,3 +1057,53 @@ html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-a
   font-size: var(--portal-type-caption-size);
   font-weight: var(--portal-weight-medium);
 }
+
+/* Bot Mode empty chat screen (plugins/hermes-bots/chat-empty.tsx): align the bot avatar,
+   display title, and prompt subtitle to the Nous redesign's display/mono hierarchy and spacing
+   instead of inheriting Classic's oversized Collapse serif fit-text wordmark. Classic untouched. */
+:root[data-shell='portal'] [data-slot='bot_chat_empty'] {
+  padding-block: 0 1.5rem;
+  transform: none !important;
+}
+
+:root[data-shell='portal'] [data-slot='bot_chat_empty'] > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+:root[data-shell='portal'] [data-slot='bot_chat_empty'] > div > div:first-child {
+  margin-bottom: 1rem !important;
+}
+
+:root[data-shell='portal'] [data-slot='bot_chat_empty'] .wordmark {
+  display: block;
+  width: auto !important;
+  max-width: 100%;
+  margin: 0 0 0.375rem;
+  color: var(--portal-text-primary);
+  font-family: var(--portal-font-display);
+  font-size: var(--portal-type-display-lg-size);
+  font-weight: var(--portal-weight-light);
+  letter-spacing: var(--portal-tracking-display);
+  line-height: 1.15;
+  mix-blend-mode: normal;
+  text-transform: none;
+}
+
+:root[data-shell='portal'] [data-slot='bot_chat_empty'] .wordmark > span {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+:root[data-shell='portal'] [data-slot='bot_chat_empty'] .wordmark > span[aria-hidden='true'] {
+  display: none;
+}
+
+:root[data-shell='portal'] [data-slot='bot_chat_empty'] > div > p:last-child {
+  color: var(--portal-text-tertiary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-ui);
+  line-height: 1.4;
+}

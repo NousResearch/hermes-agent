@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { ErrorState } from '@/components/ui/error-state'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { SearchField } from '@/components/ui/search-field'
@@ -14,6 +15,7 @@ import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { $profileColors, $profiles, refreshProfiles } from '@/store/profile'
+import { runImportProfileFlow } from '@/store/profile-share'
 
 import { useFleetRoster } from '../chat/sidebar/use-fleet-roster'
 import { type SimplifiedAgent, useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
@@ -166,7 +168,19 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
   if (failed) {
     return (
       <Panel onClose={onClose}>
-        <PanelHeader actions={<NewAgentButton />} subtitle={frame.agentsDescription} title={t.profiles.title} />
+        <PanelHeader
+          actions={
+            <div className="flex items-center gap-2">
+              <Button onClick={() => void runImportProfileFlow()} variant="outline">
+                <Codicon name="cloud-download" />
+                {t.profiles.importProfile}
+              </Button>
+              <NewAgentButton />
+            </div>
+          }
+          subtitle={frame.agentsDescription}
+          title={t.profiles.title}
+        />
         <RosterFailure error={failed.error} onRetry={retry} />
       </Panel>
     )
@@ -181,7 +195,19 @@ export function AgentDirectory({ onClose }: { onClose: () => void }) {
 
   return (
     <Panel onClose={onClose}>
-      <PanelHeader actions={<NewAgentButton />} subtitle={frame.agentsDescription} title={t.profiles.title} />
+      <PanelHeader
+        actions={
+          <div className="flex items-center gap-2">
+            <Button onClick={() => void runImportProfileFlow()} variant="outline">
+              <Codicon name="cloud-download" />
+              {t.profiles.importProfile}
+            </Button>
+            <NewAgentButton />
+          </div>
+        }
+        subtitle={frame.agentsDescription}
+        title={t.profiles.title}
+      />
       {agents.length >= SEARCH_FROM && (
         <SearchField
           aria-label={t.profiles.title}

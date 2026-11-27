@@ -14,6 +14,8 @@ import { writeClipboardText } from '@/lib/clipboard'
 import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
+import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { useHiddenAgentCopy } from '../chat/sidebar/hidden-agent-copy'
@@ -100,6 +102,27 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
             <span>{hidden ? shared.showInChatList : shared.hide}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          {canOpenNewWindow() && (
+            <DropdownMenuItem
+              onSelect={() =>
+                void openNewWindow({
+                  connectionId: owner.connectionId === 'local' ? null : owner.connectionId,
+                  profile: owner.profile
+                })
+              }
+            >
+              <Codicon name="empty-window" />
+              <span>{t.sidebar.row.newWindow}</span>
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem disabled={!profile} onSelect={() => void runExportProfileFlow(owner.profile)}>
+            <Codicon name="cloud-upload" />
+            <span>{t.profiles.exportProfile}</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void runImportProfileFlow()}>
+            <Codicon name="cloud-download" />
+            <span>{t.profiles.importProfile}</span>
+          </DropdownMenuItem>
           <DropdownMenuItem disabled={!profile?.path} onSelect={() => void copyPath()} title={profile?.path}>
             <Codicon name="copy" />
             <span>{c.copyPath}</span>

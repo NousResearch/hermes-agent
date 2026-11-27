@@ -4,6 +4,7 @@ import { type RefObject, useEffect, useRef, useState } from 'react'
 import { Navigate } from 'react-router'
 
 import { tokenFamilies } from '@/lib/design-tokens'
+import type { MarkdownBlock } from '@/lib/markdown-section'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { PageSidebarCaption, PageSidebarList, PageSidebarPanel, PageSidebarRow } from '../../overlays/page-sidebar'
@@ -15,7 +16,7 @@ import { componentGroupId, ComponentsSection, NOT_SHOWN_ID } from './components-
 import { type DesignSystemCopy, useDesignSystemCopy } from './design-system-copy'
 import { PreviewControls } from './preview-controls'
 import { GALLERY_GROUPS } from './registry'
-import { STILL_TO_UNIFY, TOKEN_SOURCES } from './sources'
+import { loadStillToUnify, TOKEN_SOURCES } from './sources'
 import { familyName, tokenFamilyId, TokensSection } from './tokens-section'
 import { UnifySection } from './unify-section'
 
@@ -98,6 +99,19 @@ function useCurrentSection(stage: RefObject<HTMLDivElement | null>, ids: readonl
 }
 
 function DesignSystemPage() {
+  const [stillToUnify, setStillToUnify] = useState<MarkdownBlock[]>([])
+  useEffect(() => {
+    let live = true
+    void loadStillToUnify().then(blocks => {
+      if (live) {
+        setStillToUnify(blocks)
+      }
+    })
+
+    return () => {
+      live = false
+    }
+  }, [])
   const copy = useDesignSystemCopy()
   const stage = useRef<HTMLDivElement>(null)
   const groups = navGroups(copy)
@@ -148,7 +162,7 @@ function DesignSystemPage() {
               {copy.stillToUnify}
             </h2>
             <p className="ds-about">{copy.stillToUnifyIntro}</p>
-            <UnifySection blocks={STILL_TO_UNIFY} />
+            <UnifySection blocks={stillToUnify} />
           </section>
         </div>
       </div>

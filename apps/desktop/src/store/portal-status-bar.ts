@@ -23,3 +23,7 @@ export const $portalStatusBarOpen = computed([$portalShell, $portalStatusBarChoi
 export function setPortalStatusBarOpen(open: boolean) {
   $portalStatusBarChoice.set(open)
 }
+
+export function togglePortalStatusBarOpen() {
+  $portalStatusBarChoice.set(!$portalStatusBarChoice.get())
+}

@@ -11,7 +11,7 @@ import {
   type StatusbarItem,
   StatusbarItemView
 } from '@/app/shell/statusbar-controls'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { $portalStatusBarOpen, setPortalStatusBarOpen } from '@/store/portal-status-bar'
 import { $portalShell } from '@/store/shell-variant'
 
@@ -84,7 +84,7 @@ export function PortalStatusBar({ children }: { children?: ReactNode }) {
   return createPortal(
     <div data-open={open || undefined} data-slot="portal-status-bar">
       {children}
-      <Tip label={label}>
+      <Tip label={<TipKeybindLabel actionId="view.toggleStatusbar" text={label} />}>
         <button
           aria-expanded={open}
           aria-label={label}

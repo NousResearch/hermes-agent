@@ -47,6 +47,7 @@ import { AGENT_CHAT_CAP, computeAgentChatLimits } from './agent-chat-cap'
 import { arrangeAgentChats, orderAgentChats } from './agent-chat-order'
 import { CreateAccountCard } from './create-account-card'
 import { PortalAgentProjects } from './portal-agent-projects'
+import { PortalBotAgentDialogs } from './portal-bot-agent-items'
 import { PortalCreateProjectDialog } from './portal-create-project-dialog'
 import {
   type GroupChatMatches,
@@ -530,6 +531,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
       </SidebarContent>
       <ProjectDialog />
       <PortalCreateProjectDialog />
+      {botModeLoaded && <PortalBotAgentDialogs />}
       {/* One mount for the whole app. The header of WorktreeDialog tells why. */}
       <WorktreeDialog />
       <CreateAccountCard />

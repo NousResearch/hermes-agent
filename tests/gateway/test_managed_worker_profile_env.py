@@ -56,3 +56,32 @@ def test_launch_scrub_runs_before_the_turn_context_is_injected(tmp_path, monkeyp
     assert 'LAUNCH_ONLY' not in env
     assert env['BETA_ONLY_TOKEN'] == 'beta-secret'
     assert dict(os.environ) == before
+
+
+_DASHBOARD_LOGIN = {
+    'HERMES_DASHBOARD_BASIC_AUTH_USERNAME': 'admin',
+    'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD': 'fake-password',
+    'HERMES_DASHBOARD_BASIC_AUTH_SECRET': 'fake-signing-secret-0123456789abcdef',
+}
+
+
+def test_secondary_worker_never_receives_the_launch_dashboard_login(tmp_path, monkeypatch):
+    """Regression for #156922: a launch login injected by systemd ``Environment=`` (no ``.env`` line)
+    must not reach a routed profile's worker, not even the username half."""
+    from gateway.session_managed_worker import _worker_env
+    root = tmp_path / '.hermes'
+    beta = root / 'profiles' / 'beta'
+    beta.mkdir(parents=True)
+    (beta / '.env').write_text('BETA_ONLY_TOKEN=beta-secret\n')
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    for name, value in _DASHBOARD_LOGIN.items():
+        monkeypatch.setenv(name, value)
+    set_multiplex_active(True)
+    try:
+        env = _worker_env(SimpleNamespace(profile_id=str(beta)))
+    finally:
+        set_multiplex_active(False)
+    assert env['BETA_ONLY_TOKEN'] == 'beta-secret'
+    assert not set(_DASHBOARD_LOGIN) & set(env)
+

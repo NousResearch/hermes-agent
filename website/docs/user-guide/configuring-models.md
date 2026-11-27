@@ -92,12 +92,13 @@ Click **Show auxiliary** to reveal one row per auxiliary task (plugins can regis
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
-Every auxiliary task defaults to `auto` — meaning Hermes tries your main model for that job too. If that route is unavailable or hits a capacity-style failure, `auto` follows any task-specific `auxiliary.<task>.fallback_chain`, then the main `fallback_providers` / `fallback_model` chain. It never guesses a provider you did not configure: with a main provider selected and no fallback declared, the side task is skipped with a warning rather than billed to another account you happen to be logged into. (Hermes' built-in discovery chain only runs when no main provider is selected at all.) Override a specific task when you want a cheaper or faster model for a side-job.
+Every auxiliary task starts at `auto`. With no shared auxiliary route, that means the main model. Set the **Default** row to create a dynamic `auxiliary.default` route for every unpinned task, then override individual rows as exceptions. If the selected route is unavailable or hits a capacity-style failure, the task follows its task-specific `auxiliary.<task>.fallback_chain`, then the main fallback chain. Hermes never guesses a provider you did not configure.
 
 ### Common override patterns
 
 | Task | When to override |
 |---|---|
+| **Default** | When most side jobs should use the same cheaper/faster model. Unpinned current and future tasks inherit it dynamically; delegation does not. |
 | **Title Gen** | When title latency or cost matters more than matching the main model. Pin a known-good flash model, or set `auxiliary.title_generation.prefer_fast_model: true` to let Hermes choose the provider's fast tier. |
 | **Vision** | When your main model lacks vision support. Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`. |
 | **Compression** | When you're burning reasoning tokens on Opus/M2.7 just to summarize context. A fast chat model does the job at 1/50th the cost. |
@@ -114,11 +115,11 @@ For more auxiliary-model options in `config.yaml`, including tasks the dashboard
 
 ### Per-task override
 
-Click **Change** on any auxiliary row. Same picker opens, same behavior — pick provider + model, hit Switch. The row updates to show `provider · model` instead of `auto (use main model)`.
+Click **Change** on any auxiliary row. Pick provider + model and hit Switch. The row changes from its inherited route to the explicit `provider · model`; choose `auto` again to resume following Default (or the main model when no Default is set).
 
 ### Reset all to auto
 
-If you've over-tuned and want to start over, click **Reset all to auto** at the top of the auxiliary section. Every slot goes back to using your main model.
+If you've over-tuned and want to start over, click **Reset all to auto** at the top of the auxiliary section. This clears the shared default and task overrides, so every slot goes back to using your main model.
 
 ## The "Use as" shortcut
 
@@ -129,7 +130,7 @@ Every model card on the page has a **Use as** dropdown. This is the fast path �
 The dropdown has:
 
 - **Main model** — same as clicking Change on the main row.
-- **All auxiliary tasks** — assigns this model to every auxiliary slot on the page at once. Useful when you just want every side-job on a cheap flash model.
+- **All auxiliary tasks** — bulk-writes this model into every auxiliary slot currently on the page. Select **Default** instead when you want dynamic inheritance that also covers future task classes.
 - **Individual task options** — Vision, Review, Compression, etc. The currently-assigned model for each task is marked `current`.
 
 Cards are badged with `main` or `aux · <task>` when they're currently assigned to something — so you can see at a glance which of your historical models are wired in where.
@@ -160,7 +161,18 @@ auxiliary:
     download_timeout: 30
 ```
 
-**Auxiliary on auto (default):**
+**Shared auxiliary default with a task exception:**
+```yaml
+auxiliary:
+  default:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+  vision:
+    provider: anthropic
+    model: claude-sonnet-4-6
+```
+
+**Auxiliary on auto:**
 ```yaml
 auxiliary:
   compression:
@@ -170,7 +182,7 @@ auxiliary:
     # ... other fields unchanged
 ```
 
-`provider: auto` with `model: ''` tells Hermes to use the main model for that task, while still honoring fallback policy if the main route cannot serve the auxiliary call.
+`provider: auto` with `model: ''` follows `auxiliary.default` when configured; otherwise it uses the main model. Fallback policy remains task-local.
 
 Optional task-specific fallback chains live under the same auxiliary task:
 
@@ -413,7 +425,7 @@ hermes model            # Interactive provider + model picker (the canonical way
 
 `hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.default` in `~/.hermes/config.yaml`. After a new model is saved, a reasoning-effort step follows (`minimal` … `ultra`, **Disable reasoning**, or **Skip** to keep the current value) and writes `agent.reasoning_effort`; the step is skipped for models the catalog marks as having no reasoning control. The provider list also has a **Reasoning effort for the current model...** row to change only the effort.
 
-**Configure auxiliary models...** opens the per-task side-model picker (vision, compression, approval, delegation, …). Each task's provider → model pick ends with the same effort step, stored as `auxiliary.<task>.reasoning_effort` (or `delegation.reasoning_effort`), with an extra **Provider default** row that leaves the level up to the provider. Tasks whose block has no `reasoning_effort` key by design (MoA slots, memory query rewrite) skip the step.
+**Configure auxiliary models...** opens the side-model picker. **Default** writes `auxiliary.default` for dynamic inheritance; Vision, Compression, Approval, and other task rows create exceptions; Delegation remains separate under `delegation.*`. Each provider → model pick ends with the same effort step.
 
 To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config get model --json` and `hermes status`.
 
@@ -440,6 +452,11 @@ curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TO
 # Override a single auxiliary task
 curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
   -d '{"scope":"auxiliary","task":"vision","provider":"openrouter","model":"google/gemini-2.5-flash"}' \
+  http://localhost:PORT/api/model/set
+
+# Set the dynamically inherited auxiliary default
+curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
+  -d '{"scope":"auxiliary","task":"default","provider":"openrouter","model":"google/gemini-3-flash-preview"}' \
   http://localhost:PORT/api/model/set
 
 # Assign one model to every auxiliary task

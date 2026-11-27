@@ -110,7 +110,7 @@ Groups = x25519:secp256r1:secp384r1:x448
 :::
 
 :::warning
-Even when using Nous Portal, Codex, or a custom endpoint, some features (vision, compression, MoA) use a separate "auxiliary" model. By default (`auxiliary.*.provider: "auto"`), Hermes routes these tasks to your **main chat model** — the same model you picked in `hermes model`. You can override each task individually to route it to a cheaper/faster model (e.g. Gemini Flash on OpenRouter) — see [Auxiliary Models](../user-guide/configuration.md#auxiliary-models).
+Even when using Nous Portal, Codex, or a custom endpoint, some features (vision, compression, MoA) use a separate "auxiliary" model. With no auxiliary route configured, Hermes uses your **main chat model**. Set `auxiliary.default` to route every unpinned auxiliary task to one cheaper/faster model, then add `auxiliary.<task>` exceptions where needed — see [Auxiliary Models](../user-guide/configuration.md#auxiliary-models). Delegated child agents remain controlled by `delegation.*`.
 :::
 
 :::tip Nous Tool Gateway

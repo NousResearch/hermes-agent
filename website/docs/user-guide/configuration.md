@@ -1628,8 +1628,8 @@ auxiliary:
 
 Precedence is: explicit task route → `auxiliary.default` → main model / automatic fallback. Inheritance is resolved when the task runs, so changing `auxiliary.default` immediately changes every unpinned task and newly introduced task class. Only route fields inherit (`provider`, `model`, `base_url`, credential references, `api_mode`, and `reasoning_effort`); task policy such as `timeout`, `enabled`, `extra_body`, and `fallback_chain` remains task-local. Delegated child agents are unchanged and continue to use `delegation.*`.
 
-:::note Why "auto" uses your main model
-Earlier builds split aggregator users (OpenRouter, Nous Portal) onto a cheap provider-side default. That was surprising — users who paid for an aggregator subscription would see a different model handling their auxiliary traffic. `auto` now uses the main model for everyone, and per-task overrides in `config.yaml` still win (see [Full auxiliary config reference](#full-auxiliary-config-reference) below).
+:::note What "auto" inherits
+An unpinned task (`provider: auto`, empty model/endpoint) follows `auxiliary.default` when configured; without one it uses the main model. Explicit task routes still win.
 :::
 
 ### Configuring auxiliary models interactively

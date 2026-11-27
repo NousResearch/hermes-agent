@@ -232,7 +232,7 @@ def _gateway_runner(multiplex_home=None):
             return None
 
         async def _record_model_switch(self, *a, **k):
-            return None
+            return (None, set())
 
         async def _model_switch_confirmation(self, *a, **k):
             return "ok"

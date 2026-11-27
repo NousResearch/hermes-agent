@@ -279,7 +279,9 @@ class GatewayModelCommandsMixin:
                 global_error = t("gateway.model.err_config_not_updated", error=str(e) or type(e).__name__)
         # Precedence is session > channel_overrides > config.yaml: in a chat with a channel_overrides
         # model/provider the session override must stay, or the next turn runs the channel model.
-        if ctx.persist_global and global_error is None and self._channel_override_for(source) is None:
+        # If managed keys will override at next load, KEEP the session override so the current
+        # session continues to run the selected model (the managed scope only wins on restart).
+        if ctx.persist_global and global_error is None and self._channel_override_for(source) is None and not managed_keys:
             try:
                 await self.async_session_store.set_model_override(ctx.session_key, None)
             except Exception as e:
@@ -368,7 +370,7 @@ class GatewayModelCommandsMixin:
             source = managed_scope.get_managed_dir() or "the managed scope"
             for key in sorted(managed_keys):
                 lines.append(t("gateway.model.warning_prefix", warning=f"config.yaml written, but {key} is managed by {source} and wins"))
-            lines.append(t("gateway.model.session_only_hint"))
+            lines.append(t("gateway.model.managed_global_hint"))
         elif ctx.persist_global:
             lines.append(t("gateway.model.saved_global"))
         elif one_turn:

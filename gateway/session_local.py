@@ -393,11 +393,13 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     policy = replace(policy, skills_prompt=skills_prompt)
     if warning := project_plugins_warning(policy):
         logger.warning('session %s: %s', sid, warning)
-    client_request = {k: params[k] for k in ('client_env',) if k in params}
+    client_request = {k: params[k] for k in ('client_env', 'paperclip_context') if k in params}
+    # Bound before bind_launch_key: an owner-resolved alias's captured ``owners[ref]`` (session_policy.py)
+    # reads ``policy.paperclip_context_ref`` off *this* policy, so the ref must already be frozen on it.
+    policy = bind_paperclip_context(authority, sid, policy, params.get('paperclip_context'))
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets,
                              owner_key=client_key is None,  # an overlapping exact retry takes the held one
                              client_request=client_request)
-    policy = bind_paperclip_context(authority, sid, policy, params.get('paperclip_context'))
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)

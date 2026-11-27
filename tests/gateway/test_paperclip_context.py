@@ -262,3 +262,40 @@ def test_client_side_paperclip_context_policy_collects_this_processs_own_env(mon
         monkeypatch.setenv(name, value)
     assert paperclip_context_policy(['paperclip_context']) == {'paperclip_context': context('z')}
 
+
+def test_owner_key_retry_requires_matching_paperclip_context():
+    """MON-1027 round-1 follow-up finding: the owner-key path (``bind_launch_key``'s ``owners[ref]``,
+    an overlapping alias expansion reusing the session slot's launch key) must judge a retry's Paperclip
+    identity exactly like the sequential (``same_create_retry`` at commit) and the sqlite-commit paths
+    already do -- not silently drop it because ``owners[ref]`` never carried ``paperclip_context_ref``.
+    ``owners[ref]`` is captured off *policy* (gateway/session_policy.py), so ``bind_paperclip_context``
+    must already have frozen the ref on it before ``bind_launch_key`` runs -- why
+    gateway/session_local.py binds the context first now, not after.
+    """
+    from persistence.core.errors import AuthorityRefusal
+    from gateway.session_policy import LocalSessionPolicy, bind_launch_key, bind_paperclip_context
+    authority = SimpleNamespace(instance_id='fixture', epoch=0)
+    base = LocalSessionPolicy('cli', 'cli', '/tmp', None, (), '{}', '{}', '{}')
+    sid, ref = 'sid-owner', 'fixture:0:sid-owner'
+
+    policy_x = bind_paperclip_context(authority, sid, base, context('x'))
+    bind_launch_key(authority, sid, policy_x, 'k1', owner_key=True,
+                     client_request={'paperclip_context': context('x')})
+    assert authority._local_launch_keys[ref] == 'k1'
+
+    # The same identity retried, a different key offered: the held one is reused, not replaced.
+    policy_x2 = bind_paperclip_context(authority, sid, base, context('x'))
+    bind_launch_key(authority, sid, policy_x2, 'k2', owner_key=True,
+                     client_request={'paperclip_context': context('x')})
+    assert authority._local_launch_keys[ref] == 'k1'
+
+    # A different identity, or the slot's identity omitted entirely, is a conflicting request --
+    # never a silent inheritance of the held key (the pre-fix behaviour: ``owners[ref]`` lacked the
+    # ref, so ``committed.get('paperclip_context_ref')`` read None regardless of what was really bound).
+    policy_y = bind_paperclip_context(authority, sid, base, context('y'))
+    with pytest.raises(AuthorityRefusal):
+        bind_launch_key(authority, sid, policy_y, 'k3', owner_key=True,
+                         client_request={'paperclip_context': context('y')})
+    with pytest.raises(AuthorityRefusal):
+        bind_launch_key(authority, sid, policy_y, 'k3', owner_key=True, client_request={})
+

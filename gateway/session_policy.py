@@ -936,7 +936,8 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
     if config_secrets:
         configs[config_ref] = dict(config_secrets)
     if api_key is not None and old is None and owner_key:
-        owners[ref] = {k: getattr(policy, k) for k in ('request_json', 'client_env_json', 'client_env_rules_json')}
+        owners[ref] = {k: getattr(policy, k) for k in
+                       ('request_json', 'client_env_json', 'client_env_rules_json', 'paperclip_context_ref')}
     if api_key is not None:
         keys[ref] = api_key
     # The durable ref carries the key's fingerprint (the digest config_secret_ref already

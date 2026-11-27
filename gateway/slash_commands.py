@@ -1367,7 +1367,8 @@ class GatewaySlashCommandsMixin(
         if src.platform not in self._UPDATE_ALLOWED_PLATFORMS:
             try:
                 from gateway.platform_registry import platform_registry
-                entry = platform_registry.get(src.platform.value)
+                # The answering bot's registration: a routed chat's profile may not load that plugin.
+                entry = self._under_authorization_profile(src, lambda: platform_registry.get(src.platform.value))
                 if not entry or not entry.allow_update_command:
                     return t("gateway.update.platform_not_messaging")
             except Exception:

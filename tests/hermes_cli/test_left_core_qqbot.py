@@ -105,11 +105,11 @@ def test_a_qqbot_disable_survives_the_automatic_install(tmp_path, monkeypatch):
     from hermes_cli.config import read_user_config_raw
     plugins = read_user_config_raw(home / "config.yaml")["plugins"]
     assert plugins["disabled"] == ["qqbot"] and "qqbot" not in (plugins.get("enabled") or [])
-    assert "`hermes plugins enable qqbot` turns it on" in said[0]
+    assert "so it is installed but off: run `hermes plugins enable qqbot` to turn it on" in said[0]
 
 
 @pytest.mark.parametrize(("config", "sentence"), [
-    ("plugins:\n  disabled: [qqbot]\n", "plugins.disabled lists 'qqbot', which now turns QQ Bot off"),
+    ("plugins:\n  disabled: [qqbot]\n", ""),  # the kept-off sentence says it, not the notice
     ("plugins:\n  isolation: host\n", "This profile sets plugins.isolation: host"),
     ("", ""),
 ])
@@ -360,8 +360,8 @@ def test_a_present_qqbot_the_home_disables_is_said_off_once_and_stays_disabled(t
     assert calls == []
     from hermes_cli.config import read_user_config_raw
     assert read_user_config_raw(home / "config.yaml")["plugins"]["disabled"] == ["qqbot"]
-    off = [line for line in said if "which now turns QQ Bot off" in line]
-    assert len(off) == 1 and "`hermes plugins enable qqbot` turns it on" in off[0], said
+    off = [line for line in said if "plugins.disabled lists 'qqbot'" in line]
+    assert len(off) == 1 and "so it is installed but off: run `hermes plugins enable qqbot`" in off[0], said
 
 
 @pytest.mark.parametrize("recorded", ["_default_plugins_installed: [qqbot]\n", ""], ids=["default-placed", "user-placed"])

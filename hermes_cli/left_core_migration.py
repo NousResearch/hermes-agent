@@ -223,18 +223,14 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
 
 
 def _qqbot_notice(home: Path, *, process_env: bool = False) -> str:
-    """An official plugin like the other official rows: no placement sentence, only what changed for *home*."""
+    """An official plugin like the other official rows: no placement sentence, only what changed for *home*.
+    A bare ``qqbot`` in plugins.disabled (core's adapter ignored it) is said by the kept-off sentence."""
     from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-    notes = []
-    # Core's adapter ignored a bare ``qqbot`` in plugins.disabled; the catalog plugin does not (see _yuanbao_notice).
-    if plugin_present("qqbot", home) and _plugins_listed(home, ("qqbot",))[1]:
-        notes.append(f"plugins.disabled lists 'qqbot', which now turns QQ Bot off: "
-                     f"`{_enable_command('qqbot', home)}` turns it on.")
     # The bundled adapter was exempt from host isolation; a catalog platform adapter cannot run in the host.
     if isolation_mode(_read_config(home)) == ISOLATION_HOST:
-        notes.append("This profile sets plugins.isolation: host, where platform adapters cannot load: QQ Bot "
-                     "stays off until the profile loads plugins in-process.")
-    return " ".join(notes)
+        return ("This profile sets plugins.isolation: host, where platform adapters cannot load: QQ Bot "
+                "stays off until the profile loads plugins in-process.")
+    return ""
 
 
 def _auth_store(home: Path) -> dict:

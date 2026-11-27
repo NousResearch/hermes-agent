@@ -44,17 +44,59 @@ def test_proxy_env_becomes_a_mount_and_no_proxy_stays_direct(env_only_proxy, mon
 
     monkeypatch.setenv("HTTPS_PROXY", PROXY)
     mounts = _mcp_proxy_mounts(httpx, URL, True, None)
-    # The mount wins over transport= for matching URLs, so it must carry the wire-body cap itself.
-    assert set(mounts) == {"https://"} and type(mounts["https://"]).__name__ == "_BodyCapTransport"
+    assert set(mounts) == {"https://"}
+    # The mount wins over transport= for matching URLs, so both of its legs carry the wire-body cap.
+    assert {type(leg).__name__ for leg in _legs(mounts["https://"])} == {"_BodyCapTransport"}
+    assert _routed(mounts["https://"], URL) == "proxied"
 
     monkeypatch.setenv("HTTP_PROXY", PROXY)  # loopback is never dialed through a proxy, NO_PROXY or not
-    assert _mcp_proxy_mounts(httpx, "http://127.0.0.1:5000/mcp", True, None) is None
+    mounts = _mcp_proxy_mounts(httpx, "http://127.0.0.1:5000/mcp", True, None)
+    assert _routed(mounts["http://"], "http://127.0.0.1:5000/mcp") == "direct"
 
     monkeypatch.setenv("NO_PROXY", "mcp.example.com")
-    assert _mcp_proxy_mounts(httpx, URL, True, None) is None
+    assert _routed(_mcp_proxy_mounts(httpx, URL, True, None)["https://"], URL) == "direct"
     monkeypatch.setenv("NO_PROXY", "10.0.0.0/8")  # CIDR: only the repo matcher understands it
-    assert _mcp_proxy_mounts(httpx, "https://10.1.2.3/mcp", True, None) is None
-    assert _mcp_proxy_mounts(httpx, "https://11.1.2.3/mcp", True, None) is not None
+    router = _mcp_proxy_mounts(httpx, "https://10.1.2.3/mcp", True, None)["https://"]
+    assert _routed(router, "https://10.1.2.3/mcp") == "direct"
+    assert _routed(router, "https://11.1.2.3/mcp") == "proxied"
+
+
+def test_each_request_gets_its_own_proxy_decision(env_only_proxy, monkeypatch):
+    """The client that reaches the MCP server also dials its OAuth authorization server (#160462):
+    a NO_PROXY MCP host must not send the AS metadata and /token calls direct, and a proxied MCP
+    host must not send a NO_PROXY AS through the proxy."""
+    from tools.mcp_tool import sdk_httpx
+    from tools.mcp_tool_transport import _mcp_proxy_mounts
+
+    httpx = sdk_httpx()
+    monkeypatch.setenv("HTTPS_PROXY", PROXY)
+    monkeypatch.setenv("NO_PROXY", ".internal.example")
+    router = _mcp_proxy_mounts(httpx, "https://mcp.internal.example/mcp", True, None)["https://"]
+    assert _routed(router, "https://mcp.internal.example/mcp") == "direct"
+    assert _routed(router, "https://auth.vendor.example/token") == "proxied"
+
+    router = _mcp_proxy_mounts(httpx, "https://mcp.vendor.example/mcp", True, None)["https://"]
+    assert _routed(router, "https://mcp.vendor.example/mcp") == "proxied"
+    assert _routed(router, "https://sso.internal.example/token") == "direct"
+
+
+def _legs(router):
+    return [router.proxied, router.direct]
+
+
+def _routed(router, url: str) -> str:
+    """Which leg ``router`` sends a request for ``url`` to, without dialing anything."""
+    import httpx as plain_httpx
+
+    class _Leg:
+        def __init__(self, name):
+            self.name = name
+
+        async def handle_async_request(self, request):
+            return self.name
+
+    router.proxied, router.direct = _Leg("proxied"), _Leg("direct")
+    return asyncio.run(router.handle_async_request(plain_httpx.Request("GET", url)))
 
 
 class _RecordingClient:
@@ -128,5 +170,5 @@ def test_preflight_probe_uses_the_same_proxy_mounts_as_the_connect_client(env_on
     with patch.object(httpx, "AsyncClient", _Probe):
         asyncio.run(MCPServerTask("remote")._preflight_content_type(URL, timeout=1.0))
     captured = _Probe.captured
-    assert type(captured["mounts"]["https://"]).__name__ == "_BodyCapTransport"
+    assert {type(leg).__name__ for leg in _legs(captured["mounts"]["https://"])} == {"_BodyCapTransport"}
     assert captured["transport"] is not None  # explicit transport: httpx env proxy auto-detection is off

@@ -61,13 +61,13 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
     (Windows ``ProxyOverride`` / macOS exceptions). Loopback is never dialed through a proxy
     (``agent.proxy_bypass.is_loopback_host``), NO_PROXY or not.
 
-    A mount wins over ``transport=`` for the URLs it matches, so each proxy transport is wrapped in
-    the same wire-body cap as the direct one. A proxy the installed httpx cannot build (e.g.
-    ``socks://`` without socksio) raises here and surfaces as this server's connect error.
+    The decision is taken per request URL, not once from the server URL (#160462): the same client
+    also dials the OAuth authorization server, which can need the proxy while the MCP host is in
+    ``NO_PROXY`` (or the other way round). A mount wins over ``transport=`` for the URLs it
+    matches, so both the proxy and the direct leg of each mount carry the same wire-body cap. A
+    proxy the installed httpx cannot build (e.g. ``socks://`` without socksio) raises here and
+    surfaces as this server's connect error.
     """
-    host = urllib.parse.urlsplit(url).hostname or ""
-    if not host or is_loopback_host(host) or should_bypass_proxy(url) or urllib.request.proxy_bypass(host):
-        return None
     proxies = urllib.request.getproxies()
     mounts: dict = {}
     for scheme in ("http", "https"):
@@ -75,9 +75,36 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
         if not proxy_url:
             continue
         # verify/cert apply to the CONNECT+TLS leg, so the proxy transport needs its own copy.
-        mounts[f"{scheme}://"] = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.AsyncHTTPTransport(
+        proxied = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.AsyncHTTPTransport(
             proxy=proxy_url, verify=ssl_verify, **_present(cert=client_cert)))
+        direct = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.AsyncHTTPTransport(
+            verify=ssl_verify, **_present(cert=client_cert)))
+        mounts[f"{scheme}://"] = _make_mcp_proxy_router(httpx_mod, proxied, direct)
     return mounts or None
+
+
+def _mcp_url_bypasses_proxy(url: str) -> bool:
+    """``url`` is dialed directly: loopback, ``NO_PROXY`` (repo matcher) or the OS bypass list."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return not host or is_loopback_host(host) or should_bypass_proxy(url) or bool(urllib.request.proxy_bypass(host))
+
+
+def _make_mcp_proxy_router(httpx_mod, proxied, direct):
+    """A transport that sends each request through ``proxied`` or ``direct`` by its own URL."""
+
+    class _ProxyRouter(httpx_mod.AsyncBaseTransport):
+        def __init__(self):
+            self.proxied, self.direct = proxied, direct
+
+        async def handle_async_request(self, request):
+            leg = self.direct if _mcp_url_bypasses_proxy(str(request.url)) else self.proxied
+            return await leg.handle_async_request(request)
+
+        async def aclose(self) -> None:
+            await self.proxied.aclose()
+            await self.direct.aclose()
+
+    return _ProxyRouter()
 
 
 def _pgroup_alive(pgid: Optional[int]) -> bool:

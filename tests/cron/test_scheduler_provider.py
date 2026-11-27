@@ -877,3 +877,43 @@ def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
 
     assert not thread.is_alive()
     assert str(gamma) in ticked, ticked
+
+
+def test_resolve_unreadable_cron_provider_warns_before_builtin(tmp_path, monkeypatch, caplog):
+    """A cron.provider value the resolver cannot read (here a YAML int in a real config.yaml)
+    still falls back to the built-in ticker, but says so: a configured provider must never be
+    dropped silently."""
+    import logging
+
+    from cron import scheduler_provider as sp
+
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("cron:\n  provider: 7\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with caplog.at_level(logging.WARNING, logger="cron.scheduler_provider"):
+        prov = sp.resolve_cron_scheduler()
+
+    assert prov.name == "builtin"
+    assert any("cron.provider" in r.getMessage() for r in caplog.records
+               if r.levelno >= logging.WARNING and r.name == "cron.scheduler_provider")
+
+
+def test_resolve_config_load_failure_warns_before_builtin(monkeypatch, caplog):
+    """load_config() raising (e.g. an unreadable HERMES_HOME) falls back loudly, not silently."""
+    import logging
+
+    import hermes_cli.config as cfg
+    from cron import scheduler_provider as sp
+
+    def _boom():
+        raise PermissionError("config.yaml: permission denied")
+
+    monkeypatch.setattr(cfg, "load_config", _boom)
+    with caplog.at_level(logging.WARNING, logger="cron.scheduler_provider"):
+        prov = sp.resolve_cron_scheduler()
+
+    assert prov.name == "builtin"
+    messages = [r.getMessage() for r in caplog.records if r.name == "cron.scheduler_provider"]
+    assert any("cron.provider" in m and "permission denied" in m for m in messages)

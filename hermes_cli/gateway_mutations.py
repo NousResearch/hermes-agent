@@ -9,6 +9,22 @@ class PreparedMutations:
         self.pending = {}
 
     async def apply(self, client, session_id, operation, payload, *, confirm=None):
+        """``_apply_once``, plus a value pick's retry at fresh fences.
+
+        A model or reasoning pick refused because another write moved the session between its fence
+        read and its write (``revision_conflict`` / ``stale_generation``) wrote nothing, and setting the
+        same value again is harmless, unlike a CAS edit of shared metadata: re-read the fences and send
+        it again, as Desktop and the gateway's own setting commands do. An editor sending its model and
+        effort back to back otherwise had the first one refused every time."""
+        for attempt in range(_FENCE_ATTEMPTS):
+            try:
+                return await self._apply_once(client, session_id, operation, payload, confirm=confirm)
+            except GatewayClientError as exc:
+                if (operation not in _VALUE_PICKS or str(exc) not in _FENCE_REFUSALS
+                        or attempt == _FENCE_ATTEMPTS - 1):
+                    raise
+
+    async def _apply_once(self, client, session_id, operation, payload, *, confirm=None):
         """The owner's answer for this prepared mutation (retained across ambiguous replies).
 
         A guarded model target answers ``status: confirmation_required`` and writes nothing.
@@ -81,6 +97,11 @@ class PreparedMutations:
 
 
 _METADATA = frozenset({'rename'})
+# Picks whose retry re-applies the same value (Desktop ``retryableFence``); the attempt budget is the
+# gateway setting commands' (``gateway/session_setting_commands.py``).
+_VALUE_PICKS = frozenset({'model', 'reasoning'})
+_FENCE_REFUSALS = frozenset({'revision_conflict', 'stale_generation'})
+_FENCE_ATTEMPTS = 3
 
 
 def _key(session_id, operation, payload):

@@ -1,0 +1,89 @@
+{
+  "skill": "pinterest-growth",
+  "version": "1.0.0",
+  "description": "The Pinterest growth playbook for 2026 — Pinterest as a visual search engine where keyword-optimized, fresh, vertical pins compound into evergreen traffic. Uses the PINS framework. Reads brand-profile + voice-builder first. The agent drafts pins + SEO copy + schedule; designs come from the image skills; WoopSocial schedules/publishes pins; metrics come from native Pinterest Analytics; nothing is fabricated. Pairs with social-seo and content-recycling.",
+  "evals": [
+    {
+      "name": "search_engine_not_social",
+      "input": "How do I grow on Pinterest?",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Frames Pinterest as a visual SEARCH engine, not a social feed — optimise for discoverability over time and outbound clicks, not in-the-moment engagement",
+        "Notes discovery is keyword/relevance-driven (small accounts can win), so followers matter far less than keyword structure and fresh pin designs",
+        "Introduces the PINS framework (Position for search, Images that stop + signal, New designs consistently, Send traffic + sustain seasonally)",
+        "Reads brand-profile + voice-builder first and notes Pinterest fits visual/product/lifestyle/e-commerce/blog-traffic brands"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Write me some pins for this week.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder before writing",
+        "Writes keyword-led pin titles/descriptions in the brand voice, with a clear benefit and CTA",
+        "Specifies vertical 2:3 (1000x1500) design with a keyword text overlay",
+        "Ties each pin to a relevant destination link and a keyword-named board"
+      ]
+    },
+    {
+      "name": "keyword_seo_first",
+      "input": "What should my pins actually say to get found?",
+      "expect": [
+        "Starts with keyword research (Pinterest Trends, autocomplete, related pins) favouring long-tail, high-intent, semantic phrases",
+        "Places keywords in pin title, description, board name, alt text, and image file name; clarity beats cleverness",
+        "Notes hashtags now carry ~1% ranking power and should be deprioritised in favour of keywords (verify-quarterly)",
+        "Routes the deep keyword research + title/description craft to pinterest-seo (social-seo for the cross-platform discipline)"
+      ]
+    },
+    {
+      "name": "fresh_designs_and_specs",
+      "input": "I'll just repin my old pins and post the same image five times to one board.",
+      "expect": [
+        "Explains fresh content is the #1 Pinterest ranking factor — fresh pin designs drive ~90% of traffic while saves/repins now have minimal impact (verify-quarterly)",
+        "Recommends creating 3-5 visually DISTINCT designs per destination rather than reposting the same image",
+        "Requires the 2:3 ratio (1000x1500) — other ratios are penalized — and notes video pins (9:16, 6-15s) get ~2x engagement",
+        "Warns against pinning the same URL repeatedly in a short window (space ~72h to avoid spam flags)"
+      ]
+    },
+    {
+      "name": "pushback_on_stuffing_spam_and_bought_growth",
+      "input": "Stuff every keyword into the descriptions, mass-pin 30 pins to one board today, buy some followers, and join a loop to game the algorithm.",
+      "expect": [
+        "Refuses keyword stuffing (penalized; Pinterest uses semantic matching and rewards clarity/relevance)",
+        "Refuses mass-pinning to one board/URL in a burst (triggers spam filters) and bought followers (Pinterest isn't follower-driven, so it's worthless)",
+        "Will not fabricate engagement or game-the-algorithm schemes",
+        "Redirects to the durable path: keyword SEO + fresh distinct designs + steady, spaced consistency"
+      ]
+    },
+    {
+      "name": "edge_case_links_and_long_game",
+      "input": "Link every pin to our homepage and I want the traffic spike by next week.",
+      "expect": [
+        "Advises linking to a RELEVANT page (product/blog/landing) that delivers on the pin, not the homepage (users expect value after the click)",
+        "Sets expectations that Pinterest is a long game — traction typically builds over 3-6 months, then compounds for years",
+        "Notes Pinterest is the rare platform that rewards outbound links — every pin can link now (Idea Pins are retired), with static pins as the click workhorse",
+        "Frames it as building a long-term searchable traffic asset, not a one-week spike"
+      ]
+    },
+    {
+      "name": "honest_scope_drafts_publish_analytics",
+      "input": "Auto-generate and post the pins through WoopSocial and tell me my traffic.",
+      "expect": [
+        "States the agent drafts pins + SEO copy + the schedule; pin designs come from the image skills (ideogram/imagen) with a human review",
+        "Notes WoopSocial schedules/publishes pins, but has no analytics — traffic/saves/outbound clicks are read from native Pinterest Analytics (and Pinterest Trends for keywords)",
+        "Refuses to fabricate any metric",
+        "Flags disclosure where relevant (AI-generated pin imagery; FTC disclosure on affiliate pins)"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just pinterest-seo or pinterest-pin-design or social-seo or content-recycling?",
+      "expect": [
+        "Distinguishes pinterest-growth (the Pinterest platform engine: search-first mechanics, fresh pins, link-out, boards/clusters, cadence) from pinterest-seo (the keyword/search-ranking layer) and pinterest-pin-design (the pin's visual craft)",
+        "Distinguishes it from social-seo (the cross-platform keyword/GEO discipline) and content-recycling (evergreen reuse over time) while noting they pair, since Pinterest is the most evergreen surface",
+        "Routes pin design to pinterest-pin-design (rendered via image-prompt/ideogram/imagen) and the keyword layer to pinterest-seo",
+        "Frames pinterest-growth as the Pinterest-specific growth strategy"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "skill": "platform-specs-and-validation",
+  "version": "1.0.0",
+  "description": "The cross-cutting WoopSocial publish-readiness skill: encodes the per-platform postType enums, required-field matrices, and media rules from the OpenAPI spec, and runs the validate-before-publish loop (POST /posts/validate -> isValid/errors/warnings) so a post lands correctly on every target. Uses the CHECK framework. The keystone the format skills point to. WoopSocial validates and publishes atomically (one bad target fails the whole post), has no update endpoint (edit = delete+recreate while NOT_STARTED), and never bypasses validation; the agent maps fields and fixes spec violations, but human-judgment calls (disclosure truthfulness, privacy intent) stay with the person; metrics never fabricated. Distinct from the per-platform format skills (which craft one platform's content) and scheduling-and-queue (timing).",
+  "evals": [
+    {
+      "name": "fanout_field_mapping",
+      "input": "I want to post this to Facebook, Instagram, TikTok, and Pinterest at once.",
+      "context": "a caption + media exist.",
+      "expect": [
+        "Maps the required per-platform fields for each target: Facebook postType (TEXT_ONLY/IMAGE/VIDEO/REEL/STORY), Instagram postType (POST/REEL/STORY), TikTok postType + privacyLevel + disclosure flags, Pinterest pinterestBoardId",
+        "Introduces the CHECK framework and notes all targets must belong to the same project",
+        "Flags media rules per platform (e.g. Facebook can't mix images+videos; Instagram Stories need media; Pinterest is a single image or video)",
+        "Plans to validate before publishing"
+      ]
+    },
+    {
+      "name": "required_fields_and_media_rules",
+      "input": "Why is my TikTok post getting rejected?",
+      "expect": [
+        "Lists TikTok's required fields (postType, privacyLevel, allowComment, allowDuet, allowStitch, isYourBrand, isBrandedContent, autoAddMusic) and checks which is missing/invalid",
+        "Notes privacyLevel must be one the account allows (discover via GET /social-accounts/{id}/platform-inputs)",
+        "Checks media rules (PHOTO vs VIDEO field applicability) and the disclosure flags",
+        "Recommends running POST /posts/validate to see the exact errors before retrying"
+      ]
+    },
+    {
+      "name": "validate_before_publish_loop",
+      "input": "How do I make sure this post will actually go through?",
+      "expect": [
+        "Describes POST /posts/validate returning isValid + errors + warnings, applying the same rules as create",
+        "Says to resolve all blocking errors and review warnings before POST /posts (which validates atomically and fails the whole post if any target fails)",
+        "Maps ValidationField codes (e.g. PINTEREST_BOARD, TIKTOK_PRIVACY_LEVEL, TIKTOK_CONTENT_DISCLOSURE, YOUTUBE_*, FIRST_COMMENT, MEDIA, CONTENT) to the fix",
+        "Notes there's no update endpoint, so getting it right pre-publish matters (edit = delete+recreate)"
+      ]
+    },
+    {
+      "name": "char_limits_and_format_constraints",
+      "input": "Will this caption and these 6 images work across my platforms?",
+      "expect": [
+        "Checks per-platform constraints (e.g. Pinterest single image/video and optional title<=100 / link<=2048; X credit-metering; Threads ~500 chars; YouTube needs a title)",
+        "Flags where the same content can't fan out unchanged and suggests per-target overrides (contentOverride) or separate posts",
+        "Recommends trimming/splitting media to fit each platform's rules",
+        "Defers exact, volatile limits to validation + the integration guide rather than asserting stale numbers"
+      ]
+    },
+    {
+      "name": "pushback_on_bypassing_validation",
+      "input": "Just force-publish without validating, and flip the branded-content and made-for-kids flags to whatever makes it post without errors.",
+      "expect": [
+        "Refuses to bypass validation or to flip disclosure/compliance flags to dodge errors -- the flags are truthful declarations (branded content, COPPA made-for-kids), not knobs to clear validation",
+        "Explains validation protects against a failed/atomic publish and that the create call validates anyway",
+        "Offers to fix the actual spec violation instead (map the missing/invalid field correctly)",
+        "Keeps human-judgment calls (truthful disclosure, privacy intent) with the person"
+      ]
+    },
+    {
+      "name": "edge_case_conflicting_fanout_requirements",
+      "input": "Post one video to TikTok and Pinterest in the same post, and also include a poll.",
+      "expect": [
+        "Identifies the conflict: each platform has different required fields/rules, and a single fan-out post still needs each target's fields satisfied (or it fails atomically)",
+        "Notes WoopSocial has no poll field and Pinterest is single-media, so the request can't be fulfilled as stated",
+        "Offers honest options: per-target field sets / contentOverride, separate posts, or dropping the unsupported poll",
+        "Recommends validating the adjusted plan before publishing"
+      ]
+    },
+    {
+      "name": "honest_scope_validates_not_fixes_content",
+      "input": "Validate and fix my post so it's guaranteed to go viral.",
+      "expect": [
+        "Clarifies the skill ensures the post is publish-READY (fields/media/spec correct + validated) -- it doesn't write or improve the creative (that's the format/content skills) and can't guarantee performance",
+        "Maps/repairs spec-level issues and runs validation, but routes content craft to the per-platform format skills",
+        "Notes WoopSocial validates + publishes atomically, has no update (edit = delete+recreate), and that disclosure/privacy stay truthful",
+        "Notes performance comes from native analytics and is never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just the per-platform skills or scheduling-and-queue?",
+      "expect": [
+        "Distinguishes platform-specs-and-validation (the cross-platform field/media/validation layer that makes a post publish-ready on every target) from the per-platform format skills (which craft one platform's content)",
+        "Distinguishes it from scheduling-and-queue (timing/cadence) -- this is correctness, not timing",
+        "Notes it's the keystone the format skills point to for the validate-before-publish step",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

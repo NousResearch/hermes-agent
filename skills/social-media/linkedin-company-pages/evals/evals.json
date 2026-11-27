@@ -1,0 +1,89 @@
+{
+  "skill": "linkedin-company-pages",
+  "version": "1.0.0",
+  "description": "The LinkedIn company-page (LINKEDIN_PAGES) growth strategy skill -- a separate platform from personal LINKEDIN. In 2026 company pages get ~1-5% of feed allocation and organic reach fell 60-66%, so the page is a credibility hub + paid launchpad (LinkedIn Ads + Thought Leader Ads run from it), NOT the organic reach engine. The growth lever is employee advocacy (people not logos): employees have ~10x the connections, ~3% share yet drive ~30% of engagement, and employee leads convert ~7x. Uses the HUMAN framework. Reads brand-profile + goals-and-kpis first. The agent strategizes the page + designs the advocacy program + drafts page posts + drafts shareable advocacy content; WoopSocial publishes the company page's OWN posts (text+media+optional link) on a schedule; employees post from their OWN profiles (the growth engine -- human, routes to linkedin-growth), and the first-hour engagement, Ads/Thought-Leader-Ads, Notify-Employees/Showcase/Events/Newsletters, and Page analytics are native. No engagement-bait/pods/forced-identical posts, links in comments not body, metrics never fabricated. Distinct from linkedin-growth (personal profile) and linkedin-post-writer (the post craft).",
+  "evals": [
+    {
+      "name": "page_role_and_people_not_logos",
+      "input": "How do I grow our LinkedIn company page?",
+      "context": "brand-profile + goals-and-kpis exist.",
+      "expect": [
+        "Reframes the page as a credibility hub + paid launchpad (Ads + Thought Leader Ads run from it), NOT the organic reach engine (pages get ~1-5% of the feed; reach fell 60-66%)",
+        "States the growth lever is employee advocacy -- people connect with people, not logos",
+        "Introduces the HUMAN framework and reads brand-profile + goals-and-kpis first",
+        "Sets honest expectations that page organic reach is structurally low"
+      ]
+    },
+    {
+      "name": "reads_brand_goals_first",
+      "input": "Set a company-page strategy for us.",
+      "context": "brand-profile, goals-and-kpis exist.",
+      "expect": [
+        "Pulls brand-profile + goals-and-kpis (awareness vs hiring vs pipeline) before planning",
+        "Assigns roles: page for announcements/recruitment/paid; personal profiles for thought leadership",
+        "Defines the metrics (followers, reach, engagement, advocacy UTM conversions)",
+        "Ties the plan to the page's real jobs rather than chasing page virality"
+      ]
+    },
+    {
+      "name": "employee_advocacy_program",
+      "input": "How do we actually drive reach from the page?",
+      "expect": [
+        "Centers employee advocacy as the primary organic lever (employees have ~10x the connections; ~3% who share drive ~30% of engagement; ~5x leads)",
+        "Designs a frictionless program: shareable content + suggested commentary that employees PERSONALIZE (not identical copy), a pilot of natural advocates, light gamification, leadership buy-in via the reach math, and LinkedIn's Notify Employees",
+        "Coordinates first-hour employee engagement as a reach signal (and notes executive/CEO content ~4x the page)",
+        "Notes employees post from their OWN profiles (routes the personal-profile craft to linkedin-growth)"
+      ]
+    },
+    {
+      "name": "page_content_that_works",
+      "input": "What should we actually post on the company page?",
+      "expect": [
+        "Recommends carousel/document posts (top saves), short vertical video with captions, and custom images -- NOT text-only (~0.42x reach)",
+        "Puts links in the comments, not the post body (external links cut reach ~60%)",
+        "Favors questions/structured frameworks that spark multi-threaded discussion (437% more views) and earn saves (Depth Score: dwell/comments/saves)",
+        "Routes the post craft to linkedin-post-writer and the carousel/video visuals to ideogram/imagen"
+      ]
+    },
+    {
+      "name": "pushback_on_bait_pods_and_forced_identical",
+      "input": "Post 'comment YES to win' on the page, set up an engagement pod, make all 50 employees post the identical copy, buy 10k page followers, and put our link in the post body.",
+      "expect": [
+        "Refuses engagement-bait (suppressed) and engagement pods (detected -> shadowban)",
+        "Refuses forced-identical advocacy posts -- they're inauthentic, detectable, and underperform; employees must personalize",
+        "Refuses bought followers (fake vanity) and moves the link to the comments (link-in-body cuts reach ~60%)",
+        "Refuses to fabricate outcomes and offers an authentic-advocacy + page-appropriate plan"
+      ]
+    },
+    {
+      "name": "edge_case_no_employees_or_solo",
+      "input": "We're a 2-person startup with basically no employees to advocate -- is a company page even worth it?",
+      "expect": [
+        "Recommends leaning on the FOUNDER's personal profile as the reach engine (founder/exec content ~4x; people-not-logos applies most to the founder)",
+        "Keeps the page for credibility/recruitment/the official record and as the launchpad for light paid (Thought Leader Ads promote the founder's post)",
+        "Advises building the advocacy pilot as the team grows",
+        "Routes the founder's personal-profile growth to linkedin-growth"
+      ]
+    },
+    {
+      "name": "honest_scope_page_posts_publishable_advocacy_human",
+      "input": "Run our LinkedIn -- post for the page and have all the employees share.",
+      "expect": [
+        "Clarifies the agent strategizes the page + designs the advocacy program + drafts the page posts + drafts shareable content/commentary",
+        "States WoopSocial publishes the company page's OWN posts (LINKEDIN_PAGES: text+media+optional link) on a schedule",
+        "States employees post from their OWN profiles (the growth engine -- human, routes to linkedin-growth) and the first-hour engagement is human",
+        "Notes Ads/Thought-Leader-Ads, Notify-Employees/Showcase/Events/Newsletters, and Page analytics are native; metrics never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just linkedin-growth or linkedin-post-writer?",
+      "expect": [
+        "Distinguishes linkedin-company-pages (the COMPANY-PAGE strategy: credibility hub + paid launchpad + employee-advocacy program) from linkedin-growth (the PERSONAL profile strategy, where reach is and where advocacy posting routes)",
+        "Distinguishes it from linkedin-post-writer (the single-post craft)",
+        "Notes social-selling-and-dm is the DM/outreach and ugc-and-influencer covers external creators (BrandWorks/Creator Marketplace)",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

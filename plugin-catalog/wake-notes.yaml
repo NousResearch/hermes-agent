@@ -1,15 +1,15 @@
 name: wake-notes
 title: Wake Notes
 repo: https://github.com/tdotlab/wake
-sha: 91ac7cdfc1106d8032920b87693479cfc6adbb5b
+sha: 30bae0b5f3e4d55f6fd03e53d85d31ffe5434775
 subdir: plugins/wake
-version: "0.2.0"
+version: "0.2.1"
 description: "Wake adds optional starter-vault setup and a nightly journal to Hermes. It stages conversations from the current profile, asks an agent to draft a cited journal, validates the draft and optionally copies it to a connected vault. Disclosure — setup can create a cron job and install vault skills; the journal reads profile conversations and sends staged excerpts to the configured model provider. The journal agent runs with the user's host permissions and uses a terminal; the write boundary is procedural, not a sandbox. The plugin can create files in the profile and a user-selected vault, and uses Hermes internal cron and model-picker APIs. It never modifies built-in memory or syncs the vault."
 maintainer: tdotlab
 tier: community
 category: memory
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/tdotlab/wake/tree/91ac7cdfc1106d8032920b87693479cfc6adbb5b/plugins/wake
+docs_url: https://github.com/tdotlab/wake/tree/30bae0b5f3e4d55f6fd03e53d85d31ffe5434775/plugins/wake
 readme: true
 platforms: [linux, macos, windows]
 known_issues:

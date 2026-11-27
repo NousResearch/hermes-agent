@@ -13,11 +13,35 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+# gh is flaky-side (rate-limit blips, transient 5xx); a non-auth failure or a
+# timeout gets one retry after this pause before the receipt says infra.
+_GH_RETRY_DELAY = 2.0
+
+
+class _GateGhError(subprocess.SubprocessError):
+    """A ``gh api`` call exited non-zero (or timed out) for a non-auth reason.
+
+    Carries the failed phase and gh's exit code — the only fields safe to
+    persist. gh's stderr never travels with it: it can echo credentials and
+    host detail. ``SubprocessError`` base so any consumer's broad clause still
+    keeps the retry wording for gh-side failures."""
+
+    def __init__(self, phase: str, exit_code, attempts: int) -> None:
+        self.phase, self.exit_code, self.attempts = phase, exit_code, attempts
+        cause = "timed out" if exit_code is None else f"exited {exit_code}"
+        super().__init__(f"gh api {phase} {cause} after {attempts} attempt(s)")
+
+
+class _GateAuthError(RuntimeError):
+    """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
+    this profile's login cannot see the repo — an identity problem to fix, not
+    an infrastructure blip to retry."""
 
 
 def validate_contract(value: str | None) -> str:
@@ -30,35 +54,42 @@ def validate_contract(value: str | None) -> str:
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
          profile_home: str | None = None):
+    # Path only, never the query string: the phase names which endpoint broke
+    # without persisting anything resembling a credential or host detail.
+    phase = endpoint.split("?")[0]
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
         command += ["--paginate", "--slurp"]
-    try:
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, encoding="utf-8", errors="replace", timeout=30,
-                                check=True, env=_gh_env(profile_home))
-    except subprocess.CalledProcessError as exc:
-        # 401/403/404 = the login cannot see this repository (wrong profile identity
-        # or missing grant), not a transient API failure. Persist only the status
-        # code + endpoint, never gh's stderr (credentials/host details).
-        denied = re.search(r"HTTP (40[134])", exc.stderr or "")
-        if denied:
-            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
-        if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
-            raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
-        raise
-    value = json.loads(result.stdout)
-    if isinstance(value, dict) and value.get("errors"):
-        raise ValueError("GitHub returned incomplete GraphQL evidence")
-    return value
-
-
-class _GateAuthError(RuntimeError):
-    """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
-    this profile's login cannot see the repo — an identity problem to fix, not
-    an infrastructure blip to retry."""
+    for attempt in (1, 2):
+        try:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, encoding="utf-8", errors="replace", timeout=30,
+                                    check=True, env=_gh_env(profile_home))
+        except subprocess.CalledProcessError as exc:
+            # 401/403/404 = the login cannot see this repository (wrong profile identity
+            # or missing grant), not a transient API failure. Persist only the status
+            # code + endpoint, never gh's stderr (credentials/host details).
+            denied = re.search(r"HTTP (40[134])", exc.stderr or "")
+            if denied:
+                raise _GateAuthError(f"HTTP {denied[1]} on {phase}") from None
+            if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
+                raise _GateAuthError(f"gh has no login for {phase}") from None
+            if attempt == 2:  # observed once more than the fleet flakes on; a blip, not a diagnosis
+                raise _GateGhError(phase, exc.returncode, attempt) from None
+            time.sleep(_GH_RETRY_DELAY)
+            continue
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise _GateGhError(phase, None, attempt) from None
+            time.sleep(_GH_RETRY_DELAY)
+            continue
+        value = json.loads(result.stdout)
+        if isinstance(value, dict) and value.get("errors"):
+            raise ValueError("GitHub returned incomplete GraphQL evidence")
+        return value
+    raise AssertionError("unreachable: every exhausted path raises _GateGhError")
 
 
 # Every key gh can read a login from, github.com and GitHub Enterprise alike. All of them are
@@ -219,9 +250,20 @@ def collect_acceptance(contract: str, published_pr: str | None,
                        detail=f"GitHub refused the acceptance read ({exc}) as {login}; "
                               "fix that profile's GitHub credentials/access to the repository, then retry completion.")
         return receipt
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
-        # Never persist gh stderr (credentials/host details); the failed phase is actionable.
-        receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
+    except _GateGhError as exc:
+        # gh itself failed (non-auth exit, or a timeout): the phase + exit code
+        # name what broke without persisting gh's stderr; retry stays the advice.
+        receipt.update(classification="infra", detail=(
+            f"GitHub evidence call failed: gh api {exc.phase} "
+            + ("timed out" if exc.exit_code is None else f"exited {exc.exit_code}")
+            + f" ({exc.attempts} attempts); GitHub or gh may be transiently unavailable, retry completion."))
+        return receipt
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError) as exc:
+        # Never a credential suggestion: an error here means the response shape
+        # broke our parsing/pagination — a gate bug, phrased as one.
+        receipt.update(classification="infra", detail=(
+            f"evidence collection failed internally: {type(exc).__name__}; "
+            "not an auth problem — report the gate if it repeats."))
         return receipt
 
 

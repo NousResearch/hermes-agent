@@ -442,6 +442,9 @@ gateway:
     cache_unknown_route: "Prompt-kas: onbekend (hierdie verskaffer publiseer nie sy kasretensie nie)."
     cache_unknown_runtime: "Prompt-kas: onbekend (hierdie looptyd stel sy eie kasopsies wat Hermes nie kan sien nie)."
     cache_unknown_storage: "Prompt-kas: onbekend (die sessiestoor kon nie gelees word nie)."
+    cache_warming_off: "Lewendhouers: af (twee keer gemis)."
+    cache_tier_pending: "Vlak: 5m totdat die 5-minuut-kas die eerste keer verval, dan 1h."
+    cache_learned: "Geleer: {rule}."
     cache_confidence:
       proven: "bewys"
       declared: "verklaar"

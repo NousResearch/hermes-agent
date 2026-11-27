@@ -4,7 +4,6 @@ import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useStat
 
 import { Button } from '@/components/ui/button'
 import { DialogCloseButton } from '@/components/ui/dialog'
-import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
@@ -20,6 +19,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import { classifyLocalBootFailure, type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
+import { BootFailureModal } from './boot-failure-modal'
 import type { RemoteReauth } from './boot-failure-reauth'
 import {
   deriveProviderShape,
@@ -45,49 +45,6 @@ type RecoveryView = 'connect' | 'recovery'
 // Repair re-runs the installer) are no-ops for that case — the only fix is to
 // re-establish the remote session. The detection + copy helpers live in
 // ./boot-failure-reauth so they're unit-testable without a React render.
-
-// Recovery surface for a hard boot failure (gateway never came up, backend
-// exited during startup, bootstrap latched, …). Without this the app shell
-// renders dead — "gateway offline", no composer, only a toast — with no way
-// to retry, repair the install, switch the gateway, or find the logs.
-function BootFailureModal({
-  children,
-  onDismiss,
-  title
-}: {
-  children: ReactNode
-  onDismiss: () => void
-  title?: string
-}) {
-  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null)
-
-  return (
-    <DialogPrimitive.Root
-      onOpenChange={open => {
-        if (!open) {
-          onDismiss()
-        }
-      }}
-      open
-    >
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Content aria-describedby={undefined} aria-modal="true" asChild ref={setContentNode}>
-          <div
-            className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
-            // Masks the whole app on boot failure — must stay filled under window
-            // glass. Contract: `[data-glass-opaque]` in styles.css.
-            data-glass-opaque=""
-          >
-            <DialogPortalContainerContext.Provider value={contentNode}>
-              {title ? <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title> : null}
-              {children}
-            </DialogPortalContainerContext.Provider>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
-  )
-}
 
 /** What the app shows over a failed startup: sign-in instructions for a signed-out Webapp tab,
  * recovery steps for everything else. */

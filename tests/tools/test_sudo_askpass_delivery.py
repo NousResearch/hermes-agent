@@ -777,6 +777,8 @@ def test_live_local_backend_noclobber_startup_keeps_caller_input(configured_pass
     env = LocalEnvironment(cwd=str(tmp_path), timeout=10, env={"TMPDIR": str(temp), "BASH_ENV": str(startup)})
     try:
         assert env.execute(f"export PATH={fake.parent}:$PATH")["returncode"] == 0
+        # The export must survive into the next command under noclobber, or the host's sudo runs.
+        assert env.execute("command -v sudo")["output"].strip() == str(fake)
         result = env.execute('read -r p; echo "got:$p"; sudo true', stdin_data="rest\n")
     finally:
         env.cleanup()

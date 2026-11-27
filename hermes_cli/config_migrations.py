@@ -753,6 +753,66 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+#: The line cli-config.yaml.example seeded (9e6f34a76e24) into every installer/Docker config. Its
+#: trailing comment intact with the value is the only byte-level proof Hermes wrote a "5m": the
+#: pre-c717be8ded71 migrations and pre-98488c4be49e save_config wrote the same bare value a user
+#: types to pin the tier, so a bare "5m" is kept.
+_TEMPLATE_CACHE_TTL_LINE = re.compile(
+    r"""^[ \t]+cache_ttl:[ \t]*(["']?)5m\1[ \t]*#[ \t]*use "1h" for long sessions with pauses between turns[ \t]*$""",
+    re.MULTILINE)
+_TOP_LEVEL_KEY = re.compile(r"^(?:[\"']?)([A-Za-z_][\w-]*)(?:[\"']?)[ \t]*:")
+
+
+def _prompt_caching_child_lines(text: str) -> list[str]:
+    """The direct-child lines of the top-level ``prompt_caching:`` block mapping (empty when there is none):
+    the template's proof is only good on that node's own ``cache_ttl`` line, never on a matching line under
+    another section."""
+    lines, block, indent = text.splitlines(), [], None
+    for i, line in enumerate(lines):
+        match = _TOP_LEVEL_KEY.match(line)
+        if not match or match.group(1) != "prompt_caching":
+            continue
+        for child in lines[i + 1:]:
+            stripped = child.lstrip(" \t")
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped is child:  # back at column 0: the block ended
+                break
+            width = len(child) - len(stripped)
+            indent = width if indent is None else indent
+            if width == indent:
+                block.append(child)
+        break
+    return block
+
+
+def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
+    # 53 → 54: prompt_caching.cache_ttl defaults to "auto" (1h for human-paced sessions, 5m for
+    # machine-paced ones). A "5m" still on the template's seeded line is Hermes' copy, not a choice,
+    # and is dropped; any other "5m" may be the user's pin and stays (with a notice).
+    config = read_raw_config()
+    section = config.get("prompt_caching")
+    if not isinstance(section, dict) or section.get("cache_ttl") != "5m":
+        return
+    from hermes_cli.config_backend import supports_file_tooling
+
+    path = _cfg().get_config_path()
+    # The proof is the template's comment bytes, which only an installer-seeded LOCAL file carries; a
+    # non-file backend was never seeded from the template, so its "5m" is kept like any other pin.
+    seeded = supports_file_tooling() and any(_TEMPLATE_CACHE_TTL_LINE.fullmatch(line) for line in _prompt_caching_child_lines(
+        path.read_text(encoding="utf-8-sig")))  # config-reader: ok — comment bytes are the provenance; parsed docs drop them
+    if not seeded:
+        if not quiet:
+            print('  ℹ prompt_caching.cache_ttl: "5m" pins every session to the 5m cache tier; the '
+                  'default is now "auto" (1h for sessions you type into). Remove the line to follow it.')
+        return
+    del section["cache_ttl"]
+    _commit(config, results, quiet, 'removed prompt_caching.cache_ttl: "5m" (seeded by the config template)',
+            '  ✓ Removed the template-seeded prompt_caching.cache_ttl: "5m". Prompt caching now follows '
+            '"auto": the 1h tier for sessions you type into, 5m for subagents, cron and other '
+            'machine-paced runs. Set cache_ttl: "5m" to pin the old behaviour.')
+
+
 def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None:
     """Post-migration: disable exfiltration-shaped MCP stdio entries (hand-edited or from older
     installs). The stanza is preserved for auditability but marked disabled."""
@@ -926,6 +986,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         section="agent", key="clarify_timeout", old=3600, new=90,
         added="agent.clarify_timeout=90",
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
+    # 53 → 54: prompt_caching.cache_ttl defaults to "auto" (see _migrate_to_54).
+    (54, _migrate_to_54),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

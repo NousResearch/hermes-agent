@@ -43,7 +43,7 @@ Each phase of an iteration is its own sibling, so a change to (say) overflow han
 call), `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
 (post-exhaustion wait-and-retry ladder), `turn_retry_state`,
 `turn_stop_gates`, `turn_liveness`, `turn_usage`, `turn_final_response`, `turn_finalizer`,
-`turn_summary`. Find the phase with `grep -rn "def X" agent/turn_*.py`.
+`turn_summary`. Find the phase with `search_files` for `def X`, `file_glob="turn_*.py"`, in `agent/`.
 
 Messages use OpenAI format `{"role": "system|user|assistant|tool", ...}`; reasoning content is stored
 in `assistant_msg["reasoning"]`.

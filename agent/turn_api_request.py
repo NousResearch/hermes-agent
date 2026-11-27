@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import time
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from agent.prompt_cache_lifecycle import cancel_prompt_cache_warming, start_in_flight_prompt_cache_warming
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 
@@ -120,6 +122,8 @@ def build_request_payload(
     which reports through ``pre/post_auxiliary_call``) share it."""
     from agent.conversation_loop import _redecorate_prompt_cache_for_provider
 
+    # The real request about to go out refreshes the cache entry itself.
+    cancel_prompt_cache_warming(agent, "new request in flight")
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None
@@ -194,6 +198,8 @@ def build_api_request(
         tools_for_api=tools_for_api, system_message=system_message, api_call_count=api_call_count,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
     )
+    # The request about to go out keeps its own prefix warm while its reply generates.
+    start_in_flight_prompt_cache_warming(agent, built.api_kwargs)
     api_kwargs, api_messages, _moa_prepared_request = built.api_kwargs, built.api_messages, built._moa_prepared_request
     _fire_pre_api_request_hook(
         agent, api_kwargs, api_messages, built._llm_middleware_trace, messages=messages,

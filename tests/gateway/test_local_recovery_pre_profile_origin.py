@@ -101,7 +101,7 @@ def _with_receipt_field(path, value):
 _RECEIPT_DAMAGE = {
     'foreign_origin': lambda db, sid: _age_receipt_origins(db, sid, lambda origin: {**origin, 'profile': 'other-profile'}),
     'lineage': lambda db, sid: _store_receipt(db, sid, _with_receipt_field(('lineage',), [sid, 'gone'])),
-    # restore_policy wraps this ValueError into a bare storage_unavailable.
+    # restore_policy refuses this as its owning field, so the log names terminal_json.
     'terminal_policy': lambda db, sid: _store_receipt(db, sid, _with_receipt_field(
         ('policy', 'terminal_json'), json.dumps({'TERMINAL_ENV': 'local', 'TERMINAL_CWD': '/elsewhere'}))),
     # local_receipt itself refuses undecodable text.
@@ -113,7 +113,7 @@ _RECEIPT_DAMAGE = {
 @pytest.mark.parametrize('damage, clause', [
     ('foreign_origin', 'entry mismatch'),
     ('lineage', 'validate_local_lineage'),
-    ('terminal_policy', 'ValueError: terminal policy mismatch'),
+    ('terminal_policy', 'storage_unavailable[terminal_json]: TERMINAL_CWD does not match'),
     ('malformed', 'JSONDecodeError'),
 ])
 async def test_a_refused_receipt_names_its_failing_check_in_the_log(tmp_path, monkeypatch, caplog, damage, clause):

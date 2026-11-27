@@ -224,12 +224,12 @@ def test_composite_transports_only_and_uses_the_restore_key_for_save(tmp_path):
     def run_description(phase, key):
         inputs.update(phase=phase, key=key)
         values = {f"${{{{ inputs.{name} }}}}": value for name, value in inputs.items()}
-        values["${{ github.action_path }}"] = str(action.parent)
         env = {name: values[value] for name, value in describe_step["env"].items()}
         output.unlink(missing_ok=True)
         result = subprocess.run(
             ["bash", "-e", "-c", describe_step["run"]], cwd=tmp_path,
-            env={**os.environ, **env, "GITHUB_OUTPUT": str(output), "RUNNER_OS": "Linux"},
+            env={**os.environ, **env, "GITHUB_OUTPUT": str(output), "RUNNER_OS": "Linux",
+                 "GITHUB_ACTION_PATH": str(action.parent)},
             capture_output=True, text=True, encoding="utf-8", timeout=30,
             check=False,
         )
@@ -245,6 +245,13 @@ def test_composite_transports_only_and_uses_the_restore_key_for_save(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert run_description("save", "").returncode != 0
     assert run_description("typo", "").returncode != 0
+    inputs.update(source="source", cache="cache", work="job")
+    result = run_description("restore", "")
+    assert result.returncode == 0, result.stdout + result.stderr
+    values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8-sig").splitlines())
+    assert values["cache-key"] == restored_key
+    assert all(Path(path).is_absolute() and Path(path).is_relative_to(cache.resolve())
+               for path in json.loads(values["cache-paths"]))
 
     restore = next(step for step in steps if step.get("id") == "restore")
     save = next(step for step in steps if step.get("id") == "save")

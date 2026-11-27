@@ -70,7 +70,7 @@ def _worker_usage(holder, conn, session_id, payload, *, auxiliary=False):
     )
     source = None
     if not auxiliary:
-        # ``source`` is the worker platform (turn_usage._agent_session_source). A Desktop
+        # ``source`` is the worker platform (turn_usage.agent_session_source). A Desktop
         # managed worker passes ``gui``; created_surface maps that to ``desktop``. The row
         # is usually stamped at admission. A compression child can still be NULL (or an
         # auxiliary-usage ``unknown``), and this worker never create_session's it, so fill

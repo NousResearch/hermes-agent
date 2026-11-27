@@ -53,7 +53,8 @@ def test_worker_constructor_restores_persisted_compressor_guards(backend, scope_
     import time
     from agent.context_compressor import ContextCompressor
     holder = backend.open(scope_a).holder()
-    create_session(holder, 'owned', 'cli', model_config={'_proactive_prune_rearm_tokens': 1234})
+    create_session(holder, 'owned', 'cli', model_config={'_proactive_prune_rearm_tokens': 1234,
+                                                         '_proactive_prune_cold_credit': 567})
     set_compression_fallback_streak(holder, 'owned', 4)
     set_compression_ineffective_count(holder, 'owned', 3)
     deadline = time.time() + 3600
@@ -70,6 +71,10 @@ def test_worker_constructor_restores_persisted_compressor_guards(backend, scope_
         assert compressor._ineffective_compression_count == 3
         assert compressor._anti_thrash_recovery_deadline == deadline
         assert compressor._proactive_prune_rearm_tokens == 1234
+        assert compressor._proactive_prune_cold_credit == 567
+        compressor._clear_durable_proactive_prune_rearm()  # a managed worker may clear both prune keys
+        assert store.failure is None
+        assert get_session_model_config_value(holder, 'owned', '_proactive_prune_cold_credit') is None
         assert store.get_compression_failure_cooldown_row('owned') == get_compression_failure_cooldown_row(holder, 'owned')
         assert store.get_compression_failure_cooldown('owned')['cooldown_until'] == deadline
         set_session_title(holder, 'owned', 'retained-title')

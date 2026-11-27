@@ -482,6 +482,9 @@ gateway:
     cache_unknown_route: "Cache du prompt : inconnu (ce fournisseur ne publie pas sa durée de rétention)."
     cache_unknown_runtime: "Cache du prompt : inconnu (ce runtime fixe ses propres options de cache, que Hermes ne peut pas observer)."
     cache_unknown_storage: "Cache du prompt : inconnu (le stockage de la session n'a pas pu être lu)."
+    cache_warming_off: "Keep-alives : désactivés (deux ratés)."
+    cache_tier_pending: "Niveau : 5m jusqu’à la première expiration du cache de 5 minutes, puis 1h."
+    cache_learned: "Appris : {rule}."
     cache_confidence:
       proven: "prouvé"
       declared: "déclaré"

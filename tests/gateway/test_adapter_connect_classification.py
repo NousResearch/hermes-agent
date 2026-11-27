@@ -182,10 +182,12 @@ class TestPhotonSidecarStartupClassification:
         assert adapter.fatal_error_code == "SIDECAR_FAILED"
         assert adapter.fatal_error_retryable is True
 
-    def test_deps_install_failure_raises_typed_nonretryable(self, monkeypatch):
+    def test_deps_install_failure_raises_typed_nonretryable(self, monkeypatch, tmp_path):
         from plugins.platforms.photon import adapter as photon_adapter
+        from plugins.platforms.photon import sidecar_paths
 
         adapter = self._make_adapter(monkeypatch)
+        monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)  # the install lock lives in the sidecar dir
         monkeypatch.setattr(photon_adapter, "sidecar_deps_installed", lambda: False)
         monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", lambda: None)
 

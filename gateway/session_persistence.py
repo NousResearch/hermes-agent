@@ -64,6 +64,45 @@ def _is_live_system_guard(exc: BaseException) -> bool:
     return isinstance(exc, RuntimeError) and "live-system guard" in str(exc)
 
 
+def _fails_only_on_platform(data: dict) -> bool:
+    """*data* names a platform ``Platform()`` cannot resolve yet and parses once that name is a known one."""
+    from gateway.config import Platform
+    from gateway.session import SessionEntry
+    origin = data.get("origin")
+    name = origin.get("platform") if isinstance(origin, dict) else None
+    try:
+        Platform(name)
+        return False  # resolvable (or missing): the row is broken some other way
+    except (ValueError, TypeError):
+        pass
+    try:
+        SessionEntry.from_dict(_with_platform(data, "local"))
+    except (ValueError, KeyError, TypeError):
+        return False
+    return True
+
+
+def _with_platform(data: dict, name: str) -> dict:
+    """*data* (a routing row) with its platform fields set to *name*."""
+    return {**data, "platform": name, "origin": {**data["origin"], "platform": name}}
+
+
+def _held_row_entry(data: dict):
+    """A held row as a ``SessionEntry`` under a stand-in platform, for platform-independent checks."""
+    from gateway.session import SessionEntry
+    return SessionEntry.from_dict(_with_platform(data, "local"))
+
+
+def _apply_to_held_row(data: dict, mutate) -> Optional[dict]:
+    """Run a platform-independent whole-index verdict (turn-marker recovery or discard) on a held row now,
+    through a stand-in platform, so it reaches the row on disk even if the process exits before the
+    plugin registers. The new row, or None when *mutate* left it unchanged."""
+    entry = _held_row_entry(data)
+    if not mutate(entry):
+        return None
+    return _with_platform({**data, **entry.to_dict()}, data["origin"]["platform"])
+
+
 class SessionPersistenceMixin:
     """SessionStore storage plumbing: storage interface handle resolution and routing-index load/save."""
 
@@ -71,11 +110,24 @@ class SessionPersistenceMixin:
         """Publish committed retirement; durable fences reject delayed saves."""
         with self._lock:
             targets = set(session_ids)
-            for key, entry in list(self._entries.items()):
-                if entry.session_id in targets:
-                    del self._entries[key]
+            self._drop_routes_locked(self._route_keys_for_sessions_locked(targets))
             for sid in targets:
                 self._session_owner_hints.pop(sid, None)
+
+    def _route_keys_for_sessions_locked(self, session_ids) -> list[str]:
+        """Every key routing to one of *session_ids*, live or held (platform not registered yet), once
+        each. Lock held."""
+        held = getattr(self, "_unparsed_routes", None) or {}
+        live = [key for key, entry in self._entries.items() if entry.session_id in session_ids]
+        return list(dict.fromkeys(live + [key for key, data in held.items() if data["session_id"] in session_ids]))
+
+    def _drop_routes_locked(self, keys) -> None:
+        """Drop *keys* from the live index AND the held rows: a held copy left behind is written back by
+        the next full save, so the route outlives its removal. Lock held."""
+        held = getattr(self, "_unparsed_routes", None) or {}
+        for key in keys:
+            self._entries.pop(key, None)
+            held.pop(key, None)
 
     def fence_retired_routes(self, session_ids, *, namespace, expiring=()) -> None:
         """Durably retire *session_ids* in the routing index's own database (fences + route
@@ -368,10 +420,40 @@ class SessionPersistenceMixin:
                 entry = self._routing_entry_from_json(key, entry_json)
                 if entry is not None:
                     self._entries[key] = entry
+                else:
+                    self._keep_unparsed_route(key, entry_json)
             return True
         except Exception as e:
             logger.warning("gateway.session: state.db routing load failed: %s", e)
             return False
+
+    def _keep_unparsed_route(self, key: str, entry_json: str) -> None:
+        """Hold a row that fails to parse ONLY because its platform's plugin is not registered (installed
+        after boot, a secondary profile's, not installed yet), so the next full save writes it back instead
+        of deleting it and a later start that has the plugin loads it. A row broken any other way is not
+        held: it stays skipped and a valid sessions.json copy can still replace it. Lock held."""
+        with contextlib.suppress(ValueError):
+            data = json.loads(entry_json)
+            if isinstance(data, dict) and data.get("session_id") and _fails_only_on_platform(data):
+                self._lazy("_unparsed_routes", dict)[key] = data
+
+    def _promote_held_routes_locked(self) -> None:
+        """Move a held row into the live index once its platform resolves (a multiplexed profile's plugin
+        registers after the index loaded), so its own state (/stop's ``suspended``, ``resume_pending``) applies
+        on the next lookup instead of a recovered entry replacing it; drop a held copy whose key the live
+        index already owns, so a later prune or delete of that entry cannot restore it. A promoted row already
+        carries every whole-index verdict given while it was held (``_update_all_entries_locked``). Lock held."""
+        from gateway.config import Platform
+        held = getattr(self, "_unparsed_routes", None) or {}
+        for key, data in list(held.items()):
+            if key not in self._entries:
+                if data["origin"].get("platform") not in Platform._value2member_map_:
+                    continue  # still unregistered: no registry lookup per call
+                entry = self._routing_entry_from_json(key, json.dumps(data))
+                if entry is None:
+                    continue
+                self._entries[key] = entry
+            del held[key]
 
     @staticmethod
     def _routing_entry_from_json(key: str, entry_json: str) -> Optional[SessionEntry]:
@@ -395,6 +477,7 @@ class SessionPersistenceMixin:
         """
         if self._loaded:
             self._reconcile_recovered_routing_locked()
+            self._promote_held_routes_locked()
             return
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         db_load_succeeded = self._load_routing_rows_locked()
@@ -405,7 +488,7 @@ class SessionPersistenceMixin:
         # Heal before the fallback baseline: a heal after it reads as a caller edit, and recovery
         # would then keep the stale mirror entry over the newer DB row.
         self._heal_missing_origins(self._entries.values())
-        self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
+        self._routing_fallback_baseline = None if db_load_succeeded else self._routing_data_locked()
         if mirror_retired and db_load_succeeded:
             # Rewrite the mirror while the fences that kept those routes out still hold: a prune's
             # ages out, and the import would then restore the retired route.
@@ -459,7 +542,8 @@ class SessionPersistenceMixin:
             imported = 0
             for key, entry_data in data.items():
                 # "_"-prefixed keys are sentinels (e.g. "_README"), not entries.
-                if key.startswith("_") or key in self._entries:
+                # A held unparsed DB row is the newer copy too (state.db first).
+                if key.startswith("_") or key in self._entries or key in (getattr(self, "_unparsed_routes", None) or {}):
                     continue
                 if not isinstance(entry_data, dict):  # corrupt file must not abort the whole load
                     logger.warning(
@@ -476,6 +560,7 @@ class SessionPersistenceMixin:
                     imported += 1
                 except (ValueError, KeyError, TypeError) as e:
                     logger.warning("Skipping invalid session entry %r: %s", key, e)
+                    self._keep_unparsed_route(key, json.dumps(entry_data))
             if imported and db_had_entries:
                 logger.info(
                     "gateway.session: imported %d legacy sessions.json entr%s missing from "
@@ -511,8 +596,7 @@ class SessionPersistenceMixin:
         except Exception as exc:
             logger.warning("gateway.session: stale-entry pruning skipped due to DB error: %s", exc)
             return
-        for key in stale_keys:
-            del self._entries[key]
+        self._drop_routes_locked(stale_keys)
         if stale_keys or recovered_keys:
             self._save()
 
@@ -603,10 +687,16 @@ class SessionPersistenceMixin:
         except Exception as exc:
             logger.warning("gateway.session: recovered state.db routing load failed: %s", exc)
             return
-        current = self._entries_as_dicts()
+        current = self._routing_data_locked()  # a held row counts as loaded too (its plugin may register meanwhile)
+        held = self._lazy("_unparsed_routes", dict)
         for key, entry_json in durable.items():
             durable_entry = self._routing_entry_from_json(key, entry_json)
             if durable_entry is None:
+                if key not in self._entries and (
+                        key not in baseline or (key in held and held[key] == baseline[key])):
+                    # A DB-only row is held; an unchanged held mirror copy yields to the DB copy, a changed
+                    # one (a boot marker verdict) or a removed one stays as it is.
+                    self._keep_unparsed_route(key, entry_json)
                 continue
             if key not in baseline:
                 # A key created while on fallback wins over a DB-only key; otherwise restore the
@@ -616,6 +706,7 @@ class SessionPersistenceMixin:
                 continue  # loaded from fallback and deliberately removed
             elif current[key] == baseline[key]:
                 self._entries[key] = durable_entry  # unchanged fallback data yields to the DB copy
+                held.pop(key, None)
         self._heal_missing_origins(self._entries.values())
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None
@@ -623,7 +714,12 @@ class SessionPersistenceMixin:
     def _snapshot_routing_locked(self) -> tuple[dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
         self._reconcile_recovered_routing_locked()
-        return self._entries_as_dicts(), self._next_routing_generation_locked()
+        return self._routing_data_locked(), self._next_routing_generation_locked()
+
+    def _routing_data_locked(self) -> dict[str, Any]:
+        """Every row a full write persists: held unparsed rows, then live entries (a live entry under the
+        same key wins). Lock held."""
+        return {**(getattr(self, "_unparsed_routes", None) or {}), **self._entries_as_dicts()}
 
     def _persist_routing_data(self, data: dict[str, Any], generation: int) -> None:
         """Serialize all whole-index writers through one durable write lock."""
@@ -717,7 +813,7 @@ class SessionPersistenceMixin:
         if entry_data is not None:
             # Full-snapshot fallback carrying the candidate transition.
             with guard:
-                fallback_data = self._entries_as_dicts()
+                fallback_data = self._routing_data_locked()
             fallback_data[session_key] = dict(entry_data)
             self._persist_routing_data(fallback_data, revision)
         else:

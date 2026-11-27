@@ -7,6 +7,7 @@ import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isTouchInteraction } from '@/lib/touch-interaction'
+import { type BackendTransitionKind, changesBackend } from '@/store/backend-transition'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
@@ -23,6 +24,7 @@ import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
+import { isReplyPaused, useReplyPaused } from '@/store/paused-replies'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -32,8 +34,17 @@ import { composerPlainText } from '../rich-editor'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
+import { freezeQueuedDraftText } from './use-composer-queue'
+
 const sameOccurrence = (a: ComposerAttachment, b: ComposerAttachment) =>
   a.id === b.id && a.occurrenceId === b.occurrenceId
+
+// A request another surface sends through the composer (the review pane's ship button, a reply's
+// Continue, a preview widget, a plugin) is not taken while the input is off, nor while the profile moves
+// to another backend (store/backend-transition.ts): sent or steered now it would run on the backend about
+// to go away, and nothing is queued across the change. Like a typed message, it is not sent later by itself.
+const refusesExternalSubmit = (inputDisabled: boolean, backendTransition: BackendTransitionKind | null) =>
+  inputDisabled || changesBackend(backendTransition)
 
 // Whether `scope`'s stashed draft is still the message just sent. By the time
 // the send is accepted the user may have typed the next one and the debounce
@@ -51,6 +62,8 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKey: string | null
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
+  /** The planned transition of the composer's profile, if any (use-composer-connection). */
+  backendTransition?: BackendTransitionKind | null
   busy: boolean
   busyInputMode?: BusyInputMode | null
   clearDraft: () => void
@@ -92,6 +105,7 @@ export function useComposerSubmit({
   activeQueueSessionKey,
   activeQueueSessionKeyRef,
   attachments,
+  backendTransition = null,
   busy,
   busyInputMode = 'interrupt',
   clearDraft,
@@ -122,6 +136,7 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const copy = t.desktop
+  const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -237,7 +252,7 @@ export function useComposerSubmit({
           surfaceId !== null &&
           requestedSurfaceId === surfaceId &&
           paneVisible &&
-          !inputDisabled
+          !refusesExternalSubmit(inputDisabled, backendTransition)
         ) {
           const current = externalSubmitRef.current
           const queueKey = activeQueueSessionKeyRef.current
@@ -250,6 +265,16 @@ export function useComposerSubmit({
               ...(id ? { id } : {}),
               ...(displayKind ? { displayKind } : {})
             })
+
+          // The chat's reply is paused for its automatic continuation (store/paused-replies.ts), which may
+          // already be running as a turn of its own. Like a typed message the request waits in the chat's
+          // queue and goes once the continuation has completed: not ahead of it (a send) and not into it
+          // (a steer). The store is asked as the request arrives; the pause can be newer than the last render.
+          if (isReplyPaused(queueKey, sessionId)) {
+            enqueue()
+
+            return
+          }
 
           if (!current.busy) {
             // Explicitly no attachments: the send must not pick up the draft's files. A rejected
@@ -303,7 +328,7 @@ export function useComposerSubmit({
           }
         }
       }),
-    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
+    [activeQueueSessionKeyRef, backendTransition, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
   // A phone keyboard the user put away stays down after a send, so the reply
@@ -327,6 +352,48 @@ export function useComposerSubmit({
         rememberDraftRetry?.(scope, retry)
       }
     })
+  }
+
+  // The profile is moving to another backend (it starts or stops: store/backend-transition.ts). A message
+  // stays in the composer until that is done: sent now it would start on the backend about to go away, and
+  // nothing is queued across the change (queueDraft). A slash command still runs.
+  const staysInComposer = (text: string, payloadPresent: boolean) =>
+    changesBackend(backendTransition) && payloadPresent && (attachments.length > 0 || !isSlashCommandText(text))
+
+  // The profile's backend restarts (the same backend and sessions come back): a message waits in the
+  // chat's LOCAL queue, also with the connection down, and drains once the backend is back
+  // (use-composer-queue). A slash command still runs at once.
+  const sendOrHold = (text: string, sent: ComposerAttachment[], retry?: ComposerDraftRetry) => {
+    if (backendTransition !== 'restarting' || isSlashCommandText(text)) {
+      dispatchSubmit(text, sent, undefined, retry && { submission_id: retry.id })
+
+      return
+    }
+
+    if (!holdForRestart(text, sent, retry?.id)) {
+      // Not held (a terminal selection is gone, or no queue yet): nothing went out, so the words come back.
+      stashAt(draftScopeRef.current, text, sent)
+      loadIntoComposer(text, sent)
+
+      if (retry) {
+        rememberDraftRetry?.(draftScopeRef.current, retry)
+      }
+    }
+  }
+
+  const holdForRestart = (text: string, sent: ComposerAttachment[], id?: string) => {
+    const frozen = freezeQueuedDraftText(text, t.composer)
+
+    return Boolean(
+      frozen &&
+      enqueueQueuedPrompt(activeQueueSessionKey, {
+        ...(id ? { id } : {}),
+        text: frozen.text,
+        attachments: sent,
+        ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+        ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
+      })
+    )
   }
 
   // Returns false when the submit was refused and must not refocus the input.
@@ -472,8 +539,27 @@ export function useComposerSubmit({
     return true
   }
 
+  // The reply is paused for an automatic continuation (store/paused-replies.ts), which may already be
+  // running as a turn of its own: a message waits in the chat's queue and goes once the continuation has
+  // completed, never into it (a steer, or the gateway's interrupt for a plain send). Also while a restart
+  // has the backend away and the composer is otherwise disabled: Enter keeps the words.
+  const holdsForContinuation = (text: string, payloadPresent: boolean) =>
+    replyPaused && !queueEdit && payloadPresent && !isSlashCommandText(text)
+
+  const holdForContinuation = (text: string, editorHadFocus: boolean) => {
+    const retry = takeDraftRetry?.(text, cloneAttachments(attachments))
+
+    if (retry) {
+      queueRetry(retry)
+    } else {
+      queueCurrentDraft()
+    }
+
+    refocusAfterSend(editorHadFocus)
+  }
+
   const submitDraft = () => {
-    if (disabled) {
+    if (disabled && !replyPaused) {
       return
     }
 
@@ -504,14 +590,28 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    if (refusedDuringSetup(text)) {
+    if (refusedDuringSetup(text) || staysInComposer(text, payloadPresent)) {
       return
     }
 
+    const hold = holdsForContinuation(text, payloadPresent)
+
+    if (disabled && !hold) {
+      return
+    }
+
+    // A card parked on the session still takes typed text as its answer.
     const parked = answerParkedCardWithDraft(text, payloadPresent)
 
     if (parked === 'answered') {
       refocusAfterSend(editorHadFocus)
+
+      return
+    }
+
+    // Ahead of `busy`, which would route the message into the running continuation.
+    if (hold) {
+      holdForContinuation(text, editorHadFocus)
 
       return
     }
@@ -543,7 +643,7 @@ export function useComposerSubmit({
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
-      dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
+      sendOrHold(text, submittedAttachments, retry)
     }
 
     refocusAfterSend(editorHadFocus)
@@ -629,7 +729,13 @@ export function useComposerSubmit({
   }
 
   const queueDraft = () => {
-    if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
+    // A paused reply's chat queues like a busy one (see submitDraft).
+    if ((disabled && !replyPaused) || !(busy || replyPaused) || refusedDuringSetup(draftRef.current)) {
+      return
+    }
+
+    // Nothing is queued across a backend change either (staysInComposer).
+    if (changesBackend(backendTransition)) {
       return
     }
 

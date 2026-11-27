@@ -1,12 +1,12 @@
 """Frozen, explicit local-client launch policy for the existing TurnRunner."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass, fields
 from functools import cached_property
 import contextlib
 import json
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from persistence.core.errors import AuthorityRefusal
 
@@ -1027,35 +1027,153 @@ def route_launch_key(authority, policy, config):
     return launch_key(authority, policy)
 
 
+def _policy_refused(field: str, detail: str) -> AuthorityRefusal:
+    """A receipt refusal that names its check. ``storage_unavailable`` stays the wire code; ``field``
+    and ``detail`` say which check fired, so an operator can tell a blank model from a bad surface
+    without reading the source (#148540)."""
+    return AuthorityRefusal('storage_unavailable', field=field, detail=detail)
+
+
+def _stored_cwd_is_absolute(cwd: str) -> bool:
+    """Whether a RECEIPT's cwd is absolute in the spelling the machine that wrote it used.
+
+    A stored cwd records where the session was created, not where this host may run it: a Windows
+    install keeps ``C:\\Users\\<user>`` (not ``Path.is_absolute()`` on POSIX) and a POSIX install keeps
+    ``/home/<user>`` (not absolute to ``WindowsPath``). Judging it with this host's ``Path`` rejected
+    the whole otherwise-valid policy, so every control on a migrated session answered
+    ``storage_unavailable``. Both pure flavours accept only a fully rooted path: a relative, a
+    drive-relative (``C:hermes``) and, unlike ``ntpath.isabs`` before Python 3.13, a drive-less
+    rooted (``\\Users\\x``) path still refuse. Running a turn in a foreign folder stays refused, by
+    name, through :func:`workspace_ready` -> ``workspace_unavailable``.
+    """
+    return PurePosixPath(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute()
+
+
+_POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy))
+_REQUIRED_POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy)
+                                    if field.default is MISSING and field.default_factory is MISSING)
+# The creation label a peer-refreshed ``local`` receipt came from, read back from the platform it kept.
+_LABEL_FOR_PLATFORM = {SURFACES[label]: label for label in STORED_AS_LOCAL}
+_ADOPTED_KEY_SETS: set = set()
+
+
+def _adopt_stored_policy(data):
+    """A stored receipt's ``policy`` dict, limited to the fields THIS build defines.
+
+    A receipt is written by whatever build the session was created on: when a policy field is
+    added or dropped at a release boundary, every receipt from the other side carries (or lacks)
+    it, and constructing the dataclass verbatim answered ``TypeError`` -> ``storage_unavailable``
+    forever — the session unrecoverable and a cron delivery into it reported as a storage fault
+    (#151667). Adopting the shape an older build wrote is the same pattern as #140234; keys are
+    named in the log (never their values: a receipt's values hold credentials and routes), and a
+    genuinely incomplete receipt still refuses, because a missing required field raises below."""
+    if not isinstance(data, dict):
+        return data
+    unknown = tuple(sorted(set(data) - _POLICY_FIELDS))
+    if not unknown:
+        return data
+    # Every turn, claim and metadata read restores the policy: name each dropped key set once per process.
+    if unknown not in _ADOPTED_KEY_SETS:
+        _ADOPTED_KEY_SETS.add(unknown)
+        logger.warning("restore_policy: adopting a stored receipt whose keys this build dropped: %s",
+                       ", ".join(unknown))
+    return {key: value for key, value in data.items() if key in _POLICY_FIELDS}
+
+
+def _stored_policy(data):
+    """The receipt's policy object; a required field the receipt lacks is refused by name."""
+    if not isinstance(data, dict):
+        raise _policy_refused('policy', 'the stored policy is not an object')
+    stored = _adopt_stored_policy(data)
+    missing = sorted(_REQUIRED_POLICY_FIELDS - set(stored))
+    if missing:
+        raise _policy_refused(missing[0], 'the stored policy has no value for this required field')
+    return LocalSessionPolicy(**stored)
+
+
+def _check_stored_surface(policy) -> None:
+    """Refuse a receipt whose source/platform is not a surface pair this build knows, by name."""
+    from gateway.session_a2a import is_forward_policy
+    # The membership checks below hash these; a list or dict would raise TypeError unnamed.
+    if not isinstance(policy.source, str) or not isinstance(policy.platform, str):
+        raise _policy_refused('source', 'the stored source/platform is not a pair of names')
+    surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
+    # A peer refresh relabels an interactive receipt's source to ``local`` and keeps its platform
+    # (#148473): that pair restores; a ``local`` label on any other platform still refuses.
+    source_ok = ((policy.source in surfaces and policy.platform == surfaces[policy.source])
+                 or (policy.source == 'local'
+                     and policy.platform in {SURFACES[name] for name in STORED_AS_LOCAL}))
+    if not is_forward_policy(policy) and not source_ok:
+        raise _policy_refused('source', f'stored source/platform {policy.source}/'
+                                        f'{policy.platform} is not a known surface pair')
+
+
 def restore_policy(data):
-    """Reject incomplete private policy rather than rebuilding from current defaults."""
+    """Reject incomplete private policy rather than rebuilding from current defaults.
+
+    Every refusal names the check that fired (``AuthorityRefusal.field`` / ``.detail``) so the gateway
+    log and the client can tell the reasons' many checks apart instead of reporting the bare
+    ``storage_unavailable`` (#148540). The wire code stays ``storage_unavailable``. The checks accept
+    exactly the shapes our own writers persist (an empty model, a peer-refreshed ``local`` label, a
+    cwd spelled for the other OS, a key another build wrote) and nothing looser.
+    """
     try:
-        policy = LocalSessionPolicy(**data)
-        from gateway.session_a2a import is_forward_policy
-        surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
-        if ((not is_forward_policy(policy) and
-             (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
-                or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
-                or not isinstance(policy.model, str) or not policy.model.strip()
-                or not isinstance(policy.toolsets, (list, tuple))
-                or any(not isinstance(name, str) for name in policy.toolsets)
-                or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
-                or not isinstance(policy.skills_prompt, (str, type(None)))
-                or type(policy.coding_posture) is not bool
-                or not _valid_client_env(policy.client_env_json) or type(policy.client_env_remote) is not bool
-                or not _valid_client_env(policy.client_env_rules_json, list)
-                or policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES
-                or (policy.edit_approval_policy != 'ask' and policy.source != 'acp')
-                or (policy.safe_mode and not policy.ignore_user_config)):
-            raise ValueError('invalid policy')
+        policy = _stored_policy(data)
+        _check_stored_surface(policy)
+        if not isinstance(policy.cwd, str) or not _stored_cwd_is_absolute(policy.cwd):
+            raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
+        # model=None/'' is what our own writers persist when the model cannot be resolved (session_local
+        # ``or None``, session_kanban's raw resolution); the launch path resolves an empty policy model
+        # from the profile's config (session_hosted_rpc falls back to _resolve_gateway_model; #35381
+        # made the runtime recover it). Refusing it here stranded the session forever (#148540).
+        if policy.model not in (None, '') and (not isinstance(policy.model, str) or not policy.model.strip()):
+            raise _policy_refused('model', 'the stored model is not a model name')
+        if not isinstance(policy.toolsets, (list, tuple)) or any(
+                not isinstance(name, str) for name in policy.toolsets):
+            raise _policy_refused('toolsets', 'the stored toolsets are not a list of names')
+        if type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool:
+            raise _policy_refused('safe_mode' if type(policy.safe_mode) is not bool
+                                  else 'ignore_user_config', 'the stored flag is not a boolean')
+        if not isinstance(policy.skills_prompt, (str, type(None))):
+            raise _policy_refused('skills_prompt', 'the stored skills prompt is not a string')
+        if type(policy.coding_posture) is not bool:
+            raise _policy_refused('coding_posture', 'the stored flag is not a boolean')
+        if not _valid_client_env(policy.client_env_json):
+            raise _policy_refused('client_env_json', 'the stored client environment map is malformed')
+        if type(policy.client_env_remote) is not bool:
+            raise _policy_refused('client_env_remote', 'the stored flag is not a boolean')
+        if not _valid_client_env(policy.client_env_rules_json, list):
+            raise _policy_refused('client_env_rules_json', 'the stored client environment rules are '
+                                                           'malformed')
+        if not isinstance(policy.edit_approval_policy, str) or (
+                policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES):
+            raise _policy_refused('edit_approval_policy', 'the stored edit approval policy is unknown')
+        if policy.edit_approval_policy != 'ask' and (policy.source, policy.platform) not in {
+                ('acp', 'acp'), ('local', 'acp')}:
+            raise _policy_refused('edit_approval_policy', 'only an acp receipt may store a non-ask '
+                                                          'edit approval policy')
+        if policy.safe_mode and not policy.ignore_user_config:
+            raise _policy_refused('safe_mode', 'safe mode requires ignore_user_config')
         from dataclasses import replace
-        for value in (policy.config_json, policy.request_json, policy.terminal_json):
-            if not isinstance(json.loads(value), dict):
-                raise ValueError('invalid policy object')
+        for name in ('config_json', 'request_json', 'terminal_json'):
+            try:
+                value = json.loads(getattr(policy, name))
+            except (TypeError, ValueError) as exc:
+                raise _policy_refused(name, 'the stored policy object is not valid JSON') from exc
+            if not isinstance(value, dict):
+                raise _policy_refused(name, 'the stored policy object is not a JSON object')
         terminal = json.loads(policy.terminal_json)
         if terminal_uses_host_cwd(terminal) and terminal.get('TERMINAL_CWD') != policy.cwd:
-            raise ValueError('terminal policy mismatch')
-        return replace(policy, toolsets=tuple(policy.toolsets))
+            raise _policy_refused('terminal_json', 'TERMINAL_CWD does not match the stored cwd')
+        # Consumers key on the creation label (``editor_scope`` installs the ACP edit approver only for
+        # ``acp``; local-interactive approval reads cli/tui/gui/acp), so a peer-refreshed ``local``
+        # receipt runs under the label its platform says it was created with.
+        source = _LABEL_FOR_PLATFORM[policy.platform] if policy.source == 'local' else policy.source
+        return replace(policy, source=source, toolsets=tuple(policy.toolsets))
+    except AuthorityRefusal:
+        # A refusal that already names its field keeps its own reason (it is a ValueError subclass,
+        # so the blanket wrap below would otherwise flatten it back to the bare code).
+        raise
     except (KeyError, TypeError, ValueError) as exc:
         raise AuthorityRefusal('storage_unavailable') from exc
 
@@ -1064,7 +1182,10 @@ def _valid_client_env(value, kind: type = str):
     """A stored client map (names to strings) or its rules (``kind=list``: rule names to string lists)."""
     if value is None:
         return True
-    env = json.loads(value) if isinstance(value, str) else None
+    try:
+        env = json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        return False
     return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, kind) and (
         kind is str or all(isinstance(item, str) for item in v)) for k, v in env.items())
 
@@ -1112,15 +1233,19 @@ def policy_for_source(runner, source):
         if policy is None:
             # Cold recovery must restore the frozen policy before executing, not
             # reinterpret a LOCAL route as a default CLI launch.
-            raise AuthorityRefusal('storage_unavailable')
+            raise AuthorityRefusal('storage_unavailable', field='policy',
+                                   detail='the session has no restored policy (its receipt was refused or not yet recovered)')
         return policy
     return None
 
 
 def workspace_ready(policy) -> bool:
     """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    turn runs in a missing directory."""
-    return Path(policy.cwd).is_dir()
+    turn runs in a missing directory. A cwd spelled for another OS restores (the receipt records where the
+    session was made) but is never ready here: on Windows ``/Users/x`` would resolve against the current
+    drive and bind a folder the session never named."""
+    cwd = Path(policy.cwd)
+    return cwd.is_absolute() and cwd.is_dir()
 
 
 def workspace_unavailable_result(policy) -> dict:

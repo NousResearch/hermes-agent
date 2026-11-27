@@ -24,7 +24,7 @@ from persistence.conversation.sessions import (
     DeleteManyOutcome,
 )
 
-from session_rules.media import admission_media_references, hosted_document_references, spillover_names_in_text
+from session_rules.media import admission_media_references, hosted_document_references, retirement_candidates_in_text
 
 from .._authority import RESULT_SCRUBBED, authority_state, record_retirement
 from .._lease_fence import lease_guarded
@@ -43,14 +43,14 @@ def _retire_media(meta: dict[str, Any], row: Mapping[str, Any], media_root: Opti
 
 
 def _retire_spillover(meta: dict[str, Any], staged_scope: Mapping[str, Any], doomed: Sequence[str]) -> None:
-    """Every spillover archive the doomed sessions' rows name in their stored content or API content becomes a retirement candidate, the first write kept."""
+    """Every archive (spillover and prune original) the doomed sessions' rows name in their stored content or API content becomes a retirement candidate, the first write kept."""
     from ..authority.admissions_rows import SPILLOVER_PREFIX
     from .messages_reads import _content_text
 
     transcripts = staged_scope.get("messages", {}).get("transcripts", {})
     for sid in doomed:
         for row in transcripts[sid].rows if sid in transcripts else ():
-            for name in spillover_names_in_text(_content_text(row.message.content), row.message.api_content):
+            for name in retirement_candidates_in_text(_content_text(row.message.content), row.message.api_content):
                 meta.setdefault(SPILLOVER_PREFIX + name, json.dumps(name))
 
 

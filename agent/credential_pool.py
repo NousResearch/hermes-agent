@@ -289,15 +289,15 @@ class PooledCredential:
         if self.provider == "nous":
             # Nous stores the runtime inference credential in agent_key for
             # compatibility. It must be a NAS invoke JWT.
-            for token, expires_at in (
-                (self.agent_key, self.agent_key_expires_at),
-                (self.access_token, self.expires_at),
+            for token, expires_at, obtained_at in (
+                (self.agent_key, self.agent_key_expires_at, self.agent_key_obtained_at),
+                (self.access_token, self.expires_at, self.obtained_at),
             ):
                 if (
                     isinstance(token, str)
                     and token.strip()
                     and auth_mod._nous_invoke_jwt_is_usable(
-                        token, scope=getattr(self, "scope", None), expires_at=expires_at,
+                        token, scope=getattr(self, "scope", None), expires_at=expires_at, obtained_at=obtained_at,
                     )
                 ):
                     return token.strip()

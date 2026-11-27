@@ -23,13 +23,14 @@ def retire_media(conn, payload, request_id='', *, media_root):
 
 
 def retire_spillover(conn, session_ids):
-    """Record the spillover archives the doomed sessions' messages point at, inside the delete
-    transaction (the pointers vanish with the rows), as durable candidates (#126351)."""
+    """Record the archives (spillover and prune originals) the doomed sessions' messages point at, inside
+    the delete transaction (the pointers vanish with the rows), as durable candidates (#126351)."""
     from persistence.sqlite.conversation._store.sql_common import _id_chunks, _placeholders
-    from persistence.sqlite.conversation._store.rules import SPILLOVER_SQL_FILTER, spillover_names_in_text
+    from persistence.sqlite.conversation._store.rules import SPILLOVER_SQL_FILTER
+    from session_rules.media import retirement_candidates_in_text
     for chunk in _id_chunks(list(session_ids)):
         for content, api_content in conn.execute(
                 f"SELECT content, api_content FROM messages WHERE session_id IN ({_placeholders(chunk)})"
                 f" AND {SPILLOVER_SQL_FILTER}", chunk).fetchall():
             conn.executemany('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
-                             [(SPILLOVER_PREFIX + n, json.dumps(n)) for n in spillover_names_in_text(content, api_content)])
+                             [(SPILLOVER_PREFIX + n, json.dumps(n)) for n in retirement_candidates_in_text(content, api_content)])

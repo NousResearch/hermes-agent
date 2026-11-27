@@ -106,8 +106,9 @@ def relay_probe_api_key(provider_id: str, relay: str, api_key: str, cred_base_ur
 def custom_catalog_probe_api_key(model_cfg: dict[str, Any], base_url: str, *, minted: bool = True) -> Any:
     """Key for a bare ``custom`` catalog probe of *base_url*, else ``""`` (keyless).
 
-    The runtime resolver's order (#145452): ``model.api_key`` / ``model.key_env`` when *base_url*
-    is ``model.base_url``, then the key of
+    The runtime resolver's order (#145452): the key the runtime authenticates ``model.base_url``
+    with when *base_url* is that URL (:func:`main_endpoint_probe_selection`; a pool that selected a
+    keyless row ends the lookup keyless, as the runtime sends ``no-key-required``), then the key of
     a ``providers:`` entry owning the URL; only a URL no entry declares a credential for falls back
     to ``CUSTOM_API_KEY`` and the host-gated env keys (#91308), so an ambient OpenAI or OpenRouter
     key never reaches a third-party endpoint. ``minted=False`` hands back a ``key_cmd`` entry's token
@@ -116,11 +117,10 @@ def custom_catalog_probe_api_key(model_cfg: dict[str, Any], base_url: str, *, mi
     from agent.command_token_source import materialize_probe_api_key
     from agent.secret_scope import get_secret_str
     from hermes_cli import runtime_provider as rp
-    from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for, _owning_entry_credential
+    from hermes_cli.runtime_provider_custom import _owning_entry_credential, main_endpoint_probe_selection
 
-    is_cfg_url = str(model_cfg.get("base_url") or "").strip().rstrip("/") == (base_url or "").strip().rstrip("/")
-    own = (str(model_cfg.get("api_key") or "").strip() if is_cfg_url else "") or _model_cfg_key_env_for(model_cfg, base_url)
-    if rp.has_usable_secret(own):
+    own = main_endpoint_probe_selection(model_cfg, base_url)
+    if own is not None:
         return own
     declared, entry_key = _owning_entry_credential(rp, base_url)
     if declared:

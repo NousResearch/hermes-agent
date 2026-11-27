@@ -28,7 +28,9 @@ _REPOSITORIES = (
 # The verbs whose declared return is a context manager: entered on the loop thread, the block's reads would run on other threads.
 _CONTEXT_VERBS = {("messages", "read_snapshot")}
 # The verbs that stream rows lazily: awaited whole they would hold every row at once and could not stop early.
-_STREAMED_VERBS = {("messages", "terminal_tool_call_payloads"), ("messages", "blocked_tool_result_payloads")}
+_STREAMED_VERBS = {
+    ("messages", "terminal_tool_call_payloads"), ("messages", "blocked_tool_result_payloads"), ("messages", "spillover_reference_rows"),
+}
 
 
 def test_every_repository_has_its_awaitable_form(backend, scope_a):

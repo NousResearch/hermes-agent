@@ -21,7 +21,7 @@ logger = logging.getLogger("gateway.run")
 
 # Upper bound on the ``model_config._delegate_from`` chain walked by _resolve_async_delegation_session
 # when canonicalizing a delegate child to its human-facing gateway parent (#92611). Real nesting is
-# bounded far lower by delegation.max_spawn_depth (default 2); this only stops a corrupt chain from
+# bounded far lower by delegation.max_spawn_depth (default 1); this only stops a corrupt chain from
 # turning one completion event into an unbounded run of sequential session reads. Exceeding it is
 # fail-closed, like every other unresolved provenance.
 _MAX_DELEGATE_PROVENANCE_HOPS = 16

@@ -78,13 +78,13 @@ def _cua_configured_permission_mode() -> str:
 
 # ``computer_use.ax_max_elements``: bound on the DRIVER's accessibility-tree walk per capture. The
 # visible-element cap in tool.py (_DEFAULT_MAX_ELEMENTS) trims the RESPONSE only, so without this an
-# unbounded walk pays for nodes the model never sees; 0 disables the bound (driver default: 2,000
-# elements / depth 25).
+# unbounded walk pays for nodes the model never sees; 0 omits Hermes's override and uses the driver
+# default (250 nodes on Cua >= 0.35, not an unlimited walk).
 _DEFAULT_AX_MAX_ELEMENTS = 200
 
 def _cua_configured_ax_max_elements() -> int:
-    """Bound on ``get_window_state``'s AX walk; 0 = no bound (driver default). Unreadable config fails to
-    the default, never to unbounded. Measured on macOS (cua-driver 0.28.2, M-series): a 1,444-node Chrome
+    """Bound on ``get_window_state``'s AX walk; 0 = driver default. Unreadable config fails to
+    the Hermes default, never to an omitted bound. Measured on macOS (cua-driver 0.28.2, M-series): a 1,444-node Chrome
     window 540 ms -> 83 ms and a 456-node Finder window 6.9 s -> 0.6 s at 200, on the CLI transport. The
     bounded result is a prefix of the unbounded walk, so the elements the model sees are unchanged. Raise
     it toward 400 to keep the full first 100 visible elements on a pathological tree (~1.4 s on Finder);
@@ -403,9 +403,24 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
+        # cua-driver 0.32+ publishes strict token-only schemas (additionalProperties: false) that
+        # drop `element_index` entirely, so sending both gets the action rejected before it runs
+        # (#132876). Older drivers' schemas keep `element_index` and accept both, so only a schema
+        # that names the token but not the index warrants stripping the index.
+        token_only = (self._session.supports_input_property(name, "element_token")
+                      and not self._session.supports_input_property(name, "element_index"))
         if token and (self._session.supports_input_property(name, "element_token")
                       or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
+            if token_only:
+                args.pop("element_index", None)
+        elif isinstance(idx, int) and token_only:
+            # A strict token-only schema never accepts the bare `element_index` either, so an index
+            # without a token (the model reusing an index from an older capture, or a capture that
+            # returned no tokens) cannot succeed — refuse it here with an actionable message instead
+            # of letting the driver echo the same opaque `unknown argument element_index` rejection.
+            return ActionResult(ok=False, action=name, code="stale_element",
+                                message=f"element {idx} has no token from the latest capture — call capture first")
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

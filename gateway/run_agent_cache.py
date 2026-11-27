@@ -1137,7 +1137,7 @@ class GatewayAgentCacheMixin:
             )
         for key, agent in evict_plan:
             logger.info("Agent cache at cap; evicting LRU session=%s (cache_size=%d)", key, len(_cache))
-            if agent is not None:
+            if agent is not None and not self._compact_then_release(key, agent):
                 # Commit end-of-session memory, then soft-release, both on the daemon thread so the
                 # (possibly network-bound) provider call never blocks the held cache lock.
                 self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}",
@@ -1167,6 +1167,8 @@ class GatewayAgentCacheMixin:
                 _cache.pop(key, None)
         for key, agent in to_evict:
             logger.info("Agent cache idle-TTL evict: session=%s (idle=%.0fs)", key, now - getattr(agent, "_last_activity_ts", now))
+            if self._compact_then_release(key, agent):
+                continue  # step 2 at release: compacted first, released by that job
             self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}",
                                        inline_fallback=False, session_key=key)
         return len(to_evict)

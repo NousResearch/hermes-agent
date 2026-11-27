@@ -1,7 +1,7 @@
 name: whiteboard
 title: Hermes Whiteboard
 repo: https://github.com/Adolanium/hermes-whiteboard
-sha: eeb336546628e4a5d203630dc55fbdeeddffc879
+sha: ffd8012018239e941ef8d0608409582b771e1b96
 description: >-
   An agentic whiteboard. Say what you're planning and Hermes lays it out as a
   route, columns or a map, with hand-drawn stickers. Add rough notes and
@@ -56,11 +56,11 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/Adolanium/hermes-whiteboard#readme
-version: "0.1.9"
-image: https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/eeb336546628e4a5d203630dc55fbdeeddffc879/docs/assets/catalog.png
+version: "0.1.10"
+image: https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/ffd8012018239e941ef8d0608409582b771e1b96/docs/assets/catalog.png
 screenshots:
-  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/eeb336546628e4a5d203630dc55fbdeeddffc879/docs/assets/route.jpg
-  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/eeb336546628e4a5d203630dc55fbdeeddffc879/docs/assets/delivered.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/ffd8012018239e941ef8d0608409582b771e1b96/docs/assets/route.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-whiteboard/ffd8012018239e941ef8d0608409582b771e1b96/docs/assets/delivered.jpg
 capabilities:
   provides_tools:
     - whiteboard_list

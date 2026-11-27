@@ -155,3 +155,19 @@ def test_mirror_carries_npmrc_release_age_gate(tmp_path, monkeypatch) -> None:
 
     assert mirror != source
     assert (mirror / ".npmrc").read_text(encoding="utf-8") == "min-release-age=14\n"
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_mirror_falls_back_to_the_source_for_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """The sidecar mirror is refused like any unwritable mirror: run from the source (#155595 U3)."""
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    source = tmp_path / "src"
+    _seed_source(source)
+    _freeze_writability(monkeypatch, writable=False)
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    assert sidecar_paths.resolve_sidecar_dir(source) == source
+    assert not home.exists()

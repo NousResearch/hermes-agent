@@ -299,17 +299,17 @@ _BEDROCK_PROBE_FAILURE_CACHE: dict[tuple, float] = {}
 DEFAULT_CONTEXT_LENGTHS = {
     # Anthropic — bare ids only (prefixed ids resolve via OpenRouter/models.dev
     # and would collide: "anthropic/claude-sonnet-4" ⊂ "anthropic/claude-sonnet-4.6").
-    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000, "claude-haiku-5": 1000000,
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
-    "claude": 200000,  # catch-all for older Claude models
-    # OpenAI — direct-API windows (Codex OAuth caps gpt-5.4+/5.5/5.6 at 272K, resolved by
-    # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
-    # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
+    "claude": 200000,  # catch-all for older Claude models (Haiku 4.5 too; Haiku 5.5 is 1M)
+    # OpenAI direct-API windows (Codex OAuth has its own caps). 5.4-nano/-mini are 400k, not 1.05M;
+    # gpt-5.3-codex-spark is OAuth-only and listed so "gpt-5" (400k) doesn't win; bare gpt-5.6 aliases Sol (1.05M, OpenAI docs).
+    "gpt-6.2-astra": 1050000, "gpt-6.2-sol": 1050000,
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
     "gpt-6.1-sol": 1050000, "gpt-6.1-terra": 1050000,  # Sol -pro too; both live on OpenRouter (Terra also Nous Portal, 2026-10-26)
     "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
-    "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
+    "gpt-5.6": 1050000, "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000, "gpt-5.4-mini": 400000, "gpt-5.4": 1050000,
     "gpt-5.3-codex-spark": 128000, "gpt-5.1-chat": 128000, "gpt-5": 400000,
     "gpt-4.1": 1047576, "gpt-4": 128000,
@@ -332,11 +332,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
-    # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
-    # 5.3-flashx 1,048,576 (2026-09-20; its own key, else the shorter 5.3-flash entry wins by substring);
+    # GLM — 5.3 / -flash / -flashx 1,048,576: Zhipu documents "1M" and the Nous, OpenRouter and NanoGPT
+    # (?detailed=true) catalogs all list exactly 1,048,576 (2026-11-18; the old 1,310,720 overstated, #154406);
     # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
-    "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
+    "glm-5.3": 1_048_576, "glm-5.3-flash": 1_048_576, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
     "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576, "glm-5.3-flashx": 1_048_576,
     "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
     "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
@@ -345,10 +345,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:
     # 200k usable (the /v1/responses ~262144 input+output budget is a separate limit).
     # grok-build-latest aliases grok-4.5; grok-4-fast / grok-4.20 also match their
-    # -(non-)reasoning and -multi-agent variants; "grok" is the catch-all.
+    # -(non-)reasoning and -multi-agent variants (all 1M on docs.x.ai); "grok" is the catch-all.
     "grok-composer": 200000, "grok-build-latest": 500000, "grok-build": 256000, "grok-code-fast": 256000,
-    "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
-    "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
+    "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 1000000,
+    "grok-4.7": 500000, "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
@@ -420,10 +420,10 @@ def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
     return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
 
 
-_CONTEXT_LENGTH_KEYS = (
-    "context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
-    "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",
-)
+_CONTEXT_LENGTH_KEYS = ("context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
+    "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size")
+# Hosts whose plain /models omits every window but publishes it on request (NanoGPT: ?detailed=true).
+_MODELS_QUERY_BY_HOST = {"nano-gpt.com": {"detailed": "true"}}
 _MAX_COMPLETION_KEYS = ("max_completion_tokens", "max_output_tokens", "max_tokens")
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 # Docker / Podman / Lima DNS names that resolve to the host machine
@@ -840,7 +840,7 @@ _PRICING_UNIT_DIVISORS = {
     "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
 }
 _PER_MILLION_QUOTE_MIN = 0.001
-_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write", "cache_write_1h")
 
 
 def _normalize_token_rates(pricing: dict[str, Any], unit: Any) -> dict[str, Any]:
@@ -879,7 +879,7 @@ def _extract_pricing(payload: dict[str, Any]) -> dict[str, Any]:
         "request": ("request", "request_cost"),
         "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
         "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
-    }
+        "cache_write_1h": ("cache_write_1h", "input_cache_write_1h"),}
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
         pricing: dict[str, Any] = {}
@@ -1054,11 +1054,11 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         # A connect timeout condemns the host, not the path.
         if _endpoint_blackholed(normalized):
             break
-        # Cache keys stay unrewritten; only the outbound target is IPv4-resolved.
-        request_candidate = _localhost_to_ipv4(candidate)
+        request_candidate = _localhost_to_ipv4(candidate)  # cache keys stay unrewritten; only the target is IPv4
         url = request_candidate.rstrip("/") + "/models"
         try:
-            with model_metadata_http.stream(url, headers=headers, timeout=(5, 10), verify=verify) as response:
+            params = _MODELS_QUERY_BY_HOST.get(base_url_hostname(normalized))
+            with model_metadata_http.stream(url, headers=headers, params=params, timeout=(5, 10), verify=verify) as response:
                 if response.status_code in (401, 403):
                     logger.debug("Model metadata probe received HTTP %s from %s; stopping candidate probing", response.status_code, url)
                     break
@@ -1507,8 +1507,8 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",  # 1M; "minimax" catch-all persisted 204,800
     "muse-spark-1.3", "muse-spark",  # 1M; pre-entry builds fell through to the 256K fallback
-    "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
-    "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
+    "grok-4.3", "grok-4.6", "grok-4.7",  # 1M / 500K / 500K; "grok-4" catch-all persisted 256,000
+    "grok-4-fast", "grok-4.20", "claude-haiku-5", "gpt-5.6",  # 2M / 1M: 256K fallback; 1M / 1.05M: "claude" / "gpt-5" catch-alls
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
     # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
     "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
@@ -1629,12 +1629,12 @@ def _normalize_model_version(model: str) -> str:
 
 
 def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> Optional[int]:
-    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped.
-
-    ``api_key`` may be a ``key_cmd`` callable token source; the metadata probe never mints — a
-    callable is not a Console key, so the lookup is skipped like an OAuth token (#114967).
+    """Anthropic /v1/models max_input_tokens, asked with ``x-api-key``. An OAuth-shaped credential
+    (``_is_oauth_token``; the Messages client sends it to Anthropic as a bearer token) 401s there and
+    is skipped; so is a ``key_cmd`` callable token source, which the metadata probe never mints (#114967).
     """
-    if not api_key or not isinstance(api_key, str) or api_key.startswith("sk-ant-oat"):
+    from agent.anthropic_credentials import _is_oauth_token
+    if not api_key or not isinstance(api_key, str) or _is_oauth_token(api_key):
         return None
     try:
         base = base_url.rstrip("/").removesuffix("/v1")
@@ -1654,7 +1654,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6.2-astra": 272_000, "gpt-6.2-sol": 500_000, "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1960,18 +1960,18 @@ def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = 
 
 
 def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
-    """Step 1 of get_model_context_length: accept, repair, or drop a persisted entry. Returns the
-    value to use, or None to fall through to live resolution. Order matters: a value must be
-    rejected as bogus before any provider-specific handling."""
-    # Drop rules: (predicate, log level, message, shown value). 0/negative is always a bug (`0 is not
-    # None` would hand the compressor a zero window); Kimi/MiniMax are underreported as 32K by stale
-    # third-party metadata; pre-catalog leftovers persisted a shorter catch-all (see _PRE_CATALOG_STALE_KEYS).
+    """Step 1: reject invalid or stale cached windows before provider-specific handling;
+    return a validated persisted value, or None to re-resolve."""
+    # Drop invalid rows, known 32K underreports, pre-catalog leftovers, and xAI's old 2M Grok 4.20.
     drop_rules = (
         (cached <= 0, logger.warning, "Dropping non-positive cache entry %s@%s -> %s; re-resolving", cached),
         (cached <= 32768 and _model_name_suggests_stale_32k_underreport(model), logger.info,
          "Dropping stale cached context entry %s@%s -> %s (known 32K underreport); re-resolving via hardcoded defaults", f"{cached:,}"),
         (_stale_pre_catalog_cache_entry(model, cached), logger.info,
          "Dropping stale pre-catalog cache entry %s@%s -> %s; re-resolving via hardcoded defaults", f"{cached:,}"),
+        (cached == 2_000_000 and base_url_host_matches(base_url, "api.x.ai")
+         and _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower()) == ("grok-4.20", 1_000_000),
+         logger.info, "Dropping stale native xAI Grok 4.20 cache entry %s@%s -> %s", f"{cached:,}"),
     )
     for hit, log, msg, shown in drop_rules:
         if hit:

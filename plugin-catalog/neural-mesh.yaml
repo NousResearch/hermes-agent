@@ -1,32 +1,38 @@
 name: neural-mesh
 repo: https://github.com/D0xedDevi0/hermes-neural-mesh
-sha: 26abb610f3cbdd4215fbb898d4a2478317dfc5e5
-description: "Bi-temporal long-term memory for Hermes: point-in-time recall (mesh_asof answers what was true on a date, not only what is true now), supersession instead of overwrite so a corrected fact keeps its history, hybrid dense + lexical retrieval, a poisoning quarantine, and an injection floor measured on a 15-family ablation. Disclosure — this is a Hermes MemoryProvider (`memory.provider: neural-mesh`). It stores user turns, pre-compression and session-end message extracts, and mirrored MEMORY.md/USER.md writes in an unencrypted local SQLite file at `<profile>/neural-mesh/mesh.db`, so credentials do not belong in it. The provider makes no network calls and needs no API key. The repo also vendors unused upstream modules with LLM/chain HTTP clients that the provider never calls. It ships no compiled binary (the Rust extension is not vendored, so retrieval runs the pure-Python path)."
+sha: 8ba9c084810d49d90367a2d958723b5205db4ac9
+description: "Bi-temporal long-term memory for Hermes: point-in-time recall (mesh_asof answers what was true on a date, not only what is true now), supersession instead of overwrite so a corrected fact keeps its history, hybrid dense + lexical retrieval, a poisoning quarantine, a curation layer that turns notes and transcripts into single facts with add/update/no-op decisions and supersession (mesh_curate), tiered L0/L1/L2 context under a hard budget, a data-only context fence so a stored note cannot read as an instruction, an injection floor measured on a 15-family ablation, and a tamper-evident provenance ledger (mesh_verify, mesh_provenance) that names what its verdict rests on: which anchor file it was judged against, or plainly that it had none. Disclosure — this is a Hermes MemoryProvider (`memory.provider: neural-mesh`). It stores curated facts from user turns (raw turns only when nothing curates out of them), from pre-compression and session-end text, and mirrored MEMORY.md/USER.md writes in an unencrypted local SQLite file at `<profile>/neural-mesh/mesh.db`, so credentials do not belong in it. The provider makes no network calls and needs no API key. The repo also vendors unused upstream modules with LLM/chain HTTP clients that the provider never calls. It ships no compiled binary (the Rust extension is not vendored, so retrieval runs the pure-Python path)."
 maintainer: D0xedDevi0
 tier: community
 category: memory
 docs_url: https://github.com/D0xedDevi0/hermes-neural-mesh
 requires_hermes: ">=0.22.0"
-version: "0.39.0"
-image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/the-difference.png
+version: "0.49.0"
+image: https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8ba9c084810d49d90367a2d958723b5205db4ac9/docs/screenshots/the-difference.png
 screenshots:
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/the-difference.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/cold-recall.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/point-in-time.png
-  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/26abb610f3cbdd4215fbb898d4a2478317dfc5e5/docs/screenshots/measured.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8ba9c084810d49d90367a2d958723b5205db4ac9/docs/screenshots/the-difference.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8ba9c084810d49d90367a2d958723b5205db4ac9/docs/screenshots/cold-recall.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8ba9c084810d49d90367a2d958723b5205db4ac9/docs/screenshots/point-in-time.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-neural-mesh/8ba9c084810d49d90367a2d958723b5205db4ac9/docs/screenshots/measured.png
 readme: true
 title: "NEURAL_MESH"
 known_issues:
+  - "Curated ingest (mesh_curate) is a deterministic, rule-based heuristic with no model call: a fact phrased quite differently from its source can be missed entirely, and the restatement/near-duplicate threshold is tuned on a 17-case labelled set."
+  - "The DATA_ONLY context fence is a prompt-level defence against delayed injection, not a security boundary; write-time validation and the quarantine lane are the enforcement point."
   - "The memory store is plain, unencrypted SQLite inside the Hermes profile — anything it remembers is readable by anyone with filesystem access to that profile, so credentials do not belong in it."
   - "The upstream Rust resonance extension is not shipped (catalog rule 17), so retrieval uses the pure-Python path; mesh_stats reports resonance_backend: python rather than rust."
   - "Automatic context injection is held to a measured 0.25 score floor, so a weakly-matching memory is deliberately not injected. Use mesh_recall (0.05 floor) when you want a wider net."
+  - "Tamper-evidence needs an anchor outside the store. Out of the box the ledger anchor lives in the same SQLite file, so an attacker who can write that file can delete the anchor along with the entries it protects; pass mesh_verify an `anchors` path (or set NEURAL_MESH_ANCHORS) to a file outside the store to make a clean truncation detectable. Until then mesh_verify says so in its verdict rather than implying the stronger guarantee."
   - "Superseding a memory that does not exist is reported in the tool reply rather than failing the write, so a correction naming a bad id is stored as a new fact — and the reply says so instead of silently leaving two contradictory values current."
 capabilities:
   provides_tools:
     - mesh_remember
     - mesh_recall
+    - mesh_curate
     - mesh_asof
     - mesh_stats
+    - mesh_verify
+    - mesh_provenance
   provides_hooks:
     - on_session_end
     - on_pre_compress

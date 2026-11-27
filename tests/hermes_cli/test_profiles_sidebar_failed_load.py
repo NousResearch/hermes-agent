@@ -101,10 +101,11 @@ class TestSidebarFailedLoad:
     ):
         home = profiles_on_disk["worker"]
         _seed_session(home, "worker-chat")
-        from persistence.sqlite.admin._maintenance import MaintenanceAdmin
         from persistence.sqlite.conversation import sessions as sqlite_sessions
 
-        monkeypatch.setattr(MaintenanceAdmin, "schema_drift_reason", lambda _self: "no such column: not_a_real_column")
+        from tests.fixtures.storage_holder import drift_probe_seam
+
+        monkeypatch.setattr(*drift_probe_seam(), lambda _conn, _home: "no such column: not_a_real_column")
         import persistence_assembly
         from persistence.sqlite._holder import StoreHolder
 

@@ -8,7 +8,7 @@ vi.mock('@/hermes', () => ({
   setSttLease: (lease: string, active: boolean, owner: ResolvedOwner) => setSttLease(lease, active, owner)
 }))
 
-import { resetSttLeasesForTests, syncSttLease, VOICE_INPUT_LEASE } from './stt-lease'
+import { anySttLeaseActive, resetSttLeasesForTests, syncSttLease, VOICE_INPUT_LEASE } from './stt-lease'
 
 const PRIMARY: ResolvedOwner = { connectionId: null, profile: null }
 const ALPHA: ResolvedOwner = { connectionId: 'gateway-a', profile: 'worker_alpha' }
@@ -184,5 +184,35 @@ describe('syncSttLease', () => {
       [VOICE_INPUT_LEASE, true, BETA],
       [VOICE_INPUT_LEASE, false, ALPHA]
     ])
+  })
+})
+
+describe('anySttLeaseActive', () => {
+  beforeEach(() => {
+    resetSttLeasesForTests()
+    setSttLease.mockReset()
+    setSttLease.mockImplementation(async () => ({ ok: true }))
+  })
+  afterEach(() => resetSttLeasesForTests())
+
+  it('tracks held voice-input leases', async () => {
+    expect(anySttLeaseActive()).toBe(false)
+    await syncSttLease(VOICE_INPUT_LEASE, true, PRIMARY)
+    expect(anySttLeaseActive()).toBe(true)
+    await syncSttLease(VOICE_INPUT_LEASE, false, PRIMARY)
+    expect(anySttLeaseActive()).toBe(false)
+  })
+})
+
+describe('anySttLeaseActive after a failed acquire', () => {
+  beforeEach(() => resetSttLeasesForTests())
+  afterEach(() => resetSttLeasesForTests())
+
+  it('reports no active lease once the rejected send settles', async () => {
+    setSttLease.mockRejectedValueOnce(new Error('gateway down'))
+
+    await syncSttLease(VOICE_INPUT_LEASE, true, PRIMARY)
+
+    expect(anySttLeaseActive()).toBe(false)
   })
 })

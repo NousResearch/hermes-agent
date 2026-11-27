@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useId, useMemo, useState } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { DocsLink } from '@/components/onboarding/flow'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,9 +16,11 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { $tourActive } from '@/lib/tour/tour-active'
 import { cn } from '@/lib/utils'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $onboardingSurfaceClear } from '@/store/onboarding-presence'
+import { normalizeProfileKey } from '@/store/profile'
 import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
@@ -26,8 +29,7 @@ import {
   SHARED_METRICS_DOCS_URL,
   type SharedMetricsChoice,
   sharedMetricsOfferPending,
-  sharedMetricsProfileRequester,
-  type SharedMetricsRequester
+  sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
 
 interface SharedMetricsConsentDialogProps {
@@ -35,7 +37,6 @@ interface SharedMetricsConsentDialogProps {
   enabled: boolean
   /** Re-ask per profile: each profile keeps its own opt-ins and install ID. */
   profile: string
-  requestGateway: SharedMetricsRequester
 }
 
 const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'off']
@@ -51,7 +52,18 @@ const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'off']
  * two equal choices, neither preselected or focused, and closing it decides
  * nothing (the strip stays until answered).
  */
-export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }: SharedMetricsConsentDialogProps) {
+export function SharedMetricsConsentDialog({ enabled, profile: fallbackProfile }: SharedMetricsConsentDialogProps) {
+  const scope = useStore($apiRequestScope)
+  const profile = normalizeProfileKey(scope.profile ?? fallbackProfile)
+
+  return <SharedMetricsConsentDialogForOwner connectionId={scope.connectionId} enabled={enabled} key={JSON.stringify([scope.connectionId, profile])} profile={profile} />
+}
+
+interface SharedMetricsConsentDialogOwnerProps extends SharedMetricsConsentDialogProps {
+  connectionId: string | null
+}
+
+function SharedMetricsConsentDialogForOwner({ connectionId, enabled, profile }: SharedMetricsConsentDialogOwnerProps) {
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const onboarding = useStore($desktopOnboarding)
@@ -63,7 +75,14 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
+  const scopedRequest = useMemo(
+    () => sharedMetricsProfileRequester(
+      <T,>(method: string, params: Record<string, unknown> = {}) =>
+        requestGatewayForAgent<T>(connectionId, profile, method, params),
+      profile
+    ),
+    [connectionId, profile]
+  )
 
   // Never over the provider picker, the free-tier welcome, onboarding or a tour on screen:
   // the question belongs to the moment after setup.
@@ -106,7 +125,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     setSaving(true)
 
     try {
-      await answerSharedMetricsOffer(scopedRequest, choice)
+      await answerSharedMetricsOffer(scopedRequest, choice, `${connectionId ?? ''}|${profile}`)
     } catch (err) {
       notifyError(err, copy.saveFailed)
     } finally {

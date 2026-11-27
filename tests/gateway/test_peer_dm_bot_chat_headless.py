@@ -32,6 +32,7 @@ async def headless(tmp_path, monkeypatch, api_store):
     from gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.chdir(tmp_path)  # symbolic profile_id is a relative home: its seeded SOUL.md stays in tmp_path
     # A following Bot Chat reads the profile config by path.
     monkeypatch.setattr(run, '_load_gateway_config',
                         lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})

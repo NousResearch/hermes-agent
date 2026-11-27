@@ -186,12 +186,16 @@ def collect_acceptance(contract: str, published_pr: str | None,
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
-            # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
-            legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+            # Status APIs expose an actor, not the originating integration ID.
+            observed = [s for s in statuses if s["context"] == context]
+            latest = max(observed, key=lambda s: s["id"]) if observed else None
+            selected = matching + ([latest] if latest and app_id in (None, -1) else [])
             if not selected:
-                outcomes.append("missing")
-                receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
+                if latest and app_id is not None and app_id != -1:
+                    outcomes.append(_record_unverifiable_status(receipt, latest, sha, app_id))
+                else:
+                    outcomes.append("missing")
+                    receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
             for check in selected:
                 is_run = "conclusion" in check
                 outcome = check.get("conclusion") if is_run else check["state"]
@@ -221,9 +225,31 @@ def collect_acceptance(contract: str, published_pr: str | None,
         return receipt
 
 
+def _record_unverifiable_status(receipt: dict, status: dict, sha: str, app_id: int) -> str:
+    """Retain observed status evidence without treating an actor as an App."""
+    classification = "unverifiable_app"
+    receipt["checks"].append({
+        "name": status["context"], "id": status["id"], "url": status.get("target_url"),
+        "head_sha": sha, "classification": classification,
+        "conclusion": status["state"], "required_app_id": app_id,
+    })
+    receipt["detail"] = (
+        "A required context exists as a commit status, but GitHub's status API does not "
+        "expose its originating GitHub App ID; the configured app pin cannot be verified."
+    )
+    receipt["recovery"] = (
+        "Obtain authoritative GitHub App attribution before retrying completion; "
+        "do not remove the source pin or force completion. Use kanban_block to retain "
+        "the task and workspace while this native capability is unavailable."
+    )
+    return classification
+
+
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
     if check.get("head_sha", check.get("sha")) != sha:
         return "stale"
     if is_run and check.get("status") != "completed":
         return "pending"
+    if outcome is None:
+        return "infra"
     return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")

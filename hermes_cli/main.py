@@ -934,14 +934,12 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
-    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    creates it at boot (a first connector use can too); ``cmd_chat`` runs the bootstrap before asking.
+    """Check if at least one inference provider is usable. Never creates one: a claimed Nous welcome
+    trial counts (``anon_auth.free_inference_active``) even when nothing selects ``nous`` yet.
 
-    ``strict_profile_scope``: the caller has bound a NAMED profile's home and
-    secret scope and wants an answer for that profile only — launch-process
-    env and host-wide fallbacks (gh auth, Claude Code credentials) must not
-    make it appear ready. Unscoped callers keep the legacy behavior.
+    ``strict_profile_scope``: the caller has bound a NAMED profile's home and secret scope and wants
+    an answer for that profile only — launch-process env and host-wide fallbacks (gh auth, Claude
+    Code credentials) must not make it appear ready. Unscoped callers keep the legacy behavior.
     """
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
@@ -985,7 +983,9 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # Cheap on-disk checks (auth.json, config.yaml) first: the PROVIDER_REGISTRY
     # sweep below spawns subprocesses (gh) and can take 15-20s — long enough
     # that desktop setup.status calls time out.
-    if _auth_store_logged_in(get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
+    from hermes_cli.anon_auth import own_trial_active
+    if own_trial_active(strict_profile_scope) or _auth_store_logged_in(
+            get_hermes_home() / "auth.json", PROVIDER_REGISTRY, strict_profile_scope):
         return True
 
     # model as a dict with provider/base_url/api_key means setup ran (fresh
@@ -1118,16 +1118,11 @@ def _resolve_workspace_key() -> Optional[str]:
     subdirs/worktrees group together), else the CWD itself. Returns None when
     neither can be determined — callers fall back to the global MRU then.
     """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return os.path.abspath(result.stdout.strip())
-    except Exception:
-        pass
+    from hermes_cli._subprocess_compat import bounded_git_probe
+    # The user's own environment: a GIT_DIR/GIT_WORK_TREE pair names the workspace they resume in.
+    top = bounded_git_probe(["git", "rev-parse", "--show-toplevel"], timeout=5, env=os.environ)
+    if top:
+        return os.path.abspath(top)
     try:
         return os.getcwd()
     except Exception:
@@ -2280,7 +2275,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
     if token_file and (getattr(args, "status", False) or getattr(args, "stop", False)):
         raise SystemExit("--ssh-session-token-file cannot be used with --status or --stop")
     if getattr(args, "status", False):
-        _report_dashboard_status()
+        _report_dashboard_status(args.host, args.port)
         sys.exit(0)  # status is informational, always 0
     if getattr(args, "stop", False):
         # Scoped to the invoking home (`-p` applied by _apply_profile_override): another
@@ -2667,6 +2662,15 @@ def _prepare_agent_startup(args) -> None:
 
     if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
         return
+    # Before any banner, TUI, discovery or gateway contact. `gateway run` gets the gateway's own refusal here (exit 78,
+    # EX_CONFIG, and the verdict in the profile's logs): in gateway.run_bootstrap it only comes after the discovery
+    # below and run_gateway's host-gateway guards.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere, run_elsewhere_for_home
+    if args.command == "gateway" and (_elsewhere := run_elsewhere_for_home(get_hermes_home())) is not None:
+        logger.error("Refusing to start the gateway: %s", _elsewhere.message())
+        print(_elsewhere.message(), file=sys.stderr)
+        raise SystemExit(78)
+    exit_if_profile_runs_elsewhere(args.command)  # returns for `gateway`, handled above
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     if not (_is_tui_chat_launch(args) or _chat_runs_at_gateway(args)):
@@ -2679,10 +2683,7 @@ def _prepare_agent_startup(args) -> None:
             # which joins this thread first (incl. model_tools at import time).
             start_background_plugin_discovery()
         except Exception:
-            logger.warning(
-                "plugin discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.warning("plugin discovery failed at CLI startup", exc_info=True)
     # -t/--toolsets narrows which configured MCP servers get spawned, on
     # every discovery path (background thread, TUI/desktop
     # deferred start). Built-in toolset names never match a server key, so
@@ -2708,10 +2709,7 @@ def _prepare_agent_startup(args) -> None:
                 thread_name="cli-mcp-discovery",
             )
         except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.debug("Background MCP tool discovery failed at CLI startup", exc_info=True)
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
@@ -2724,10 +2722,7 @@ def _prepare_agent_startup(args) -> None:
             accept_for_process()
         register_outbound_webhooks(_hooks_cfg)
     except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
-        )
+        logger.debug("shell-hook registration failed at CLI startup", exc_info=True)
 
 
 def _apply_safe_mode(args) -> None:
@@ -2838,9 +2833,9 @@ def _try_fast_serve_launch() -> bool:
 
     # Container routing is top-level policy and must run before host dispatch.
     try:
-        from hermes_cli.config import get_container_exec_info
+        from hermes_cli.main_container import container_exec_info
 
-        if get_container_exec_info():
+        if container_exec_info():
             return False
     except Exception:
         return False
@@ -2877,8 +2872,8 @@ def _try_fast_chat_launch() -> bool:
         return False
     # Container routing must win: NixOS container mode forwards EVERY invocation.
     try:
-        from hermes_cli.config import get_container_exec_info
-        if get_container_exec_info():
+        from hermes_cli.main_container import container_exec_info
+        if container_exec_info():
             return False
     except Exception:
         return False
@@ -3293,9 +3288,9 @@ def main():
     # NixOS container mode routes ALL invocations into the managed container.
     # MUST run before parse_args() so --help, unrecognised flags and every
     # subcommand are forwarded instead of intercepted by argparse on the host.
-    from hermes_cli.config import get_container_exec_info
+    from hermes_cli.main_container import container_exec_info
 
-    container_info = get_container_exec_info()
+    container_info = container_exec_info()  # None for a profile a plugin runs elsewhere
     if container_info:
         from hermes_cli.main_container import exec_in_container
 

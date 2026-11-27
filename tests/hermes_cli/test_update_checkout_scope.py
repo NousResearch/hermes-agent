@@ -15,12 +15,14 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import psutil
 import pytest
 
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_launch_files
 from hermes_cli.update_receipt import _updater_code_root as _maybe_root
+from tests.waiting import wait_until
 
 
 def _updater_code_root() -> Path:
@@ -118,6 +120,10 @@ def test_ancestor_gateway_of_another_checkout_is_never_signalled(tmp_path, monke
                                 str(code_root / "hermes_cli" / "main.py")], executable=sys.executable)
     real_kill = os.kill  # the test records os.kill below; the stand-in gateway still has to die
     try:
+        # Popen returns at fork; until exec the child still shows pytest's argv, which names no
+        # checkout, so the scope check would read the stand-in as this update's own gateway.
+        wait_until(lambda: str(code_root / "hermes_cli" / "main.py") in psutil.Process(gateway.pid).cmdline(),
+                   what="the stand-in gateway to exec its argv")
         signalled: list[int] = []
         monkeypatch.setattr(gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == gateway.pid)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: signalled.append(pid) or True)

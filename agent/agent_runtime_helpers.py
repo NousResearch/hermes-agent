@@ -1176,7 +1176,7 @@ def _raw_cache_ttl_from_config(default: Any) -> Any:
     """Raw ``prompt_caching.cache_ttl`` config value, or ``default`` when config cannot be read."""
     try:
         from hermes_cli.config import load_config_readonly
-        return (load_config_readonly().get("prompt_caching", {}) or {}).get("cache_ttl", "5m")
+        return (load_config_readonly().get("prompt_caching", {}) or {}).get("cache_ttl", "auto")
     except Exception:
         return default
 
@@ -1211,7 +1211,7 @@ def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):
 def plan_cache_sections_for_destination(
     messages: list, tools: Optional[list], *, provider: str, base_url: str, api_mode: str,
     model: str, cache_disabled: Optional[bool] = None, cache_ttl: Optional[str] = None,
-    static_system_prefix: Optional[str] = None,
+    cache_ttl_auto: bool = False, static_system_prefix: Optional[str] = None,
 ) -> tuple[list, list]:
     """Plan request-local cache sections for one resolved destination (MoA / auxiliary senders):
     stripped copies (non-caching route) or a ``build_prompt_cache_plan`` layout; never mutates
@@ -1238,7 +1238,7 @@ def plan_cache_sections_for_destination(
     plan = build_prompt_cache_plan(
         messages, tools,
         # effective_cache_ttl resolves None → "5m"; cache-disabled agents never reach here.
-        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url),
+        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url, auto=cache_ttl_auto),
         native_anthropic=native_layout,
         static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
         direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(stub, **dest),
@@ -1348,12 +1348,9 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
-    # Kimi/Moonshot via OpenRouter uses the same envelope cache_control as Claude; without this it
-    # serves ~1% cache hits. Family matcher covers bare k1./k2. slugs.
-    # Without this branch moonshotai/kimi-k2.6 falls through to (False, False), serving ~1% cache hits on
-    # 64K-token prompts and re-billing the full prompt on every turn. Observed within-turn progression with
-    # cache enabled: 1% → 67% → 84% → 97% (#25970). Reuses the canonical family matcher (covers bare
-    # k1./k2./k25 release slugs the substring check missed).
+    # Kimi/Moonshot via OpenRouter takes Claude's envelope cache_control; without it moonshotai/kimi-k2.6
+    # served ~1% hits on 64K prompts (1% → 67% → 84% → 97% with it, #25970). The family matcher covers
+    # bare k1./k2./k25 slugs.
     from agent.anthropic_endpoints import _model_name_is_kimi_family
     is_kimi = _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
@@ -1399,12 +1396,15 @@ def anthropic_prompt_cache_policy(
             return False, False
     if is_native_anthropic:
         return True, True
+    from agent.prompt_caching import learned_or_catalog_markers  # learned use, then a catalog route's rates
+    if eff_api_mode == "chat_completions" and (catalog := learned_or_catalog_markers(
+            eff_provider, eff_base_url, eff_model, getattr(agent, "api_key", "") or "")) is not None:
+        return catalog, False
     # Envelope layout is OpenAI-wire only; Portal Claude on native Messages must fall through to the
     # anthropic_messages branch (inner-block markers) or it serves 0% cache hits.
     if (is_openrouter or is_nous_portal) and (is_claude or is_kimi) and not is_anthropic_wire:
         return True, False
-    # Nous Portal Qwen takes the envelope path too; the alibaba-family check below only matches
-    # provider=opencode/alibaba and would leave Portal traffic uncached.
+    # Nous Portal Qwen (catalog unreachable) takes the envelope path; the alibaba check below misses it.
     if is_nous_portal and "qwen" in model_lower:
         return True, False
     if is_anthropic_wire and is_claude:
@@ -1456,7 +1456,7 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
-        if getattr(profile, "auth_type", "") == "external_process":
+        if getattr(profile, "auth_type", "") == "external_process" or getattr(profile, "strict_client", False):
             raise
         _ra().logger.warning(
             "Provider profile %r failed to create a client; falling back to the standard client path",
@@ -1476,6 +1476,8 @@ def _profile_for_base_url(base_url: str) -> Any | None:
         return None
     target = base_url.rstrip("/").lower()
     for candidate in candidates or []:
+        if getattr(candidate, "hidden", False):
+            continue
         own = str(getattr(candidate, "base_url", "") or "").rstrip("/").lower()
         if own and (target == own or target.startswith(own + "/")):
             return candidate
@@ -1497,27 +1499,6 @@ def _ensure_route_client_headers(client_kwargs: dict, provider: str) -> None:
         if hk.lower() not in existing_lower:
             existing[hk] = hv
     client_kwargs["default_headers"] = existing
-
-
-def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
-    """Native Gemini client when the base_url is the Gemini API, else None."""
-    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-    base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
-        return None
-    safe_kwargs = {
-        k: v for k, v in client_kwargs.items()
-        if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
-    }
-    if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
-        if keepalive_http is not None:
-            safe_kwargs["http_client"] = keepalive_http
-    client = GeminiNativeClient(**safe_kwargs)
-    _ra().logger.info(
-        "Gemini native client created (%s, shared=%s) %s", reason, shared, agent._client_log_context()
-    )
-    return client
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
@@ -1579,11 +1560,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-        if client is not None:
-            return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the

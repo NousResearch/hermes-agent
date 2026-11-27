@@ -1086,6 +1086,14 @@ def build_cache_parity_fork(
     if not _routed and write_origin == "background_review":
         _warn_ignored_reasoning_effort(agent, task_cfg)
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
+    # A same-route fork shares the parent's warmed prefix; a routed fork's own prefix is never warmed.
+    review_agent._skip_prompt_cache_warming = True
+    if _routed and getattr(review_agent, "_cache_ttl", None) == "1h":
+        # A routed fork's cache is cold and nobody pauses between its calls: 1h writes buy nothing (#104168).
+        review_agent._cache_ttl = "5m"
+    elif not _routed and getattr(agent, "_cache_ttl_adaptive", False):
+        # The parent's markers as they are now (5m before its first pause, 1h after): same bytes, same cache.
+        review_agent._cache_ttl = agent._cache_ttl
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     # Fork-turn log tag: the fork shares the parent's session_id (and model on the
     # same-model path), so its turn-start/turn-exit log lines are otherwise

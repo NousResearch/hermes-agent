@@ -190,6 +190,14 @@ def read_busy_timeout_seam():
     return _holder, "_READ_BUSY_TIMEOUT_S"
 
 
+def drift_probe_seam():
+    """``(module, name)``: the backend's holder module and the name of the declared-schema probe a browse's read-only
+    open runs on its connection (``name(conn, home)``: the missing table or column, or None), for a stub patched
+    where the holder looks it up."""
+    from persistence.sqlite import _holder
+    return _holder, "declared_schema_drift"
+
+
 def store_copy_seam():
     """``(module, name)``: the backend's backup module and the name of the WAL-safe file copy the store admin's
     ``backup_to`` runs (``name(src, dst, *, timeout_seconds)``, False when no snapshot could be made), for a stub

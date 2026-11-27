@@ -36,7 +36,7 @@ from gateway.run_shutdown_home_notice import (
     settle_home_online_notice_debt,
 )
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
-from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
+from gateway.shutdown_watchdog import arm_shutdown_watchdog, disarm_after_teardown, resolve_shutdown_watchdog_delay
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -268,9 +268,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         cancellation while the worker thread lives on. Read live at the close gate instead of
         snapshotting.
         """
+        runs = sys.modules.get("gateway.platforms.api_server_runs")  # its state: not loaded = no worker ran
         try:
-            from gateway.platforms.api_server_runs import api_worker_live_count
-            return max(0, int(api_worker_live_count()))
+            return max(0, int(runs.api_worker_live_count())) if runs is not None else 0
         except Exception:
             return 0
 
@@ -630,7 +630,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         )
         try:
             if self_suspend_available():
-                accepted = await asyncio.to_thread(suspend_self)
+                accepted = await self._suspend_after_status_goodbye(suspend_self)
                 lever = "self-suspend"
                 if accepted:
                     # flaps answers seconds BEFORE the kernel freezes, so the fence has to span
@@ -652,7 +652,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                     )
                     return
                 # The watcher already holds the supervisor across this call.
-                accepted = await asyncio.to_thread(request_brokered_suspend, url)
+                accepted = await self._suspend_after_status_goodbye(request_brokered_suspend, url)
                 lever = "brokered suspend"
                 if not accepted:
                     self._scale_to_zero_abandon_suspend()
@@ -1350,13 +1350,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
 
         The host multiplexer is respawned with ``host_gateway_child_env`` (default-root
-        secrets via ``served_profile_child_env``, not ``os.environ.copy()``). A standalone
+        secrets plus available launch stamps, not ``os.environ.copy()``). A standalone
         named-profile gateway keeps that profile's home — only a multiplexer, or a process
         already on the default root, is the host.
         """
         from gateway.config_loader import drop_bridged_env
         from hermes_constants import get_default_hermes_root, get_hermes_home
-        from tools.environments.local import host_gateway_child_env, served_profile_child_env
+        from tools.environments.local import gateway_child_env, host_gateway_child_env
 
         home = get_hermes_home()
         try:
@@ -1390,9 +1390,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         if on_default or settled_multiplex or multiplex:
             watcher_env = host_gateway_child_env()
         else:
-            watcher_env = served_profile_child_env(
-                target_home=home, inherit_credentials=True,
-            )
+            watcher_env = gateway_child_env(home)
         watcher_env = drop_bridged_env(watcher_env)
         watcher_env.pop("_HERMES_GATEWAY", None)
         from gateway.restart_watcher_env import keep_running_checkout_importable
@@ -1892,10 +1890,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             if _task is self._stop_task or _task is self._restart_task:
                 continue
             _task.cancel()
-        # The restart orchestration task is awaiting _stop_task right now; cancelling it would propagate
-        # CancelledError into this _stop_impl and skip _shutdown_event.set() / _exit_code = 75 (#12875). It
-        # self-terminates anyway.
+        # The restart task awaits _stop_task: cancelling it skips _shutdown_event.set() / _exit_code = 75 (#12875).
         self._background_tasks.clear()
+        from gateway.run_watchers import drain_pending_cache_releases
+        drain_pending_cache_releases(self)  # cache-edge jobs just cancelled (or never scheduled) owe a release
         ctx.api_live = self._active_api_run_count()
         self.adapters.clear()
         for _session_key in list(self._running_agents):
@@ -2108,7 +2106,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 _effective_watchdog_leash(self), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
-        try:
+        with disarm_after_teardown(_watchdog_done, getattr(self, "_shutdown_event", None), owner=self):
             await GatewayRunner._stop_begin_teardown(self, ctx)
             timeout = effective_stop_drain_timeout(self)
             if timeout < self._restart_drain_timeout:
@@ -2126,8 +2124,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             await GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
             await GatewayRunner._stop_persist_exit_state(self, ctx)
-        finally:
-            _watchdog_done.set()
 
     async def stop(
         self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False

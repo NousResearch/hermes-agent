@@ -5,7 +5,7 @@ import path from 'node:path'
 
 import { test, type TestContext } from 'vitest'
 
-import { provisionCliLinks, removeBundleCliLinks } from './cli-provision'
+import { provisionCliLinks, removeBundleCliLinks, shouldProvisionBundledCliLinks } from './cli-provision'
 
 function fixture(): { root: string; binDir: string; source: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-cli-links-'))
@@ -127,6 +127,38 @@ test('qualified CLI paths expose their filenames, not shared canonical command k
   }
 })
 
+test.runIf(process.platform !== 'win32')(
+  'a live link into an older build beside the payload moves forward; another install keeps its link',
+  (): void => {
+    const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-cli-links-'))
+    const binDir: string = path.join(root, 'bin')
+
+    const command = (store: string, build: string): string =>
+      path.join(root, store, build, 'agent-payload', 'bin', 'hermes')
+
+    const current: string = command('bundles', 'build-2')
+
+    try {
+      for (const destination of [current, command('bundles', 'build-1'), command('opt', 'Hermes')]) {
+        fs.mkdirSync(path.dirname(destination), { recursive: true })
+        fs.writeFileSync(destination, destination)
+      }
+
+      fs.mkdirSync(binDir)
+      fs.symlinkSync(command('bundles', 'build-1'), path.join(binDir, 'hermes'))
+      provisionCliLinks({ hermes: current }, binDir, (): void => {})
+      assert.equal(fs.readlinkSync(path.join(binDir, 'hermes')), current)
+
+      fs.unlinkSync(path.join(binDir, 'hermes'))
+      fs.symlinkSync(command('opt', 'Hermes'), path.join(binDir, 'hermes'))
+      provisionCliLinks({ hermes: current }, binDir, (): void => {})
+      assert.equal(fs.readlinkSync(path.join(binDir, 'hermes')), command('opt', 'Hermes'))
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
 test('a failed link swap preserves its source and target, then provisions later commands', context => {
   const { root, binDir, source } = fixture()
   const target = path.join(binDir, 'hermes')
@@ -166,4 +198,64 @@ test('a failed link swap preserves its source and target, then provisions later 
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+const readOnly = (): never => {
+  throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+}
+
+const writable = (): void => undefined
+
+test('skips CLI links into a translocated or read-only macOS payload', (): void => {
+  for (const [payloadRoot, access, location] of [
+    ['/Volumes/Hermes Agent/Hermes Agent.app/Contents/Resources/agent-payload', readOnly, 'read-only-volume'],
+    [
+      '/private/var/folders/aa/bb/T/AppTranslocation/1111/d/Hermes Agent.app/Contents/Resources/agent-payload',
+      writable,
+      'app-translocation'
+    ]
+  ] as const) {
+    const logs: string[] = []
+
+    assert.equal(
+      shouldProvisionBundledCliLinks(payloadRoot, line => logs.push(line), 'darwin', access),
+      false
+    )
+    assert.deepEqual(logs, [`[install] skipping ~/.local/bin CLI symlink provisioning while running from ${location}`])
+  }
+})
+
+test('links a payload the move prompt flags or a root-owned one, keeps Linux as it was, and never links on Windows', (): void => {
+  const permissionDenied = (): never => {
+    throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+  }
+
+  const logs: string[] = []
+  const log = (line: string): void => void logs.push(line)
+
+  // The prompt offers a move from Downloads, but links into it stay valid until the user moves the app.
+  assert.equal(
+    shouldProvisionBundledCliLinks(
+      '/Users/alice/Downloads/Hermes Agent.app/Contents/Resources/agent-payload',
+      log,
+      'darwin',
+      writable
+    ),
+    true
+  )
+  assert.equal(
+    shouldProvisionBundledCliLinks(
+      '/Applications/Hermes Agent.app/Contents/Resources/agent-payload',
+      log,
+      'darwin',
+      permissionDenied
+    ),
+    true
+  )
+  assert.equal(
+    shouldProvisionBundledCliLinks('/tmp/.mount_hermes/resources/agent-payload', log, 'linux', readOnly),
+    true
+  )
+  assert.equal(shouldProvisionBundledCliLinks('C:\\Hermes\\resources\\agent-payload', log, 'win32', writable), false)
+  assert.deepEqual(logs, [])
 })

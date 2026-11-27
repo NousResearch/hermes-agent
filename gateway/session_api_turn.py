@@ -287,7 +287,8 @@ def recover_authority_api_turns(adapter, authority):
                     check_api_turn(authority, ref, row.payload)
             authority._schedule(ref)
         except AuthorityRefusal as exc:
-            logging.getLogger(__name__).warning('API session %s paused: %s', sid, exc.reason)
+            from gateway.session_local_recovery import _refused_check
+            logging.getLogger(__name__).warning('API session %s paused: %s', sid, _refused_check(exc))
 
 
 async def run_api_turn(adapter, *, approval_notify_callback=None, approval_session_key=None, **kwargs):

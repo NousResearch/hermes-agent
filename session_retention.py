@@ -77,21 +77,27 @@ def remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
 
 
 def collect_retired_spillover(store, store_home) -> None:
-    """Unlink retired spillover archives no surviving message references (a branch or compression sibling sharing the pointer keeps it until it dies too), then drop the collected candidates. Unknown reference set: keep files and candidates."""
+    """Unlink retired archives (spillover, and the proactive prune's originals) no surviving message references (a branch or compression sibling sharing the pointer keeps it until it dies too), then drop the collected candidates. A candidate is a spillover basename or a ``cache/pruned/<name>`` reference. Unknown reference set for a directory: keep its files and candidates."""
+    from session_rules.media import PRUNED_SUBDIR, SPILLOVER_SUBDIR
     from tools.tool_result_storage import referenced_spillover_names
-    rows = store.admissions.retired_candidates("spillover")
-    spill_dir = Path(store_home) / "cache" / "spillover"
-    if not rows or (referenced := referenced_spillover_names(spill_dir)) is None:
-        return
+    by_dir: dict[str, list[tuple[str, str]]] = {}
+    for key, ref in store.admissions.retired_candidates("spillover"):
+        subdir, name = (PRUNED_SUBDIR, ref[len(PRUNED_SUBDIR) + 1:]) if ref.startswith(PRUNED_SUBDIR + "/") else (SPILLOVER_SUBDIR, ref)
+        by_dir.setdefault(subdir, []).append((key, name))
     done = []
-    for key, name in rows:
-        try:
-            if name not in referenced:
-                (spill_dir / name).unlink(missing_ok=True)
-        except OSError:
-            continue  # stays a candidate for the next delete/prune pass
-        done.append(key)
-    store.admissions.drop_retired_candidates(done)
+    for subdir, rows in by_dir.items():
+        archive_dir = Path(store_home) / subdir
+        if (referenced := referenced_spillover_names(archive_dir)) is None:
+            continue
+        for key, name in rows:
+            try:
+                if name not in referenced:
+                    (archive_dir / name).unlink(missing_ok=True)
+            except OSError:
+                continue  # stays a candidate for the next delete/prune pass
+            done.append(key)
+    if done:
+        store.admissions.drop_retired_candidates(done)
 
 
 def collect_retired_media(store, store_home) -> None:

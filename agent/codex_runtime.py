@@ -16,7 +16,9 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.display import redact_tool_args_for_display
+from agent.reasoning_summaries import redact_reasoning_fields
 from agent.redact import redact_sensitive_text
+from agent.redact_phone_policy import redact_assistant_reply
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
@@ -142,8 +144,8 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        from agent.turn_usage import _queue_usage
-        _queue_usage(agent, **counts())
+        from agent.turn_usage import queue_usage
+        queue_usage(agent, **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
@@ -216,8 +218,8 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     # The app-server builds its own requests (cache options included), so Hermes cannot know the
     # window: an explicit unknown keeps an older window from outliving this cache activity.
     from agent.prompt_cache_clock import record_unobserved_cache_response
-    from agent.turn_usage import _cache_clock_column
-    clock = _cache_clock_column(record_unobserved_cache_response(agent, canonical_usage, reason="codex_app_server"))
+    from agent.turn_usage import cache_clock_column
+    clock = cache_clock_column(record_unobserved_cache_response(agent, canonical_usage, reason="codex_app_server"))
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
         counts=lambda: billing(**token_counts, **cost_fields, **clock,
@@ -693,6 +695,19 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     )
 
 
+def _redact_projected_assistant_row(message: dict[str, Any]) -> None:
+    """Storage-boundary scrub of one projected assistant row, as ``build_assistant_message`` does on the
+    chat path (#43666): ``content`` and the unsigned ``reasoning`` copy are masked in place (no-op with
+    ``security.redact_secrets`` off). Runs after ``_transform_codex_reply``, which finds the final row by
+    its raw text. Tool-call arguments stay verbatim (#43083)."""
+    if message.get("role") != "assistant":
+        return
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        message["content"] = redact_assistant_reply(content)
+    redact_reasoning_fields(message)
+
+
 def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB; True when the
     rows are durable in the session DB (the codex thread binding may then be published).
@@ -712,6 +727,7 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
             and first.get("content") == submitted_user_text):
         projected_messages = projected_messages[1:]
     for projected_message in projected_messages:
+        _redact_projected_assistant_row(projected_message)
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
         return False

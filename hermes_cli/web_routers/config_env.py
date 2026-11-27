@@ -375,15 +375,16 @@ def _save_env_credential(key: str, value: str, provider_setup: bool = False) -> 
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
-# (Authorization header) or "query" (?key=). A cheap read-only call that 401s
-# on a bad token — enough to catch a mistyped key before it's persisted.
+# (Authorization header) or the name of the header the provider's own requests
+# carry the key in. A cheap read-only call that 401s on a bad token — enough to
+# catch a mistyped key before it's persisted.
 # Providers absent here (or local endpoints) are not network-validated; the
 # client treats those as "unknown".
 _CREDENTIAL_PROBES: dict[str, tuple[str, str]] = {
     "OPENROUTER_API_KEY": ("https://openrouter.ai/api/v1/key", "bearer"),
     "OPENAI_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
     "XAI_API_KEY": ("https://api.x.ai/v1/models", "bearer"),
-    "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "query"),
+    "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "x-goog-api-key"),
 }
 
 
@@ -1166,20 +1167,19 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 
     url, auth = probe
     if key == "GEMINI_API_KEY":
-        from agent.gemini_native_adapter import normalize_gemini_base_url
+        from agent.gemini_urls import normalize_gemini_base_url
         # Normalize guarantees the version segment; the key itself never decides the surface —
         # AQ. keys exist for both AI Studio and Vertex express mode (#115306).
         url = normalize_gemini_base_url(url.rsplit("/models", 1)[0]) + "/models"
     headers = {"Accept": "application/json"}
-    params = {}
     if auth == "bearer":
         headers["Authorization"] = f"Bearer {value}"
     else:
-        params["key"] = value
+        headers[auth] = value
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            resp = await client.get(url, headers=headers, params=params)
+            resp = await client.get(url, headers=headers)
     except Exception:
         return {"ok": False, "reachable": False, "message": "Could not reach the provider to verify the key."}
 

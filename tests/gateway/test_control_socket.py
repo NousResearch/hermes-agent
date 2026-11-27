@@ -79,7 +79,7 @@ def test_client_resolution_prefers_direct_then_pointer(home: Path, tmp_path: Pat
     # pointer file to an existing socket-ish file
     target = tmp_path / "elsewhere.sock"
     target.touch()
-    (home / "gateway.sock.path").write_text(str(target))
+    (home / "gateway.sock.path").write_text(str(target), encoding="utf-8")
     assert resolve_client_socket_path(home) == target
     # direct file wins over pointer
     direct = home / "gateway.sock"
@@ -124,6 +124,68 @@ def test_server_answers_identify_and_status(home: Path):
     ident, status = _run(scenario())
     assert ident == {"pid": 4242, "code_sha": "abc123", "protocol": 1}
     assert status == {"gateway_state": "running"}
+
+
+def test_identify_answers_from_identity_resolved_before_accepting(home: Path, monkeypatch):
+    """A fresh process's first ``identify`` must not pay the code-identity git walk inside the
+    client's deadline: the listener warms it before it accepts (a loaded Windows runner
+    stretched that walk past the 5 s identify budget)."""
+    from hermes_cli import version_info
+
+    resolved = []
+
+    def _resolve_once():
+        resolved.append(True)
+        return version_info.VersionInfo("1.2.3", "1.2.3", 0, "f" * 40, "main", "git")
+
+    monkeypatch.setattr(version_info, "_cached_version_info", None)
+    monkeypatch.setattr(version_info, "_stamp_or_none", _resolve_once)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        assert await server.start()
+        try:
+            resolved_at_start = len(resolved)
+            ident = await asyncio.get_running_loop().run_in_executor(None, lambda: identify_gateway(home))
+            return resolved_at_start, ident
+        finally:
+            await server.stop()
+
+    resolved_at_start, ident = _run(scenario())
+    assert resolved_at_start == 1
+    assert ident is not None and ident["code_sha"] == "f" * 40
+    assert len(resolved) == 1
+
+
+def test_process_record_is_built_before_the_listener_opens(home: Path, monkeypatch):
+    """The first psutil process probe (``_build_pid_record``) is the other cold cost of a fresh
+    ``identify``: the listener builds it before it opens, so no client's deadline pays it."""
+    from gateway import control_socket, status
+
+    order = []
+    real_record = status._build_pid_record
+    real_open = control_socket.GatewayControlServer._start_windows if sys.platform == "win32" \
+        else control_socket.GatewayControlServer._start_posix
+
+    def _record():
+        order.append("pid_record")
+        return real_record()
+
+    async def _open(self):
+        order.append("listener")
+        return await real_open(self)
+
+    monkeypatch.setattr(status, "_build_pid_record", _record)
+    monkeypatch.setattr(control_socket.GatewayControlServer,
+                        "_start_windows" if sys.platform == "win32" else "_start_posix", _open)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        assert await server.start()
+        await server.stop()
+
+    _run(scenario())
+    assert order[:2] == ["pid_record", "listener"], order
 
 
 def test_unknown_verb_and_malformed_request(home: Path):
@@ -301,7 +363,7 @@ def test_home_refusing_sockets_listens_on_private_fallback_both_clients_reach(sh
         assert await server.start()
         try:
             pointer = home / "gateway.sock.path"
-            target = Path(pointer.read_text(encoding="utf-8"))
+            target = Path(pointer.read_text(encoding="utf-8-sig"))
             assert server._bind_path == target and target.name == "control.sock"
             assert stat.S_IMODE(pointer.lstat().st_mode) == 0o600
             assert stat.S_IMODE(target.parent.lstat().st_mode) == 0o700

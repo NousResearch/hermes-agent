@@ -1,0 +1,27 @@
+name: bark
+repo: https://github.com/iam1maker/hermes-bark
+sha: 1709090ceef850c55d71ce3d86197f4e8d2b05b4
+title: Bark (iOS push)
+description: "One-way push notifications to an iPhone through Bark, as a first-class Hermes delivery platform: cron jobs with `--deliver bark`, `hermes send --to bark[:device]`, the `bark_notify` tool, and optional turn-end/subagent-stop hooks. Multi-device aliases (BARK_KEY_<ALIAS>), per-push level, sound, group, TTL, badge, icon, url and image (http(s) URL only — Bark fetches it), plus a Desktop settings page with a live probe, a test push and a local delivery log. Disclosure — outbound requests go only to the configured Bark server (default https://api.day.app; self-hosted bark-server works; plain http:// is accepted for a LAN you control and warned about, never silently upgraded), with the notification title/body/image URL and the device key in the request body (never in the URL path); Bark is one-way, so there is no inbound stream, no reply channel and no delivery receipt — a 200 means the server queued the push for APNs, not that the phone showed it; automatic pushes are off by default and, when enabled, run inside the Hermes process only after a turn or subagent ends (status filter, duration floor, quiet hours, 60s per-session debounce); every push path (adapter, hooks, the bark_notify tool, cron/hermes send, the CLI test and the page) appends to a local `plugin-data/hermes-bark/deliveries.jsonl` (title/body/alias/status/latency, 250-record rotation), which the page displays and can clear; settings saved on the page are written to plugins.entries.hermes-bark.settings in config.yaml, and adding/removing a device goes through Hermes' credential lifecycle; device keys are read from the bound profile secret scope (only a process with no scope falls back to the process env; a plugin never parses `.env`, Hermes' auth.json or any other store, a scoped miss is fail-closed, and a literal key in config.yaml is refused rather than used) and only a mask ever reaches the renderer; the plugin follows `HTTPS_PROXY` and, when that proxy is a loopback address that refuses connections, retries once with `trust_env=False` and says so in the result; no telemetry, no subprocesses, no self-update, no file writes other than Hermes' own settings and credential writers, and the Desktop half is the standard opt-in marker package."
+maintainer: iam1maker
+tier: community
+category: platform
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/iam1maker/hermes-bark#readme
+version: "0.2.1"
+screenshots:
+  - https://raw.githubusercontent.com/iam1maker/hermes-bark/1709090ceef850c55d71ce3d86197f4e8d2b05b4/docs/settings-page.png
+platforms: []
+known_issues:
+  - Needs the Bark iOS app (or a self-hosted bark-server) and a device key; without an iPhone to receive them, pushes only reach the server.
+  - Delivery is one-way by design: no read receipts, no replies and no approval prompts through Bark.
+capabilities:
+  provides_tools:
+    - bark_notify
+  provides_hooks:
+    - on_session_end
+    - pre_llm_call
+    - subagent_stop
+  provides_middleware: []
+  requires_env:
+    - BARK_TOKEN

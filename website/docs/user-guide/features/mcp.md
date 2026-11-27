@@ -504,6 +504,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
+| `single_instance` | bool | If `true`, this stdio server must have exactly one live child system-wide (a single-writer datastore). A second Hermes context that finds the resource already held parks quietly — no timed self-probe — and is revived by an explicit reconnect (`/reload-mcp` or `hermes mcp` refresh) once the owning instance exits. |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -787,6 +788,8 @@ This reloads MCP servers from config and refreshes the available tool list. It i
 
 A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
 
+**Parked servers.** A server that keeps failing (its initial connect attempts or its reconnect budget are used up) is parked: its tools are removed and Hermes tries one reconnect on its own after 5 minutes, then waits twice as long after each failed try, up to one hour. Each try starts the server once, so a broken `npx`/`uvx` command is not re-run in a tight loop. A healthy session resets the wait to 5 minutes, and `/reload-mcp` retries at once.
+
 **Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe. Until the token files change, starting new sessions does not retry the rejected token: only the timed self-probe does, so a dead grant cannot hammer the provider's token endpoint.
 
 ### Toolsets
@@ -945,11 +948,17 @@ By default, MCP tools run sequentially — one at a time. If your MCP server exp
 ```yaml
 mcp_servers:
   docs:
-    command: "docs-server"
+    url: "https://mcp.example.com/mcp"
     supports_parallel_tool_calls: true
+    sampling:
+      enabled: false
+    elicitation:
+      enabled: false
 ```
 
-When `supports_parallel_tool_calls` is `true`, Hermes may execute multiple tools from that server at the same time within a single tool-call batch, just like it does for built-in read-only tools (web_search, read_file, etc.).
+When `supports_parallel_tool_calls` is `true`, Hermes admits tools from that server to parallel tool-call batches. Calls to the **same server** overlap on Streamable HTTP only when both sampling and elicitation are disabled. These callbacks carry server-wide state, so enabling either retains serialized RPCs. Both are enabled by default.
+
+Stdio, explicit legacy SSE (`transport: sse`), and automatic SSE fallback retain serialized RPCs even with the opt-in. Discovery, resource and prompt utilities keep their existing locking. The opt-in belongs to the calling profile, including when profiles share a connection. With the setting absent or `false`, calls remain serial. Tool approval and replay-safety rules are unchanged.
 
 :::caution
 Only enable parallel calls for MCP servers whose tools are safe to run at the same time. If tools read and write shared state, files, databases, or external resources, review the read/write race conditions before enabling this setting.

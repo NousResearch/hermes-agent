@@ -409,6 +409,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_platform/resolver/__init__.py",  # update_cmd_commit's interpreter lookup
     "hermes_platform/resolver/base.py",
     "hermes_platform/resolver/core.py",
+    "hermes_platform/resolver/git.py",  # macOS CLT git guard used by _subprocess_compat and source_check
     "agent/curator.py",
     "plugins/memory/__init__.py",
     "agent/checkpoints/maintenance.py",
@@ -452,7 +453,9 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
         "persistence/sqlite/",
-        "sqlite_support.py",  # journal mode, WAL fallback and durability barriers
+        # journal mode, WAL fallback and durability barriers; MOVES folds hermes_state_wal into it, so the
+        # guards see it under that oldest name
+        original_path("sqlite_support.py"),
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
         "tests/gateway/test_session_terminal_cwd_restart.py",
@@ -493,6 +496,10 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_agent/__init__.py",
         "hermes_agent/compat/",
         "hermes_cli/main_install",
+        # The old-backend notice (hermes_cli/update_backend_notice.py) reads the backend-migration marker.
+        "hermes_cli/backend_migration_marker.py",
+        # The same notice asks whether a plugin runs the profile elsewhere, and prints nothing when one does.
+        "hermes_cli/profiles_run_elsewhere.py",
         *_UPDATE_PIPELINE,
         *_UPDATE_ENTRY_POINTS,
         *_UPDATE_DEPENDENCIES,

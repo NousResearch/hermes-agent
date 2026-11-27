@@ -44,7 +44,8 @@ HANDOFF_MESSAGE_FIELDS = WORKER_MESSAGE_FIELDS | {"_compressed_summary_has_user_
 ROW_ANNOTATION_KEYS = ("_row_id", "timestamp", "_db_row_snapshot", "_canonical_row", "message_uid", "_tool_call_uids", "_tool_call_uid")
 
 #: The ``model_config`` keys a worker may patch (``patch_session_sidecars`` and a compaction's ``model_config_patch``).
-SIDECAR_KEYS = frozenset({"_usage_anchor", "_proactive_prune_rearm_tokens", "_anthropic_rejected_thinking"})
+SIDECAR_KEYS = frozenset({"_usage_anchor", "_proactive_prune_rearm_tokens", "_proactive_prune_cold_credit",
+                          "_anthropic_rejected_thinking"})
 
 #: The ``model_config`` keys the worker's constructor upsert accepts.
 WORKER_CONSTRUCTOR_CONFIG_KEYS = frozenset({"max_iterations", "max_tokens", "reasoning_config", "yolo_mode"})

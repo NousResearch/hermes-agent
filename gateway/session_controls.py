@@ -69,8 +69,24 @@ def _log_refusal(profile, method, exc: AuthorityRefusal) -> None:
         logger.debug(line, *args)
     elif field == 'request_id' and exc.reason == 'admission_conflict':
         logger.info(line, *args)
+    elif exc.reason == 'storage_unavailable' and _seen_storage_refusal((method, *args[1:])):
+        # A stored receipt refuses the same way on every retry (Desktop reopens a chat dozens of
+        # times): the first line names the check, the repeats stay at debug.
+        logger.debug(line, *args)
     else:
         logger.warning(line, *args)
+
+
+# (method, profile, reason, field, detail) of the named storage refusals this process already warned.
+_STORAGE_REFUSALS = set()
+
+
+def _seen_storage_refusal(key) -> bool:
+    if key in _STORAGE_REFUSALS:
+        return True
+    if len(_STORAGE_REFUSALS) < 512:
+        _STORAGE_REFUSALS.add(key)
+    return False
 
 
 # (method, error class) pairs whose traceback this process already logged.
@@ -178,6 +194,14 @@ class AuthorityConnection:
         every profile this process serves; any other grant is bound to its own profile."""
         return self._identity.get('profile_scope') == 'host'
 
+    @property
+    def client(self):
+        """The label this connection announced (``client.capabilities``), or ``None``. A sibling
+        profile's connection shares the transport, so it carries the same label."""
+        from gateway.session_client import client_problem
+        value = getattr(self.transport, 'client_identity', None)
+        return value if value is not None and client_problem(value) is None else None
+
     def _sibling_for(self, profile):
         """Connection bound to the sibling authority a ``profile`` param names, or None for our own
         home. Only a host-scoped grant (the Desktop's shared-primary socket, the dashboard gate)
@@ -262,6 +286,8 @@ class AuthorityConnection:
         handlers.update(side_handlers(self))
         from gateway.session_llm_oneshot import handlers as oneshot_handlers
         handlers.update(oneshot_handlers(self))
+        from gateway.session_teammate_waits import handlers as teammate_wait_handlers
+        handlers.update(teammate_wait_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
@@ -329,6 +355,11 @@ class AuthorityConnection:
             # unknown keys; every other handler validates ``profile`` itself.
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
+        from gateway.session_presence import touch
+        try:
+            touch(self, method, params)  # the user's own input, even when the request is then refused
+        except Exception:  # health: allow BLE001 -- observing input never fails the request
+            logger.debug('presence touch failed for %s', method, exc_info=True)
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
@@ -565,7 +596,7 @@ class AuthorityConnection:
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
                                  'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1',
-                                 'session-list-cursor-v1'],
+                                 'session-list-cursor-v1', 'client-identity-v1', 'client-activity-v1'],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -883,6 +914,9 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
+        if self.client is not None:
+            # The owner stamps the turn with the connection's announced label; the wire cannot.
+            payload['client'] = self.client
         return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):
@@ -959,17 +993,21 @@ class AuthorityConnection:
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):
+        from gateway.session_presence import seen
         from gateway.session_server_requests import may_settle, resolve
-        asked = []
+        asked, settler = [], []
 
         def entitled(session_id, events):
             asked.append(session_id)
             # The same rule ``clarify.lock`` applies to the same request id (attached + respond). A
             # response frame names no profile: a host-scoped socket answers a sibling's request as the
             # sibling connection that attached it.
-            return any(may_settle(connection.authority, connection.actor, session_id, events)
-                       for connection in (self, *self._siblings.values()))
-        if not resolve(frame, session_ok=entitled):
+            connection = next((connection for connection in (self, *self._siblings.values())
+                               if may_settle(connection.authority, connection.actor, session_id, events)), None)
+            settler.append(connection)
+            return connection is not None
+        # A person's answer is their input on this connection, for the profile that asked.
+        if not resolve(frame, session_ok=entitled, answered=lambda session_id: seen(settler[-1], session_id)):
             import logging
             what = 'a server request this connection may not settle' if asked else 'unknown server request'
             logging.getLogger(__name__).debug('dropping response for %s id=%r', what, frame.get('id'))

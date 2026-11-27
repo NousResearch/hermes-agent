@@ -1,3 +1,6 @@
+import { setFlagsFromString } from 'node:v8'
+import { runInNewContext } from 'node:vm'
+
 import { expect, it } from 'vitest'
 
 import {
@@ -5,6 +8,7 @@ import {
   chatMessageText,
   preserveLocalAssistantErrors,
   preserveLocalSystemNotices,
+  reconcileLocalAssistantTimeline,
   textPart,
   toChatMessages
 } from './index'
@@ -520,4 +524,69 @@ it.each([
   expect(chatMessageText(beatRows[0])).toBe('Hi!')
   expect(errorCards).toHaveLength(1)
   expect(errorCards[0]).toMatchObject({ error: 'rate limited', errorSurface: { code: 'rate_limit' } })
+})
+
+it('keeps settled message and part identity when reconciliation has nothing to merge', () => {
+  const live = [row('u1', 'user', 'hi'), row('a1', 'assistant', 'hello')]
+  const hydrated = [row('u1', 'user', 'hi'), row('a1', 'assistant', 'hello')]
+
+  const merged = preserveLocalAssistantErrors(hydrated, live)
+
+  // The streamed path republishes every row through this reconciler; allocating
+  // fresh settled objects here defeats the runtime repository's identity cache.
+  expect(merged[1]).toBe(hydrated[1])
+  expect(merged[1].parts[0]).toBe(hydrated[1].parts[0])
+})
+
+it('derives the message completion stamp from its parts even when the view holds the same row', () => {
+  // Hydration stamps a folded tool bubble on its tool part only. The view and
+  // the cache share that row object after a thread load, and later flushes
+  // must still lift the part stamp onto the message.
+  const toolBubble: ChatMessage = {
+    id: 'a1',
+    parts: [
+      {
+        completedAt: 105,
+        timestamp: 101,
+        toolCallId: 'c1',
+        toolName: 'read_file',
+        type: 'tool-call'
+      } as ChatMessage['parts'][number]
+    ],
+    role: 'assistant',
+    timestamp: 101
+  }
+
+  const transcript = [row('u1', 'user', 'hi'), toolBubble]
+  const merged = preserveLocalAssistantErrors(transcript, transcript)
+
+  expect(merged[1].completedAt).toBe(105)
+  expect(preserveLocalAssistantErrors(transcript, merged)[1]).toBe(merged[1])
+})
+
+it('does not keep earlier streamed snapshots of a reply alive', async () => {
+  // Each live flush folds the new tail row against the view's previous one. The
+  // fold memo must not hold that previous row strongly, or every snapshot of a
+  // streamed reply stays reachable from the settled row for the session's life.
+  setFlagsFromString('--expose-gc')
+  const gc = runInNewContext('gc') as () => void
+  const user = row('u1', 'user', 'hi')
+  let view: ChatMessage[] = [user]
+  let first: null | WeakRef<ChatMessage> = null
+  let text = ''
+
+  for (let delta = 0; delta < 50; delta += 1) {
+    text += 'token '
+    const tail = row('a1', 'assistant', text, { pending: true })
+    first ??= new WeakRef(tail)
+    view = reconcileLocalAssistantTimeline([user, tail], view)
+  }
+
+  for (let pass = 0; pass < 3; pass += 1) {
+    gc()
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+
+  expect(first?.deref()).toBeUndefined()
+  expect(view[1].parts[0]).toMatchObject({ text })
 })

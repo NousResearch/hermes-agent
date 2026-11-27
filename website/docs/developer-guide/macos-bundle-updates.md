@@ -24,7 +24,7 @@ Existing tagged clients retain their native feed URLs. The generic
 register channels. The builder writes the legacy URL into `app-update.yml`;
 `updates.desktop_feed_base_url` can supply an explicit bucket-base URL.
 
-- Stable: `releases/darwin/stable/stable-mac.yml`
+- Stable: `releases/darwin/stable/stable-mac.yml` (and the unversioned Apple Silicon DMG alias at `releases/darwin/stable/HermesBundled-mac-arm64.dmg`, updated during stable desktop promotion with `Cache-Control: no-store`)
 - Canary: `releases/darwin/canary/canary-mac.yml`
 - Light: the same paths with `light/` between `darwin/` and the channel.
 - Artifacts: `releases/tag/TAG/FILENAME`, shared by download links and feeds.
@@ -70,9 +70,13 @@ The existing `release-signing` environment supplies:
   `CLOUDFLARE_R2_SECRET_ACCESS_KEY`: bucket access secrets.
 - `CLOUDFLARE_R2_BUCKET`, `CLOUDFLARE_R2_PUBLIC_URL`: repository/environment vars.
 
-Publishing requires the Apple credentials. The existing after-sign hook owns
-notarization, so electron-builder's second notarization path is disabled.
-The publish gate verifies the signature, stapled ticket and Gatekeeper assessment.
+Publishing requires the Apple credentials. The `afterSign` hook owns `.app`
+notarization (so electron-builder's second notarization path is disabled), and
+`artifactBuildCompleted` (`scripts/notarize-dmg.mjs`) signs the outer `.dmg`
+with `--timestamp`, notarizes and staples it, verifies `codesign`, `stapler`,
+and `spctl -t open --context context:primary-signature`, and refreshes
+`.dmg.blockmap` and feed hashes from the stapled bytes. The publish gate and
+macOS smoke verify both the outer `.dmg` and the contained `.app`.
 Recording the build refuses an update ZIP of 1 GiB (1,073,741,824 bytes) or
 more: Squirrel.Mac before Electron 44.7, which v0.22.0 ships, reads the whole ZIP
 into memory and crashes downloading one that size

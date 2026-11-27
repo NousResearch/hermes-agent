@@ -112,7 +112,7 @@ def _refresh_horizon_seconds(tick_seconds: int, floor_seconds: int) -> int:
 
 
 def _entry_state(entry: object) -> dict:
-    return {k: getattr(entry, k, None) for k in ("agent_key", "agent_key_expires_at", "scope")}
+    return {k: getattr(entry, k, None) for k in ("agent_key", "agent_key_expires_at", "agent_key_obtained_at", "scope")}
 
 
 def _refresh_selected_pool_entry(*, min_key_ttl_seconds: int, min_access_ttl_seconds: Optional[int] = None) -> Optional[bool]:

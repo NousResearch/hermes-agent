@@ -31,7 +31,9 @@ the machine restores that value on teardown.
 Machines run in parallel. Updates and gateway lifetimes take a job-wide lock
 (``gateway_phase``) so each journey's gateway hand-off is deterministic; installs, turns and
 everything else stay parallel. One install's update sparing another's gateway (#124659) is
-its own journey (test_update_spares_other_installs.py).
+its own journey (test_update_spares_other_installs.py). CI runs each file in its own job
+(windows-install-update-e2e.yml): with every file on one runner, journeys spent most of the
+job waiting for this lock.
 
 The suite mutates HKCU and downloads a toolchain per machine, so it only runs where
 ``HERMES_E2E_WINDOWS_INSTALL=1`` (the CI job sets it).

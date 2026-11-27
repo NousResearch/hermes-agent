@@ -1,12 +1,12 @@
 name: pilot
 repo: https://github.com/LangerSword/hermes-pilot
-sha: a1459dd57b11ced70c41903425da9648b06cc78b
+sha: 3724e8f096d36f32affe7873d715cfda78d6f7aa
 title: Pilot
 description: "Give Hermes a real interactive terminal. Pilot runs commands inside a private tmux server, so the agent can drive programs that need a TTY: ssh logins, vim/nano, htop/btop, fzf, less, package installers, ncurses menus and REPLs. It types literal text and named keys, reads the pane back as plain text, and keeps sessions alive across tool calls; a human can attach to the same pane and take over. The suite exposes 24 tools for session control, scripted expect flows, scrollback search, snapshots/diffs, logging, signals, resize, health and base64 file transfer. Disclosure — Pilot starts a private, profile-scoped tmux server as your user and runs model-requested commands and keystrokes in it (each one asks for your approval); terminal text, including output from remote hosts, enters the model's context; snapshots, pane logs and downloaded files can hold sensitive output and are kept under plugin-data/pilot; pilot_upload can type a local file into a remote session after approval."
 maintainer: LangerSword
 tier: community
 category: tools
-version: "0.3.3"
+version: "0.4.1"
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/LangerSword/hermes-pilot
 platforms:

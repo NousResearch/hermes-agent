@@ -22,7 +22,7 @@ from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
     lock_fd as _lock,
-    lock_path,
+    moved_lock,
     read_bytes_or_none as _bytes,
 )
 
@@ -45,16 +45,16 @@ def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_
     (``activate_dependencies`` still selects and leases the committed generation), writers that
     cannot be skipped pass ``timeout=None`` — an install the user asked for is theirs to wait on.
     """
-    lock = install_state_dir(project) / ".install.lock"
-    fd = lock_path(lock, timeout=timeout, create_dir=True)
-    if fd is None:
-        LOG.warning("dependency lock still held after %ss; continuing without it (%s)", timeout, lock)
-        yield False
-        return
-    try:
-        yield True
-    finally:
-        os.close(fd)
+    old, new = install_lock_paths(install_state_dir(project))
+    with moved_lock(old, new, timeout=timeout) as held:
+        if not held:
+            LOG.warning("dependency lock still held after %ss; continuing without it (%s)", timeout, new)
+        yield held
+
+
+def install_lock_paths(state: Path) -> tuple[Path, Path]:
+    """The install lock where releases before ``locks/`` existed take it, and where it lives now."""
+    return state / ".install.lock", state / "locks" / "install.lock"
 
 
 def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
@@ -144,12 +144,28 @@ def lease_generation(environment: Path) -> Callable[[], None]:
     return lease_directory(environment.parent)
 
 
+def lease_dirs(generation: Path) -> list[Path]:
+    """Where *generation*'s leases are taken now, then where releases before that took them.
+
+    An install's generations lease from ``installs/<key>/leases/<kind>/<generation>``, outside the
+    dependency tree, so that tree can be mounted read-only. Processes started on an earlier
+    release still lease ``<generation>/.leases`` until they exit.
+    """
+    old = generation / ".leases"
+    parent = generation.parent
+    if parent.name == "environments":
+        return [parent.parent / "leases" / "environments" / generation.name, old]
+    if parent.name == "generations" and parent.parent.name == "pm-runtime":
+        return [parent.parent.parent / "leases" / "pm-runtime" / generation.name, old]
+    return [old]
+
+
 def lease_directory(generation: Path) -> Callable[[], None]:
     """Pin a lease-managed generation directory for this process's lifetime."""
     if not (generation / ".lease-managed").is_file():
         return lambda: None  # Generations produced before leases stay conservatively retained.
-    leases = generation / ".leases"
-    leases.mkdir(exist_ok=True)
+    leases = lease_dirs(generation)[0]
+    leases.mkdir(parents=True, exist_ok=True)
     _prune_unlocked_leases(leases)
     while True:
         lease = leases / uuid.uuid4().hex
@@ -203,12 +219,23 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not leases_held(generation):
                 shutil.rmtree(generation)
                 removed.append(generation)
+        collect_lease_dirs(root / "leases" / "environments", generations)
     return removed
 
 
 def leases_held(generation: Path) -> bool:
     """True while any process still holds a lease taken by ``lease_directory``."""
-    return _prune_unlocked_leases(generation / ".leases")
+    return any([_prune_unlocked_leases(leases) for leases in lease_dirs(generation)])
+
+
+def collect_lease_dirs(leases: Path, generations: Path) -> None:
+    """Remove the lease directories under *leases* whose generation is gone and nothing holds."""
+    if not leases.is_dir():
+        return
+    for directory in leases.iterdir():
+        if not (generations / directory.name).exists() and not _prune_unlocked_leases(directory):
+            with suppress(OSError):
+                directory.rmdir()  # a lease taken since the prune keeps it
 
 
 def _open_lease_probe(lease: Path) -> int:

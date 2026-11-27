@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import json
 import tomllib
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -95,15 +96,27 @@ def _is_own_module_path(module: str, local: set[str]) -> bool:
     return any(".".join(parts[i:]) in local for i in range(1, len(parts))) and not _core_module_exists(module)
 
 
+def _is_hermes_import(module: str, name: str, core: frozenset, local: set[str]) -> bool:
+    """True when ``module`` (with ``name`` from it) is a Hermes core import, not the plugin's own module."""
+    own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(f"{module}.{name}", local)
+    return module.split(".")[0] in core and module not in local and not own
+
+
+def is_public_import(module: str, name: str, public_api: frozenset | None = None) -> bool:
+    """True when ``from module import name`` (``import module`` for ``name`` "") is on the published plugin API
+    (``public_api`` entries, default this checkout's ``plugin_api.json``)."""
+    target = f"{module}.{name}" if name else module
+    # A name is public under its old or its current spelling: a MOVES key may fold a module into a published one.
+    public_api = _public_api() if public_api is None else public_api
+    return bool({original_module(target), current_module(target)} & public_api) or any(
+        f"{mod}:{name}" in public_api or (mod in public_api and not name.startswith("_"))  # ``from gateway.platforms import base``
+        for mod in {original_module(module), current_module(module)})
+
+
 def _private_target(module: str, name: str, core: frozenset, local: set[str]) -> str:
     """The dotted target to report, or "" when the import is public, local or not Hermes's."""
     target = f"{module}.{name}" if name else module
-    own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
-    hermes = module.split(".")[0] in core and module not in local and not own
-    public_api, old = _public_api(), original_module(module)
-    public = original_module(target) in public_api or f"{old}:{name}" in public_api \
-        or (old in public_api and not name.startswith("_"))  # ``from gateway.platforms import base`` too
-    return target if hermes and not public else ""
+    return target if _is_hermes_import(module, name, core, local) and not is_public_import(module, name) else ""
 
 
 def _parsed_files(plugin_dir: Path) -> list[tuple[Path, ast.AST]]:
@@ -118,6 +131,103 @@ def _parsed_files(plugin_dir: Path) -> list[tuple[Path, ast.AST]]:
         except (SyntaxError, ValueError):
             continue
     return parsed
+
+
+_IMPORT_ERRORS = frozenset({"ImportError", "ModuleNotFoundError", "Exception", "BaseException"})
+
+
+@dataclass(frozen=True)
+class ImportSite:
+    """One Hermes core import in a plugin: ``from module import name`` (``name`` "" for ``import module``)."""
+
+    rel: str
+    line: int
+    module: str
+    name: str
+
+
+@dataclass(frozen=True)
+class ImportBranch:
+    """One block of a ``try`` (its body or one handler): the Hermes imports it makes and the ``try`` blocks
+    nested in it. The block runs when every site resolves and no nested ``try`` fails as a whole."""
+
+    sites: tuple[ImportSite, ...]
+    choices: tuple[ImportChoice, ...] = ()
+
+
+@dataclass(frozen=True)
+class ImportChoice:
+    """A ``try`` that catches a failed import; Python runs the body, else a handler."""
+
+    branches: tuple[ImportBranch, ...]
+
+
+@dataclass(frozen=True)
+class CoreImports:
+    plain: tuple[ImportSite, ...]
+    choices: tuple[ImportChoice, ...]
+
+
+def _catches_import_errors(node: ast.Try) -> bool:
+    return any(handler.type is None or {ast.unparse(t).rpartition(".")[2] for t in (
+        handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type])} & _IMPORT_ERRORS
+        for handler in node.handlers)
+
+
+@dataclass
+class _Block:
+    sites: set
+    choices: list
+
+
+class _ImportCollector:
+    """Walks one file, filing each Hermes import under the innermost catching ``try`` block it sits in."""
+
+    def __init__(self, rel: str, skipped: set[int], is_hermes) -> None:
+        self.rel, self.skipped, self.is_hermes = rel, skipped, is_hermes
+
+    def block(self, nodes) -> _Block:
+        found = _Block(set(), [])
+        stack = list(reversed(list(nodes)))
+        while stack:
+            node = stack.pop()
+            if id(node) in self.skipped:
+                continue
+            if isinstance(node, ast.Try) and _catches_import_errors(node):
+                choice = self.choice(node)
+                if choice is not None:
+                    found.choices.append(choice)
+                stack += reversed([*node.orelse, *node.finalbody])
+                continue
+            found.sites |= {ImportSite(self.rel, getattr(node, "lineno", 0), module, name)
+                            for module, name in _imported(node) if self.is_hermes(module, name)}
+            stack += reversed(list(ast.iter_child_nodes(node)))
+        return found
+
+    def choice(self, node: ast.Try) -> ImportChoice | None:
+        blocks = [self.block(body) for body in [node.body, *(h.body for h in node.handlers)]]
+        if not any(b.sites or b.choices for b in blocks):
+            return None
+        return ImportChoice(tuple(ImportBranch(tuple(sorted(b.sites, key=lambda s: (s.line, s.module, s.name))),
+                                               tuple(b.choices)) for b in blocks))
+
+
+def hermes_import_sites(plugin_dir: Path) -> CoreImports:
+    """Every import of a Hermes core module, public or not: unconditional ones in file/line order, and each
+    outermost ``try`` that catches import errors as an :class:`ImportChoice` (nested ones stay inside the
+    branch that holds them). ``TYPE_CHECKING`` imports never load, so they are left out."""
+    files = _parsed_files(Path(plugin_dir))
+    local = _local_modules(rel for rel, _tree in files)
+    core = _hermes_packages()
+    plain: set[ImportSite] = set()
+    choices: list[ImportChoice] = []
+    for rel, tree in files:
+        collector = _ImportCollector(rel.as_posix(), _type_checking_nodes(tree),
+                                     lambda module, name: _is_hermes_import(module, name, core, local))
+        found = collector.block(tree.body)
+        plain |= found.sites
+        choices += found.choices
+    return CoreImports(tuple(sorted(plain, key=lambda s: (s.rel, s.line, s.module, s.name))), tuple(choices))
 
 
 def private_import_findings(plugin_dir: Path) -> list[str]:

@@ -471,10 +471,13 @@ class MessageRecord:
 
 @dataclass(frozen=True, slots=True)
 class MessageStorageState:
-    """The owning session and visibility of one stored row."""
+    """The owning session and visibility of one stored row. ``superseded`` marks a rewound row that compaction replaced
+    with a rewritten copy (same ``message_uid``, different content; a demoted tool result's stub), so its text left the
+    live transcript rather than being undone."""
 
     session_id: SessionId
     visibility: RowVisibility
+    superseded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1120,7 +1123,7 @@ class MessageRepository(Protocol):
         ...
 
     def message_storage_state(self, message_id: MessageId) -> Optional[MessageStorageState]:
-        """The owning session and visibility of the row ``message_id`` names in the scope, or ``None``."""
+        """The owning session, visibility and ``superseded`` flag of the row ``message_id`` names in the scope, or ``None``."""
         ...
 
     def latest_row_id(self, session_id: SessionId, *, role: str = "user", offset: int = 0, require_text: bool = True) -> Optional[MessageId]:
@@ -1175,8 +1178,8 @@ class MessageRepository(Protocol):
         """Whether the scope holds any transcript row (False when the store has no transcript table yet)."""
         ...
 
-    def spillover_reference_rows(self) -> tuple[tuple[Optional[str], Optional[str]], ...]:
-        """``(content, api_content)`` of at most 20001 rows that reference spilled-over tool results, in no defined order."""
+    def spillover_reference_rows(self) -> Iterator[tuple[Optional[str], Optional[str]]]:
+        """``(content, api_content)`` of every row that references spilled-over tool results or proactive-prune originals (``session_rules.media.ARCHIVE_POINTER_MARKERS``), in no defined order, streamed in batches inside one read that ends when the iterator is exhausted or closed: no row cap, so memory is bounded by what the caller keeps."""
         ...
 
     def read_snapshot(self) -> ContextManager[ReadCheck]:

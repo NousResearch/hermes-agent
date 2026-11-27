@@ -57,6 +57,7 @@ from tests.e2e.core.upgrade._helpers import (
     wait_for,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.process_scan import children_matching, matching
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux", reason="fork()-based import isolation and bwrap sandbox are Linux-only"),
@@ -790,9 +791,9 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
 
             # With bwrap the reaper is a child; without it (CI) it is proc itself.
             root = psutil.Process(proc.pid)
-            reaper_proc = next(p for p in [root, *root.children(recursive=True)]
-                               if p.cmdline()[1:2] == [str(reaper)])
-            serve = next(p for p in reaper_proc.children() if p.cmdline()[1:3] == ["-m", "hermes_cli.main"])
+            reaper_proc = next(iter(matching([root, *root.children(recursive=True)],
+                                             lambda p: p.cmdline()[1:2] == [str(reaper)])))
+            serve = next(iter(children_matching(reaper_proc, lambda p: p.cmdline()[1:3] == ["-m", "hermes_cli.main"])))
             descendants = [p.pid for p in serve.children(recursive=True)]
             serve.send_signal(signal.SIGTERM)
             wait_for(lambda: report_path.exists() and report_path.stat().st_size > 0, timeout=120,

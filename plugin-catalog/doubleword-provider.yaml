@@ -1,0 +1,18 @@
+name: doubleword-provider
+repo: https://github.com/doublewordai/hermes-doubleword-provider
+sha: e1d1b33693c4070f7d1b3d1c11ebe49a9bc5cee1
+title: "Doubleword"
+description: "Doubleword models (GLM, Kimi, DeepSeek, Qwen) via the OpenAI-compatible API at api.doubleword.ai/v1. Disclosure — model provider; prompts, tool schemas and your DOUBLEWORD_API_KEY go to api.doubleword.ai, or to DOUBLEWORD_BASE_URL when you set it."
+maintainer: doublewordai
+tier: community
+category: models
+requires_hermes: ">=0.23.2"
+docs_url: https://github.com/doublewordai/hermes-doubleword-provider#readme
+version: "1.0.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DOUBLEWORD_API_KEY

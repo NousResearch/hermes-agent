@@ -112,7 +112,8 @@ def test_fill_is_password_blind_and_redaction_registered(real_profile):
          patch("tools.browser_real_profile_logins.resolve_login_password", return_value=_PASSWORD), \
          patch("tools.browser_session_real_profile.real_profile_cdp", return_value=("ws://x", None)), \
          patch("agent.redact.register_vault_redaction_value", side_effect=registered.append), \
-         patch("tools.browser_vault_tool._bound_page_origin", return_value="https://example.com"), \
+         patch("tools.browser_vault_tool._bound_page_origin",
+               return_value=browser_vault_tool._CheckedPage("https://example.com")), \
          patch("tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps(
              [{"index": 0, "tag": "input", "type": "password", "name": "password", "autocomplete": "current-password"}])}), \
          patch("tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps({"filled": 1})}):

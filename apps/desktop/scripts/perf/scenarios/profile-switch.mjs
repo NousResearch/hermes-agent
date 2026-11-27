@@ -8,7 +8,7 @@ import { SELECTORS, sleep } from '../lib/cdp.mjs'
 export default {
   name: 'profile-switch',
   tier: 'backend',
-  description: 'Click a profile in the rail and wait for its sidebar to settle.',
+  description: 'Click a profile in the rail and wait for the switch indicator and rail square to settle.',
   requiredOpts: ['profile'],
   async run(cdp, opts = {}) {
     const profile = opts.profile
@@ -27,6 +27,9 @@ export default {
         ((b.getAttribute('aria-label') || '') + ' ' + (b.title || '') + ' ' + (b.textContent || ''))
           .toLowerCase().includes(${JSON.stringify(String(profile).toLowerCase())}))
       if (!target) return null
+      // Held for the poll below: the clicked square's aria-busy is half of
+      // the readiness signal.
+      window.__perfProfileSwitchTarget = target
       target.click()
       return performance.now()
     })()`)
@@ -37,16 +40,33 @@ export default {
 
     const deadline = Date.now() + settleTimeoutMs
     let settledMs = null
+    let failed = false
 
     while (Date.now() < deadline) {
       await sleep(100)
+      // Deterministic readiness, not overlay text: the chat's switch
+      // indicator publishes data-switch-state (pending/slow/stalled while a
+      // switch is in flight, failed on a rejected one) and the clicked rail
+      // square carries aria-busy until its activation settles.
       const s = await cdp.eval(`(() => {
-        const label = [...document.querySelectorAll('div[aria-hidden]')].find(el => /waking up/i.test(el.textContent || ''))
-        const overlayVisible = label ? Number(getComputedStyle(label).opacity) > 0.05 : false
-        return { t: performance.now(), overlayVisible, rows: document.querySelectorAll(${JSON.stringify(SELECTORS.rowButton)}).length }
+        const indicator = document.querySelector('[data-slot="chat-switch-indicator"]')
+        const target = window.__perfProfileSwitchTarget
+        return {
+          t: performance.now(),
+          state: indicator ? indicator.getAttribute('data-switch-state') : null,
+          busy: Boolean(target && target.getAttribute('aria-busy') === 'true'),
+          rows: document.querySelectorAll(${JSON.stringify(SELECTORS.rowButton)}).length
+        }
       })()`)
 
-      if (!s.overlayVisible && s.rows > 0) {
+      if (s.state === 'failed') {
+        failed = true
+        break
+      }
+
+      const switching = s.busy || s.state === 'pending' || s.state === 'slow' || s.state === 'stalled'
+
+      if (s.state !== null && !switching && s.rows > 0) {
         settledMs = s.t - t0
         break
       }
@@ -54,7 +74,7 @@ export default {
 
     return {
       metrics: { profile_switch_settled_ms: settledMs === null ? -1 : Math.round(settledMs) },
-      detail: { profile, timedOut: settledMs === null }
+      detail: { failed, profile, timedOut: settledMs === null && !failed }
     }
   }
 }

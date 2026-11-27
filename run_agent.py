@@ -289,6 +289,8 @@ class AIAgent(
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
         from agent.agent_init import init_agent
+        from hermes_cli.profiles_run_elsewhere import require_home_runs_here
+        require_home_runs_here()  # no agent on this host for a profile a plugin runs elsewhere
         init_agent(self, **init_kwargs)
 
     def _get_session_db_for_recall(self):
@@ -406,13 +408,20 @@ class AIAgent(
         With ``previous_messages`` / ``old_session_id`` / ``carry_over_context`` the context engine gets the
         full transition lifecycle instead of a bare reset.
         """
-        for counter in (
-            "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
-            "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
-            "session_reasoning_tokens", "session_api_calls",
-        ):
-            setattr(self, counter, 0)
-        self.session_estimated_cost_usd = 0.0
+        from agent.prompt_cache_lifecycle import reset_prompt_cache_session, session_totals_lock
+
+        with session_totals_lock(self):  # a keep-alive in flight adds to these under the same lock
+            reset_prompt_cache_session(self)  # a fresh session: an old keep-alive miss no longer stops warming
+            for counter in (
+                "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
+                "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
+                "session_reasoning_tokens", "session_api_calls", "session_cache_warm_calls",
+            ):
+                setattr(self, counter, 0)
+            # Monotonic, unlike the counters it accompanies: a reply to a request sent before this
+            # reset (a cache keep-alive in flight) compares it to tell the old session from the new.
+            self._session_reset_epoch = getattr(self, "_session_reset_epoch", 0) + 1
+            self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
 
@@ -592,7 +601,7 @@ class AIAgent(
             return implicit
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
-        from agent.gemini_long_decode import long_decode_stale_multiplier
+        from agent.output_budget_timeout import output_budget_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
         explicit = self._stale_timeout_is_explicit()
         # The context tiers raise only an implicit base: an explicit value can shorten patience (#115024).
@@ -603,7 +612,7 @@ class AIAgent(
         if self.api_mode == "codex_responses" and not explicit:
             timeout = max(timeout, _high_effort_silence_floor(self))
         if not explicit:
-            timeout *= long_decode_stale_multiplier(api_payload)
+            timeout *= output_budget_stale_multiplier(api_payload)
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         if not explicit:
@@ -954,6 +963,8 @@ class AIAgent(
         cache eviction: the session may resume on the same task_id, so processes, sandbox, browser and computer-use
         are kept). Idempotent; distinct from ``close()``."""
         self._close_active_children(soft=True)
+        from agent.prompt_cache_lifecycle import cancel_prompt_cache_warming
+        _quietly(cancel_prompt_cache_warming, self, "release_clients")
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
@@ -971,6 +982,8 @@ class AIAgent(
         blocks the rest."""
         session_messages = getattr(self, "_session_messages", None)
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
+        from agent.prompt_cache_lifecycle import cancel_prompt_cache_warming
+        _quietly(cancel_prompt_cache_warming, self, "agent_close")
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
         from agent.prepared_compaction import release_for_agent

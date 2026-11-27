@@ -1,0 +1,22 @@
+name: blindboxshop
+title: BlindBoxShop
+repo: https://github.com/AbigailDavised/blindboxshop-mcp
+sha: 91dcaa4944d4dbeb32403bf80c674f90c19dabb1
+version: "1.0.1"
+description: "Designer toy blind box gram weight & shake clue database (Hirono, Skullpanda, Labubu, Sonny Angel, Crybaby, Dimoo), Labubu factory authenticity verification checklist, hypergeometric chase probability calculator, and full-case vs single-box collection cost optimizer through BlindBoxShop's official MCP server (Streamable HTTP at https://blindboxshop.com/api/mcp, no sign-in, no keys in config). Bundles the blindboxshop workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to blindboxshop.com/api/mcp with only the series name, gram weight or probability query arguments. All 6 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: BlindBoxShop
+tier: community
+category: tools
+docs_url: https://blindboxshop.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/blindboxshop-mcp/91dcaa4944d4dbeb32403bf80c674f90c19dabb1/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/blindboxshop-mcp/91dcaa4944d4dbeb32403bf80c674f90c19dabb1/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/blindboxshop-mcp/91dcaa4944d4dbeb32403bf80c674f90c19dabb1/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

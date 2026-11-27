@@ -431,13 +431,28 @@ def cmd_env(args) -> int:
     return 0
 
 
+def _doctor_staged_tool(package, lockfile, store, target, reason) -> int:
+    from pm.build_operations import verified_tools
+    from pm.package import Package
+
+    name = package.name
+    try:
+        tools = verified_tools([name], source_store=store.root, target=target, lock=lockfile)
+        if problem := Package.verify(package, tools.entries[name].path, target):
+            raise InstallError(name, problem)
+    except InstallError as exc:
+        print(f"✗ {exc}")
+        return 1
+    print(f"- {name}: staged bytes verified; not runnable ({reason})")
+    return 0
+
+
 def cmd_doctor(args) -> int:
-    from pm.install import _identity, _installed_location
+    from pm.install import _identity, _installed_location, sealed
     from pm.store import digest_matches
 
     lockfile = _lockfile()
-    facts = _facts()
-    store = _store()
+    shipped_facts = _facts() if sealed() else None
     target = current_target()
     bad = 0
     for name in lockfile.names():
@@ -446,6 +461,12 @@ def cmd_doctor(args) -> int:
         if reason is not None:
             print(f"- {name}: n/a on {target} ({reason})")
             continue
+        if shipped_facts is not None and (blocker := package.native_abi_reason(target)):
+            store = _store()
+            version = lockfile.version(name)
+            if shipped_facts.get(name) is not None or (version and store.entry(package.store_entry(version, target)).exists()):
+                bad += _doctor_staged_tool(package, lockfile, store, target, blocker)
+                continue
         facts, store = _installed_location(package, lockfile, target) or (_facts(), _store())
         fact = facts.get(name)
         soft = package.is_optional(target) or package.internal

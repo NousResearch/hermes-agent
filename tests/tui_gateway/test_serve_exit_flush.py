@@ -21,6 +21,8 @@ import time
 
 import pytest
 
+from tests.process_scan import children_matching
+
 from tui_gateway import server
 
 class _FlushAgent:
@@ -207,8 +209,8 @@ def test_shutdown_mid_tool_kills_the_command_and_keeps_its_result(monkeypatch):
     deadline = time.monotonic() + 20.0
     sleeper = None
     while sleeper is None and time.monotonic() < deadline:
-        sleeper = next((p for p in psutil.Process().children(recursive=True)
-                        if p.name() == "sleep" and "3518" in " ".join(p.cmdline())), None)
+        sleeper = next(iter(children_matching(
+            os.getpid(), lambda p: p.name() == "sleep" and "3518" in " ".join(p.cmdline()), recursive=True)), None)
         time.sleep(0.05)
     assert sleeper is not None, "test setup: foreground sleep never started"
 
@@ -256,8 +258,8 @@ def test_sigterm_grace_hard_exit_kills_a_sigterm_ignoring_command(monkeypatch):
     deadline = time.monotonic() + 20.0
     sleeper = None
     while sleeper is None and time.monotonic() < deadline:
-        sleeper = next((p for p in psutil.Process().children(recursive=True)
-                        if p.name() == "sleep" and "3522" in " ".join(p.cmdline())), None)
+        sleeper = next(iter(children_matching(
+            os.getpid(), lambda p: p.name() == "sleep" and "3522" in " ".join(p.cmdline()), recursive=True)), None)
         time.sleep(0.05)
     assert sleeper is not None, "test setup: foreground sleep never started"
     exits: list = []

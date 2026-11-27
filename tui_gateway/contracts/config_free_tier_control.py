@@ -442,6 +442,27 @@ class SharedMetricsDesktopDailyResult(Result):
 method("shared_metrics.desktop_daily", params=SharedMetricsDesktopDailyParams,
        result=SharedMetricsDesktopDailyResult,
        doc="Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry.")
+
+
+class SharedMetricsDesktopLongFrameCount(Params):
+    """Long animation frames counted in one duration bucket while the window was visible."""
+
+    bucket: Literal["50ms_to_100ms", "100ms_to_250ms", "250ms_to_1s", "1s_to_5s", "gte_5s"]
+    count: int
+
+
+class SharedMetricsDesktopLongFramesParams(ProfileParams):
+    """One finished UTC day's long-frame histogram and visible window time, aggregated on the client.
+    ``day`` (YYYY-MM-DD) only latches a resend and is never recorded."""
+
+    day: str
+    frames: list[SharedMetricsDesktopLongFrameCount] = Field(default_factory=list)
+    visible_ms: float = 0
+
+
+method("shared_metrics.desktop_long_frames", params=SharedMetricsDesktopLongFramesParams,
+       result=SharedMetricsDesktopDailyResult,
+       doc="Record one finished Desktop day's long-frame histogram (uncapped); recorded=false keeps it for a retry.")
 # ---- end v5 desktop ----
 
 

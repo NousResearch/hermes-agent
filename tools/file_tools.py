@@ -24,7 +24,9 @@ from tools.binary_extensions import has_binary_extension
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
-from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
+from tools.file_operations_common import (
+    DEFAULT_READ_LIMIT, cell_read_fields, count_conflict_blocks, directory_listing, settle_tail, tail_offset,
+    tail_request, tail_start)
 from tools import file_state
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
@@ -41,7 +43,7 @@ from tools.file_tools_read_tracking import (
     _file_metadata, _file_version, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
-    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp, is_programmatic_read)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
 _DEFAULT_MAX_READ_CHARS = 100_000
+_ARCHIVE_GUTTER_CHARS = 16  # '<n>|' line-number gutter plus newline, generously
 def _get_max_read_chars() -> int:
     """Return ``file_read_max_chars`` from config.yaml (default on missing/invalid). No module
     cache: ``load_config_readonly`` is already mtime+path cached, and a process-lifetime slot
@@ -418,7 +421,8 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str,
+                             tail: int | None = None) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -429,18 +433,41 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     from tools.read_extract import (
         ANYDOC_EXTENSIONS, EXTRACTABLE_EXTENSIONS, MAX_DOCUMENT_BYTES, ExtractionError,
         extract_document_bytes, is_extractable_document)
+    from tools.tool_output_limits import get_max_line_length
+    from tools.tool_result_storage import is_pruned_archive, pageable_archive_text
     if hosted_scope() is not None:
         return None  # extraction parses the bytes in host temp files and host tools; the binary guard answers
 
-    if not is_extractable_document(str(_resolved)):
+    # A pruned tool result is archived byte-exact, so JSON output (or any one-line output) is a line the
+    # per-line cap would cut with no way to continue: page its text, long lines wrapped at the cap.
+    archived = is_pruned_archive(str(_resolved))
+    wrapped, wrap_width = False, 0
+    if not (archived or is_extractable_document(str(_resolved))):
         return None
     file_ops = _get_file_ops(task_id)
+    if archived and (sync_manager := getattr(getattr(file_ops, "env", None), "_sync_manager", None)) is not None:
+        # A file-synced sandbox gets new cache files on its next (rate-limited) sync; an archive written since
+        # must be there before this read, or the model is told it expired.
+        try:
+            sync_manager.sync(force=True)
+        except Exception:  # health: allow BLE001 -- a failed push leaves the read to report what the sandbox has
+            logger.debug("Archive sync before read failed for %s", path, exc_info=True)
+    # The sandbox resolves its own ``~`` and cwd: _resolved expanded them with the host's, so a sandbox
+    # gets the path as the model gave it, like the ordinary read in read_file_tool.
+    byte_path = str(_resolved) if _file_ops_uses_host_paths(file_ops) else path
     try:
-        binary = file_ops.read_file_bytes(str(_resolved), max_bytes=MAX_DOCUMENT_BYTES)
+        binary = file_ops.read_file_bytes(byte_path, max_bytes=MAX_DOCUMENT_BYTES)
         if binary.error or binary.base64_content is None:
             raise ExtractionError(binary.error or "Document bytes unavailable")
         document_bytes = base64.b64decode(binary.base64_content, validate=True)
-        extracted_text = extract_document_bytes(document_bytes, str(_resolved))
+        if archived:
+            # Each wrapped line, gutter included, must also fit the read budget: a line the budget cuts
+            # mid-way advances next_offset past its remainder.
+            wrap_width = max(1, min(get_max_line_length(), _get_max_read_chars() - _ARCHIVE_GUTTER_CHARS))
+            extracted_text, wrapped = pageable_archive_text(
+                document_bytes.decode("utf-8", errors="replace"), str(_resolved), wrap_width)
+        else:
+            extracted_text = extract_document_bytes(document_bytes, str(_resolved))
     except (ExtractionError, ValueError, base64.binascii.Error) as exc:
         logger.debug("document extraction failed for %s", path, exc_info=True)
         # Binary formats surface the specific failure (fallthrough would only
@@ -458,9 +485,9 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
 
     lines = extracted_text.splitlines()
     total_lines = len(lines)
+    offset = tail_start(total_lines, tail, offset)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
-    from tools.tool_output_limits import get_max_line_length
     max_line_length = get_max_line_length()
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
@@ -469,12 +496,14 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
         "extracted_document": True}
+    if wrapped:  # the archive file itself is byte-exact; only this view splits its long lines
+        result_dict["long_lines_wrapped_at"] = wrap_width
     if result_dict["truncated"]:
         result_dict["hint"] = (
             f"Use offset={end_line + 1} to continue reading "
             f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)")
     max_chars = _get_max_read_chars()
-    if len(result_dict["content"]) > max_chars:
+    if len(result_dict["content"]) > max_chars and not is_programmatic_read():
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
         rendered = result_dict["content"]
@@ -484,6 +513,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
+    result_dict.update(cell_read_fields(result_dict["content"], is_programmatic_read()))
     if (offset == 1 and not result_dict["truncated"] and not redacted
             and not truncated_lines and not result_dict.get("truncated_lines")):
         # The whole document was shown, so a text-authorable format (.ipynb)
@@ -610,6 +640,19 @@ def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | N
         return None, True
 
 
+def _denied_or_directory_listing(resolved, task_id: str) -> str | None:
+    """The denylist refusal for a read, else a host directory's listing (``ls -la``), else None.
+    The denylist runs first so a protected directory is never listed."""
+    block_error = get_read_block_error(str(resolved))
+    if block_error:
+        return tool_error(block_error)
+    if _file_ops_uses_host_paths(_get_file_ops(task_id)) and os.path.isdir(resolved):
+        cell = is_programmatic_read()  # a cell gets every entry; the model's table keeps to the read budget
+        listing = directory_listing(str(resolved), structured=cell, max_chars=None if cell else _get_max_read_chars())
+        return json.dumps(listing, ensure_ascii=False)
+    return None
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
@@ -619,7 +662,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     → negative-result cache → dedup stub → real read.
     """
     try:
+        raw_offset = offset
         offset, limit = normalize_read_pagination(offset, limit)
+        tail, limit = tail_request(raw_offset, limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
         # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
@@ -654,11 +699,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # credential stores). Runs BEFORE document extraction so a
         # protected SQLite store (state.db) cannot be read through the extractor. Pass the RESOLVED path: the denylist's own
         # resolve() uses the process cwd and would miss a relative "auth.json".
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
+        refused_or_listed = _denied_or_directory_listing(_resolved, task_id)
+        if refused_or_listed is not None:
+            return refused_or_listed
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, tail=tail)
         if extracted is not None:
             return extracted
 
@@ -673,6 +718,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
         if cached_not_found is not None:
             return cached_not_found
+        file_ops = _get_file_ops(task_id)
+        read_path = resolved_str if _file_ops_uses_host_paths(file_ops) else path
+        offset = tail_offset(file_ops, read_path, tail, offset)
 
         # Dedup: identical (path, offset, limit) on an unchanged file returns a
         # lightweight stub instead of re-sending the content.
@@ -680,13 +728,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         task_data, cached_version, content_served_in_generation = _dedup_lookup(task_id, dedup_key)
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
-        file_ops = _get_file_ops(task_id)
         version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
         if (cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        offset, result = settle_tail(file_ops, read_path, tail, offset, limit,
+                                     file_ops.read_file(read_path, offset, limit))
+        dedup_key = (resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -703,7 +752,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # with a next_offset instead of rejecting.
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
-        if len(result.content or "") > max_chars:
+        # A cell's read is consumed by code (only what it prints enters context): no char budget.
+        if len(result.content or "") > max_chars and not is_programmatic_read():
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
@@ -714,6 +764,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
+        result_dict.update(cell_read_fields(result.content, is_programmatic_read()))
 
         if result.content:
             conflicts = count_conflict_blocks(result.content)
@@ -1113,7 +1164,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
+        # The path-grouped text block saves the model tokens; a cell also gets the match dicts, always
+        # present for a content search (an empty list when nothing matched) so code can iterate them,
+        # beside the grouped keys existing cells already read.
         result_dict = result.to_dict(densify=True)
+        if is_programmatic_read() and not result_dict.get("error"):
+            if target == "files":
+                result_dict.setdefault("files", [])
+            elif target == "content" and output_mode == "content":
+                result_dict["matches"] = result.to_dict().get("matches", [])
 
         if omitted:
             result_dict["_omitted"] = (
@@ -1138,9 +1197,50 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"Results truncated. Use offset={offset + limit} to see more, "
                 "or narrow with a more specific pattern or file_glob."
             )
+        elif target == "content" and offset == 0 and not is_programmatic_read():
+            _note_search_complete(_get_file_ops(task_id), result, result_dict,
+                                  pattern=pattern, path=path, file_glob=file_glob, output_mode=output_mode,
+                                  task_id=task_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def _note_search_complete(file_ops, result, result_dict: dict, *, pattern: str, path: str,
+                          file_glob: str | None, output_mode: str, task_id: str) -> None:
+    """State that a first-page, untruncated content search is the whole answer, and whether the
+    hidden/gitignored files it skips hold more: in the live routing eval Opus re-ran every
+    correct search with grep for exactly that reason. A warning means paths were skipped or
+    errored, so no claim is made then; a failed hidden-file probe leaves that part unverified."""
+    if result_dict.get("error") or result_dict.get("warning") or result_dict.get("_omitted"):
+        return
+    if output_mode == "count":
+        # Highest first, so the per-file counts read as the ranking they are asked for.
+        result_dict["counts"] = dict(sorted(result.counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        visible = {p for p, n in result.counts.items() if n > 0}  # grep -c also prints zero rows
+        shown = f"{result.total_count} matching lines in "
+    elif output_mode == "files_only":
+        visible, shown = set(result.files), ""
+    else:
+        visible = {m.path for m in result.matches}
+        shown = f"{result.total_count} result rows in "  # context rows count as rows
+    note = f"Complete: {shown}{len(visible)} files in the requested search scope under {path}"
+    try:
+        everywhere = file_ops.hidden_match_counts(pattern, path, file_glob)
+    except (OSError, RuntimeError):  # optional check: the primary result still stands
+        everywhere = None
+    if everywhere is None:
+        note += ". Hidden and gitignored files were not verified."
+    else:
+        if any(get_read_block_error(_resolved_match_path(p, task_id)) for p in everywhere):
+            return  # same policy as the primary rows: an omitted match means no completeness claim
+        skipped = sorted(p for p in everywhere if p not in visible)
+        note += (" (hidden and gitignored files checked too, except dependency/build trees such as "
+                 ".git, node_modules, .venv, build, dist, vendor): "
+                 + ("none match among the additional files checked." if not skipped else
+                    f"{len(skipped)} more file(s) match there, not shown: "
+                    + ", ".join(skipped[:5]) + (" (+more)" if len(skipped) > 5 else "")))
+    result_dict["complete"] = note
 
 
 # ---------------------------------------------------------------------------
@@ -1164,12 +1264,12 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination, or list a directory. Use this instead of cat/head/tail/ls in terminal. Output format: 'LINE_NUM|CONTENT'. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
+            "path": {"type": "string", "description": "File to read, or a directory to list with each entry's type and size (absolute, relative, or ~/path)"},
+            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1); negative reads the last N lines", "default": 1},
             "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
         },
         "required": ["path"]

@@ -5,6 +5,7 @@ application dependencies or adds the manager's dependencies to that process.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -110,8 +111,17 @@ def _validate(python: Path, env: dict[str, str]) -> str:
     return checked.stderr.strip() or f"exit {checked.returncode}" if checked.returncode else ""
 
 
+@contextmanager
+def _prepare_lock(root: Path, *, timeout: float | None):
+    """Serialize staging and collection of *root*'s generations; yields whether the lock is held."""
+    from pm.filesystem import moved_lock
+
+    with moved_lock(root / ".prepare.lock", root.parent / "locks" / "prepare.lock", timeout=timeout) as held:
+        yield held
+
+
 # Generations this process resolved for a child. The lease is taken under
-# .prepare.lock, which the collector also holds, so a publish + `pm gc` between
+# the prepare lock, which the collector also holds, so a publish + `pm gc` between
 # this return and the child's own lease cannot remove the child's generation.
 # It lives as long as this process (one lease per generation, not per call):
 # children may still be starting from an older generation after a newer one
@@ -134,7 +144,6 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     Generations are immutable after publication. Failed preparation leaves the
     previous generation intact, including when an old worker is still running.
     """
-    from pm.filesystem import lock_fd
     from pm.lock import _write
     from pm.runtime_stage import stage_runtime  # noqa: TID251
 
@@ -142,8 +151,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     identity = _inputs(project, python)
     env = runtime_environment()
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".prepare.lock").open("a+b") as lock:
-        lock_fd(lock.fileno(), wait=True)
+    with _prepare_lock(root, timeout=None):
         selected = root / "selected.json"
         try:
             fact = json.loads(selected.read_text(encoding="utf-8"))
@@ -190,15 +198,14 @@ def collect_runtime_generations(root: Path) -> list[Path]:
     once every worker launched from it has exited; generations published before leases
     existed stay, as the application collector keeps its own.
     """
-    from pm.filesystem import lock_fd
-    from hermes_cli.runtime_state import leases_held
+    from hermes_cli.runtime_state import collect_lease_dirs, leases_held
 
     generations = root / "generations"
     removed: list[Path] = []
     if not generations.is_dir():
         return removed
-    with (root / ".prepare.lock").open("a+b") as lock:
-        if not lock_fd(lock.fileno(), wait=False):
+    with _prepare_lock(root, timeout=0) as held:
+        if not held:
             return removed  # a stage is in flight; maintenance skips rather than queues
         try:
             selected = json.loads((root / "selected.json").read_text(encoding="utf-8-sig")).get("generation", "")
@@ -212,6 +219,7 @@ def collect_runtime_generations(root: Path) -> list[Path]:
                 continue
             shutil.rmtree(generation)
             removed.append(generation)
+        collect_lease_dirs(root.parent / "leases" / "pm-runtime", generations)
     return removed
 
 

@@ -1,8 +1,8 @@
 name: openmail
 repo: https://github.com/openmailsh/hermes-plugin
-sha: bdc1cb4203506fd055944df58a5ee49998493b6e
-version: "0.4.1"
-description: "Gives a Hermes agent an email address. New profiles can receive arrival-only home-channel alerts. Channel mode sends automatic in-thread replies. The agent can manage drafts, send or schedule mail, manage queued sends, organise folders, move or restore messages, and provision inboxes. Requests to api.openmail.sh or the configured OPENMAIL_BASE_URL include the X-OpenMail-Client: hermes header and the plugin version in the User-Agent. With the configured key, tools can send mail, change or cancel scheduled delivery, delete drafts or custom folder trees, and move mail into or out of Trash without a separate Hermes approval prompt."
+sha: b095bffb079ac359ea6550282c2726c1a9bb2c48
+version: "0.4.2"
+description: "Gives a Hermes agent an email address. New profiles can receive arrival-only home-channel alerts. Channel mode sends automatic in-thread replies. The agent can search inbox messages, manage drafts, send or schedule mail, manage queued sends, organise folders, move or restore messages, and provision inboxes. Requests to api.openmail.sh or the configured OPENMAIL_BASE_URL include the X-OpenMail-Client: hermes header and the plugin version in the User-Agent. With the configured key, tools can send mail, change or cancel scheduled delivery, delete drafts or custom folder trees, and move mail into or out of Trash without a separate Hermes approval prompt."
 maintainer: openmailsh
 tier: community
 category: platform

@@ -345,6 +345,59 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sse_shaped_text_with_tool_calls_same_delta_keeps_call(self, mock_close, mock_create):
+        """A delta carrying BOTH a tool call and SSE-control-shaped text keeps the call.
+
+        The pending-SSE-echo guard buffers text that looks like an SSE control block
+        (or a streaming prefix of one — a lone ``e`` matches ``event``) and `continue`s
+        past the tool-call feed. Providers that put short text and a complete tool call
+        in the same delta (qwen3.5 via Ollama 0.32.x) then reported "0 tool calls" with
+        finish_reason="tool_calls" while the model's call was silently dropped (#66452).
+        """
+        import uuid
+
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(
+                content="e",
+                tool_calls=[
+                    _make_tool_call_delta(
+                        index=0,
+                        tc_id="call_1",
+                        name="terminal",
+                        arguments='{"command": "echo X"}',
+                    )
+                ],
+            ),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key=uuid.uuid4().hex,
+            base_url="http://127.0.0.1:11434/v1",
+            model="qwen3.5:9b",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None and len(tc) == 1
+        assert tc[0].function.name == "terminal"
+        assert tc[0].function.arguments == '{"command": "echo X"}'
+        assert response.choices[0].message.content == "e"
+
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

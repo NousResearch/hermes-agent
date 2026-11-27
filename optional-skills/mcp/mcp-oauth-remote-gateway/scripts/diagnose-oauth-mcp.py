@@ -54,14 +54,30 @@ def _post(url, data=None, headers=None, form=False, timeout=30):
     req.add_header("User-Agent", UA)
     try:
         r = urllib.request.urlopen(req, timeout=timeout)
-        return r.status, dict(r.headers), r.read()
+        try:
+            return r.status, dict(r.headers), r.read()
+        finally:
+            r.close()
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers), e.read()
+        try:
+            return e.code, dict(e.headers), e.read()
+        finally:
+            e.close()
 
 
 def _get_json(url, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        # urlopen raises before any response is bound to `r`; the error
+        # response has no other owner, so close it here as _post does.
+        e.close()
+        raise
+    try:
+        return json.loads(r.read())
+    finally:
+        r.close()
 
 
 def _mcp_initialize(mcp_url, access_token):

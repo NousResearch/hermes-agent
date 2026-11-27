@@ -508,6 +508,52 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    # ── Upstream error relayed as 400 (New-API / one-api forks) ──
+
+    def test_400_upstream_error_is_server_error(self):
+        """Gateway relays upstream failure as 400 + upstream_error → retryable server_error."""
+        e = MockAPIError(
+            "upstream provider failed",
+            status_code=400,
+            body={"error": {"type": "upstream_error", "message": "upstream provider failed"}},
+        )
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_400_upstream_error_case_insensitive(self):
+        """upstream_error type match is case-insensitive."""
+        e = MockAPIError(
+            "error",
+            status_code=400,
+            body={"error": {"type": "UPSTREAM_ERROR", "message": "error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_400_non_upstream_error_type_still_format_error(self):
+        """400 with a different error type → still format_error, not server_error."""
+        e = MockAPIError(
+            "invalid request",
+            status_code=400,
+            body={"error": {"type": "invalid_request_error", "message": "invalid request"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+
+    def test_400_upstream_error_not_masked_by_large_session(self):
+        """upstream_error body on a large session → server_error, not context_overflow."""
+        e = MockAPIError(
+            "upstream provider failed",
+            status_code=400,
+            body={"error": {"type": "upstream_error", "message": "upstream provider failed"}},
+        )
+        result = classify_api_error(e, approx_tokens=150000, context_length=200000)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
     def test_message_only_overloaded_without_status_is_overloaded(self):
         """Some Anthropic-compatible proxies surface 'overloaded' in the
         message with no 503/529 status_code. It must classify as overloaded

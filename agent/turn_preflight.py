@@ -55,6 +55,19 @@ class PreflightGateVerdict:
     result: Optional[dict[str, Any]] = None
 
 
+def _defer_midturn_compression(agent: Any, compressor: Any, tokens: int) -> bool:
+    """compression.defer_mid_turn: hold in-turn compaction until the turn ends, unless the request nears
+    the hard context limit (defer_hard_limit_ratio * context_length)."""
+    if not getattr(agent, "compression_defer_mid_turn", False):
+        return False
+    ctx = int(getattr(compressor, "context_length", 0) or 0)
+    ratio = float(getattr(agent, "compression_defer_hard_limit_ratio", 0.85) or 0.85)
+    if ctx > 0 and tokens >= ctx * ratio:
+        return False
+    logger.info("Mid-turn compression deferred to turn end (~%s tokens)", f"{tokens:,}")
+    return True
+
+
 def run_preflight_compression(
     agent: Any, v: PreflightGateVerdict, *, compressor: Any, request_pressure_tokens: int,
     provider_overflow_preflight: bool, defer_preflight: Any, moa_prepared_request: Any,
@@ -100,6 +113,10 @@ def run_preflight_compression(
         and not _review_fork_first_request_pending(agent)
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
+        and (
+            provider_overflow_preflight or v.api_call_count <= 1
+            or not _defer_midturn_compression(agent, compressor, request_pressure_tokens)
+        )
         and not _compression_cooldown
         and compressor.should_compress(request_pressure_tokens)
     ):
@@ -304,6 +321,7 @@ def compress_after_tool_results(
         and not bool(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
         )
+        and not _defer_midturn_compression(agent, _compressor, _real_tokens)
         and _compressor.should_compress(_real_tokens)
     ):
         compression_attempts += 1
@@ -360,7 +378,7 @@ def compress_after_tool_results(
                 turn_exit_reason = "compaction_handoff_not_actionable"
                 return _verdict(True)
             current_turn_user_idx = _reanchor(agent, messages, user_message)
-    elif agent.compression_enabled:
+    elif agent.compression_enabled and not _defer_midturn_compression(agent, _compressor, _real_tokens):
         # Over threshold but compression blocked (cooldown/anti-thrash): deduped
         # warning so context can't silently overflow. ``attempts_spent`` names the
         # attempts_exhausted lockout when the engine says RUN but the per-turn

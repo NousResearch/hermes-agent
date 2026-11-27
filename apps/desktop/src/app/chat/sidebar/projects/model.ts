@@ -12,7 +12,7 @@ import { projectOwnerRoute } from './gateway-project-rows'
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
 
 // Page size when revealing more already-loaded rows within a workspace group.
-export const SIDEBAR_GROUP_PAGE = 5
+export const SIDEBAR_GROUP_PAGE = 20
 
 // Recent sessions previewed under each project in the overview.
 export const PROJECT_PREVIEW_COUNT = 3

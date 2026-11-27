@@ -28,6 +28,7 @@ from hermes_cli import kanban as kanban_cli
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from plugins.kanban.dashboard import plugin_api
 
 
 @pytest.fixture
@@ -198,3 +199,118 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_needs_input_survives_missing_block_event(kanban_home: Path) -> None:
+    """A persisted needs_input state must not be revived after event pruning."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="legacy-sticky", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', block_kind='needs_input' WHERE id=?",
+                (tid,),
+            )
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_transient_block_without_event_can_resume(kanban_home: Path) -> None:
+    """Transient restart recovery must continue to work."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="recoverable", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', block_kind='transient' WHERE id=?",
+                (tid,),
+            )
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_todo_needs_input_cannot_auto_resurrect(kanban_home: Path) -> None:
+    """Legacy recovery can leave needs_input on todo; it must not dispatch."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="needs-owner-decision", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='todo', block_kind='needs_input' WHERE id=?",
+                (tid,),
+            )
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "todo"
+
+
+def test_explicit_unblock_allows_recovery_from_legacy_todo(kanban_home: Path) -> None:
+    """Human unblock supersedes a retained needs_input classification."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn, title="manual-release")
+        kb.block_task(conn, tid, reason="needs approval", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (tid,))
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_blocked_needs_input_survives_missing_newer_block_event(kanban_home: Path) -> None:
+    """An old unblock event cannot override the persisted new blocked state."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn, title="repeat-needs-input")
+        kb.block_task(conn, tid, reason="first", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+        # Recovered row records a newer needs_input hold but its blocked
+        # event was lost. The older unblocked event must not release it.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', block_kind='needs_input' WHERE id=?",
+                (tid,),
+            )
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_todo_needs_input_supports_explicit_unblock(kanban_home: Path) -> None:
+    """Recovery parks a card in todo; the supported API must still release it."""
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="legacy-todo", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='todo', block_kind='needs_input' WHERE id=?",
+                (tid,),
+            )
+        assert kb.recompute_ready(conn) == 0
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+        assert [e for e in kb.list_events(conn, tid) if e.kind == "unblocked"]
+
+
+def test_recovered_todo_unblock_closes_dangling_run(kanban_home: Path) -> None:
+    """Clearing current_run_id must not orphan a live task_runs row."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn, title="orphaned-run")
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert run_id is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='todo', block_kind='needs_input' WHERE id=?",
+                (tid,),
+            )
+        assert kb.unblock_task(conn, tid)
+        row = conn.execute("SELECT ended_at FROM task_runs WHERE id=?", (run_id,)).fetchone()
+        assert row is not None and row["ended_at"] is not None
+
+
+def test_dashboard_releases_recovered_todo_needs_input(kanban_home: Path) -> None:
+    """Dashboard Ready action must use the eventful unblock path."""
+    with kbc.connect_closing() as conn:
+        parent = kb.create_task(conn, title="unfinished", assignee="worker")
+        tid = kb.create_task(conn, title="dashboard-recovery", assignee="worker")
+        kb.link_tasks(conn, parent_id=parent, child_id=tid)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='todo', block_kind='needs_input' WHERE id=?",
+                (tid,),
+            )
+        assert plugin_api._drag_to(conn, tid, "ready")
+        assert kb.get_task(conn, tid).status == "todo"
+        assert [e for e in kb.list_events(conn, tid) if e.kind == "unblocked"]

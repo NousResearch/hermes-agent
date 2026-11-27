@@ -19,6 +19,7 @@ _PROPERTIES: dict[str, Any] = {
         "type": "string",
         "enum": [
             "capture",
+            "point",
             "click",
             "double_click",
             "right_click",
@@ -34,10 +35,12 @@ _PROPERTIES: dict[str, Any] = {
             "focus_app",
         ],
         "description": (
-            "Which action to perform. `capture` is free (no side effects). All other actions "
-            "require approval unless auto-approved. Use `set_value` for select/popup elements and "
-            "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "Which action to perform. `capture` is free (no side effects); `point` is also free (no "
+            "click, never needs approval) — use it to show the user where you WOULD click, or as a "
+            "harmless probe when an app's own click-protection (anti-cheat, overlay guards) is "
+            "swallowing synthetic clicks. All other actions require approval unless auto-approved. "
+            "Use `set_value` for select/popup elements and sliders — it selects the matching option "
+            "directly without opening the native menu (no focus steal)."
         ),
     },
     "mode": {
@@ -88,6 +91,17 @@ _PROPERTIES: dict[str, Any] = {
         "description": (
             "Pixel coordinates [x, y] relative to the captured window screenshot (top-left "
             "origin). Only use this if no element index is available."
+        ),
+    },
+    "scope": {
+        "type": "string",
+        "enum": ["window", "desktop"],
+        "description": (
+            "For action='point' only. `window` (default) moves just the agent's visual cursor "
+            "overlay near `coordinate` — no real input is sent, so it never clicks anything and "
+            "never needs approval. `desktop` instead moves the REAL OS mouse pointer there (still "
+            "no click) — visibly disrupts whatever the user is doing, so only use it when you "
+            "need the physical cursor itself to move, not just an indicator."
         ),
     },
     "button": {

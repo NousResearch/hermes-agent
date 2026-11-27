@@ -86,6 +86,24 @@ class _InputMixin:
             result.meta["foreground_focus"] = {"invoked": True, "tool": "bring_to_front"}
         return result
 
+    def point(self, *, x: Optional[int] = None, y: Optional[int] = None, scope: str = "window") -> ActionResult:
+        """Move the agent cursor overlay (scope='window') or the real OS pointer (scope='desktop') to
+        (x, y) — no click, no delivery ladder, never destructive. Maps to cua-driver's own `move_cursor`
+        tool (trycua/cua), which already exists precisely for this: a visible pointer that costs nothing
+        and isn't blocked by an app's click-protection, since no button-down/up event is ever sent."""
+        if scope not in {"window", "desktop"}:
+            return _refuse("point", f"unknown scope {scope!r} — use window|desktop.", code="bad_scope")
+        if x is None or y is None:
+            return _refuse("point", "point requires x and y.")
+        if scope == "desktop":
+            # Desktop scope is a global OS pointer move: no sticky-window target needed or sent.
+            return self._action("move_cursor", {"x": x, "y": y, "scope": "desktop"})
+        refusal, args = self._target_args("point")
+        if refusal is not None:
+            return refusal
+        args.update(x=x, y=y, scope="window")
+        return self._action("move_cursor", args)
+
     def click(self, *, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None,
               button: str = "left", click_count: int = 1, modifiers: Optional[list[str]] = None,
               delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:

@@ -141,6 +141,15 @@ class ComputerUseBackend(ABC):
               delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
 
     @abstractmethod
+    def point(self, *, x: Optional[int] = None, y: Optional[int] = None,
+              scope: str = "window") -> ActionResult:
+        """Move the agent cursor (scope='window', default) or the real OS pointer (scope='desktop')
+        to (x, y) WITHOUT clicking. Never destructive — safe to call without approval, and a useful
+        fallback when an app's own click-protection swallows synthetic button-down/up events but still
+        shows cursor movement (or when the user just wants a visual pointer to something on screen)."""
+        ...
+
+    @abstractmethod
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
              from_xy: Optional[tuple[int, int]] = None, to_xy: Optional[tuple[int, int]] = None,
              button: str = "left", modifiers: Optional[list[str]] = None,

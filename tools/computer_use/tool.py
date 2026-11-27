@@ -308,6 +308,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     capture = _noop_stub("capture", "mode", "app", "pid", "window_id", result=lambda kw: CaptureResult(
         mode=kw["mode"] or "som", width=1024, height=768, png_b64=None, elements=[], app=kw["app"] or "", window_title=""))
     click, drag, scroll = _noop_stub("click"), _noop_stub("drag"), _noop_stub("scroll")
+    point = _noop_stub("point", "x", "y", "scope")
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
     focus_app = _noop_stub("focus_app", "app", "raise_window")
@@ -450,6 +451,15 @@ def _summarize_click(action: str, args: dict[str, Any], fg: str) -> str:
              else f" at {tuple(args['coordinate'])}" if args.get("coordinate") else "")
     return f"{action}{where}{fg}"
 
+def _do_point(backend, action, args, **_):
+    coord = args.get("coordinate")
+    if not coord or coord[0] is None or coord[1] is None:
+        return json.dumps({"error": "point requires coordinate=[x, y]"})
+    scope = args.get("scope") or "window"
+    if scope not in {"window", "desktop"}:
+        return json.dumps({"error": f"bad scope {scope!r}; use window|desktop"})
+    return backend.point(x=coord[0], y=coord[1], scope=scope)
+
 # One `action`. ``input``: native input to the backend's sticky target (gets delivery kwargs + the `app=` mismatch
 # guard). ``destructive``: mutates user-visible state -> approval prompt (the rest only read).
 # ``summarize(action, args, fg_suffix)`` renders the one-line approval prompt.
@@ -458,6 +468,8 @@ _ActionSpec = namedtuple("_ActionSpec", "handler input destructive summarize",
 _input = partial(_ActionSpec, input=True, destructive=True)
 
 _ACTIONS: dict[str, _ActionSpec] = {
+    "point": _ActionSpec(_do_point, input=True, summarize=lambda a, args, fg: (
+        f"point at {tuple(args['coordinate'])} (scope={args.get('scope') or 'window'}) — no click")),
     "click": _input(_do_click, summarize=_summarize_click),
     "double_click": _input(partial(_do_click, count=2), summarize=_summarize_click),
     "right_click": _input(partial(_do_click, button="right"), summarize=_summarize_click),

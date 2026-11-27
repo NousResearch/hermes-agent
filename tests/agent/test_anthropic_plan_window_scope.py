@@ -196,3 +196,89 @@ def test_an_auth_or_billing_bench_is_not_reported_as_a_rate_limit(pool, status):
         _anthropic_token_or_raise(model=OPUS)
     assert not is_rate_limited_auth_error(excinfo.value)
     assert "cooling down" not in str(excinfo.value)
+
+
+def _env_key_beside_a_401_row(tmp_path, monkeypatch):
+    from agent.credential_pool import load_pool
+
+    root = _isolated_home(tmp_path, monkeypatch)
+    (root / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [
+        {"id": "spare", "label": "spare", "auth_type": "api_key", "priority": 0, "source": "manual",
+         "access_token": SPARE}]}}))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SPENT)
+    load_pool("anthropic").mark_exhausted_and_rotate(status_code=401, api_key_hint=SPARE, model=OPUS)
+
+
+def _bench(key: str, claim: str, hours: float, model: str = OPUS) -> None:
+    from agent.agent_runtime_helpers import extract_api_error_context
+    from agent.credential_pool import load_pool
+
+    load_pool("anthropic").mark_exhausted_and_rotate(
+        status_code=429, error_context=extract_api_error_context(_plan_429(claim, time.time() + hours * 3600)),
+        api_key_hint=key, failure_reason="rate_limit", model=model,
+    )
+
+
+@pytest.mark.parametrize("claim, account_wide", [("seven_day", True), ("seven_day_opus", False)])
+def test_a_benched_env_token_beside_an_unusable_row_names_its_own_scope(tmp_path, monkeypatch, claim, account_wide):
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.runtime_provider import _anthropic_token_or_raise
+
+    _env_key_beside_a_401_row(tmp_path, monkeypatch)
+    _bench(SPENT, claim, 63)
+    with pytest.raises(AuthError) as excinfo:
+        _anthropic_token_or_raise(model=OPUS)
+    assert is_rate_limited_auth_error(excinfo.value)
+    assert ("every Claude model" in str(excinfo.value)) is account_wide
+    assert ("other Claude models remain available" in str(excinfo.value)) is not account_wide
+
+
+@pytest.mark.parametrize("account_hours, model_hours", [(1, 2), (2, 1)])
+def test_an_active_account_bench_is_named_whichever_cooldown_ends_last(tmp_path, monkeypatch, account_hours, model_hours):
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import _anthropic_token_or_raise
+
+    _env_key_beside_a_401_row(tmp_path, monkeypatch)
+    _bench(SPENT, "seven_day_opus", model_hours)
+    _bench(SPENT, "seven_day", account_hours, model=FABLE)
+    with pytest.raises(AuthError) as excinfo:
+        _anthropic_token_or_raise(model=OPUS)
+    assert "every Claude model" in str(excinfo.value)
+    assert "remain available" not in str(excinfo.value)
+
+
+def test_auxiliary_client_skips_an_env_token_benched_for_the_requested_model(tmp_path, monkeypatch):
+    from agent.auxiliary_client import _try_anthropic
+
+    _isolated_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SPENT)
+    _bench(SPENT, "seven_day_opus", 63)
+    assert _try_anthropic(requested_model=FABLE)[0] is not None
+    assert _try_anthropic(requested_model=f"anthropic/{OPUS}") == (None, None)
+    _bench(SPENT, "seven_day", 63, model=FABLE)
+    assert _try_anthropic(requested_model=FABLE) == (None, None)
+
+
+def test_auxiliary_client_without_a_requested_model_is_not_gated_on_the_default_model(tmp_path, monkeypatch):
+    import agent.auxiliary_client as aux
+
+    _isolated_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SPENT)
+    _bench(SPENT, "seven_day_opus", 63, model=aux._get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001")
+    assert aux._try_anthropic()[0] is not None
+
+
+def test_api_key_aux_chain_moves_past_a_refused_anthropic_client(monkeypatch):
+    import agent.auxiliary_client as aux
+
+    rows = [("anthropic", SimpleNamespace(auth_type="api_key")), ("next", SimpleNamespace(auth_type="api_key"))]
+    monkeypatch.setattr("hermes_cli.auth_plugin_providers.canonical_registry_rows", lambda: rows)
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr(aux, "_is_provider_unhealthy", lambda pid: False)
+    served = MagicMock()
+    for anthropic_result, expected in (((served, "claude-haiku"), (served, "claude-haiku")), ((None, None), (None, None))):
+        monkeypatch.setattr(aux, "_try_anthropic", lambda result=anthropic_result: result)
+        reached = []
+        monkeypatch.setattr(aux, "_get_aux_model_for_provider", lambda pid: reached.append(pid))
+        assert aux._resolve_api_key_provider() == expected
+        assert reached == ([] if anthropic_result[0] else ["next"])

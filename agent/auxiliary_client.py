@@ -2111,7 +2111,7 @@ def _read_codex_singleton_token() -> Optional[str]:
 def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
     """Try each API-key provider in PROVIDER_REGISTRY order; (client, model) or (None, None)."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+        from hermes_cli.auth import PROVIDER_REGISTRY, is_provider_explicitly_configured, resolve_api_key_provider_credentials
     except ImportError:
         logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
         return None, None
@@ -2124,16 +2124,15 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
             continue
         if provider_id == "anthropic":
             # Explicit-config gate: Claude Code credentials must not silently become aux fallback.
-            with contextlib.suppress(ImportError):
-                from hermes_cli.auth import is_provider_explicitly_configured
-                if not is_provider_explicitly_configured("anthropic"):
-                    continue
+            if not is_provider_explicitly_configured("anthropic"):
+                continue
             client, model = _try_anthropic()
+            if client is None:  # a benched or missing token: try the next provider
+                continue
             return _tag_backend(client, "anthropic"), model
         from providers import get_provider_profile
         if getattr(get_provider_profile(provider_id), "ambient_credentials", False):
             # Explicit-config gate: ambient credentials (another tool's login) must not silently become aux fallback (#114740).
-            from hermes_cli.auth import is_provider_explicitly_configured
             if not is_provider_explicitly_configured(provider_id):
                 continue
         model = _get_aux_model_for_provider(provider_id) or None
@@ -3043,8 +3042,8 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
     from hermes_cli.runtime_provider import anthropic_foundry_key  # Foundry: never the OAuth token (#154242)
     if explicit_api_key or base_url_host_matches(base_url, "azure.com"):
         token = explicit_api_key or anthropic_foundry_key(model_cfg, base_url, requested_model or model)
-    else:  # pool absent/empty: legacy resolver so a dead entry can't wedge aux
-        token = _pool_runtime_api_key(entry) if entry is not None else resolve_anthropic_token()
+    else:  # the selected row, else the legacy resolver; a caller-named model gates a benched token
+        token = _pool_runtime_api_key(entry) if entry is not None else resolve_anthropic_token(model=_normalize_resolved_model(requested_model, "anthropic"))
     if not token:
         return None, None
     from agent.anthropic_credentials import _is_oauth_token

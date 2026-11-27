@@ -418,12 +418,28 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
         from agent.auxiliary_unavailable import pool_cooldown_message
         if cooldown := pool_cooldown_message("anthropic", rate_limited_only=True):
             raise AuthError(cooldown, provider="anthropic", code=MODEL_RATE_LIMITED_CODE)
-        if model and resolve_anthropic_token():
-            raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
-                            "other Claude models remain available (see `hermes auth list`).",
-                            provider="anthropic", code=MODEL_RATE_LIMITED_CODE)
+        if model and (unscoped := resolve_anthropic_token()):
+            raise AuthError(_anthropic_model_refusal(unscoped, model), provider="anthropic",
+                            code=MODEL_RATE_LIMITED_CODE)
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
+
+
+def _anthropic_model_refusal(token: str, model: str) -> str:
+    from agent.auxiliary_unavailable import format_local_reset
+    from agent.credential_pool import load_pool
+
+    reset = None
+    try:
+        reset = load_pool("anthropic").token_account_reset(token)
+    except Exception:
+        logger.debug("Failed to read the Anthropic cooldown for %s", model, exc_info=True)
+    if reset is not None:
+        return (f"The Anthropic credential in use is rate-limited for every Claude model (a credential-wide "
+                f"429) until {format_local_reset(reset)}. Wait for the reset, use a different Anthropic "
+                "key or login, or switch provider with `hermes model`.")
+    return (f"Anthropic credentials are rate-limited for {model}; "
+            "other Claude models remain available (see `hermes auth list`).")
 
 
 def _host_derived_api_key(base_url: str) -> str:

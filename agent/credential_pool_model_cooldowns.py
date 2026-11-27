@@ -127,6 +127,19 @@ class CredentialPoolModelCooldownMixin:
                 for entry in self._entries
             )
 
+    def token_account_reset(self, token: str) -> Optional[float]:
+        """When the latest credential-wide 429 bench on *token* ends (a spent plan window refuses
+        every model until then), or ``None`` when none is active."""
+        from agent.credential_pool import _exhausted_until
+
+        now = time.time()
+        with self._lock:
+            sole = self._is_sole_credential()
+            resets = [until for entry in self._entries
+                      if entry.runtime_api_key == token and entry.last_error_code == 429
+                      and (until := _exhausted_until(entry, sole_credential=sole) or 0) > now]
+        return max(resets) if resets else None
+
     def _is_model_scoped_failure(
         self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str],
         error_context: Optional[dict[str, Any]] = None,

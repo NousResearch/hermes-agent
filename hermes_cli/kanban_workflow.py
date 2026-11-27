@@ -26,6 +26,10 @@ from typing import Iterator, Mapping, Optional
 
 # ``archived`` is outside every workflow: a filter toggle, never a board column.
 ARCHIVED = "archived"
+# Terminal by operator action, not by completion: the card's work is abandoned
+# on purpose. Like ARCHIVED it is a valid ``tasks.status`` value but not a board
+# column — cancelled cards are history, listed with ``status="cancelled"``.
+CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -46,7 +50,8 @@ class Workflow:
 
     columns: tuple[Column, ...]
     # Manual moves (drag, PATCH status) a human may request: ``src -> {dst}``. Archiving
-    # (dst) is always allowed and not listed; ``archived`` may appear as a source (restore). Allowed != guaranteed: verbs still apply their own
+    # (dst) is always allowed and not listed; ``archived`` and ``cancelled`` may appear
+    # as sources (restore). Allowed != guaranteed: verbs still apply their own
     # gates (parents open, completion evidence).
     manual: Mapping[str, frozenset[str]]
 
@@ -54,7 +59,7 @@ class Workflow:
         return iter(self.columns)
 
     def keys(self) -> tuple[str, ...]:
-        """Column keys in board order (never includes ``archived``)."""
+        """Column keys in board order (never includes ``archived`` or ``cancelled``)."""
         return tuple(c.key for c in self.columns)
 
     def column(self, key: str) -> Optional[Column]:
@@ -68,19 +73,23 @@ class Workflow:
 
     def can_move(self, src: str, dst: str) -> bool:
         """True when a human may request ``src -> dst``. Archiving is always allowed;
-        ``archived`` is a valid source (restore). ``src == dst`` is not a move."""
-        if src != ARCHIVED:
+        ``archived`` and ``cancelled`` are valid sources (restore). Cancelling is
+        never a manual move — it is a verb with its own gates (worker kill, audit),
+        so ``-> cancelled`` is known but always False. ``src == dst`` is not a move."""
+        if src not in (ARCHIVED, CANCELLED):
             self._require(src)
         if src == dst:
             return False
         if dst == ARCHIVED:
             return True
+        if dst == CANCELLED:
+            return False
         self._require(dst)
         return dst in self.manual.get(src, frozenset())
 
     def to_dict(self) -> dict:
         """JSON shape served by the dashboard's ``GET /workflow``. ``manual`` keys are the
-        column keys plus ``archived`` (restore source), which is never a column."""
+        column keys plus ``archived`` and ``cancelled`` (restore sources), which are never columns."""
         return {
             "columns": [
                 {"key": c.key, "label": c.label, "icon": c.icon, "drag_target": c.drag_target}
@@ -95,11 +104,11 @@ class Workflow:
         keys = self.keys()
         if len(set(keys)) != len(keys):
             raise ValueError(f"duplicate column keys: {keys}")
-        if ARCHIVED in keys:
-            raise ValueError(f"{ARCHIVED!r} is reserved and cannot be a column")
+        if ARCHIVED in keys or CANCELLED in keys:
+            raise ValueError(f"{ARCHIVED!r} / {CANCELLED!r} are reserved and cannot be columns")
         known = set(keys)
         for src, dsts in self.manual.items():
-            if src not in known | {ARCHIVED} or not set(dsts) <= known:
+            if src not in known | {ARCHIVED, CANCELLED} or not set(dsts) <= known:
                 raise ValueError(f"manual moves from {src!r} reference unknown columns")
 
 
@@ -134,9 +143,10 @@ DEFAULT_WORKFLOW = Workflow(
         "review": ("triage", "todo", "ready", "done"),
         "done": ("triage", "todo", "ready"),
         ARCHIVED: ("triage", "todo", "ready"),  # restore from the archive filter
+        CANCELLED: ("triage", "todo", "ready"),  # restore from the cancelled filter
     }),
 )
 DEFAULT_WORKFLOW.validate()
 
 # Every value ``tasks.status`` can hold under the default workflow.
-DEFAULT_STATUSES = frozenset(DEFAULT_WORKFLOW.keys()) | {ARCHIVED}
+DEFAULT_STATUSES = frozenset(DEFAULT_WORKFLOW.keys()) | {ARCHIVED, CANCELLED}

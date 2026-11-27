@@ -585,6 +585,7 @@ class GatewayBusySessionMixin:
         from gateway.session import label_shared_sender
 
         source = event.source
+        self._resolve_owner_status(source)  # before the sender label renders it
         text = label_shared_sender(
             source, text, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))

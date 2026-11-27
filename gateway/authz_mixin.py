@@ -16,7 +16,7 @@ from typing import Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
 from gateway.config import Platform
-from gateway.session import SessionSource
+from gateway.session import OWNER_DETECTION_PLATFORMS, SessionSource
 from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
@@ -937,6 +937,30 @@ class GatewayAuthorizationMixin:
         if platform_allowlist:
             allowed_ids |= self._adapter_resolved_allowlist_ids(source)
         return "*" in allowed_ids or _principal_matches_allowlist(source, user_id, allowed_ids)
+
+    def _is_owner(self, source: SessionSource) -> bool:
+        """Whether *source*'s sender is the owner: listed by explicit id in the platform's DM
+        allowlist (``allowed_users_env``, e.g. ``SIGNAL_ALLOWED_USERS``) under the platform's id
+        aliases, or confirmed by the receiving adapter's ``is_sender_owner`` (identity only the
+        adapter knows, e.g. a Signal sender seen only by UUID). A wildcard is open access, never an
+        owner. A per-turn verdict: the durable inbound envelope does not carry ``is_owner``."""
+        if source is None or source.platform is None:
+            return False
+        env_name = authz_field(source.platform.value, "allowed_users_env", _registry_entry(source.platform)) or ""
+        owner_ids = _coerce_allow_set(_auth_env(env_name)) - {"*"}
+        candidates = {source.user_id, getattr(source, "user_id_alt", None)}
+        if owner_ids and any(
+                _principal_matches_allowlist(source, c, owner_ids) for c in candidates if isinstance(c, str) and c):
+            return True
+        adapter_check = getattr(self._intake_adapter_for(source), "is_sender_owner", None)
+        return callable(adapter_check) and adapter_check(source) is True
+
+    def _resolve_owner_status(self, source) -> None:
+        """Settle ``source.is_owner`` for this turn on owner-detection platforms, before anything
+        renders it (context prompt, sender label). Needed per turn because the durable inbound
+        envelope rebuilds ``source`` without ``is_owner``; a True already settled is kept."""
+        if getattr(source, "platform", None) in OWNER_DETECTION_PLATFORMS and not getattr(source, "is_owner", False):
+            source.is_owner = self._is_owner(source)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform], *, profile: Optional[str] = None) -> str:
         """How unauthorized DMs are handled ("pair" / "ignore" / "decline") for a platform.

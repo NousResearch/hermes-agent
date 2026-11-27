@@ -783,6 +783,7 @@ class GatewayTurnPrepareMixin:
         (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         from tools.approval_yolo import restore_gateway_yolo
+        self._resolve_owner_status(source)  # before the context prompt renders it
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
         context = build_session_context(source, self.config, session_entry, event)

@@ -369,9 +369,12 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import cancel_task, chat_ordered_work, spoken_mention_clips, voice_mention_gate_enabled
 from gateway.platforms.helpers import bypasses_chat_order
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import caption_is_command
-from utils import env_int
+from utils import env_int, is_truthy_value
+
+# Outcome reaction that replaces the in-progress 👀 (WhatsApp keeps one reaction per sender per message).
+_OUTCOME_REACTION = {ProcessingOutcome.SUCCESS: "✅", ProcessingOutcome.FAILURE: "❌"}
 
 
 def _cache_dirs() -> tuple:
@@ -1300,6 +1303,48 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # ``async with`` — a bare ``await session.post(...)`` leaves the response (and its CLOSE_WAIT socket) alive until GC.
             async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_whatsapp_jid(chat_id)}, timeout=aiohttp.ClientTimeout(total=5)):
                 pass
+
+    # Processing reactions: 👀 while the agent works, then ✅ / ❌. The base runs both hooks only when
+    # the runner's own authorization verdict admits the sender (sender_may_see_activity).
+    def _reactions_enabled(self) -> bool:
+        """``whatsapp.reactions`` in config.yaml; off unless set, like Telegram's."""
+        return is_truthy_value((self.config.extra or {}).get("reactions"))
+
+    @staticmethod
+    def _reaction_target(event: MessageEvent) -> Optional[tuple[str, str, Optional[str]]]:
+        """``(chat_id, message_id, participant)`` of the triggering message; the sender rides as
+        ``participant`` because a group reaction key must name whose message it reacts to."""
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        chat_id = raw.get("chatId") or getattr(event.source, "chat_id", None)
+        message_id = raw.get("messageId") or event.message_id
+        return (chat_id, message_id, raw.get("senderId")) if chat_id and message_id else None
+
+    async def _send_reaction(self, chat_id: str, message_id: str, participant: Optional[str], emoji: str) -> bool:
+        """React to a message through the bridge; ``emoji=""`` clears this bot's reaction."""
+        import aiohttp
+
+        if await self._bridge_unavailable():
+            return False
+        payload = {"chatId": chat_id, "messageId": message_id, "participant": participant, "emoji": emoji}
+        try:
+            async with self._bridge_req("post", "send-reaction", 15, json=payload) as resp:
+                if resp.status == 200:
+                    return True
+                logger.warning("WhatsApp: bridge rejected reaction %r on %s (HTTP %s)", emoji, message_id, resp.status)
+        except (aiohttp.ClientError, TimeoutError) as e:
+            logger.warning("WhatsApp: reaction %r on %s failed: %s", emoji, message_id, e)
+        return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React 👀 when processing begins."""
+        if self._reactions_enabled() and (target := self._reaction_target(event)):
+            event._whatsapp_eyes_sent = await self._send_reaction(*target, "👀")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap 👀 for ✅ / ❌; CANCELLED clears it. Keyed on the 👀 actually sent, so a turn whose
+        start reaction never went out gets no orphan outcome reaction."""
+        if getattr(event, "_whatsapp_eyes_sent", False) and (target := self._reaction_target(event)):
+            await self._send_reaction(*target, _OUTCOME_REACTION.get(outcome, ""))
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         if not self._running or not self._http_session:

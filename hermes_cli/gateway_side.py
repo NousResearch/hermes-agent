@@ -4,14 +4,15 @@ On main the classic CLI built a second ``AIAgent`` (``/bg``) or made a one-shot 
 (``/btw``) in its own process. Rewired, the side work runs in the gateway, like Ink's: the verb
 replies ``{task_id}`` at once and the answer arrives later on the session's event stream as
 ``background.complete`` / ``btw.complete`` ``{task_id, text}`` (``error: <exc>`` on failure,
-``gateway/session_tui_side.py``). The connection's pump hands those frames to the waiter
+``gateway/session_tui_side.py``); a ``/btw --explore`` thread streams ``btw.progress`` lines
+before its answer. ``/btw --threads|--stop|--promote`` reply at once with ``{text, prompt}``. The connection's pump hands those frames to the waiter
 registered here, so neither the turn pump nor the idle notification tick can drop them.
 """
 from __future__ import annotations
 
 import queue
 
-SIDE_EVENTS = frozenset({"background.complete", "btw.complete"})
+SIDE_EVENTS = frozenset({"background.complete", "btw.complete", "btw.progress"})
 _POLL_SECONDS = 1.0
 
 
@@ -32,6 +33,23 @@ def start(connection, session_id, verb, text):
     task_id = (result or {}).get("task_id")
     if not task_id:
         raise RuntimeError(f"prompt.{verb} returned no task id")
+    return task_id, _waiter(connection, task_id, epoch)
+
+
+def start_btw(connection, session_id, text, *, on_progress=None):
+    """``prompt.btw`` with its flags: ``(task_id, wait, None)`` for a question or an exploration
+    (``on_progress(line)`` gets each ``btw.progress`` step), or ``(None, None, reply)`` for a
+    thread command, whose ``reply`` is ``{text, prompt}`` (``prompt``: the turn to submit)."""
+    result, epoch = connection.call_tagged("prompt.btw", session_id=session_id, text=text)
+    result = result or {}
+    if not result.get("task_id"):
+        if "text" not in result:
+            raise RuntimeError("prompt.btw returned no task id")
+        return None, None, result
+    return result["task_id"], _waiter(connection, result["task_id"], epoch, on_progress), None
+
+
+def _waiter(connection, task_id, epoch, on_progress=None):
     inbox = connection.side_waiter(task_id)
 
     def wait():
@@ -45,10 +63,14 @@ def start(connection, session_id, verb, text):
                         from hermes_cli.gateway_connection import DISCONNECTED
                         raise RuntimeError(DISCONNECTED) from None
                     continue
+                if (payload or {}).get("event") == "btw.progress":
+                    if on_progress is not None:
+                        on_progress(str(payload.get("text") or ""))
+                    continue
                 answer = str((payload or {}).get("text") or "")
                 if answer.startswith("error: "):
                     raise RuntimeError(answer[len("error: "):])
                 return answer
         finally:
             connection.drop_side_waiter(task_id)
-    return task_id, wait
+    return wait

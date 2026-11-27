@@ -1451,6 +1451,18 @@ def _classify_400(c: _Ctx) -> Verdict:
     verdict = _first_match(msg, _400_TAIL_RULES)
     if verdict is not None:
         return verdict
+    # OpenAI-compatible gateways (New-API and similar one-api forks)
+    # may relay upstream provider failures as HTTP 400 with
+    # {"error": {"type": "upstream_error", "message": "...", ...}}.
+    # The request itself is well-formed; the upstream model service is
+    # momentarily unavailable. Retry (and fall back if it persists)
+    # instead of aborting the turn on a transient upstream blip.
+    if (
+        isinstance(c.body, dict)
+        and isinstance(c.body.get("error"), dict)
+        and str(c.body["error"].get("type") or "").strip().lower() == "upstream_error"
+    ):
+        return _v(FailoverReason.server_error, retryable=True, should_fallback=True)
     # Generic 400 + large session → probable overflow (Anthropic can return a
     # bare "Error"); proxy shapes are read so a descriptive rejection isn't "bare".
     body_msg = next((m for m in (str(x or "").strip().lower() for x in _body_message_candidates(c.body)) if m), "")

@@ -135,10 +135,15 @@ _CORPUS = [(shape, origin, routes, loaded, primary_parser, False)
            (shape, origin, routes, False, False, True) for shape in _SHAPES for origin in _ORIGINS for routes in _ROUTES] + [
            # ``home``: the satellite's own ``<PLATFORM>_HOME_CHANNEL``, read for a bare platform destination.
            (shape, origin, routes, loaded, False, False, home) for shape in ("{p}", "origin", "all")
-           for origin in _ORIGINS for routes in _ROUTES for loaded in (False, True) for home in ("chat-1", "chat-2")]
+           for origin in _ORIGINS for routes in _ROUTES for loaded in (False, True) for home in ("chat-1", "chat-2")] + [
+           # ``failure_only``: the shape is the ``failure_deliver`` lane of a job whose regular report goes to
+           # ``local``; preflight never names the install, the failed run's delivery does.
+           (shape, origin, routes, loaded, False, False, None, True) for shape in _SHAPES
+           for origin in _ORIGINS for routes in _ROUTES for loaded in (False, True)]
 
 
-def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_bot=False, home_chat=None):
+def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_bot=False, home_chat=None,
+              failure_only=False):
     """``(preflight error, delivery error, [(chat, thread)] the primary's bot sent, origin read as absent)`` for
     one corpus case: a credentialless ``fitness`` profile the primary's bot serves through ``profile_routes``."""
     import asyncio
@@ -169,7 +174,8 @@ def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_
     primary.send = send
     loop = MagicMock()
     loop.is_running.return_value = True
-    job = {"id": "j1", "name": "Report", "deliver": shape.format(p=feature.platform)}
+    job = ({"id": "j1", "name": "Report", "deliver": "local", "failure_deliver": shape.format(p=feature.platform)}
+           if failure_only else {"id": "j1", "name": "Report", "deliver": shape.format(p=feature.platform)})
     if origin is not None:
         job["origin"] = {"platform": feature.platform, **origin}
 
@@ -189,13 +195,13 @@ def _run_case(root, feature, shape, origin, routes, loaded, primary_parser, own_
     try:
         with patch.dict("os.environ", home_env), \
              patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)):
-            preflight, unresolved = _preflight_check_delivery(job), _origin_unresolved(job)
+            preflight, unresolved = _preflight_check_delivery(job), _origin_unresolved(job, for_failure=failure_only)
         with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("gateway.config.load_gateway_config", return_value=_config("telegram" if own_bot else None)), \
              patch.dict("os.environ", home_env), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
             delivered = _deliver_result(job, "the report", adapters={Platform.TELEGRAM: MagicMock()} if own_bot else (
-                shared_route_adapters_for_current_home(primary_adapters)), loop=loop)
+                shared_route_adapters_for_current_home(primary_adapters)), loop=loop, for_failure=failure_only)
     finally:
         reset_hermes_home_override(token)
         for scope in scopes:
@@ -217,6 +223,15 @@ def test_preflight_is_a_dry_run_of_delivery_for_a_moved_platform(tmp_path, monke
         root_dir["root"] = tmp_path / f"case{index}"
         preflight, delivered, sent, unresolved = _run_case(root_dir["root"], feature, *case)
         verdict = "install" if preflight and install in preflight else ("pass" if preflight is None else "blocked")
+        if len(case) > 7 and case[7]:
+            # A failure-only destination the move leaves unreachable never blocks the run (``origin``/``all`` pass
+            # as main skipped them; an explicit platform keeps main's NS-788 credential check); the failed run's
+            # delivery is what names the install.
+            if verdict == "install" or (case[0] in ("origin", "all") and verdict != "pass") or (
+                    # (an origin-less job's ``origin`` names no platform: nothing to report for this one)
+                    not case[3] and sent == [] and delivered is None and not (case[0] == "origin" and case[1] is None)):
+                counterexamples.append((case, preflight, delivered, sent))
+            continue
         outcome = ("install" if delivered and install in delivered else
                    "reached" if sent and delivered is None else "other")
         outcomes.add((verdict, outcome, case[3]))

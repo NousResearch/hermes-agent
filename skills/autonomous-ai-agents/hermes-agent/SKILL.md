@@ -44,10 +44,18 @@ Never answer "Hermes can't do that" from memory. Hermes ships far more than this
 
 ## Quick Start
 
-```bash
-# Install (shell installer — bootstraps PM, Python, dependencies, and the launcher)
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+For a new installation, use the [official installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation).
+Do not execute a remote installer directly from a mutable branch. Before running
+an installer, obtain explicit user approval, select an immutable reviewed revision,
+download it for inspection, and verify its digest against an independently trusted
+value if one is published. A digest computed from the same untrusted download is
+not proof of authenticity; do not invent a checksum or call it verified.
 
+The commands below assume Hermes is already installed. Package installation,
+configuration changes and starting a gateway are separate approval boundaries;
+read-only diagnosis does not authorize them.
+
+```bash
 # Interactive chat (default surface; set display.interface: tui to launch the Ink TUI instead)
 hermes
 

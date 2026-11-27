@@ -1,5 +1,12 @@
 # Troubleshooting
 
+Start with read-only status and redacted logs. Obtain explicit approval before
+installing dependencies, editing configuration or credentials, changing permissions,
+resetting sessions, or starting/stopping/restarting a CLI or gateway. Confirm the
+exact profile and service, preserve existing work, and check for other sessions
+before a lifecycle change. The remedies below describe possible next steps, not
+permission to execute them; inspect secret values locally without posting them.
+
 ### Voice not working
 1. Check `stt.enabled: true` in config.yaml
 2. Verify provider: `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"` or set API key

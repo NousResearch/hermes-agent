@@ -148,9 +148,10 @@ class PluginHost:
             raise PluginHomeMoved(moved)
 
         def build() -> dict[str, str]:  # imported here too: a first import reads the registry for the bound home
-            from tools.environments.local import served_profile_child_env
-            return served_profile_child_env(target_home=self._home, inherit_credentials=True, own_profile=own,
-                                            template_env=templates)
+            with lending_launcher(launcher):  # and that read can run a cold provider extraction
+                from tools.environments.local import served_profile_child_env
+                return served_profile_child_env(target_home=self._home, inherit_credentials=True, own_profile=own,
+                                                template_env=templates)
 
         env = self._base_context.run(build)
 

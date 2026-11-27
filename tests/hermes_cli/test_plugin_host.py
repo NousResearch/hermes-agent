@@ -1282,16 +1282,24 @@ def test_a_secondarys_provider_extraction_runs_under_the_launcher_its_host_start
 
 
 @pytest.mark.platforms("posix")  # the stand-in launcher is a shell script
-def test_a_launch_body_starts_provider_extraction_under_the_launcher_it_chose_for_the_host(tmp_path, monkeypatch):
+@pytest.mark.parametrize("env_builder", ["imported", "first_imported_by_the_start"])
+def test_a_launch_body_starts_provider_extraction_under_the_launcher_it_chose_for_the_host(env_builder, tmp_path,
+                                                                                         monkeypatch):
     """A host start inside a launch-profile body (the TUI gateway binds one even single-profile) reads its launcher
     through the launch scope, the ``.env`` as it is now. A cold provider extraction that start runs takes that
-    same launcher, though the host's own context binds no scope and the process env still holds what the
-    process loaded before the ``.env`` was edited."""
+    same launcher, whether its ambient-credential scan or its first import of the child-env builder runs it,
+    though the host's own context binds no scope and the process env still holds what the process loaded
+    before the ``.env`` was edited."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from tui_gateway import server
 
     monkeypatch.setenv("RUNNER_TAG", "loaded-before-the-edit")
     host, tags, home = _tagging_launch_host(tmp_path, monkeypatch, "RUNNER_TAG=edited-since\n")
     _hosted_model_provider(home)
+    if env_builder == "first_imported_by_the_start":  # its blocklist reads the registry, which extracts
+        for module in ("tools.environments.local", "tools.environments.local_env_policy"):
+            monkeypatch.delitem(sys.modules, module, raising=False)
+        PROVIDER_REGISTRY.sync_before_first_read()
     try:
         with server._session_profile_runtime_scope({"profile_home": None}, hydrate_secrets=False):
             host.ensure_started()

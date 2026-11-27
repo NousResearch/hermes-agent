@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
-from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_model_cooldowns import (
+    CredentialPoolModelCooldownMixin, migrate_model_cooldowns, model_cooldown_until, provider_serves_model,
+)
 from agent.credential_pool_errors import _normalize_error_context, redact_error_text
 from agent.credential_pool_selection import CredentialPoolSelectionMixin
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
@@ -236,6 +238,9 @@ class PooledCredential:
     # usable for its sibling models.  Keep that observation separate from the
     # credential-wide status used for auth and billing failures.
     model_cooldowns: Optional[dict[str, float]] = None
+    # ``{model: "entitlement" | "window"}`` for the rows in ``model_cooldowns``: an entitlement bench
+    # never blocks model-less callers, a window cooldown does (``model_cooldown_until``).
+    model_cooldown_kinds: Optional[dict[str, str]] = None
     extra: dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -269,6 +274,11 @@ class PooledCredential:
         data.setdefault("priority", 0)
         data.setdefault("source", SOURCE_MANUAL)
         data.setdefault("access_token", "")
+        if data.get("model_cooldowns"):
+            from agent.credential_pool_model_cooldowns import migrate_model_cooldowns
+            data["model_cooldowns"], data["model_cooldown_kinds"], _changed = migrate_model_cooldowns(
+                provider, data.get("model_cooldowns"), data.get("model_cooldown_kinds"),
+            )
         return cls(provider=provider, **data)
 
     def to_dict(self) -> dict[str, Any]:
@@ -2189,6 +2199,17 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            if self._is_model_scoped_failure(status_code, model, failure_reason) and not provider_serves_model(
+                self.provider, model,
+            ):
+                # Another vendor's model id sent to this provider (a misrouted child or fallback):
+                # no entry here can ever serve it, and recording a cooldown would pin a bogus row
+                # onto a healthy login (a year-long one for an entitlement 400). Rotation cannot
+                # help either; the session-level marker and the fallback chain take over.
+                logger.info("pool: %s does not serve model %s; no login benched",
+                            self.provider, model)
+                self._current_id = None
+                return None
             if self._is_model_scoped_failure(status_code, model, failure_reason):
                 # A generic Anthropic 429 (per-model rate limit) or a Codex account model
                 # entitlement rejection: bench this model only, the credential stays
@@ -2904,6 +2925,14 @@ def load_pool(provider: str) -> CredentialPool:
         for payload in raw_entries
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    # Kindless per-model cooldowns from older versions get their kind fixed once at load
+    # (``migrate_model_cooldowns``); persist it so the kind never drifts as the row ages.
+    changed |= any(
+        isinstance(payload, dict) and migrate_model_cooldowns(
+            provider, payload.get("model_cooldowns"), payload.get("model_cooldown_kinds"),
+        )[2]
+        for payload in raw_entries
+    )
     raw_needs_auth_normalization = any(
         isinstance(payload, dict)
         and _normalize_pool_auth_type(

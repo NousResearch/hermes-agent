@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { findLiveVoiceEngine } from '@/contrib/voice-engines'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech, lastTextPartText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
@@ -31,6 +32,7 @@ import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { useExtensionVoiceConversation } from './use-extension-voice-conversation'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
@@ -97,6 +99,8 @@ export function useComposerVoice({
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
   const [liveEngineActive, setLiveEngineActive] = useState(false)
+  // `<plugin>:<engine>` of the extension engine this conversation mounted, or null.
+  const [extensionEngineId, setExtensionEngineId] = useState<null | string>(null)
   // Barge-in can retain a submit callback from a render where the interrupted
   // turn was still busy. Read the current gate when its transcript arrives so
   // that stale closure does not silently drop the next voice turn.
@@ -202,6 +206,13 @@ export function useComposerVoice({
         .map(m => ({ role: m.role as 'assistant' | 'user', text: chatMessageText(m) }))
     )
 
+  /** The same bounded window, as plain turns for an extension engine. */
+  const seedExtensionHistory = () =>
+    seedLiveHistory().map(message => ({
+      role: message.role as 'assistant' | 'user',
+      text: message.content.map(part => part.text).join(' ')
+    }))
+
   /** The tool Hermes is running right now, for quiet progress in the voice. */
   const activeToolLabel = () => {
     const last = $messages.get().findLast(m => m.role === 'assistant' && !m.hidden)
@@ -221,7 +232,7 @@ export function useComposerVoice({
   const chainedConversation = useVoiceConversation({
     busy,
     consumePendingResponse,
-    enabled: voiceConversationActive && !liveEngineActive,
+    enabled: voiceConversationActive && !liveEngineActive && extensionEngineId === null,
     onFatalError: () => setVoiceConversationActive(false),
     // Speaking over the model mid-generation interrupts the in-flight turn —
     // the same seam as the Stop button — so the interjection becomes the next
@@ -254,17 +265,38 @@ export function useComposerVoice({
     seedHistory: seedLiveHistory
   })
 
-  const conversation = liveEngineActive ? liveConversation : chainedConversation
+  const extensionConversation = useExtensionVoiceConversation({
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
+    busy,
+    consumePendingResponse,
+    enabled: voiceConversationActive && extensionEngineId !== null,
+    engineId: extensionEngineId,
+    onFatalError: () => setVoiceConversationActive(false),
+    onInterrupt,
+    onStopWord: () => setVoiceConversationActive(false),
+    onSubmit: submitLiveDelegation,
+    // The engine said no at start: this conversation continues on chained.
+    onUnavailable: () => setExtensionEngineId(null),
+    pendingResponse: pendingTurnResponse,
+    seedHistory: seedExtensionHistory,
+    sessionId: sessionId ?? null
+  })
+
+  const conversation =
+    extensionEngineId !== null ? extensionConversation : liveEngineActive ? liveConversation : chainedConversation
 
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
    *  decided in the same state batch so the other engine never sees a frame of
    *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
-   *  gateway) falls back to chained with a notice rather than a dead button. */
+   *  gateway), or an extension engine whose plugin is not loaded, falls back to
+   *  chained with a notice rather than a dead button. */
   const activateConversation = useCallback(() => {
     const status = $voiceLiveStatus.get()
+    const mode = selectedVoiceChatMode(status)
     let live = false
+    let extension: null | string = null
 
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
+    if (mode === 'gpt-live') {
       if (status?.available) {
         live = true
       } else {
@@ -274,9 +306,16 @@ export function useComposerVoice({
           message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
         })
       }
+    } else if (mode !== 'chained') {
+      extension = findLiveVoiceEngine(mode)?.id ?? null
+
+      if (extension === null) {
+        notify({ id: 'voice-live-unavailable', kind: 'warning', message: t.notifications.voice.extensionMissing(mode) })
+      }
     }
 
     setLiveEngineActive(live)
+    setExtensionEngineId(extension)
     setVoiceConversationActive(true)
     recordFeatureUse('voice_conversation')
   }, [t])
@@ -410,8 +449,8 @@ export function useComposerVoice({
   // lease, and the backend unloads resident local models once no surface holds
   // one. Fire-and-forget — the toggle never waits on or fails from this.
   useEffect(() => {
-    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive)
-  }, [liveEngineActive, voiceConversationActive])
+    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive && extensionEngineId === null)
+  }, [extensionEngineId, liveEngineActive, voiceConversationActive])
 
   useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
 

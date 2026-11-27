@@ -122,6 +122,8 @@ export const arOverrides = {
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: 'تلقائي',
     ...arChat.composer,
     redirect: 'إعادة توجيه التشغيل الحالي',
     queueLostNote: 'فُقد الدور أثناء إعادة التشغيل',

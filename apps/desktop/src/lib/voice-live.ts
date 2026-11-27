@@ -19,10 +19,23 @@ import { hermesApi } from '@/hermes'
  * https://developers.openai.com/api/docs/guides/live-delegation
  */
 
-export type VoiceChatMode = 'chained' | 'gpt-live'
+/** `<plugin>:<engine>`: a live voice engine an extension registered on
+ *  `VOICE_ENGINE_AREA` (contrib/voice-engines.ts). Same grammar the backend
+ *  validators accept (tools/voice_live.py `EXTENSION_MODE_RE`). */
+export type ExtensionVoiceChatMode = `${string}:${string}`
+
+export type VoiceChatMode = 'chained' | 'gpt-live' | ExtensionVoiceChatMode
+
+const EXTENSION_MODE_RE = /^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$/
+
+export function isExtensionVoiceChatMode(value: unknown): value is ExtensionVoiceChatMode {
+  return typeof value === 'string' && EXTENSION_MODE_RE.test(value)
+}
 
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
+  /** GPT-Live readiness, whichever mode is selected: an extension engine
+   *  answers its own `status()`. */
   available: boolean
   reason: null | string
   model: string
@@ -91,7 +104,7 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
 
     return {
       available: Boolean(response.available),
-      mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
+      mode: response.mode === 'gpt-live' || isExtensionVoiceChatMode(response.mode) ? response.mode : 'chained',
       model: response.model,
       reason: response.reason ?? null,
       voice: response.voice

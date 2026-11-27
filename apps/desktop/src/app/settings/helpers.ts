@@ -177,6 +177,10 @@ export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConf
 // Voice renders only fields for the selected TTS/STT provider. Search and the
 // page share this rule so every indexed field can actually mount when opened.
 export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
+  if (key.startsWith('voice.gpt_live.')) {
+    return getNested(config, 'voice.voice_chat_mode') === 'gpt-live'
+  }
+
   const match = /^(tts|stt)\.([^.]+)\./.exec(key)
 
   if (!match) {

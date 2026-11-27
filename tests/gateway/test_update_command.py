@@ -735,3 +735,35 @@ async def test_a_routed_chat_reads_the_answering_bots_registration(tmp_path, mon
         reset_hermes_home_override(token)
         platform_registry.unregister("sharedbot", scope=scope)
     assert "only available from messaging platforms" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_routed_chat_gets_the_prompt_and_result_from_the_receiving_bot(tmp_path):
+    """A named profile's bot routes a chat to ``default``, and only that profile runs the platform: /update's
+    prompt and its result notice both go out through the bot that received the command, not the chat's profile."""
+    from gateway.session_identity import _IDENTITY_ATTR, RoutingIdentity
+    event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
+    setattr(event.source, _IDENTITY_ATTR, RoutingIdentity(
+        transport_profile="qqnamed", runtime_profile="default", authorization_home=tmp_path / "qqnamed",
+        runtime_home=tmp_path / "hermes"))
+    fake_root = tmp_path / "project"
+    (fake_root / ".git").mkdir(parents=True)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    receiving = AsyncMock()
+    runner = _make_runner()
+    runner._profile_adapters = {"qqnamed": {Platform.TELEGRAM: receiving}}
+    with patch("gateway.run._hermes_home", hermes_home), \
+         patch("gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
+         patch("hermes_cli.config.detect_install_method", return_value="git"), \
+         patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
+         patch("subprocess.Popen"), patch.object(runner, "_schedule_update_notification_watch"):
+        await runner._handle_update_command(event)
+        target = runner._resolve_update_target(runner._update_paths())
+        assert target is not None and target.adapter is receiving
+        await target.send("Continue? [Y/n]")
+        (hermes_home / ".update_output.txt").write_text("✓ Update complete!")
+        (hermes_home / ".update_exit_code").write_text("0")
+        assert await runner._send_update_notification() is True
+    sent = [call.args[1] for call in receiving.send.call_args_list]
+    assert sent[0] == "Continue? [Y/n]" and len(sent) == 2

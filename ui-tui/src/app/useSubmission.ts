@@ -18,7 +18,7 @@ import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, Compo
 import { stagePastes } from './pasteStore.js'
 import { applyQueuePlan, planQueueSlash } from './queueSlash.js'
 import { findSlashCommand } from './slash/registry.js'
-import { submitPrompt } from './submissionCore.js'
+import { readmitAsPrompt, submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -294,6 +294,21 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
       }
 
+      // Busy corrections (session.steer / session.redirect) carry text only, and a control
+      // without a receipt is never resent: an image sent that way was retained as
+      // unconfirmed forever. Admit the whole input behind the running turn instead.
+      if (gw.isCanonical && mode !== 'queue' && item.attachments?.length) {
+        // A retained row may still name a control it never sent (the old refusal path).
+        if (item.controlMethod) {
+          readmitAsPrompt(item)
+        }
+
+        sys(t('canonical.submit.busyTextOnly'))
+
+        return send(item.text, true, item.display, value => value, {
+          destination, behindTurn: true, queueItem: item.settle ? item : undefined, attachments: item.attachments })
+      }
+
       if (gw.isCanonical && mode !== 'queue') {
         const staged = item.settle ? item : composerActions.stage?.(item.text, item.display, destination)
 
@@ -328,7 +343,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // and file-drop interpolation exactly once.
       send(item.text, true, item.display, value => value, { destination, queueItem: item.settle ? item : undefined, attachments: item.attachments })
     },
-    [composerActions, gw, send]
+    [composerActions, gw, send, sys]
   )
 
   const dispatchSubmission = useCallback(

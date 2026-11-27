@@ -52,6 +52,8 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
   })
 
   const gw = { request, isCanonical: true } as any
+  const tokensRef = { current: [] as any[] }
+  const sys = vi.fn()
   let queue!: ReturnType<typeof useQueue>
   let submission!: ReturnType<typeof useSubmission>
 
@@ -78,10 +80,10 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
       appendMessage: noop,
       composerActions: { ...queue, prependQueue: queue.prependQ, takeQueue: queue.takeQ, removeQueue: queue.removeQ,
         pushHistory: noop, clearIn: noop } as any,
-      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef: { current: [] } } as any,
+      composerRefs: { queueRef: queue.queueRef, queueEditRef: queue.queueEditRef, tokensRef } as any,
       composerState: { input: '', inputBuf: [], completions: [] } as any,
       gw, setLastUserMsg: noop, slashRef: { current: () => true },
-      submitRef: { current: noop }, sys: noop
+      submitRef: { current: noop }, sys
     })
 
     return <Text>{ui.status} {queue.queuedDisplay.join('|')}</Text>
@@ -94,7 +96,7 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel:
   })
 
   return {
-    calls, request, fanout,
+    calls, request, fanout, sys, tokensRef,
     get queue() { return queue }, get submission() { return submission },
     cleanup() { instance.unmount(); turnController.fullReset(); resetUiState(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
   }
@@ -286,5 +288,47 @@ it('re-admits an edited row to the session it was edited in, even when the user 
     release({ admission_id: 'adm-orig', status: 'terminal', outcome: 'cancelled' })
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.submit').length).toBe(1)
     expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({ session_id: 'owner', text: 'EDITED_A' })
+  } finally { h.cleanup() }
+})
+
+// A pasted image in the composer: the label is what the user sees, the payload rides out-of-band.
+const IMAGE = { kind: 'image', index: 1, label: '[[ image #1 ]]', path: '/tmp/shot.png', mime: 'image/png' }
+
+for (const mode of ['steer', 'interrupt'] as const) {
+  it(`admits ${mode}-mode input carrying an image behind the turn instead of as a text-only busy correction`, async () => {
+    const h = mount(mode)
+
+    try {
+      h.tokensRef.current = [IMAGE]
+      h.submission.dispatchSubmission(`look at this ${IMAGE.label}`)
+      await expect.poll(() => h.calls.filter(c => c.method === 'prompt.submit').length).toBe(1)
+      expect(h.calls.map(c => c.method)).not.toContain('session.steer')
+      expect(h.calls.map(c => c.method)).not.toContain('session.redirect')
+      const submit = h.calls.find(c => c.method === 'prompt.submit')!.params
+      expect(submit).toMatchObject({ session_id: 'owner', queued: true, attachments: [{ path: IMAGE.path, mime: IMAGE.mime }] })
+      expect(typeof submit.submission_id).toBe('string')
+      expect(submit).not.toHaveProperty('execution_generation')
+      expect(h.sys).toHaveBeenCalledWith(expect.stringContaining('queued for the next turn'))
+      // The durable receipt settles the row: nothing is left retained as unconfirmed.
+      await expect.poll(() => h.queue.queueRef.current.length).toBe(0)
+      expect(loadPendingInputs(captureDestination())).toEqual([])
+      expect($uiState.get()).toMatchObject({ busy: true, status: 'running…' })
+    } finally { h.cleanup() }
+  })
+}
+
+it('still steers text-only busy input (typed or voice-transcribed) through session.steer', async () => {
+  const h = mount('steer')
+
+  try {
+    h.request.mockImplementation(async (method, params) => {
+      h.calls.push({ method, params })
+
+      return { status: 'steered', execution_generation: params.execution_generation } as any
+    })
+    h.submission.dispatchSubmission('text only correction')
+    await expect.poll(() => h.calls.length).toBe(1)
+    expect(h.calls[0]).toEqual({ method: 'session.steer', params: { session_id: 'owner', text: 'text only correction', execution_generation: 1 } })
+    expect(h.sys).not.toHaveBeenCalledWith(expect.stringContaining('queued for the next turn'))
   } finally { h.cleanup() }
 })

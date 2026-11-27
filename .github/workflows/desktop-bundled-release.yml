@@ -1276,7 +1276,8 @@ jobs:
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         run: |
           root="$GITHUB_WORKSPACE/apps/desktop/release"
-          python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
+          python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- \
+            -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
             --root "$root" --commit "$RELEASE_COMMIT" --channel-request "$RUNNER_TEMP/channel-request.json" \
             --out "$root/metadata-macos-${TARGET##*-}.json"
           python -m scripts.releases.handoff stage --channel-request "$RUNNER_TEMP/channel-request.json" \
@@ -1299,7 +1300,8 @@ jobs:
           root="$GITHUB_WORKSPACE/apps/desktop/release"
           args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
           if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; then
-            python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
+            python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- \
+              -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
               --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "$root/metadata-macos-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')

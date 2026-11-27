@@ -365,3 +365,107 @@ def test_macos_record_refuses_a_root_without_its_outer_dmg(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="Expected exactly one artifact"):
         release_artifacts.record("macos", "arm64", root, tag, commit, out, channel_request=request)
     assert not out.exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("step_name", [
+    "Stage macOS packages and feed inputs to R2",
+    "Record and stage channel macos packages",
+])
+def test_macos_stage_workflow_step_provides_ruamel_for_feed_verification(tmp_path, step_name):
+    """The macOS build job runs on bare bootstrap Python (stdlib only), so every workflow step that
+    runs ``scripts.bundles.release_artifacts record --platform macos`` against a ``*-mac.yml`` feed
+    must obtain ``ruamel.yaml`` through ``scripts.ci.python_packages``."""
+    import os
+    import shlex
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    jobs = hermes_yaml.safe_load((repo / ".github/workflows/desktop-bundled-release.yml").read_text(encoding="utf-8-sig"))["jobs"]
+    step = next(s for s in jobs["build-darwin-arm64-release"]["steps"] if s.get("name") == step_name)
+
+    commit = "a" * 40
+    channel = step_name == "Record and stage channel macos packages"
+    request = channel_request(commit, sequence=6) if channel else None
+    tag = None if channel else "canary.20261127T064803Z-v0.23.4"
+    version = request["version"] if request else "0.23.4+canary.20261127T064803Z"
+    identity = request["identity"]["appId"] if request else "ai.hermes.test"
+    stamp = ({"source": "channel-build", "channelBuild": request, "commit": commit, "tag": None}
+             if request else {"commit": commit, "tag": tag, "baseVersion": version})
+
+    workspace = tmp_path / "workspace"
+    root = workspace / "apps/desktop/release"
+    (root / "mac" / "Product.app").mkdir(parents=True)
+    package = root / f"Product-{version}-mac-arm64.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Product.app/Contents/Info.plist", plistlib.dumps({
+            "CFBundleIdentifier": identity, "CFBundleShortVersionString": version,
+        }))
+        archive.writestr("Product.app/Contents/Resources/install-stamp.json", json.dumps(stamp))
+    dmg = package.with_suffix(".dmg")
+    dmg.write_bytes(b"signed-stapled-dmg")
+    _write_blockmap(dmg.with_name(dmg.name + ".blockmap"), dmg.stat().st_size)
+    _write_mac_feed(root / "arm64-canary-mac.yml", version, package, dmg)
+
+    req_path = tmp_path / "channel-request.json"
+    if request is not None:
+        req_path.write_text(json.dumps(request), encoding="utf-8")
+
+    # Simulate bare bootstrap Python: direct imports of ruamel fail with ModuleNotFoundError unless
+    # the step invokes scripts.ci.python_packages with ruamel.yaml before running release_artifacts.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    driver = bin_dir / "python-driver.py"
+    driver.write_text(
+        "import importlib.abc, runpy, sys\n"
+        f"sys.path.insert(0, {str(repo)!r})\n"
+        "args = sys.argv[1:]\n"
+        "with_ruamel = False\n"
+        "if args[:2] == ['-m', 'scripts.ci.python_packages']:\n"
+        "    sep = args.index('--')\n"
+        "    reqs = args[2:sep]\n"
+        "    assert any(r.startswith('ruamel.yaml==') for r in reqs), reqs\n"
+        "    with_ruamel = True\n"
+        "    args = args[sep + 1:]\n"
+        "if args[:2] == ['-m', 'scripts.releases.handoff']:\n"
+        "    sys.exit(0)\n"
+        "if not with_ruamel:\n"
+        "    class _BlockRuamel(importlib.abc.MetaPathFinder):\n"
+        "        def find_spec(self, fullname, path, target=None):\n"
+        "            if fullname == 'ruamel' or fullname.startswith('ruamel.'):\n"
+        "                raise ModuleNotFoundError(\"No module named 'ruamel'\", name='ruamel')\n"
+        "            return None\n"
+        "    sys.meta_path.insert(0, _BlockRuamel())\n"
+        "assert args[:1] == ['-m'], args\n"
+        "sys.argv = args[1:]\n"
+        "runpy.run_module(args[1], run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    py_shim = bin_dir / "python"
+    py_shim.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))} \"$@\"\n", encoding="utf-8")
+    py_shim.chmod(0o755)
+    codesign = bin_dir / "codesign"
+    codesign.write_text("#!/bin/sh\necho 'TeamIdentifier=ABCDEFGHIJ' >&2\nexit 0\n", encoding="utf-8")
+    codesign.chmod(0o755)
+
+    cwd = workspace / ".build/channel-controller" if channel else workspace
+    cwd.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_WORKSPACE": str(workspace),
+        "RUNNER_TEMP": str(tmp_path),
+        "TARGET": "darwin-arm64",
+        "RELEASE_PHASE": "candidate",
+        "RELEASE_COMMIT": commit,
+        "HERMES_DESKTOP_VARIANT": "bundled",
+        "HERMES_PAYLOAD_TAG": tag or "",
+        "HERMES_ARCHIVE_TAG": tag or "",
+        "HERMES_BUILD_COMMIT": "",
+    }
+    res = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"]], cwd=cwd, env=env,
+                         capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert res.returncode == 0, f"{step_name} failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    metadata = json.loads((root / "metadata-macos-arm64.json").read_text(encoding="utf-8"))
+    assert metadata["version"] == version and metadata["filename"] == package.name

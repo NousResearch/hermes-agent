@@ -1278,6 +1278,12 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         placed_by_default = _marked(config, _DEFAULT_INSTALLED_KEY, feature)
         if placed_by_default and _predates_split(home, feature):
             _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
+        if _predates_split(home, feature) and _installed_for_good(home, feature.plugin) and _plugins_listed(
+                home, (feature.plugin, *legacy_plugin_keys(feature.plugin)))[1]:
+            # Core ran the feature despite that entry; the plugin the home has honours it, so the upgrade turns
+            # it off. The disable stays; this pass marks the row installed, so the home is told once.
+            say(_noticed(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
+                         "profile has but keeps disabled.", home, feature, process_env))
         if not _predates_split(home, feature):
             if not placed_by_default:
                 _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)

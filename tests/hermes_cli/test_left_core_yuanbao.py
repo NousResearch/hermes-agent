@@ -161,19 +161,22 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disabl
 
 def test_a_bare_yuanbao_in_plugins_disabled_is_still_use(tmp_path):
     """Core's adapter was ``platforms/yuanbao`` / ``yuanbao-platform``: a bare ``yuanbao`` never stopped it, so
-    the home gets the plugin. The automatic install keeps that entry (the plugin is placed but off), and the
-    one notice names the enable command."""
-    import shutil
+    the home gets the plugin. The automatic install keeps that entry (only the user's enable lifts it), so it
+    now turns the plugin off, and the notice says so and names the enable."""
+    from hermes_cli.config import read_user_config_raw
     home = _home(tmp_path, env="YUANBAO_APP_ID=a\nYUANBAO_APP_SECRET=s\n",
                  config="plugins:\n  disabled: [yuanbao]\n")
     assert lcm.yuanbao_in_use(home) is True
-    sentence = "so it is installed but off: run `hermes plugins enable yuanbao`"
-    for kept_off in (True, False):
+    sentence = "plugins.disabled lists 'yuanbao', which now turns Yuanbao off: `hermes plugins enable yuanbao` turns it on"
+    for lifted in (True, False):
+        (home / "config.yaml").write_text("plugins:\n  disabled: [yuanbao]\n", encoding="utf-8")
         said = []
 
         def install(name):
             (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
-            return {"ok": True, **({"kept_disabled": True} if kept_off else {})}
+            if lifted:  # an enable lifts it (_apply_activation)
+                (home / "config.yaml").write_text("plugins:\n  enabled: [yuanbao]\n  disabled: []\n", encoding="utf-8")
+            return {"ok": True}
 
         lcm._attempted.clear()
         shutil.rmtree(home / "plugins", ignore_errors=True)

@@ -59,7 +59,9 @@ def evaluate_economics(
     fee = float(getattr(pricing, "request_cost", None) or 0)  # a per-request fee the refresh pays on top
     tail_cost = uncached_tokens * inp
     hit_cost = cached_tokens * read
-    miss_full = cached_tokens * (write if write > 0 else inp)
+    # A miss re-sends the prefix uncached, so it never costs less than the input rate; a write rate
+    # above input (1h tiers) still governs (#158687).
+    miss_full = cached_tokens * max(write, inp)
     warm_cost = max(hit_cost + tail_cost + output_tokens * out + fee, observed_warm_usd)
     miss_cost = max(0.0, miss_full - hit_cost)
     economics_available = cached_tokens > 0 and (hit_cost > 0 or miss_full > 0)

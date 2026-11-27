@@ -2259,7 +2259,7 @@ _RUN_OUTCOME_TERMINAL_STATUS = {
 
 
 def goal_run_status(
-    conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int] = None,
+    conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int] = None, *, expected_goal=None,
 ) -> Optional[str]:
     """Lifecycle status as seen by ONE run: terminal handoffs bind to that run,
     any other ownership loss is ``superseded`` — otherwise an old goal loop
@@ -2278,11 +2278,11 @@ def goal_run_status(
             return terminal_status
         if outcome is not None or task.current_run_id != int(expected_run_id):
             return "superseded"
+    if expected_goal is not None and (not task.goal_mode or (task.title, task.body) != expected_goal):
+        return "goal_changed"
     if task.status in {"ready", "todo"}:
-        event = conn.execute(
-            "SELECT kind FROM task_events WHERE task_id = ? "
-            "ORDER BY id DESC LIMIT 1", (task_id,),
-        ).fetchone()
+        event = conn.execute("SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                             (task_id,)).fetchone()
         if event and event["kind"] == "changes_requested":
             return "changes_requested"
     return task.status

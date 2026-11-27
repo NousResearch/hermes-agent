@@ -905,7 +905,7 @@ def judge_goal(
         from agent.auxiliary_unavailable import AuxiliaryClientUnavailable
     except Exception as exc:
         # No judge can run: an outage like AuxiliaryClientUnavailable below, not a "continue" verdict.
-        logger.debug("goal judge: auxiliary client import failed: %s", exc)
+        logger.warning("goal judge: auxiliary client import failed (%s)", type(exc).__name__)
         return "continue", "auxiliary client unavailable", False, None, True
 
     # Prompt priority: contract > subgoals > plain. With both, subgoals fold into the contract
@@ -1728,14 +1728,21 @@ def run_kanban_goal_loop(
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)
+        try:
+            status = task_status_fn()
+        except Exception as exc:
+            _log(f"kanban goal loop: status check failed after judgment ({exc}); stopping")
+            return _result("stopped", "status check failed")
+        terminal = _KANBAN_TERMINAL_STATUSES.get(status)
+        if terminal is not None:
+            return _result(terminal[0], terminal[1])
+        if status not in ("running", "ready"):
+            return _result("stopped", f"Kanban status changed while judging: {status}")
         if _transport_failed:
             _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
             return _result("stopped", "judge transport failure")
         if claim_is_live is not None and not claim_is_live():
             # The judge can run long enough for the dispatcher lease to expire.
-            terminal = _KANBAN_TERMINAL_STATUSES.get(task_status_fn())
-            if terminal is not None:
-                return _result(terminal[0], terminal[1])
             return _result("stopped", "Kanban claim lost while judging")
         if verdict == "wait":
             verdict = "continue"

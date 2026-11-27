@@ -434,12 +434,19 @@ def _run_task_turns(agent, frame, history, context):
     from hermes_cli.goals import run_kanban_goal_loop, DEFAULT_MAX_TURNS
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect_closing
+    with connect_closing() as conn:
+        task = kb.get_task(conn, context['task_id'])
+    if task is None or '\n\n'.join(p for p in (task.title, task.body) if p) != context['goal_text']:
+        return kanban_goal_turn_result(result, {'outcome': 'stopped', 'reason': 'Kanban goal changed since dispatch'})
+    expected_goal = task.title, task.body
+
     def status():
         with connect_closing() as conn:
-            return kb.goal_run_status(conn, context['task_id'], context['run_id'])
+            return kb.goal_run_status(conn, context['task_id'], context['run_id'], expected_goal=expected_goal)
     def block(reason):
         with connect_closing() as conn:
-            return kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
+            return kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'],
+                                 expected_goal=expected_goal)
     def turn(prompt):
         nonlocal result
         result = agent.run_conversation(prompt, conversation_history=_stored_conversation(agent),

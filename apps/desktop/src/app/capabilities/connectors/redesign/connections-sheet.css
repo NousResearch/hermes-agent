@@ -18,14 +18,6 @@
   color: var(--portal-text-primary);
 }
 
-:root[data-shell='portal'] .conn-sheet-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.875rem;
-  padding: 1.5rem 2rem 1rem;
-  background: var(--portal-surface-elevated);
-}
-
 /* The drawer's own header stacks its top row (close, menu) over the app line; the
    directory's simpler head is the flex row above. */
 :root[data-shell='portal'] .conn-sheet-header {
@@ -80,7 +72,6 @@
   line-height: 1.45;
 }
 
-:root[data-shell='portal'] .conn-connected-pill,
 :root[data-shell='portal'] .conn-pill-connected,
 :root[data-shell='portal'] .conn-status-pill {
   display: inline-flex;
@@ -151,7 +142,6 @@
   padding: 0.5rem 2rem 2rem;
 }
 
-:root[data-shell='portal'] .conn-sheet-card,
 :root[data-shell='portal'] .conn-card {
   padding: 0.875rem 2rem;
   border: 1px solid var(--portal-stroke-hairline);
@@ -161,11 +151,9 @@
 
 /* Light's settings card is a near-white wash; the sheet needs a solid card to separate from the
    elevated surface behind it. */
-:root[data-shell='portal']:not(.dark) .conn-sheet-card,
 :root[data-shell='portal']:not(.dark) .conn-card {
   background-color: var(--portal-surface-card);
 }
-
 :root[data-shell='portal'] .conn-sheet-section-title {
   margin: 0;
   color: var(--portal-text-primary);
@@ -173,19 +161,6 @@
   font-size: var(--portal-type-ui-size);
   font-weight: var(--portal-weight-semibold);
   letter-spacing: var(--portal-tracking-ui);
-}
-
-:root[data-shell='portal'] .conn-sheet-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  min-height: 2.5rem;
-  padding-block: 0.5rem;
-}
-
-:root[data-shell='portal'] .conn-sheet-row + .conn-sheet-row {
-  border-top: 1px solid var(--portal-stroke-divider);
 }
 
 :root[data-shell='portal'] .conn-sheet-actions,

@@ -10,8 +10,7 @@
   line-height: 1.4;
 }
 
-.appearance-overview-intro,
-.appearance-overview-description {
+.appearance-overview-intro {
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-ui-size);
   line-height: 1.4;

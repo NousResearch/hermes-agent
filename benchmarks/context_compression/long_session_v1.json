@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "description": "Privacy-safe long-session cases derived from real Hermes failure shapes. All names, paths, secrets, and project details are synthetic.",
+  "cases": [
+    {
+      "id": "exact-operational-context",
+      "category": "exact-retention",
+      "description": "Preserve an exact Windows path, Unicode constraint, and latest request through unrelated tool-heavy work.",
+      "turns": [
+        {"role": "user", "content": "Edit C:\\Bench\\GlyphLab\\source-grid.txt. Backticks are invisible grid markers; never add border | characters to displayed samples."},
+        {"role": "assistant", "content": "I will inspect the file and verify glyph columns."},
+        {"role": "tool", "name": "read_file", "content": "Synthetic file output followed by 18000 characters of unrelated fixture noise."},
+        {"role": "user", "content": "For the prose note, use — rather than - in the final output."},
+        {"role": "assistant", "content": "A credential appeared in a failed command and must not survive: sk-benchmark-secret-123456789."},
+        {"role": "user", "content": "Run the verification now; do not rewrite the grid."}
+      ],
+      "checks": [
+        {"id": "windows-path", "kind": "contains", "value": "C:\\Bench\\GlyphLab\\source-grid.txt", "weight": 2},
+        {"id": "backtick-constraint", "kind": "contains_any", "values": ["Backticks are invisible grid markers", "Backticks (`) are invisible grid markers", "Backticks (`) in source-grid.txt are designated as invisible grid markers"]},
+        {"id": "unicode-em-dash", "kind": "contains_any", "values": ["use — rather than -", "em dashes (—) instead of hyphens (-)"]},
+        {"id": "latest-request", "kind": "contains", "value": "Run the verification now; do not rewrite the grid.", "weight": 2},
+        {"id": "target-not-negated", "kind": "excludes_any", "values": ["do not use C:\\Bench\\GlyphLab\\source-grid.txt", "C:\\Bench\\GlyphLab\\source-grid.txt is obsolete"], "normalize": ["casefold", "whitespace"]},
+        {"id": "secret-not-leaked", "kind": "excludes", "value": "sk-benchmark-secret-123456789"}
+      ]
+    },
+    {
+      "id": "correction-supersedes-stale-state",
+      "category": "temporal-correction",
+      "description": "Retain the corrected current state without carrying a stale operational target forward.",
+      "turns": [
+        {"role": "user", "content": "The deployment target is staging-east."},
+        {"role": "assistant", "content": "Recorded staging-east as the target."},
+        {"role": "user", "content": "Correction: the deployment target is production-west. staging-east was only a dry run."},
+        {"role": "assistant", "content": "Understood; production-west is current."}
+      ],
+      "checks": [
+        {"id": "current-target", "kind": "contains", "value": "production-west", "weight": 2},
+        {"id": "correction-context", "kind": "contains_any", "values": ["staging-east was only a dry run", "staging-east is obsolete"]},
+        {"id": "current-target-not-reversed", "kind": "excludes_any", "values": ["production-west is obsolete", "deploy to staging-east", "current deployment target is staging-east"], "normalize": ["casefold", "whitespace"]},
+        {"id": "stale-directive-not-carried", "kind": "excludes", "value": "The deployment target is staging-east."}
+      ]
+    },
+    {
+      "id": "reverse-signal-cancels-old-task",
+      "category": "active-task-grounding",
+      "description": "A late reverse signal must replace an earlier action request as the active task.",
+      "turns": [
+        {"role": "user", "content": "Publish the draft now."},
+        {"role": "assistant", "content": "Preparing publication checks."},
+        {"role": "tool", "name": "terminal", "content": "Validation completed successfully."},
+        {"role": "user", "content": "Stop. Just verify the draft locally; do not publish it."}
+      ],
+      "checks": [
+        {"id": "reverse-signal", "kind": "contains", "value": "Stop. Just verify the draft locally; do not publish it.", "weight": 3},
+        {"id": "publication-not-reactivated", "kind": "excludes_any", "values": ["publish the draft immediately", "publish it now", "proceed with publication"], "normalize": ["casefold", "whitespace"]},
+        {"id": "stale-action-not-active", "kind": "excludes", "value": "Publish the draft now."}
+      ]
+    }
+  ]
+}

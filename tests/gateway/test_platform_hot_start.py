@@ -651,7 +651,7 @@ def test_racing_reconciles_report_each_change_to_exactly_one_ask(tmp_path, monke
 
 
 _NAMED_FRESH = [p.value.upper() for p in (Platform.FEISHU, Platform.DINGTALK, Platform.WECOM, Platform.BLUEBUBBLES,
-                                          Platform.QQBOT, Platform.WHATSAPP)]
+                                          Platform.DISCORD, Platform.WHATSAPP)]
 
 
 def _named_steps(gw, monkeypatch, answers, running, fresh):

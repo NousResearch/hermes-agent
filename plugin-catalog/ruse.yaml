@@ -1,5 +1,5 @@
 name: ruse
-version: 2.0.0
+version: 2.0.1
 title: Ruse — Bounded Browser Authority for Hermes
 summary: |
   Ruse grants Hermes a temporary, owner-approved capability lease over a
@@ -28,12 +28,13 @@ description: |
   allow/deny with the server-side fixture proving blocked requests never
   arrived.
 
-  **Evidence**: 30 decision-matrix tests plus 21 real-Chrome end-to-end tests,
-  including a hostile page script (destructive DELETE, wrong-record write,
+  **Evidence**: 32 decision-matrix tests, 45 plugin-surface tests (including
+  lease-name containment for `../x` and `/abs/x`) and 24 real-Chrome end-to-end
+  tests, including a hostile page script (destructive DELETE, wrong-record write,
   cross-origin exfiltration) that is fully contained — the application's own
   audit log shows zero mutating requests arrived.
 repo: https://github.com/HillaryIkhais/Ruse.git
-sha: e81a230e9ded745bdd52d603fc6b64f3bac040b2
+sha: 25868c6c202c82a4f8e4dad81c6ecf10a9029b03
 tier: community
 category: security
 requires_hermes: ">=0.23.0"

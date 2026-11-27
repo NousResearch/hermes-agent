@@ -121,6 +121,7 @@ import {
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
+  dropSessionStatesForStoredIds,
   focusOpenSession,
   holdSessionOwnerUntilForeground,
   isSessionInForeground,
@@ -3121,6 +3122,7 @@ export function useSessionActions({
         await deleteSession(storedSessionId, removedOwner)
 
         dropTranscriptTailEverywhere(storedSessionId)
+        dropSessionStatesForStoredIds(removedIds)
         // Only after the RPC lands — the optimistic eviction above can roll
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, profile)
@@ -3271,6 +3273,8 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
         }
+
+        dropSessionStatesForStoredIds(archivedIds)
 
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {

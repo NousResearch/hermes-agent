@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
 import {
+  $draftSessionIds,
   $sessionStates,
   $workingSessionIds,
   clearAllSessionStates,
@@ -42,6 +43,17 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     })
 
     expect($workingSessionIds.get()).toContain('stored-cold')
+  })
+
+  // #137768: an archived session's runtime outlives its row in the snapshot.
+  // Seeding an empty state for it reads as a draft once the tombstone is gone.
+  it('does not seed a state for an idle runtime the renderer never held', () => {
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-archived', session_key: 'stored-archived', status: 'idle' }]
+    })
+
+    expect($sessionStates.get()['runtime-archived']).toBeUndefined()
+    expect($draftSessionIds.get()).toEqual([])
   })
 
   it('keeps the spinner across polls while the turn is still running', () => {

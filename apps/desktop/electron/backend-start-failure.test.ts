@@ -4,16 +4,20 @@ import { test } from 'vitest'
 
 import { isReauthRequiredError, makeUnsignedOauthError } from './backend-health'
 import {
+  classifyTerminalRemoteBootFailure,
+  isHermesNotFoundBootFailure,
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   isSshAuthFailedBootFailure,
   isSshClientFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
+  shouldLatchHermesNotFoundFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure,
   shouldLatchSshAuthFailure,
   shouldLatchSshClientFailure,
+  shouldLatchTerminalRemoteBootFailure,
   sshClientFailedError
 } from './backend-start-failure'
 import { SshConnection } from './ssh-connection'
@@ -245,6 +249,95 @@ test('FIX #103288: a failed local `ssh -G` probe latches and is never auto-retri
     true
   )
   assert.equal(shouldLatchSshClientFailure({ attemptedRemote: false, isReauth: false, isSshClientFailed: true }), false)
+})
+
+test('a remote with no Hermes install latches the boot failure and is never auto-retried', () => {
+  // As remote-lifecycle's locateHermes throws it (auto-detect and explicit path),
+  // as the SSH bootstrap re-wraps it (message + sshError tag), and as a Windows
+  // remote's PowerShell throw arrives: ssh stderr wrapped by SshConnection, text only.
+  const windowsRemote = (thrown: string) =>
+    new SshConnection({ host: '127.0.0.1', user: 'me' }, {})._fail(
+      `#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">${thrown}_x000D__x000A_</S></Objs>`
+    )
+
+  const notInstalled = Object.assign(
+    new Error('Hermes is not installed on the remote host (could not find a `hermes` executable).'),
+    { kind: 'hermes-not-found' }
+  )
+
+  const badPath = Object.assign(
+    new Error('The Hermes path you set is not an executable on the remote host: "/bad/path/hermes".'),
+    { kind: 'hermes-not-found' }
+  )
+
+  const rewrapped = Object.assign(new Error(notInstalled.message), {
+    sshError: 'hermes-not-found',
+    isSshBootstrap: true
+  })
+
+  for (const error of [
+    notInstalled,
+    badPath,
+    rewrapped,
+    new Error(notInstalled.message),
+    windowsRemote('Hermes is not installed on the remote Windows host.'),
+    windowsRemote('The configured Hermes path is not an executable file.')
+  ]) {
+    const isHermesNotFound = isHermesNotFoundBootFailure(error)
+    const context = { attemptedRemote: true, isReauth: false, isHermesNotFound }
+
+    assert.equal(shouldLatchHermesNotFoundFailure(context), true)
+    assert.equal(isRetryableRemoteBootFailure(context), false)
+  }
+
+  // Connectivity faults keep self-healing; local boots never take this latch.
+  const unreachable = new Error('ssh: connect to host box port 22: Connection timed out')
+  const transient = {
+    attemptedRemote: true,
+    isReauth: false,
+    isHermesNotFound: isHermesNotFoundBootFailure(unreachable)
+  }
+
+  assert.equal(shouldLatchHermesNotFoundFailure(transient), false)
+  assert.equal(isRetryableRemoteBootFailure(transient), true)
+  assert.equal(
+    shouldLatchHermesNotFoundFailure({ attemptedRemote: false, isReauth: false, isHermesNotFound: true }),
+    false
+  )
+})
+
+test('every terminal remote kind takes the one boot latch; anything else does not', () => {
+  const ssh = new SshConnection({ host: '127.0.0.1', user: 'me' }, {})
+
+  const cases = [
+    [new Error('Host key verification failed.'), 'isHostKeyChanged'],
+    [ssh._fail('me@127.0.0.1: Permission denied (publickey).'), 'isSshAuthFailed'],
+    [sshClientFailedError('ssh', new Error('boom'), 'linux'), 'isSshClientFailed'],
+    [
+      Object.assign(new Error('Hermes is not installed on the remote host.'), { kind: 'hermes-not-found' }),
+      'isHermesNotFound'
+    ]
+  ] as const
+
+  for (const [error, flag] of cases) {
+    const flags = classifyTerminalRemoteBootFailure(error)
+
+    assert.deepEqual(
+      Object.entries(flags)
+        .filter(([, set]) => set)
+        .map(([name]) => name),
+      [flag]
+    )
+    assert.equal(shouldLatchTerminalRemoteBootFailure({ attemptedRemote: true, isReauth: false, ...flags }), true)
+    assert.equal(shouldLatchTerminalRemoteBootFailure({ attemptedRemote: false, isReauth: false, ...flags }), false)
+  }
+
+  const transient = classifyTerminalRemoteBootFailure(
+    ssh._fail('ssh: connect to host 127.0.0.1 port 22: Connection refused')
+  )
+
+  assert.equal(shouldLatchTerminalRemoteBootFailure({ attemptedRemote: true, isReauth: false, ...transient }), false)
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: false, ...transient }), true)
 })
 
 test('FIX #103288: the desktop.ssh_path hint is Windows-only', () => {

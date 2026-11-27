@@ -215,7 +215,7 @@ def _cmd_test(args) -> None:
 
     specs = [s for s in shell_hooks.iter_configured_hooks(load_config()) if s.event == event]
     if for_tool:
-        specs = [s for s in specs if s.event not in {"pre_tool_call", "post_tool_call"} or s.matches_tool(for_tool)]
+        specs = [s for s in specs if s.event not in shell_hooks._TOOL_EVENTS or s.matches_tool(for_tool)]
     if not specs:
         print(f"No shell hooks configured for event: {event}")
         if for_tool:

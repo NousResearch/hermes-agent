@@ -132,6 +132,18 @@ class TestHooksTest:
         assert '"action": "block"' in out
         assert '"message": "nope"' in out
 
+    def test_for_tool_skips_unmatched_transform_tool_result_hook(self, tmp_path):
+        """``--for-tool`` mirrors the live matcher on transform_tool_result: an unmatched tool fires nothing."""
+        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '\"x\"'\n", name="rewrite.sh")
+        cfg = {"hooks": {"transform_tool_result": [{"matcher": "terminal", "command": str(script)}]}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            skipped = _run(SimpleNamespace(hooks_action="test", event="transform_tool_result",
+                                           for_tool="read_file", payload_file=None))
+            fired = _run(SimpleNamespace(hooks_action="test", event="transform_tool_result",
+                                         for_tool="terminal", payload_file=None))
+        assert "No shell hooks configured" in skipped
+        assert 'parsed (Hermes wire shape): "x"' in fired
+
 
 # ── revoke ────────────────────────────────────────────────────────────────
 

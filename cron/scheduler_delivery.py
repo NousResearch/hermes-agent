@@ -465,15 +465,19 @@ def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]
 
 
 def resolve_cron_destination(
-    job: dict, deliver_value: str, *, from_broadcast: bool = False
+    job: dict, deliver_value: str, *, from_broadcast: bool = False, skipped: Optional[list] = None
 ) -> tuple[Optional[dict], Optional[str]]:
     """``(target, error)`` for one destination: delivery's resolver, and preflight's dry run of it.
     A platform that left core and whose plugin is not loaded here is served only by the primary's
-    bot through an exact route on the parsed chat; when none serves it the error names the install."""
-    target = _resolve_single_delivery_target(job, deliver_value, from_broadcast=from_broadcast)
+    bot through an exact route on the parsed chat; when none serves it the error names the install.
+    A bare token for such a platform whose home is saved in config.yaml is that saved home, so its error
+    is the skipped-home one ``all``/``origin`` add to *skipped* (:func:`_note_unloaded_homes`): one per home."""
+    target = _resolve_single_delivery_target(job, deliver_value, from_broadcast=from_broadcast, skipped=skipped)
     platform_name = str(target["platform"] if target else deliver_value.split(":", 1)[0]).strip()
     if not moved_platform_hint(platform_name) or (target and _preflight.shared_route_serves(target)):
         return target, None
+    if ":" not in deliver_value and platform_name.lower() in _unloaded_home_platforms():
+        return None, _unloaded_home_error(platform_name.lower())
     return None, unknown_platform_error(platform_name)
 
 
@@ -1014,15 +1018,16 @@ def _snapshot_delivery_job(job: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_delivery_targets(
-    job: dict, *, for_failure: bool = False, moved_errors: Optional[list] = None
+    job: dict, *, for_failure: bool = False, skipped: Optional[list] = None
 ) -> list[dict]:
     """Resolve auto-delivery targets from comma-separated ``deliver``; ``all`` expands to every
     platform with a home channel and combines with explicit targets. Dedup by (platform, chat_id,
     thread_id). ``for_failure=True`` (failure summaries, interrupted-run notices, drift/preflight
     alerts) resolves from ``failure_deliver`` INSTEAD when the job carries one —
     ``failure_deliver: local`` is the structural opt-out; absent, failures follow ``deliver``.
-    ``moved_errors`` collects the install error of each destination skipped because its platform left
-    core and its plugin is not loaded, so a run that reached the others still reports it."""
+    ``skipped`` collects, once each, the error of every destination its platform plugin not being loaded
+    left unreached: a saved home channel ``all``/``origin`` could not reach, and a destination whose platform
+    left core with no route serving it (it names the install), so a run that reached the others reports it."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver == "local":
         return []
@@ -1037,9 +1042,9 @@ def _resolve_delivery_targets(
         if from_broadcast:
             _note_unloaded_homes(_unloaded_home_platforms(), skipped)
         for part in _expand_routing_tokens(raw):
-            target, error = resolve_cron_destination(job, part, from_broadcast=from_broadcast)
-            if error and moved_errors is not None:
-                moved_errors.append(error)
+            target, error = resolve_cron_destination(job, part, from_broadcast=from_broadcast, skipped=skipped)
+            if error and skipped is not None and error not in skipped:
+                skipped.append(error)
             if not target:
                 continue
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
@@ -1059,11 +1064,11 @@ def _resolve_delivery_targets(
 def _origin_unresolved(job: dict, *, for_failure: bool = False) -> bool:
     """``deliver: origin`` with nothing to deliver to (no origin, no home): not a failure. An origin
     ``resolve_cron_destination`` refused (its platform left core, no route serves it) is not this
-    case; the run still reports the install."""
-    moved_errors: list = []
+    case, nor a saved home skipped because its platform plugin is not loaded; the run still reports it."""
+    skipped: list = []
     return (_normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure)) == "origin"
-            and not _resolve_delivery_targets(job, for_failure=for_failure, moved_errors=moved_errors)
-            and not moved_errors)
+            and not _resolve_delivery_targets(job, for_failure=for_failure, skipped=skipped)
+            and not skipped)
 
 
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
@@ -1824,14 +1829,14 @@ def _prepare_target_delivery(
         opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready)
 
 
-def _unresolved_delivery_outcome(job: dict, for_failure: bool, moved_errors: list) -> Optional[str]:
+def _unresolved_delivery_outcome(job: dict, for_failure: bool, skipped: list) -> Optional[str]:
     """``_deliver_result`` outcome when no target resolved: None (not a failure) for ``local`` and
     origin-less ``origin`` (CLI jobs never capture an origin — a spurious error every run), else
-    an error string carrying ``moved_errors`` (destinations whose platform plugin is not loaded)."""
+    an error string carrying ``skipped`` (destinations whose platform plugin is not loaded)."""
     deliver_value = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver_value == "local":
         return None
-    if deliver_value == "origin" and not moved_errors:
+    if deliver_value == "origin" and not skipped:
         logger.info(
             # deliver=origin with no resolvable origin and no configured home channels: treat as local
             # rather than reporting an error. CLI-created jobs never capture a {platform, chat_id} origin,
@@ -1842,7 +1847,7 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool, moved_errors: lis
             "skipping delivery (output saved in last_output)",
             job.get("name", job.get("id", "?")))
         return None
-    msg = "; ".join([f"no delivery target resolved for deliver={deliver_value}", *moved_errors])
+    msg = "; ".join([f"no delivery target resolved for deliver={deliver_value}", *skipped])
     logger.warning("Job '%s': %s", job["id"], msg)
     return msg
 
@@ -1869,11 +1874,11 @@ def _deliver_result(
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_all_targets_suppressed", None)
-    moved_errors: list = []
-    targets = _resolve_delivery_targets(job, for_failure=for_failure, moved_errors=moved_errors)
+    skipped: list = []
+    targets = _resolve_delivery_targets(job, for_failure=for_failure, skipped=skipped)
     if not targets:
         job["_delivery_reached_none"] = (
-            outcome := _unresolved_delivery_outcome(job, for_failure, moved_errors)) is not None
+            outcome := _unresolved_delivery_outcome(job, for_failure, skipped)) is not None
         _record_delivery_verification(job, [])
         return outcome
 
@@ -1966,7 +1971,9 @@ def _deliver_result(
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
-    delivery_errors = list(moved_errors)
+    for error in skipped:
+        logger.warning("Job '%s': %s", job["id"], error)
+    delivery_errors = list(skipped)
     reached = 0  # targets that received the text (bot chat / room / local count when error-free)
     suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
     for target in targets:

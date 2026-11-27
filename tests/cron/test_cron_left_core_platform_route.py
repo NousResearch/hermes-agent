@@ -100,6 +100,20 @@ def test_origin_on_a_moved_platform_names_the_install(feature):
     assert error and f"hermes plugins install {feature.plugin}" in error
 
 
+@pytest.mark.parametrize("deliver", ["all,{p}", "{p},all", "{p}", "origin", "origin,{p}"])
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_a_saved_moved_platform_home_is_reported_once(feature, deliver):
+    """A home saved for a platform that left core, its plugin not loaded: ``all``/``origin`` report the skipped
+    home and a bare token addresses that same home, so a job naming it both ways still names the install once."""
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(
+        f"platforms:\n  {feature.platform}:\n    home_channel: {{chat_id: home-1}}\n", encoding="utf-8")
+    assert platform_registry.get(feature.platform) is None
+    error = _deliver_result({"id": "j1", "name": "Report", "deliver": deliver.format(p=feature.platform)},
+                            "the report", adapters=None, loop=None)
+    assert error and error.count(f"hermes plugins install {feature.plugin}") == 1, error
+
+
 def _feishu_style_parser(ref):
     """A plugin's native ref parser in the Feishu shape: ``oc_<chat>[:omt_<topic>]``; anything else is not its syntax."""
     chat, _, thread = ref.partition(":")

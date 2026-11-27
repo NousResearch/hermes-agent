@@ -1,4 +1,4 @@
-"""Upstage Solar provider profile: top-level ``reasoning_effort`` (low|medium|high).
+"""Upstage Solar provider profile: top-level ``reasoning_effort`` (low|medium|high|xhigh|max).
 
 Solar's server default is ``minimal`` (reasoning off) — wrong for agentic work —
 so an unset reasoning_config defaults reasoning ON at ``medium``, matching the
@@ -52,7 +52,8 @@ upstage = UpstageProfile(
     signup_url="https://console.upstage.ai/api-keys", env_vars=("UPSTAGE_API_KEY", "UPSTAGE_BASE_URL"),
     base_url="https://api.upstage.ai/v1", auth_type="api_key",
     # No default_aux_model: auxiliary tasks use the main model. [0] is the setup default.
-    fallback_models=("solar-pro3",),
+    # solar-pro3 is retired on 2026-10-30 (KST); solar-pro4 is its replacement.
+    fallback_models=("solar-pro4",),
 )
 
 register_provider(upstage)

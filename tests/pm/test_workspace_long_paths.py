@@ -7,7 +7,11 @@ reach the outer copytree call; it does not fake Windows or lower MAX_PATH.
 from pathlib import Path
 import shutil
 
+import pytest
+
 from pm import filesystem, workspace
+
+pytestmark = pytest.mark.platforms("windows", "posix")
 
 
 def test_core_snapshot_copies_deep_package_through_long_roots(tmp_path, monkeypatch):

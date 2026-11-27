@@ -26,6 +26,8 @@ from pm import (
 )
 from hermes_cli import runtime_state
 
+pytestmark = pytest.mark.platforms("windows", "posix")
+
 
 def _track_long_root(monkeypatch, module, real_shutil_fn, attr_name: str):
     """Wrap ``module.long_root`` and ``module.shutil.<attr_name>`` to prove the

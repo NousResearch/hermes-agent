@@ -59,3 +59,24 @@ def test_rename_and_archive(tmp_path):
 
 
 
+
+
+def test_create_and_add_folder_warn_about_missing_folders(capsys, tmp_path):
+    existing, missing, later = tmp_path / "here", tmp_path / "never-made", tmp_path / "also-missing"
+    existing.mkdir()
+    # Registration stays allowed (remote terminal backends own their own paths) but must say so.
+    assert _run(["create", "Ghost", str(existing), str(missing)]) == 0
+    err = capsys.readouterr().err
+    assert f"warning: {missing} is not a directory on this machine" in err
+    assert str(existing) not in err
+
+    assert _run(["add-folder", "ghost", str(later)]) == 0
+    assert f"warning: {later} is not a directory on this machine" in capsys.readouterr().err
+
+
+def test_existing_folders_do_not_warn(capsys, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    assert _run(["create", "Real", str(tmp_path)]) == 0
+    assert _run(["add-folder", "real", str(other)]) == 0
+    assert capsys.readouterr().err == ""

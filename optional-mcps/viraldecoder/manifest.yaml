@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: viraldecoder
+description: >-
+  Why short videos go viral, and a script for yours: analyze Instagram
+  Reels, YouTube Shorts and TikTok videos and browse trending videos by niche.
+source: https://viraldecoder.online/claude
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh. Also listed in the official
+# MCP Registry as online.viraldecoder/viraldecoder.
+transport:
+  type: http
+  url: https://viraldecoder.online/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - viraldecoder
+  hosts:
+    - viraldecoder.online
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to ViralDecoder
+  with Google or an email link (or run `hermes mcp login viraldecoder`).
+  Approve access, then restart the session so tools load. The free plan
+  includes 3 video analyses a month; browsing trends and past analyses
+  doesn't use them. Paid plans are sold only on viraldecoder.online.

@@ -40,6 +40,8 @@ export const chatBitsEn = {
       helpHint: '/help for commands',
       commitsBehindOne: (count: number) => `! ${count} commit behind`,
       commitsBehindOther: (count: number) => `! ${count} commits behind`,
+      branchDiverged: '! branch diverged from origin/main',
+      branchDivergedHint: ' - not a fast-forward; review before ',
       runPrefix: ' - run ',
       toUpdate: ' to update'
     },

@@ -22,6 +22,9 @@ from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, reso
 
 logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
+# HEAD and the remote tip share history, but neither contains the other.
+# Not a fast-forward count (#68484).
+UPDATE_DIVERGED = -2
 _UPDATE_CHECK_CACHE_SECONDS = 24 * 3600
 _UPDATE_CHECK_FAILURE_CACHE_SECONDS = 3600
 _RUNTIME_LOOKUP_SECONDS = 8.0
@@ -522,11 +525,30 @@ def _unhealable_reason(co: _Checkout, branch: str) -> Optional[str]:
     return "unmerged"  # Unknown merge state keeps the branch.
 
 
+def _full_clone_diverged(co: _Checkout, target: str) -> bool:
+    """True when a full clone has a merge-base and HEAD is not an ancestor of ``target``.
+
+    The caller already returned when ``target`` is an ancestor of HEAD. Shallow
+    clones and embedded revisions fail ``merge-base`` and must fall through to
+    the GitHub compare count instead of being called diverged (#68484).
+    """
+    if co.embedded or not co.head or not co.root:
+        return False
+    if not _git_ok(["merge-base", co.head, target], cwd=co.root, git=co.git):
+        return False
+    return not _git_ok(
+        ["merge-base", "--is-ancestor", co.head, target], cwd=co.root, git=co.git)
+
+
 def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
     """``(behind, commits)`` for ``target``: local ancestry first, then the GitHub compare API."""
     if co.head == target or (not co.embedded and _git_ok(
             ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git)):
         return 0, []
+    # A positive GitHub ahead_by here is the misleading "1 commit behind" on a
+    # diverged feature branch. Do not count it as a fast-forward (#68484).
+    if _full_clone_diverged(co, target):
+        return UPDATE_DIVERGED, []
     if co.repository:
         payload = _github_compare(co.head, target, co.repository)
         ahead = (payload or {}).get("ahead_by")

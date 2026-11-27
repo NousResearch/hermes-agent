@@ -102,6 +102,10 @@ function availableLine(
     return rollback(back)
   }
 
+  if (behind === -2) {
+    return 'Branch diverged from origin/main (not a fast-forward)'
+  }
+
   return behind > 0 ? u.updateReady(behind) : u.updateReadyUnknown
 }
 
@@ -118,7 +122,7 @@ function ordinaryUpdateStatus({
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
-  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
+  const updateAvailable = behind > 0 || behind === -2 || Boolean(status?.updateAvailable)
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 

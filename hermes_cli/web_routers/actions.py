@@ -337,7 +337,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
     status: dict[str, Any] = {}
     try:
-        from hermes_cli.source_check import check_for_updates
+        from hermes_cli.source_check import UPDATE_DIVERGED, check_for_updates
 
         with _config_profile_scope(profile):
             status = await asyncio.to_thread(check_for_updates, force=force)
@@ -356,6 +356,14 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
                                "runtime its sessions use. It stays on this build until a newer release ships.")
     elif behind == 0:
         payload["message"] = "You're on the latest version."
+    elif behind == UPDATE_DIVERGED:
+        payload["update_available"] = True
+        payload["message"] = (
+            "Branch diverged from origin/main (not a fast-forward). "
+            "Review WIP before updating."
+        )
+        payload.update(channel=status.get("channel"), branch=status.get("branch"),
+                       source_version=status.get("sourceVersion"))
     else:
         payload["update_available"] = True
         if status.get("rollback"):

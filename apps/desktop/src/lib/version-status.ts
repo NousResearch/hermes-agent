@@ -90,11 +90,13 @@ function pendingLines({ available, behind, branch, copy, latestTag, rollback, st
     lines.push(copy.releaseAvailable(latestTag))
   }
 
-  if (!stable && behind > 0) {
+  if (!stable && behind === -2) {
+    lines.push('branch diverged from origin/main (not a fast-forward)')
+  } else if (!stable && behind > 0) {
     lines.push(copy.commitsBehind(behind, branch || '...'))
   }
 
-  if (available && (stable ? !latestTag : behind <= 0)) {
+  if (available && behind !== -2 && (stable ? !latestTag : behind <= 0)) {
     lines.push(copy.update)
   }
 
@@ -128,7 +130,7 @@ export function resolveVersionStatus({
   // targets — the client statusbar item is how a shallow desktop install
   // learns it's stale at all.
   const stable = channel === 'stable'
-  const available = behind > 0 || !!updateAvailable
+  const available = behind > 0 || behind === -2 || !!updateAvailable
 
   // A client with no version still identifies itself by sha; a backend can't.
   const named = version ?? (client ? sha : null) ?? copy.unknown
@@ -143,7 +145,15 @@ export function resolveVersionStatus({
   // count of commits is the wrong vocabulary — a release is one step, so
   // the hint is always the update word. `(update)` also covers a backend
   // that knows it's stale but can't count (pip, non-git checkout).
-  const hint = busy ? '' : !stable && behind > 0 ? ` (+${behind})` : available ? ` (${copy.update})` : ''
+  const hint = busy
+    ? ''
+    : !stable && behind > 0
+      ? ` (+${behind})`
+      : !stable && behind === -2
+        ? ' (diverged)'
+        : available
+          ? ` (${copy.update})`
+          : ''
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),

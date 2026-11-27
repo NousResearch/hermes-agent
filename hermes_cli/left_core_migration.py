@@ -212,11 +212,11 @@ _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research,
 
 
 def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
-    # Core's adapter ignored a bare ``yuanbao`` there; the catalog plugin does not. The install's enable
-    # purges the entry from the user's list, so this fires only when it survived (a managed overlay pin).
+    # Core's adapter ignored a bare ``yuanbao`` there; the catalog plugin does not, and the automatic install
+    # keeps the entry (:func:`_install_into`), so the plugin is placed but off.
     if plugin_present("yuanbao", home) and _plugins_listed(home, ("yuanbao",))[1]:
-        return (f"{_YUANBAO_NOTICE} plugins.disabled lists 'yuanbao', which now turns Yuanbao off; "
-                "remove it to keep using Yuanbao.")
+        return (f"{_YUANBAO_NOTICE} plugins.disabled lists 'yuanbao', which now turns Yuanbao off: "
+                f"`{_enable_command('yuanbao', home)}` turns it on.")
     return _YUANBAO_NOTICE
 
 
@@ -1320,12 +1320,16 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
     return f"{message} {extra}" if extra else message
 
 
+def _enable_command(name: str, home: Path) -> str:
+    """The exact command that enables *name* in *home* (the shape of :func:`_install_command`)."""
+    return _install_command(name, home).replace(" plugins install ", " plugins enable ")
+
+
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
     """The unattended install both automatic installers (this migrator, ``default_plugins``) run in *home*.
-    A plugin *home*'s ``plugins.disabled`` names when the enable runs (also an entry the operator wrote while
-    the download ran) is placed but left off (``kept_disabled``): only the user's own enable lifts it."""
-    def _install(name: str, discard: Optional[Path] = None,
-                 on_step: Optional[Callable[[object], None]] = None) -> dict:
+    A plugin *home*'s ``plugins.disabled`` already names (its name or a bundled key it replaced) is placed but
+    not enabled: the enable would lift that entry, and only the user's own enable may."""
+    def _install(name: str, discard: Optional[Path] = None) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
@@ -1333,7 +1337,8 @@ def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[st
             if discard is not None:  # the caller's own leftover tree, removed under this same binding
                 from hermes_cli.plugins_cmd_remove import _remove_plugin_core
                 _remove_plugin_core(discard)
-            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name, unattended=True,
+            kept_off = _plugins_listed(home, (name, *legacy_plugin_keys(name)))[1]
+            return dashboard_install_plugin("", force=False, enable=not kept_off, catalog_name=name,
                                             assume_deps_consent=_unattended_consent() if consent is None
                                             else consent, on_step=on_step)
         finally:

@@ -6,6 +6,7 @@ generation/workspace/cache rmtree and copy/walk site routes through
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -314,3 +315,47 @@ def test_remove_tree_and_collect_generations_use_long_root(tmp_path, monkeypatch
     assert removed == [stale]
     assert not stale.exists()
     assert rt_seen and _was_long_rooted(rt_seen[0][0], rt_returned)
+
+
+@pytest.mark.parametrize("case", ["committed", "rolled-back", "first-install"])
+def test_plugin_publication_recovery_removes_through_long_root(tmp_path, monkeypatch, case):
+    from hermes_cli import fs_utils
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, backup = home / "plugins" / "published", home / "plugins" / ".previous-probe"
+    for tree in (target, backup):
+        tree.mkdir(parents=True)
+        (tree / "version").write_text(tree.name, encoding="utf-8")
+    metadata = target.parent / ".install-metadata.json"
+    metadata.write_bytes(b"new")
+    journal = tmp_path / "publication.json"
+    journal.write_bytes(b"{}")
+    row = {"target": str(target), "backup": str(backup), "metadata": str(metadata),
+           "target_existed": True, "facts_before": None, "committed": case == "committed",
+           "metadata_before": base64.b64encode(b"old").decode(),
+           "metadata_after": base64.b64encode(b"new").decode()}
+    if case == "first-install":
+        shutil.rmtree(backup)
+        row.update(target_existed=False, metadata_before=None)
+    returned, removed = [], []
+    real_long_root, real_remove = filesystem.long_root, fs_utils.rmtree_force
+
+    def record_long_root(path):
+        rooted = Path(real_long_root(path))
+        returned.append(rooted)
+        return rooted
+
+    def observe_remove(path):
+        removed.append(path)
+        real_remove(path)
+
+    monkeypatch.setattr(runtime_state, "long_root", record_long_root, raising=False)
+    monkeypatch.setattr(fs_utils, "rmtree_force", observe_remove)
+    runtime_state._recover_plugin_publication(tmp_path / "project", row, journal)
+
+    assert len(removed) == 1 and _was_long_rooted(removed[0], returned)
+    assert not backup.exists() and not journal.exists()
+    kept = (target / "version").read_text(encoding="utf-8") if target.exists() else None
+    assert kept == {"committed": "published", "rolled-back": ".previous-probe", "first-install": None}[case]

@@ -32,6 +32,9 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 _attempted: set[tuple[str, str]] = set()
+# Homes whose last start found the installer lock held: the next start in this process retries without
+# waiting again, so a long-held lock costs one wait per process, not one per gateway message.
+_lock_busy: set[tuple[str, str]] = set()
 
 # Providers that shipped bundled in core. Unattended consent covers only these: their users already
 # accepted the deps when they picked the built-in. Any other catalog plugin named in memory.provider
@@ -98,23 +101,34 @@ def configured_provider(home: Path) -> str:
     return str(memory.get("provider") or "").strip()
 
 
+def _plugin_choice(home: Path):
+    """*home*'s memory selection and plugin lists as the memory loader reads them (effective config,
+    managed overlay included), in one read. Bound explicitly: the update hook walks several homes."""
+    from agent.runtime_scope import bind_profile_scope
+    from plugins.plugin_loader import read_plugin_choice
+    with bind_profile_scope(home, hydrate_secrets=False):
+        return read_plugin_choice("memory", "provider")
+
+
 def provider_disabled(name: str, home: Path) -> bool:
-    """*home*'s ``plugins.disabled`` names provider *name* (bare or as ``<kind>/<name>``): the user's own
-    off switch, which an install (it enables what it places) must never override."""
-    from pm.plugins_state import read_home_selection
-    disabled = ((read_home_selection(home) or {}).get("plugins") or {}).get("disabled") or []
-    return any(entry.rsplit("/", 1)[-1] == name for entry in disabled)
+    """*home*'s ``plugins.disabled`` lists provider *name*: the user's own off switch, which an install
+    (it enables what it places) must never override. A catalog plugin not installed yet has one
+    spelling, its name, which is also the directory and manifest name the loader will match."""
+    return name in _plugin_choice(home).disabled
 
 
 def _still_wanted(name: str, home: Path) -> bool:
-    """*home* still selects *name* and has not disabled it (read now, not when the attempt began)."""
-    return configured_provider(home) == name and not provider_disabled(name, home)
+    """*home* still selects *name* and has not disabled it, from one read taken now (under the
+    installer lock), not when the attempt began."""
+    choice = _plugin_choice(home)
+    return choice.selected == name and name not in choice.disabled
 
 
 class _Outcome(enum.Enum):
     """What one install attempt left in the home."""
     PRESENT = "present"          # installed now, or by another Hermes process meanwhile
-    FAILED = "failed"            # tried (or locked out) and reported
+    FAILED = "failed"            # the install ran and failed (reported, stamped)
+    BUSY = "busy"                # the installer lock was not had: nothing ran (reported, never stamped)
     NOT_WANTED = "not_wanted"    # the user changed the selection or disabled it meanwhile: nothing owed
 
 
@@ -200,12 +214,15 @@ def kept_off_sentence(name: str, home: Path) -> str:
 
 
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
-                     say: Callable[[str], None], wait: float = 900.0) -> _Outcome:
+                     say: Callable[[str], None], wait: float = 900.0,
+                     busy_say: Optional[Callable[[str], None]] = None) -> _Outcome:
     """Install *name* into *home* under the installer lock every unattended plugin installer holds
     (:func:`default_plugins.installer_lock`). The home is read again under the lock: another Hermes
     process may have placed the provider while this one waited (nothing reported: that one reports its
-    own), and the user may have switched to another provider or disabled this one (nothing owed)."""
+    own), and the user may have switched to another provider or disabled this one (nothing owed).
+    *busy_say* (default *say*) takes the line for a lock that could not be had."""
     from hermes_cli.default_plugins import installer_lock
+    busy_say = busy_say or say
     try:
         with installer_lock(wait):
             if provider_present(name, home):
@@ -217,9 +234,13 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                 return _Outcome.NOT_WANTED
             return _Outcome.PRESENT if _install_locked(home, name, install=install, say=say) else _Outcome.FAILED
     except TimeoutError:  # nothing was tried, so no failure is stamped
-        say(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its plugin "
-            f"was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
-        return _Outcome.FAILED
+        busy_say(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its "
+                 f"plugin was not installed now. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+        return _Outcome.BUSY
+    except OSError as exc:  # the lock file cannot be opened or locked: report it, never end the update loop
+        busy_say(f"  ⚠ Memory provider '{name}': the plugin installer lock could not be taken ({exc}), so its "
+                 f"plugin was not installed. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
+        return _Outcome.BUSY
 
 
 def _install_locked(home: Path, name: str, *, install: Callable[[str], dict],
@@ -346,7 +367,7 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
                     outcome = _install_pending(home, name, install=_install_into(home), say=labelled(home))
                     if outcome is _Outcome.PRESENT:
                         installed.append(name)
-                    if outcome is not _Outcome.FAILED:
+                    if outcome in (_Outcome.PRESENT, _Outcome.NOT_WANTED):
                         continue
                     rest = homes[index + 1:]
                     if rest:
@@ -375,7 +396,8 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
     key = (hermes_home_key(home), name)
     if key in _attempted:
         return False
-    _attempted.add(key)
+    if say is not None:  # unattended: marked only once an install runs, so a later watched start reports the rest
+        _attempted.add(key)
 
     def report(message: str) -> None:
         logger.warning(message)
@@ -408,7 +430,15 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
     from hermes_cli.left_core_migration import startup_lock_wait
     if _pending_provider(home, say=report) != name:
         return False
+    _attempted.add(key)
+    retry = key in _lock_busy  # the busy-lock line was already given once in this process
     outcome = _install_pending(home, name, install=_install_into(home, consent=True),
                                say=report if say is not None else defer_startup_notice,
-                               wait=startup_lock_wait(gateway_start=False))
+                               wait=0.0 if retry else startup_lock_wait(gateway_start=False),
+                               busy_say=logger.info if retry else None)
+    if outcome is _Outcome.BUSY:  # nothing ran: the next start in this process (a gateway, Desktop) tries again
+        _attempted.discard(key)
+        _lock_busy.add(key)
+    else:
+        _lock_busy.discard(key)
     return outcome is _Outcome.PRESENT

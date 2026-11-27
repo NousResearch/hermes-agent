@@ -16,6 +16,25 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _lock_reached(monkeypatch):
+    """An event set when the migration asks for the installer lock (before it blocks on it), so a test
+    holding the lock changes the home only once the migration is waiting under it."""
+    import threading
+    from contextlib import contextmanager
+    from hermes_cli import default_plugins
+
+    reached, real = threading.Event(), default_plugins.installer_lock
+
+    @contextmanager
+    def lock(wait):
+        reached.set()
+        with real(wait):
+            yield
+
+    monkeypatch.setattr(default_plugins, "installer_lock", lock)
+    return reached, real
+
+
 def test_missing_provider_installs_its_catalog_plugin_and_keeps_config(home, monkeypatch):
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
     calls: list[str] = []
@@ -422,12 +441,13 @@ def test_install_waits_for_another_installer_and_installs_once(tmp_path, monkeyp
     installs: list[str] = []
     monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: installs.append(n) or {"ok": False,
                                                                                                  "error": "exists"})
-    held, release = threading.Event(), threading.Event()
+    held = threading.Event()
+    reached, real_lock = _lock_reached(monkeypatch)
 
     def other_installer():
-        with default_plugins.installer_lock(5):
+        with real_lock(5):
             held.set()
-            release.wait(10)
+            reached.wait(10)
             plugin_dir = tmp_path / "plugins" / "byterover"
             plugin_dir.mkdir(parents=True)
             (plugin_dir / "__init__.py").write_text("class P(MemoryProvider): ...\n", encoding="utf-8")
@@ -435,24 +455,22 @@ def test_install_waits_for_another_installer_and_installs_once(tmp_path, monkeyp
     holder = threading.Thread(target=other_installer)
     holder.start()
     assert held.wait(10)
-    threading.Timer(0.5, release.set).start()
     said: list[str] = []
     try:
         assert mig.recover_at_startup("byterover", say=said.append) is True
     finally:
-        release.set()
+        reached.set()
         holder.join(10)
     assert installs == [] and said == []
     assert not mig._failure_stamp(tmp_path, "byterover").exists()
 
 
-@pytest.mark.parametrize("entry", ["byterover", "memory/byterover"])
-def test_a_disabled_labs_provider_is_never_installed_or_enabled(tmp_path, monkeypatch, entry):
+def test_a_disabled_labs_provider_is_never_installed_or_enabled(tmp_path, monkeypatch):
     """`plugins.disabled` naming the provider is the user's own off switch: neither `hermes update` nor
     an agent start installs (and so enables) it, and the user is told why external memory is off."""
     from pm import install as pm_install
 
-    config = f"memory:\n  provider: byterover\nplugins:\n  disabled:\n  - {entry}\n"
+    config = "memory:\n  provider: byterover\nplugins:\n  disabled:\n  - byterover\n"
     (tmp_path / "config.yaml").write_text(config, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(mig, "_attempted", set())
@@ -482,23 +500,23 @@ def test_a_selection_changed_while_waiting_for_the_installer_lock_installs_nothi
     monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
     installs: list[str] = []
     monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: installs.append(n) or {"ok": True})
-    held, release = threading.Event(), threading.Event()
+    held = threading.Event()
+    reached, real_lock = _lock_reached(monkeypatch)
 
     def other_installer():
-        with default_plugins.installer_lock(5):
+        with real_lock(5):
             held.set()
-            release.wait(10)
+            reached.wait(10)
             (tmp_path / "config.yaml").write_text(change, encoding="utf-8")
 
     holder = threading.Thread(target=other_installer)
     holder.start()
     assert held.wait(10)
-    threading.Timer(0.5, release.set).start()
     said: list[str] = []
     try:
         assert mig.recover_at_startup("retaindb", say=said.append) is False
     finally:
-        release.set()
+        reached.set()
         holder.join(10)
     assert installs == [] and said == []
     assert not mig._failure_stamp(tmp_path, "retaindb").exists()
@@ -539,3 +557,102 @@ def test_a_labs_notice_from_a_cron_migration_waits_for_the_next_watched_turn(tmp
         monkeypatch.setattr(watched, "_emit_warning", lambda message, **_kw: seen.append(message))
         deliver_kept_startup_notices(watched)
     assert len([m for m in seen if "ByteRover is now a Hermes Labs plugin" in m]) == 1, seen
+
+
+def test_an_unusable_installer_lock_is_reported_and_the_update_goes_on(tmp_path, monkeypatch):
+    """A lock file that cannot be opened is one profile's reported failure, not an exception that ends
+    `hermes update`'s migration before the other profiles are looked at."""
+    from contextlib import contextmanager
+    from hermes_cli import default_plugins
+    from pm import plugins_state
+
+    homes = [tmp_path / name for name in ("a", "b")]
+    for home, provider in zip(homes, ("retaindb", "byterover")):
+        home.mkdir()
+        (home / "config.yaml").write_text(f"memory:\n  provider: {provider}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    monkeypatch.setattr(plugins_state, "dependency_homes", lambda: homes)
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    calls = iter([PermissionError(13, "Permission denied"), None])
+
+    @contextmanager
+    def lock(wait):
+        error = next(calls)
+        if error is not None:
+            raise error
+        yield
+
+    monkeypatch.setattr(default_plugins, "installer_lock", lock)
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: (home / "plugins" / n).mkdir(parents=True)
+                        or {"ok": True})
+    said: list[str] = []
+    assert mig.migrate_all_homes(say=said.append) == ["byterover"]
+    assert (homes[1] / "plugins" / "byterover").is_dir() and not (homes[0] / "plugins").exists()
+    assert any("lock could not be taken" in line and "Permission denied" in line for line in said)
+
+
+def test_a_start_that_found_the_lock_busy_retries_in_the_same_process_without_waiting(tmp_path, monkeypatch):
+    """A gateway or Desktop process serves many sessions: a start that timed out on another installer's
+    lock installed nothing, so the next session there tries again (without a second long wait or a
+    second busy line) instead of running without memory until a restart."""
+    from contextlib import contextmanager
+    from hermes_cli import default_plugins
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    waits: list[float] = []
+    busy = iter([True, True, False])
+
+    @contextmanager
+    def lock(wait):
+        waits.append(wait)
+        if next(busy):
+            raise TimeoutError("another default plugin install is running")
+        yield
+
+    def installer(home, *, consent=None):
+        def install(plugin):
+            (home / "plugins" / plugin).mkdir(parents=True)
+            (home / "plugins" / plugin / "__init__.py").write_text("class P(MemoryProvider): ...\n", encoding="utf-8")
+            return {"ok": True}
+        return install
+
+    monkeypatch.setattr(default_plugins, "installer_lock", lock)
+    monkeypatch.setattr(mig, "_install_into", installer)
+    said: list[str] = []
+    assert [mig.recover_at_startup("retaindb", say=said.append) for _session in range(3)] == [False, False, True]
+    assert waits[0] > 0 and waits[1:] == [0.0, 0.0]
+    assert sum("still installing plugins" in line for line in said) == 1
+    assert not mig._failure_stamp(tmp_path, "retaindb").exists()
+
+
+def test_a_cron_start_that_installs_nothing_leaves_the_report_to_the_next_watched_start(tmp_path, monkeypatch):
+    """Lazy installs off: a cron run (nobody watching) fetches nothing and must not use up the one
+    attempt per process, or a chat served by the same gateway runs without memory and says nothing."""
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: False)
+    assert mig.recover_at_startup("byterover", say=None) is False
+    said: list[str] = []
+    assert mig.recover_at_startup("byterover", say=said.append) is False
+    assert len(said) == 1 and "security.allow_lazy_installs is off" in said[0] and "Hermes Labs" in said[0]
+
+
+def test_another_kind_of_plugin_with_the_same_leaf_name_does_not_park_the_provider(tmp_path, monkeypatch):
+    """`plugins.disabled` is matched with the loader's spellings: a disabled `observability/byterover`
+    is another plugin and leaves the ByteRover memory provider's migration alone."""
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n  provider: byterover\nplugins:\n  disabled:\n  - observability/byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    installs: list[str] = []
+    assert mig.migrate_home(tmp_path, install=lambda n: installs.append(n) or (tmp_path / "plugins" / n).mkdir(
+        parents=True) or {"ok": True}, say=lambda s: None) == "byterover"
+    assert installs == ["byterover"]

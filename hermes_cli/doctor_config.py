@@ -395,6 +395,33 @@ def _check_config_backend(backend, home, f: Finding) -> bool:
     return True
 
 
+@doctor_check("Credential value check skipped: {e}")
+def _check_credential_values(should_fix: bool, f: Finding) -> None:
+    """Credential leaves in config.yaml that can never work: unsendable characters
+    (every API request dies with a header UnicodeEncodeError, far from the file that
+    caused it) or an obvious redacted display mask. The write path refuses new ones; this
+    is how a value poisoned before that guard — or pasted in by hand — gets named."""
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_credential_values import suspect_credential_leaves
+    from hermes_constants import display_hermes_home
+
+    raw = read_user_config_raw()
+    problems = suspect_credential_leaves(raw) if isinstance(raw, dict) else []
+    if not problems:
+        check_ok("Credential values are usable")
+        return
+    backups = f"{display_hermes_home()}/backups/config"
+    for path, issue in problems:
+        _fail_and_issue(
+            f"Credential {path} is unusable: {issue}",
+            "(requests will fail before reaching the provider)",
+            f"Fix {path}: {issue}. Re-enter the real key with `hermes config set {path} <key>` "
+            f"(or remove the entry). If the real value is lost, check {backups} — "
+            "a mask's prefix/suffix can identify it.",
+            f.issues,
+        )
+
+
 def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
     from hermes_cli.config import check_config_version, migrate_config, newer_stamp_message
     current_ver, latest_ver = check_config_version()

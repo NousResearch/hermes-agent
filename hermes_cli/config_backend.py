@@ -519,6 +519,7 @@ def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None
     check) changes none of them: a grouped edit such as a model switch (default + provider + ...)
     never lands half-applied. The file backend applies them key by key, as before."""
     _refuse_redacted_sets(config_path, {k: v for k, v in updates.items() if v is not None})
+    _refuse_non_ascii_sets(config_path, {k: v for k, v in updates.items() if v is not None})
     backend, home = _route(config_path)
     backend.write_changes(home, Changes(set={k: v for k, v in updates.items() if v is not None},
                                         unset=tuple(k for k, v in updates.items() if v is None)))
@@ -527,7 +528,10 @@ def write_config_keys(config_path: PathLike, updates: Mapping[str, Any]) -> None
 def _refuse_redacted_sets(config_path: PathLike, sets: Mapping[str, Any]) -> None:
     """A keyed write never stores a redacted display mask as a credential (#42727): the same
     check the document writer (``hermes_cli.config._write_config_state``) runs."""
-    from hermes_cli.config_credential_values import refuse_redacted_config_sets
+    from hermes_cli.config_credential_values import (
+        refuse_non_ascii_config_sets,
+        refuse_redacted_config_sets,
+    )
 
     def read_old() -> Any:  # a guard read: never the read base a Remote Config edit diffs against
         try:
@@ -536,6 +540,20 @@ def _refuse_redacted_sets(config_path: PathLike, sets: Mapping[str, Any]) -> Non
             return {}
 
     refuse_redacted_config_sets(sets, read_old)
+
+
+def _refuse_non_ascii_sets(config_path: PathLike, sets: Mapping[str, Any]) -> None:
+    """A keyed write never stores a non-ASCII credential (#160524): same check the document
+    writer runs, applied to dotted-key updates."""
+    from hermes_cli.config_credential_values import refuse_non_ascii_config_sets
+
+    def read_old() -> Any:
+        try:
+            return keeping_read_base(lambda: read_config_doc(config_path)) or {}
+        except FileNotFoundError:
+            return {}
+
+    refuse_non_ascii_config_sets(sets, read_old)
 
 
 def keeping_read_base(read):

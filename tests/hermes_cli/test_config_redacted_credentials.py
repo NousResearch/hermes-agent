@@ -307,3 +307,85 @@ def test_document_writer_guard_read_keeps_the_read_base(home, monkeypatch):
     with pytest.raises(ConfigValueError, match="model.api_key"):
         config.save_config(cfg)
     assert seen and all(seen)
+
+
+@pytest.mark.parametrize("key", ["model.api_key", "mcp_servers.s.headers.X-API-Key"])
+def test_keyed_writer_refuses_non_ascii(home, key):
+    """``write_config_key(s)`` refuses non-ASCII credentials too (#160524)."""
+    from hermes_cli.config import get_config_path
+    from hermes_cli.config_backend import (
+        ConfigValueError,
+        write_config_key,
+        write_config_keys,
+    )
+
+    before = (home / "config.yaml").read_text()
+    for bad in ("sk-proj-abc\u2026defg", "sk-proj-\u0430bcdef12"):
+        with pytest.raises(ConfigValueError, match=key.replace(".", r"\.")):
+            write_config_key(get_config_path(), key, bad)
+        with pytest.raises(ConfigValueError):
+            write_config_keys(
+                get_config_path(), {"display.personality": "kawaii", key: bad}
+            )
+    assert (home / "config.yaml").read_text() == before
+
+
+def test_save_config_refuses_non_ascii_credential(home):
+    """#160524: a value no HTTP header can carry must never reach disk via the config writer."""
+    from hermes_cli.config import read_raw_config, save_config
+    from hermes_cli.config_backend import ConfigValueError
+
+    cfg = read_raw_config()
+    cfg["auxiliary"]["vision"]["api_key"] = (
+        "sk-proj-abc…xyz1234"  # U+2026, head > 8 chars (not a mask)
+    )
+    before = (home / "config.yaml").read_text(encoding="utf-8")
+    with pytest.raises(ConfigValueError) as exc:
+        save_config(cfg)
+    assert "auxiliary.vision.api_key" in str(exc.value)
+    assert "U+2026" in str(exc.value)
+    assert (home / "config.yaml").read_text(encoding="utf-8") == before
+
+
+def test_save_config_refuses_cyrillic_homoglyph_credential(home):
+    from hermes_cli.config import read_raw_config, save_config
+    from hermes_cli.config_backend import ConfigValueError
+
+    cfg = read_raw_config()
+    cfg["auxiliary"]["vision"]["api_key"] = "sk-proj-а1b2c3d4"  # Cyrillic а
+    with pytest.raises(ConfigValueError, match="auxiliary.vision.api_key"):
+        save_config(cfg)
+
+
+def test_save_config_allows_preexisting_non_ascii_elsewhere(home):
+    """A poisoned value already on disk must not wedge unrelated saves (the doctor check reports it instead)."""
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"api_key": "sk-proj-abc…xyz1234", "default": "a"}}),
+        encoding="utf-8",
+    )
+    from hermes_cli.config import read_raw_config, save_config
+
+    cfg = read_raw_config()
+    cfg["model"]["default"] = "b"
+    save_config(cfg)
+    assert (
+        yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["model"][
+            "default"
+        ]
+        == "b"
+    )
+
+
+def test_save_config_allows_non_ascii_password(home):
+    """Passphrases may legitimately be non-ASCII (basic auth base64-encodes them)."""
+    from hermes_cli.config import read_raw_config, save_config
+
+    cfg = read_raw_config()
+    cfg["terminal"] = {"sudo_password": "пароль-123"}
+    save_config(cfg)
+    assert (
+        yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["terminal"][
+            "sudo_password"
+        ]
+        == "пароль-123"
+    )

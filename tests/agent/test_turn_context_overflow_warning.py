@@ -266,3 +266,21 @@ class TestWarningSurvivesNoiseFilter:
             _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message, "dm")
             == message
         )
+
+
+def test_blocked_warning_names_the_underlying_compression_error():
+    """A blocked cooldown caused by a credential/encode failure must say so, not just
+    'cooldown:NN' — the user needs to go fix the key (#160524), not stare at /compress."""
+    comp = _make_compressor()
+    comp.last_prompt_tokens = comp.last_real_prompt_tokens = 73_000
+    comp._summary_failure_cooldown_until = time.monotonic() + 30
+    comp._last_summary_error = (
+        "'ascii' codec can't encode character '\\u2026' in position 15"
+    )
+    agent = _build_warn_agent(comp)
+    _run_build(agent)
+    assert len(agent._warnings) == 1
+    warning = agent._warnings[0]
+    assert "cooldown" in warning
+    assert "Last compression error:" in warning
+    assert "ascii" in warning

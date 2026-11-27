@@ -45,7 +45,7 @@ from agent.turn_scripted_prelude import Prelude, play_prelude
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, credential_failure_copy, failed_turn_notice, looks_like_credential_failure, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -1191,8 +1191,14 @@ def _provider_overflow_exhausted_result(
     # matches interrupt aborts (#48879 / #52592) so the next user turn is not tool→user for strict
     # providers.
     agent._persist_session(messages, conversation_history)
+    _cred_err = getattr(getattr(agent, "context_compressor", None), "_last_summary_error", None)
+    final_copy = (
+        credential_failure_copy(_cred_err)
+        if looks_like_credential_failure(_cred_err)
+        else site_copy("context_overflow", model=agent.model)
+    )
     return _partial_turn_result(
-        site_copy("context_overflow", model=agent.model),
+        final_copy,
         messages, api_call_count, failed=True, compression_exhausted=True,
         turn_exit_reason="context_compression_exhausted",
         failure_reason="context_overflow", failure_retryable=False,

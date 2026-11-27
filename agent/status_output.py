@@ -172,9 +172,26 @@ class StatusOutputMixin:
         # cooldown + anti-thrash (ineffective) are both "compression blocked".
         if _warn_kind in ("cooldown", "ineffective"):
             self._touch_activity(f"compression blocked ({reason})", provenance=ActivityProvenance.AGENT_COMPRESSION_COOLDOWN)
-        self._emit_warning(CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        _message = CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
             tokens=preflight_tokens, threshold=threshold_tokens, reason=reason,
-        ))
+        )
+        # Surface the recorded compression failure (e.g. "'ascii' codec can't encode …") so a
+        # credential/config problem doesn't read as "context is just too big". Never let this
+        # lookup break the warning path.
+        try:
+            _cc = getattr(self, "context_compressor", None)
+            _get = getattr(_cc, "get_active_compression_failure_cooldown", None) if _cc is not None else None
+            _state = _get() if callable(_get) else None
+            _err = (_state or {}).get("error") if isinstance(_state, dict) else None
+            if _err:
+                _err = str(_err).strip()
+                if len(_err) > 200:
+                    _err = _err[:197] + "..."
+                _message += f" Last compression error: {_err}"
+        except Exception:
+            # The warning itself must not be lost, but never lose the traceback either.
+            logger.exception("failed to read the compression-failure cooldown detail")
+        self._emit_warning(_message)
 
     def _warn_uncompressed_context_overflow(self, preflight_tokens: int, context_length: int) -> None:
         """Deduped warning when uncompressed context exceeds the model limit; points the user at /compact.

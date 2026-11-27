@@ -496,19 +496,26 @@ def _cleanup_worktree_workspace(
         pass  # best-effort — never block completion
 
 
-def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
-    """Run the deferred cleanup of any parent scratch/worktree workspace whose
-    children are now all done/archived/failed/cancelled (called after each
-    child completes).
+def _try_cleanup_parent_workspaces(
+    conn: sqlite3.Connection, task_id: str, _visited: Optional[set[str]] = None
+) -> None:
+    """Run deferred cleanup for terminal parents whose children are also all
+    done/archived/failed/cancelled (called after each child completes).
 
+    Continue through eligible ancestors; the shared set bounds diamond-DAG visits.
     See #33774.
     """
+    if _visited is None:
+        _visited = set()
     try:
         parents = conn.execute(
             "SELECT parent_id FROM task_links WHERE child_id = ?",
             (task_id,),
         ).fetchall()
         for (parent_id,) in parents:
+            if parent_id in _visited:
+                continue
+            _visited.add(parent_id)
             row = conn.execute(_WORKSPACE_ROW_SQL, (parent_id,)).fetchone()
             if (
                 not row
@@ -523,6 +530,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 if _defer_shared_worktree_cleanup(conn, parent_id, ws_path):
                     continue
                 _cleanup_worktree_workspace(parent_id, ws_path, row["branch_name"])
+                _try_cleanup_parent_workspaces(conn, parent_id, _visited)
                 continue
             wp = Path(ws_path)
             if not wp.is_dir():
@@ -533,6 +541,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
+            _try_cleanup_parent_workspaces(conn, parent_id, _visited)
     except Exception:
         pass  # best-effort
 

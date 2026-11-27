@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: bisque
+description: Author narrated presentations and publish them to a shareable watch URL.
+source: https://bisque.today/docs/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+#
+# initialize, tools/list, resources/list, resources/read, prompts/list and
+# prompts/get answer with no credential; only tools/call needs one. So the
+# picker can introspect the server before a user signs in.
+
+transport:
+  type: http
+  url: https://bisque.cloud/presentations/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - bisque
+    - presentation
+  hosts:
+    - bisque.today
+
+post_install: |
+  Sign in the first time you call a tool — your browser opens and the client
+  registers itself; there is no API key to paste. Ask for a presentation and
+  you get back a watch URL: slides with synchronized narration that play in
+  any browser, published to your own channel.

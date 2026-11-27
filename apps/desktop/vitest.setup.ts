@@ -1,3 +1,5 @@
+import { setTimeout as nodeSetTimeout } from 'node:timers'
+
 import { configure } from '@testing-library/react'
 import { afterAll, afterEach } from 'vitest'
 
@@ -93,5 +95,7 @@ afterEach(() => clearPlaybackSourceCache())
 // 'Event'" even though every test passed. Registered here, this hook runs after
 // the file's own hooks (cleanup included), and a same-delay timer created later
 // fires later, so every unmount timer already queued runs inside the live
-// environment.
-afterAll(() => new Promise<void>(resolve => setTimeout(resolve, 0)))
+// environment. Node's own timer, not the global: a test that stubs or fakes
+// `setTimeout` and is not restored (a `-t` filter skipping the restore) must not
+// hang this hook; the real timer shares the queue Radix's timer sits in.
+afterAll(() => new Promise<void>(resolve => nodeSetTimeout(resolve, 0)))

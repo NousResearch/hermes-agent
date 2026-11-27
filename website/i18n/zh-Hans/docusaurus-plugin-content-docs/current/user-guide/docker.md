@@ -53,6 +53,18 @@ docker run -d \
 
 端口 8642 暴露 gateway 的 [OpenAI 兼容 API 服务器](./features/api-server.md)和健康检查端点。如果你只使用聊天平台（Telegram、Discord 等），该端口是可选的；但如果你希望 dashboard 或外部工具访问 gateway，则必须开放。
 
+:::tip Gateway 以 supervised 模式运行
+在官方 Docker 镜像中，`gateway run` 由 **s6-overlay 自动托管**：gateway 进程崩溃时会在几秒内自动重启而不影响容器；若设置了 `HERMES_DASHBOARD=1`，dashboard 也由 s6 一并托管。`gateway run` 这个 CMD 进程本身只是一个 `sleep infinity` 心跳，用于在 s6 管理真正的 gateway 进程时保持容器存活——因此 `docker stop` 仍能干净地关闭整个容器，而 `docker logs` 显示的就是受托管的 gateway 输出。
+
+你会在 `docker logs` 里看到一行 breadcrumb 确认该升级行为。如需关闭（恢复“gateway 即容器主进程、gateway 退出即容器退出”的旧语义），传入 `--no-supervise` 或设置 `HERMES_GATEWAY_NO_SUPERVISE=1`。关闭后通常用于 CI 冒烟测试——希望容器以 gateway 的退出码退出；生产部署仍建议使用 supervised 默认行为。
+
+该行为仅适用于 s6 镜像。更早的（基于 tini 的）镜像仍以前台主进程方式运行 `gateway run`。
+:::
+
+:::note Gateway 日志存放位置
+完整的日志路由（每个 profile 的 gateway、dashboard、启动协调器以及容器级 `docker logs`）请参见下文的[日志存放位置](#日志存放位置)。
+:::
+
 注意：API 服务器需设置 `API_SERVER_ENABLED=true` 才会启用。若要在容器内将其暴露至 `127.0.0.1` 以外，还需设置 `API_SERVER_HOST=0.0.0.0` 和 `API_SERVER_KEY`（最少 8 个字符——可用 `openssl rand -hex 32` 生成）。示例：
 
 ```sh
@@ -198,6 +210,22 @@ docker exec hermes hermes -p coder gateway status
 
 若第二个 profile 也要暴露 OpenAI 兼容 API server，请在**该 profile 自己的** `.env` 中设置不同的 `API_SERVER_PORT`，然后重启该 profile 的 gateway；不要把端口放进容器级 `environment:`，否则所有 profile 都会争抢同一个端口。更底层的监管细节见后文的 [Per-profile gateway 监管](#per-profile-gateway-supervision)。
 
+## 日志存放位置
+
+s6 容器有四类不同的日志出口。要确认某类日志应在哪里查看，可使用下表：
+
+| 来源 | 存放位置 | 查看方式 |
+|---|---|---|
+| **每个 profile 的 gateway**（`hermes gateway run` 以及 s6 管理的各 profile gateway） | 同时输出到两处：`docker logs <container>`（实时、无额外前缀）和 `${HERMES_HOME}/logs/gateways/<profile>/current`（轮转保存，带 ISO 8601 时间戳，10 份归档 × 每份 1 MB） | `docker logs -f hermes` 或在宿主机上运行 `tail -F ~/.hermes/logs/gateways/default/current` |
+| **Dashboard**（设置 `HERMES_DASHBOARD=1` 时） | `docker logs <container>`（无前缀） | `docker logs -f hermes`；日志与 gateway 行交错显示 |
+| **启动协调器**（记录每次容器启动时恢复了哪些 profile gateway） | `${HERMES_HOME}/logs/container-boot.log`（只追加的审计日志） | `tail -F ~/.hermes/logs/container-boot.log` |
+| **Hermes 通用日志**（`agent.log`、`errors.log`） | `${HERMES_HOME}/logs/`（区分 profile） | `docker exec hermes hermes logs --follow [--level WARNING] [--session <id>]` |
+
+还需注意以下两点：
+
+- `logs/gateways/<profile>/current` 中的文件副本会在容器重启后保留。`docker logs` 只保留当前容器生命周期内的输出，执行 `docker rm` 后会清除；轮转文件则保存在绑定挂载的卷上。
+- 启动协调器的审计行格式为 `<iso-timestamp> profile=<name> prior_state=<state> action=<registered|started>`。运行 `grep profile=coder ~/.hermes/logs/container-boot.log` 即可确认指定 profile 上次恢复的时间，以及 s6 是否自动启动了它。
+
 ## 环境变量转发
 
 API 密钥从容器内的 `/opt/data/.env` 读取。你也可以直接传递环境变量：
@@ -205,8 +233,8 @@ API 密钥从容器内的 `/opt/data/.env` 读取。你也可以直接传递环�
 ```sh
 docker run -it --rm \
   -v ~/.hermes:/opt/data \
-  -e ANTHROPIC_API_KEY="sk-ant-..." \
-  -e OPENAI_API_KEY="sk-..." \
+  -e ANTHROPIC_API_KEY="<your-anthropic-api-key>" \
+  -e OPENAI_API_KEY="<your-openai-api-key>" \
   nousresearch/hermes-agent
 ```
 

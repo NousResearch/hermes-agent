@@ -359,6 +359,10 @@ _MODEL_NOT_FOUND_PATTERNS = (
     # HTTP 410 Gone: model was permanently retired by the provider. The slug
     # is dead for every credential, so fall back instead of burning retries.
     "was retired",
+    # Gemini 404 for a retired id ("models/gemini-1.0-pro is not found for API version v1main, or is not
+    # supported for generateContent") and xAI 404 ("The model grok-beta was deprecated on 2025-09-15 and is
+    # no longer accessible via the API"): both name the dead model, so a retry can never succeed.
+    "is not found for api version", "no longer accessible via the api",
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body

@@ -41,3 +41,19 @@ class TestClassify410Retired:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
+
+@pytest.mark.parametrize("provider, body", [
+    # Live bodies (2026-11-26) for a retired id: Gemini's 404 and xAI's 404.
+    ("gemini", [{"error": {"code": 404, "status": "NOT_FOUND", "message": (
+        "models/gemini-1.0-pro is not found for API version v1beta, or is not supported for "
+        "generateContent. Call ModelService.ListModels to see the list of available models and their "
+        "supported methods.")}}]),
+    ("xai", {"code": "not-found", "error": (
+        "The model grok-beta was deprecated on 2025-09-15 and is no longer accessible via the API. "
+        "Please use grok-3 instead.")}),
+])
+def test_retired_model_404_falls_back_instead_of_retrying(provider, body):
+    e = MockAPIError(f"Error code: 404 - {body}", status_code=404, body=body)
+    result = classify_api_error(e, provider=provider, model="m")
+    assert result.reason == FailoverReason.model_not_found
+    assert result.retryable is False and result.should_fallback is True

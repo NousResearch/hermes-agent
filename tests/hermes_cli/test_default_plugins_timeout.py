@@ -75,9 +75,14 @@ def _child_script(tmp_path: Path, args: tuple[str, ...], *, sleep: float, instal
     return [sys.executable, "-I", "-c", body, *args]
 
 
-def _result(home: Path) -> dict:
-    path = home / "cache" / "default-plugins.result.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+def _result_files(home: Path) -> list[Path]:
+    cache = home / "cache"
+    return sorted(cache.glob("default-plugins.result-*.json")) if cache.is_dir() else []
+
+
+def _result(home: Path, run_id: str | None = None) -> dict:
+    path = default_plugins._result_path(home, run_id) if run_id else (_result_files(home)[0] if _result_files(home) else None)
+    return json.loads(path.read_text(encoding="utf-8")) if path and path.is_file() else {}
 
 
 def test_timed_out_ensure_leaves_no_install_running_in_its_own_process(home, tmp_path, monkeypatch):
@@ -171,7 +176,7 @@ def test_timeout_returns_promptly_and_the_detached_child_completes(home, tmp_pat
     wait_until(lambda: bool(_result(home)), timeout=20, what="detached ensure child result")
     result = _result(home)
     assert result.get("installed") == ["langfuse"], "the child did not finish after ensure returned"
-    assert (home / "cache" / "default-plugins.result.json").stat().st_mtime > time.time() - (time.monotonic() - returned) - 0.5
+    assert default_plugins._result_path(home, result["run_id"]).stat().st_mtime > time.time() - (time.monotonic() - returned) - 0.5
     starts = (tmp_path / "child-starts.txt").read_text(encoding="utf-8").splitlines()
     assert len(starts) == 1, f"expected exactly one child, got {starts}"
     assert starts[0].split()[0] == result["run_id"] and starts[0].split()[1] == "-"
@@ -298,3 +303,25 @@ def test_nothing_pending_but_unsettled_records_in_process_without_a_child(home, 
     assert default_plugins._recorded(home) == {"langfuse"}
     assert (home / "cache" / "default-plugins.settled").is_file()
     assert not [t for t in threading.enumerate() if t.name.startswith("default-plugins")]
+
+
+def test_concurrent_runs_keep_isolated_result_files_and_unlink_on_read(home):
+    """Per-run-id result files prevent concurrent runs from clobbering each other, unlink once read,
+    and prune orphaned result files older than an hour."""
+    import os
+
+    stale = default_plugins._result_path(home, "stale-old-run")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(json.dumps({"run_id": "stale-old-run", "installed": [], "owed": []}), encoding="utf-8")
+    old_ts = time.time() - default_plugins._RESULT_MAX_AGE - 60
+    os.utime(stale, (old_ts, old_ts))
+
+    default_plugins._write_child_result(home, "run-a", {"installed": ["plugin-a"], "owed": []})
+    default_plugins._write_child_result(home, "run-b", {"installed": [], "owed": ["plugin-b"]})
+
+    assert not stale.exists(), "stale result file older than 1 hour should be pruned"
+    assert default_plugins._read_child_result(home, "run-a") == {"installed": ["plugin-a"], "owed": []}
+    assert not default_plugins._result_path(home, "run-a").exists()
+    assert default_plugins._result_path(home, "run-b").is_file()
+    assert default_plugins._read_child_result(home, "run-b") == {"installed": [], "owed": ["plugin-b"]}
+    assert not default_plugins._result_path(home, "run-b").exists()

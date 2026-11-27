@@ -391,6 +391,7 @@ export function useGatewayBoot({
 
   useEffect(() => {
     let cancelled = false
+    const bootAbort = new AbortController()
     const desktop = window.hermesDesktop
 
     // Window-state IPC (fullscreen / traffic-light position) that lands while
@@ -1683,7 +1684,9 @@ export function useGatewayBoot({
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out connecting to Hermes backend',
           onChange => $desktopBoot.subscribe(onChange),
-          () => $desktopBoot.get().phase === 'backend.default-plugins'
+          () => $desktopBoot.get().phase === 'backend.default-plugins',
+          undefined,
+          bootAbort.signal
         )
 
         if (cancelled) {
@@ -1912,6 +1915,7 @@ export function useGatewayBoot({
 
     return () => {
       cancelled = true
+      bootAbort.abort()
       offSwitchLifecycle()
       endGatewaySwitch()
       clearReconnectTimer()

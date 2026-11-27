@@ -370,6 +370,11 @@ def invalidate_live_cache_for_home(home: Path) -> None:
 _live_fetch_failed_until = 0.0
 
 
+def live_fetch_recently_failed() -> bool:
+    """True when the most recent live catalog HTTP fetch failed within the failure-TTL window."""
+    return time.time() < _live_fetch_failed_until
+
+
 def _stale_live_cache(cache: Path) -> Optional[dict[str, Any]]:
     """A previously fetched copy still beats the in-tree one when the network is down — for
     :data:`LIVE_CATALOG_MAX_STALE_SECONDS`. Past that its pins may trail the checkout's own catalog
@@ -446,7 +451,9 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
-            return json.loads(cache.read_text(encoding="utf-8-sig"))
+            data = json.loads(cache.read_text(encoding="utf-8-sig"))
+            _live_fetch_failed_until = 0.0
+            return data
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     if not force and time.time() < _live_fetch_failed_until:
@@ -463,6 +470,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
         # Atomic: a concurrent reader (gateway, TUI, a second CLI) must never see a half-written
         # document, which would read as a fetch failure and start its own 60 s failure window.
         atomic_write_text(cache, json.dumps(data), tmp_prefix=f"{cache.name}.tmp-")
+        _live_fetch_failed_until = 0.0
         return data
     except Exception as exc:
         logger.debug("Plugin catalog: live fetch failed: %s", exc)

@@ -257,9 +257,11 @@ enables it automatically:
   disables a default plugin keeps that choice through every later start and
   update.
 - **Offline fail-open and retry:** When offline or if an install fails,
-  preflight fails open without stalling startup and retries on a later start
-  (with exponential backoff); an interrupted install leaves an in-progress
-  marker so the next pass reinstalls it cleanly.
+  preflight fails open without stalling startup. Exponential retry backoff
+  applies to the background/CLI boot step (reopening Desktop or restarting a
+  container retries the foreground preflight immediately, failing open quickly
+  if still offline); an interrupted install leaves an in-progress marker so the
+  next pass reinstalls it cleanly.
 - **Tier and opt-out gates:** Only `official` and `verified` entries may set
   `default: true` (the validator refuses it elsewhere and Hermes ignores it on
   any other tier). Homes with `security.allow_lazy_installs: false` (or

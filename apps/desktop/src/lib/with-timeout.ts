@@ -107,14 +107,31 @@ export function withPausableTimeout<T>(
   message: string,
   watchPause: (onChange: () => void) => () => void,
   isPaused: () => boolean,
-  onTimeout?: (error: TimeoutError) => void
+  onTimeout?: (error: TimeoutError) => void,
+  signal?: AbortSignal
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('Aborted'))
+
+      return
+    }
+
     let settled = false
     let remainingMs = ms
     let armedAt: number | null = null
     let timer: ReturnType<typeof setTimeout> | null = null
     let unsubscribe: () => void = () => undefined
+
+    const onAbort = () => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      cleanup()
+      reject(signal?.reason ?? new Error('Aborted'))
+    }
 
     const cleanup = () => {
       if (timer !== null) {
@@ -124,6 +141,7 @@ export function withPausableTimeout<T>(
 
       armedAt = null
       unsubscribe()
+      signal?.removeEventListener('abort', onAbort)
     }
 
     const arm = () => {
@@ -179,6 +197,7 @@ export function withPausableTimeout<T>(
       }
     }
 
+    signal?.addEventListener('abort', onAbort, { once: true })
     unsubscribe = watchPause(sync)
     sync()
 

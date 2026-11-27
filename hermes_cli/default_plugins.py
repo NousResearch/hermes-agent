@@ -49,6 +49,19 @@ ENSURE_EXIT_SKIPPED = 4
 DEFAULT_ENSURE_TIMEOUT = 300.0
 PROFILE_CREATE_ENSURE_TIMEOUT = 120.0
 _CHILD_LOCK_WAIT = 900.0  # an ensure child waits out another installer instead of exiting with nothing done
+_RESULT_MAX_AGE = 3600.0  # prune orphaned per-run result files older than 1 hour
+
+
+def _is_remote_config_backend(home: Optional[Path] = None) -> bool:
+    """Whether the configured config backend is remote, checked without network I/O."""
+    from hermes_cli.env_loader import selected_config_backend_name
+    return selected_config_backend_name(home) == "remote"
+
+
+def _live_catalog_unreachable() -> bool:
+    """True when the live catalog fetch failed (empty/None OR fell back to an expired stale cache)."""
+    from hermes_cli.plugin_catalog import fetch_live_catalog, live_fetch_recently_failed
+    return not (fetch_live_catalog() or {}).get("entries") or live_fetch_recently_failed()
 
 
 def _runs_here(entry) -> bool:
@@ -322,7 +335,6 @@ def _install_defaults_for_homes(
     _allowed_out: Optional[list] = None,
 ) -> dict:
     """Install defaults for *target_homes*. Catalog is read once; one home's failure never stops the next."""
-    from hermes_cli.plugin_catalog import fetch_live_catalog
     summary: dict = {"installed": [], "owed": []}
     policies = {home: fetch_policy(home) for home in target_homes}
     summary["owed"] += [str(home) for home, policy in policies.items() if policy == "unreadable"]
@@ -332,7 +344,7 @@ def _install_defaults_for_homes(
     resolved_entries = (default_entries() if entries is None else list(entries)) if homes else []
     if _entries_out is not None:
         _entries_out[:] = resolved_entries
-    if homes and not (fetch_live_catalog() or {}).get("entries"):  # an expired offline cache has none
+    if homes and _live_catalog_unreachable():  # an expired offline cache has none or just failed HTTP
         # Offline: the in-tree defaults still install, but one the live catalog added since this release
         # is unknown, so the pass is owed until the live catalog is read.
         summary["owed"].append("live catalog")
@@ -562,30 +574,53 @@ def spawn_install(home: Optional[Path] = None) -> bool:
 
 def _launch_ensure_child(run_id: str, home: Optional[Path]) -> subprocess.Popen:
     """The detached child an ``ensure`` waits on: it installs (for *home* only, when given, else every
-    home), then writes its outcome under *run_id* to ``cache/default-plugins.result.json``."""
+    home), then writes its outcome under *run_id* to ``cache/default-plugins.result-<run_id>.json``."""
     args: list[str] = ["_child", "--run-id", run_id]
     if home is not None:
         args += ["--home", str(home)]
     return _popen_detached(_child_argv(tuple(args)))
 
 
+def _result_path(root: Path, run_id: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(run_id)) or "run"
+    return _state(root, f"result-{safe}.json")
+
+
+def _cleanup_stale_results(root: Path, *, max_age: float = _RESULT_MAX_AGE) -> None:
+    cache_dir = _state(root, "result").parent
+    cutoff = time.time() - max_age
+    try:
+        for candidate in cache_dir.glob("default-plugins.result-*.json"):
+            try:
+                if candidate.stat().st_mtime < cutoff:
+                    candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _write_child_result(root: Path, run_id: str, outcome: dict) -> None:
     from utils import atomic_write_text
-    path = _state(root, "result.json")
+    path = _result_path(root, run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_results(root)
     payload = {"run_id": run_id, "installed": [str(x) for x in outcome.get("installed") or ()],
                "owed": [str(x) for x in outcome.get("owed") or ()]}
     atomic_write_text(path, json.dumps(payload), tmp_prefix=f"{path.name}.tmp-")
 
 
 def _read_child_result(root: Path, run_id: str) -> Optional[dict]:
-    """The result *run_id*'s child wrote, else None (none yet, unreadable, or another run's)."""
+    """The result *run_id*'s child wrote, else None (none yet, unreadable, or another run's).
+    Unlinks *run_id*'s result file once read so completed runs do not accumulate in cache."""
+    path = _result_path(root, run_id)
     try:
-        data = json.loads(_state(root, "result.json").read_text(encoding="utf-8-sig"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict) or data.get("run_id") != run_id:
         return None
+    path.unlink(missing_ok=True)
     return {key: [str(x) for x in data.get(key) or ()] for key in ("installed", "owed")}
 
 
@@ -688,7 +723,11 @@ def step_install_default_plugins() -> dict:
     from pm.environments import dependency_home_root
     from pm.plugins_state import dependency_homes
     try:
+        if _is_remote_config_backend():
+            return {"ok": True, "skipped": "remote-config-backend"}
         homes = list(dependency_homes())
+        if any(_is_remote_config_backend(home) for home in homes):
+            return {"ok": True, "skipped": "remote-config-backend"}
         policies = {home: fetch_policy(home) for home in homes}
         if homes and all(policy == "denied" for policy in policies.values()):
             return {"ok": True, "skipped": "lazy-installs-disabled"}
@@ -700,7 +739,11 @@ def step_install_default_plugins() -> dict:
             saved_id, saved_hash = _read_settled(_state(root, "settled"))
             if saved_hash is not None and saved_id == _identity():
                 cached_entries = _cached_default_entries()
-                if cached_entries is not None and saved_hash == _defaults_hash(cached_entries):
+                if (
+                    cached_entries is not None
+                    and saved_hash == _defaults_hash(cached_entries)
+                    and not _pending_names(allowed_homes, cached_entries)
+                ):
                     return {"ok": True}
         return {"ok": True, "spawned": spawn_install(), "owed": True}
     except (OSError, ValueError) as exc:  # unreadable profiles dir, failed spawn: still owed, retried next boot
@@ -766,14 +809,13 @@ def _check_ensure_fast_path(
     t0: float,
 ) -> Optional[tuple[int, dict]]:
     """Return a settled/owed response immediately when no install or record write is needed."""
-    from hermes_cli.plugin_catalog import fetch_live_catalog
     if pending_before or unreadable_homes:
         return None
     if homes is None:
         if _is_settled_for(root, entries):
             return ENSURE_EXIT_OK, _ensure_payload("nothing-pending", [], [], [], t0)
         return None
-    if allowed_homes and not (fetch_live_catalog() or {}).get("entries"):
+    if allowed_homes and _live_catalog_unreachable():
         _state(root, "settled").unlink(missing_ok=True)
         return ENSURE_EXIT_OWED, _ensure_payload("owed", [], [], ["live catalog"], t0)
     needs_record = any(entry.name not in _recorded(home) for home in allowed_homes for entry in entries)
@@ -799,7 +841,6 @@ def ensure_defaults(
     - ``3`` (``timeout`` — hard deadline hit; the detached installer child keeps going and finishes)
     - ``4`` (``skipped`` — fetch policy denied for all target homes)
     """
-    from hermes_cli.plugin_catalog import fetch_live_catalog
     from pm.environments import dependency_home_root
     from pm.plugins_state import dependency_homes
 
@@ -830,7 +871,7 @@ def ensure_defaults(
 
     # Offline: the live catalog read just failed, so every git/uv install would fail too, each after its
     # own network timeout. Fail open at once; the next start retries (same backoff and owed state).
-    if pending_before and allowed_homes and not (fetch_live_catalog() or {}).get("entries"):
+    if pending_before and allowed_homes and _live_catalog_unreachable():
         from hermes_cli.memory_provider_migration import _note_failure
         _state(root, "settled").unlink(missing_ok=True)
         _note_failure(root, _BACKOFF)

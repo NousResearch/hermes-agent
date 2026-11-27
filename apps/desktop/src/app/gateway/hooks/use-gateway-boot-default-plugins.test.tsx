@@ -239,3 +239,54 @@ it('still times out if main wedges after leaving backend.default-plugins', async
   })
   expect($desktopBoot.get().error).toContain('Timed out connecting to Hermes backend')
 })
+
+it('disposes the $desktopBoot subscription on unmount while waiting in backend.default-plugins', async () => {
+  const desktop = fakeDesktop(() => new Promise<typeof primaryConn>(() => undefined))
+
+  ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+  const unsubSpies: Array<ReturnType<typeof vi.fn>> = []
+  const origSubscribe = $desktopBoot.subscribe.bind($desktopBoot)
+
+  const subscribeSpy = vi.spyOn($desktopBoot, 'subscribe').mockImplementation(listener => {
+    const off = origSubscribe(listener)
+    const wrapped = vi.fn(() => off())
+    unsubSpies.push(wrapped)
+
+    return wrapped
+  })
+
+  try {
+    const { unmount } = render(<Harness />)
+    await flushAsync()
+
+    act(() => {
+      desktop.emitBootProgress({
+        error: null,
+        fakeMode: false,
+        message: 'Installing default plugins...',
+        phase: 'backend.default-plugins',
+        progress: 45,
+        running: true,
+        timestamp: Date.now()
+      })
+    })
+
+    expect(unsubSpies.length).toBeGreaterThan(0)
+    expect(unsubSpies.some(spy => spy.mock.calls.length === 0)).toBe(true)
+
+    unmount()
+    await flushAsync()
+
+    for (const spy of unsubSpies) {
+      expect(spy).toHaveBeenCalledTimes(1)
+    }
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 10_000)
+    })
+    expect($desktopBoot.get().error).toBeNull()
+  } finally {
+    subscribeSpy.mockRestore()
+  }
+})

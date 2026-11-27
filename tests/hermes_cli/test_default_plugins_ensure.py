@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -506,6 +507,59 @@ def test_ensure_offline_fails_open_without_attempting_installs(tmp_path, monkeyp
     live[0] = {"entries": [_entry_dict("hermes-security"), _entry_dict("langfuse")]}  # back online
     assert default_plugins.main(["ensure", "--json"]) == 0
     assert sorted(name for _, name in calls) == ["hermes-security", "langfuse"]
+
+
+def test_ensure_offline_with_expired_stale_cache_fails_open_without_spawning(tmp_path, monkeypatch, capsys):
+    """Returning user goes offline with an expired (>6h, <24h) stale cache/plugin-catalog.json:
+    fetch_live_catalog fails HTTP and returns the stale entries, so ensure_defaults must still detect
+    the failed fetch via live_fetch_recently_failed() and fail open with exit=2 and zero child spawns."""
+    home = tmp_path / "home"
+    cache = home / "cache"
+    cache.mkdir(parents=True)
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(default_plugins, "_identity", lambda: "rev-stale-offline")
+    monkeypatch.setattr(pm.plugins_state, "dependency_homes", lambda: [home])
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: tmp_path / "empty-in-tree")
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", None)
+    monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
+
+    cache_file = cache / "plugin-catalog.json"
+    cache_file.write_text(
+        json.dumps({
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "entries": [_entry_dict("hermes-security", default=True)],
+            "removed": [],
+        }),
+        encoding="utf-8",
+    )
+    # Past LIVE_CATALOG_TTL_SECONDS (6h), within LIVE_CATALOG_MAX_STALE_SECONDS (24h).
+    stale_mtime = time.time() - pc.LIVE_CATALOG_TTL_SECONDS - 600
+    os.utime(cache_file, (stale_mtime, stale_mtime))
+
+    monkeypatch.setattr(
+        pc,
+        "_download_live_catalog",
+        lambda _httpx: (_ for _ in ()).throw(OSError("network unreachable")),
+    )
+    monkeypatch.setattr(
+        default_plugins,
+        "_launch_ensure_child",
+        lambda *_a, **_k: pytest.fail("must not spawn ensure child when offline with stale cache"),
+    )
+    monkeypatch.setattr(
+        lcm,
+        "_install_into",
+        lambda *_a, **_k: pytest.fail("must not install when offline with stale cache"),
+    )
+
+    code = default_plugins.main(["ensure", "--json"])
+    payload = _parse_single_json_line(capsys.readouterr().out)
+    assert code == default_plugins.ENSURE_EXIT_OWED
+    assert payload["state"] == "owed"
+    assert payload["installed"] == []
+    assert set(payload["owed"]) == {"live catalog", "hermes-security"}
+    assert pc.live_fetch_recently_failed() is True
 
 
 def test_install_and_record_reports_every_pass_of_a_rescanned_run(tmp_path, monkeypatch):

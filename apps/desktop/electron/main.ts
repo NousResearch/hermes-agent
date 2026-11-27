@@ -11465,7 +11465,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
     const connection = await ensureLocalGateway(
       await preflightGateway.prepare(setup.backend, primaryProfile, {
         onBefore: () => advanceBootProgress(DEFAULT_PLUGINS_BOOT_PHASE, DEFAULT_PLUGINS_BOOT_MESSAGE, 45),
-        onAfter: () => { localBackendLifecycle.assertCanStart(); backendConnectionState.assertCurrentAttempt(connectionAttempt) }
+        onAfter: async () => { localBackendLifecycle.assertCanStart(); backendConnectionState.assertCurrentAttempt(connectionAttempt); await advanceBootProgress('backend.starting', 'Starting Hermes gateway...', 55) }
       }),
       undefined,
       restartStaleLocalGateway

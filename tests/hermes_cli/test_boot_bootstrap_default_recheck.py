@@ -100,3 +100,100 @@ def test_cli_recheck_never_fetches_network_when_cache_missing_or_expired(install
     res_expired = default_plugins.step_install_default_plugins()
     assert res_expired == {"ok": True, "spawned": True, "owed": True}
     assert len(spawned) == 2
+
+
+def test_cli_recheck_skips_remote_config_backend_without_network_or_exit(install, tmp_path, monkeypatch):
+    """With HERMES_CONFIG_BACKEND=remote, step_install_default_plugins skips before fetch_policy
+    and _recheck_default_plugins neither touches the network nor exits on ConfigBackendUnavailable."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_CONFIG_BACKEND", "remote")
+    monkeypatch.setattr(pm.plugins_state, "dependency_homes", lambda: [home])
+    monkeypatch.setattr(
+        default_plugins,
+        "fetch_policy",
+        lambda _h: (_ for _ in ()).throw(ConfigBackendUnavailable("remote config plane unreachable")),
+    )
+    monkeypatch.setattr(default_plugins, "spawn_install", lambda h=None: pytest.fail("must not spawn for remote backend"))
+
+    assert default_plugins.step_install_default_plugins() == {"ok": True, "skipped": "remote-config-backend"}
+
+    # Boot bootstrap recheck on an already-maintained revision also succeeds without exiting.
+    monkeypatch.setattr(
+        post_update,
+        "BOOT_HOME_STEPS",
+        (("install_default_plugins", default_plugins.step_install_default_plugins),),
+    )
+    boot_bootstrap.run_boot_bootstrap(install)
+    assert boot_bootstrap.run_boot_bootstrap(install) == {"home": "skipped"}
+
+
+def test_recheck_catches_config_backend_unavailable_system_exit(install, monkeypatch):
+    """ConfigBackendUnavailable inherits SystemExit; _recheck_default_plugins must never abort CLI startup."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+
+    calls = []
+
+    def defaults():
+        calls.append(1)
+        if len(calls) > 1:
+            raise ConfigBackendUnavailable("config plane down")
+        return {"ok": True}
+
+    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("install_default_plugins", defaults),))
+    boot_bootstrap.run_boot_bootstrap(install)
+    assert boot_bootstrap.run_boot_bootstrap(install) == {"home": "skipped"}
+    assert len(calls) == 2
+
+
+def test_settled_marker_fallback_spawns_for_unrecorded_home(install, tmp_path, monkeypatch):
+    """When _fast_settled_hit returns False (e.g. a profile re-enabled lazy installs and never recorded
+    the defaults), the settled-hash fallback must still check _pending_names and spawn_install()."""
+    home = tmp_path / ".hermes"
+    profile_home = home / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("security:\n  allow_lazy_installs: true\n", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
+    monkeypatch.setattr(default_plugins, "_identity", lambda: "aaaa1111")
+    monkeypatch.setattr(pm.plugins_state, "dependency_homes", lambda: [home, profile_home])
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: tmp_path / "empty-in-tree")
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", None)
+
+    entry = {
+        "name": "hermes-security",
+        "repo": "https://github.com/NousResearch/hermes-official-plugins",
+        "sha": "a" * 40,
+        "description": "security plugin",
+        "maintainer": "NousResearch",
+        "tier": "official",
+        "default": True,
+    }
+    cache_file = home / "cache" / "plugin-catalog.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    cache_file.write_text(
+        json.dumps({"generated_at": "2099-01-01T00:00:00+00:00", "entries": [entry], "removed": []}),
+        encoding="utf-8",
+    )
+
+    # Default home already recorded the plugin, but profile_home has neither installed nor recorded it.
+    (home / "config.yaml").write_text("_default_plugins_installed:\n  - hermes-security\n", encoding="utf-8")
+    cached = default_plugins._cached_default_entries()
+    assert cached is not None and [e.name for e in cached] == ["hermes-security"]
+    default_plugins._write_settled(
+        home / "cache" / "default-plugins.settled",
+        "aaaa1111",
+        default_plugins._defaults_hash(cached),
+        default_names=["hermes-security"],
+        live_cache_sig=default_plugins._live_cache_signature(),
+    )
+
+    spawned: list = []
+    monkeypatch.setattr(default_plugins, "spawn_install", lambda h=None: spawned.append(h) or True)
+
+    assert default_plugins._fast_settled_hit(home, [home, profile_home]) is False
+    res = default_plugins.step_install_default_plugins()
+    assert res == {"ok": True, "spawned": True, "owed": True}
+    assert len(spawned) == 1

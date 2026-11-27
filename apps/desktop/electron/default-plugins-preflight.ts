@@ -546,8 +546,18 @@ export interface PreflightGatewayRunnerDeps<TResult> {
 export interface PreflightGatewayCallOptions {
   once?: { ran: boolean }
   onBefore?: () => Promise<void> | void
-  onAfter?: () => void
+  onAfter?: () => Promise<void> | void
   ensureOptions?: { timeoutMs?: number; label?: string; execPath?: string }
+}
+
+function throwIfPreflightAborted(signal: AbortSignal | undefined, aborted = false): void {
+  if (signal?.aborted) {
+    signal.throwIfAborted()
+  }
+
+  if (aborted) {
+    throw new Error('Default plugins preflight aborted')
+  }
 }
 
 /**
@@ -566,6 +576,9 @@ export function createPreflightGatewayRunner<TResult>(deps: PreflightGatewayRunn
     const spawnBackend = { ...backend, env: deps.buildSpawnEnv(backend.env || {}) }
     const cwd = deps.resolveCwd()
     const parentEnv = deps.buildParentEnv(profile)
+    const signal = deps.getSignal()
+
+    throwIfPreflightAborted(signal)
 
     if (!options.once || !options.once.ran) {
       if (options.once) {
@@ -573,17 +586,24 @@ export function createPreflightGatewayRunner<TResult>(deps: PreflightGatewayRunn
       }
 
       await options.onBefore?.()
-      await preflight(spawnBackend, {
+
+      const result = await preflight(spawnBackend, {
         cwd,
         home: deps.hermesHome,
         parentEnv,
         log: deps.log,
-        signal: deps.getSignal()
+        signal
       })
-      options.onAfter?.()
+
+      throwIfPreflightAborted(signal, result.aborted)
+      await options.onAfter?.()
     }
 
-    return () => deps.runEnsure(spawnBackend, cwd, deps.hermesHome, parentEnv, options.ensureOptions)
+    return () => {
+      throwIfPreflightAborted(deps.getSignal())
+
+      return deps.runEnsure(spawnBackend, cwd, deps.hermesHome, parentEnv, options.ensureOptions)
+    }
   }
 
   async function run<TBackend extends PreflightBackend>(

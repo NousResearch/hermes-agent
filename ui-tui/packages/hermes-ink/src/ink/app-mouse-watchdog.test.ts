@@ -7,7 +7,7 @@ import StdinContext from './components/StdinContext.js'
 import Text from './components/Text.js'
 import Ink from './ink.js'
 import instances from './instances.js'
-import { csi } from './termio/csi.js'
+import { csi, CURSOR_HOME, ERASE_SCREEN } from './termio/csi.js'
 import { DEC, DISABLE_MOUSE_TRACKING, enableMouseTrackingFor } from './termio/dec.js'
 
 // DECRQM request for mode 1000 (what the watchdog writes).
@@ -211,6 +211,31 @@ describe('App mouse-mode watchdog', () => {
     await h.tickWatchdog()
     await h.tickWatchdog()
     expect(h.stdout.chunks.join('')).not.toContain(DECRQM_1000)
+
+    h.ink.unmount()
+  })
+
+  it('force-redraws the screen when the terminal ignores DECRQM (scrubs echoed query byte)', async () => {
+    const h = await mount('all')
+
+    await h.tickWatchdog()
+    expect(h.stdout.chunks.join('')).toContain(DECRQM_1000)
+    h.stdout.chunks = []
+
+    // Terminal answers only the DA1 sentinel — DECRQM unsupported. The
+    // DA1 reply proves the terminal already processed the query bytes, so
+    // any echo (Apple Terminal prints the trailing 'p' of CSI ? 1000 $ p)
+    // has landed. The watchdog must erase + repaint to scrub it — the
+    // diff engine never rewrites cells it believes unchanged.
+    await h.answer(DA1_REPLY)
+
+    const out = h.stdout.chunks.join('')
+
+    // forceRedraw: erase screen + cursor home, then a full repaint of the
+    // rendered cell even though the model didn't change.
+    expect(out).toContain(ERASE_SCREEN)
+    expect(out).toContain(CURSOR_HOME)
+    expect(out).toContain('x')
 
     h.ink.unmount()
   })

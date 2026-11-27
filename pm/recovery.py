@@ -159,7 +159,12 @@ def _free_a_full_volume() -> None:
     from pm.environments import dependency_home_root
     from pm.packages import uv_cache_path
 
-    free = shutil.disk_usage(dependency_home_root()).free
+    try:
+        free = shutil.disk_usage(dependency_home_root()).free
+    except OSError as exc:
+        # Unknown is not full: keep the cache, and still record the fallback below.
+        print(f"could not measure free space; keeping the uv cache: {exc}", file=sys.stderr)
+        return
     if free < REBUILD_HEADROOM_BYTES:
         print(f"{free >> 20} MB free on the data volume: removing the uv cache", file=sys.stderr)
         shutil.rmtree(uv_cache_path(), ignore_errors=True)

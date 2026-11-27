@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from hermes_platform.host.facts import os_family
 
 from hermes_cli.agent_plugins import (
     MCP_SCHEMA_V1,
@@ -101,7 +102,7 @@ def test_server_declaration_joins_mcp_and_preserves_liveness(tmp_path: Path) -> 
         tmp_path / "plugin.json",
         _manifest(extensions={
             "com.nousresearch.hermes": {"servers": {"worker": {
-                "app": {"darwin": {"presence": "executable", "location": str(app)}},
+                "app": {os_family(): {"presence": "executable", "location": str(app)}},
                 "requires": {"app": True},
                 "liveness": {"kind": "static"},
             }}}

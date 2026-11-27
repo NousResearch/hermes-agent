@@ -2,10 +2,31 @@
 
 import tarfile
 import zipfile
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from pm import Lockfile, Store, get_package, paths
+
+
+def test_cua_version_probe_runs_without_hermes_dependencies():
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from pm.packages import CuaDriver\n"
+        "env = CuaDriver()._probe_env()\n"
+        "assert env['CUA_DRIVER_RS_TELEMETRY_ENABLED'] == '0'\n"
+        "assert 'providers' not in sys.modules\n"
+        "assert 'tools.computer_use.cua_backend' not in sys.modules\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", code, str(repo)],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("target", ["darwin-arm64", "darwin-x64"])

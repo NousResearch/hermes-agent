@@ -20,10 +20,12 @@ def _no_discovery(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *a, **k: None)
 
 
-def _config(name):
+def _config(name=None):
+    """A gateway config enabling *name* only; ``None`` is a credentialless satellite's (nothing connected)."""
     cfg = type("Cfg", (), {})()
-    cfg.platforms = {Platform(name): PlatformConfig(enabled=True)}
+    cfg.platforms = {Platform(name): PlatformConfig(enabled=True)} if name else {}
     cfg.get_home_channel = lambda _platform: None
+    cfg.get_connected_platforms = lambda: list(cfg.platforms)
     return cfg
 
 
@@ -98,87 +100,118 @@ def test_origin_on_a_moved_platform_names_the_install(feature):
     assert error and f"hermes plugins install {feature.plugin}" in error
 
 
-def _satellite(tmp_path, monkeypatch, platform):
-    """A credentialless ``fitness`` profile the primary routes ``<platform>:chat-1`` to; returns its home."""
-    import hermes_yaml as yaml
-    root = tmp_path / "root"
-    home = root / "profiles" / "fitness"
-    home.mkdir(parents=True)
-    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True, "profile_routes": [
-        {"platform": platform, "chat_id": "chat-1", "profile": "fitness"}]}}), encoding="utf-8")
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
-    return home
+def _feishu_style_parser(ref):
+    """A plugin's native ref parser in the Feishu shape: ``oc_<chat>[:omt_<topic>]``; anything else is not its syntax."""
+    chat, _, thread = ref.partition(":")
+    if not chat.startswith("oc_") or (thread and not thread.startswith("omt_")):
+        return None
+    return chat, thread or None
 
 
-@pytest.mark.parametrize("deliver,reached", [("origin", True), ("{p}:chat-1", True), ("{p}:chat-2", False)],
-                         ids=["origin", "explicit", "unrouted"])
-@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
-def test_satellite_route_rides_the_primarys_bot_without_the_plugin(tmp_path, monkeypatch, feature, deliver, reached):
-    """A secondary profile without the plugin whose chat the primary's bot serves delivers through that bot:
-    the install hint is for a destination nothing can reach, not one a shared route reaches. A chat the
-    primary does not route here stays closed and names the install."""
+# The generated corpus: every destination shape cron accepts, against every satellite / primary state.
+_SHAPES = ["{p}", "{p}:chat-1", "{p}:chat-2", "{p}:chat-1:t9", "{p}:oc_chat", "{p}:oc_chat:omt_topic",
+           "{p}:oc_chat:omt_other", "origin", "all"]
+_ORIGINS = [None, {"chat_id": "chat-1"}, {"chat_id": "chat-2"}, {"chat_id": "oc_chat", "thread_id": "omt_topic"}]
+_ROUTES = {"routed": [{"chat_id": "chat-1"}, {"chat_id": "oc_chat", "thread_id": "omt_topic"}], "unrouted": []}
+_CORPUS = [(shape, origin, routes, loaded, primary_parser)
+           for shape in _SHAPES for origin in _ORIGINS for routes in _ROUTES
+           for loaded in (False, True) for primary_parser in (False, True)]
+
+
+def _run_case(root, feature, shape, origin, routes, loaded, primary_parser):
+    """``(preflight error, delivery error, [(chat, thread)] the primary's bot sent)`` for one corpus case: a
+    credentialless ``fitness`` profile the primary's bot serves through ``profile_routes``."""
+    import asyncio
+    from concurrent.futures import Future
     from unittest.mock import MagicMock
+
+    import hermes_yaml as yaml
     from cron.scheduler_preflight import _preflight_check_delivery, shared_route_adapters_for_current_home
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 
+    home = root / "profiles" / "fitness"
+    home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True, "profile_routes": [
+        {"platform": feature.platform, "profile": "fitness", **route} for route in _ROUTES[routes]]}}), encoding="utf-8")
     sent = []
 
     async def send(chat_id, content, metadata=None):
-        sent.append(chat_id)
+        sent.append((chat_id, (metadata or {}).get("thread_id")))
         return {"success": True, "message_id": "m1"}
+
+    def run_now(coro, _loop):
+        future = Future()
+        future.set_result(asyncio.run(coro))
+        return future
 
     primary = MagicMock()
     primary.send = send
     loop = MagicMock()
     loop.is_running.return_value = True
+    job = {"id": "j1", "name": "Report", "deliver": shape.format(p=feature.platform)}
+    if origin is not None:
+        job["origin"] = {"platform": feature.platform, **origin}
 
-    def run_now(coro, _loop):
-        import asyncio
-        from concurrent.futures import Future
-        future = Future()
-        future.set_result(asyncio.run(coro))
-        return future
-
-    job = {"id": "j1", "name": "Report", "deliver": deliver.format(p=feature.platform),
-           "origin": {"platform": feature.platform, "chat_id": "chat-1"}}
-    home = _satellite(tmp_path, monkeypatch, feature.platform)
-    # The primary's plugin registers the platform in the primary's scope only; its adapter map keys it.
-    primary_scope = hermes_home_key(home.parent.parent)
-    platform_registry.register(PlatformEntry(
-        name=feature.platform, label=feature.label, adapter_factory=lambda cfg: None, check_fn=lambda: True),
-        scope=primary_scope)
-    token = set_hermes_home_override(str(home.parent.parent))
+    def entry():
+        return PlatformEntry(name=feature.platform, label=feature.label, adapter_factory=lambda cfg: None,
+                             check_fn=lambda: True, cron_deliver_env_var=f"{feature.platform.upper()}_HOME_CHANNEL",
+                             parse_target_ref_fn=_feishu_style_parser if primary_parser else None)
+    # The primary loads the plugin in its own scope; the satellite loads it only when ``loaded``.
+    scopes = [hermes_home_key(root)] + ([hermes_home_key(home)] if loaded else [])
+    for scope in scopes:
+        platform_registry.register(entry(), scope=scope)
+    token = set_hermes_home_override(str(root))
     primary_adapters = {Platform(feature.platform): primary}
     reset_hermes_home_override(token)
     token = set_hermes_home_override(str(home))
     try:
-        assert platform_registry.get(feature.platform) is None
-        assert (_preflight_check_delivery(job) is None) is reached
-        adapters = shared_route_adapters_for_current_home(primary_adapters)
+        with patch("gateway.config.load_gateway_config", return_value=_config()):
+            preflight = _preflight_check_delivery(job)
         with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("gateway.config.load_gateway_config", return_value=_config()), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
-            error = _deliver_result(job, "the report", adapters=adapters, loop=loop)
+            delivered = _deliver_result(job, "the report", adapters=shared_route_adapters_for_current_home(
+                primary_adapters), loop=loop)
     finally:
         reset_hermes_home_override(token)
-        platform_registry.unregister(feature.platform, scope=primary_scope)
-    if reached:
-        assert error is None, error
-        assert sent == ["chat-1"]
-    else:
-        assert error and f"plugins install {feature.plugin}" in error
-        assert sent == []
+        for scope in scopes:
+            platform_registry.unregister(feature.platform, scope=scope)
+    return preflight, delivered, sent
 
 
-@pytest.mark.parametrize("deliver", ["{p}", "{p}:chat-2"], ids=["bare", "unrouted"])
 @pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
-def test_satellite_preflight_blocks_a_target_no_route_serves(tmp_path, monkeypatch, feature, deliver):
-    """The primary routing the platform here is not enough: a bare platform with no saved origin or home, or a
-    chat no route maps here, reaches nothing, so preflight blocks it with the install instead of running."""
-    from cron.scheduler_preflight import _preflight_check_delivery
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    token = set_hermes_home_override(str(_satellite(tmp_path, monkeypatch, feature.platform)))
-    try:
-        error = _preflight_check_delivery({"id": "j1", "name": "Report", "deliver": deliver.format(p=feature.platform)})
-    finally:
-        reset_hermes_home_override(token)
-    assert error and f"plugins install {feature.plugin}" in error
+def test_preflight_is_a_dry_run_of_delivery_for_a_moved_platform(tmp_path, monkeypatch, feature):
+    """Property over the generated corpus: preflight names the install exactly when delivery does, never blocks
+    a destination delivery reaches, and never passes one delivery fails to reach without saying why. Where the
+    satellite lacks the plugin both read the ref with the primary's parser (else core's ``chat[:thread]``
+    split) and send only where an exact route serves the parsed chat."""
+    root_dir = {}
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root_dir["root"])
+    install = f"plugins install {feature.plugin}"
+    counterexamples, outcomes = [], set()
+    for index, case in enumerate(_CORPUS):
+        root_dir["root"] = tmp_path / f"case{index}"
+        preflight, delivered, sent = _run_case(root_dir["root"], feature, *case)
+        verdict = "install" if preflight and install in preflight else ("pass" if preflight is None else "blocked")
+        outcome = ("install" if delivered and install in delivered else
+                   "reached" if sent and delivered is None else "other")
+        outcomes.add((verdict, outcome, case[3]))
+        # Unloaded, a pass must not hide a failure to reach this platform (``all`` with no home addresses none).
+        if (verdict == "install") != (outcome == "install") or (outcome == "reached" and verdict != "pass") or (
+                not case[3] and verdict == "pass" and outcome != "reached" and feature.platform in (delivered or "")):
+            counterexamples.append((case, preflight, delivered, sent))
+    assert counterexamples == []
+    # The corpus exercises both verdicts on the unloaded side, and the loaded side never names the install.
+    assert {("pass", "reached", False), ("install", "install", False), ("pass", "reached", True)} <= outcomes
+    assert not any(verdict == "install" for verdict, _outcome, loaded in outcomes if loaded)
+
+
+@pytest.mark.parametrize("primary_parser", [False, True], ids=["generic-split", "primary-parser"])
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_satellite_topic_rides_the_primarys_bot_without_the_plugin(tmp_path, monkeypatch, feature, primary_parser):
+    """``<platform>:oc_chat:omt_topic`` on a satellite without the plugin reaches the routed topic through the
+    primary's bot: the ref is parsed into chat + thread before the exact route lookup, not matched whole."""
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    preflight, delivered, sent = _run_case(
+        tmp_path, feature, "{p}:oc_chat:omt_topic", None, "routed", False, primary_parser)
+    assert (preflight, delivered, sent) == (None, None, [("oc_chat", "omt_topic")])

@@ -439,6 +439,40 @@ def moved_platform_hint(platform_name: str) -> str:
     return "" if platform_registry.get(name) else platform_install_hint(name)
 
 
+def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]]:
+    """``(chat_id, thread_id)`` of a moved platform's ref when its plugin is not loaded here: the
+    primary's already-loaded plugin parser when it reads the ref, else core's generic
+    ``chat[:thread]`` split. Only an exact route match on the result sends anything."""
+    from gateway.platform_registry import platform_registry
+    from hermes_constants import get_default_hermes_root, hermes_home_key
+    entry, _loader = platform_registry.snapshot_registration(
+        platform_key, scope=hermes_home_key(get_default_hermes_root()))
+    parse = entry.parse_target_ref_fn if entry is not None else None
+    parsed = None
+    if parse is not None:
+        try:
+            parsed = parse(ref)
+        except Exception:
+            logger.debug("Primary's target parser failed for %s", platform_key, exc_info=True)
+    if isinstance(parsed, tuple) and len(parsed) == 2 and parsed[0]:
+        return str(parsed[0]), str(parsed[1]) if parsed[1] else None
+    chat_id, _, thread_id = ref.partition(":")
+    return chat_id, thread_id or None
+
+
+def resolve_cron_destination(
+    job: dict, deliver_value: str, *, from_broadcast: bool = False
+) -> tuple[Optional[dict], Optional[str]]:
+    """``(target, error)`` for one destination: delivery's resolver, and preflight's dry run of it.
+    A platform that left core and whose plugin is not loaded here is served only by the primary's
+    bot through an exact route on the parsed chat; when none serves it the error names the install."""
+    target = _resolve_single_delivery_target(job, deliver_value, from_broadcast=from_broadcast)
+    platform_name = str(target["platform"] if target else deliver_value.split(":", 1)[0]).strip()
+    if not moved_platform_hint(platform_name) or (target and _preflight.shared_route_serves(target)):
+        return target, None
+    return None, unknown_platform_error(platform_name)
+
+
 def _resolve_home_env_var(platform_name: str) -> str:
     """Env var name for a platform's cron home channel (``PlatformEntry.cron_deliver_env_var``)."""
     return _plugin_cron_env_var(platform_name.lower())
@@ -713,11 +747,9 @@ def _resolve_single_delivery_target(
         # must reach the adapter as written or the job's output is silently lost.
         chat_id, thread_id, resolution_error = resolve_send_target(
             platform_key, rest, pass_unresolved_references=True)
-        if resolution_error and moved_platform_hint(platform_key) and (
-                _preflight._delivery_platform_routed_from_primary_gateway(platform_key)):
-            # No plugin here to parse it, but the primary's bot may serve it: the ref as written must match an
-            # exact route at send time (a miss names the install), so nothing is guessed from its shape.
-            chat_id, thread_id, resolution_error = rest, None, None
+        if resolution_error and moved_platform_hint(platform_key):
+            # No plugin here to parse it; resolve_cron_destination sends it only where a route serves it.
+            (chat_id, thread_id), resolution_error = _moved_platform_ref(platform_key, rest), None
         if resolution_error:
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
             return None
@@ -992,11 +1024,10 @@ def _resolve_delivery_targets(
         if from_broadcast:
             _note_unloaded_homes(_unloaded_home_platforms(), skipped)
         for part in _expand_routing_tokens(raw):
-            target = _resolve_single_delivery_target(job, part, from_broadcast=from_broadcast, skipped=skipped)
+            target, error = resolve_cron_destination(job, part, from_broadcast=from_broadcast)
+            if error and moved_errors is not None:
+                moved_errors.append(error)
             if not target:
-                platform_name = part.split(":", 1)[0]
-                if moved_errors is not None and moved_platform_hint(platform_name):
-                    moved_errors.append(unknown_platform_error(platform_name))
                 continue
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
             kept = seen.get(key)
@@ -1220,9 +1251,6 @@ def _resolve_target_transport(
             transport = DeliveryTransport(
                 shared, replace(own, enabled=True) if own is not None else PlatformConfig(enabled=True),
                 platform)
-    if transport is None and moved_platform_hint(platform_name):
-        # Left core and its plugin is not loaded here: only a shared route (above) can still reach it.
-        return None, unknown_platform_error(platform_name)
     if transport is None:
         transport = resolve_delivery_transport(platform, config, target_adapters)
     if transport is not None:
@@ -1780,7 +1808,7 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool, moved_errors: lis
     deliver_value = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver_value == "local":
         return None
-    if deliver_value == "origin" and not skipped:
+    if deliver_value == "origin" and not moved_errors:
         logger.info(
             # deliver=origin with no resolvable origin and no configured home channels: treat as local
             # rather than reporting an error. CLI-created jobs never capture a {platform, chat_id} origin,

@@ -162,9 +162,8 @@
 
 /* ── Chrome buttons ───────────────────────────────────────────────────────────────────────── */
 
-/* 30×30 r3, the band's navy tile and a 16px glyph at .4 (16292:15285). Figma draws no hover/pressed
-   states: they brighten the tile a step each. Selection (a shown tool pane) is the brand square with
-   its 1px ring (Overview 856:2665). */
+/* 30×30 r3, the band's chrome tile and a 20px glyph matching the global rail (--portal-rail-glyph)
+   so left rail, top-right band, and right developer rail read as one uniform icon family. */
 :root[data-shell='portal'] .portal-chrome-button {
   inline-size: var(--portal-chrome-button-size);
   block-size: var(--portal-chrome-button-size);
@@ -173,7 +172,7 @@
   background-color: var(--portal-surface-chrome);
   box-shadow: none;
   color: var(--portal-text-chrome);
-  font-size: var(--portal-icon-size);
+  font-size: var(--portal-rail-glyph);
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -186,9 +185,13 @@
 }
 
 :root[data-shell='portal'] .portal-chrome-button .codicon[class*='codicon-'] {
-  font-size: var(--portal-icon-size);
+  font-size: var(--portal-rail-glyph);
 }
 
+:root[data-shell='portal'] .portal-chrome-button > svg:not(.codicon) {
+  width: var(--portal-rail-glyph);
+  height: var(--portal-rail-glyph);
+}
 :root[data-shell='portal'] .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
   background-color: var(--portal-surface-chrome-hover);
   color: var(--ui-text-secondary);
@@ -275,9 +278,6 @@
   color: var(--portal-rail-ink-selected);
 }
 
-:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button .codicon[class*='codicon-'] {
-  font-size: var(--portal-rail-glyph);
-}
 
 /* A destination that needs the user (Routines with a failed routine, Figma 1081:29422): the error
    ink's dot at the glyph's top end, ringed by the rail so it reads on the brand selection too. */

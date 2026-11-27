@@ -222,7 +222,7 @@ install()
 plugin_dir = sys.argv[1]
 sentinel = sys.argv[2]
 options = json.loads(sys.argv[3])
-# Public method names of the real PluginContext, computed by the parent so the
+# Public method names of the real contexts, computed by the parent so the
 # stub's attribute surface cannot drift from the class plugins run against.
 context_methods = set(options["context_methods"])
 # Service properties (``ctx.llm``, ``ctx.state``, ...): plugins capture them in register() and
@@ -265,7 +265,7 @@ class RecordingContext:
     def __getattr__(self, name):
         # Any other REAL registration surface (platforms, providers, skills,
         # context engines, ...) is accepted as a no-op — the probe only audits
-        # the declared-capability categories. Names the real PluginContext does
+        # the declared-capability categories. Names the real contexts do
         # not have raise AttributeError exactly like it would; handing back a
         # callable made `getattr(ctx, "profile_path", None)` truthy and crashed
         # register() in the probe alone.
@@ -372,11 +372,18 @@ emit(recorded)
 
 def _probe_options(manifest: dict) -> dict:
     from hermes_cli.plugins import PluginContext
+    from plugins.computer_use import _ProviderCollector as ComputerUseCollector
+    from plugins.cron_providers import _ProviderCollector as CronCollector
 
     public = [n for n in dir(PluginContext) if not n.startswith("_")]
     return {
         "kind": str(manifest.get("kind") or ""),
-        "context_methods": sorted(n for n in public if callable(getattr(PluginContext, n))),
+        # Exclusive computer-use and cron-scheduler plugins are loaded with their family's collector,
+        # not PluginContext, so its registrar is part of the surface they run against.
+        "context_methods": sorted({
+            n for context in (PluginContext, ComputerUseCollector, CronCollector) for n in dir(context)
+            if not n.startswith("_") and callable(getattr(context, n))
+        }),
         "context_properties": sorted(
             n for n in public if isinstance(getattr(PluginContext, n), (property, cached_property))
         ),

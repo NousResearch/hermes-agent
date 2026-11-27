@@ -326,6 +326,7 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.run_platform_reconcile import reconcile_platforms_verb
         from gateway.run_active_work_verb import active_work_verb
         from gateway.relay.link import relay_link_verb
         from gateway.drain_control import RESTART_WAIT_REASON
@@ -409,6 +410,9 @@ async def _start_gateway_start_control_socket(runner):
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop),
+                           # A platform saved by another process (dashboard, Desktop, `config set`)
+                           # starts/restarts/stops now; the answer is each platform's live state.
+                           "reconcile-platforms": reconcile_platforms_verb(runner, _main_loop),
                            # The per-gateway relay secret exists only in this process: the dashboard
                            # mints Team Gateway link codes through it.
                            "relay-link": relay_link_verb})
@@ -938,8 +942,12 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     try:
         _start_gateway_configure_logging(verbosity)
 
-        from gateway.run_startup import recover_left_core_at_gateway_start
-        if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
+        # A platform plugin owed to the credentials this profile has installs beside the start, never
+        # long ahead of it: one landing within the head start is in the runner's config; a slower one
+        # (a clone, another installer's lock) leaves the ready platforms serving and starts when it lands.
+        from gateway.run_platform_reconcile import recover_plugins_for_start, start_recovered_platforms
+        _recovered, _plugin_recovery = await recover_plugins_for_start()
+        if _recovered and config is None:
             resolved_config = _reload_config_keeping_multiplex_verdict(resolved_config)
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
@@ -1006,6 +1014,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
         from gateway.run_api import await_session_socket_preload
         _early_verdict, ws_preload, _unclean_exit = await _start_gateway_listener_and_runner(
             runner, _signal_initiated_shutdown, idle_exit=idle_exit)
+        start_recovered_platforms(runner, _plugin_recovery)
         if _early_verdict is not None:
             await await_session_socket_preload(ws_preload)  # never left unawaited on the way out
             return _early_verdict

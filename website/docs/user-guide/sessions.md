@@ -115,7 +115,7 @@ Each session is tagged with its source platform:
 | Source | Description |
 |--------|-------------|
 | `cli` | Interactive CLI (`hermes` or `hermes chat`) |
-| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `kanban` and `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list` shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
+| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `kanban` and `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list --all` (or `--source oneshot`) shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
 | `slack` | Slack workspace |
@@ -358,6 +358,9 @@ Hermes provides a full set of session management commands via `hermes sessions`:
 ### List Sessions
 
 ```bash
+# Pick a recent conversation with the arrow keys and resume it (prints the list when not on a terminal)
+hermes sessions
+
 # List recent sessions (default: last 20)
 hermes sessions list
 
@@ -366,7 +369,12 @@ hermes sessions list --source telegram
 
 # Show more sessions
 hermes sessions list --limit 50
+
+# Show every source (cron, webhook, push, kanban, tool, one-shot) and sessions with no messages
+hermes sessions list --all
 ```
+
+The list holds the conversations you resume: one row per thread, ranked by its last message. A thread that was compressed shows once, under the id of its live continuation (the one `hermes --resume` continues) and the title of the most recent part of the thread that has one. Subagent runs never appear here. Cron, webhook, push, kanban, tool and one-shot runs and empty sessions stay out unless you pass `--all` (or name a `--source`).
 
 When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
 

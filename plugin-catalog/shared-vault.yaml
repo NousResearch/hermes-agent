@@ -1,0 +1,19 @@
+name: shared-vault
+title: Shared Vault
+version: "0.1.2"
+repo: https://github.com/mcheng916/hermes-shared-vault
+sha: d17c47a90dfc252c30420590109759a8d564d1f7
+description: "Your existing Obsidian/Markdown vault becomes Hermes's long-term memory: a pre_llm_call hook retrieves the vault sections relevant to the current message (BM25-style keyword scoring fused with local-embedding cosine search by reciprocal-rank fusion) and injects them as labelled historical evidence before the model answers. Retrieval runs in a subprocess with a 5-second budget and skips the injection on any failure, so a slow or broken index can never block a turn. Stdlib-only Python (numpy used opportunistically). Read-only by default: the hook never writes; an optional stdlib MCP server (run separately) adds vault_query/read/propose/create/patch tools. Disclosure — fully local by default: it reads the Markdown files under the configured vault roots, writes an index, vector cache and edit backups under ~/.cache/shared-vault/, and makes one kind of network call, an HTTP POST of your message (and, when you build the vector index, your note text) to the embeddings endpoint you configure (the stock default is a loopback Ollama endpoint, http://127.0.0.1:11434/api/embed with model bge-m3:latest). With no vector index built it runs lexical-only, and an empty vault_path (the default) disables retrieval entirely. An optional persistent daemon talks over a user-owned Unix socket under ~/.cache/shared-vault/, never a network listener. No credentials, no telemetry, no cloud sync."
+maintainer: mcheng916
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/mcheng916/hermes-shared-vault#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

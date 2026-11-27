@@ -196,16 +196,29 @@ class StreamingTTSConsumer:
         while True:
             # next() runs in a thread so a blocking provider never stalls the loop.
             chunk = await asyncio.to_thread(next, iterator, _DONE)
-            if chunk is _DONE or self._aborted or (self._handle is not None and self._handle.aborted):
+            if chunk is _DONE:
+                break
+            if self._aborted or (self._handle is not None and self._handle.aborted):
                 return
             if not chunk:
                 continue
             if self._handle is None and not await self._open_handle():
                 raise _HandleDeclined()
-            was_audible = self._handle.audible
-            await self._adapter.write_streaming_tts(self._handle, chunk)
-            if not was_audible:
-                self._handle.audible = self._suppress_whole_file = True
+            handle = self._handle
+            if handle is None:  # defensive: _open_handle() succeeded without a handle
+                raise _HandleDeclined()
+            was_audible = handle.audible
+            await self._adapter.write_streaming_tts(handle, chunk)
+            if not was_audible and not handle.defer_audible_until_flush:
+                handle.audible = self._suppress_whole_file = True
+        # A file/message sink can now deliver one complete clause instead of waiting
+        # for the entire turn. Continuous voice adapters keep the default no-op.
+        if self._handle is not None and not self._aborted:
+            flush: Any = getattr(self._adapter, "flush_streaming_tts", None)
+            if callable(flush):
+                await flush(self._handle)
+            if self._handle.audible:
+                self._suppress_whole_file = True
 
     async def _safe_abort(self, reason: str) -> None:
         """Abort the adapter stream, swallowing errors (idempotent)."""

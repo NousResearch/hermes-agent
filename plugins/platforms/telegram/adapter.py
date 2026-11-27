@@ -145,6 +145,7 @@ from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
+    AudioFormat, StreamingTTSHandle,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_proxy_url_for_log, describe_proxy_error, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len, env_proxy_for_redaction,
 )
@@ -4793,6 +4794,75 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                     continue
                 raise
         raise _last_parse_error or RuntimeError("Telegram send_voice failed for all caption variants")
+
+    # --- native streaming TTS: clause PCM -> early Ogg/Opus voice bubbles --------
+    # Telegram has no live PCM track. Buffer each completed clause and send it through
+    # the existing voice path while the consumer synthesizes subsequent clauses.
+    def supports_streaming_tts(self, chat_id: str, audio_format: AudioFormat) -> bool:
+        from plugins.platforms.telegram.telegram_streaming_tts import supports_pcm_format
+        return self._bot is not None and supports_pcm_format(audio_format)
+
+    async def begin_streaming_tts(
+        self, chat_id: str, audio_format: AudioFormat, metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[StreamingTTSHandle]:
+        if not self.supports_streaming_tts(chat_id, audio_format):
+            return None
+        from plugins.platforms.telegram.telegram_streaming_tts import TelegramStreamingTTSHandle
+        return TelegramStreamingTTSHandle(
+            chat_id=str(chat_id), audio_format=audio_format, metadata=dict(metadata or {}),
+        )
+
+    @staticmethod
+    def _coerce_streaming_tts_handle(handle: StreamingTTSHandle):
+        from plugins.platforms.telegram.telegram_streaming_tts import TelegramStreamingTTSHandle
+        if not isinstance(handle, TelegramStreamingTTSHandle):
+            raise TypeError("Telegram streaming TTS requires its buffered handle")
+        return handle
+
+    async def write_streaming_tts(self, handle: StreamingTTSHandle, chunk: bytes) -> None:
+        handle = self._coerce_streaming_tts_handle(handle)
+        if not handle.aborted and chunk:
+            handle.pcm.extend(chunk)
+
+    async def flush_streaming_tts(self, handle: StreamingTTSHandle) -> None:
+        handle = self._coerce_streaming_tts_handle(handle)
+        if handle.aborted or not handle.pcm:
+            return
+        from plugins.platforms.telegram.telegram_streaming_tts import (
+            encode_pcm_ogg_opus, pcm_duration_seconds,
+        )
+        pcm = bytes(handle.pcm)
+        handle.pcm.clear()
+        ogg = await asyncio.to_thread(encode_pcm_ogg_opus, pcm, handle.audio_format)
+        if handle.aborted:
+            return
+        import io
+        audio_file = io.BytesIO(ogg)
+        audio_file.name = "voice.ogg"
+        try:
+            await self._send_voice_bubble(
+                audio_file, handle.chat_id, None, handle.metadata, None,
+                pcm_duration_seconds(pcm, handle.audio_format),
+            )
+        except Exception as exc:
+            # A lost acknowledgment may already have delivered this clause.
+            # Preserve the native no-replay rule while reporting partial failure.
+            if _unconfirmed(exc, "streaming voice") is not None:
+                handle.audible = True
+            raise
+        handle.audible = True
+
+    async def finish_streaming_tts(self, handle: StreamingTTSHandle, *, interrupted: bool = False) -> None:
+        handle = self._coerce_streaming_tts_handle(handle)
+        if interrupted:
+            handle.pcm.clear()
+            return
+        await self.flush_streaming_tts(handle)
+
+    async def abort_streaming_tts(self, handle: StreamingTTSHandle, error: Optional[str] = None) -> None:
+        handle = self._coerce_streaming_tts_handle(handle)
+        handle.pcm.clear()
+        handle.aborted = True
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,

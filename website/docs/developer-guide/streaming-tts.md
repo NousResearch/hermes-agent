@@ -109,10 +109,17 @@ streaming-audio seam. Adapters opt in by overriding, on
 `BasePlatformAdapter`:
 
 - `supports_streaming_tts(chat_id, audio_format) -> bool`
-- `begin_streaming_tts / write_streaming_tts / finish_streaming_tts /
-  abort_streaming_tts`
+- `begin_streaming_tts / write_streaming_tts / flush_streaming_tts /
+  finish_streaming_tts / abort_streaming_tts`
 
-All default to unsupported/no-op, so existing adapters are untouched. When a
+`flush_streaming_tts` is called at each spoken-clause boundary. Continuous voice
+tracks keep the default no-op; Telegram uses it to transcode and send one complete
+Ogg/Opus voice message per clause while later clauses are still being synthesized.
+Buffered handles set `defer_audible_until_flush=True`, so a failed first upload keeps
+the whole-file fallback eligible, while a failure after a delivered clause never
+replays audio from the beginning.
+
+All defaults report unsupported/no-op, so existing adapters are untouched. When a
 turn's streaming audio completes, the whole-file auto-TTS reply for that turn
 is suppressed (no double playback); when streaming fails before any audio was
 audible, the gateway falls back to the legacy whole-file voice reply.

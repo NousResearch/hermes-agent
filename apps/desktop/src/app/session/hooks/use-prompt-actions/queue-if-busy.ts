@@ -1,3 +1,4 @@
+import type { ComposerAttachment } from '@/store/composer'
 import { enqueueQueuedPrompt, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { isReplyPaused } from '@/store/paused-replies'
 import { $sessions, resolveComposerSessionKey } from '@/store/session'
@@ -16,6 +17,9 @@ export interface QueueIfBusyInput {
   foregroundBusy?: boolean
   text: string
   displayText?: string
+  /** Attachments the slash dispatch was invoked with — they ride the queued
+   *  entry and submit on its drain instead of being dropped (#131233). */
+  attachments?: ComposerAttachment[]
 }
 
 /**
@@ -33,6 +37,7 @@ export interface QueueIfBusyInput {
  * the continuation. It waits in the chat's local queue, which the pause holds.
  */
 export function queueKickoffIfSessionBusy({
+  attachments = [],
   displayText,
   foregroundBusy = false,
   id,
@@ -51,5 +56,5 @@ export function queueKickoffIfSessionBusy({
     return 'idle'
   }
 
-  return enqueueQueuedPrompt(queueKey, { attachments: [], displayText, id, text }) ? 'queued' : 'busy'
+  return enqueueQueuedPrompt(queueKey, { attachments, displayText, id, text }) ? 'queued' : 'busy'
 }

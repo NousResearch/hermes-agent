@@ -37,6 +37,8 @@ hermes plugins install teams-pipeline --enable
 
 Profiles that already had the formerly bundled `teams_pipeline` plugin enabled get the catalog plugin installed and enabled automatically by `hermes update` (or on the next agent or gateway start); `teams_pipeline` keeps working as an alias in `plugins.enabled` / `plugins.disabled`.
 
+The plugin binds to the webhook adapter in-process, so it needs `plugins.isolation: in_process` (the default). Under `plugins.isolation: host` it does not load: meeting notifications are not processed and `hermes teams-pipeline` is unavailable. The migration and every gateway start say so.
+
 Operator actions stay in the CLI:
 
 ```bash

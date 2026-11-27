@@ -250,13 +250,15 @@ def test_saved_qqbot_preset_still_selects_core_tools_at_runtime(monkeypatch, col
     assert ("mcp_fixture_echo" in tools) is collision
 
 
-def test_a_qqbot_the_default_installer_placed_and_the_user_removed_stays_removed(tmp_path):
-    # default_plugins recorded it (qqbot is a default plugin); the user removed the tree; creds are still there.
+def test_a_qqbot_the_default_installer_placed_and_the_user_removed_stays_removed_and_is_said_off(tmp_path):
+    # default_plugins recorded it (qqbot is a default plugin) while core still ran QQ Bot; the user removed that
+    # idle tree; creds are still there. The removal sticks, and the home is told QQ Bot is off and how to get it.
     home = _home(tmp_path, env=_CREDS, config="_default_plugins_installed: [qqbot]\n")
-    calls = []
-    assert lcm.migrate_home(home, install=lambda name: calls.append(name) or {"ok": True},
-                            say=lambda message: None) == []
+    calls, said = [], []
+    assert lcm.migrate_home(home, install=lambda name: calls.append(name) or {"ok": True}, say=said.append) == []
     assert calls == []
+    off = [line for line in said if "so it is off" in line]
+    assert len(off) == 1 and "`hermes plugins install qqbot`" in off[0], said
 
 
 def test_the_default_installer_skips_a_plugin_the_left_core_migration_placed(tmp_path):

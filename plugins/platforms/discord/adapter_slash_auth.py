@@ -3,10 +3,18 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional, Tuple
 
+from agent.i18n import t
+
 try:
     import discord
 except ImportError:  # the adapter does not start without discord.py
     discord = None
+
+_CHANNEL_SCOPE_REJECTION_REASONS = frozenset({
+    "channel not in DISCORD_ALLOWED_CHANNELS",
+    "channel in DISCORD_IGNORED_CHANNELS",
+    "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
+})
 
 
 class DiscordSlashAuthMixin:
@@ -92,3 +100,10 @@ class DiscordSlashAuthMixin:
         stamp the grant on an actor the slash gate would refuse."""
         allowed = self._evaluate_slash_authorization(interaction)[0]  # refreshes the gate first
         return allowed and bool(getattr(self, "_allowed_role_ids", set()))
+
+    @staticmethod
+    def _slash_rejection_message(reason: str, unauthorized_fallback: Callable[[], str]) -> str:
+        """Pick the ephemeral rejection notice for a slash-authorization failure."""
+        if reason in _CHANNEL_SCOPE_REJECTION_REASONS:
+            return t("platform.discord.slash.channel_not_allowed")
+        return unauthorized_fallback()

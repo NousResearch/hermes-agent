@@ -342,6 +342,73 @@ def test_classify_network_failure_stays_generic():
     assert not isinstance(err, ResolutionConflict)
 
 
+def test_duplicate_member_name_verdict_is_deterministic():
+    """uv's "Two workspace members are both named" is a property of the staged trees, not of
+    the moment: every retry resolves the same refusal, so each one must not rebuild a full
+    generation. Classify it as the resolver verdict it is so the update's eviction disables
+    once instead of trying twice."""
+    from pm.workspace import ResolutionConflict, classify_uv_failure
+
+    err = classify_uv_failure("lock", 2,
+                              "error: Two workspace members are both named `hermes-custodian-plugin`: "
+                              "/home/u/.hermes/plugins/custodian-x and "
+                              "/home/u/.hermes/profiles/bones/plugins/custodian-y")
+    assert isinstance(err, ResolutionConflict)
+
+
+def test_duplicate_buildable_member_names_refused_before_staging(layout):
+    """Two homes each carrying their own clone of a buildable plugin put one declared
+    [project].name into the workspace twice; uv's "Two workspace members are both named"
+    failed every sync from inside `uv lock`, and the update's eviction retried and re-added,
+    minting a fresh dependency generation per apply (the 56-generation storm). Refuse as a
+    resolver verdict before staging — naming both trees and the copy that stays — so one
+    apply reaches one eviction verdict with zero churn."""
+    from pm.workspace import ResolutionConflict
+
+    tmp, core, _, _ = layout
+    trees = {}
+    for home in ("main", "bones"):
+        tree = tmp / home / "custodian"
+        tree.mkdir(parents=True)
+        (tree / "pyproject.toml").write_text(
+            '[project]\nname="hermes-custodian-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
+            '[build-system]\nrequires=[]\nbuild-backend="local_backend"\nbackend-path=["."]\n',
+            encoding="utf-8")
+        trees[home] = tree
+    root = tmp / "workspace"
+    with pytest.raises(ResolutionConflict) as refused:
+        ws._generate_pyproject([trees["main"], trees["bones"]], root, source=core,
+                               python=Path(sys.executable))
+    message = str(refused.value)
+    assert "hermes-custodian-plugin" in message
+    assert str(trees["main"].resolve()) in message and str(trees["bones"].resolve()) in message
+    assert "precedence" in message
+    assert not (root / "plugin-sources").exists() and not (root / "pyproject.toml").exists()
+
+
+def test_virtual_twins_declaring_one_name_are_renamed_not_refused(layout):
+    """Virtual members never keep a declared name — each is renamed to its unique
+    hermes-plugin-<key> — so same-name twins from two homes stay legal; only buildable
+    members can collide, and only they are refused."""
+    import tomllib
+
+    tmp, core, _, _ = layout
+    trees = []
+    for home in ("main", "bones"):
+        tree = tmp / home / "twin"
+        tree.mkdir(parents=True)
+        (tree / "pyproject.toml").write_text(
+            '[project]\nname="one-name-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
+            'dependencies=["member-dep==1.0"]\n[tool.uv]\npackage=false\n', encoding="utf-8")
+        trees.append(tree)
+    root = tmp / "workspace"
+    ws._generate_pyproject(trees, root, source=core, python=Path(sys.executable))
+    document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    names = sorted(tomllib.loads((root / relative / "pyproject.toml").read_text())["project"]["name"]
+                   for relative in document["tool"]["uv"]["workspace"]["members"])
+    assert names == sorted(f"hermes-plugin-{ws._member_key(tree.resolve())}" for tree in trees)
+
+
 def test_core_only_generation_carries_no_release_age_cutoff(layout):
     """A core-only install (hermes update) is a frozen sync: the cutoff there only gates the build
     tools uv fetches, and a mirror without upload times rejects every one of them (#135589)."""

@@ -160,6 +160,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
 
     candidates = {identity: source for identity, source in member_sources(plugin_dirs).items()
                   if _is_member_candidate(source)}
+    _refuse_duplicate_member_names(candidates)
     target = _target_environment(python) if candidates else {}
     members = [_workspace_member(source, root, identity=identity, extras=extras, target=target)
                .relative_to(root).as_posix() for identity, source in candidates.items()]
@@ -607,6 +608,47 @@ def hermes_fit_error(declaration, extras: Iterable[str] | None = None) -> Option
     from hermes_cli.plugins_manifest import requires_hermes_error
 
     return requires_hermes_error(declaration.manifest) or core_requirement_error(declaration, extras)
+
+
+def _refuse_duplicate_member_names(candidates: Mapping[Path, Path]) -> None:
+    """Refuse a member set where two buildable members declare one package name.
+
+    Buildable members keep their declared name on purpose — uv verifies it against the
+    metadata their own backend produces (_workspace_member) — so two enabled homes each
+    holding a clone of the same plugin (a profile-local copy of core's plugin, say) put one
+    name into the workspace twice and every sync died inside `uv lock` on uv's "Two workspace
+    members are both named". Retrying that resolves the identical refusal, and the update's
+    eviction retried it: one fresh dependency generation per apply (the generation storm).
+    Refusing here, before staging and before the resolver, makes it a resolver verdict at
+    once — one apply, one eviction disable, zero churn. The message names both trees and
+    which copy stays: member order is the precedence every member listing follows, so the
+    earlier home keeps its clone and the later home's plugin is the one to disable.
+    """
+    import re
+    import tomllib
+
+    declared: dict[str, Path] = {}
+    for identity, source in candidates.items():
+        pyproject = read_python_declaration(source).pyproject
+        if pyproject is None:
+            continue  # a plugin-deps member carries a synthesized unique name
+        document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+        virtual = ("build-system" not in document
+                   and document.get("tool", {}).get("uv", {}).get("package") is not True)
+        if virtual:
+            continue  # a virtual member is renamed to its unique hermes-plugin-<key>
+        name = (document.get("project") or {}).get("name")
+        if not isinstance(name, str):
+            continue  # a member uv itself refuses later
+        canonical = re.sub(r"[-_.]+", "-", name).lower()  # uv compares names PEP 503-style
+        earlier = declared.get(canonical)
+        if earlier is not None:
+            raise ResolutionConflict(
+                "venv",
+                f"two enabled plugin trees declare the same package name {name!r}: {earlier}"
+                f" (kept — its home takes precedence) and {identity}"
+                " (disable this plugin's clone in its home)")
+        declared[canonical] = identity
 
 
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = (),

@@ -44,6 +44,11 @@ _RESOLVER_MARKERS = (
     "conflicting urls",
     "because only the following versions",
     "and your pyproject depends on",
+    # One package name declared by two workspace members is a property of the staged trees,
+    # not of the moment: every retry resolves the identical refusal, so it must classify as
+    # a verdict (disabling once) rather than earn eviction's retry — each rebuild of a
+    # refused union costs a full dependency generation.
+    "two workspace members are both named",
 )
 
 

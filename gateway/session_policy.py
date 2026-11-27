@@ -165,10 +165,14 @@ class LocalSessionPolicy:
     # plain data: an exact retry is judged by them, never by the profile's current ones, and the session's
     # tools run without every toolchain name they cover that the client did not send.
     client_env_rules_json: str | None = None
-    # The launching CLI process's PAPERCLIP_* run identity (``agent.paperclip_context``), bound for this
-    # session's turns only, never echoed in ``request_json``: None when the client sent none (every
-    # surface but a Paperclip-launched CLI/oneshot run, or a session from before the field).
-    paperclip_context_json: str | None = None
+    # Opaque reference to the launching CLI process's PAPERCLIP_* run identity (``agent.paperclip_context``),
+    # bound for this session's turns only, never echoed in ``request_json``: None when the client sent
+    # none (every surface but a Paperclip-launched CLI/oneshot run, or a session from before the field).
+    # The VALUES never live here (this dataclass is persisted via ``asdict`` into the session's durable
+    # receipt): only ``bind_paperclip_context``'s ref, resolved back through the owning authority's
+    # in-memory registry by ``paperclip_context``/``paperclip_scope`` -- the same authority-lifetime-only
+    # pattern ``credential_ref`` uses for a launch API key.
+    paperclip_context_ref: str | None = None
     # An ACP session's edit approval (``session.mutate edit_policy``; main's ACP modes): ``ask`` (Default),
     # ``workspace_session`` (Accept Edits) or ``session`` (Don't Ask). Sensitive paths always ask.
     edit_approval_policy: str = 'ask'
@@ -181,12 +185,20 @@ class LocalSessionPolicy:
         rules = None if self.client_env_rules_json is None else json.loads(self.client_env_rules_json)
         return client_env_scope(self.client_env(), local=not self.client_env_remote, rules=rules)
 
-    def paperclip_context(self):
-        return None if self.paperclip_context_json is None else json.loads(self.paperclip_context_json)
+    def paperclip_context(self, authority=None):
+        """This session's bound Paperclip run context, from *authority*'s in-memory registry -- never
+        from the policy itself, which carries only the opaque ``paperclip_context_ref``. None when this
+        session carries no ref, *authority* is not supplied, or the authority that bound it has since
+        restarted (the registry is authority-lifetime only, so this fails closed, same as a key
+        ``bind_launch_key`` revoked that way)."""
+        if self.paperclip_context_ref is None or authority is None:
+            return None
+        contexts = getattr(authority, '_local_paperclip_contexts', None) or {}
+        return contexts.get(self.paperclip_context_ref.split('#', 1)[0])
 
-    def paperclip_scope(self):
+    def paperclip_scope(self, authority=None):
         from agent.paperclip_context import paperclip_scope
-        return paperclip_scope(self.paperclip_context() or {})
+        return paperclip_scope(self.paperclip_context(authority) or {})
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -508,11 +520,13 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         except ValueError as exc:
             _refuse('client_env', str(exc))
         rules = json.dumps(rules, sort_keys=True)
-    paperclip_context = None
+    # ``paperclip_context`` is validated here (fail fast, before a session_id is reserved) but never
+    # frozen into the policy: ``bind_paperclip_context`` (called once the caller knows the session_id)
+    # keeps the actual values authority-side only, same as ``api_key``/``bind_launch_key`` above.
     if 'paperclip_context' in params:
         from agent.paperclip_context import validate_context
         try:
-            paperclip_context = json.dumps(validate_context(params['paperclip_context']), sort_keys=True)
+            validate_context(params['paperclip_context'])
         except ValueError as exc:
             _refuse('paperclip_context', str(exc))
     # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
@@ -527,7 +541,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config,
                               coding_posture=coding_posture, client_env_json=client_env,
                               client_env_remote=client_env is not None and not client_local,
-                              client_env_rules_json=rules, paperclip_context_json=paperclip_context)
+                              client_env_rules_json=rules)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -938,6 +952,38 @@ def _key_slot(credential_ref):
     return credential_ref.split('#', 1)[0]
 
 
+def bind_paperclip_context(authority, session_id, policy, context):
+    """A launched CLI process's PAPERCLIP_* run identity lives only in *authority*'s memory for
+    *session_id*, exactly like ``bind_launch_key``'s API key: ``LocalSessionPolicy`` is persisted via
+    ``asdict`` into the session's durable SQLite receipt, so no run-identity value -- not even a
+    non-secret one, since ``PAPERCLIP_API_KEY`` rides along in the same map -- belongs on it.
+
+    *context* is *params.get('paperclip_context')*: None when the client sent none (every session this
+    freezes to a bare policy with ``paperclip_context_ref=None``, its prior behaviour unchanged). A
+    restarted authority's registry is empty, so a session that carried one simply runs its turns with
+    none afterward -- the same disposition as a surface that never launched with one (TUI, Desktop, ACP,
+    bot rooms); unlike a launch API key, there is no ``session.resume`` re-supply path, because a
+    Paperclip wake always mints a fresh session for its turn rather than resuming one across a gateway
+    restart.
+    """
+    from dataclasses import replace
+    if context is None:
+        return replace(policy, paperclip_context_ref=None)
+    from agent.paperclip_context import validate_context
+    try:
+        context = validate_context(context)
+    except ValueError as exc:
+        _refuse('paperclip_context', str(exc))
+    contexts = getattr(authority, '_local_paperclip_contexts', None)
+    if contexts is None:
+        contexts = authority._local_paperclip_contexts = {}
+    slot = f'{authority.instance_id}:{authority.epoch}:{session_id}'
+    contexts[slot] = context
+    from agent.credential_persistence import fingerprint_secret_value
+    fingerprint = fingerprint_secret_value(json.dumps(context, sort_keys=True))
+    return replace(policy, paperclip_context_ref=f'{slot}#{fingerprint}')
+
+
 def rebind_launch_key(authority, session, api_key):
     """``session.resume`` re-supplying a launch-only key after an owner restart revoked it
     (call after authorizing *session*, a SessionRef).
@@ -986,7 +1032,8 @@ def _secret_refs(authority, retired):
     refs = set()
     for policy in filter(None, map(policies.get, chats)):
         refs.update(ref for ref in (policy.credential_ref and _key_slot(policy.credential_ref),
-                                    policy.config_secret_ref) if ref)
+                                    policy.config_secret_ref,
+                                    policy.paperclip_context_ref and _key_slot(policy.paperclip_context_ref)) if ref)
     return refs
 
 
@@ -1013,6 +1060,9 @@ def release_launch_secrets(authority, session_ids):
     for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired and ref not in kept]:
         del keys[ref]
         owners.pop(ref, None)
+    contexts = getattr(authority, '_local_paperclip_contexts', None) or {}
+    for ref in [ref for ref in contexts if ref.split(':', 2)[-1] in retired and ref not in kept]:
+        del contexts[ref]
     configs = getattr(authority, '_local_config_secrets', None) or {}
     for ref in list(configs):
         if ref.startswith(PREFIX):
@@ -1336,7 +1386,7 @@ def policy_scope(policy, *, authority=None, home=None):
         aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
                      if policy.ignore_user_config else contextlib.nullcontext())
         with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
-              policy.client_env_scope(), policy.paperclip_scope()):
+              policy.client_env_scope(), policy.paperclip_scope(authority)):
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)

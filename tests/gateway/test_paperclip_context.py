@@ -3,6 +3,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import pytest
@@ -148,9 +149,9 @@ async def test_session_create_binds_paperclip_context_for_the_turns_tools(tmp_pa
     try:
         _, mine = _create(owner, connection.actor, home, 'a', paperclip_context=context('x'))
         _, bare = _create(owner, connection.actor, home, 'b')  # a wake-free launch (TUI, Desktop, ACP...)
-        assert mine.paperclip_context() == context('x')
+        assert mine.paperclip_context(owner) == context('x')
         assert 'paperclip_context' not in json.loads(mine.request_json)  # never echoed to a viewer
-        assert bare.paperclip_context() is None
+        assert bare.paperclip_context(owner) is None
         assert seen(mine) == [context('x')] * 2
         assert seen(bare) == [{}] * 2
         # Outside any turn's policy scope, the gateway's own process never carries it either.
@@ -159,6 +160,49 @@ async def test_session_create_binds_paperclip_context_for_the_turns_tools(tmp_pa
     finally:
         await connection.close()
         close_stores_under(owner.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
+async def test_paperclip_context_values_never_reach_the_durable_policy_or_receipt(tmp_path, monkeypatch):
+    """MON-1027 point (a): the committed policy (``asdict(policy)``, what ``gateway.session_local``'s
+    ``stage_session_prefill`` puts in ``NewSessionBinding.policy`` and the sqlite receipt persists) must
+    carry no PAPERCLIP_* value -- only the opaque ``paperclip_context_ref``, same indirection as
+    ``credential_ref`` for a launch API key."""
+    home = _home(tmp_path)
+    owner, connection = await _owner(home, monkeypatch)
+    try:
+        secret = context('durable-secret')
+        ref, policy = _create(owner, connection.actor, home, 'durable', paperclip_context=secret)
+        committed = asdict(policy)
+        blob = json.dumps(committed)
+        for value in secret.values():
+            assert value not in blob
+        assert committed['paperclip_context_ref'] is not None
+        assert '#' in committed['paperclip_context_ref']
+        # The exact dict the sqlite receipt persists (gateway/session_local.py: 'policy': asdict(policy)).
+        receipt = owner.persistence.bindings.receipt(ref.session_id)
+        receipt_blob = json.dumps(receipt.policy)
+        for value in secret.values():
+            assert value not in receipt_blob
+        assert policy.paperclip_context(owner) == secret  # still resolvable through the live authority
+    finally:
+        await connection.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
+
+
+def test_paperclip_context_is_revoked_when_the_authority_restarts():
+    """A restarted authority's in-memory registry is empty (``bind_paperclip_context`` never persists the
+    values): a session that carried a context then simply runs its turns with none, the same fail-closed
+    disposition ``bind_launch_key``'s docstring already promises for its API key."""
+    from gateway.session_policy import LocalSessionPolicy
+    from agent.paperclip_context import child_environ
+    stale_ref = 'fixture:0:some-retired-session#sha256:deadbeefdeadbeef'
+    policy = replace(LocalSessionPolicy('cli', 'cli', '/tmp', None, (), '{}', '{}', '{}'),
+                      paperclip_context_ref=stale_ref)
+    restarted_authority = SimpleNamespace(instance_id='fixture', epoch=0)  # no _local_paperclip_contexts
+    assert policy.paperclip_context(restarted_authority) is None
+    with policy.paperclip_scope(restarted_authority):
+        assert not any(k.startswith('PAPERCLIP_') for k in child_environ())
 
 
 @pytest.mark.asyncio
@@ -200,14 +244,15 @@ async def test_runtime_describe_lists_paperclip_context(tmp_path, monkeypatch):
         close_stores_under(owner.persistence.scope.profile_dir)
 
 
-def test_policy_identity_ignores_the_field_for_a_session_committed_before_it_existed():
-    from dataclasses import replace
+def test_policy_identity_always_ignores_the_opaque_paperclip_ref():
+    """MON-1027 point (a), the identity side: ``paperclip_context_ref`` is an opaque per-bind reference
+    (session slot + fingerprint), never the context's content -- it must never change a policy's identity
+    hash, exactly like ``credential_ref``/``config_secret_ref`` already don't for a launch API key."""
     from gateway.session_policy import LocalSessionPolicy
     from gateway.session_policy_credentials import policy_identity
     base = LocalSessionPolicy('cli', 'cli', '/tmp', None, (), '{}', '{}', '{}')
-    assert policy_identity(base) == policy_identity(replace(base, paperclip_context_json=None))
-    assert policy_identity(replace(base, paperclip_context_json=json.dumps(context('x'), sort_keys=True))) \
-        != policy_identity(base)
+    ref = 'fixture:0:some-session#sha256:deadbeefdeadbeef'
+    assert policy_identity(base) == policy_identity(replace(base, paperclip_context_ref=ref))
 
 
 def test_client_side_paperclip_context_policy_collects_this_processs_own_env(monkeypatch):

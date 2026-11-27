@@ -7,11 +7,27 @@ environment nor any ``env_passthrough``/``client_env`` allowlist can smuggle or 
 
 This ContextVar is bound once per Paperclip-run session, across the CLI process -> shared gateway
 RPC boundary (``hermes_cli.gateway_chat.paperclip_context_policy`` sends ``collect_context()`` as
-``session.create``'s ``paperclip_context``; ``gateway.session_policy.build_policy`` validates and
-freezes it as ``LocalSessionPolicy.paperclip_context_json``; ``gateway.session_policy.policy_scope``
-binds it for every turn via ``LocalSessionPolicy.paperclip_scope``), mirroring the existing
-``client_env`` mechanism. A session a Paperclip wake did not launch (TUI, Desktop, ACP, bot rooms,
-messaging/cron) sends or stores none, so its turns run exactly as before this module existed.
+``session.create``'s ``paperclip_context``; ``gateway.session_policy.bind_paperclip_context`` validates
+it and keeps the actual values ONLY in the owning authority's in-memory registry, for this authority's
+lifetime, exactly like ``bind_launch_key`` keeps an API key out of the durable receipt -- the frozen
+``LocalSessionPolicy`` carries just an opaque ``paperclip_context_ref`` (a session slot plus a
+non-reversible fingerprint), never the values themselves, so they never reach ``asdict(policy)`` or the
+session's SQLite receipt. ``gateway.session_policy.policy_scope`` resolves that ref back through the
+authority and binds the result for every turn via ``LocalSessionPolicy.paperclip_scope``, mirroring the
+existing ``client_env`` mechanism. A restarted authority's registry is empty, so a session that carried
+a context runs its turns with none afterward -- the same fail-closed disposition as a session a Paperclip
+wake never launched (TUI, Desktop, ACP, bot rooms, messaging/cron), which sends or stores none to begin
+with.
+
+Accepted risk, by design (MON-1027 review): ``paperclip_context`` is a generic ``session.create`` field,
+so any client already inside this gateway's local trust tier -- the tier ``api_key`` and ``client_env``
+already rely on, since reaching ``session.create`` at all requires the private control socket's ticket --
+can assert an arbitrary Paperclip identity for that session's terminal/execute_code children.
+``validate_context`` checks only the shape (allowlisted names, bounded size, all-or-nothing required
+subset), never that the asserted identity belongs to the caller: there is no cryptographic binding, and
+none is added here. The trust boundary is unchanged (a caller able to reach this RPC locally is already
+trusted with a real model API key and an arbitrary ``client_env``); this adds a field inside that
+boundary, not a new one. Pinned by ``tests/gateway/test_paperclip_context.py``.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar

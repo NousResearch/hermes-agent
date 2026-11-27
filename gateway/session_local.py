@@ -363,7 +363,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     from gateway.session_local_recovery import restore_local_session
     authority._require_admission_open()
     sid = local_session_id(authority.profile_id, actor.subject, request_id)
-    from gateway.session_policy import bind_launch_key, restore_policy, launch_key
+    from gateway.session_policy import bind_launch_key, bind_paperclip_context, restore_policy, launch_key
     store = authority_persistence(authority)
     if store.sessions.get(sid) is not None:
         saved = store.bindings.receipt(sid)
@@ -397,6 +397,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets,
                              owner_key=client_key is None,  # an overlapping exact retry takes the held one
                              client_request=client_request)
+    policy = bind_paperclip_context(authority, sid, policy, params.get('paperclip_context'))
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)

@@ -176,4 +176,5 @@ def test_a_core_era_disable_keeps_weixin_off_through_both_installers(tmp_path, p
     plugins = (yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}).get("plugins") or {}
     assert plugins.get("disabled") == [name], f"the core-era disable was lifted: {plugins}"
     assert "weixin" not in (plugins.get("enabled") or []), plugins
-    assert any("installed but off" in line and "plugins enable weixin`" in line for line in said), said
+    assert any(f"plugins.disabled lists '{name}', so it is installed but off" in line
+               and "plugins enable weixin`" in line for line in said), said

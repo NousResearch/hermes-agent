@@ -662,6 +662,7 @@
     .global-settings-card,
     .global-settings-disclosure,
     .appearance-mode-grid,
+    .appearance-make-it-yours .discovery-theme-controls,
     .gateway-mode-cards,
     .gateway-connection-editor,
     .billing-summary-grid,
@@ -711,10 +712,18 @@
 :root[data-shell='portal']
   [data-page-surface]
   [data-slot='overlay-main']
-  :is(.global-settings-card, .global-settings-disclosure) {
+  :is(.global-settings-card, .global-settings-disclosure, .appearance-make-it-yours .discovery-theme-controls) {
   border: 0;
   border-radius: var(--portal-radius-settings-card);
   background: var(--portal-settings-card);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  .appearance-make-it-yours
+  .discovery-theme-controls {
+  padding: var(--portal-settings-card-pad) var(--portal-settings-inset);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-card {

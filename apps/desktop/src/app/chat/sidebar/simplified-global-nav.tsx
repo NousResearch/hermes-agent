@@ -32,7 +32,6 @@ import {
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
-  MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
@@ -111,7 +110,7 @@ interface RailButtonProps {
   /** Something here needs the user (Routines: a failed or overdue routine), as a dot on the glyph. */
   alert?: string
   label: string
-  metric?: IaAction
+  metric: IaAction
   onNavigate: () => void
   panel: null | PanelToggle
 }
@@ -133,9 +132,7 @@ function RailButton({ active, alert, area, children, label, metric, onNavigate, 
         // Where a splash row points at this destination (app/discovery/nav-spotlight.tsx).
         data-nav-spot={area}
         onClick={() => {
-          if (metric) {
-            recordIaAction(metric)
-          }
+          recordIaAction(metric)
           if (panel) {
             panel.toggle()
 
@@ -264,15 +261,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
       active: view === 'artifacts'
     },
     // Figma's Routines glyph is a clock (16292:15264).
-    { id: 'cron', label: t.cron.title, icon: 'clock', area: 'cron', route: CRON_ROUTE, active: view === 'cron' },
-    {
-      id: 'messaging',
-      label: t.sidebar.nav.messaging,
-      icon: 'mail',
-      area: 'messaging',
-      route: MESSAGING_ROUTE,
-      active: view === 'messaging'
-    }
+    { id: 'cron', label: t.cron.title, icon: 'clock', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
   ] as const
 
   const coreItem = ({ icon, ...item }: (typeof anchored)[number] | (typeof movable)[number]) => ({
@@ -318,8 +307,6 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
     <nav aria-label={t.updates.appName} className="portal-rail w-(--global-nav-width) shrink-0" data-slot="global-nav">
       <div className="portal-rail-group min-h-0 flex-1 overflow-y-auto">
         {items.map(item => {
-          const metric: IaAction | undefined =
-            item.area === 'messaging' ? undefined : (`ia.rail.${item.area}` as IaAction)
           const button = (
             <RailButton
               active={item.active}
@@ -327,7 +314,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
               area={item.area}
               key={item.id}
               label={item.label}
-              metric={metric}
+              metric={`ia.rail.${item.area}`}
               onNavigate={() => onNavigate(item)}
               panel={panelFor(item.area, item.active)}
             >

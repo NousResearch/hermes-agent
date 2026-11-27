@@ -75,6 +75,8 @@ import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
+  /** Mounted inside Capabilities' Messaging tab: suppress the duplicate page header. */
+  embedded?: boolean
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
@@ -320,7 +322,7 @@ function AgentChannelRow({ platform, pending, onEdit }: AgentChannelRowProps) {
   )
 }
 
-export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+export function MessagingView({ embedded = false, setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const frame = usePageFrameCopy()
   const m = t.messaging
@@ -871,6 +873,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   return (
     <PageSearchShell
+      hideHeader={embedded}
       pageDescription={frame.messagingDescription}
       pageTitle={pinnedOwner ? undefined : t.sidebar.nav.messaging}
       {...props}

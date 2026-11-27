@@ -8,6 +8,8 @@
    lines take the brand ink lightened for body text on it; the agent's stay white. */
 :root[data-shell='portal'] [data-hud-shell] {
   --hud-sheet: var(--portal-raw-navy-channels);
+  /* Keep the bottom spectrum edge as the sole focus signal instead of a competing blue ring. */
+  --dt-composer-ring: var(--portal-stroke-strong);
 }
 
 :root[data-shell='portal'] [data-hud-shell] [data-slot='composer-bounds'] {
@@ -35,12 +37,65 @@
   white-space: nowrap;
 }
 
-/* Inline approval, clarify, and computer-use cards in HUD wear the same redesign surface tokens. */
-:root[data-shell='portal'] [data-hud-shell] :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
-  border-radius: var(--portal-radius-surface);
-  background: var(--portal-surface-card-inline);
+/* Keep stage-only dock spacing, fade curtains, and vertical landing centering out of the
+   chrome-free floating HUD bar. */
+:root[data-shell='portal'] [data-hud-shell] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]),
+:root[data-shell='portal'] [data-hud-shell] [data-chat-landing='true'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+  top: auto;
+  bottom: 0;
+  width: 100%;
+  max-width: none;
+  padding-block: 0;
+  translate: none;
 }
 
-:root[data-shell='portal'] [data-hud-shell] [data-redesigned-composer] [data-slot='composer-surface'] {
+:root[data-shell='portal'] [data-hud-shell] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out])::before {
+  content: none;
+}
+
+/* Compact Spotlight bar proportions with crisp floating stroke, elevation, and full panel radius
+   so the spectrum edge clips cleanly inside the rounded bottom corners. */
+:root[data-shell='portal'] [data-hud-shell] [data-slot='composer-root'] {
   border-radius: var(--portal-radius-panel);
+}
+
+:root[data-shell='portal'] [data-hud-shell] [data-slot='composer-fade'] {
+  min-height: 0;
+}
+
+:root[data-shell='portal'] [data-hud-shell] [data-slot='composer-surface'] {
+  --composer-surface-pad-x: 0.875rem;
+  --composer-surface-pad-y: 0.625rem;
+  --composer-row-gap: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--portal-stroke-floating) !important;
+  border-radius: var(--portal-radius-panel);
+  box-shadow: var(--portal-shadow-floating);
+}
+
+/* Transcript scrim and completion drawer share the same floating panel geometry and hairline. */
+:root[data-shell='portal'] [data-hud-shell] [data-hud-glass] {
+  border: 1px solid var(--portal-stroke-floating);
+  border-bottom-width: 0;
+  border-radius: var(--portal-radius-panel) var(--portal-radius-panel) 0 0;
+}
+
+:root[data-shell='portal'] [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
+  border-top-width: 0;
+  border-bottom-width: 1px;
+  border-radius: 0 0 var(--portal-radius-panel) var(--portal-radius-panel);
+}
+
+:root[data-shell='portal'] [data-hud-shell] [data-slot='composer-completion-drawer'] {
+  border: 1px solid var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-panel);
+  background: var(--portal-surface-elevated) !important;
+  box-shadow: var(--portal-shadow-floating);
+}
+
+/* Inline approval, clarify, and computer-use cards in HUD wear the same redesign surface tokens. */
+:root[data-shell='portal'] [data-hud-shell] :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
+  border: 1px solid var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-surface);
+  background: var(--portal-surface-card-inline);
 }

@@ -51,3 +51,26 @@
   background: var(--portal-surface-brand);
   color: var(--portal-text-on-brand);
 }
+
+/* A split route tile (Routines, Agents, Settings beside chat) may be narrower than a full window:
+   collapse its internal nav column and drop its panel inset when the tile itself is narrow. */
+:root[data-shell='portal'] [data-route-tile] {
+  container-type: inline-size;
+}
+
+@container (max-width: 48rem) {
+  :root[data-shell='portal'] [data-route-tile] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
+    display: none;
+  }
+
+  :root[data-shell='portal']
+    [data-route-tile]
+    [data-page-surface]
+    :is(.management-panel.routines-page, .page-stage):has(> .page-sidebar-panel) {
+    padding-inline-start: 0;
+  }
+
+  :root[data-shell='portal'] [data-route-tile] [data-page-surface] [data-slot='overlay-main'] {
+    grid-column: 1 / -1;
+  }
+}

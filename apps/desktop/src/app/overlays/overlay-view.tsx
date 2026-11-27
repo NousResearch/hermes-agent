@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef } from 'react'
+import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useLayoutEffect, useRef } from 'react'
 
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
@@ -11,6 +11,10 @@ import { cn } from '@/lib/utils'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { PageToolbar } from './page-toolbar'
+
+/** True when an OverlayView-backed page (Routines, Agents, Settings) is mounted inside a split
+ *  route tile rather than covering the full viewport. */
+export const RouteTileContext = createContext(false)
 
 // Shared top clearance for overlay content that sits *beside* the floating
 // close button (which is absolute at `0.1875rem + titlebar/2`, -translate-y-1/2,
@@ -94,18 +98,22 @@ export function OverlayView({
   titlebarActions
 }: OverlayViewProps) {
   const page = usePortalShell()
+  const inTile = useContext(RouteTileContext)
   const titlebarHeight = useTitlebarHeight()
-  const surfaceRef = usePageOverlayFocus(page)
+  const surfaceRef = usePageOverlayFocus(page && !inTile)
 
   const closeOverlay = () => {
     triggerHaptic('close')
     onClose()
   }
 
-  // Esc dismisses every OverlayView-based overlay. Nested Radix dialogs
-  // stop propagation themselves, so opening (e.g.) the model picker inside
-  // Settings still closes the picker first instead of the underlying overlay.
+  // Esc dismisses every full-viewport OverlayView-based overlay. Inside a split tile the user is
+  // working beside chat, so bare Escape must not dismiss the tile.
   useEffect(() => {
+    if (inTile) {
+      return
+    }
+
     const releaseLayer = pushEscapeLayer(ESCAPE_PRIORITY.overlay)
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -124,19 +132,23 @@ export function OverlayView({
       window.removeEventListener('keydown', onKeyDown)
       releaseLayer()
     }
-  }, [onClose])
+  }, [inTile, onClose])
 
   return (
     <div
       className={cn(
-        'fixed z-50',
-        // Equidistant inset on every side. The top value is driven by the
-        // titlebar height so the card clears the OS traffic-lights vertically;
-        // since the card top already sits below them, the left needs no extra
-        // inset — keeping all sides equal so the card is ~full-width at any size.
-        page
-          ? 'bottom-0 start-(--global-nav-width) end-0 top-(--titlebar-height) bg-background outline-none'
-          : 'inset-0 bg-black/22 p-[calc(var(--titlebar-height)+0.625rem)] backdrop-blur-[0.125rem] sm:p-[calc(var(--titlebar-height)+0.875rem)]'
+        inTile
+          ? 'relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-background outline-none'
+          : [
+              'fixed z-50',
+              // Equidistant inset on every side. The top value is driven by the
+              // titlebar height so the card clears the OS traffic-lights vertically;
+              // since the card top already sits below them, the left needs no extra
+              // inset — keeping all sides equal so the card is ~full-width at any size.
+              page
+                ? 'bottom-0 start-(--global-nav-width) end-0 top-(--titlebar-height) bg-background outline-none'
+                : 'inset-0 bg-black/22 p-[calc(var(--titlebar-height)+0.625rem)] backdrop-blur-[0.125rem] sm:p-[calc(var(--titlebar-height)+0.875rem)]'
+            ]
       )}
       // Every OverlayView-based overlay (settings, command-center, agents, cron,
       // profiles, star map, …) covers the chat while the composer stays mounted
@@ -144,6 +156,7 @@ export function OverlayView({
       // the global type-to-focus / soft `/` / Enter down, so keystrokes don't
       // leak into the hidden composer (and the overlay's own bare-key shortcuts,
       // e.g. star map's Space, keep working).
+      data-in-tile={inTile || undefined}
       data-overlay-surface=""
       data-page-surface={page || undefined}
       onClick={event => {
@@ -159,7 +172,7 @@ export function OverlayView({
       // so a fixed overlay mounted inside a zone would read 0 and bleed to
       // the edges. Re-pin the real height at the overlay root.
       // Classic's card insets from its compact band on every host, as on main.
-      style={{ '--titlebar-height': `${page ? titlebarHeight : TITLEBAR_HEIGHT}px` } as CSSProperties}
+      style={inTile ? undefined : ({ '--titlebar-height': `${page ? titlebarHeight : TITLEBAR_HEIGHT}px` } as CSSProperties)}
       // A redesign page's container is programmatically focused (usePageOverlayFocus) so Tab enters
       // the page; it is not a control, so it stays out of the tab order and draws no focus ring.
       tabIndex={page ? -1 : undefined}

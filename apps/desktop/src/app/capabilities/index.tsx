@@ -2,7 +2,7 @@ import './ui/page.css'
 
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { PageLoader } from '@/components/page-loader'
@@ -24,6 +24,7 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell, type PageShellTab } from '../page-search-shell'
+import { MessagingView } from '../page-views'
 import { SETTINGS_ROUTE } from '../routes'
 import { useSettingsOwner } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -55,14 +56,9 @@ import { CapabilitySearch } from './ui/capability-search'
 // links fall back to 'skills' via useRouteEnumParam.
 const CAPABILITY_MODES = ['skills', 'plugins', 'connectors', 'toolsets'] as const
 
-type CapabilityMode = (typeof CAPABILITY_MODES)[number]
+const PORTAL_CAPABILITY_MODES = ['connectors', 'plugins', 'skills', 'messaging'] as const
 
-// The redesign's page leads with what Hermes is connected to, then what extends it, then what it
-// knows how to do; it opens on the first. Classic keeps its own order above. No Tools tab: here it
-// was a list with nothing to configure, and an agent's tools are switched in that agent's settings
-// (which pins this view to `toolsets`). A link to the old tab lands on the first.
-const PORTAL_CAPABILITY_MODES = ['connectors', 'plugins', 'skills'] as const satisfies readonly CapabilityMode[]
-
+type CapabilityMode = (typeof CAPABILITY_MODES)[number] | (typeof PORTAL_CAPABILITY_MODES)[number]
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
   /** Embedded mode (plugin dialogs — e.g. Bot Mode's Advanced section): tab
@@ -181,6 +177,11 @@ export function CapabilitiesView({
         redesignLayout={redesignedInventory}
       />
     ),
+    messaging: () => (
+      <Suspense fallback={null}>
+        <MessagingView embedded />
+      </Suspense>
+    ),
     plugins: () =>
       redesign && !pluginsReachable ? (
         <PluginsElsewhere onOpenAgentSettings={openAgentSettings} />
@@ -276,7 +277,7 @@ export function CapabilitiesView({
       <CapabilitiesBody agentLayout={presentation.agentLayout}>
         <CapabilityLoadGate
           error={skillsError}
-          failed={skillsFailed || toolsetsFailed}
+          failed={mode !== 'messaging' && (skillsFailed || toolsetsFailed)}
           onRefresh={refreshCapabilities}
           pending={pending}
           skeleton={capabilitiesSkeleton(presentation, query, setQuery)}
@@ -545,7 +546,7 @@ function capabilitiesHeaderAction(
 
   return (
     <CapabilityInventoryScope
-      managedHere={mode === 'connectors'}
+      managedHere={mode === 'connectors' || mode === 'messaging'}
       onOpenAgentSettings={onOpenAgentSettings}
       scope={scope}
     />
@@ -603,9 +604,9 @@ function capabilityTabs(
     skills: { label: t.skills.tabSkills, meta: skills?.length ?? null },
     plugins: { label: t.skills.tabPlugins },
     connectors: { label: connectorsLabel ?? t.connectorsPage.title },
+    messaging: { label: t.sidebar.nav.messaging },
     toolsets: { label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
   }
-
   return modes.map(id => ({ id, ...tabs[id] }))
 }
 

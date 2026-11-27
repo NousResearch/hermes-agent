@@ -15,6 +15,7 @@ import { runtimeTranslations, type Translations, useI18n } from '@/i18n'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 import { $portalShell, usePortalShell } from '@/store/shell-variant'
 
+import { RouteTileContext } from '../overlays/overlay-view'
 import { ArtifactsView, CapabilitiesView, CronView, MessagingView, ProfilesView, SettingsView } from '../page-views'
 import {
   $routesVersion,
@@ -102,19 +103,27 @@ export function RouteTilePane({ path }: { path: string }) {
 
   if (builtin) {
     return (
-      <ContribBoundary id={path}>
-        <Suspense fallback={null}>
-          <ContribRender render={builtin.render} />
-        </Suspense>
-      </ContribBoundary>
+      <RouteTileContext.Provider value={true}>
+        <div className="h-full min-h-0 w-full" data-route-tile="">
+          <ContribBoundary id={path}>
+            <Suspense fallback={null}>
+              <ContribRender render={builtin.render} />
+            </Suspense>
+          </ContribBoundary>
+        </div>
+      </RouteTileContext.Provider>
     )
   }
 
   if (contrib) {
     return (
-      <ContribBoundary id={path}>
-        <ContribRender render={contrib.render} />
-      </ContribBoundary>
+      <RouteTileContext.Provider value={true}>
+        <div className="h-full min-h-0 w-full" data-route-tile="">
+          <ContribBoundary id={path}>
+            <ContribRender render={contrib.render} />
+          </ContribBoundary>
+        </div>
+      </RouteTileContext.Provider>
     )
   }
 

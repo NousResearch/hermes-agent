@@ -193,7 +193,6 @@ it('applies nav preferences to the rail’s core destinations as classic does to
       en.simplifiedAgents.library,
       // Capabilities hosts the Plugins tab, the way back to a plugin's off switch: never hidden.
       en.sidebar.nav.capabilities,
-      en.sidebar.nav.messaging,
       en.commandCenter.settings
     ])
     act(dispose)
@@ -203,7 +202,6 @@ it('applies nav preferences to the rail’s core destinations as classic does to
       en.sidebar.nav.capabilities,
       en.simplifiedAgents.library,
       en.cron.title,
-      en.sidebar.nav.messaging,
       en.commandCenter.settings
     ])
   } finally {

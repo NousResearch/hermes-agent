@@ -426,6 +426,13 @@ def _cmd_export(args, *, persistence=None):
         filters["include_pinned"] = True
     if args.session_id and not persistence.sessions.resolve_id(args.session_id):
         return _not_found(args.session_id)
+    output = getattr(args, "output", None)
+    if (not args.session_id and not filters and output and output != "-" and not os.path.exists(output)
+            and persistence.sessions.resolve_id(output) == output):
+        # `export <id>` puts the id in the OUTPUT slot and would export every session to a file named <id> (#160181).
+        print(f"Error: '{output}' is a session id, not an output path. "
+              f"Did you mean: hermes sessions export --session-id {output}")
+        return 1
 
     def _redact(data):
         if not args.redact or data is None:

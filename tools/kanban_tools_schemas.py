@@ -192,7 +192,8 @@ KANBAN_BLOCK_SCHEMA = _schema(
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
                 "resumes automatically when an incomplete parent finishes; "
-                "if no parent is open it is recorded as needs_input instead. "
+                "with no open parent, ordinary workers record needs_input instead. "
+                "A Goal worker must have an incomplete parent and pass its judge gate. "
                 "The others surface to a human. Omit only if none apply."
             ),
         },

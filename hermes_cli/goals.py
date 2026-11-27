@@ -907,6 +907,7 @@ def judge_goal(
     except Exception as exc:
         # No judge can run: an outage like AuxiliaryClientUnavailable below, not a "continue" verdict.
         logger.warning("goal judge: auxiliary client import failed (%s)", type(exc).__name__)
+        logger.debug("goal judge: auxiliary client import traceback", exc_info=True)
         return "continue", _JUDGE_IMPORT_FAILURE, False, None, True
 
     # Prompt priority: contract > subgoals > plain. With both, subgoals fold into the contract

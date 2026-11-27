@@ -1,0 +1,36 @@
+manifest_version: 0.11.5
+batch_id: hermes-corpus-wave1-batch5
+runtime: standalone-hermes
+patterns:
+  - id: dual_light_conflicting_claims
+    path: references/patterns/cinematic/dual_light_conflicting_claims.json
+    routes: [divided_obligation, competing_systems, allegiance_shift]
+  - id: kubrick_red_culmination_state
+    path: references/patterns/cinematic/kubrick_red_culmination_state.json
+    routes: [color_accumulation, culmination, latent_to_dominant]
+  - id: reflection_substitution_ownership
+    path: references/patterns/semiotic/reflection_substitution_ownership.json
+    routes: [image_ownership, substitution, reflected_agency]
+  - id: occlusion_relational_denial
+    path: references/patterns/spatial-geometric/occlusion_relational_denial.json
+    routes: [denial, occlusion, forced_recognition]
+  - id: broken_symmetry_state_evidence
+    path: references/patterns/spatial-geometric/broken_symmetry_state_evidence.json
+    routes: [measurable_deviation, state_evidence, disrupted_order]
+  - id: material_repair_visible_scar
+    path: references/patterns/semiotic/material_repair_visible_scar.json
+    routes: [repair, persistent_consequence, resilience]
+  - id: negative_space_authority_vacancy
+    path: references/patterns/spatial-geometric/negative_space_authority_vacancy.json
+    routes: [absent_authority, succession_pressure, operative_vacancy]
+selection_policy:
+  primary_limit: 1
+  supporting_limit: 2
+  minimum_confidence: 0.55
+  fail_closed: NOT_COMPUTABLE
+guards:
+  observed_structure_required: true
+  mutation_required: true
+  provenance_required: true
+  latent_surface_default: true
+  color_meaning_project_specific: true

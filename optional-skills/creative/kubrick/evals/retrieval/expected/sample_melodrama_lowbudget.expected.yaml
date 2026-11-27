@@ -1,0 +1,7 @@
+retrieval_receipt:
+  status: SELECTED
+  selected_primary_grammar: alchemical_nigredo_putrefaction
+  ranked_patterns:
+    - pattern_id: alchemical_nigredo_putrefaction
+      total_score: 0.6575
+  confidence: 0.6575

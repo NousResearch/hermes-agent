@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kubrick.local/schemas/diagnostic.schema.json",
+  "title": "Kubrick Structured Diagnostic",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "code",
+    "exit_code",
+    "message",
+    "reason_vector",
+    "context",
+    "recoverable"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "status": {"enum": ["INVALID_COMMAND", "DEPENDENCY_UNAVAILABLE", "NOT_COMPUTABLE", "EXECUTION_FAILED"]},
+    "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+    "exit_code": {"enum": [1, 2, 3, 4]},
+    "message": {"type": "string", "minLength": 1},
+    "reason_vector": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "context": {"type": "object"},
+    "recoverable": {"type": "boolean"}
+  }
+}

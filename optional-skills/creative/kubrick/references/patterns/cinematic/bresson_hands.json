@@ -1,0 +1,18 @@
+{
+  "pattern_id": "bresson_hands",
+  "title": "Bresson Hands as Moral Action Site",
+  "version": "0.11.5",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Robert Bresson", "title": "Notes on the Cinematograph / films", "date": "20th century"}],
+  "observed_structure": ["A precise hand action carries moral or relational information that dialogue and facial expression withhold.", "The object touched, passed, opened, or refused changes the scene's causal state."],
+  "dramatic_operations": ["gesture as character", "moral transformation through action"],
+  "transformation_grammars": ["substitute"],
+  "cinematic_affordances": ["extreme close-up on hands", "object sound emphasized", "face withheld during consequential action"],
+  "misuse_risks": ["empty fetishization of hands", "gesture without consequence", "direct imitation of Bresson staging"],
+  "mutation_requirements": {"required": true, "variables": ["gesture", "object", "ownership", "sound emphasis", "consequence"]},
+  "transferable_structure": "Isolate a precise gesture and let its material consequence carry character or moral change.",
+  "non_transferable_surface": "Do not copy specific Bresson performances, Catholic framing, shot sequences, or prop choices.",
+  "production_cost": "low",
+  "confidence": 0.85
+}

@@ -1,0 +1,23 @@
+{
+  "pattern_id": "alchemical_calcination_false_structure",
+  "title": "Calcination / False Structure Under Heat",
+  "version": "0.11.0",
+  "domain": "alchemical",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"European alchemical tradition","title":"Calcination operation","date":"early modern","cultural_context":"European alchemy"}],
+  "observed_structure": ["a rigid social or material arrangement is subjected to sustained pressure", "status markers become brittle, exposed, or unusable", "the surviving behavior is simpler than the destroyed identity"],
+  "dramatic_operations": ["strip false authority", "expose brittle identity", "convert humiliation into agency"],
+  "transformation_grammars": ["calcination", "pressure-to-clarity"],
+  "cinematic_affordances": ["dry high-contrast light", "repeated heat shimmer or hard glare", "status objects cracking, scorching, or losing function", "camera holds after public composure fails"],
+  "applicable_genres": ["drama", "satire", "thriller", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["European alchemical source; transferable only as pressure and state change"],
+  "misuse_risks": ["literal occult furnace", "fire used as generic intensity", "humiliation without causal transformation"],
+  "mutation_requirements": {"required":true,"variables":["heat source","status object","witness position","surface integrity","camera distance"]},
+  "transferable_structure": "sustained pressure destroys a rigid false form and reveals a simpler operative identity",
+  "non_transferable_surface": "robes, laboratories, alchemical symbols, or unexplained ritual fire",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.5,"lighting_dependency":0.7,"VFX_dependency":0.2},
+  "lexicon_links": ["calcination", "athanor", "sulfur"],
+  "confidence": 0.82
+}

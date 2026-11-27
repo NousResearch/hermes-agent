@@ -1,0 +1,27 @@
+schema_version: 1.0.0
+project_id: authority-transfer-storyboard
+governing_grammar: authority persists through spatial and material systems
+supporting_grammars:
+  - ownership transfer through access
+active_motifs:
+  - motif_id: cracked-badge
+    observed_form: cracked access badge
+    current_state: held by supervisor
+    recurrence_count: 1
+    last_mutation: null
+    ownership: supervisor
+    pattern_links: []
+    convergence_sites:
+      - primary
+retired_motifs: []
+prohibited_motifs:
+  - crown imagery
+unresolved_payoffs:
+  - badge ownership must determine doorway access
+completed_payoffs: []
+collisions: []
+cultural_boundaries: []
+symbolic_debt: 0
+saturation_score: 0.25
+revision: 1
+updated_at: "2026-07-29T00:00:00Z"

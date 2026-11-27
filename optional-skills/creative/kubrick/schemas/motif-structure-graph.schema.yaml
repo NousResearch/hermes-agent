@@ -1,0 +1,92 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/motif-structure-graph.schema.yaml
+title: Kubrick Motif Structure Graph
+type: object
+additionalProperties: false
+required: [schema_version, graph_id, intent, nodes, edges, layers, convergence_sites, residue, surface_output, validation]
+properties:
+  schema_version: {const: 1.1.0}
+  graph_id: {type: string, minLength: 1}
+  intent:
+    type: object
+    additionalProperties: false
+    required: [dramatic_function, emotional_force, desired_state_change]
+    properties:
+      dramatic_function: {type: string, minLength: 1}
+      emotional_force: {type: string, minLength: 1}
+      desired_state_change: {type: string, minLength: 1}
+  nodes:
+    type: array
+    minItems: 2
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, kind, observed_form, initial_state, target_state, provenance_label]
+      properties:
+        id: {type: string, minLength: 1}
+        kind: {enum: [motif, character, object, location, sound, light, boundary, trace]}
+        observed_form: {type: string, minLength: 1}
+        initial_state: {type: string, minLength: 1}
+        target_state: {type: string, minLength: 1}
+        provenance_label: {enum: [OBSERVED, INFERRED, SPECULATIVE]}
+        lexicon_links: {type: array, items: {type: string}}
+        pattern_links: {type: array, items: {type: string}}
+  edges:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required: [source, target, relation, pressure, transformation]
+      properties:
+        source: {type: string}
+        target: {type: string}
+        relation: {enum: [binds, divides, mirrors, contaminates, conceals, reveals, transfers, opposes, resonates, crosses, encloses, dissolves, coagulates]}
+        pressure: {type: number, minimum: 0, maximum: 1}
+        transformation: {type: string, minLength: 1}
+  layers:
+    type: object
+    additionalProperties: false
+    required: [layout_geometry, semantics_function, attributes_states]
+    properties:
+      layout_geometry: {type: array, items: {type: string}}
+      semantics_function: {type: array, items: {type: string}}
+      attributes_states: {type: array, items: {type: string}}
+  convergence_sites:
+    type: array
+    minItems: 1
+    maxItems: 2
+    items:
+      type: object
+      additionalProperties: false
+      required: [site_id, node_ids, edge_ids, observable_effect, mask_priority]
+      properties:
+        site_id: {type: string, minLength: 1}
+        node_ids: {type: array, minItems: 2, items: {type: string}}
+        edge_ids: {type: array, minItems: 1, items: {type: integer, minimum: 0}}
+        observable_effect: {type: string, minLength: 1}
+        mask_priority: {type: number, minimum: 0, maximum: 1}
+  residue: {type: array, items: {type: string}}
+  surface_output:
+    type: object
+    additionalProperties: false
+    required: [audience_prompt, geometry, light, material, state_differentials, convergence, residue]
+    properties:
+      audience_prompt: {type: string}
+      geometry: {type: array, items: {type: string}}
+      light: {type: array, items: {type: string}}
+      material: {type: array, items: {type: string}}
+      state_differentials: {type: array, items: {type: string}}
+      convergence: {type: array, items: {type: string}}
+      residue: {type: array, items: {type: string}}
+  validation:
+    type: object
+    additionalProperties: false
+    required: [attribute_leakage, convergence_density, named_esoterica_surface, unknown_references, errors, status]
+    properties:
+      attribute_leakage: {type: array, items: {type: string}}
+      convergence_density: {type: number, minimum: 0}
+      named_esoterica_surface: {type: array, items: {type: string}}
+      unknown_references: {type: array, items: {type: string}}
+      errors: {type: array, items: {type: string}}
+      status: {enum: [VALID, INVALID, NOT_COMPUTABLE]}

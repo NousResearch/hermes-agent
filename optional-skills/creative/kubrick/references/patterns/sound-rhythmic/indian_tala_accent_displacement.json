@@ -1,0 +1,23 @@
+{
+  "pattern_id": "indian_tala_accent_displacement",
+  "title": "Tala-Informed Cycle / Accent Displacement",
+  "version": "0.11.1",
+  "domain": "sound-rhythmic",
+  "source_tier": "SCHOLARLY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Indian music theory and ethnomusicology scholarship","title":"Tala, cyclical meter, and sam/khali relations","date":"classical tradition with modern scholarship","cultural_context":"North and South Asian rhythmic traditions"}],
+  "observed_structure": ["a recurring cycle establishes an expected point of return", "accent, action, or visual emphasis shifts away from that point", "the delayed or altered return changes anticipation while preserving the cycle"],
+  "dramatic_operations": ["displace expected emphasis", "delay convergence", "make recurrence carry changing agency"],
+  "transformation_grammars": ["cyclical accent displacement", "return-with-reweighted-beat"],
+  "cinematic_affordances": ["editing cycle repeats with one displaced cut", "gesture lands before or after the established visual downbeat", "sound and movement reunite at a later return point", "empty beat functions as structural absence"],
+  "applicable_genres": ["drama", "action", "musical", "experimental", "thriller"],
+  "applicable_formats": ["feature", "pilot", "short", "music video", "vertical video"],
+  "cultural_scope": ["South Asian rhythmic provenance must be retained; use only the formal relation of cycle, emphasis, absence, and return unless culturally specific consultation supports more"],
+  "misuse_risks": ["generic exotic percussion", "claiming equivalence among distinct tala systems", "decorative rhythmic complexity without dramatic consequence"],
+  "mutation_requirements": {"required":true,"variables":["cycle length","accent position","empty beat","movement alignment","return point"]},
+  "transferable_structure": "a stable cycle gains dramatic pressure when emphasis moves and later returns under altered agency",
+  "non_transferable_surface": "imitating specific compositions, instruments, devotional contexts, or naming a tala without accurate structural use",
+  "production_cost": {"location_dependency":0.0,"prop_dependency":0.0,"lighting_dependency":0.0,"VFX_dependency":0.0},
+  "lexicon_links": ["rhythm", "eternal_return", "kairos"],
+  "confidence": 0.78
+}

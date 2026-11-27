@@ -1,0 +1,47 @@
+suite: structured-symbolic-audit-v0.11
+runtime: standalone-hermes
+entrypoint: scripts/audit_symbolic_structure.py
+cases:
+  - id: valid_mutating_motif
+    expected_status: PASS
+    packet:
+      dramatic_function: transfer authority through material evidence
+      causal_actions: [badge changes hands and access changes]
+      motifs:
+        - motif_id: cracked-badge
+          dramatic_function: record authority transfer
+          observed_form: cracked access badge
+          recurrences:
+            - {state: worn by supervisor, mutation: initial state, consequence: access granted}
+            - {state: worn by subordinate, mutation: ownership and function transfer, consequence: former supervisor waits outside}
+      channels:
+        diegetic: [cracked badge changes hands]
+        dramaturgical: [authority transfers through access]
+        cinematic: [empty doorway remains behind former owner]
+      convergence_sites:
+        - {site_id: doorway, functions: [ownership transfer, access consequence]}
+      cultural_sources: []
+  - id: recurrence_without_mutation
+    expected_status: FAIL
+    expected_gate: Q
+  - id: channel_redundancy
+    expected_status: FAIL
+    expected_gate: O
+  - id: missing_causal_action
+    expected_status: FAIL
+    expected_gate: U
+  - id: convergence_overload
+    expected_status: FAIL
+    expected_gate: U
+  - id: cultural_boundary_missing
+    expected_status: FAIL
+    expected_gate: S
+  - id: premature_closure
+    expected_status: FAIL
+    expected_gate: W
+compiler_expectations:
+  compiler_version: 0.2.0
+  required_artifacts:
+    - structured-symbolic-packet.yaml
+    - structured-anti-slop-report.json
+    - text-anti-slop-report.json

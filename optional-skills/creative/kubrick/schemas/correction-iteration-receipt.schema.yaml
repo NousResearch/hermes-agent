@@ -1,0 +1,20 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/correction-iteration-receipt.schema.yaml
+title: Kubrick Correction Iteration Receipt
+type: object
+additionalProperties: false
+required: [schema_version, iteration_id, source_graph_id, frame_id, iteration, max_iterations, improved, regressed, unchanged_failures, decision]
+properties:
+  schema_version: {const: 1.0.0}
+  iteration_id: {type: string, minLength: 1}
+  source_graph_id: {type: string, minLength: 1}
+  frame_id: {type: string, minLength: 1}
+  previous_report_id: {type: [string, 'null']}
+  current_report_id: {type: string, minLength: 1}
+  iteration: {type: integer, minimum: 1}
+  max_iterations: {type: integer, minimum: 1}
+  improved: {type: array, items: {type: string}}
+  regressed: {type: array, items: {type: string}}
+  unchanged_failures: {type: array, items: {type: string}}
+  decision: {enum: [PASS, CONTINUE, HUMAN_REVIEW, STOP_NO_PROGRESS, STOP_LIMIT, STOP_REGRESSION]}
+  reason_vector: {type: array, items: {type: string}}

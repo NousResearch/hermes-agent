@@ -1,0 +1,25 @@
+{
+  "pattern_id": "acousmatic_sound",
+  "title": "Acousmatic / Offscreen Sound Power",
+  "version": "0.11.5",
+  "domain": "sound-rhythmic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [
+    {"author": "Michel Chion", "title": "Audio-Vision", "date": "1990"}
+  ],
+  "observed_structure": [
+    "A sound source remains unseen while characters and space react to it.",
+    "The offscreen source gains power by controlling attention before visual confirmation."
+  ],
+  "dramatic_operations": ["unseen power", "threat", "spatial control"],
+  "cinematic_affordances": ["reaction to unseen source", "sound bridge", "empty frame"],
+  "misuse_risks": ["generic ominous sound", "unmotivated jump-scare audio", "source withheld without dramatic consequence"],
+  "mutation_requirements": {
+    "required": true,
+    "variables": ["source distance", "source ownership", "reveal timing", "listener response", "spatial dominance"]
+  },
+  "transferable_structure": "Withhold the source while its sound changes behavior, spatial attention, or authority.",
+  "non_transferable_surface": "Do not copy a famous unseen voice, mechanical drone, or signature soundtrack cue.",
+  "production_cost": "low",
+  "confidence": 0.8
+}

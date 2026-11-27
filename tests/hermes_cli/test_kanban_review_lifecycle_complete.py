@@ -274,10 +274,12 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
 
 
 @pytest.mark.parametrize("bad_payload", ["{not-json", "[]"])
-def test_request_changes_fails_closed_on_malformed_review_provenance(
+def test_request_changes_recovers_from_malformed_review_provenance(
     conn,
     bad_payload: str,
 ):
+    """A malformed handoff payload no longer blocks the reviewer; the
+    implementer comes from the implementing run."""
     task_id = kb.create_task(conn, title="Malformed handoff", assignee="builder")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
@@ -303,13 +305,10 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(
         reason="Needs changes.",
         expected_run_id=review.current_run_id,
     )
-    assert ok is False
-    assert "implementer provenance" in (detail or "")
+    assert (ok, detail) == (True, "builder")
     task = kb.get_task(conn, task_id)
     assert task is not None
-    assert task.status == "running"
-    assert task.assignee == "reviewer"
-    assert task.current_run_id == review.current_run_id
+    assert (task.status, task.assignee) == ("ready", "builder")
 
 
 def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:

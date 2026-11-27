@@ -917,6 +917,69 @@ def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
         assert "implementer provenance" in (reason or "")
 
 
+def test_rereview_from_ready_keeps_implementer_provenance(kanban_home: Path) -> None:
+    """Regression: a self-reviewing profile's card
+    goes review -> changes_requested -> ready, then is handed back to review
+    with no live run. The reviewer defaults to the prior reviewer, which equals
+    the assignee, so the handoff used to record ``implementer: null`` and a
+    NULL run profile; ``request_changes`` then refused with "no valid
+    implementer provenance", the card blocked twice, went to triage and was
+    re-created. The handoff must take the implementer from history."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="self review loop", assignee="3dprinting")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, tid, summary="v1", expected_run_id=claimed.current_run_id,
+        ) is True
+        assert kb.claim_review_task(conn, tid, claimer="3dprinting") is not None
+        ok, implementer = kb.request_changes(conn, tid, reason="not done yet")
+        assert (ok, implementer) == (True, "3dprinting")
+        assert kb.get_task(conn, tid).status == "ready"
+
+        # Managing session hands the card back to review from ``ready``.
+        assert kb.request_review(conn, tid, summary="resume via review lane") is True
+        ev = _events(conn, tid, kind="review_requested")[-1][1]
+        assert ev["reviewer"] == "3dprinting"
+        assert ev["implementer"] == "3dprinting"
+        run = conn.execute(
+            "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert (run["outcome"], run["profile"]) == ("review_requested", "3dprinting")
+
+        assert kb.claim_review_task(conn, tid, claimer="3dprinting") is not None
+        ok, implementer = kb.request_changes(conn, tid, reason="still not done")
+        assert (ok, implementer) == (True, "3dprinting")
+        assert "implementer_source" not in _events(conn, tid, kind="changes_requested")[-1][1]
+
+
+def test_request_changes_recovers_legacy_null_implementer_from_runs(kanban_home: Path) -> None:
+    """Handoffs already written with ``implementer: null`` (rows in existing
+    boards from before the fix) must still route back: the profile of the latest
+    implementing run (not claimed from review) is the fallback."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="legacy null handoff", assignee="builder")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, tid, summary="v1", reviewer="checker",
+            expected_run_id=claimed.current_run_id,
+        ) is True
+        conn.execute(
+            "UPDATE task_events SET payload = json_set(payload, '$.implementer', json('null')) "
+            "WHERE task_id = ? AND kind = 'review_requested'", (tid,),
+        )
+        conn.commit()
+        assert kb.claim_review_task(conn, tid, claimer="checker") is not None
+        ok, implementer = kb.request_changes(conn, tid, reason="fix it")
+        assert (ok, implementer) == (True, "builder")
+        task = kb.get_task(conn, tid)
+        assert (task.status, task.assignee) == ("ready", "builder")
+        ev = _events(conn, tid, kind="changes_requested")[-1][1]
+        assert ev["implementer_source"] == "history"
+
+
 def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Path) -> None:
     """A transition that does not name an actor still reads the card: an
     unassigned card's synthesized run carries ``profile=NULL`` (the actor

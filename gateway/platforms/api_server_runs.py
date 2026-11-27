@@ -127,6 +127,10 @@ _SUBAGENT_EVENT_KEYS = (
     "output_tokens", "reasoning_tokens", "api_calls", "cost_usd", "files_read", "files_written",
     "output_tail")
 _SUBAGENT_TEXT_KEYS = ("goal", "summary", "output_tail")
+# Opt-in child tool steps (``platforms.api_server.subagent_tool_events``): identity, tool name, timing and
+# outcome only, never the child's arguments, preview or result, so the event carries no tool content.
+_SUBAGENT_TOOL_KEYS = (
+    "tool_call_id", "tool_index", "subagent_id", "child_session_id", "delegation_id", "parent_id", "task_index", "depth")
 # Terminal usage payload: (wire key, agent attribute), in wire order. Cache reads ride along so a
 # cost poller does not book them as full-price input (#102101).
 _USAGE_FIELDS = (
@@ -276,6 +280,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_shutdown_requested_at: Optional[float] = None
     # Streaming run id -> its canonical admission id, held while that request observes the turn.
     self._run_admission_aliases: dict[str, str] = {}
+    from gateway.platforms.api_server import _coerce_request_bool
+    self._subagent_tool_events: bool = _coerce_request_bool(
+        (self.config.extra or {}).get("subagent_tool_events"), default=False)
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -366,9 +373,21 @@ def _mark_shutdown_requested(self) -> int:
     return marked
 
 
+def _subagent_tool_event(run_id: str, event_type: str, tool_name: str | None, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """``subagent.tool.started`` / ``subagent.tool.completed``: the parent's ``tool.*`` shape plus the child's identity."""
+    started = event_type == "subagent.tool"
+    fields: dict[str, Any] = {"tool": tool_name}
+    fields.update({key: kwargs[key] for key in _SUBAGENT_TOOL_KEYS if kwargs.get(key) is not None})
+    if not started:
+        fields.update(duration=round(kwargs.get("duration") or 0, 3), error=bool(kwargs.get("is_error")))
+    return _run_event(run_id, "subagent.tool.started" if started else "subagent.tool.completed", **fields)
+
+
 def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop, *, _api_server):
     """Return a callback that pushes structured events to the run SSE queue."""
+    from tools.delegate_tool_progress import CHILD_TOOL_COMPLETED
     redact_sensitive_text = _api_server.redact_sensitive_text
+    subagent_tool_events = self._subagent_tool_events
 
     def _push(event: dict[str, Any]) -> None:
         self._set_run_status(
@@ -379,8 +398,9 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
                 loop.call_soon_threadsafe(q.put_nowait, event)
 
     def _callback(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
-        # _thinking / subagent.tool / subagent_progress are deliberately dropped (UI noise);
-        # lifecycle boundaries must land so clients can observe delegate_task failures.
+        # _thinking / subagent_progress are deliberately dropped (UI noise), and so are the child's tool steps
+        # unless ``subagent_tool_events`` opts in; lifecycle boundaries must land so clients can observe
+        # delegate_task failures.
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
             event_fields = fields(tool_name, preview, kwargs)
@@ -399,6 +419,8 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
                     redact = key in _SUBAGENT_TEXT_KEYS and isinstance(value, str)
                     event[key] = redact_sensitive_text(value, force=True) if redact else value
             _push(event)
+        elif subagent_tool_events and event_type in {"subagent.tool", CHILD_TOOL_COMPLETED}:
+            _push(_subagent_tool_event(run_id, event_type, tool_name, kwargs))
 
     return _callback
 
@@ -1131,7 +1153,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
                     run.admission, stream_delta_callback=_text_cb,
-                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
+                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete,
+                    # The child's lifecycle and tool steps ride the same sink as the direct path's callback.
+                    subagent_callback=tool_cb if self._subagent_tool_events else None)
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (

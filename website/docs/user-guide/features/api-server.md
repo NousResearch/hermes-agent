@@ -561,12 +561,32 @@ run going silent while a child works. The `subagent.complete` payload carries
 the child's status, summary, duration, token/cost figures, a
 `child_session_id` for correlation, and the `delegation_id` of the batch it
 belongs to (so concurrent or nested fan-outs stay distinguishable); free-text fields pass forced secret
-redaction before leaving the process. Per-tool child events
-(`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
-are high-volume UI noise; use the per-child live transcript files for
-play-by-play. These events are available while the parent stream is open; a
-late detached completion does not reopen a finished run's SSE stream or change
-its terminal status.
+redaction before leaving the process. Per-tool child events and progress ticks
+are not forwarded by default — they are high-volume UI noise; use the per-child
+live transcript files for play-by-play. These events are available while the
+parent stream is open; a late detached completion does not reopen a finished
+run's SSE stream or change its terminal status.
+
+Clients that want to show what a child is doing can opt in to its tool steps:
+
+```yaml
+gateway:
+  platforms:
+    api_server:
+      subagent_tool_events: true
+```
+
+With the flag on (advertised as `features.subagent_tool_events` on
+`GET /v1/capabilities`), the stream also carries `subagent.tool.started` and
+`subagent.tool.completed` for each tool a child calls. Both carry `tool`,
+`subagent_id`, `child_session_id`, `delegation_id`, `parent_id`, `task_index`
+and `depth` (the same identifiers as the lifecycle events), a `tool_index`
+(the child's n-th tool, the same on the start and its completion), and
+`tool_call_id` when the tool's producer supplies one. `subagent.tool.completed`
+adds `duration` in seconds and `error`, as `tool.completed` does. The events
+carry no arguments, preview or result of the child's tool, so they never expose
+tool content. Only the tools of a direct child are reported, not those of its
+own children.
 
 #### Detached results and session history
 

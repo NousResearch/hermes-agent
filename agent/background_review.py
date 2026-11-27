@@ -335,14 +335,28 @@ def managed_worker_review_requested() -> bool:
         return False
 
 
-def wait_for_background_review(agent: Any, timeout: float = 120.0) -> bool:
-    """Wait (bounded) for this session's in-flight review, so a worker is not killed mid-review.
+def wait_for_managed_worker_review(agent: Any, timeout_s: float = 120.0) -> bool:
+    """Wait (bounded) for this session's review to finish, so a worker is not killed mid-review.
 
-    Returns True when nothing was in flight or the run published its request exit, False on the
-    timeout - the caller logs that rather than blocking its own shutdown. ``request_done`` is the
-    ABA-safe signal ``finish_background_review_run`` sets, so a successor run is never confused
-    with the one being waited on.
+    Joins the review thread when the spawn left a handle: ``request_done`` is published the moment
+    the review's provider-capable phase returns (``finish_background_review_run``), while the
+    completion log, the summary and the publish callback are written *after* it - so waiting on the
+    thread is what makes "the review landed" true, and waiting on the signal alone is not. Falls
+    back to ``request_done`` when no thread handle exists (a review requeued rather than run in
+    place), and returns True when nothing is in flight, so the caller never blocks its own shutdown
+    on a review it never spawned.
+
+    Named for the managed worker rather than ``wait_for_background_review``: the generic name is
+    taken by the one-shot CLI shutdown helper, in this same module.
     """
+    thread = getattr(agent, "_background_review_thread", None)
+    if thread is not None and thread.is_alive():
+        try:
+            thread.join(timeout_s)
+            return not thread.is_alive()
+        except Exception:
+            logger.debug("background review join raised", exc_info=True)
+            return True
     run = getattr(agent, "_background_review_run", None)
     if run is None:
         # The run token is published just before the thread starts; give a spawn that is still in
@@ -354,7 +368,7 @@ def wait_for_background_review(agent: Any, timeout: float = 120.0) -> bool:
     if run is None:
         return True
     try:
-        return bool(run.request_done.wait(timeout))
+        return bool(run.request_done.wait(timeout_s))
     except Exception:
         logger.debug("background review wait raised", exc_info=True)
         return True
@@ -369,6 +383,7 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     # A safe/troubleshooting worker never self-modifies.
     if safe_worker_enabled():
         return False, {}
+    finite = finite_turn_required() is True
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value
@@ -380,13 +395,15 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
             "review enabled (fail-open)",
             exc_info=True,
         )
-        return True, {}
+        # Fail-open only where a review can outlive the turn: a finite turn still must not fork
+        # one, and the managed-worker opt-in is unreadable here, so it cannot apply.
+        return (not finite), {}
 
     # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
     # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
     # ~30K-token review after the viewer has already gone. A managed worker is the one finite
     # turn that drains the review before retiring its agent, so it opts in by config.
-    if finite_turn_required() is True and not (
+    if finite and not (
             managed_worker_turn() and _review_requested_for_managed_worker(task)):
         return False, {}
     return enabled, task

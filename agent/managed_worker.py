@@ -507,11 +507,17 @@ def execute(frame, channel):
             turn_done.set()
             # The review is a daemon thread and retiring the agent below would kill it mid-write;
             # wait for it the way an interactive session's next turn would, bounded.
-            from agent.background_review import wait_for_background_review
-            if not wait_for_background_review(agent, timeout=REVIEW_DRAIN_SECONDS):
+            from agent.background_review import (
+                cancel_background_review_for_live_turn, wait_for_managed_worker_review)
+            if not wait_for_managed_worker_review(agent, timeout_s=REVIEW_DRAIN_SECONDS):
+                # Cancel rather than abandon: retire_agent releases the provider clients, and a
+                # review still calling them would race that teardown.
+                cancel_background_review_for_live_turn(
+                    agent, message="managed worker is retiring",
+                    tool_reason="managed worker retired")
                 logger.warning(
-                    "managed worker: background review still running after %ss; retiring the agent",
-                    REVIEW_DRAIN_SECONDS)
+                    "managed worker: background review still running after %ss; cancelled it "
+                    "before retiring the agent", REVIEW_DRAIN_SECONDS)
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)

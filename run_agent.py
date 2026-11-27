@@ -857,7 +857,9 @@ class AIAgent(
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.
-            threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review").start()
+            self._background_review_thread = threading.Thread(
+                target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review")
+            self._background_review_thread.start()
         except Exception:
             finish_background_review_run(self, review_run)
             raise

@@ -1,0 +1,62 @@
+{
+  "source_document": "C:/Users/marma/tmp/.firecrawl/viajando-con-carlos-bot.md",
+  "documents_root": "plugins/viaja_con_carlos/knowledge",
+  "entries": {
+    "PAL-001": {"source_lines": "13-17", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-002": {"source_lines": "13-15", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-003": {"source_lines": "19-25", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-004": {"source_lines": "27", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-005": {"source_lines": "27-30", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-006": {"source_lines": "27-31", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-007": {"source_lines": "33", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-008": {"source_lines": "35", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-009": {"source_lines": "37", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-010": {"source_lines": "39-71", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-011": {"source_lines": "69-71", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "PAL-012": {"source_lines": "73-82", "document_path": "plugins/viaja_con_carlos/knowledge/palafitos-overwater-maroma.md"},
+    "DUN-001": {"source_lines": "83-85", "document_path": "plugins/viaja_con_carlos/knowledge/dunbar-rock.md"},
+    "DUN-002": {"source_lines": "87", "document_path": "plugins/viaja_con_carlos/knowledge/dunbar-rock.md"},
+    "DUN-003": {"source_lines": "89-92", "document_path": "plugins/viaja_con_carlos/knowledge/dunbar-rock.md"},
+    "DUN-004": {"source_lines": "92-93", "document_path": "plugins/viaja_con_carlos/knowledge/dunbar-rock.md"},
+    "DUN-005": {"source_lines": "95", "document_path": "plugins/viaja_con_carlos/knowledge/dunbar-rock.md"},
+    "DUN-006": {"source_lines": "97", "document_path": "plugins/viaja_con_carlos/knowledge/dunbar-rock.md"},
+    "CAY-001": {"source_lines": "101-102,127-129", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-002": {"source_lines": "103-105,131-134", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-003": {"source_lines": "107,135", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-004": {"source_lines": "109,137", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-005": {"source_lines": "111,139", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-006": {"source_lines": "113,141", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-007": {"source_lines": "115,143", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-008": {"source_lines": "119,147", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-009": {"source_lines": "117", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md", "status": "confirmation-required", "conflict_group": "cayo_tax_treatment"},
+    "CAY-010": {"source_lines": "149", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md", "status": "confirmation-required", "conflict_group": "cayo_tax_treatment"},
+    "CAY-011": {"source_lines": "121", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "CAY-012": {"source_lines": "123,151", "document_path": "plugins/viaja_con_carlos/knowledge/cayo-espanto.md"},
+    "AGY-001": {"source_lines": "1-5", "document_path": "plugins/viaja_con_carlos/knowledge/agency-policies.md"},
+    "AGY-002": {"source_lines": "33", "document_path": "plugins/viaja_con_carlos/knowledge/agency-policies.md"},
+    "AGY-003": {"source_lines": "123,151", "document_path": "plugins/viaja_con_carlos/knowledge/agency-policies.md"},
+    "AGY-004": {"source_lines": "117,149", "document_path": "plugins/viaja_con_carlos/knowledge/agency-policies.md", "status": "confirmation-required", "conflict_group": "cayo_tax_treatment"},
+    "AGY-005": {"source_lines": "117,121,149", "document_path": "plugins/viaja_con_carlos/knowledge/agency-policies.md", "status": "confirmation-required", "conflict_group": "cayo_tax_treatment"},
+    "OFF-001": {"source_lines": "27-33", "document_path": "plugins/viaja_con_carlos/knowledge/offers.md"},
+    "OFF-002": {"source_lines": "15,35-37", "document_path": "plugins/viaja_con_carlos/knowledge/offers.md"},
+    "OFF-003": {"source_lines": "89-97", "document_path": "plugins/viaja_con_carlos/knowledge/offers.md"},
+    "OFF-004": {"source_lines": "117,121,149", "document_path": "plugins/viaja_con_carlos/knowledge/offers.md", "status": "confirmation-required", "conflict_group": "cayo_tax_treatment"}
+  },
+  "aliases": {
+    "palafitos-overwater-maroma.md": ["PALAFITOS OVERWATER MAROMA EL DORADO", "Palafitos Overwater", "Palafitos-Overwater Bungalow", "Palafitos Overwater Bungalows", "Riviera Maya", "Playa del Carmen", "Cancún", "CANCUN", "México", "Mexico"],
+    "dunbar-rock.md": ["DUNBAR ROCK", "DUMBAR ROCK", "Dunbar", "Dumbar", "Roatán", "Roatan", "Honduras"],
+    "cayo-espanto.md": ["CAYO ESPANTO", "Cayo Espanto (Belice)", "Belize", "BELIZE", "San Pedro", "BZE", "SPR", "Cayo Ambergris"],
+    "agency-policies.md": ["VIAJA CON CARLOS", "Viaja con Carlos", "Carlos Arturo Casañas", "CARLOS ARTURO CASAÑAS", "agency", "travel agency"],
+    "offers.md": ["offers", "programas", "Palafitos", "Dunbar Rock", "Dumbar Rock", "Cayo Espanto"]
+  },
+  "conflicts": {
+    "cayo_tax_treatment": {
+      "status": "confirmation-required",
+      "entries": ["CAY-009", "CAY-010", "AGY-004", "AGY-005", "OFF-004"],
+      "statements": [
+        {"source_lines": "117", "text": "IMPUESTOS Y RESORT FEE included"},
+        {"source_lines": "149", "text": "USD$2.445 mas impuestos por pareja"}
+      ]
+    }
+  }
+}

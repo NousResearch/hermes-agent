@@ -593,10 +593,12 @@ def test_an_unusable_installer_lock_is_reported_and_the_update_goes_on(tmp_path,
 
 def test_a_start_that_found_the_lock_busy_retries_in_the_same_process_without_waiting(tmp_path, monkeypatch):
     """A gateway or Desktop process serves many sessions: a start that timed out on another installer's
-    lock installed nothing, so the next session there tries again (without a second long wait or a
-    second busy line) instead of running without memory until a restart."""
-    from contextlib import contextmanager
-    from hermes_cli import default_plugins
+    (real, held) lock installed nothing, so a later session there tries again instead of running without
+    memory until a restart. Sessions inside the retry interval do not touch the lock at all, and the busy
+    line is given once."""
+    import threading
+    import time
+    from hermes_cli import default_plugins, left_core_migration
     from pm import install as pm_install
 
     (tmp_path / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
@@ -604,15 +606,7 @@ def test_a_start_that_found_the_lock_busy_retries_in_the_same_process_without_wa
     monkeypatch.setattr(mig, "_attempted", set())
     monkeypatch.setattr(mig, "catalog_source", lambda n: n)
     monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
-    waits: list[float] = []
-    busy = iter([True, True, False])
-
-    @contextmanager
-    def lock(wait):
-        waits.append(wait)
-        if next(busy):
-            raise TimeoutError("another default plugin install is running")
-        yield
+    monkeypatch.setattr(left_core_migration, "startup_lock_wait", lambda **_kw: 0.0)
 
     def installer(home, *, consent=None):
         def install(plugin):
@@ -621,14 +615,85 @@ def test_a_start_that_found_the_lock_busy_retries_in_the_same_process_without_wa
             return {"ok": True}
         return install
 
-    monkeypatch.setattr(default_plugins, "installer_lock", lock)
     monkeypatch.setattr(mig, "_install_into", installer)
+    held, release = threading.Event(), threading.Event()
+
+    def other_installer():
+        with default_plugins.installer_lock(5):
+            held.set()
+            release.wait(30)
+
+    holder = threading.Thread(target=other_installer)
+    holder.start()
+    assert held.wait(10)
     said: list[str] = []
-    assert [mig.recover_at_startup("retaindb", say=said.append) for _session in range(3)] == [False, False, True]
-    assert waits[0] > 0 and waits[1:] == [0.0, 0.0]
+    try:
+        assert mig.recover_at_startup("retaindb", say=said.append) is False  # waits out the lock once
+        started = time.monotonic()
+        assert mig.recover_at_startup("retaindb", say=said.append) is False  # inside the retry interval
+        assert time.monotonic() - started < 0.5
+    finally:
+        release.set()
+        holder.join(10)
+    monkeypatch.setattr(mig, "BUSY_RETRY_SECONDS", 0.0)
+    assert mig.recover_at_startup("retaindb", say=said.append) is True
     assert sum("still installing plugins" in line for line in said) == 1
+    assert any("RetainDB is now a Hermes Labs plugin" in line for line in said)
     assert not mig._failure_stamp(tmp_path, "retaindb").exists()
 
+
+def test_an_install_that_failed_while_this_start_waited_is_not_run_again(tmp_path, monkeypatch):
+    """Two starts for one profile: the first fails its install while the second waits for the lock. The
+    second reads the failure stamp under the lock and reports it instead of failing the same install again."""
+    import threading
+    from pm import install as pm_install
+
+    (tmp_path / "config.yaml").write_text("memory:\n  provider: byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    installs: list[str] = []
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: installs.append(n) or {"ok": False,
+                                                                                                 "error": "offline"})
+    held = threading.Event()
+    reached, real_lock = _lock_reached(monkeypatch)
+
+    def first_start():
+        with real_lock(5):
+            held.set()
+            reached.wait(10)
+            mig._note_failure(tmp_path, "byterover")  # its install failed
+
+    holder = threading.Thread(target=first_start)
+    holder.start()
+    assert held.wait(10)
+    said: list[str] = []
+    try:
+        assert mig.recover_at_startup("byterover", say=said.append) is False
+    finally:
+        reached.set()
+        holder.join(10)
+    assert installs == []
+    assert len(said) == 1 and "failed recently" in said[0]
+
+
+def test_a_managed_memory_selection_is_the_one_migrated(tmp_path, monkeypatch):
+    """An administrator's managed config that selects RetainDB over the user's old ByteRover entry is
+    what the agent asks for, so it is what the migration installs."""
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("memory:\n  provider: byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    installs: list[str] = []
+    assert mig.migrate_home(home, install=lambda n: installs.append(n) or (home / "plugins" / n).mkdir(
+        parents=True) or {"ok": True}, say=lambda s: None) == "retaindb"
+    assert installs == ["retaindb"]
 
 def test_a_cron_start_that_installs_nothing_leaves_the_report_to_the_next_watched_start(tmp_path, monkeypatch):
     """Lazy installs off: a cron run (nobody watching) fetches nothing and must not use up the one

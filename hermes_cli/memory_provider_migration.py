@@ -25,6 +25,7 @@ from __future__ import annotations
 import enum
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -32,9 +33,12 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 _attempted: set[tuple[str, str]] = set()
-# Homes whose last start found the installer lock held: the next start in this process retries without
-# waiting again, so a long-held lock costs one wait per process, not one per gateway message.
-_lock_busy: set[tuple[str, str]] = set()
+_attempt_claim = threading.Lock()  # check-and-add on _attempted: parallel starts in one process claim once
+# When a start last found the installer lock held, by home and provider: a later start in this process
+# retries after BUSY_RETRY_SECONDS without the long wait, so a long-held lock costs one wait per process
+# and at most a one-second try per interval, not a wait per gateway message.
+_lock_busy: dict[tuple[str, str], float] = {}
+BUSY_RETRY_SECONDS = 60.0
 
 # Providers that shipped bundled in core. Unattended consent covers only these: their users already
 # accepted the deps when they picked the built-in. Any other catalog plugin named in memory.provider
@@ -95,10 +99,9 @@ def _note_success(home: Path, plugin: str) -> None:
 
 
 def configured_provider(home: Path) -> str:
-    """``memory.provider`` of *home*'s effective config, or ``""``."""
-    from pm.plugins_state import read_home_selection
-    memory = (read_home_selection(home) or {}).get("memory") or {}
-    return str(memory.get("provider") or "").strip()
+    """``memory.provider`` of *home*'s effective config (managed overlay included, as the agent reads
+    it), or ``""``."""
+    return _plugin_choice(home).selected
 
 
 def _plugin_choice(home: Path):
@@ -174,11 +177,12 @@ def catalog_install_hint(name: str, *, category: Optional[str] = None) -> Option
 def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str]:
     """The provider *home* needs from the catalog, or None (nothing to do, or a catalog miss already
     reported through *say*). Read-only."""
-    name = configured_provider(home)
+    choice = _plugin_choice(home)  # one read: the provider and the off switch agree
+    name = choice.selected
     from agent.memory_provider import is_core_memory_provider
     if is_core_memory_provider(name) or provider_present(name, home):
         return None
-    if provider_disabled(name, home):
+    if name in choice.disabled:
         say(f"  ⚠ Memory provider '{name}' is turned off: plugins.disabled lists it, so Hermes did not install "
             f"its plugin and external memory is off (built-in memory still works). To use it, run "
             f"`{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
@@ -214,13 +218,14 @@ def kept_off_sentence(name: str, home: Path) -> str:
 
 
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
-                     say: Callable[[str], None], wait: float = 900.0,
+                     say: Callable[[str], None], wait: float = 900.0, backoff: bool = False,
                      busy_say: Optional[Callable[[str], None]] = None) -> _Outcome:
     """Install *name* into *home* under the installer lock every unattended plugin installer holds
     (:func:`default_plugins.installer_lock`). The home is read again under the lock: another Hermes
     process may have placed the provider while this one waited (nothing reported: that one reports its
-    own), and the user may have switched to another provider or disabled this one (nothing owed).
-    *busy_say* (default *say*) takes the line for a lock that could not be had."""
+    own), the user may have switched to another provider or disabled this one (nothing owed), and with
+    *backoff* (agent start) an install that failed while this one waited is not run again. *busy_say*
+    (default *say*) takes the line for a lock that could not be had."""
     from hermes_cli.default_plugins import installer_lock
     busy_say = busy_say or say
     try:
@@ -232,6 +237,9 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                 logger.info("memory provider '%s' is no longer selected (or is disabled) for %s; not installing it",
                             name, home)
                 return _Outcome.NOT_WANTED
+            if backoff and _failed_recently(home, name):
+                say(_failed_recently_line(name, home))
+                return _Outcome.FAILED
             return _Outcome.PRESENT if _install_locked(home, name, install=install, say=say) else _Outcome.FAILED
     except TimeoutError:  # nothing was tried, so no failure is stamped
         busy_say(f"  ⚠ Memory provider '{name}': another Hermes process is still installing plugins, so its "
@@ -381,6 +389,20 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     return installed
 
 
+def _failed_recently_line(name: str, home: Path) -> str:
+    return (f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
+            f"Its automatic install failed recently: run `{_install_command(name, home)}`.")
+
+
+def _claim_attempt(key: tuple[str, str]) -> bool:
+    """Take this process's one attempt for *key*; False when another start already took it."""
+    with _attempt_claim:
+        if key in _attempted:
+            return False
+        _attempted.add(key)
+        return True
+
+
 def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None) -> bool:
     """Agent-init hook for a configured provider that resolved nowhere. One attempt per process per
     home and name; honours ``security.allow_lazy_installs`` because it installs code. True when installed.
@@ -394,10 +416,11 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
 
     home = get_hermes_home()
     key = (hermes_home_key(home), name)
-    if key in _attempted:
+    # A watched start claims the attempt now. An unattended one (say None) claims it only when it is about
+    # to install, so the lines it can only log (lazy installs off, a disabled provider) are left for a
+    # watched start in this process to report.
+    if key in _attempted or (say is not None and not _claim_attempt(key)):
         return False
-    if say is not None:  # unattended: marked only once an install runs, so a later watched start reports the rest
-        _attempted.add(key)
 
     def report(message: str) -> None:
         logger.warning(message)
@@ -424,21 +447,27 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
                    f"run `{_install_command(name, home)}`.")
         return False
     if _failed_recently(home, name):
-        report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
-               f"Its automatic install failed recently: run `{_install_command(name, home)}`.")
+        report(_failed_recently_line(name, home))
         return False
     from hermes_cli.left_core_migration import startup_lock_wait
     if _pending_provider(home, say=report) != name:
         return False
-    _attempted.add(key)
-    retry = key in _lock_busy  # the busy-lock line was already given once in this process
+    if say is None and not _claim_attempt(key):
+        return False
+    busy_since = _lock_busy.get(key)
+    if busy_since is not None and time.monotonic() - busy_since < BUSY_RETRY_SECONDS:
+        logger.info("memory provider '%s': the installer lock was busy %.0fs ago; retrying later", name,
+                    time.monotonic() - busy_since)
+        _attempted.discard(key)
+        return False
+    # A retry after a busy lock takes it without the long wait and logs (the busy line was given once).
     outcome = _install_pending(home, name, install=_install_into(home, consent=True),
                                say=report if say is not None else defer_startup_notice,
-                               wait=0.0 if retry else startup_lock_wait(gateway_start=False),
-                               busy_say=logger.info if retry else None)
-    if outcome is _Outcome.BUSY:  # nothing ran: the next start in this process (a gateway, Desktop) tries again
+                               wait=0.0 if busy_since is not None else startup_lock_wait(gateway_start=False),
+                               backoff=True, busy_say=logger.info if busy_since is not None else None)
+    if outcome is _Outcome.BUSY:  # nothing ran: a later start in this process (a gateway, Desktop) tries again
         _attempted.discard(key)
-        _lock_busy.add(key)
+        _lock_busy[key] = time.monotonic()
     else:
-        _lock_busy.discard(key)
+        _lock_busy.pop(key, None)
     return outcome is _Outcome.PRESENT

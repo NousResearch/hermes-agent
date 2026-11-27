@@ -18,7 +18,7 @@ import re
 # forbidden substrings must pass ``mask_code_consumers=False`` or the payload hides in the blanked
 # body (#127698).
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
-    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
+    r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_.~+-]+/|/)*"
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
 _STRICT_INERT_HEREDOC_CONSUMER_RE = re.compile(

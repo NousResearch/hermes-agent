@@ -9,12 +9,13 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { readDesktopFileText } from '@/lib/desktop-fs'
+import { ESCAPE_PRIORITY, isTopEscapeLayer } from '@/lib/escape-layers'
 import { fmtDateTime } from '@/lib/time'
 
 import type { ArtifactRecord } from '../artifacts/artifact-utils'
 import type { IndexedChat } from '../artifacts/item-index-snapshot'
 
-import { chatOfItem } from './library-actions'
+import { chatOfItem, itemOwner } from './library-actions'
 import { useLibraryCopy } from './library-copy'
 
 type MarkdownViewMode = 'rendered' | 'source'
@@ -42,8 +43,11 @@ export function MarkdownPreviewView({
 }: MarkdownPreviewViewProps) {
   const copy = useLibraryCopy()
   const chat = chatOfItem(chats, item)
+  const ownerConnectionId = chat?.connectionId
+  const ownerProfile = chat?.profile ?? item.profile
   const titleRef = useRef<HTMLHeadingElement>(null)
   const [mode, setMode] = useState<MarkdownViewMode>('rendered')
+  const [reloadKey, setReloadKey] = useState(0)
   const [state, setState] = useState<{ error: string | null; loading: boolean; text: string }>({
     error: null,
     loading: true,
@@ -55,8 +59,9 @@ export function MarkdownPreviewView({
   useEffect(() => {
     let live = true
     setState({ error: null, loading: true, text: '' })
+    const owner = itemOwner(chat) ?? (ownerProfile ? { profile: ownerProfile } : undefined)
 
-    readDesktopFileText(item.value, { sessionId: item.sessionId })
+    readDesktopFileText(item.value, { owner, sessionId: item.sessionId })
       .then(result => {
         if (live) {
           setState({ error: null, loading: false, text: result.text ?? '' })
@@ -75,14 +80,15 @@ export function MarkdownPreviewView({
     return () => {
       live = false
     }
-  }, [chat, item.profile, item.sessionId, item.value])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on primitive owner fields so background index refreshes do not re-fetch.
+  }, [item.sessionId, item.value, ownerConnectionId, ownerProfile, reloadKey])
 
   return (
     <div
       className="library-preview"
       data-slot="library-markdown-preview"
       onKeyDown={event => {
-        if (event.key === 'Escape' && !event.defaultPrevented) {
+        if (event.key === 'Escape' && !event.defaultPrevented && isTopEscapeLayer(ESCAPE_PRIORITY.overlay)) {
           event.preventDefault()
           onBack()
         }
@@ -123,9 +129,14 @@ export function MarkdownPreviewView({
         ) : state.error ? (
           <div className="library-markdown-error" role="alert">
             <p>{state.error}</p>
-            <Button onClick={() => onOpenExternal(item)} size="sm" variant="secondary">
-              Open file
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button onClick={() => setReloadKey(count => count + 1)} size="sm" variant="secondary">
+                Retry
+              </Button>
+              <Button onClick={() => onOpenExternal(item)} size="sm" variant="ghost">
+                Open file
+              </Button>
+            </div>
           </div>
         ) : mode === 'rendered' ? (
           <div className="library-markdown-body">

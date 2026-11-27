@@ -44,7 +44,11 @@ beforeEach(() => {
   vi.stubGlobal('hermesDesktop', {
     readFileText: vi.fn().mockResolvedValue({ path: '/out/brief.md', text: '# Brief\n\nLaunch checklist ready.' }),
     saveGatewayFile: vi.fn().mockResolvedValue({ saved: true }),
-    api: vi.fn().mockResolvedValue('data:image/png;base64,AA==')
+    api: vi.fn().mockImplementation((req: { path?: string }) =>
+      req?.path?.includes('/api/fs/read-text')
+        ? Promise.resolve({ path: '/out/brief.md', text: '# Brief\n\nLaunch checklist ready.' })
+        : Promise.resolve('data:image/png;base64,AA==')
+    )
   })
 })
 

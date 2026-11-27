@@ -26,7 +26,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell, type PageShellTab } from '../page-search-shell'
 import { MessagingView } from '../page-views'
 import { SETTINGS_ROUTE } from '../routes'
-import { useSettingsOwner } from '../settings/profile-scope'
+import { SettingsOwnerContext, useSettingsOwner } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { type CapabilityCount, useConnectorsCount, usePluginsCount } from './capability-counts'
@@ -155,6 +155,13 @@ export function CapabilitiesView({
     [t, toolsets]
   )
 
+  const rawMessagingConn = profileScopeConnectionId(scope.profile)
+  const messagingConnectionId = rawMessagingConn && rawMessagingConn !== 'local' ? rawMessagingConn : undefined
+  const messagingProfile = typeof scope.profile === 'string' ? scope.profile : (scope.profile?.profile ?? 'default')
+  const messagingOwner = useMemo(
+    () => ({ connectionId: messagingConnectionId, profile: messagingProfile }),
+    [messagingConnectionId, messagingProfile]
+  )
   // MCP and Plugins load independently of the installed Skills/Tools lists.
   const pending = mode === 'toolsets' && !(skills && toolsets)
   const redesignedInventory = presentation.inventoryFrame
@@ -178,9 +185,11 @@ export function CapabilitiesView({
       />
     ),
     messaging: () => (
-      <Suspense fallback={null}>
-        <MessagingView embedded />
-      </Suspense>
+      <SettingsOwnerContext.Provider value={messagingOwner}>
+        <Suspense fallback={null}>
+          <MessagingView embedded />
+        </Suspense>
+      </SettingsOwnerContext.Provider>
     ),
     plugins: () =>
       redesign && !pluginsReachable ? (

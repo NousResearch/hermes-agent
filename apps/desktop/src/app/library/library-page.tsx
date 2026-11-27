@@ -425,6 +425,7 @@ export function LibraryPage(props: ComponentProps<'section'>) {
             backLabel={copy.tabs[tab]}
             chats={chats}
             item={previewMarkdown}
+            key={previewMarkdown.id}
             onBack={closePreview}
             onDownload={download}
             onOpenChat={openChat}

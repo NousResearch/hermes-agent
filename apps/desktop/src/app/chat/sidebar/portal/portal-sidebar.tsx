@@ -22,13 +22,12 @@ import {
   claimPendingPortalProjectSession,
   clearPendingPortalProjectNewChat,
   markPendingPortalProjectLeftArmed,
-  mergeBackendPortalProjects,
   resolvePortalProjectForSession
 } from '@/store/portal-projects'
 import { syncPortalAgentProjects } from '@/store/portal-projects-sync'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projects, $projectTree, refreshProjectTree } from '@/store/projects'
-import { $gatewayState, $selectedStoredSessionId, sessionPinId } from '@/store/session'
+import { $gatewayState, $selectedStoredSessionId, knownSessionOwner, sessionPinId } from '@/store/session'
 
 import type { ChatSidebar } from '../index'
 import { SidebarLoadMoreRow } from '../load-more-row'
@@ -156,8 +155,27 @@ function PortalPinnedShelf() {
   )
 }
 
+function resolveAgentProjectSessions(
+  agentProjects: ReturnType<typeof agentPortalProjectsFor>,
+  agentSessions: readonly { id: string; cwd?: string | null }[]
+): { looseCount: number; map: Map<string, string | null> } {
+  const map = new Map<string, string | null>()
+  let looseCount = 0
+
+  for (const row of agentSessions) {
+    const pid = resolvePortalProjectForSession(agentProjects, row)
+    map.set(row.id, pid)
+
+    if (!pid) {
+      looseCount += 1
+    }
+  }
+
+  return { looseCount, map }
+}
+
 /** Sync backend `projects.db` records into `$portalAgentProjects` for every visible agent and
- *  mirror live `$projects` updates on the active profile so Classic and Redesign stay identical. */
+ *  re-sync the active owner whenever `$projects` updates (never copying unscoped `$projects` across profiles). */
 function useSyncPortalBackendProjects(
   gatewayState: string,
   agents: readonly { connectionId: null | string; profile: string; targetProfile?: string }[],
@@ -187,14 +205,11 @@ function useSyncPortalBackendProjects(
   }, [agentSyncKeys, gatewayState])
 
   useEffect(() => {
-    if (gatewayState !== 'open' || activeBackendProjects.length === 0) {
+    if (gatewayState !== 'open') {
       return
     }
 
-    mergeBackendPortalProjects(
-      { connectionId: activeConnection ?? null, profile: activeProfile || 'default' },
-      activeBackendProjects
-    )
+    void syncPortalAgentProjects({ connectionId: activeConnection ?? null, profile: activeProfile || 'default' })
   }, [activeBackendProjects, activeConnection, activeProfile, gatewayState])
 }
 
@@ -265,11 +280,26 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
         return
       }
 
+      const selectedOwner = knownSessionOwner(all, selectedStoredSessionId)
+      const ownerMatches =
+        !selectedOwner ||
+        (typeof selectedOwner === 'string'
+          ? selectedOwner === pendingProjectNewChat.owner.profile
+          : agentSidebarKey({
+              connectionId: selectedOwner.connectionId,
+              profile: selectedOwner.targetProfile || selectedOwner.profile
+            }) === agentSidebarKey(pendingProjectNewChat.owner))
+
+      if (!ownerMatches) {
+        clearPendingPortalProjectNewChat()
+
+        return
+      }
+
       if (claimPendingPortalProjectSession(pendingProjectNewChat.owner, selectedStoredSessionId)) {
         return
       }
     }
-
     const ownerKey = agentSidebarKey(pendingProjectNewChat.owner)
 
     for (const agent of agents.agents) {
@@ -285,7 +315,8 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
         break
       }
     }
-  }, [agents, pendingProjectNewChat, selectedStoredSessionId])
+  }, [agents, all, pendingProjectNewChat, selectedStoredSessionId])
+  const botModeLoaded = useBotModeLoaded()
   useEffect(() => {
     const el = sectionsRef.current
 
@@ -303,8 +334,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
     observer.observe(el)
 
     return () => observer.disconnect()
-  }, [])
-  const botModeLoaded = useBotModeLoaded()
+  }, [botModeLoaded])
   const searching = Boolean(query.trim())
   // Nothing in flight: a settled list may show its empty notes.
   const quiet = !loading && !search.pending && !search.failed
@@ -330,30 +360,31 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
     let collapsedAgentCount = 0
 
     let projectRowsOverhead = 0
+    const resolvedProjectsByAgent = new Map<string, Map<string, string | null>>()
 
     for (const agent of agents.agents) {
       const isOpen = expanded[agentKey(agent)] ?? true
       const owner = agentOwner(agent)
       const key = agentSidebarKey(owner)
+      const agentProjects = agentPortalProjectsFor(allProjects, owner)
+      const agentSessions = agents.sessionsByAgent.get(agentKey(agent)) ?? []
+      const resolved = resolveAgentProjectSessions(agentProjects, agentSessions)
+      resolvedProjectsByAgent.set(agentKey(agent), resolved.map)
 
       if (!isOpen) {
         collapsedAgentCount += 1
         continue
       }
 
-      const agentProjects = agentPortalProjectsFor(allProjects, owner)
-      const agentSessions = agents.sessionsByAgent.get(agentKey(agent)) ?? []
-      const looseCount = agentSessions.filter(row => !resolvePortalProjectForSession(agentProjects, row)).length
       projectRowsOverhead += agentProjects.projects.length
 
       openAgents.push({
         key,
-        count: looseCount,
+        count: resolved.looseCount,
         showAll: showAll[key] ?? false,
         active: agent.connectionId === activeConnection && agent.profile === activeProfile
       })
     }
-
     const dynamicLimits = computeAgentChatLimits({
       availableHeight: Math.max(0, sectionsHeight - projectRowsOverhead * 36),
       collapsedAgentCount,
@@ -395,11 +426,12 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
               const agentShowsAll = showAll[key] ?? false
               const agentProjects = agentPortalProjectsFor(allProjects, owner)
               const ordered = orderAgentChats(sessions, chatOrder[key])
+              const resolvedMap = resolvedProjectsByAgent.get(agentKey(agent))
               const sessionsByProject = new Map<string, typeof ordered>()
               const looseSessions: typeof ordered = []
 
               for (const row of ordered) {
-                const projectId = resolvePortalProjectForSession(agentProjects, row)
+                const projectId = resolvedMap ? (resolvedMap.get(row.id) ?? null) : resolvePortalProjectForSession(agentProjects, row)
 
                 if (projectId) {
                   const list = sessionsByProject.get(projectId) ?? []
@@ -410,11 +442,19 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
                 }
               }
 
+              const allAgentSessionIds = all
+                .filter(
+                  row =>
+                    (row.connection_id ?? null) === (owner.connectionId ?? null) &&
+                    (row.profile || 'default') === (owner.profile || 'default')
+                )
+                .map(row => row.id)
+
               return (
                 <div className="portal-agent-sessions">
                   <PortalAgentProjects
                     agent={agent}
-                    allAgentSessionIds={ordered.map(row => row.id)}
+                    allAgentSessionIds={allAgentSessionIds}
                     owner={owner}
                     projects={agentProjects.projects}
                     renderChats={projectChats => (

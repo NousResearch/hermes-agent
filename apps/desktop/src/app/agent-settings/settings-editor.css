@@ -232,16 +232,19 @@
   height: auto;
   max-height: none;
   min-height: 0;
+  background: transparent;
 }
 /* The agent body is the one scroller: the embedded capability page grows to its content instead
-   of clipping it inside the page shell's own frame. */
+   of clipping it inside the page shell's own frame, and stays transparent over the agent backdrop. */
 .agent-settings-body > .agent-settings-capabilities {
   min-height: auto;
   overflow: visible;
 }
-.agent-settings-capabilities .page-search-body {
+.agent-settings-capabilities .page-search-body,
+.agent-settings-messaging .page-search-body {
   flex: none;
   overflow: visible;
+  background: transparent;
 }
 
 @container (min-width: 28rem) {

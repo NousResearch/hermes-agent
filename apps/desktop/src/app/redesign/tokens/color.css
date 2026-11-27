@@ -134,18 +134,22 @@
   --portal-surface-collection: color-mix(
     in srgb,
     var(--portal-raw-pure-white) 2%,
-    color-mix(in srgb, var(--portal-raw-black) 50%, color-mix(in srgb, var(--portal-raw-blue) 10%, transparent))
+    color-mix(in srgb, var(--portal-raw-black) 65%, color-mix(in srgb, var(--portal-raw-blue) 10%, transparent))
   );
   /* Menus, popovers, dialogs, drawers, toasts: the solid floating fill (878:6044 #0D0D1E on dark). */
   --portal-surface-elevated: var(--ui-bg-elevated);
-  /* Cards of grouped rows (1036:7576, 1038:7803). */
-  --portal-surface-card: var(--portal-raw-ink-2);
-  /* Global Settings' cards lift off the page with no stroke (Card 16292:16456): white .02 / black .50 /
-     blue .10 (#1A1A30 where solid); their dividers light/5. Section heads at .8 ink. */
+  /* Cards of grouped rows (1036:7576, 18563:9589): white .02 / black .60 / brand .10 over artwork. */
+  --portal-surface-card: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 2%,
+    color-mix(in srgb, var(--portal-raw-black) 60%, var(--portal-raw-brand-10))
+  );
+  /* Global Settings' cards lift off the page with no stroke (18563:9589): white .02 / black .60 /
+     blue .10 stacked (~65% opaque dark navy-black); their dividers light/5. Section heads at .8 ink. */
   --portal-settings-card: color-mix(
     in srgb,
     var(--portal-raw-pure-white) 2%,
-    color-mix(in srgb, var(--portal-raw-black) 50%, var(--portal-raw-brand-10))
+    color-mix(in srgb, var(--portal-raw-black) 65%, var(--portal-raw-brand-10))
   );
   --portal-settings-divider: var(--portal-raw-ink-5);
   /* The first-time splash's cards (Onboarding 18695:17163 "Information", the artwork cards): white .02
@@ -326,10 +330,11 @@
   --portal-surface-chrome-pressed: var(--portal-raw-ink-10);
   --portal-text-chrome: color-mix(in srgb, var(--ui-base) 48%, transparent);
   --portal-status-chip-fill: color-mix(in srgb, var(--portal-raw-pure-white) 60%, transparent);
-  /* Light's settings cards are near-white on the page (#F9F9FA, 16292:26032). */
-  --portal-settings-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
+  /* Light's settings and agent cards lift cleanly off the veiled artwork (#F9F9FA, 16292:26032). */
+  --portal-surface-card: color-mix(in srgb, var(--portal-raw-pure-white) 82%, transparent);
+  --portal-settings-card: color-mix(in srgb, var(--portal-raw-pure-white) 85%, transparent);
   /* Figma draws the onboarding in dark only: light takes its settings cards' white, and a white rim. */
-  --portal-welcome-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
+  --portal-welcome-card: color-mix(in srgb, var(--portal-raw-pure-white) 85%, transparent);
   --portal-choice-rim: color-mix(in srgb, var(--portal-raw-pure-white) 80%, transparent);
   /* Light's waiting fill is the dark ink at .64: white reads on it, black does not. */
   --portal-badge-ok-fill: color-mix(in srgb, var(--portal-status-online) 12%, transparent);
@@ -337,7 +342,7 @@
   --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));
   --portal-panel-action: var(--portal-raw-ink-2);
   --portal-panel-action-hover: var(--portal-raw-ink-5);
-  --portal-surface-collection: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
+  --portal-surface-collection: color-mix(in srgb, var(--portal-raw-pure-white) 85%, transparent);
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);

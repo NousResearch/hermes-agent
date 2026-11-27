@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react'
 
+import { CopyButton } from '@/components/ui/copy-button'
 import { PathText } from '@/components/ui/path-text'
 import { PixelIcon } from '@/components/ui/pixel-icon'
 import { ExternalLink, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
@@ -169,11 +170,18 @@ export function ItemTable({ chats, filter, items, onOpen, onOpenChat }: ItemTabl
                   )}
                 </td>
                 <td className="library-col-location">
-                  {link ? (
-                    <span className="library-url">{hostPathLabel(item.value)}</span>
-                  ) : (
-                    <PathText path={item.value} />
-                  )}
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 flex-1 truncate">
+                      {link ? <span className="library-url">{hostPathLabel(item.value)}</span> : <PathText path={item.value} />}
+                    </span>
+                    <CopyButton
+                      appearance="icon"
+                      buttonSize="icon-xs"
+                      label={link ? 'Copy URL' : copy.copyPath}
+                      text={item.value}
+                      title={link ? 'Copy URL' : copy.copyPath}
+                    />
+                  </div>
                 </td>
                 <td className="library-col-chat">
                   <button className="library-chat-cell" onClick={() => onOpenChat(item)} type="button">

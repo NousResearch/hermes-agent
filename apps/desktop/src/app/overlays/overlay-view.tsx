@@ -175,9 +175,9 @@ export function OverlayView({
       style={inTile ? undefined : ({ '--titlebar-height': `${page ? titlebarHeight : TITLEBAR_HEIGHT}px` } as CSSProperties)}
       // A redesign page's container is programmatically focused (usePageOverlayFocus) so Tab enters
       // the page; it is not a control, so it stays out of the tab order and draws no focus ring.
-      tabIndex={page ? -1 : undefined}
+      tabIndex={page && !inTile ? -1 : undefined}
     >
-      {page && (
+      {page && !inTile && (
         <div className="absolute inset-x-0 bottom-full h-(--titlebar-height) bg-background [-webkit-app-region:drag]" data-slot="page-toolbar">
           <PageToolbar actions={titlebarActions} onBack={closeOverlay}>
             {headerContent}
@@ -189,7 +189,7 @@ export function OverlayView({
         <div
           className={cn(
             'relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
-            !page && 'rounded-xl border border-(--ui-stroke-secondary) shadow-md',
+            !page && !inTile && 'rounded-xl border border-(--ui-stroke-secondary) shadow-md',
             rootClassName
           )}
           // Marks the card as a RAISED surface for window glass: while the field
@@ -197,7 +197,7 @@ export function OverlayView({
           // (see the [data-glass-raised] rules in styles.css). Inert otherwise.
           data-glass-raised=""
         >
-          {!page && (
+          {!page && !inTile && (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
               {headerContent && (
                 <div className="pointer-events-auto absolute left-1/2 top-[calc(0.5rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]">
@@ -230,7 +230,7 @@ export function OverlayView({
         {/* Sibling of the card, not a child: the card clips its own overflow
             (rounded corners), and the badge deliberately straddles the top
             border — half above, half below. */}
-        {!page && edgeBadge && (
+        {!page && !inTile && edgeBadge && (
           <div className="absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-1/2">{edgeBadge}</div>
         )}
       </div>

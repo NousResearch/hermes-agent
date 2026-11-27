@@ -68,11 +68,13 @@
 }
 
 .portal-sidebar-brand-caption {
+  overflow: hidden;
   color: var(--portal-sidebar-meta);
   font-family: var(--portal-sidebar-meta-font);
   font-size: var(--portal-sidebar-caption);
   letter-spacing: var(--portal-sidebar-caption-tracking);
   line-height: var(--portal-sidebar-label-line);
+  text-overflow: ellipsis;
   text-transform: uppercase;
   white-space: nowrap;
 }

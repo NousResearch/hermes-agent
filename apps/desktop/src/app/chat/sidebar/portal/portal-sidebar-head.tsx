@@ -8,6 +8,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
@@ -64,7 +65,7 @@ export function usePortalSidebarSearch(setQuery: (query: string) => void): Porta
 /** The sidebar's header: the wordmark over its caption, the search button at the end. */
 export function PortalSidebarHead({ search }: { search: PortalSidebarSearch }) {
   const { t } = useI18n()
-  const unreadCount = useStore($unreadFinishedSessionIds).length
+  const hasUnread = useStoreSelector($unreadFinishedSessionIds, ids => ids.length > 0)
 
   return (
     <div className="portal-sidebar-head">
@@ -73,7 +74,7 @@ export function PortalSidebarHead({ search }: { search: PortalSidebarSearch }) {
         <span className="portal-sidebar-brand-caption">{WORDMARK_CAPTION}</span>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        {unreadCount > 0 ? (
+        {hasUnread ? (
           <Tip label={t.sidebar.markAllRead}>
             <Button
               aria-label={t.sidebar.markAllRead}

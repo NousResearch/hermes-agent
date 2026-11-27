@@ -18,7 +18,9 @@ import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ChevronRight, MoreVertical, Pencil, Plus, Trash2 } from '@/lib/icons'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import type { AgentSidebarOwner } from '@/store/agent-sidebar-preferences'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import {
   $pendingPortalProjectForNewChat,
@@ -60,11 +62,10 @@ function PortalProjectRow({
   sessions
 }: ProjectRowProps) {
   const { t } = useI18n()
-  const pendingNewChat = useStore($pendingPortalProjectForNewChat)
+  const hasDraftHere = useStoreSelector($pendingPortalProjectForNewChat, pending => pending?.projectId === project.id)
   const [truncated, setTruncated] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(project.name)
-  const hasDraftHere = pendingNewChat?.projectId === project.id
   const iconName = project.icon || 'folder'
   const iconStyle = project.color ? { color: project.color } : undefined
 
@@ -79,7 +80,11 @@ function PortalProjectRow({
 
     if (project.path) {
       requestStartWorkSession(project.path, undefined, {
-        owner: owner.connectionId ? { connectionId: owner.connectionId, profile: owner.profile } : undefined
+        owner: {
+          connectionId: owner.connectionId ?? activeGatewayConnectionId() ?? 'local',
+          profile: agent.profile,
+          ...(agent.targetProfile ? { targetProfile: agent.targetProfile } : {})
+        }
       })
     } else {
       startSimplifiedAgentSession(agent)

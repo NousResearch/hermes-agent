@@ -330,6 +330,7 @@ const ActiveThreadTimeline: FC = () => {
 
     return () => {
       window.clearTimeout(timer)
+      delete rail.dataset.scrolling
       viewport.removeEventListener('wheel', reveal)
       viewport.removeEventListener('touchmove', reveal)
     }

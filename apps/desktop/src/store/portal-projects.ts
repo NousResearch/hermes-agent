@@ -92,7 +92,7 @@ function parseAgentProjects(value: unknown): AgentPortalProjects | null {
 
   if (raw.sessionProject && typeof raw.sessionProject === 'object' && !Array.isArray(raw.sessionProject)) {
     for (const [sessionId, projectId] of Object.entries(raw.sessionProject as Record<string, unknown>)) {
-      if (typeof projectId === 'string' && validIds.has(projectId)) {
+      if (typeof projectId === 'string' && (projectId === '' || validIds.has(projectId))) {
         sessionProject[sessionId] = projectId
       }
     }
@@ -210,13 +210,21 @@ export function agentPortalProjectsFor(
   return all[agentSidebarKey(owner)] ?? EMPTY_AGENT_PROJECTS
 }
 
-/** Resolve which project owns a session: explicit assignment wins (supports folder-less projects
- *  and manual overrides); otherwise longest matching workspace folder prefix (Classic parity). */
+/** Sentinel in `sessionProject` meaning the user explicitly detached this session from its
+ *  workspace-folder project so `cwd` prefix matching does not silently pull it back in. */
+export const DETACHED_PORTAL_PROJECT = ''
+
+/** Resolve which project owns a session: explicit assignment wins (including explicit detach
+ *  via `DETACHED_PORTAL_PROJECT`); otherwise longest matching workspace folder prefix (Classic parity). */
 export function resolvePortalProjectForSession(
   entry: AgentPortalProjects,
   session: { id: string; cwd?: string | null }
 ): string | null {
   const explicit = entry.sessionProject[session.id]
+
+  if (explicit === DETACHED_PORTAL_PROJECT) {
+    return null
+  }
 
   if (explicit && entry.projects.some(project => project.id === explicit)) {
     return explicit
@@ -227,7 +235,6 @@ export function resolvePortalProjectForSession(
   if (!cwd) {
     return null
   }
-
   let bestId: string | null = null
   let bestLength = -1
 
@@ -267,8 +274,42 @@ export function projectInfoToPortalProject(project: BackendProjectRecord): Porta
   }
 }
 
+function projectSignature(project: PortalProject): string {
+  return JSON.stringify([
+    project.id,
+    project.name,
+    project.path ?? null,
+    project.folders ?? null,
+    project.color ?? null,
+    project.icon ?? null,
+    Boolean(project.backend)
+  ])
+}
+
+function entriesEqual(a: AgentPortalProjects, b: AgentPortalProjects): boolean {
+  if (a.projects.length !== b.projects.length) {
+    return false
+  }
+
+  for (let i = 0; i < a.projects.length; i += 1) {
+    if (projectSignature(a.projects[i]) !== projectSignature(b.projects[i])) {
+      return false
+    }
+  }
+
+  const aKeys = Object.keys(a.sessionProject)
+  const bKeys = Object.keys(b.sessionProject)
+
+  if (aKeys.length !== bKeys.length) {
+    return false
+  }
+
+  return aKeys.every(key => a.sessionProject[key] === b.sessionProject[key])
+}
+
 /** Merge authoritative backend projects (`projects.list`) into an agent's cached project list.
- *  Preserves any local-only (`!backend`) fallback projects and valid manual session assignments. */
+ *  Preserves any local-only (`!backend`) fallback projects and valid manual session assignments.
+ *  Skips writing `$portalAgentProjects` when nothing semantically changed. */
 export function mergeBackendPortalProjects(
   owner: AgentSidebarOwner,
   backendProjects: readonly BackendProjectRecord[]
@@ -282,14 +323,19 @@ export function mergeBackendPortalProjects(
   const sessionProject: Record<string, string> = {}
 
   for (const [sessionId, projectId] of Object.entries(entry.sessionProject)) {
-    if (validIds.has(projectId)) {
+    if (projectId === DETACHED_PORTAL_PROJECT || validIds.has(projectId)) {
       sessionProject[sessionId] = projectId
     }
   }
 
-  updateAgentEntry(owner, { projects: merged, sessionProject })
-}
+  const next = { projects: merged, sessionProject }
 
+  if (entriesEqual(entry, next)) {
+    return
+  }
+
+  updateAgentEntry(owner, next)
+}
 export function upsertPortalProject(
   owner: AgentSidebarOwner,
   project: PortalProject,
@@ -409,13 +455,28 @@ export function deletePortalProject(
 export function moveSessionToPortalProject(
   owner: AgentSidebarOwner,
   sessionId: string,
-  projectId: string | null
+  projectId: string | null,
+  options?: { detach?: boolean }
 ): string | undefined {
   const entry = agentPortalProjectsFor($portalAgentProjects.get(), owner)
-  const previousProjectId = entry.sessionProject[sessionId]
+  const rawPrevious = entry.sessionProject[sessionId]
+  const previousProjectId = rawPrevious && rawPrevious !== DETACHED_PORTAL_PROJECT ? rawPrevious : undefined
 
   if (projectId === null) {
-    if (!previousProjectId) {
+    if (options?.detach) {
+      if (rawPrevious === DETACHED_PORTAL_PROJECT) {
+        return previousProjectId
+      }
+
+      updateAgentEntry(owner, {
+        ...entry,
+        sessionProject: { ...entry.sessionProject, [sessionId]: DETACHED_PORTAL_PROJECT }
+      })
+
+      return previousProjectId
+    }
+
+    if (rawPrevious === undefined) {
       return undefined
     }
 

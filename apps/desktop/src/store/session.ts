@@ -667,6 +667,10 @@ export function mergeSessionPage(
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
   const prevById = new Map(previous.map(session => [identity(session), session]))
+  // Secondary profile::id lookup for reconciling a connection-tagged row with an untagged refresh
+  // (never merges two differently tagged remote connections).
+  const profileIdentity = (session: SessionInfo) => `${profileKeyOf(session)}::${session.id}`
+  const prevByProfileId = new Map(previous.map(session => [profileIdentity(session), session]))
   // Tip rotation changes the live id — carry activity/title across the lineage
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
@@ -674,8 +678,10 @@ export function mergeSessionPage(
   const merged = incoming
     .filter(session => !session.is_internal_child)
     .map(session => {
-      const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
-      // User-send stamps last_active before the DB flushes the user row
+      const exactPrev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
+      const loosePrev =
+        !exactPrev && !session.connection_id?.trim() ? prevByProfileId.get(profileIdentity(session)) : undefined
+      const prev = exactPrev ?? loosePrev
       // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
       const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
       const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
@@ -699,7 +705,12 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(merged.map(identity))
-
+  const incomingUntaggedProfileIds = new Set(
+    merged.filter(session => !session.connection_id?.trim()).map(profileIdentity)
+  )
+  const incomingTaggedProfileIds = new Set(
+    merged.filter(session => Boolean(session.connection_id?.trim())).map(profileIdentity)
+  )
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
@@ -755,6 +766,7 @@ export function mergeSessionPage(
       !session.hidden &&
       !tombstoned(session) &&
       !incomingIds.has(identity(session)) &&
+      !(session.connection_id?.trim() ? incomingUntaggedProfileIds.has(profileIdentity(session)) : incomingTaggedProfileIds.has(profileIdentity(session))) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       !incomingLineageIdMembers.has(identity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))

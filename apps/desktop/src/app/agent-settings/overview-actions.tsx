@@ -9,7 +9,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { PathText } from '@/components/ui/path-text'
 import { useI18n } from '@/i18n'
 import { writeClipboardText } from '@/lib/clipboard'
 import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
@@ -101,15 +100,9 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
             <span>{hidden ? shared.showInChatList : shared.hide}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={!profile?.path} onSelect={() => void copyPath()}>
+          <DropdownMenuItem disabled={!profile?.path} onSelect={() => void copyPath()} title={profile?.path}>
             <Codicon name="copy" />
-            <span className="shrink-0">{c.copyPath}</span>
-            {profile?.path && (
-              <PathText
-                className="ms-auto max-w-[45%] text-[length:var(--portal-type-meta-size)] text-(--ui-text-tertiary)"
-                path={profile.path}
-              />
-            )}
+            <span>{c.copyPath}</span>
           </DropdownMenuItem>
           {profile && !profile.is_default && owner.profile !== 'default' && (
             <DropdownMenuItem onSelect={() => open({ kind: 'delete', owner, profile })} variant="destructive">

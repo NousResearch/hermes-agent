@@ -9,7 +9,9 @@ import { PathText } from '@/components/ui/path-text'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
 import {
+  $portalAgentProjects,
   $portalCreateProjectDialog,
+  agentPortalProjectsFor,
   closePortalCreateProjectDialog,
   PORTAL_PROJECT_NAME_MAX
 } from '@/store/portal-projects'
@@ -23,6 +25,7 @@ import { pickProjectFolder } from '@/store/projects'
  */
 export function PortalCreateProjectDialog() {
   const request = useStore($portalCreateProjectDialog)
+  const allProjects = useStore($portalAgentProjects)
   const [name, setName] = useState('')
   const [folder, setFolder] = useState<string | null>(null)
   const [pickingFolder, setPickingFolder] = useState(false)
@@ -35,6 +38,7 @@ export function PortalCreateProjectDialog() {
     if (request) {
       setName('')
       setFolder(null)
+      setPickingFolder(false)
       setSubmitting(false)
       requestAnimationFrame(() => inputRef.current?.focus())
     }
@@ -42,27 +46,37 @@ export function PortalCreateProjectDialog() {
 
   const trimmed = name.trim()
   const tooLong = name.length > PORTAL_PROJECT_NAME_MAX
-  const canSubmit = trimmed.length > 0 && !tooLong && !submitting
+  const duplicateName =
+    Boolean(request && trimmed) &&
+    agentPortalProjectsFor(allProjects, request!.owner).projects.some(
+      project => project.name.trim().toLowerCase() === trimmed.toLowerCase()
+    )
+  const hasError = tooLong || duplicateName
+  const canSubmit = trimmed.length > 0 && !hasError && !submitting
 
   const handlePickFolder = async () => {
-    if (pickingFolder) {
+    if (pickingFolder || !request) {
       return
     }
 
+    const activeRequest = request
     setPickingFolder(true)
 
     try {
       const picked = await pickProjectFolder()
 
-      if (picked) {
+      if (picked && $portalCreateProjectDialog.get() === activeRequest) {
         setFolder(picked)
       }
     } catch {
       // User cancelled or picker unavailable.
     } finally {
-      setPickingFolder(false)
+      if ($portalCreateProjectDialog.get() === activeRequest) {
+        setPickingFolder(false)
+      }
     }
   }
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
 
@@ -70,15 +84,24 @@ export function PortalCreateProjectDialog() {
       return
     }
 
+    const activeRequest = request
     setSubmitting(true)
-    const sessionId = request.session?.id
-    const { owner } = request
+    const sessionId = activeRequest.session?.id
+    const { owner } = activeRequest
+    const currentEntry = agentPortalProjectsFor($portalAgentProjects.get(), owner)
+    const previousProject = sessionId
+      ? currentEntry.projects.find(project => project.id === currentEntry.sessionProject[sessionId])
+      : undefined
     const created = await createPortalProjectSynced(owner, trimmed, {
       folder,
       moveSessionId: sessionId
     })
-    setSubmitting(false)
 
+    if ($portalCreateProjectDialog.get() !== activeRequest) {
+      return
+    }
+
+    setSubmitting(false)
     if (!created) {
       return
     }
@@ -92,7 +115,13 @@ export function PortalCreateProjectDialog() {
           deletePortalProjectSynced(
             owner,
             created.project,
-            sessionId ? { previousProjectId: created.previousProjectId, sessionId } : undefined
+            sessionId
+              ? {
+                  previousProjectId: created.previousProjectId,
+                  previousProjectPath: previousProject?.path ?? null,
+                  sessionId
+                }
+              : undefined
           )
         }
       },
@@ -137,11 +166,11 @@ export function PortalCreateProjectDialog() {
                 </span>
               </div>
               <Input
-                aria-describedby={tooLong ? errorId : undefined}
-                aria-invalid={tooLong || undefined}
+                aria-describedby={hasError ? errorId : undefined}
+                aria-invalid={hasError || undefined}
                 autoComplete="off"
                 autoFocus
-                className={cn(tooLong && 'portal-create-project-input is-error')}
+                className={cn(hasError && 'portal-create-project-input is-error')}
                 id={inputId}
                 onChange={event => setName(event.target.value)}
                 placeholder="Launch prep"
@@ -151,6 +180,10 @@ export function PortalCreateProjectDialog() {
               {tooLong ? (
                 <p className="portal-create-project-error" id={errorId} role="alert">
                   Use {PORTAL_PROJECT_NAME_MAX} characters or fewer so the name fits in the sidebar.
+                </p>
+              ) : duplicateName ? (
+                <p className="portal-create-project-error" id={errorId} role="alert">
+                  A project named &ldquo;{trimmed}&rdquo; already exists for this agent.
                 </p>
               ) : null}
             </div>
@@ -197,7 +230,7 @@ export function PortalCreateProjectDialog() {
                 Cancel
               </Button>
               <Button disabled={!canSubmit} type="submit">
-                {request.session ? 'Create and move' : 'Create project'}
+                {submitting ? 'Creating…' : request.session ? 'Create and move' : 'Create project'}
               </Button>
             </DialogFooter>
           </form>

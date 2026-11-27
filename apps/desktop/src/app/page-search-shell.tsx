@@ -25,7 +25,8 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   pageTitle?: string
   /** A drill-down surface draws its own header (back link and title); the shell omits its own. */
   hideHeader?: boolean
-  /** The redesign's one-line description under the heading (919:9095). */
+  /** Embedded inside a parent page tab: omit page title/description but keep search & trailing actions. */
+  headerless?: boolean
   pageDescription?: string
   tabs?: PageShellTab[]
   activeTab?: string
@@ -69,6 +70,7 @@ function ShellTabs({
 
 interface ShellHeaderProps {
   hideHeader: boolean
+  headerless: boolean
   redesigned: boolean
   pageTitle?: string
   pageDescription?: string
@@ -81,6 +83,7 @@ interface ShellHeaderProps {
 
 function ShellHeader({
   hideHeader,
+  headerless,
   redesigned,
   pageTitle,
   pageDescription,
@@ -92,6 +95,19 @@ function ShellHeader({
 }: ShellHeaderProps) {
   if (hideHeader) {
     return null
+  }
+
+  if (headerless) {
+    if (!search && !searchTrailingAction) {
+      return null
+    }
+
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
+        {search && <div className="page-header-search">{search}</div>}
+        {searchTrailingAction}
+      </div>
+    )
   }
 
   if (redesigned) {
@@ -129,6 +145,7 @@ export function PageSearchShell({
   className,
   pageTitle,
   hideHeader = false,
+  headerless = false,
   pageDescription,
   tabs,
   activeTab,
@@ -143,7 +160,7 @@ export function PageSearchShell({
   searchTrailingAction,
   ...props
 }: PageSearchShellProps) {
-  const redesigned = usePortalShell() && (Boolean(pageTitle) || Boolean(hideHeader))
+  const redesigned = usePortalShell() && (Boolean(pageTitle) || Boolean(hideHeader) || Boolean(headerless))
   const hasTabs = (tabs?.length ?? 0) > 0
 
   const search = !searchHidden && onSearchChange && (
@@ -194,6 +211,7 @@ export function PageSearchShell({
       */}
       <div className="shrink-0">
         <ShellHeader
+          headerless={headerless}
           hideHeader={hideHeader}
           pageDescription={pageDescription}
           pageTitle={pageTitle}

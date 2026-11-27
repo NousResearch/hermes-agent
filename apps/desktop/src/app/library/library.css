@@ -557,6 +557,10 @@
   display: flex;
   flex-direction: column;
   padding: calc(var(--titlebar-band-height) + 0.5rem) 1.5rem 1rem;
+  /* Always sits over the 70% black scrim, so light-theme dark inks must never bleed onto it. */
+  color: var(--portal-raw-pure-white);
+  --portal-text-primary: var(--portal-raw-pure-white);
+  --portal-text-tertiary: color-mix(in srgb, var(--portal-raw-pure-white) 72%, transparent);
   outline: none;
 }
 

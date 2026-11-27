@@ -1,5 +1,6 @@
 import { agentSidebarKey, type AgentSidebarOwner } from '@/store/agent-sidebar-preferences'
 import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
+import { notifyError } from '@/store/notifications'
 import {
   type BackendProjectRecord,
   createPortalProject,
@@ -15,7 +16,8 @@ import {
   upsertPortalProject
 } from '@/store/portal-projects'
 import { $activeGatewayProfile } from '@/store/profile'
-import { moveSessionToProject, refreshProjects, refreshProjectTree } from '@/store/projects'
+import { refreshProjects, refreshProjectTree } from '@/store/projects'
+import { $sessions, sessionMatchesStoredId } from '@/store/session'
 
 const SYNC_TIMEOUT_MS = 8_000
 const inFlightSync = new Map<string, Promise<void>>()
@@ -37,6 +39,36 @@ function refreshActiveProjectStores(owner: AgentSidebarOwner): void {
   void refreshProjectTree()
 }
 
+function isOfflineOrUnsupportedRpc(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '')
+
+  return /not open|not connected|timed out|connection closed|method not found|unknown method|-32601/i.test(msg)
+}
+
+/** Owner-routed `session.workspace.move`: updates the backend session's workspace `cwd` directly
+ *  on the owning machine/profile without depending on the active gateway's `$projectTree`. */
+async function moveWorkspaceSession(owner: AgentSidebarOwner, sessionId: string, cwd: string): Promise<void> {
+  await requestGatewayForAgent(
+    owner.connectionId,
+    owner.profile,
+    'session.workspace.move',
+    { cwd, profile: owner.profile, session_key: sessionId },
+    SYNC_TIMEOUT_MS,
+    undefined,
+    { spawnPriority: 'foreground' }
+  )
+
+  $sessions.set(
+    $sessions.get().map(row =>
+      sessionMatchesStoredId(row, sessionId) &&
+      (row.connection_id ?? null) === (owner.connectionId ?? null) &&
+      (row.profile || 'default').toLowerCase() === (owner.profile || 'default').toLowerCase()
+        ? { ...row, cwd }
+        : row
+    )
+  )
+  refreshActiveProjectStores(owner)
+}
 /** Pull backend `projects.db` projects for an agent and merge them into `$portalAgentProjects`.
  *  Deduplicates concurrent requests per agent and degrades quietly when offline or unsupported. */
 export function syncPortalAgentProjects(owner: AgentSidebarOwner): Promise<void> {
@@ -110,15 +142,21 @@ export async function createPortalProjectSynced(
       const result = upsertPortalProject(owner, mapped, options.moveSessionId)
 
       if (options.moveSessionId && mapped.path) {
-        void moveSessionToProject(options.moveSessionId, mapped.id, owner.profile).catch(() => {})
+        void moveWorkspaceSession(owner, options.moveSessionId, mapped.path).catch(err =>
+          notifyError(err, 'Could not move chat folder')
+        )
       }
 
       refreshActiveProjectStores(owner)
 
       return result
     }
-  } catch {
-    // Offline or duplicate/unsupported RPC: fall back to local storage so the user isn't blocked.
+  } catch (err) {
+    if (!isOfflineOrUnsupportedRpc(err)) {
+      notifyError(err, 'Could not create project')
+
+      return null
+    }
   }
 
   return createPortalProject(owner, name, options.moveSessionId, folder)
@@ -127,9 +165,13 @@ export async function createPortalProjectSynced(
 export function deletePortalProjectSynced(
   owner: AgentSidebarOwner,
   project: Pick<PortalProject, 'backend' | 'id'>,
-  restoreMove?: { sessionId: string; previousProjectId?: string }
+  restoreMove?: { sessionId: string; previousProjectId?: string; previousProjectPath?: string | null }
 ): void {
   deletePortalProject(owner, project.id, restoreMove)
+
+  if (restoreMove?.previousProjectPath) {
+    void moveWorkspaceSession(owner, restoreMove.sessionId, restoreMove.previousProjectPath).catch(() => {})
+  }
 
   if (!project.backend) {
     return
@@ -145,7 +187,10 @@ export function deletePortalProjectSynced(
     { spawnPriority: 'foreground' }
   )
     .then(() => refreshActiveProjectStores(owner))
-    .catch(() => {})
+    .catch(err => {
+      notifyError(err, 'Could not delete project')
+      void syncPortalAgentProjects(owner)
+    })
 }
 
 export function renamePortalProjectSynced(
@@ -169,7 +214,10 @@ export function renamePortalProjectSynced(
     { spawnPriority: 'foreground' }
   )
     .then(() => refreshActiveProjectStores(owner))
-    .catch(() => {})
+    .catch(err => {
+      notifyError(err, 'Could not rename project')
+      void syncPortalAgentProjects(owner)
+    })
 
   return true
 }
@@ -200,7 +248,10 @@ export function setPortalProjectAppearanceSynced(
     { spawnPriority: 'foreground' }
   )
     .then(() => refreshActiveProjectStores(owner))
-    .catch(() => {})
+    .catch(err => {
+      notifyError(err, 'Could not update project appearance')
+      void syncPortalAgentProjects(owner)
+    })
 }
 
 export function addPortalProjectFolderSynced(
@@ -237,20 +288,26 @@ export function addPortalProjectFolderSynced(
     { spawnPriority: 'foreground' }
   )
     .then(() => refreshActiveProjectStores(owner))
-    .catch(() => {})
+    .catch(err => {
+      notifyError(err, 'Could not attach folder')
+      void syncPortalAgentProjects(owner)
+    })
 }
 
-/** Move a session to a portal project (or back to loose chats when `project` is null).
+/** Move a session to a portal project (or detach back to loose chats when `project` is null).
  *  When moving into a backend folder-backed project, also updates the session's workspace cwd. */
 export function moveSessionToPortalProjectSynced(
   owner: AgentSidebarOwner,
   sessionId: string,
-  project: Pick<PortalProject, 'backend' | 'id' | 'path'> | null
+  project: Pick<PortalProject, 'backend' | 'id' | 'path'> | null,
+  options?: { detach?: boolean }
 ): string | undefined {
-  const previous = moveSessionToPortalProject(owner, sessionId, project?.id ?? null)
+  const previous = moveSessionToPortalProject(owner, sessionId, project?.id ?? null, options)
 
   if (project?.backend && project.path) {
-    void moveSessionToProject(sessionId, project.id, owner.profile).catch(() => {})
+    void moveWorkspaceSession(owner, sessionId, project.path).catch(err =>
+      notifyError(err, 'Could not move chat folder')
+    )
   }
 
   return previous

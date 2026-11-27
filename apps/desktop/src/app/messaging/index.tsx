@@ -330,7 +330,7 @@ export function MessagingView({ embedded = false, setStatusbarItemGroup: _setSta
   // the active profile; the API helpers treat null as "target primary").
   const requestedProfile = useStore($settingsRequestProfile)
   const pinnedOwner = useSettingsOwner()
-  const agentLayout = usePortalShell() && Boolean(pinnedOwner)
+  const agentLayout = usePortalShell() && Boolean(pinnedOwner) && !embedded
   const scopeProfile = pinnedOwner ?? requestedProfile
   // An agent page restarts (and watches) its owner's messaging gateway; classic keeps the active one.
   const restartProfile = pinnedOwner?.profile
@@ -873,7 +873,7 @@ export function MessagingView({ embedded = false, setStatusbarItemGroup: _setSta
 
   return (
     <PageSearchShell
-      hideHeader={embedded}
+      headerless={embedded}
       pageDescription={frame.messagingDescription}
       pageTitle={pinnedOwner ? undefined : t.sidebar.nav.messaging}
       {...props}
@@ -898,8 +898,8 @@ export function MessagingView({ embedded = false, setStatusbarItemGroup: _setSta
       ) : (
         <div className="flex h-full min-h-0 flex-col">
           {/* Which profile's gateway this page configures (hidden for
-              single-profile users). */}
-          <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />
+              single-profile users, and when embedded inside Capabilities which owns the scope header). */}
+          {!embedded && <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />}
           <div className="min-h-0 flex-1">
             <MasterDetail>
               <ListColumn>

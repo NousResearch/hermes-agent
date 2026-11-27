@@ -123,8 +123,8 @@ it('shows and copies the real profile path, and starts deleting from the menu it
   render(<AgentOverviewActions owner={owner} profile={profile} />, { wrapper: page })
   openMenu()
   const copy = screen.getByRole('menuitem', { name: /Copy agent folder path/ })
-  // One line: the label, then the path as a trailing hint.
-  expect(copy.textContent).toBe(`Copy agent folder path${profile.path}`)
+  expect(copy.textContent).toBe('Copy agent folder path')
+  expect(copy.getAttribute('title')).toBe(profile.path)
   await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: /^Delete agent/ })))
   expect(screen.getByRole('dialog', { name: en.profiles.deleteTitle })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: en.common.cancel }))

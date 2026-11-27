@@ -987,9 +987,8 @@ html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-a
   color: var(--portal-status-pending);
   font-size: var(--portal-type-meta-size);
 }
-
 :root[data-shell='portal'] [data-slot='bot-screen-state-card'] {
-  padding: 1.5rem;
+  padding: 1.25rem;
   border: 1px solid var(--portal-stroke-hairline);
   border-radius: var(--portal-radius-frame);
   background-color: var(--portal-surface-card);
@@ -1014,6 +1013,11 @@ html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-a
 :root[data-shell='portal'] [data-slot='bot-screen-hero'] {
   border-color: var(--portal-stroke-hairline);
   border-radius: var(--portal-radius-card);
+}
+
+:root[data-shell='portal'] [data-slot='bot-screen-hero']:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 :root[data-shell='portal'] [data-slot='bot-screen-hero'][data-tone='human'] {

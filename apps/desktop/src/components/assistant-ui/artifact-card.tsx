@@ -46,11 +46,9 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
   const storedId = useStore(view.$storedId)
   const transcriptStoredId = useStore(view.$transcriptStoredId)
   const registry = useStore($artifactRegistry)
-  // The chat this card's message belongs to. While another chat is selected and its transcript has
-  // not replaced this one yet, the selection is not it: registering under it filed this chat's
-  // artifact with the next one.
-  const sessionId = transcriptStoredId || (storedId ? '' : runtimeId) || ''
-
+  // The chat this card's message belongs to: prefer the live transcript's stored id when bound,
+  // else fall back to runtimeId or storedId so cold-resumed / read-only transcripts still register.
+  const sessionId = transcriptStoredId || runtimeId || storedId || ''
   const trimmed = code.trim()
 
   // Register/version the artifact once its fence has finished streaming.

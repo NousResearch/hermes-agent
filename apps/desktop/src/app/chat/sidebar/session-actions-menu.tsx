@@ -325,14 +325,17 @@ function PortalMoveToProjectItems({
               }
 
               triggerHaptic('selection')
-              const previous = moveSessionToPortalProjectSynced(owner, sessionId, project)
-              const previousProject = previous
-                ? (entry.projects.find(item => item.id === previous) ?? null)
+              const previousProject = currentProjectId
+                ? (entry.projects.find(item => item.id === currentProjectId) ?? null)
                 : null
+              moveSessionToPortalProjectSynced(owner, sessionId, project)
               notify({
                 action: {
                   label: 'Undo',
-                  onClick: () => moveSessionToPortalProjectSynced(owner, sessionId, previousProject)
+                  onClick: () =>
+                    moveSessionToPortalProjectSynced(owner, sessionId, previousProject, {
+                      detach: previousProject === null
+                    })
                 },
                 durationMs: 4_000,
                 kind: 'success',
@@ -355,10 +358,10 @@ function PortalMoveToProjectItems({
         <kit.Item
           onSelect={() => {
             triggerHaptic('selection')
-            const previous = moveSessionToPortalProjectSynced(owner, sessionId, null)
-            const previousProject = previous
-              ? (entry.projects.find(item => item.id === previous) ?? null)
+            const previousProject = currentProjectId
+              ? (entry.projects.find(item => item.id === currentProjectId) ?? null)
               : null
+            moveSessionToPortalProjectSynced(owner, sessionId, null, { detach: true })
             notify({
               action: {
                 label: 'Undo',

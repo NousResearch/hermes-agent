@@ -14,9 +14,15 @@ vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: { get: () => 'default' }
 }))
 vi.mock('@/store/projects', () => ({
-  moveSessionToProject: (...args: unknown[]) => moveSessionToProject(...args),
   refreshProjects: () => refreshProjects(),
   refreshProjectTree: () => refreshProjectTree()
+}))
+vi.mock('@/store/notifications', () => ({
+  notifyError: vi.fn()
+}))
+vi.mock('@/store/session', () => ({
+  $sessions: { get: () => [], set: vi.fn() },
+  sessionMatchesStoredId: (row: { id: string }, id: string) => row.id === id
 }))
 
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
@@ -153,19 +159,50 @@ describe('portal-projects store', () => {
     moveSessionToPortalProject(owner, 's-nested', 'p_root')
     const updated = agentPortalProjectsFor($portalAgentProjects.get(), owner)
     expect(resolvePortalProjectForSession(updated, { cwd: '/work/hermes/apps/desktop', id: 's-nested' })).toBe('p_root')
+
+    // Explicit detach prevents cwd prefix matching from re-filing the chat back into its folder project.
+    moveSessionToPortalProject(owner, 's-nested', null, { detach: true })
+    const detached = agentPortalProjectsFor($portalAgentProjects.get(), owner)
+    expect(resolvePortalProjectForSession(detached, { cwd: '/work/hermes/apps/desktop', id: 's-nested' })).toBeNull()
+
+    // Identical backend merge is a no-op (preserves store reference identity).
+    const beforeRef = $portalAgentProjects.get()
+    mergeBackendPortalProjects(owner, [
+      {
+        color: '#22c55e',
+        created_at: 999,
+        folders: [{ is_primary: true, path: '/work' }],
+        icon: 'repo',
+        id: 'p_root',
+        name: 'Work',
+        primary_path: '/work',
+        slug: 'work'
+      },
+      {
+        created_at: 999,
+        folders: [{ is_primary: true, path: '/work/hermes' }],
+        id: 'p_hermes',
+        name: 'Hermes',
+        primary_path: '/work/hermes',
+        slug: 'hermes'
+      }
+    ])
+    expect($portalAgentProjects.get()).toBe(beforeRef)
   })
 
   it('syncs folder-backed & folder-less creation, appearance, and folder attachment through gateway RPCs', async () => {
-    requestGatewayForAgent.mockResolvedValueOnce({
-      project: {
-        created_at: 300,
-        folders: [{ is_primary: true, path: '/repo/app' }],
-        id: 'p_app',
-        name: 'App',
-        primary_path: '/repo/app',
-        slug: 'app'
-      }
-    })
+    requestGatewayForAgent
+      .mockResolvedValueOnce({
+        project: {
+          created_at: 300,
+          folders: [{ is_primary: true, path: '/repo/app' }],
+          id: 'p_app',
+          name: 'App',
+          primary_path: '/repo/app',
+          slug: 'app'
+        }
+      })
+      .mockResolvedValueOnce({})
 
     const created = await createPortalProjectSynced(owner, 'App', {
       folder: '/repo/app',
@@ -174,7 +211,8 @@ describe('portal-projects store', () => {
     expect(created?.project.id).toBe('p_app')
     expect(created?.project.path).toBe('/repo/app')
     expect(created?.project.backend).toBe(true)
-    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(
+      1,
       null,
       'default',
       'projects.create',
@@ -183,8 +221,16 @@ describe('portal-projects store', () => {
       undefined,
       { spawnPriority: 'foreground' }
     )
-    expect(moveSessionToProject).toHaveBeenCalledWith('s-move', 'p_app', 'default')
-
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(
+      2,
+      null,
+      'default',
+      'session.workspace.move',
+      { cwd: '/repo/app', profile: 'default', session_key: 's-move' },
+      8000,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
     requestGatewayForAgent.mockResolvedValueOnce({})
     setPortalProjectAppearanceSynced(owner, created!.project, { color: '#f59e0b', icon: 'rocket' })
     expect(agentPortalProjectsFor($portalAgentProjects.get(), owner).projects[0]).toMatchObject({

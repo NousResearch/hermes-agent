@@ -73,14 +73,15 @@
   box-shadow: var(--portal-shadow-floating);
 }
 
-/* Transcript scrim and completion drawer share the same floating panel geometry and hairline. */
-:root[data-shell='portal'] [data-hud-shell] [data-hud-glass] {
+/* Transcript scrim and completion drawer share the same floating panel geometry and hairline.
+   Scope the border to [data-hud-band] so an empty 0px band never paints a stray 1px line. */
+:root[data-shell='portal'] [data-hud-shell][data-hud-band] [data-hud-glass] {
   border: 1px solid var(--portal-stroke-floating);
   border-bottom-width: 0;
   border-radius: var(--portal-radius-panel) var(--portal-radius-panel) 0 0;
 }
 
-:root[data-shell='portal'] [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
+:root[data-shell='portal'] [data-hud-shell][data-hud-band][data-hud-edge='top'] [data-hud-glass] {
   border-top-width: 0;
   border-bottom-width: 1px;
   border-radius: 0 0 var(--portal-radius-panel) var(--portal-radius-panel);

@@ -37,7 +37,7 @@ export function useSettingsEditsActiveAgent(requestedProfile: null | string | un
   const activeProfile = useStore($activeGatewayProfile)
 
   if (!owner) {
-    return requestedProfile == null
+    return requestedProfile == null || normalizeProfileKey(requestedProfile) === normalizeProfileKey(activeProfile)
   }
 
   return (

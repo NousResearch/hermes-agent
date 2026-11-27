@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import type { CronJob } from '@/hermes'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
 import {
@@ -79,7 +80,10 @@ export function useHeldDelete(source: RoutineSource, backend: HeldDeleteBackend 
             id: job.id,
             name,
             resume: !routinePaused(job) && job.state !== 'completed',
-            scope: { connectionId: scope.connectionId ?? connectionId, profile: job.profile ?? '' }
+            scope: {
+              connectionId: scope.connectionId ?? connectionId ?? activeGatewayConnectionId(),
+              profile: job.profile ?? ''
+            }
           },
           backend
         )

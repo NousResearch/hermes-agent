@@ -29,7 +29,6 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5077, str(e))
     return _ok(rid, _sessionless_state(retire=False) if params.get("sessionless") else _run_state())
 
-
 def _sessionless_state(*, assume_fresh=False, retire=True):
     from hermes_cli.anon_auth import on_local_desktop_backend
     from hermes_cli.onboarding_run import guide_progress, should_run

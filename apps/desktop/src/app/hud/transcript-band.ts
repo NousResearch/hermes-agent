@@ -63,24 +63,17 @@ export function useHudTranscriptBand(rootRef: RefObject<HTMLDivElement | null>):
 
       const contentSpan = text < 1 ? 0 : text + HUD_SHEET_OVERHANG_PX
 
-      // Once the HUD has a transcript, a resize must buy readable scrollback.
-      // The old glance-band ceiling froze this at 152px and turned every extra
-      // pixel of native window height into empty transparent chrome.
+      // Single DOM read pass before mutating style/attributes so we never force a sync reflow.
+      const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
+      const barHeight = bar?.getBoundingClientRect().height ?? 0
       const visible = hudTranscriptHeight({
-        barHeight: root.querySelector<HTMLElement>('[data-slot="composer-dock"]')?.getBoundingClientRect().height ?? 0,
+        barHeight,
         contentHeight: contentSpan,
         viewportHeight: window.innerHeight
       })
 
+      root.toggleAttribute('data-hud-band', visible > 0)
       root.style.setProperty('--hud-band-height', `${visible}px`)
-
-      // …and the bar's real height, which is what the thread has to clear.
-      // --composer-measured-height would be the obvious source, but it is a
-      // surface var that never lands here, so the clearance silently fell back
-      // to the root estimate and reserved ~20px more than the bar occupies —
-      // a visible hole under the last message.
-      const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
-      const barHeight = bar?.getBoundingClientRect().height ?? 0
 
       if (bar) {
         ro.observe(bar)

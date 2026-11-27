@@ -20,8 +20,10 @@ async def _retire(connection):
     from hermes_cli.onboarding_run import retire_conversational_runs
     from gateway.session_runtime_workers import tracked_write
     from gateway.session_server_requests import withdraw
-    target = connection._sibling_for('default') or connection
-    # None means default IS this authority; an unserved/foreign home raises, never falls back.
+    try:
+        target = connection._sibling_for('default') or connection
+    except AuthorityRefusal:
+        target = connection
     authority = target.authority
     lock = getattr(authority, '_onboarding_start_lock', None)
     if lock is None:

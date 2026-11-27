@@ -10,7 +10,7 @@ import { notify, readableError } from '@/store/notifications'
 
 import type { McpServersController } from '../../mcp/use-mcp-servers'
 import { $accountOperations, accountOperationFor } from '../data/account-operations'
-import { accountName } from '../data/join'
+import { accountName, memberRevision } from '../data/join'
 import { invalidatePluginProbe } from '../data/keys'
 import type { WriteOutcome } from '../data/mutations'
 import { type HostedConnectorsView, useConnectorTools } from '../data/queries'
@@ -33,6 +33,20 @@ import {
 import { useConnectionsCopy } from './connections-copy'
 
 const NO_ACCOUNTS: readonly AccountRow[] = []
+
+function canEditSheetTools(
+  localMode: boolean,
+  agentControls: boolean,
+  card: ConnectorCardModel,
+  hostedConnected: boolean,
+  hosted: HostedConnectorsView
+): boolean {
+  if (localMode) {
+    return agentControls && card.plugin === undefined
+  }
+
+  return hostedConnected && agentControls && !hosted.rulesFailed && memberRevision(hosted.policy) !== undefined
+}
 
 export interface ConnectionSheetProps {
   agentControls: boolean
@@ -250,10 +264,7 @@ export function ConnectionSheet({
   }
 
   const reconnect = () => onReconnect(accounts.length === 1 ? accounts[0] : undefined)
-  const toolsEditable = localMode
-    ? agentControls && card.plugin === undefined
-    : hostedConnected && agentControls && !hosted.rulesFailed
-
+  const toolsEditable = canEditSheetTools(localMode, agentControls, card, hostedConnected, hosted)
   const menu = connected ? (
     <HeaderMenu
       disabled={busy}

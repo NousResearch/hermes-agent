@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type SetStateAction, useMemo, useState } from 'react'
+import { type ComponentProps, type SetStateAction, useCallback, useMemo, useState } from 'react'
 
 import { mutateSessionHttp } from '@/api/sessions'
 import { type SessionInfo } from '@/hermes'
@@ -100,22 +100,33 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const trimmedQuery = query.trim()
   const isSearching = Boolean(trimmedQuery)
 
-  const matches = (row: SessionInfo) =>
-    !trimmedQuery ||
-    sessionMatchesSearch(row, trimmedQuery) ||
-    (row.profile ?? 'default').toLowerCase().includes(trimmedQuery.toLowerCase())
+  const matches = useCallback(
+    (row: SessionInfo) =>
+      !trimmedQuery ||
+      sessionMatchesSearch(row, trimmedQuery) ||
+      (row.profile ?? 'default').toLowerCase().includes(trimmedQuery.toLowerCase()),
+    [trimmedQuery]
+  )
 
   const search = useSimplifiedSessionSearch(trimmedQuery)
 
-  const searchRows = isSearching
-    ? [...new Map([...search.rows, ...allCandidates.filter(matches)].map(row => [sessionRowKey(row), row])).values()]
-    : all
+  const searchRows = useMemo(
+    () =>
+      isSearching
+        ? [...new Map([...search.rows, ...allCandidates.filter(matches)].map(row => [sessionRowKey(row), row])).values()]
+        : all,
+    [all, allCandidates, isSearching, matches, search.rows]
+  )
 
   // Archived chats stay out of the resting list, but surface during search (Classic parity).
-  const rows = searchRows.filter(
-    row => !row.hidden && (isSearching || !row.archived) && !removed.has(row.id) && !removed.has(sessionRowKey(row))
+  const rows = useMemo(
+    () =>
+      searchRows.filter(
+        row => !row.hidden && (isSearching || !row.archived) && !removed.has(row.id) && !removed.has(sessionRowKey(row))
+      ),
+    [isSearching, removed, searchRows]
   )
-  useIaSearchMetrics(query.trim(), search.pending, search.failed, rows.length)
+  useIaSearchMetrics(trimmedQuery, search.pending, search.failed, rows.length)
   const agents = useSimplifiedAgents(rows)
   const pinned = simplifiedPins(all, pinIds, unconfirmed, pinWrites.value)
   const pinnedIds = new Set(pinned.map(row => sessionRowKey(row)))

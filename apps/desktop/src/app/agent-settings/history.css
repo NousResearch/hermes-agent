@@ -163,6 +163,7 @@
   padding: 0 4px;
   border-radius: var(--portal-radius-chip);
   background: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
   font-size: var(--portal-type-caption-size);
 }
 .agent-history-scope,

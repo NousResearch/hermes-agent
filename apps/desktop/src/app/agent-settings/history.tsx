@@ -572,7 +572,7 @@ function HistoryFilterPopover({
         <Button className="agent-history-filter-trigger" data-active={active > 0 || undefined} variant="secondary">
           <Codicon name="filter" />
           {c.filters}
-          {active > 0 && <span className="agent-history-filter-count text-primary-foreground">{active}</span>}
+          {active > 0 && <span className="agent-history-filter-count">{active}</span>}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="agent-history-filter-popover" variant="menu">

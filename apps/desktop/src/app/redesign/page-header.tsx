@@ -100,10 +100,13 @@ export function PageTabs({ label, onChange, tabs, value, variant = 'underline' }
   const listRef = useRef<HTMLDivElement>(null)
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return
+    }
+
     const rtl = getComputedStyle(event.currentTarget).direction === 'rtl'
     const step = STEP[(rtl && MIRRORED[event.key]) || event.key]
     const current = tabs.findIndex(tab => tab.id === value)
-
     if (!step || current < 0) {
       return
     }

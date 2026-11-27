@@ -96,22 +96,13 @@ const toState = (result: PluginsManageResult | undefined, profile: null | string
 
 export async function loadPluginAutoUpdate(request: GatewayRequest, profile: null | string): Promise<void> {
   const generation = ++autoUpdateGeneration
+  const result = await request<PluginsManageResult>('plugins.manage', scoped({ action: 'auto_update' }, profile))
 
-  try {
-    const result = await request<PluginsManageResult>('plugins.manage', scoped({ action: 'auto_update' }, profile))
-
-    if (generation === autoUpdateGeneration) {
-      $pluginAutoUpdate.set({
-        ...toState(result, profile),
-        ...(request.ownerKey ? { ownerKey: request.ownerKey } : {})
-      })
-    }
-  } catch (error) {
-    if (generation === autoUpdateGeneration) {
-      $pluginAutoUpdate.set(null)
-    }
-
-    throw error
+  if (generation === autoUpdateGeneration) {
+    $pluginAutoUpdate.set({
+      ...toState(result, profile),
+      ...(request.ownerKey ? { ownerKey: request.ownerKey } : {})
+    })
   }
 }
 

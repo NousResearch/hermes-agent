@@ -48,7 +48,7 @@ function focusDialogItself(event: Event) {
  * does); "Not now", × and Escape only close it.
  */
 export function UsageStatsDialog({ choose, onClose, reask, saving }: UsageStatsDialogProps) {
-  const copy = useUsageStatsCopy().dialog
+  const { card: cardCopy, dialog: copy } = useUsageStatsCopy()
   const { t } = useI18n()
   // What had focus as the dialog opened, read on the first render, before the dialog takes focus.
   const [opener] = useState(() => document.activeElement)
@@ -82,6 +82,9 @@ export function UsageStatsDialog({ choose, onClose, reask, saving }: UsageStatsD
         <DialogFooter>
           <Button disabled={saving} onClick={() => void choose('share')} type="button">
             {copy.share}
+          </Button>
+          <Button disabled={saving} onClick={() => void choose('off')} type="button" variant="outline">
+            {cardCopy.decline}
           </Button>
           <Button onClick={onClose} type="button" variant="ghost">
             {copy.notNow}

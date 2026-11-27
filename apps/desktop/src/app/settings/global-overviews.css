@@ -789,7 +789,7 @@
    art masked in from its leading edge; 20px under the rows, on the title's inset. */
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-nav-related'] {
   margin-top: var(--portal-settings-related-gap);
-  padding: 0 0 0 calc(var(--portal-settings-nav-inset) - var(--portal-frame-inset));
+  padding: 0;
   border: 0;
 }
 
@@ -799,7 +799,7 @@
   overflow: hidden;
   align-items: center;
   gap: 0.75rem;
-  max-width: var(--portal-settings-link-width);
+  width: 100%;
   padding: 1rem 1rem 1rem 3rem;
   border: 0;
   border-radius: var(--portal-radius-settings-link);

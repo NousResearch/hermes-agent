@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useMemo } from 'react'
 
 import { tileOwnerRoute } from '@/app/chat/session-tile-owner'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
@@ -34,13 +35,15 @@ export function useChatOwner(sessionId: null | string): ChatOwner {
   // ambient profile only follows once that agent's backend is in front.
   const draft = useStore($newChatRoute)
 
-  const rows = [
-    ...useStore($sessions),
-    ...useStore($cronSessions),
-    ...useStore($messagingSessions),
-    ...useStore($unlistedSessionOwnerRows)
-  ]
+  const sessions = useStore($sessions)
+  const cronSessions = useStore($cronSessions)
+  const messagingSessions = useStore($messagingSessions)
+  const unlistedSessionOwnerRows = useStore($unlistedSessionOwnerRows)
 
+  const rows = useMemo(
+    () => [...sessions, ...cronSessions, ...messagingSessions, ...unlistedSessionOwnerRows],
+    [sessions, cronSessions, messagingSessions, unlistedSessionOwnerRows]
+  )
   const row = sessionId ? rows.find(session => sessionMatchesStoredId(session, sessionId)) : undefined
   const route = sessionId ? (tileOwnerRoute(tiles, rows, sessionId) ?? knownSessionOwner(rows, sessionId)) : undefined
 

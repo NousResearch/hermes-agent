@@ -5,6 +5,8 @@ this, only ``plugins/platforms/*`` in the repo was scanned, so a third-party pla
 ``requires_env`` prompts/descriptions/password flags never reached the UI.
 """
 
+import pytest
+
 import hermes_cli.config as config_mod
 
 
@@ -144,3 +146,22 @@ def test_reload_never_drops_a_launch_only_name_a_plugin_declares(tmp_path, monke
     monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(tmp_path / "state"))
     config.reload_env()
     assert os.environ.get("HERMES_INSTALL_STATE_DIR") == str(tmp_path / "state")
+
+
+@pytest.mark.platforms("posix")
+def test_reload_finds_plugin_env_names_through_a_symlinked_home(tmp_path, monkeypatch):
+    """The plugin loads under one spelling of the home, /reload runs under another (a symlink the launcher
+    kept): both name one profile, so the removed line is still dropped."""
+    import os
+    from hermes_cli import config
+    from hermes_cli.plugins import PluginManager
+    real = tmp_path / "real"
+    _late_platform(real, ["LATEPLAT_LINK_SANDBOX"])
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(real))
+    PluginManager().discover_and_load()
+    monkeypatch.setenv("HERMES_HOME", str(link))
+    monkeypatch.setenv("LATEPLAT_LINK_SANDBOX", "stale")
+    config.reload_env()
+    assert "LATEPLAT_LINK_SANDBOX" not in os.environ

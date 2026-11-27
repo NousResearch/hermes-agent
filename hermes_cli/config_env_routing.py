@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import hermes_home_key
 
 # Environment-variable shape: what every shell and ``os.getenv`` caller treats as a variable name.
 # Case-sensitive on purpose: a lowercase bare name (``my_flag``) stays a config.yaml top-level key.
@@ -35,7 +35,7 @@ _LOADED_PLUGIN_ENV: dict[str, set[str]] = {}
 
 def note_loaded_plugin_env(manifest) -> None:
     """Record a loading platform plugin's declared env names for the profile loading it."""
-    names = _LOADED_PLUGIN_ENV.setdefault(str(get_hermes_home()), set())
+    names = _LOADED_PLUGIN_ENV.setdefault(hermes_home_key(), set())
     for entry in (*manifest.requires_env, *manifest.optional_env):
         name = entry.get("name") if isinstance(entry, dict) else entry
         if isinstance(name, str) and name:
@@ -44,7 +44,7 @@ def note_loaded_plugin_env(manifest) -> None:
 
 def loaded_plugin_env() -> frozenset[str]:
     """Env names the active profile's loaded platform plugins declare."""
-    return frozenset(_LOADED_PLUGIN_ENV.get(str(get_hermes_home()), ()))
+    return frozenset(_LOADED_PLUGIN_ENV.get(hermes_home_key(), ()))
 
 
 def is_registered_env_name(name: str) -> bool:

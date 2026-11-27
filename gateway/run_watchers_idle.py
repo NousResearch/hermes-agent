@@ -30,9 +30,14 @@ def has_buffered_input(runner: Any, key: str) -> bool:
     groups = (getattr(runner, "adapters", None) or {}, *(getattr(runner, "_profile_adapters", None) or {}).values())
     for group in groups:
         for adapter in list(group.values()):
-            for name in ("_pending_messages", "_pending_text_batches", "_active_sessions"):
-                if key in (getattr(adapter, name, None) or {}):
-                    return True
+            if any(key in (getattr(adapter, name, None) or {}) for name in ("_pending_messages", "_active_sessions")):
+                return True
+            # Text batches are keyed by each adapter's own batch key (a sender or topic suffix, or the
+            # bare chat id), not the session key: match the buffered event's session instead.
+            batches = list((getattr(adapter, "_pending_text_batches", None) or {}).values())
+            if any(getattr(event, "source", None) is not None and runner._session_key_for_source(event.source) == key
+                   for event in batches):
+                return True
     state = (runner.__dict__.get("_sessions") or {}).get(key)
     return bool(state is not None and state.conversation.queued_events)
 
@@ -63,8 +68,14 @@ def idle_admitted(agent: Any, history: list) -> bool:
     """The turn-start idle gates (``idle_compaction_admission``) on the stored transcript: above the
     post-compaction floor, grown since the last compaction, no failure cooldown. The gap is measured
     from the transcript, so a row another process wrote since the claim counts as activity."""
-    from agent.turn_context_compaction import idle_compaction_admission, idle_reference_timestamp
+    from agent.turn_context_compaction import (
+        _codex_native_auto_compaction, idle_compaction_admission, idle_reference_timestamp,
+    )
 
+    # A Codex app-server thread compacts itself unless ``codex_app_server_auto: hermes``; the gateway's
+    # compaction path would force it, as ``/compress`` does.
+    if _codex_native_auto_compaction(agent):
+        return False
     reference = idle_reference_timestamp(history, None) or getattr(agent, "_last_activity_ts", None) or time.time()
     gap = time.time() - reference
     system_prompt = getattr(agent, "_cached_system_prompt", None) or ""

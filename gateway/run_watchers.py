@@ -15,7 +15,9 @@ from collections import Counter
 from typing import Any, Callable, Dict, Optional
 
 from gateway.run_auto_resume import GatewayAutoResumeMixin
-from gateway.run_watchers_idle import IDLE_ACTION, forget_stretches, idle_admitted, idle_due, idle_policy_seconds
+from gateway.run_watchers_idle import (
+    IDLE_ACTION, forget_stretches, has_buffered_input, idle_admitted, idle_due, idle_policy_seconds,
+)
 from gateway.session_stall import (
     format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
@@ -208,7 +210,8 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         if not await asyncio.to_thread(idle_admitted, live_agent, history):
             logger.debug("Background idle compaction skipped (idle gates refuse): session=%s", key)
             return
-        if self._is_session_running(key):
+        # Re-checked here, not only at the claim: the job may have waited for a slot behind other summaries.
+        if self._is_session_running(key) or has_buffered_input(self, key):
             return
         reply = await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=IDLE_ACTION)
         logger.info("Background idle compaction: session=%s idle_after=%ss result=%s",

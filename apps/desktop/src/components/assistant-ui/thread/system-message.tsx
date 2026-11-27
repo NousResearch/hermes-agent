@@ -10,6 +10,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
+import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { LinkifiedText } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
@@ -58,7 +59,8 @@ export const BackgroundResult: FC<BackgroundResultProps> = ({ text, report, proc
           <LogView className="mt-2 max-h-80 overscroll-x-contain overscroll-y-auto">{report}</LogView>
         ) : (
           <div className="mt-2 max-h-80 min-w-0 max-w-full overflow-auto overscroll-x-contain overscroll-y-auto wrap-anywhere">
-            <MarkdownTextContent isRunning={false} text={report} />
+            {/* A report is agent output: its `MEDIA:` lines render as an assistant reply's do (#148449). */}
+            <MarkdownTextContent isRunning={false} text={renderMediaTags(report)} />
           </div>
         ))}
     </div>

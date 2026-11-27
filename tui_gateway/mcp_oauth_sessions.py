@@ -10,7 +10,7 @@ import secrets
 import threading
 import time
 from contextlib import suppress
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from tools.connectors.mcp_oauth import (
     _validate_client_redirect_uri,
@@ -34,6 +34,12 @@ def _shutdown_listener(rec: dict[str, Any]) -> None:
         with suppress(Exception):
             stop()
     rec["httpd"] = None
+
+
+def _mark_error_and_shutdown(flow: Any, rec: dict[str, Any], message: str) -> None:
+    with suppress(Exception):
+        flow.mark_error(message)
+    _shutdown_listener(rec)
 
 
 def register_flow(flow, *, httpd=None) -> dict[str, Any]:
@@ -105,8 +111,7 @@ def start_flow(
             raise TimeoutError("Timed out waiting for MCP authorization URL")
     except Exception as exc:
         from tools.mcp_dashboard_oauth import exception_message
-        flow.mark_error(exception_message(exc))  # no-op when the worker already recorded the cause
-        _shutdown_listener(rec)
+        _mark_error_and_shutdown(flow, rec, exception_message(exc))
         raise
     # ``flow`` mirrors the provider-OAuth discriminator: open a URL then poll (no user_code).
     return {"session_id": session_id, "auth_url": auth_url, "flow": "pkce"}

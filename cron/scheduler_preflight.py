@@ -349,6 +349,8 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     connected: Optional[set] = None
     for platform_name in platform_parts:
         if not _delivery._is_known_delivery_platform(platform_name):
+            if _delivery_platform_routed_from_primary_gateway(platform_name):
+                continue  # a satellite without the plugin rides the primary's bot (#97476)
             unknown = f"delivery platform '{platform_name}' is not a known cron delivery target"
             if hint := _delivery.moved_platform_hint(platform_name):
                 return unknown + hint

@@ -485,8 +485,13 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> dict[str, Any]:
 
 
 # Container name for the bind-mounted workspace. Local backends keep this name
-# even when it is the same directory as a child of the locked files root.
+# even when it is the same directory as a path under the locked files root.
 _HOSTED_FS_ALIAS_PREFIXES = ("/workspace",)
+# Root, its children, and their children. A full walk of a data volume is not
+# worth a preview; the hosted layout aliases /workspace at one of those levels.
+_ALIAS_SCAN_DEPTH = 2
+_ALIAS_SCAN_CAP = 48
+_alias_scan_cache: dict[tuple, Path | None] = {}
 
 
 def _is_real_dir(path: Path) -> bool:
@@ -506,20 +511,55 @@ def _same_real_dir(left: Path, right: Path) -> bool:
         return False
 
 
+def _alias_scan_key(prefix: Path, root: Path) -> tuple | None:
+    try:
+        st = root.stat()
+    except OSError:
+        return None
+    return (
+        os.fspath(prefix),
+        st.st_dev,
+        st.st_ino,
+        getattr(st, "st_mtime_ns", st.st_mtime),
+    )
+
+
+def _find_alias_dir(prefix: Path, root: Path) -> Path | None:
+    if _same_real_dir(prefix, root):
+        return root
+    pending = [root]
+    seen = 0
+    for _depth in range(_ALIAS_SCAN_DEPTH):
+        next_level: list[Path] = []
+        for directory in pending:
+            try:
+                children = list(directory.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if not _is_real_dir(child):
+                    continue
+                seen += 1
+                if _same_real_dir(prefix, child):
+                    return child
+                next_level.append(child)
+                if seen >= _ALIAS_SCAN_CAP:
+                    return None
+        pending = next_level
+    return None
+
+
 def _alias_dir_under_root(prefix: Path, root: Path) -> Path | None:
     """A real directory under *root* that is the same inode as *prefix*, or None."""
     if not _is_real_dir(prefix):
         return None
-    if _same_real_dir(prefix, root):
-        return root
-    try:
-        children = list(root.iterdir())
-    except OSError:
-        return None
-    for child in children:
-        if _same_real_dir(prefix, child):
-            return child
-    return None
+    key = _alias_scan_key(prefix, root)
+    if key is not None and key in _alias_scan_cache:
+        return _alias_scan_cache[key]
+    found = _find_alias_dir(prefix, root)
+    if key is not None:
+        _alias_scan_cache[key] = found
+    return found
 
 
 def _translate_hosted_fs_alias(target: Path, root: Path | None) -> Path:

@@ -569,6 +569,82 @@ def test_local_backend_read_guard_accepts_workspace_bind_alias(monkeypatch, tmp_
     )
     assert resolved == report.resolve()
 
+    # ``..`` must not be rewritten onto the alias (that would land inside the root).
+    (root / "secret.txt").write_text("sibling", encoding="utf-8")
+    with pytest.raises(HTTPException) as escaped:
+        web_server_files._hosted_fs_read_guard(workspace / ".." / "secret.txt")
+    assert escaped.value.status_code == 403
+    assert escaped.value.detail == "Path is outside the managed read boundary"
+
+
+def _bind_mount(monkeypatch, workspace: Path, alias: Path):
+    """Pretend *workspace* is a bind mount of *alias*: resolve() keeps the name."""
+    real_is_dir = Path.is_dir
+    real_is_symlink = Path.is_symlink
+    real_samefile = Path.samefile
+
+    def is_dir(self, *args, **kwargs):
+        if self == workspace:
+            return True
+        return real_is_dir(self, *args, **kwargs)
+
+    def is_symlink(self):
+        if self == workspace:
+            return False
+        return real_is_symlink(self)
+
+    def samefile(self, other):
+        if {Path(self), Path(other)} == {workspace, alias}:
+            return True
+        return real_samefile(self, other)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+    monkeypatch.setattr(Path, "samefile", samefile)
+
+
+def test_workspace_symlink_is_not_a_locked_root_alias(monkeypatch, tmp_path):
+    """A symlink named ``/workspace`` is not a bind mount; resolve() already follows it."""
+    from fastapi import HTTPException
+
+    root = tmp_path / "opt-data"
+    box = root / "box-workspace"
+    box.mkdir(parents=True)
+    (box / "report.html").write_text("report", encoding="utf-8")
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    workspace = Path("/workspace")
+    _bind_mount(monkeypatch, workspace, box)
+    real_is_symlink = Path.is_symlink
+
+    def is_symlink(self):
+        if self == workspace:
+            return True
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+    with pytest.raises(HTTPException) as refused:
+        web_server_files._hosted_fs_read_guard(workspace / "report.html")
+    assert refused.value.status_code == 403
+
+
+def test_nested_workspace_bind_alias_is_inside_locked_root(monkeypatch, tmp_path):
+    """A bind one directory below a child of the locked root is still the same file."""
+    root = tmp_path / "opt-data"
+    nested = root / "mounts" / "box-workspace"
+    nested.mkdir(parents=True)
+    report = nested / "report.html"
+    report.write_text("nested", encoding="utf-8")
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    workspace = Path("/workspace")
+    _bind_mount(monkeypatch, workspace, nested)
+
+    assert web_server_files._hosted_fs_read_guard(workspace / "report.html") == root.resolve()
+    _policy, resolved, _display = web_server_files._resolve_managed_path(
+        "/workspace/report.html", None,
+    )
+    assert resolved == report.resolve()
+
 
 _PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 16).decode()
 

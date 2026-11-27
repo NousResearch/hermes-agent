@@ -40,6 +40,15 @@ def _context(agent, compressor) -> dict:
         anchored = anchored_context_tokens(messages if isinstance(messages, list) else [],
                                            getattr(agent, "_turn_base_usage_anchor", None),
                                            charge_stale_thinking=False)
+        if anchored is None and last == 0:
+            # A resumed session before its first turn has no turn-base anchor yet: use the restored one,
+            # else the one persisted on the session row, instead of reporting 0 (#159070).
+            msgs = messages if isinstance(messages, list) else []
+            anchored = anchored_context_tokens(msgs, getattr(agent, "_usage_anchor", None), charge_stale_thinking=False)
+            if anchored is None:
+                from agent.usage_anchor import persisted_anchor_tokens
+                anchored = persisted_anchor_tokens(getattr(agent, "_session_db", None), getattr(agent, "session_id", None),
+                                                   msgs, persistence=getattr(agent, "persistence", None))
         if anchored is not None and anchored > 0:
             tokens = anchored
     length = max(0, getattr(compressor, "context_length", 0) or 0)

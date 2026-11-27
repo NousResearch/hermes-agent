@@ -344,7 +344,7 @@ async def execute_admission(authority, ref, row):
         from gateway.session_ingress_context import restore_provenance
         home = restore_provenance(authority.runner, event.source, provenance)
     from gateway.config import Platform
-    from gateway.session_api_turn import api_execution, prepare_api_execution
+    from gateway.session_api_turn import api_execution, prepare_api_execution_async
     from gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
     if not (event.internal or is_api or live.source.platform == Platform.LOCAL):
@@ -366,7 +366,7 @@ async def execute_admission(authority, ref, row):
         async with _admission_scope(authority, ref, home, row, event, captured):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
-                prepared = prepare_api_execution(authority, ref, row['payload'])
+                prepared = await prepare_api_execution_async(authority, ref, row['payload'])
                 api_execution.set(prepared)
                 if isinstance(event.text, list):
                     # The durable transcript keeps the committed media references (the same

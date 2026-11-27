@@ -16,10 +16,10 @@ async def test_conflicted_head_settles_with_its_refusal_and_the_successor_runs(t
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     executed = []
 
-    def check_api_turn(authority, ref, payload):
+    async def check_api_turn_async(authority, ref, payload):
         if payload['text'] == 'stale':
             raise AuthorityRefusal('admission_conflict')  # its route moved under it, on every drain
-    monkeypatch.setattr(session_api_turn, 'check_api_turn', check_api_turn)
+    monkeypatch.setattr(session_api_turn, 'check_api_turn_async', check_api_turn_async)
 
     async def execute(authority, ref, row):
         executed.append(row['payload']['text'])
@@ -51,10 +51,10 @@ async def test_refusal_write_storage_error_retries_and_still_settles_that_head(t
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.0)
     executed, cancels = [], []
 
-    def check_api_turn(authority, ref, payload):
+    async def check_api_turn_async(authority, ref, payload):
         if payload['text'] == 'stale':
             raise AuthorityRefusal('admission_conflict')
-    monkeypatch.setattr(session_api_turn, 'check_api_turn', check_api_turn)
+    monkeypatch.setattr(session_api_turn, 'check_api_turn_async', check_api_turn_async)
 
     async def execute(authority, ref, row):
         executed.append(row['payload']['text'])
@@ -96,10 +96,10 @@ async def test_storage_error_after_the_refusal_commits_still_publishes_its_compl
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.0)
     executed, frames, committed = [], [], []
 
-    def check_api_turn(authority, ref, payload):
+    async def check_api_turn_async(authority, ref, payload):
         if payload['text'] == 'stale':
             raise AuthorityRefusal('admission_conflict')
-    monkeypatch.setattr(session_api_turn, 'check_api_turn', check_api_turn)
+    monkeypatch.setattr(session_api_turn, 'check_api_turn_async', check_api_turn_async)
 
     async def execute(authority, ref, row):
         executed.append(row['payload']['text'])

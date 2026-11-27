@@ -9,7 +9,7 @@ import re
 import uuid
 
 from gateway.config import Platform
-from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
+from gateway.session_api import bind_api_steps, restore_api_session, restore_api_steps, run_steps, run_steps_off_loop
 from gateway.session_authority import admission_row
 from gateway.session_persistence import authority_persistence
 from gateway.session_results import admission_result
@@ -47,9 +47,21 @@ def api_settings(authority, ref):
 
 
 def check_api_turn(authority, ref, payload):
+    return run_steps(check_api_turn_steps(authority, ref, payload))
+
+
+async def check_api_turn_async(authority, ref, payload):
+    return await run_steps_off_loop(authority, check_api_turn_steps(authority, ref, payload), ordered=False)
+
+
+def check_api_turn_steps(authority, ref, payload):
+    if authority.sessions[ref.session_id].source.platform == Platform.API_SERVER:
+        yield from restore_api_steps(authority, ref.session_id)
+    return check_bound_api_turn(authority, ref, payload)
+
+
+def check_bound_api_turn(authority, ref, payload):
     live = authority.sessions[ref.session_id]
-    if live.source.platform == Platform.API_SERVER:
-        restore_api_session(authority, ref.session_id)
     adapter = authority.runner._adapter_for_source(live.source)
     if adapter is None or getattr(adapter, 'gateway_runner', None) is not authority.runner:
         raise AuthorityRefusal('runtime_draining')
@@ -227,7 +239,7 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
         return authority, SessionRef(authority.profile_id, sid), admission_row(row)
     ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key,
                                     caller_key=kwargs.get('gateway_session_key'), walked_from=kwargs.get('walked_from'))
-    check_api_turn(authority, ref, payload)
+    check_bound_api_turn(authority, ref, payload)
     # In the admission's own off-loop transaction: one target per request id (an Idempotency-Key; a
     # deleted session's tombstone still spends a client key), and the session's settings for its later
     # payload-less (internal) turns, committed with the admitted turn rather than by the drain (N50).
@@ -284,7 +296,7 @@ def recover_authority_api_turns(adapter, authority):
                 continue
             for row in pending:
                 if row.status == 'queued':
-                    check_api_turn(authority, ref, row.payload)
+                    check_bound_api_turn(authority, ref, row.payload)
             authority._schedule(ref)
         except AuthorityRefusal as exc:
             from gateway.session_local_recovery import _refused_check
@@ -416,7 +428,15 @@ def observe_api_controls(admitted, sink):
 
 
 def prepare_api_execution(authority, ref, payload):
-    adapter = check_api_turn(authority, ref, payload)
+    return _api_execution_input(authority, ref, payload, check_api_turn(authority, ref, payload))
+
+
+async def prepare_api_execution_async(authority, ref, payload):
+    adapter = await check_api_turn_async(authority, ref, payload)
+    return _api_execution_input(authority, ref, payload, adapter)
+
+
+def _api_execution_input(authority, ref, payload, adapter):
     data = payload.get('api_turn_v1')
     settings = data['settings'] if data else api_settings(authority, ref)
     content = payload['text']

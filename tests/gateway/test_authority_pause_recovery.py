@@ -35,7 +35,9 @@ async def test_busy_head_keeps_api_waiter_until_the_worker_finish_answers_it(own
     async def execute(authority, ref, row):
         return 'done'
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
-    monkeypatch.setattr('gateway.session_api_turn.check_api_turn', lambda *a, **k: None)
+    async def check_api_turn_async(authority, ref, payload):
+        return None
+    monkeypatch.setattr('gateway.session_api_turn.check_api_turn_async', check_api_turn_async)
     await owner._drain(ref)
     assert owner.persistence.admissions.get(admission_id=row.admission_id).status == 'queued'
     # Process identity is independent of this test's real receipt and scheduler path.

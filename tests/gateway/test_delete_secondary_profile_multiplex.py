@@ -152,7 +152,7 @@ def test_a_failed_shared_fence_fails_the_canonical_delete_not_the_prune(monkeypa
     store = SimpleNamespace(retire_runtime_sessions=lambda ids: None, fence_retired_routes=broken,
                             _routing_persistence=SimpleNamespace(scope='/launch'))
     authority = SimpleNamespace(runner=SimpleNamespace(session_store=store), profile_id='p',
-                                persistence=SimpleNamespace(scope='/secondary'), sessions={})
+                                persistence=SimpleNamespace(scope='/secondary'), sessions={}, api_restores={})
     with pytest.raises(AuthorityRefusal) as raised:
         retire_live_sessions(authority, ['gone'], require_fence=True)
     assert raised.value.reason == 'storage_unavailable'

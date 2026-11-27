@@ -52,14 +52,14 @@ def _lookup_admission(authority, store, durable_key, request_id):
     return authority, SessionRef(authority.profile_id, row['target_session_id']), row
 
 
-def _restore_admitted(found):
-    """The owner-loop half of a found admission: a live one's session is restored and checked."""
+def _restore_admitted_steps(found):
+    """Restore the route off-loop before checking a live admission on the owner loop."""
     if found is not None and found[2]['status'] in {'queued', 'started'}:
-        from gateway.session_api import restore_api_session
-        from gateway.session_api_turn import check_api_turn
+        from gateway.session_api import restore_api_steps
+        from gateway.session_api_turn import check_bound_api_turn
         authority, ref, row = found
-        restore_api_session(authority, ref.session_id)
-        check_api_turn(authority, ref, row['payload'])
+        yield from restore_api_steps(authority, ref.session_id)
+        check_bound_api_turn(authority, ref, row['payload'])
     return found
 
 
@@ -72,9 +72,13 @@ def _lookup_call(adapter, durable_key, request_id):
 
 
 async def find_admission(adapter, durable_key, request_id):
-    """``_lookup_admission`` off the loop, then the session restore on it."""
+    """Look up a durable response and restore a live admission without blocking the loop."""
+    from gateway.session_api import run_steps_off_loop
     store, call = _lookup_call(adapter, durable_key, request_id)
-    return _restore_admitted(await store.off_loop(*call))
+    found = await store.off_loop(*call)
+    if found is None:
+        return None
+    return await run_steps_off_loop(found[0], _restore_admitted_steps(found), ordered=False)
 
 
 def admitted_context(admitted, *, replay=False):
@@ -93,12 +97,12 @@ def admitted_context(admitted, *, replay=False):
 def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
     """The final lookup and the admission are one API admission drive (``run_steps_off_loop``
     serializes them per authority): simultaneous observers converge on one admission. Every
-    store call is a yielded step, so a worker runs it: only the session restore stays on the loop."""
+    store call is a yielded step, so a worker runs it: only live session publication stays on the loop."""
     from gateway.session_api_turn import admit_api_steps
     store, lookup = _lookup_call(adapter, durable_key, request_id)
     if not (yield partial(store.bind_request_key, durable_key[0], binding, model=model)):
         raise AuthorityRefusal('admission_conflict')
-    admitted = _restore_admitted((yield partial(store.atomically, *lookup)))
+    admitted = yield from _restore_admitted_steps((yield partial(store.atomically, *lookup)))
     if admitted is not None:
         return (*admitted, True)
     try:
@@ -108,7 +112,7 @@ def _admit_steps(adapter, durable_key, request_id, binding, run_kwargs, model):
     except Exception:
         # A definite pre-admission refusal does not reserve a poisoned identity. If storage
         # cannot prove absence, leave the binding intact for later recovery.
-        if _restore_admitted((yield partial(store.atomically, *lookup))) is None:
+        if (yield partial(store.atomically, *lookup)) is None:
             yield partial(store.forget_unadmitted_request, durable_key[0])
         raise
     yield partial(store.bind_request_admission, durable_key[0], admitted[2]['admission_id'])

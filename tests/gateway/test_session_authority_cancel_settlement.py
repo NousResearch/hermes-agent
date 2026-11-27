@@ -70,10 +70,10 @@ async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_pa
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
     executed = []
 
-    def check_api_turn(authority, ref, payload):
+    async def check_api_turn_async(authority, ref, payload):
         if payload['text'] == 'blocked':
             raise AuthorityRefusal('permission_denied')
-    monkeypatch.setattr(session_api_turn, 'check_api_turn', check_api_turn)
+    monkeypatch.setattr(session_api_turn, 'check_api_turn_async', check_api_turn_async)
 
     async def execute(authority, ref, row):
         executed.append(row['payload']['text'])

@@ -215,6 +215,8 @@ class SessionAuthority:
         # route -> the compression-exhaustion auto-reset its LOCAL turn deferred: the store refuses a
         # reset while that turn's admission is started, so the drain runs it once the turn settles.
         self.deferred_resets = {}
+        # Active API route restores only; deletion invalidates their pending loop publication.
+        self.api_restores = {}
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -1197,9 +1199,9 @@ class SessionAuthority:
                     return False, first
             if first is not None and live.source.platform == Platform.API_SERVER:
                 from gateway.session_api import reopen_api_session
-                from gateway.session_api_turn import check_api_turn
+                from gateway.session_api_turn import check_api_turn_async
                 from gateway.session_runtime_workers import tracked_write
-                check_api_turn(self, ref, first['payload'])
+                await check_api_turn_async(self, ref, first['payload'])
                 await tracked_write(self, partial(reopen_api_session, self, ref))
             elif first is not None and live.detached:
                 # The chat's /new ended its row; the app's turn makes it live again, as an API row's

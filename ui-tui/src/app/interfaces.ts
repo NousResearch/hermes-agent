@@ -374,6 +374,10 @@ export interface UiState {
   sections: SectionVisibility
   sessionTitle: string
   showReasoning: boolean
+  // `display.tui_quiet_idle` — an idle TUI emits no terminal output: status
+  // clocks freeze between turns, the live-session count holds, and the
+  // composer ignores terminal focus changes.
+  quietIdle: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string
   status: string

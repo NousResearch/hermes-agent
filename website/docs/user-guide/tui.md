@@ -230,6 +230,12 @@ The status line also shows:
 - **`▶ N`** — number of `/bg` tasks currently running in this session. Appears whenever at least one task is in flight.
 - **`⚠ YOLO`** — visible warning whenever YOLO mode is on (`hermes --yolo`, `/yolo`, or `HERMES_YOLO_MODE=1`). The same badge also appears in the startup banner so you cannot launch an auto-approving session without noticing.
 
+By default the session-duration and `✓` idle clocks repaint every second, even when the agent is idle. If your terminal flags idle tabs for activity (Konsole tab highlighting, tmux `monitor-activity`), set `display.tui_quiet_idle: true` and an idle TUI writes nothing to the terminal:
+
+- the clocks tick only during a turn: the duration holds between turns, and `✓` shows the time the last reply finished (`✓ 14:03`);
+- the live-session count holds until the next turn instead of repainting when other sessions start or end;
+- the composer ignores terminal focus changes, so switching away from a tab doesn't repaint its cursor (the terminal draws its own unfocused cursor).
+
 ## Configuration
 
 The TUI respects all standard Hermes config: `~/.hermes/config.yaml`, profiles, personalities, skins, quick commands, credential pools, memory providers, tool/skill enablement. No TUI-specific config file exists.

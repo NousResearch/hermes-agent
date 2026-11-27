@@ -9,6 +9,7 @@ import { $delegationState } from '../app/delegationStore.js'
 import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
+import { $uiQuietIdle } from '../app/uiStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { faces } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
@@ -429,38 +430,57 @@ function SpawnHud({ t }: { t: Theme }) {
   )
 }
 
-function SessionDuration({ startedAt }: { startedAt: number }) {
+function SessionDuration({ busy = false, startedAt }: { busy?: boolean; startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
+  // display.tui_quiet_idle: tick only mid-turn so an idle TUI writes
+  // nothing to the terminal (no activity flag on an idle Konsole/tmux tab).
+  const quietIdle = useStore($uiQuietIdle)
+  const live = busy || !quietIdle
 
   useEffect(() => {
     // Paused only while an overlay actually covers the status rule — see
     // FaceTicker.  The `setNow` below already re-seeds from the wall clock
-    // on every re-arm, so it doubles as the reveal catch-up.
+    // on every re-arm, so it doubles as the reveal catch-up — and, when the
+    // turn ends with idle clocks off, freezes the read-out at the turn's end.
     if (isOccluded) {
       return
     }
 
     setNow(Date.now())
+
+    if (!live) {
+      return
+    }
+
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [isOccluded, startedAt])
+  }, [isOccluded, live, startedAt])
 
   return fmtDuration(now - startedAt)
 }
 
+// Local HH:MM — IdleSince's static form under display.tui_quiet_idle.
+const fmtClockTime = (ms: number) => {
+  const d = new Date(ms)
+
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 function IdleSince({ endedAt }: { endedAt: number }) {
   // Time since the last final agent response. Re-ticks every second like
-  // SessionDuration so the read-out stays live while the session idles.
+  // SessionDuration so the read-out stays live while the session idles —
+  // unless display.tui_quiet_idle, which shows the static end time.
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
+  const live = !useStore($uiQuietIdle)
 
   useEffect(() => {
     // Paused only while an overlay actually covers the status rule — see
     // FaceTicker.  The `setNow` below re-seeds from the wall clock on reveal
     // so the idle read-out is not frozen when the overlay closes.
-    if (isOccluded) {
+    if (isOccluded || !live) {
       return
     }
 
@@ -468,9 +488,9 @@ function IdleSince({ endedAt }: { endedAt: number }) {
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [endedAt, isOccluded])
+  }, [endedAt, isOccluded, live])
 
-  return `✓ ${fmtDuration(now - endedAt)}`
+  return live ? `✓ ${fmtDuration(now - endedAt)}` : `✓ ${fmtClockTime(endedAt)}`
 }
 
 // `wire` is the level the route actually sends (session.info.reasoning_effort_wire):
@@ -791,7 +811,7 @@ export function StatusRule({
         {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            <SessionDuration startedAt={sessionStartedAt!} />
+            <SessionDuration busy={busy} startedAt={sessionStartedAt!} />
           </Text>
         ) : null}
         {showIdle ? (

@@ -346,6 +346,31 @@ describe('status-chrome timers under an occluding overlay', () => {
   })
 })
 
+describe('display.tui_quiet_idle', () => {
+  it('arms no status clock while idle and shows a static end time', () => {
+    patchUiState({ quietIdle: true })
+
+    const rule = mount(idleProps)
+
+    expect(oneSecondTimers(intervalSpy)).toBe(0)
+    expect(rule.output()).toContain('1m 0s')
+
+    const end = new Date(T0 - 5_000)
+    const hhmm = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`
+
+    expect(rule.output()).toContain(`✓ ${hhmm}`)
+  })
+
+  it('still ticks the session clock mid-turn', () => {
+    patchUiState({ quietIdle: true })
+
+    mount(busyProps)
+
+    // FaceTicker's elapsed clock + the live SessionDuration.
+    expect(oneSecondTimers(intervalSpy)).toBe(2)
+  })
+})
+
 // teknium1's review of #12463 called out that its test asserted on a `picker`
 // overlay state that no longer exists.  Pin the gate to fields the current
 // OverlayState actually carries so a rename breaks this file loudly.

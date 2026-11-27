@@ -2092,6 +2092,16 @@ display:
   #   false: Silent (default)
   bell_on_prompt: false
 
+  # Quiet idle: an idle TUI writes nothing to the terminal, so terminals with
+  # activity monitoring (Konsole tab highlight, tmux monitor-activity) stop
+  # flagging idle Hermes tabs.
+  #   false: Default. Status clocks re-tick every second even while idle.
+  #   true:  Session duration and the ✓ clock tick only during a turn (✓ shows
+  #          the last reply's end time, HH:MM); the live-session count holds
+  #          until the next turn; the composer ignores terminal focus changes
+  #          (the terminal draws its own unfocused cursor).
+  # tui_quiet_idle: false
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

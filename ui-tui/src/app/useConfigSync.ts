@@ -361,6 +361,7 @@ export const applyDisplay = (
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,
+    quietIdle: d.tui_quiet_idle === true,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     inlineImages: inlineImagesEnabled(d.inline_images),

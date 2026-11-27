@@ -387,8 +387,14 @@ def _commit_model_switch(
                                       one_turn=one_turn)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
-        _cprint(f"    {t('cli.model.saved_global' if picker else 'cli.model.saved')}")
+        from hermes_cli import managed_scope
+        managed_keys = persist_model_selection(result)
+        if managed_keys:
+            source = managed_scope.get_managed_dir() or "the managed scope"
+            for key in sorted(managed_keys):
+                _cprint(f"    ⚠ config.yaml written, but {key} is managed by {source} and wins")
+        else:
+            _cprint(f"    {t('cli.model.saved_global' if picker else 'cli.model.saved')}")
     elif one_turn:
         _cprint(f"    {t('cli.model.next_turn_only')}")
     else:

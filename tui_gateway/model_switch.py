@@ -358,7 +358,15 @@ def _apply_model_switch(
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
+        from hermes_cli import managed_scope
+        managed_keys = persist_model_selection(result)
+        if managed_keys:
+            source = managed_scope.get_managed_dir() or "the managed scope"
+            for key in sorted(managed_keys):
+                _emit("notification.show", sid, {
+                    "text": f"⚠ config.yaml written, but {key} is managed by {source} and wins",
+                    "level": "warn", "kind": "ttl", "ttl_ms": 8000,
+                    "key": "model_switch.managed", "id": f"model_switch.managed.{key}"})
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     if count_switch:

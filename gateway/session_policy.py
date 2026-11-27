@@ -700,6 +700,12 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         from agent.coding_context import focus_toolsets
         posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
+    if explicit is not None and not explicit:
+        # An explicit empty pick is "no tools", not "no opinion": `_get_platform_tools` fills an empty
+        # value back in from the profile's plugin and MCP toolsets, so `-t none` would otherwise keep
+        # every default surface. Same falsiness class as the `-t ""` pick in #155674, reached here
+        # through the named token; nothing below can add to an empty selection anyway.
+        return set()
     if explicit is not None:
         from toolsets import TOOLSETS, resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}

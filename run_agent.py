@@ -1515,11 +1515,12 @@ def _print_tool_listing() -> None:
 
 
 def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
-    """Comma-separated toolset CLI arg → list (echoed), or None when absent."""
+    """Comma-separated toolset CLI arg → list (echoed), or None when absent. ``none`` → ``[]``."""
     if not raw:
         return None
-    names = [t.strip() for t in raw.split(",")]
-    print(f"{label}: {names}")
+    from toolsets import parse_toolset_selection
+    names = parse_toolset_selection(raw)
+    print(f"{label}: {names or 'none (every tool disabled)'}")
     return names
 
 

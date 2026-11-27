@@ -1524,15 +1524,9 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
 
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
-    toolsets_list = None
-    if isinstance(toolsets, str) and toolsets:
-        toolsets_list = [t.strip() for t in toolsets.split(",")]
-    elif isinstance(toolsets, (list, tuple)) and toolsets:
-        # Fire may pass multiple --toolsets as a tuple
-        toolsets_list = []
-        for t in toolsets:
-            toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
-    elif not toolsets:
+    from toolsets import parse_toolset_selection
+    toolsets_list = parse_toolset_selection(toolsets)
+    if toolsets_list is None:
         # Coding posture inside a code workspace, else the profile default the gateway resolves (its
         # platform resolver reads plugin toolsets, which only the gateway loads: adopted when the session
         # opens). Neither is a pick: this list only feeds the display.

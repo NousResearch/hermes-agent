@@ -561,7 +561,10 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     try:
         from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
         ts_cfg = _load_ts_config()
-        if not skip_tool_search_assembly and ts_cfg.enabled != "off":
+        # An explicit empty selection means "no tools". The bridge would otherwise still arrive as
+        # tool_search/describe/call and re-open the deferred catalog the caller just refused.
+        explicit_no_tools = enabled_toolsets is not None and not enabled_toolsets
+        if not skip_tool_search_assembly and ts_cfg.enabled != "off" and not explicit_no_tools:
             assembly = assemble_tool_defs(filtered_tools, context_length=_resolve_active_context_length(), config=ts_cfg)
             if assembly.activated and not quiet_mode:
                 print(f"🔎 Tool Search (tier {assembly.tier}): {assembly.deferred_count} "

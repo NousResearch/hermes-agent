@@ -187,6 +187,37 @@ def scan_directory(
     return manifests
 
 
+def manifest_config_names(manifest: PluginManifest) -> set[str]:
+    """Identifiers ``plugins.enabled`` and ``plugins.disabled`` match for one manifest."""
+    from hermes_cli.left_core_migration import legacy_plugin_keys
+
+    key = manifest_key(manifest)
+    return {key, manifest.name, *legacy_plugin_keys(key)}
+
+
+def directory_entrypoint_precedence(manifests: list[PluginManifest]) -> tuple[set[str], set[str]]:
+    """Return ``(keys, names)`` of directory manifests that displace an entry point.
+
+    Every directory key wins over an entry point with that key. A nested user
+    or project manifest also wins on its bare name, unless ``plugins.disabled``
+    names it the same way :func:`gate_manifest` does. Bundled category plugins
+    are not name-matched.
+    """
+    keys = {manifest_key(manifest) for manifest in manifests}
+    disabled = _get_disabled_plugins()
+    names: set[str] = set()
+    for manifest in manifests:
+        key = manifest_key(manifest)
+        if (
+            manifest.name
+            and manifest.source in {"user", "project"}
+            and "/" in key
+            and not (manifest_config_names(manifest) & disabled)
+        ):
+            names.add(manifest.name)
+    return keys, names
+
+
 def collect_directory_manifests() -> list[PluginManifest]:
     """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, user, opt-in
     project) without loading or mutating anything, so startup probes share the exact precedence/containment
@@ -273,9 +304,8 @@ def gate_manifest(
     category-owned kinds (exclusive / model-provider), bundled auto-loads (backend now, platform deferred),
     then ``plugins.enabled`` opt-in (path-derived key or legacy bare name)."""
     lookup_key = manifest_key(manifest)
-    from hermes_cli.left_core_migration import legacy_plugin_keys
     # A bundled key that left core (``observability/langfuse``) keeps selecting its catalog plugin.
-    names = {lookup_key, manifest.name, *legacy_plugin_keys(lookup_key)}
+    names = manifest_config_names(manifest)
 
     def _placeholder(error: Optional[str], level: int, message: str, *args, enabled: bool = False) -> ManifestGate:
         return ManifestGate("placeholder", enabled=enabled, error=error, log=(level, message, lookup_key, *args))

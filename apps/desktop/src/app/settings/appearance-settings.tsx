@@ -45,6 +45,7 @@ import {
 } from '@/store/titlebar-app-actions'
 import { $hideCodeDiffs, $toolViewMode, setHideCodeDiffs, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
+import { $trajectoryCollapsedByDefault, setTrajectoryCollapsedByDefault } from '@/store/trajectory-disclosure'
 import {
   $translucency,
   beginTranslucencyPeek,
@@ -130,6 +131,34 @@ function ResumeLastSessionSetting() {
       label={a.resumeLastSessionTitle}
       onChange={update}
     />
+  )
+}
+
+// Chat-display toggles backed by their own renderer stores: each subscribes
+// here, so flipping one re-renders these rows instead of the whole page.
+function TranscriptLayoutSettings() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const hideThreadTimeline = useStore($hideThreadTimeline)
+  const trajectoryCollapsedByDefault = useStore($trajectoryCollapsedByDefault)
+
+  return (
+    <>
+      <ToggleRow
+        checked={hideThreadTimeline}
+        description={a.hideThreadTimelineDesc}
+        id={settingElementId(ids.hideThreadTimeline)}
+        label={a.hideThreadTimelineTitle}
+        onChange={setHideThreadTimeline}
+      />
+      <ToggleRow
+        checked={trajectoryCollapsedByDefault}
+        description={a.trajectoryCollapsedDesc}
+        id={settingElementId(ids.trajectoryCollapsed)}
+        label={a.trajectoryCollapsedTitle}
+        onChange={setTrajectoryCollapsedByDefault}
+      />
+    </>
   )
 }
 
@@ -417,7 +446,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
-  const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
@@ -922,15 +950,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('chat-display') && (
-            <ToggleRow
-              checked={hideThreadTimeline}
-              description={a.hideThreadTimelineDesc}
-              id={settingElementId(ids.hideThreadTimeline)}
-              label={a.hideThreadTimelineTitle}
-              onChange={setHideThreadTimeline}
-            />
-          )}
+          {show('chat-display') && <TranscriptLayoutSettings />}
 
           {show('general') && (
             <ToggleRow

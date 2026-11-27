@@ -1,12 +1,14 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import {
+  $persistedSessions,
   $programResumeEnabled,
   buildTuiResumeArgv,
   clearProgramResume,
   encodeProgramResume,
+  isProgramResumeReported,
   markProgramResumeReported
 } from '../lib/programResume.js'
 
@@ -18,22 +20,44 @@ const SETTLE_MS = 50
 export function useProgramResume(stdout: NodeJS.WriteStream | undefined): void {
   const ui = useStore($uiState)
   const enabled = useStore($programResumeEnabled)
+  const persisted = useStore($persistedSessions)
   const lastArgvKey = useRef('')
+  const [continued, setContinued] = useState(0)
 
-  const durable = Boolean(
-    ui.storedSid &&
-      (ui.busy ||
-        ui.sessionTitle ||
-        (ui.usage.input ?? 0) > 0 ||
-        (ui.usage.output ?? 0) > 0 ||
-        (STARTUP_RESUME_ID && ui.storedSid === STARTUP_RESUME_ID) ||
-        (ui.info && ui.info.lazy !== true))
-  )
+  // Back in the foreground after a stop: OSC 7577 asks for a fresh report, since another program may
+  // have replaced the record meanwhile.
+  useEffect(() => {
+    if (process.platform === 'win32') {
+      return
+    }
 
-  const targetSessionId = durable ? ui.storedSid : null
+    const onContinue = () => {
+      lastArgvKey.current = ''
+      setContinued(n => n + 1)
+    }
+
+    process.on('SIGCONT', onContinue)
+
+    return () => void process.off('SIGCONT', onContinue)
+  }, [])
+
+  // `--resume` only finds a session with a state.db row: one the gateway confirmed ($persistedSessions,
+  // the startup --resume included). A built agent, a pending submit or token usage is not proof of one.
+  const targetSessionId = ui.storedSid && persisted.has(ui.storedSid) ? ui.storedSid : null
 
   useEffect(() => {
-    if (DASHBOARD_TUI_MODE || enabled !== true || !stdout?.isTTY) {
+    if (DASHBOARD_TUI_MODE || !stdout?.isTTY) {
+      return
+    }
+
+    if (enabled !== true) {
+      // Turned off at runtime: remove the record already reported, and report afresh if turned back on.
+      lastArgvKey.current = ''
+
+      if (enabled === false && isProgramResumeReported()) {
+        clearProgramResume(seq => stdout.write(seq))
+      }
+
       return
     }
 
@@ -45,13 +69,11 @@ export function useProgramResume(stdout: NodeJS.WriteStream | undefined): void {
         return
       }
 
-      const seq = encodeProgramResume(argv)
+      const seq = argv && encodeProgramResume(argv)
 
       if (!seq) {
-        if (lastArgvKey.current) {
-          lastArgvKey.current = ''
-          clearProgramResume(clearSeq => stdout.write(clearSeq))
-        }
+        lastArgvKey.current = ''
+        clearProgramResume(clearSeq => stdout.write(clearSeq))
 
         return
       }
@@ -62,5 +84,5 @@ export function useProgramResume(stdout: NodeJS.WriteStream | undefined): void {
     }, SETTLE_MS)
 
     return () => clearTimeout(timer)
-  }, [enabled, stdout, targetSessionId])
+  }, [continued, enabled, stdout, targetSessionId])
 }

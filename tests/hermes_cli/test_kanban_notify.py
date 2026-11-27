@@ -1178,3 +1178,39 @@ def test_gc_purges_blocked_task_that_never_done(kanban_home):
         assert kbn.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# GOV-F25.c AC-1 — publish_task_notification + notification kind + wake render  #
+# --------------------------------------------------------------------------- #
+from tests.gov_f25c_support import (  # noqa: E402
+    _seed_task, _task_events, _event_message, _drain_and_capture_wake,
+)
+
+
+@pytest.fixture
+def kanban_conn(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def test_ac_gov_f25_c_1(kanban_conn):
+    """publish_task_notification appends one notification event the notifier renders into the wake turn (kind in TERMINAL_KINDS and _WAKE_KINDS)."""
+    from hermes_cli.kanban_db import publish_task_notification
+    from gateway import kanban_watchers_notifier as knw
+
+    task_id = _seed_task(kanban_conn)
+    publish_task_notification(kanban_conn, task_id, "durable ping", metadata={"src": "test"})
+    events = _task_events(kanban_conn, task_id, kind="notification")
+    assert len(events) == 1
+    assert "durable ping" in _event_message(events[0])
+    assert "notification" in knw.TERMINAL_KINDS
+    assert "notification" in knw._WAKE_KINDS
+    delivered = _drain_and_capture_wake(kanban_conn, task_id)
+    assert "durable ping" in delivered.wake_text

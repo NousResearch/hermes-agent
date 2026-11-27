@@ -41,7 +41,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
-    "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
+    "transform_interim_message", "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end", "on_session_open",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
@@ -68,6 +68,8 @@ _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out 
 
 # The one hook whose callback rewrites the reply the user would otherwise see streaming.
 STREAM_HOLDING_HOOK = "transform_llm_output"
+# Shows a held turn's interim commentary (a held turn otherwise drops it): see run_interim_transforms.
+INTERIM_TRANSFORM_HOOK = "transform_interim_message"
 
 
 def stream_held() -> bool:
@@ -609,6 +611,26 @@ class PluginDispatchMixin:
             if isinstance(ret, str) and ret:
                 return ret, False
         return None, bool(failed)
+
+    def run_interim_transforms(self, **kwargs: Any) -> Optional[str]:
+        """Text to show for a held turn's interim commentary, or None to drop it. The commentary was
+        never streamed, so it leaves only after every ``transform_interim_message`` callback saw it:
+        the first string returned wins ("" drops it), all-None keeps ``kwargs["text"]``. No callback,
+        or one that raised or timed out with no rewrite, drops it (fail closed, as held finals do)."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return None
+        callbacks = tuple(self._hooks.get(INTERIM_TRANSFORM_HOOK, ()))
+        if not callbacks:
+            return None
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        failed: list = []
+        for ret in self._run_hook_callbacks(INTERIM_TRANSFORM_HOOK, callbacks, kwargs, failed):
+            if isinstance(ret, str):
+                return ret or None
+        text = kwargs.get("text")
+        return None if failed or not isinstance(text, str) else text
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.

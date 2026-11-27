@@ -219,22 +219,38 @@ class StreamDeliveryMixin:
     def _deliver_interim(self, visible: str, *, already_streamed: bool, record: list[str],
                          asks_clarify: bool = False) -> None:
         """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors.
-        Commentary is model text ``transform_llm_output`` never sees, so a held turn drops it. With interim
+        Commentary is model text ``transform_llm_output`` never sees, so a held turn shows it only through a
+        ``transform_interim_message`` hook (:meth:`_held_interim_text`) and drops it otherwise. With interim
         messages off, prose in the same message as a ``clarify`` call still goes to
         ``clarify_context_callback``: it is what the user is asked to decide on."""
-        if getattr(self, "_hold_stream", False):
-            return
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None and asks_clarify:
             cb = getattr(self, "clarify_context_callback", None)
         if cb is None:
             return
+        if getattr(self, "_hold_stream", False):
+            visible = self._held_interim_text(visible)
+            if not visible:
+                return
+            already_streamed = False  # nothing of a held turn was streamed
         try:
             cb(visible, already_streamed=already_streamed)
             for part in record:
                 self._record_delivered_interim_text(part)
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
+
+    def _held_interim_text(self, visible: str) -> str:
+        """What a held turn may show for ``visible``: the ``transform_interim_message`` result, or ""
+        when no plugin handles the hook or one failed (see ``run_interim_transforms``)."""
+        try:
+            from hermes_cli.plugins import _delivery_manager
+
+            shown = _delivery_manager().run_interim_transforms(text=visible, **self._stream_hook_base_payload())
+        except Exception:
+            logger.warning("held transform_interim_message dispatch failed", exc_info=True)
+            return ""
+        return shown.strip() if isinstance(shown, str) else ""
 
     def _fire_streamed_codex_commentary(self, text: str) -> None:
         """Deliver a completed live Codex commentary message immediately."""

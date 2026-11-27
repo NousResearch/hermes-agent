@@ -1,0 +1,24 @@
+# Anchor Browser hosted MCP servers as a portable Agent Plugin (no Python).
+#
+# Submitted by an Anchor Browser employee who is a contributor to the plugin repository.
+name: anchorbrowser-mcp
+title: Anchor Browser Tools
+repo: https://github.com/anchorbrowser/anchorbrowser-plugin
+sha: "d65c198f9ad44207919b22cd6cd8334fc24e28f4"
+subdir: hermes-mcp
+description: "Anchor Browser's hosted MCP tools in Hermes: run a web task in a cloud browser from a prompt, reuse verified deterministic recipes for known sites (the action index), manage logins without sharing passwords, start and end browser sessions, run saved tasks, and drive a live browser step by step. Three servers, 56 tools, plus a skill for picking the right one. Disclosure: Hermes connects to api.anchorbrowser.io (/v1/mcp, /v1/mcp/actions, /v1/mcp/browser) and sends ANCHORBROWSER_API_KEY as the anchor-api-key header to those URLs only; browsing runs in Anchor's cloud; sessions, AI task steps and proxy traffic are billed to your Anchor account; tools can create sessions, identities and profiles and call write endpoints in that account. All three servers are declared trust: untrusted, so every write-capable tool asks for approval and fails closed in unattended runs. No code runs locally: no Python, shell commands, background processes, files written or telemetry."
+maintainer: anchorbrowser
+tier: community
+category: web
+docs_url: https://github.com/anchorbrowser/anchorbrowser-plugin/tree/d65c198f9ad44207919b22cd6cd8334fc24e28f4/hermes-mcp
+requires_hermes: ">=0.21.6"
+version: "0.1.0"
+readme: true
+known_issues:
+  - "Write-capable tools ask for approval on every call until you approve them for the session or always."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ANCHORBROWSER_API_KEY

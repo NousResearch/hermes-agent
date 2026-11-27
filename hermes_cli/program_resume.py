@@ -27,15 +27,18 @@ _ENCODE_ERRORS = (TypeError, ValueError, UnicodeError)
 
 
 def _entrypoint() -> list[str]:
-    """argv[0]: the launcher this process came from, or this interpreter for ``python -m`` and source runs
-    (``resolve_hermes_bin`` would otherwise fall back to whichever ``hermes`` is on PATH)."""
+    """The command that runs this install: the launcher this process came from, else this install's
+    own command for ``python -m`` and source runs (``resolve_hermes_bin`` would otherwise fall back to
+    whichever ``hermes`` is on PATH), which needs no PYTHONPATH from the old shell."""
     if not sys.argv[0].lower().endswith((".py", ".pyc")):
         from hermes_cli.relaunch import resolve_hermes_bin
 
         bin_path = resolve_hermes_bin()
         if bin_path and _is_valid_osc7577_argv0(bin_path):
             return [bin_path]
-    return [sys.executable, "-m", "hermes_cli.main"]
+    from hermes_cli.chat_launch import hermes_command
+
+    return hermes_command()
 
 
 def _profile_args() -> list[str] | None:

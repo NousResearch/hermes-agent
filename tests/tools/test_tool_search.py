@@ -364,6 +364,49 @@ class TestBridgeDispatch:
             {"queries": over}, current_tool_defs=[], config=cfg))
         assert "error" in parsed
 
+    def test_tool_search_tolerates_legacy_singular_query_key(self):
+        """Callers sending the singular ``query`` key still bridge instead of erroring
+        out (#133107); ``queries`` stays authoritative when both keys are present."""
+        import tools.tool_search as tool_search
+
+        cfg = tool_search.ToolSearchConfig.from_raw({})
+        parsed = json.loads(
+            tool_search.dispatch_tool_search(
+                {"query": "terminal run"},
+                current_tool_defs=[],
+                config=cfg,
+            )
+        )
+        assert [g["query"] for g in parsed["results"]] == ["terminal run"]
+
+        parsed = json.loads(
+            tool_search.dispatch_tool_search(
+                {"query": ["gmail send", "slack post"]},
+                current_tool_defs=[],
+                config=cfg,
+            )
+        )
+        assert [g["query"] for g in parsed["results"]] == ["gmail send", "slack post"]
+
+        # Both keys present: the canonical ``queries`` wins, the legacy key is ignored.
+        parsed = json.loads(
+            tool_search.dispatch_tool_search(
+                {"queries": ["canonical"], "query": "legacy"},
+                current_tool_defs=[],
+                config=cfg,
+            )
+        )
+        assert [g["query"] for g in parsed["results"]] == ["canonical"]
+
+        # The shim must not weaken validation: a blank singular value still errors.
+        assert "error" in json.loads(
+            tool_search.dispatch_tool_search(
+                {"query": "   "},
+                current_tool_defs=[],
+                config=cfg,
+            )
+        )
+
     def test_empty_search_keeps_connected_sources_discoverable(self):
         from tools.registry import registry
         from tools.tool_search import dispatch_tool_search

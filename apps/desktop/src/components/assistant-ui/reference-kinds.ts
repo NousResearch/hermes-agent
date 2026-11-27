@@ -97,7 +97,7 @@ export const REFERENCE_STYLES: Record<ReferenceKind, ReferenceStyle> = {
   terminal: { codicon: 'terminal', paths: TERMINAL_PATHS, label: 'Terminal' },
   session: {
     codicon: 'comment-discussion',
-    paths: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227'],
+    paths: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
     label: 'Sessions'
   },
   git: { codicon: 'git-branch', paths: ['M7 18l0 -12', 'M7 8a2 2 0 1 0 0 -4a2 2 0 0 0 0 4'], label: 'Git' },

@@ -785,6 +785,9 @@ def cmd_mcp_list(args=None):
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            print(f"  {name!s:<16} {'?':<30} {'-':<12} " + color("✗ invalid", Colors.RED))
+            continue
         if "url" in cfg:
             transport = cfg["url"]
         elif "command" in cfg:

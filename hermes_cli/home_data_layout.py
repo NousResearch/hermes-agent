@@ -8,7 +8,7 @@ from pathlib import Path
 PM_RUNTIME_ROOT_DIRS = frozenset({"installs", "tools", "cache"})
 
 # Owned by the host, not the agent, and only at the Hermes root: Hermes Cloud's recovery state (which the agent
-# may not be able to read) and a volume's lost+found/. Backups leave them out; imports never write them.
+# may not be able to read) and a volume's lost+found/. Backups leave them out; imports skip them.
 HOST_MANAGED_ROOT_DIRS = frozenset({"portal-recovery", "lost+found"})
 
 # Frozen copies of provider plugins that Hermes processes import from (``providers.plugin_reload``), as path parts

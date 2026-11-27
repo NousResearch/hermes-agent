@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tools.mcp_tool_common import _parse_boolish
+
 logger = logging.getLogger(__name__)
 
 _CACHE_FILENAME = "mcp_schema_cache.json"
@@ -27,13 +29,17 @@ def _cache_path() -> Path:
 def config_fingerprint(config: dict) -> str:
     """Stable hash of the connection-defining parts of an MCP server config."""
     tools_filter = config.get("tools") or {}
+    include = tools_filter.get("include")
     payload = {
         "command": config.get("command"),
         "args": config.get("args") or [],
         "url": config.get("url"),
         "transport": config.get("transport"),
-        "tools_include": sorted(tools_filter.get("include") or []),
-        "tools_exclude": sorted(tools_filter.get("exclude") or [])}
+        # The stored manifest is already filtered; [] and no whitelist select different tools.
+        "tools_include": sorted(include) if isinstance(include, (str, list, tuple, set)) else None,
+        "tools_exclude": sorted(tools_filter.get("exclude") or []),
+        "tools_resources": _parse_boolish(tools_filter.get("resources"), default=True),
+        "tools_prompts": _parse_boolish(tools_filter.get("prompts"), default=True)}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 

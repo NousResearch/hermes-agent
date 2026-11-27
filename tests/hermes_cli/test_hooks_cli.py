@@ -260,3 +260,87 @@ def test_hooks_test_distinguishes_fail_closed_from_fail_open(tmp_path):
     assert "failed closed" in closed
     assert '"action": "block"' not in open_
     assert "contributed nothing" in open_
+
+
+# ── accept ────────────────────────────────────────────────────────────────
+
+
+class TestHooksAccept:
+    """`hermes hooks accept` is the non-interactive approval path (#138413): before it, the
+    allowlist write only happened as a side effect of agent-session startup (TTY prompt /
+    --accept-hooks), so unattended environments had to hand-edit the JSON file."""
+
+    def _two_hooks_cfg(self, tmp_path):
+        a = _hook_script(tmp_path, "#!/usr/bin/env bash\nexit 0\n", name="a.sh")
+        b = _hook_script(tmp_path, "#!/usr/bin/env bash\nexit 0\n", name="b.sh")
+        return {
+            "hooks": {
+                "pre_llm_call": [{"command": str(a)}],
+                "on_session_start": [{"command": str(b)}],
+            }
+        }
+
+    def _approved_pairs(self):
+        return {
+            (e["event"], e["command"])
+            for e in shell_hooks.load_allowlist()["approvals"]
+        }
+
+    def test_accept_all_records_every_pending_hook(self, tmp_path):
+        cfg = self._two_hooks_cfg(tmp_path)
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="accept", commands=[], all=True))
+
+        assert out.count("✓ allowlisted") == 2
+        assert self._approved_pairs() == {
+            ("pre_llm_call", str(tmp_path / "a.sh")),
+            ("on_session_start", str(tmp_path / "b.sh")),
+        }
+
+    def test_accept_specific_command_only_touches_match(self, tmp_path):
+        cfg = self._two_hooks_cfg(tmp_path)
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            _run(SimpleNamespace(hooks_action="accept", commands=[str(tmp_path / "a.sh")], all=False))
+
+        assert self._approved_pairs() == {("pre_llm_call", str(tmp_path / "a.sh"))}
+
+    def test_accept_without_selector_fails_loudly_and_lists_pending(self, tmp_path):
+        cfg = self._two_hooks_cfg(tmp_path)
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="accept", commands=[], all=False))
+
+        assert "Nothing matched" in out
+        assert "Pending" in out and str(tmp_path / "a.sh") in out and str(tmp_path / "b.sh") in out
+        assert self._approved_pairs() == set()
+
+    def test_accept_unknown_command_reports_and_writes_nothing(self, tmp_path):
+        cfg = self._two_hooks_cfg(tmp_path)
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="accept", commands=["/not/in/config.sh"], all=False))
+
+        assert "not declared" in out and "/not/in/config.sh" in out
+        assert self._approved_pairs() == set()
+
+    def test_accept_already_allowlisted_is_idempotent(self, tmp_path):
+        cfg = self._two_hooks_cfg(tmp_path)
+        shell_hooks._record_approval("pre_llm_call", str(tmp_path / "a.sh"))
+        before = shell_hooks.allowlist_entry_for("pre_llm_call", str(tmp_path / "a.sh"))
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="accept", commands=[], all=True))
+
+        assert "already allowlisted" in out
+        assert shell_hooks.allowlist_entry_for("pre_llm_call", str(tmp_path / "a.sh")) == before
+
+
+def test_accept_subcommand_is_registered_on_the_parser():
+    import argparse
+
+    from hermes_cli.subcommands.hooks import build_hooks_parser
+
+    root = argparse.ArgumentParser()
+    build_hooks_parser(root.add_subparsers(dest="command"), cmd_hooks=hooks_cli.hooks_command)
+
+    args = root.parse_args(["hooks", "accept", "--all"])
+    assert args.hooks_action == "accept" and args.all and args.commands == []
+    args = root.parse_args(["hooks", "accept", "/path/to/hook.sh"])
+    assert args.commands == ["/path/to/hook.sh"] and args.all is False

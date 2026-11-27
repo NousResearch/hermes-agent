@@ -280,7 +280,9 @@ _SPECS = [
     _cmd("comment", [
         _TASK_ID,
         _arg("text", nargs="+", help="Comment body"),
-        _arg("--author", help="Author name (default: $HERMES_PROFILE or 'user')"),
+        _arg("--author", help="Author name (default: $HERMES_PROFILE or 'user'; workers cannot override — see --operator)"),
+        _arg("--operator", action="store_true",
+             help="Allow an arbitrary --author (human operator override; workers are pinned to their profile)"),
         _arg("--max-len", type=int, help="Trim the stored comment body to this many characters"),
     ], help="Append a comment"),
     _cmd("attach", [
@@ -288,7 +290,9 @@ _SPECS = [
         _arg("path", help="Path to the local file to attach"),
         _arg("--content-type", help="MIME type (default: guessed from the file extension)"),
         _arg("--name", help="Stored filename (default: the source file's basename)"),
-        _arg("--author", help="uploaded_by label (default: $HERMES_PROFILE or 'user')"),
+        _arg("--author", help="uploaded_by label (default: $HERMES_PROFILE or 'user'; workers cannot override — see --operator)"),
+        _arg("--operator", action="store_true",
+             help="Allow an arbitrary --author (human operator override; workers are pinned to their profile)"),
     ], help="Attach a local file to a task"),
     _cmd("attachments", [_TASK_ID, _json_flag()], help="List a task's attachments"),
     _cmd("attach-rm", [_arg("attachment_id", type=int)], help="Delete an attachment by id"),

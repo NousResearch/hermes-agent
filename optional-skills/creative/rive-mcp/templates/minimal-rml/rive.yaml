@@ -1,0 +1,6 @@
+name: minimal-rml
+main: Smoke
+exclude:
+  - README.md
+output:
+  dir: build

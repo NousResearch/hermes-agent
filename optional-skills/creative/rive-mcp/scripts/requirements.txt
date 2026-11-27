@@ -1,0 +1,6 @@
+# Standalone helper only; never add these to Hermes core or install into its venv.
+# Python 3.11+. Tested with 2.0.0 / 2.7.0 / 4.26.0 / 0.37.0 respectively.
+mcp>=2.0.0,<3
+httpx2>=2.7.0,<3
+jsonschema>=4.26.0,<5
+referencing>=0.37.0,<0.39

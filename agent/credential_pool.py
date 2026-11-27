@@ -1163,14 +1163,16 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         error_context: Optional[dict[str, Any]] = None,
         *,
         persist: bool = True,
-        failure_reason: Optional[str] = None,
+        failure_reason: Optional[str] = None, bench: bool = False,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context, (entry.access_token, entry.refresh_token, entry.agent_key))
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
         # fails immediately until the user removes it (#32849); a row whose
-        # refresh grant just went DEAD stays DEAD on the 401 that follows.
-        terminal = entry.last_status == STATUS_DEAD or self._is_terminal_auth_failure(status_code, normalized_error)
+        # refresh grant just went DEAD stays DEAD on the 401 that follows. A ``bench`` row's grant just
+        # minted tokens, so its reason (Codex ``token_invalidated``) names the access token, not the grant.
+        terminal = entry.last_status == STATUS_DEAD or (
+            not bench and self._is_terminal_auth_failure(status_code, normalized_error))
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
@@ -2174,7 +2176,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
-        model: Optional[str] = None,
+        model: Optional[str] = None, bench: bool = False,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2197,7 +2199,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 self._current_id = None
                 next_entry, _pending = self._select_unlocked(refresh=False, model=model)
                 return next_entry
-            self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
+            self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason, bench=bench)
             # A 402/429/401 is a key-level failure, and the same key can back
             # several entries (an explicit entry plus a ``model_config`` row
             # auto-seeded from ``model.api_key``). Marking only the first
@@ -2211,7 +2213,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 ]
                 for sibling in siblings:
                     self._mark_exhausted(
-                        sibling, status_code, error_context, persist=False, failure_reason=failure_reason,
+                        sibling, status_code, error_context, persist=False, failure_reason=failure_reason, bench=bench,
                     )
                 if siblings:
                     self._persist()

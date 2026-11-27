@@ -3,10 +3,12 @@ from __future__ import annotations
 import itertools
 import time
 
+from dataclasses import replace
+
 import pytest
 
 from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential
+from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_DEAD, STATUS_EXHAUSTED, CredentialPool, PooledCredential
 
 _API = "https://api.anthropic.com"
 _EIGHT_HOURS_MS = 8 * 3600 * 1000
@@ -239,7 +241,15 @@ class TestRefreshCap:
                 child, status_code=401, has_retried_429=False, error_context=invalidated) == (True, False)
 
         assert child._credential_pool_entry_id == "claude-4"
-        assert _status(pool, "claude-3") == STATUS_EXHAUSTED
+        benched = next(e for e in pool.entries() if e.id == "claude-3")
+        assert (benched.last_status, benched.last_error_reason) == (STATUS_EXHAUSTED, "token_invalidated")
+
+    def test_a_bench_leaves_a_dead_row_dead(self, fake_pool_store):
+        pool = CredentialPool("anthropic", [replace(_row("claude-3"), last_status=STATUS_DEAD), _row("claude-4", priority=1)])
+
+        pool.mark_exhausted_and_rotate(status_code=401, credential_id="claude-3", bench=True)
+
+        assert _status(pool, "claude-3") == STATUS_DEAD
 
     def test_issue_timeline_401s_ten_minutes_apart_keep_refreshing(self, endpoint, fake_pool_store, monkeypatch):
         import types

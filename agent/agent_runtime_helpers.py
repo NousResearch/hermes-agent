@@ -592,16 +592,16 @@ def recover_with_credential_pool(
     if effective_reason is None:
         effective_reason = _STATUS_TO_FAILOVER_REASON.get(status_code)
 
-    def _rotate_and_swap(default_status: int, label: str, context: Optional[dict[str, Any]] = None) -> bool:
+    def _rotate_and_swap(default_status: int, label: str, *, bench: bool = False) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
             "status_code": rotate_status,
-            "error_context": error_context if context is None else context,
+            "error_context": error_context,
             "api_key_hint": api_key_hint,
+            **({"credential_id": credential_id} if credential_id else {}),
+            **({"bench": True} if bench else {}),  # test doubles take no ``bench``
         }
-        if credential_id:
-            kwargs["credential_id"] = credential_id
         # Pass classified semantics, not just the status: a billing 403 and an edge-throttle 403
         # need opposite cooldowns.
         if effective_reason is not None:

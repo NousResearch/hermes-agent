@@ -53,3 +53,17 @@ def test_parent_tenant_is_inherited_at_creation_boundary(tmp_path, monkeypatch):
         with pytest.raises(ValueError, match="unknown parent"):
             kb.create_task(conn, title="invalid", parents=["missing"])
         assert kb.get_task(conn, unscoped).tenant is None
+
+
+def test_archived_parent_gates_creation_like_linking(tmp_path, monkeypatch):
+    """Creating under a parent and linking to it later agree on the child's state."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    with kbc.connect_closing() as conn:
+        parent = kb.create_task(conn, title="retired prerequisite")
+        assert kb.archive_task(conn, parent)
+        created_under = kb.create_task(conn, title="created under", parents=[parent])
+        linked_later = kb.create_task(conn, title="linked later")
+        kb.link_tasks(conn, parent, linked_later)
+        assert kb.get_task(conn, created_under).status == kb.get_task(conn, linked_later).status
+        assert kb.unsatisfied_parents(conn, created_under) == []

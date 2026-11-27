@@ -1267,12 +1267,14 @@ def _stamp_created(home: Path, config: dict) -> None:
 
 
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False,
-             backoff: bool = False) -> list[LeftCoreFeature]:
+             backoff: bool = False, seen: Optional[set[str]] = None) -> list[LeftCoreFeature]:
     """Rows *home* uses whose plugin it never had and that the catalog ships (a catalog miss is
     reported through *say*). Converts the toolset scope of every row *home* uses once
     (:func:`_record_migration`), installed or not; a row whose scope cannot be recorded is
     reported and skipped, never installed unscoped. A row marked installed is done for good.
-    *backoff* (startup) skips a row whose last attempt failed recently, before any network."""
+    *backoff* (startup) skips a row whose last attempt failed recently, before any network. *seen*: the
+    plugins an earlier pass of this start already handled (extended here), so a re-pass neither reports nor
+    installs one again."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
@@ -1281,6 +1283,10 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue  # one install per plugin: two rows may name the same one
         if not feature_in_use(feature, home, process_env=process_env):
             continue
+        if seen is not None:
+            if feature.plugin in seen:
+                continue
+            seen.add(feature.plugin)
         # One automatic install per plugin and home, by either installer: a default plugin
         # (``default_plugins``) the user removed after it installed stays removed. Its core-era
         # toolset scope is still kept below, so only the install is skipped. A home that ran the feature in
@@ -1622,9 +1628,7 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
         deliver(message)
 
     try:
-        features = [f for f in _pending(home, say=report, process_env=True, backoff=not gateway_start)
-                    if f.plugin not in tried]
-        tried.update(f.plugin for f in features)
+        features = _pending(home, say=report, process_env=True, backoff=not gateway_start, seen=tried)
         if not features:
             return []
         from pm.install import lazy_installs_allowed

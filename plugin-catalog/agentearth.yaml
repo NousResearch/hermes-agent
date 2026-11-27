@@ -1,0 +1,20 @@
+name: agentearth
+title: AgentEarth
+repo: https://github.com/agentearth-ai/agentearth-integrations
+subdir: hermes/plugin
+sha: "5c334e372bcf78d670ccc7ca643a5f71ec2d70cf"
+version: "1.0.0"
+description: >-
+  Use 31 bundled skills for research, e-commerce, financial data, and media creation with the hosted AgentEarth MCP server. Requests go to AgentEarth, and tool execution may send inputs to the selected provider and consume credits.
+maintainer: AgentEarth
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "After installation, configure MCP OAuth in the active Hermes profile and sign in through the browser. See the plugin README for the command."

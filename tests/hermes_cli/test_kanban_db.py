@@ -551,6 +551,13 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+# Systemd-scope semantics (#114720) exist only on Linux: on macOS/Windows
+# ``restart_safe_gateway_child_argv`` returns ``in_process`` before the
+# user-scope probe (``tools/process_registry.py``: ``if not _IS_LINUX``), so
+# ``RestartSafeScopeUnavailable`` can never be raised there — the spawn
+# boundary would fall through to a control failure and wrongly charge the
+# card. Upstream CI exercises this on the Linux runner.
+@pytest.mark.linux_only
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

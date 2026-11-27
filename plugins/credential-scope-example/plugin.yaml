@@ -1,0 +1,11 @@
+name: credential-scope-example
+version: 1.1.0
+description: "Example consumer of the credential-scope + quota-observation contracts: records per-scope API attempt outcomes from pre/post/error hooks without ever touching credential material."
+author: "NousResearch"
+capabilities:
+  - llm.credential_scope
+  - llm.quota_observation
+provides_hooks:
+  - pre_api_request
+  - post_api_request
+  - api_request_error

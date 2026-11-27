@@ -165,7 +165,7 @@ class ApiRequestHooksMixin:
         api_start_time: float, api_kwargs: Optional[dict[str, Any]], error_type: str,
         error_message: str, status_code: Optional[int] = None, retry_count: Optional[int] = None,
         max_retries: Optional[int] = None, retryable: Optional[bool] = None,
-        reason: Optional[str] = None,
+        reason: Optional[str] = None, http_response: Any = None,
     ) -> None:
         # Lazy module import (not from-import) so tests can replace lifecycle dispatch at this call site.
         with suppress(Exception):
@@ -173,6 +173,8 @@ class ApiRequestHooksMixin:
             if not _lifecycle.has_hook("api_request_error"):
                 return
             ended_at = time.time()
+            from agent.credential_scope import attempt_credential_scope
+            from agent.quota_observation import build_quota_observation
             _lifecycle.invoke_hook(
                 "api_request_error",
                 task_id=task_id,
@@ -184,6 +186,11 @@ class ApiRequestHooksMixin:
                 provider=self.provider,
                 base_url=self.base_url,
                 api_mode=self.api_mode,
+                credential_scope=attempt_credential_scope(
+                    self, api_request_id).to_dict(),
+                quota_observation=build_quota_observation(
+                    self, http_response=http_response, status_code=status_code,
+                    reason=reason, api_request_id=api_request_id),
                 api_call_count=api_call_count,
                 api_duration=ended_at - api_start_time,
                 started_at=api_start_time,

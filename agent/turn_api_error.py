@@ -144,7 +144,7 @@ def handle_api_error(
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
         error_type=type(api_error).__name__, error_message=str(api_error), status_code=status_code,
         retry_count=retry_count, max_retries=max_retries, retryable=classified.retryable,
-        reason=classified.reason.value,
+        reason=classified.reason.value, http_response=getattr(api_error, "response", None),
     )
 
     _recovered, recovered_with_pool = recover_after_classification(

@@ -215,6 +215,11 @@ class PooledCredential:
     source: str
     access_token: str
     refresh_token: Optional[str] = None
+    # Host-owned opaque scope id for plugin request attribution (see
+    # agent/credential_scope.py). Random per entry, independent of the token;
+    # persisted with the row so it is stable across processes. Never a
+    # credential fingerprint: it cannot authenticate or reverse to a secret.
+    scope_id: Optional[str] = None
     last_status: Optional[str] = None
     last_status_at: Optional[float] = None
     last_error_code: Optional[int] = None
@@ -241,6 +246,12 @@ class PooledCredential:
     def __post_init__(self):
         if self.extra is None:
             self.extra = {}
+        if not (isinstance(self.scope_id, str) and self.scope_id):
+            # New pool entry (or a legacy persisted row without one): mint its
+            # scope id. Token refreshes go through dataclasses.replace() /
+            # from_dict() on the persisted row, which carry scope_id over, so
+            # a refreshed credential keeps its scope.
+            self.scope_id = uuid.uuid4().hex
         self.auth_type = _normalize_pool_auth_type(self.provider, self.access_token, self.auth_type)
 
     def __getattr__(self, name: str):

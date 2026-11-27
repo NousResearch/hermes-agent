@@ -377,6 +377,12 @@ _ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LIN
 
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter (no message editing → REQUIRES_EDIT_FINALIZE stays False)."""
+    # LINE's Messaging API has no message-edit endpoint, so an incremental (edit-based) stream
+    # could never update its first partial bubble: the preview would freeze with the edit cursor
+    # (▉) still visible and the real final would land as a separate message. Declare the capability
+    # so the gateway declines incremental streaming (empty cursor, or skip) instead of assuming
+    # edits work — the same declaration signal/weixin/photon/qqbot/bluebubbles/wecom already carry.
+    SUPPORTS_MESSAGE_EDITING = False
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
 

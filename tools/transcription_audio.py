@@ -201,16 +201,16 @@ _CLOUD_TRIM_MIN_RESULT_SECONDS = 0.3  # all-silence guard floor: never upload ~e
 _CLOUD_TRIM_MIN_INPUT_SECONDS = 12.0
 
 
-def _probe_audio_duration(file_path: str) -> Optional[float]:
+def _probe_audio_duration(file_path: str, env: Optional[dict] = None) -> Optional[float]:
     """Return the audio duration in seconds via ffprobe, or None. Canonical sync probe;
     ``gateway/run.py._probe_audio_duration`` and the Telegram adapter carry local variants — keep
-    the command shape in sync."""
+    the command shape in sync. *env* lets callers pass a scrubbed environment."""
     ffprobe = _find_ffprobe_binary()
     if not ffprobe:
         return None
     try:
         probe = _run_quiet([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of",
-                            "default=noprint_wrappers=1:nokey=1", file_path], timeout=30)
+                            "default=noprint_wrappers=1:nokey=1", file_path], timeout=30, env=env)
         return float(probe.stdout.strip())
     except Exception:
         return None

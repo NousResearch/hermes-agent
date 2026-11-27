@@ -432,3 +432,41 @@ def test_refresh_keeps_its_headroom_once_the_uv_cache_is_merged(install, monkeyp
 
     assert refresh_dependencies(root) == outcome
     assert bool(rebuilt) == (outcome == "rebuilt")
+
+
+def test_refresh_unselects_old_generation_when_free_space_is_unavailable(install, monkeypatch):
+    """If the filesystem can't report its space, don't build or boot the previous generation."""
+    import errno
+    import shutil
+
+    import pm.client
+    from pm.environments import install_state_dir, runtime_facts_path, selected_venv
+    from pm.lock import Facts
+    from pm.packages import uv_cache_path
+    from pm.recovery import refresh_dependencies
+
+    root, store = install
+    old = install_state_dir(root) / "environments" / "previous" / "venv"
+    old.mkdir(parents=True)
+    (old / "pyvenv.cfg").touch()
+    (root / "venv").mkdir()
+    (root / "venv" / "pyvenv.cfg").touch()
+    Facts(store / "facts.json").record_state("venv", "stamp:all,messaging", ["all", "messaging"])
+    Facts(runtime_facts_path(root)).record_state("venv", "previous-image", ["all", "fal", "messaging"],
+                                                environment=old)
+    cache = uv_cache_path()
+    cache.mkdir(parents=True)
+    assert selected_venv(root) == old
+
+    def unavailable(path):
+        raise OSError(errno.EIO, "statvfs failed", path)
+
+    monkeypatch.setattr(shutil, "disk_usage", unavailable)
+    monkeypatch.setattr(pm.client, "sync_venv", lambda *a, **k: pytest.fail("room is unknown"))
+
+    assert refresh_dependencies(root) == "fallback"
+    assert selected_venv(root) == root / "venv"
+    assert Facts(runtime_facts_path(root)).get("venv") == {
+        "stamp": "stale", "extras": ["all", "fal", "messaging"],
+    }
+    assert cache.is_dir()

@@ -449,26 +449,33 @@ def uv_cache_seed_bytes() -> int:
     Counts what ``_copy_seed_file`` would copy (a destination of the same size is done), each
     file rounded up to a 4 KiB block: uv's unpacked archives are mostly small files.
     """
-    import stat
-
     _, pending, payload_cache = _uv_cache_seed()
     if not pending or not payload_cache.is_dir():
         return 0
     seeded = long_root(uv_cache_path())
+    root = Path(os.path.realpath(payload_cache))
     total = 0
-    # Links are recreated, not copied, and a linked directory is never followed (as in _seed_tree).
+    # As in _seed_entry: a link within the cache is recreated, not copied, but a link out of it
+    # (a file the bundle ships once, in its venv) is copied, so its target's bytes count. A
+    # linked directory is never followed.
     for dirpath, _, filenames in os.walk(payload_cache):
         relative = os.path.relpath(dirpath, payload_cache)
         for name in filenames:
-            source = os.lstat(os.path.join(dirpath, name))
-            if stat.S_ISLNK(source.st_mode) or (relative == "." and name == ".seeded"):
+            source = Path(dirpath) / name
+            if (relative == "." and name == ".seeded") or (
+                source.is_symlink() and Path(os.path.realpath(source)).is_relative_to(root)
+            ):
                 continue
             try:
-                if os.stat(os.path.join(seeded, relative, name)).st_size == source.st_size:
+                size = source.stat().st_size
+            except OSError:
+                continue  # a dangling link out of the cache: nothing to size
+            try:
+                if os.stat(os.path.join(seeded, relative, name)).st_size == size:
                     continue
             except OSError:
                 pass
-            total += -(-source.st_size // 4096) * 4096
+            total += -(-size // 4096) * 4096
     return total
 
 

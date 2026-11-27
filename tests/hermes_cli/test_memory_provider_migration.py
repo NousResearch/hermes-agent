@@ -860,3 +860,29 @@ def test_a_managed_reference_is_left_to_the_profile_agent_start_too(tmp_path, mo
     monkeypatch.setenv("MEMORY_BACKEND", "retaindb")
     monkeypatch.setattr(mig, "catalog_source", lambda n: n)
     assert mig.migrate_home(profile, install=lambda n: pytest.fail("must not install"), say=lambda s: None) is None
+
+
+def test_a_config_edit_between_the_scan_reads_installs_nothing_stale(tmp_path, monkeypatch):
+    """The scan reads the expanded selection and the raw value as two reads. If the provider is
+    rewritten in between (a reference replaced by a fixed name), the scan may name the old value, but
+    the read under the installer lock sees the new config and installs nothing stale."""
+    from pm import plugins_state
+
+    profile = tmp_path / "launch" / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("memory:\n  provider: ${MEMORY_BACKEND}\n", encoding="utf-8")
+    (profile / ".env").write_text("MEMORY_BACKEND=byterover\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    real, edited = plugins_state.read_home_selection, []
+
+    def read_then_edit(home):
+        if not edited:
+            edited.append(True)
+            (profile / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
+        return real(home)
+
+    monkeypatch.setattr(plugins_state, "read_home_selection", read_then_edit)
+    installs: list[str] = []
+    mig.migrate_home(profile, install=lambda n: installs.append(n) or {"ok": True}, say=lambda s: None)
+    assert installs == []

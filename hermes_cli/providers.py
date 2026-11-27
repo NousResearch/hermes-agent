@@ -518,6 +518,11 @@ def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[Pr
                       entry.get("transport", "openai_chat") or "openai_chat")
 
 
+def custom_provider_display_prefix(name: str) -> str:
+    """Text before the per-model separator Hermes uses for grouped endpoints."""
+    return next((name.split(sep)[0].strip() for sep in ("—", " - ") if sep in name), name)
+
+
 def custom_provider_slug(display_name: str, provider_key: str = "") -> str:
     """Stable ``custom:`` identity for a configured provider: keyed ``providers:`` entries use their
     config key (survives display-name changes); legacy ``custom_providers:`` entries have no key,
@@ -551,6 +556,7 @@ def resolve_custom_provider(name: str, custom_providers: Optional[list[dict[str,
     if not requested or not custom_providers or not isinstance(custom_providers, list):
         return None
     first_valid: Optional[ProviderDef] = None
+    grouped_fallback: Optional[ProviderDef] = None
     # If the stored provider is the bare string "custom" (corrupt state from a prior model-switch bug), fall
     # back to the first custom provider entry so existing configs self-heal. (GH #17478)
     for entry in custom_providers:
@@ -567,9 +573,13 @@ def resolve_custom_provider(name: str, custom_providers: Optional[list[dict[str,
             first_valid = pdef
         if requested in custom_provider_aliases(display_name, provider_key):
             return pdef
+        if grouped_fallback is None and not provider_key:
+            prefix = custom_provider_display_prefix(display_name)
+            if prefix and requested == custom_provider_slug(prefix):
+                grouped_fallback = pdef
     if requested == "custom" and first_valid:
         return first_valid
-    return None
+    return grouped_fallback
 
 
 def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef]:

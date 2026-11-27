@@ -26,8 +26,11 @@ field, retry once without it. These tests lock in that behaviour for both
 sync and async paths.
 """
 
+import json
 from unittest.mock import patch, MagicMock, AsyncMock
 
+import httpx
+from openai import OpenAI
 import pytest
 
 from agent.auxiliary_client import (
@@ -101,6 +104,53 @@ class TestIsStructuredOutputRejection:
         exc = RuntimeError("output_config: Extra inputs are not permitted")
         exc.status_code = 500
         assert _is_structured_output_rejection(exc) is False
+
+
+@pytest.mark.parametrize("transient_first", [False, True])
+def test_title_generation_retries_mlx_speculative_decoding_without_schema(monkeypatch, transient_first):
+    from agent.title_generator import generate_title
+
+    base_url = "http://127.0.0.1:1/v1"
+    model = "mlx-qwen"
+    attempts = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        attempts.append((request.url.path, payload["model"], "response_format" in payload))
+        if transient_first and len(attempts) == 1:
+            return httpx.Response(500, json={"detail": "Temporary server failure"})
+        if "response_format" in payload:
+            return httpx.Response(500, json={
+                "detail": "Generation failed: Structured response_format is not supported with speculative decoding."
+            })
+        return httpx.Response(200, json={
+            "id": "title-retry",
+            "model": model,
+            "object": "chat.completion",
+            "created": 1,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": '{"title":"Cardboard Observatory Exhibition"}'},
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr("agent.auxiliary_structured_output._REJECTED_ROUTES", set())
+    monkeypatch.setattr("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0)
+    monkeypatch.setattr(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        lambda *args, **kwargs: ("custom", model, base_url, "test", "chat_completions"),
+    )
+    with OpenAI(
+        base_url=base_url, api_key="test", max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+    ) as client:
+        monkeypatch.setattr("agent.auxiliary_client._get_cached_client", lambda *args, **kwargs: (client, model))
+        title = generate_title("I want to build a cardboard model of an observatory for an exhibition.")
+
+    assert title == "Cardboard Observatory Exhibition", attempts
+    expected_schema_usage = [True, True, False] if transient_first else [True, False]
+    assert attempts == [("/v1/chat/completions", model, enabled) for enabled in expected_schema_usage]
 
 
 class TestWithoutStructuredOutputFormat:

@@ -1295,7 +1295,14 @@ def _status_429(c: _Ctx) -> Verdict:
     return _V_RATE_LIMIT
 
 
+def is_mlx_speculative_output_rejection(message: str) -> bool:
+    """Match MLX-VLM's deterministic rejection of a schema during speculative decoding."""
+    return "structured response_format is not supported with speculative decoding" in message.lower()
+
+
 def _status_5xx(c: _Ctx) -> Verdict:
+    if c.status_code == 500 and is_mlx_speculative_output_rejection(c.msg):
+        return _V_FORMAT_ERROR
     # Request-validation errors as 5xx (codex.nekos.me) fail fast instead of
     # retry-flooding — unless the parameter was injected server-side.
     validation = any(p in c.msg for p in _REQUEST_VALIDATION_PATTERNS) or c.code in _5XX_VALIDATION_CODES

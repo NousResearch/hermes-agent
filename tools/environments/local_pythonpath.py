@@ -135,7 +135,11 @@ def _is_hermes_install_environment_site_packages(path: Path) -> bool:
     PM activates a generation once at process boot, so inherited PYTHONPATH can
     still name an older generation after the committed selection changes. Its
     location proves provenance even if collection has removed pyvenv.cfg.
+    ``relative_to`` is lexical, so a spelling with ``.``/``..`` segments could
+    name a path outside the generations directory; such entries are never owned.
     """
+    if any(part in (".", "..") for part in path.parts):
+        return False
     try:
         from hermes_cli._startup_fast import project_root_str
         from pm.environments import install_state_dir, site_packages

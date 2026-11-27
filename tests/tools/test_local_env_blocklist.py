@@ -620,6 +620,19 @@ def test_pythonpath_keeps_other_install_and_generation_subdirectory(tmp_path, mo
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
+def test_pythonpath_keeps_dot_dot_escape_from_environments(tmp_path, monkeypatch):
+    """A lexical ``..`` spelling that leaves environments/ is not a generation path."""
+    from pm.environments import site_packages
+
+    state = tmp_path / "hermes/installs/this-install"
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    escaped = site_packages(state / "environments" / ".." / "venv")
+    entries = [str(escaped)]
+    env = {"PYTHONPATH": os.pathsep.join(entries)}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"].split(os.pathsep) == entries
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])

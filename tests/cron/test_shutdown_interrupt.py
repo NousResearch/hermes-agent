@@ -12,6 +12,7 @@ Covers the cron/scheduler.py primitives directly:
 """
 
 import threading
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -75,8 +76,8 @@ class TestMarkRunningJobsInterrupted:
         profile_home = sched._get_hermes_home().resolve()
         sched._running_fire_owners.update(
             {
-                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home)},
-                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home)},
+                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home, False)},
+                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home, False)},
             }
         )
 
@@ -114,8 +115,8 @@ class TestMarkRunningJobsInterrupted:
         profile_home = sched._get_hermes_home().resolve()
         sched._running_fire_owners.update(
             {
-                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home)},
-                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home)},
+                sched._inflight_key("job-1"): {object(): ("owner-1", profile_home, False)},
+                sched._inflight_key("job-2"): {object(): ("owner-2", profile_home, False)},
             }
         )
 
@@ -150,7 +151,7 @@ class TestMarkRunningJobsInterrupted:
 
             sched._running_job_ids.add(sched._inflight_key(created["id"]))
             sched._running_fire_owners[sched._inflight_key(created["id"])] = {
-                object(): (stale_owner, profile_home)
+                object(): (stale_owner, profile_home, False)
             }
             marked = sched.mark_running_jobs_interrupted("shutdown")
             refreshed = jobs.get_job(created["id"])
@@ -172,7 +173,34 @@ class TestRunningFireOwnerRegistry:
 
         def _observe_registry(current_job, run):
             assert list(sched._running_fire_owners[sched._inflight_key(current_job["id"])].values()) == [
-                ("owner-1", sched._get_hermes_home().resolve())
+                ("owner-1", sched._get_hermes_home().resolve(), False)
+            ]
+            return True
+
+        with patch("cron.scheduler._run_with_fire_claim_heartbeat", side_effect=_observe_registry):
+            assert sched.run_one_job(job) is True
+
+        assert sched._inflight_key(job["id"]) not in sched._running_fire_owners
+
+    def test_run_one_job_registers_the_ladder_flag_from_the_snapshot(self):
+        """#160910 capture side: a ladder re-run's registration carries the flag the
+        shutdown marker needs — replacing the registration's ``is_retry_run(job)`` with a
+        literal False must fail here, not only in repeat bookkeeping."""
+        import cron.scheduler as sched
+        from cron.unreachable_retry import is_retry_run
+
+        job = {
+            "id": "laddered-job",
+            "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner-1"},
+            "next_run_at": "2026-07-12T12:05:00+00:00",
+            "unreachable_retry": {"attempt": 1, "at": "2026-07-12T12:05:00+00:00"},
+            "_scheduled_instant": "2026-07-12T12:05:00+00:00",
+        }
+        assert is_retry_run(job)
+
+        def _observe_registry(current_job, run):
+            assert list(sched._running_fire_owners[sched._inflight_key(current_job["id"])].values()) == [
+                ("owner-1", sched._get_hermes_home().resolve(), True)
             ]
             return True
 
@@ -228,8 +256,8 @@ class TestRunningFireOwnerRegistry:
         profile_b = tmp_path / "b"
         observed = []
         sched._running_fire_owners[sched._inflight_key("same-job")] = {
-            object(): ("owner-a", profile_a),
-            object(): ("owner-b", profile_b),
+            object(): ("owner-a", profile_a, False),
+            object(): ("owner-b", profile_b, False),
         }
 
         def mark(job_id, success, reason, *, expected_fire_owner):
@@ -299,7 +327,7 @@ class TestExecutionScopedInterruption:
         profile_home = sched._get_hermes_home().resolve()
         old_token = object()
         sched._running_fire_owners[sched._inflight_key("job-1")] = {
-            old_token: ("owner-1", profile_home),
+            old_token: ("owner-1", profile_home, False),
         }
 
         with patch("cron.scheduler.mark_job_run", return_value=True):
@@ -318,8 +346,8 @@ class TestExecutionScopedInterruption:
 
         profile_home = sched._get_hermes_home().resolve()
         token_a, token_b = object(), object()
-        sched._running_fire_owners[sched._inflight_key("job-a")] = {token_a: ("owner-a", profile_home)}
-        sched._running_fire_owners[sched._inflight_key("job-b")] = {token_b: ("owner-b", profile_home)}
+        sched._running_fire_owners[sched._inflight_key("job-a")] = {token_a: ("owner-a", profile_home, False)}
+        sched._running_fire_owners[sched._inflight_key("job-b")] = {token_b: ("owner-b", profile_home, False)}
 
         with patch("cron.scheduler.mark_job_run", return_value=True) as mock_mark:
             marked = sched.mark_running_jobs_interrupted(
@@ -341,7 +369,7 @@ class TestExecutionScopedInterruption:
         profile_home = sched._get_hermes_home().resolve()
         stale_token = object()
         sched._running_fire_owners[sched._inflight_key("job-1")] = {
-            stale_token: ("stale-owner", profile_home),
+            stale_token: ("stale-owner", profile_home, False),
         }
         with patch("cron.scheduler.mark_job_run", return_value=True):
             sched.mark_running_jobs_interrupted("shutdown")
@@ -371,6 +399,133 @@ class TestExecutionScopedInterruption:
 
         assert result is True
         mock_mark.assert_called_once()
+
+
+class TestInterruptedLadderRerunNotCounted:
+    """#160910: gateway shutdown during an unreachable-model re-run must not spend another
+    repeat slot. Every normal terminal write gates ``ladder_rung`` on ``is_retry_run(job)``
+    (the #130614 family); shutdown has no dispatch snapshot in hand, so ``run_one_job``
+    captures the predicate at registration and the marker carries it through.
+
+    The clock is the only fake (the reporter's own repro sketch): fire 1's failed-unreachable
+    mark parks the ladder, the clock then moves past the parked rung so the re-run's claim is
+    on-schedule (a force/manual claim would be occurrence-free by design), and the shutdown
+    marks the in-flight run through the real mark_job_run."""
+
+    @staticmethod
+    def _pin_clock(monkeypatch, when):
+        import cron.jobs as jobs_mod
+
+        monkeypatch.setattr(jobs_mod, "_hermes_now", lambda: when)
+
+    def _seed_ladder(self, monkeypatch):
+        """Fire 1 of a finite-repeat job fails unreachable: the occurrence counts once and
+        the ladder parks a re-run. Returns the job id; the clock is pinned just past the
+        rung so the re-run's claim is on-schedule."""
+        from datetime import datetime, timedelta
+
+        from cron import jobs
+        from cron.unreachable_retry import STATE_KEY
+
+        job = jobs.create_job("nightly report", "every 24h", name="laddered", repeat=3)
+        assert jobs.mark_job_run(job["id"], False, "ConnectError: dns", model_unreachable=True)
+        parked = jobs.get_job(job["id"])
+        assert isinstance(parked, dict)
+        rung = parked[STATE_KEY]["at"]
+        assert rung == parked["next_run_at"]  # the re-run fires exactly at the parked instant
+        assert parked["repeat"]["completed"] == 1
+        self._pin_clock(monkeypatch, datetime.fromisoformat(rung) + timedelta(seconds=5))
+        return job["id"]
+
+    def _dispatch_rerun(self, job_id):
+        """The re-run's on-schedule dispatch: its claim snapshot pins the parked ladder
+        instant — the exact input ``is_retry_run`` evaluates at registration."""
+        from cron import jobs
+
+        claimed = jobs.claim_job_for_fire(job_id, return_job=True)
+        assert isinstance(claimed, dict)
+        assert claimed["_scheduled_instant"] is not None
+        return claimed
+
+    def test_shutdown_during_ladder_rerun_does_not_spend_another_repeat(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import cron.scheduler as sched
+        from cron import jobs
+        from cron.unreachable_retry import STATE_KEY
+
+        job_id = self._seed_ladder(monkeypatch)
+        claimed = self._dispatch_rerun(job_id)
+        owner = claimed["fire_claim"]["by"]
+        from cron.unreachable_retry import is_retry_run
+        # The flag comes from the snapshot, exactly as run_one_job registers it.
+        sched._running_fire_owners[sched._inflight_key(job_id)] = {
+            object(): (owner, tmp_path.resolve(), is_retry_run(claimed))
+        }
+        marked = sched.mark_running_jobs_interrupted("gateway shutdown")
+        refreshed = jobs.get_job(job_id)
+        assert isinstance(refreshed, dict)
+
+        assert marked == [job_id]
+        # CONTRACT: the re-run's occurrence already counted at its first failed fire — the
+        # shutdown interruption must not spend another repeat slot (repeat: 3, one occurrence).
+        assert refreshed["repeat"]["completed"] == 1
+        assert refreshed["state"] != "completed"
+        # The fence outcomes of an interrupted run: the fire claim is released and the parked
+        # ladder is abandoned (the re-run waits for the natural occurrence, rung slot unspent).
+        assert refreshed["fire_claim"] is None
+        assert refreshed.get(STATE_KEY) is None
+
+    def test_shutdown_counts_an_original_occurrence(self, tmp_path, monkeypatch):
+        """The same shutdown on an ORIGINAL dispatch (no parked ladder) still counts — the
+        flag must not un-count real runs."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import cron.scheduler as sched
+        from cron import jobs
+
+        job = jobs.create_job("nightly report", "every 24h", name="original", repeat=3)
+        self._pin_clock(
+            monkeypatch, datetime.fromisoformat(job["next_run_at"]) + timedelta(seconds=5))
+        claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+        assert isinstance(claimed, dict)
+        owner = claimed["fire_claim"]["by"]
+        sched._running_fire_owners[sched._inflight_key(job["id"])] = {
+            object(): (owner, tmp_path.resolve(), False)
+        }
+        marked = sched.mark_running_jobs_interrupted("gateway shutdown")
+        refreshed = jobs.get_job(job["id"])
+        assert isinstance(refreshed, dict)
+
+        assert marked == [job["id"]]
+        assert refreshed["repeat"]["completed"] == 1
+
+    def test_ladder_flag_rides_the_owning_profile_store(self, tmp_path, monkeypatch):
+        """A multiplexed gateway's SECONDARY profile: the job lives (and must be marked) in
+        the owning profile's store, not the launch home's. The captured flag must reach that
+        write with no shutdown-side store probing."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+        import cron.scheduler as sched
+        from cron import jobs
+
+        other = tmp_path / "other-profile"
+        with jobs.use_cron_store(other):
+            job_id = self._seed_ladder(monkeypatch)
+            claimed = self._dispatch_rerun(job_id)
+            owner = claimed["fire_claim"]["by"]
+            from cron.unreachable_retry import is_retry_run
+            ladder_flag = is_retry_run(claimed)
+        # The flag comes from the snapshot, exactly as run_one_job registers it.
+        sched._running_fire_owners[sched._inflight_key(job_id)] = {
+            object(): (owner, other.resolve(), ladder_flag)
+        }
+        marked = sched.mark_running_jobs_interrupted("gateway shutdown")
+
+        assert marked == [job_id]
+        with jobs.use_cron_store(other):
+            refreshed = jobs.get_job(job_id)
+            assert isinstance(refreshed, dict)
+            assert refreshed["repeat"]["completed"] == 1
 
 
 class TestCombinedCancelEvent:

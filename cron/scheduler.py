@@ -613,7 +613,11 @@ def _inflight_home_path(home_key: str) -> Path:
 # In-flight state below is keyed by ``_inflight_key``; the public accessors still report bare job
 # ids so host-wide consumers (shutdown drain, idle-exit, metrics) see the union across profiles.
 _running_job_ids: set = set()
-_running_fire_owners: dict[tuple, dict[object, tuple[Optional[str], Path]]] = {}
+# Per execution token: ``(fire_owner, profile_home, ladder_rung)`` — the third element is
+# ``is_retry_run(job)`` evaluated on the dispatch snapshot at registration (the same predicate
+# every terminal write uses), so gateway shutdown can mark an interrupted ladder re-run without
+# re-deriving the identity (no dispatch snapshot and no store/ledger read exist there: #160910).
+_running_fire_owners: dict[tuple, dict[object, tuple[Optional[str], Path, bool]]] = {}
 # Parent gateway threads synchronously waiting on restart-safe scope workers.
 # Shutdown must not misclassify these as ownerless in-process runs: the tool
 # process sweep cannot reach the worker's transient scope.
@@ -1111,35 +1115,43 @@ def mark_running_jobs_interrupted(
     Called by gateway shutdown right after ``process_registry.kill_all()``: a job whose tool was
     killed must never report success. ``only_owners`` (``(job_id, fire_owner)`` pairs) restricts
     marking. Tokens go into ``_interrupted_job_ids`` BEFORE ``last_status`` is written so
-    ``run_one_job`` sees them.
+    ``run_one_job`` sees them. An in-flight ladder re-run (an unreachable-model occurrence
+    already counted at its first failed fire) is marked ``ladder_rung`` like every other
+    terminal write, so the shutdown does not spend another repeat slot (#160910): the flag was
+    captured at registration from the dispatch snapshot (``is_retry_run``), because shutdown
+    holds neither the snapshot nor a reliable way to re-derive the identity — the executions
+    ledger is not scoped by ``use_cron_store`` and its latest row is not always the in-flight
+    one (a refused Run-now or a booked missed occurrence hides it).
     """
     with _running_lock:
         restart_safe_waiters = set(_restart_safe_waiter_job_ids)
         active_fires = [
-            (token, key, owner, profile_home)
+            (token, key, owner, profile_home, ladder_rung)
             for key, executions in _running_fire_owners.items()
             if key not in restart_safe_waiters
-            for token, (owner, profile_home) in executions.items()
+            for token, (owner, profile_home, ladder_rung) in executions.items()
         ]
         if only_owners is not None:
             active_fires = [fire for fire in active_fires if (fire[1][1], fire[2]) in only_owners]
-        registered_keys = {key for _t, key, _o, _p in active_fires}
+        registered_keys = {key for _t, key, _o, _p, _l in active_fires}
         if only_owners is None:
             # The key's home half IS the profile home this claim belongs to — the only record of
             # it for a claim that never reached ``_running_fire_owners``. Read the real Path back
-            # from the key, never ``Path(key[0])``: the key is normcased.
+            # from the key, never ``Path(key[0])``: the key is normcased. Such a claim also has
+            # no dispatch snapshot, so no ladder identity exists for it (the persisted write is
+            # skipped below anyway, #82232).
             active_fires.extend(
-                (None, key, None, _inflight_home_path(key[0]))
+                (None, key, None, _inflight_home_path(key[0]), False)
                 for key in (
                     _running_job_ids - registered_keys - restart_safe_waiters
                 )
             )
         _interrupted_job_ids.update(
             token if token is not None else key
-            for token, key, _owner, _profile_home in active_fires
+            for token, key, _owner, _profile_home, _ladder in active_fires
         )
     marked = []
-    for _token, key, fire_owner, profile_home in active_fires:
+    for _token, key, fire_owner, profile_home, ladder_rung in active_fires:
         job_id = key[1]
         if not fire_owner:
             logger.warning(
@@ -1153,8 +1165,12 @@ def mark_running_jobs_interrupted(
             continue
         try:
             with use_cron_store(profile_home):
-                if mark_job_run(
-                    job_id, False, reason, expected_fire_owner=fire_owner):
+                mark_kwargs: dict = {"expected_fire_owner": fire_owner}
+                if ladder_rung:
+                    # A re-run of an occurrence that already counted at its first failed fire:
+                    # the interruption must not spend another repeat slot (#160910).
+                    mark_kwargs["ladder_rung"] = True
+                if mark_job_run(job_id, False, reason, **mark_kwargs):
                     marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
@@ -2816,14 +2832,22 @@ def run_one_job(
         _stamped = job.get("manual_run_prompt")
         if _stamped and job.get("manual_run_at"):
             extra_prompt = str(_stamped)
+    # Late import: the failure path above imports it too; this one binds it unconditionally
+    # for the registration below.
+    from cron.unreachable_retry import is_retry_run
+
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
     profile_home = _get_hermes_home().resolve()
     _fire_key = _inflight_key(job["id"])
+
     with _running_lock:
+        # The ladder identity is fixed HERE, from the dispatch snapshot (the same predicate the
+        # interrupted branch above and every other terminal write use): shutdown has neither the
+        # snapshot nor a reliable durable way to re-derive it (#160910).
         _running_fire_owners.setdefault(_fire_key, {})[execution_token] = (
-            fire_owner or None, profile_home)
+            fire_owner or None, profile_home, is_retry_run(job))
     try:
         with self_removal_delivery_scope(job["id"]):
             return _run_with_fire_claim_heartbeat(

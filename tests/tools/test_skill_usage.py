@@ -3,6 +3,7 @@
 import json
 import multiprocessing as mp
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -361,6 +362,29 @@ def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
     ok, msg = restore_skill("huggingface-accelerate")
     assert ok, msg
     assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
+
+    # Collision suffix must also key on skill_name, not skill_dir.name.
+    ok, msg = archive_skill("huggingface-accelerate")
+    assert ok, msg
+    d2 = skills_dir / "training" / "accelerate"
+    d2.mkdir(parents=True)
+    (d2 / "SKILL.md").write_text("---\nname: huggingface-accelerate\ndescription: v2\n---\n", encoding="utf-8")
+    ok, msg = archive_skill("huggingface-accelerate")
+    assert ok, msg
+    collision_dirs = [
+        p.name for p in (skills_dir / ".archive").iterdir()
+        if p.name.startswith("huggingface-accelerate-")
+    ]
+    assert len(collision_dirs) == 1
+    shutil.rmtree(skills_dir / ".archive" / "huggingface-accelerate")
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+    assert "v2" in (skills_dir / "huggingface-accelerate" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_activity_count_ignores_booleans_and_clamps_negatives():
+    from tools.skill_usage import activity_count
+    assert activity_count({"use_count": True, "view_count": -5, "patch_count": 2}) == 2
 
 
 def test_forget_removes_record(skills_home):

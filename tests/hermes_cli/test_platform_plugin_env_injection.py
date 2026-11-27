@@ -83,3 +83,22 @@ def test_a_platform_manifest_with_an_empty_requires_env_key_still_loads_with_the
     manager = PluginManager()
     manager.discover_and_load()
     assert {"emptyenv", "otherplat"} <= {key for key, plugin in manager._plugins.items() if not plugin.error}
+
+
+def test_a_platform_manifest_with_non_list_env_fields_still_loads_with_the_others(tmp_path, monkeypatch):
+    """``optional_env: 5`` / ``requires_env: true`` read as no env names where the manifest is parsed: noting a
+    loading platform's env names for /reload must not raise on them and take the rest of the discovery down."""
+    from hermes_cli.plugins import PluginManager
+    home = tmp_path / "home"
+    manifests = (("numenv", "optional_env: 5\n"), ("boolenv", "requires_env: true\noptional_env: true\n"),
+                 ("otherplat", "requires_env: [OTHERPLAT_TOKEN]\n"))
+    for name, env in manifests:
+        plugin = home / "plugins" / name
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text(f"name: {name}\nkind: platform\n{env}", encoding="utf-8")
+        (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [numenv, boolenv, otherplat]\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    manager = PluginManager()
+    manager.discover_and_load()
+    assert {"numenv", "boolenv", "otherplat"} <= {key for key, plugin in manager._plugins.items() if not plugin.error}

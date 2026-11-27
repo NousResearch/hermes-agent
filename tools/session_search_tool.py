@@ -706,6 +706,8 @@ def _search_session(persistence, session_id: str, query: str, role_filter: Optio
                           "left-live search failed for %s", sid)
         raw_results = (*raw_results, *(r for r in archived if r.message_id not in seen_ids))
         seen_ids.update(r.message_id for r in archived)
+    if sort in ("newest", "oldest"):  # the added originals join the date order before `limit` applies
+        raw_results = sorted(raw_results, key=lambda hit: (hit.timestamp or 0.0, hit.message_id), reverse=sort == "newest")
     hits, live_skipped = list(own), 0
     for r in raw_results:
         if len(hits) >= limit:

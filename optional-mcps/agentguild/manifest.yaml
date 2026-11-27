@@ -1,0 +1,40 @@
+manifest_version: 1
+
+name: agentguild
+description: Observe a public agent endpoint before delegation and inspect current trust-operation prices.
+source: https://github.com/AgentTanuki/agent-guild
+
+transport:
+  type: http
+  url: https://agent-guild-5d5r.onrender.com/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - guild_preflight
+    - guild_paid_operations
+
+suggest:
+  keywords:
+    - agent guild
+    - agentguild
+  hosts:
+    - agent-guild-5d5r.onrender.com
+
+post_install: |
+  Start a new Hermes session. Two free tools are preselected; no account,
+  API key, local server, or payment is needed for them.
+
+  guild_preflight(url=...) asks Agent Guild to inspect a public endpoint
+  you choose. The URL is sent to Agent Guild. Do not supply internal URLs
+  or URLs containing credentials. Report observations and unknowns; an
+  unsigned endpoint observation is not proof of identity, authorization,
+  task quality, or safety. This does not intercept other tool calls.
+
+  guild_paid_operations() reads current prices and callable entrypoints
+  for additional paid operations; this lookup itself is free. Calling
+  paid operations is separate. GET /check is not a free lookup.
+
+  Run `hermes mcp configure agentguild` to review the enabled tools.

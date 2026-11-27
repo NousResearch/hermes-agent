@@ -13,17 +13,48 @@ from agent.markdown_tables import is_table_divider, realign_markdown_tables
 _TABLE_WIDTH = 40
 
 # Any fence length (CommonMark): code_fence() wraps a command that contains ``` in a longer run,
-# and a ``` inside it must not close the block.
-_CODE_BLOCK_RE = re.compile(r"(`{3,})[a-zA-Z0-9_+-]*\n?(.*?)\1(?!`)", re.DOTALL)
-_FENCE_SPLIT_RE = re.compile(r"((`{3,}).*?\2(?!`))", re.DOTALL)
+# and a ``` inside it must not close the block. Fences are paired from the backtick runs, not by a
+# backreference regex: ``(`{3,}).*?\1`` retries every width of a run and rescans the rest of the
+# text for each, so it is cubic in a run's width (5k backticks held the event loop for ~10 s).
+_FENCE_RUN_RE = re.compile(r"`{3,}")
+_FENCE_LANG_RE = re.compile(r"[a-zA-Z0-9_+-]*\n?")
+
+
+def _fence_spans(text: str) -> list[tuple[int, int, int]]:
+    """``(start, end, width)`` of every fenced block, in one linear pass over the backtick runs.
+
+    A block opens on a run of 3+ backticks and closes on the last ``width`` backticks of the next
+    run at least that wide, or of its own run when ``width`` is at most half of it; narrower runs
+    in between stay code. ``width`` is the widest that closes, and at least 3 (a last run under 6
+    opens nothing)."""
+    runs = [match.span() for match in _FENCE_RUN_RE.finditer(text)]
+    widest_from = [0] * (len(runs) + 1)  # widest run at or after each index
+    for i in reversed(range(len(runs))):
+        widest_from[i] = max(widest_from[i + 1], runs[i][1] - runs[i][0])
+    spans, i = [], 0
+    while i < len(runs):
+        start, end = runs[i]
+        size = end - start
+        width = max(min(size, widest_from[i + 1]), size // 2)
+        i += 1
+        if width < 3:
+            break
+        if width <= size // 2:
+            spans.append((start, end, width))
+            continue
+        while runs[i][1] - runs[i][0] < width:  # one exists: width <= widest_from[i]
+            i += 1
+        spans.append((start, runs[i][1], width))
+        i += 1
+    return spans
 
 
 def _split_fenced(source: str) -> list[str]:
-    """``[prose, fenced, prose, ...]``: the fence pattern has a nested backreference group."""
+    """``[prose, fenced, prose, ...]``."""
     parts, last = [], 0
-    for match in _FENCE_SPLIT_RE.finditer(source):
-        parts += [source[last:match.start()], match.group(1)]
-        last = match.end()
+    for start, end, _ in _fence_spans(source):
+        parts += [source[last:start], source[start:end]]
+        last = end
     return parts + [source[last:]]
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _INLINE_PATTERNS = [
@@ -86,13 +117,14 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     code_blocks: list[tuple[int, int]] = []
     # One pass over the original text: code a longer fence kept may hold ``` runs, never re-parsed.
     unwrapped, last = "", 0
-    for match in _CODE_BLOCK_RE.finditer(text):
-        inner = match.group(2).rstrip("\n")
-        unwrapped += text[last : match.start()]
+    for start, end, width in _fence_spans(text):
+        body = text[start + width : end - width]
+        inner = body[_FENCE_LANG_RE.match(body).end() :].rstrip("\n")
+        unwrapped += text[last:start]
         styles.append((len(unwrapped), len(inner), "MONOSPACE"))
         code_blocks.append((len(unwrapped), len(unwrapped) + len(inner)))
         unwrapped += inner
-        last = match.end()
+        last = end
     text = unwrapped + text[last:]
     new_text, last_end = "", 0
     heading_removals: list[tuple[int, int]] = []

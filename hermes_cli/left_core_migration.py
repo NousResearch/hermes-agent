@@ -1278,8 +1278,9 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         placed_by_default = _marked(config, _DEFAULT_INSTALLED_KEY, feature)
         if placed_by_default and _predates_split(home, feature):
             _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
-        if _predates_split(home, feature) and _installed_for_good(home, feature.plugin) and _plugins_listed(
-                home, (feature.plugin, *legacy_plugin_keys(feature.plugin)))[1]:
+        kept_off = _predates_split(home, feature) and _installed_for_good(home, feature.plugin) and _plugins_listed(
+            home, (feature.plugin, *legacy_plugin_keys(feature.plugin)))[1]
+        if kept_off:
             # Core ran the feature despite that entry; the plugin the home has honours it, so the upgrade turns
             # it off. The disable stays; this pass marks the row installed, so the home is told once.
             say(_noticed(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
@@ -1297,6 +1298,11 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
                 + ("." if present else f" and run `{_install_command(feature.plugin, home)}`."))
             continue
         if present or placed_by_default:
+            # Whoever placed the plugin, what changed for this profile (host isolation, a re-login) is said on
+            # this, the pass that marks the row installed; one the disabled line above carried is not repeated.
+            if present and not kept_off and (extra := feature.notice(home, process_env=process_env)):
+                say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
+                    f"profile has. {extra}")
             continue
         if backoff and _failed_recently(home, feature.plugin):
             logger.info("%s plugin install failed recently for %s; retrying later or on `hermes update`",

@@ -549,6 +549,38 @@ def test_optional_source_upstream_stub_fetches_from_external_repo(tmp_path, monk
     assert bundle.metadata["upstream_repo"] == "acme/design-skill"
 
 
+def test_optional_source_upstream_stub_with_repo_root_skill(tmp_path, monkeypatch):
+    """``path: .`` points a stub at a repo whose SKILL.md sits at the root (#11036): the
+    GitHub fetch resolves to the repo root, and the install is named after the catalog
+    entry, not the upstream repo."""
+    from tools.skills_hub_github import _split_repo_id
+    from tools.skills_hub_official import OptionalSkillSource
+
+    root = tmp_path / "optional-skills"
+    skill = root / "creative" / "root-demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(UPSTREAM_STUB_MD.replace(
+        "repo: acme/design-skill\n      path: .hermes/skills/design", "repo: acme/root-skill-repo\n      path: ."))
+
+    source = OptionalSkillSource()
+    source._optional_dir = root
+    fetched_ids = []
+
+    class _FakeGitHub:
+        def fetch(self, identifier):
+            fetched_ids.append(identifier)
+            repo, _ = _split_repo_id(identifier)
+            return SkillBundle(name=repo.split("/")[-1], files={"SKILL.md": "---\nname: real\n---\n"},
+                               source="github", identifier=identifier, trust_level="community", metadata={})
+
+    monkeypatch.setattr(source, "_get_github", lambda: _FakeGitHub())
+
+    bundle = source.fetch("official/creative/root-demo")
+
+    assert [_split_repo_id(i) for i in fetched_ids] == [("acme/root-skill-repo", "")]
+    assert bundle is not None and bundle.name == skill.name
+
+
 def test_optional_source_upstream_pointer_rejects_malformed(tmp_path):
     from tools.skills_hub_official import OptionalSkillSource
 

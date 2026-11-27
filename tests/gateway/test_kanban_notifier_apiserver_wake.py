@@ -27,6 +27,14 @@ class SoftFailAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.attempts += 1
+    async def _send_with_retry(self, chat_id=None, content=None, metadata=None, **kwargs):
+        # Minimal base-class stand-in: single send, SendResult contract.
+        from gateway.platforms.base import SendResult
+        try:
+            await self.send(chat_id, content, metadata=metadata)
+            return SendResult(success=True)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
         return SendResult(success=False, error="soft failure")
 
 

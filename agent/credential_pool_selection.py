@@ -47,14 +47,16 @@ class CredentialPoolSelectionMixin:
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
-        endpoint_url: Optional[str] = None,
+        endpoint_url: Optional[str] = None, exclude_ids: frozenset = frozenset(),
     ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
         ``count=False`` skips the ``request_count`` bump for selections that are
         not going to serve a request (a forced-refresh target lookup).
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
+        available, pending_refresh = self._available_entries(
+            clear_expired=True, refresh=refresh, model=model, exclude_ids=exclude_ids,
+        )
         available = _serving(available, endpoint_url)
         if not available:
             self._current_id = None

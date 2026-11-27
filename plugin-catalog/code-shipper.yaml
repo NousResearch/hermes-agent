@@ -1,0 +1,17 @@
+name: code-shipper
+repo: https://github.com/Sahil-SS9/code-shipper
+sha: 09eb73497c8e8d36c2206b675cb175f32a01e5f7
+subdir: plugin/code-shipper
+description: "/ship reviews a GitHub pull request, can fix it within a budget, and gets it ready for a person to merge. It never approves and never merges. Disclosure: every /ship runs the separately installed code-shipper CLI as a child process (up to 30 min, allowlisted environment with no provider keys or tokens, no stdin); the CLI runs Hermes one-shot chats for the review, calls the GitHub API with its own token file, pushes fix commits and a label to the named PR, runs the fixer in a rootless container with no GitHub token, and keeps state under ~/.local/state/code-shipper. No background work, telemetry or self-updating."
+maintainer: Sahil-SS9
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Sahil-SS9/code-shipper
+version: "0.1.2"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

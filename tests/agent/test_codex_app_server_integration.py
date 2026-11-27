@@ -198,6 +198,17 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
 
+        assert getattr(agent, "_last_turn_usage", None) == {
+            "prompt_tokens": 80,
+            "completion_tokens": 25,
+            "total_tokens": 130,
+            "input_tokens": 60,
+            "output_tokens": 25,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 5,
+        }
+
     def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

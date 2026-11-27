@@ -525,6 +525,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
             print(f"  max-retries: {int(cfg_val)} (config kanban.failure_limit)")
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
+    if task.idempotency_key:
+        field("key", task.idempotency_key)
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics up top so CLI users see distress signals before scrolling.

@@ -86,6 +86,38 @@ def test_kanban_show_json_includes_runtime_limit(kanban_home):
     assert uncapped["task"]["max_runtime_seconds"] is None
 
 
+def test_kanban_list_json_includes_idempotency_key(kanban_home):
+    """The key is the duplicate defence for card creation, so ``list --json``
+    must expose it: a reader that cannot see the field reports absence as fact
+    and a per-unit key convention becomes unverifiable (#134874)."""
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="keyed task", idempotency_key="unit-42")
+        kb.create_task(conn, title="unkeyed task")
+
+    rows = {
+        row["title"]: row.get("idempotency_key")
+        for row in json.loads(kc.run_slash("list --json"))
+    }
+    assert rows["keyed task"] == "unit-42"
+    assert rows["unkeyed task"] is None
+
+
+def test_kanban_show_surfaces_idempotency_key(kanban_home):
+    import re
+
+    with kbc.connect() as conn:
+        keyed_id = kb.create_task(conn, title="keyed card", idempotency_key="unit-42")
+        unkeyed_id = kb.create_task(conn, title="unkeyed card")
+
+    keyed = json.loads(kc.run_slash(f"show {keyed_id} --json"))
+    assert keyed["task"]["idempotency_key"] == "unit-42"
+    assert json.loads(kc.run_slash(f"show {unkeyed_id} --json"))["task"]["idempotency_key"] is None
+
+    # Text output stays byte-identical for unkeyed cards; keyed cards gain a line.
+    assert re.search(r"^  key:\s+unit-42$", kc.run_slash(f"show {keyed_id}"), re.M)
+    assert not re.search(r"^  key:", kc.run_slash(f"show {unkeyed_id}"), re.M)
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

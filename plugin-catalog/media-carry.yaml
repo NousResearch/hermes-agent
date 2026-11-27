@@ -1,0 +1,23 @@
+name: media-carry
+title: Hermes Media Carry
+repo: https://github.com/noblebrown-69/hermes-media-carry
+sha: c41767cd93cf943d7010e3134bd46b4ac80dd6be
+description: "The last line holds the picture. If a tool printed a MEDIA:<path> line this turn (for example an image render) and the final reply forgot it, Media Carry appends that exact MEDIA: line as the reply's last line so Desktop, the phone UI and the API show the file. It never invents paths: only files a tool reported this turn that exist on disk and are fresh. Reader tools (skills, search, web, memory and similar prefixes) are ignored so quoted examples are not attached. Includes a dashboard tab with carry counts, recent events and a simulated forgotten-MEDIA test. Disclosure — hooks only read tool results and the final reply text and write nothing to disk; a path is used only when it appeared in a tool result this turn, the file exists, and its modification time is within the configured max age (default 6 hours); the dashboard overview is read-only and the test endpoint creates a file in a TemporaryDirectory that is always removed before the response returns; no model calls, no network, no telemetry, no python_dependencies; platforms are linux and macos because MEDIA paths are absolute POSIX paths."
+maintainer: noblebrown-69
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+image: "https://raw.githubusercontent.com/noblebrown-69/hermes-media-carry/c41767cd93cf943d7010e3134bd46b4ac80dd6be/assets/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/noblebrown-69/hermes-media-carry/c41767cd93cf943d7010e3134bd46b4ac80dd6be/assets/screenshot-dashboard.png"
+docs_url: "https://github.com/noblebrown-69/hermes-media-carry/blob/c41767cd93cf943d7010e3134bd46b4ac80dd6be/README.md"
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

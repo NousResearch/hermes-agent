@@ -12,7 +12,12 @@ def _store_scope(home):
     return profile_scope(home=Path(home))
 
 
-def read_catalog_rows(home):
+def read_catalog_rows(home, include_hidden=False):
+    """Every ACP row of this profile's store, keyed by id.
+
+    ``include_hidden`` lifts the listing's own exclusion (``SessionQuery.include_hidden``). Hidden
+    rows still carry ``hidden`` as a cell, so a caller can tell them apart from the rest.
+    """
     scope = _store_scope(home)
     if not store_exists(scope):
         return {}
@@ -22,8 +27,12 @@ def read_catalog_rows(home):
     # labels match both in SQL, before the LIMIT.
     with open_persistence_reader(scope.profile_dir) as persistence:
         expanded = SurfaceLabelReader(persistence)._expand(["acp"])
-        query = (SessionQuery(sources=("acp",)) if expanded is None
-                 else SessionQuery(sources=tuple(expanded[0]), local_created_sources=tuple(expanded[1])))
+        if expanded is None:
+            query = SessionQuery(sources=("acp",), include_hidden=include_hidden)
+        else:
+            query = SessionQuery(sources=tuple(expanded[0]),
+                                 local_created_sources=tuple(expanded[1]),
+                                 include_hidden=include_hidden)
         entries = persistence.sessions.list_sessions(query, SessionWindow(limit=1000))
         rows = [entry.as_list_row() for entry in entries]
         return {str(row["id"]): dict(row) for row in rows}
@@ -80,3 +89,41 @@ def catalog_sessions(home, cwd=None):
         if held is None or _updated_at_sort_key(info.get("updated_at")) > _updated_at_sort_key(held.get("updated_at")):
             results[sid] = info
     return sorted(results.values(), key=lambda row: _updated_at_sort_key(row.get("updated_at")), reverse=True)
+
+
+def catalog_with_hidden(home, cwd=None):
+    """Every ACP session, hidden ones included, each row carrying its ``hidden`` flag.
+
+    ``catalog_sessions`` is the projection ``session/list`` shows and keeps that listing's rule: a
+    hidden (or archived) conversation is not in it. A side panel's tabs are the inverse projection —
+    a tab is an *unhidden* session — so it needs both halves and the flag: the same rows out of the
+    same store, read with ``include_hidden`` on the query.
+
+    A row carries what a tab renders (``message_count``, epoch ``updated_at``) rather than
+    ``session/list``'s ``history_len`` and formatted stamp, and the same logical id
+    ``catalog_sessions`` reports: the editor loads a tab by that id, and compression advanced the
+    physical transcript.
+    """
+    normalized = _normalize_cwd_for_compare(cwd) if cwd else None
+    owners = read_local_owners(home)
+    results = {}
+    for sid, row in read_catalog_rows(home, include_hidden=True).items():
+        sid = row.get("_lineage_root_id") or sid
+        sid = owners.get(sid, sid)
+        count = int(row.get("message_count") or 0)
+        session_cwd = row.get("cwd") or _parse_model_config(row.get("model_config")).get("cwd", ".")
+        if count <= 0 or (normalized and _normalize_cwd_for_compare(session_cwd) != normalized):
+            continue
+        info = {
+            "session_id": sid,
+            "cwd": session_cwd,
+            "title": row.get("title") or "",
+            "hidden": bool(int(row.get("hidden") or 0)),
+            "message_count": count,
+            "updated_at": float(row.get("last_active") or row.get("started_at") or 0.0),
+        }
+        # One row per logical conversation: its most recently active segment represents it.
+        held = results.get(sid)
+        if held is None or _updated_at_sort_key(info["updated_at"]) > _updated_at_sort_key(held["updated_at"]):
+            results[sid] = info
+    return sorted(results.values(), key=lambda item: _updated_at_sort_key(item["updated_at"]), reverse=True)

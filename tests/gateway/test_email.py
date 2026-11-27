@@ -1389,6 +1389,60 @@ class TestSenderAuthentication(unittest.TestCase):
             self.assertTrue(ok, (ar, reason))
 
 
+    def test_ar_rfc2047_encoded_authenticates(self):
+        """Some MTAs (e.g. Post.lu) deliver Authentication-Results as RFC 2047
+        encoded-words; the header must be decoded before parsing, else every
+        legitimate sender is silently dropped (#133811)."""
+        # Whole-header QP encoding, encoded-words folded across lines, and each
+        # verdict method all authenticate.
+        for ar in (
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B?=\r\n =?utf-8?Q?_dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_spf=3Dpass_smtp=2Emailfrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dkim=3Dpass_header=2Ed=3Dexample=2Ecom?=",
+        ):
+            with self.subTest(ar=ar):
+                ok, reason = self._verify("admin@example.com", [ar])
+                self.assertTrue(ok, (ar, reason))
+        # Decoding never relaxes the fail-closed checks: a forged authserv-id or a
+        # misaligned identity hidden inside an encoded-word stays rejected.
+        for ar in (
+            "=?utf-8?Q?edge=2Ereceiver=2Etest=3B_dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dmarc=3Dpass_header=2Efrom=3Devil=2Etest?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_spf=3Dpass_smtp=2Emailfrom=3Devil=2Etest?=",
+            "=?utf-8?Q?mx=2Eourserver=2Ecom=3B_dkim=3Dpass_header=2Ed=3Devil=2Etest?=",
+        ):
+            with self.subTest(ar=ar):
+                ok, reason = self._verify("admin@example.com", [ar])
+                self.assertFalse(ok, (ar, reason))
+
+    def test_ar_rfc2047_embedded_in_plaintext_stays_opaque(self):
+        """Only a header that is entirely encoded-words is decoded (#133811). Receiving
+        MTAs copy sender-controlled text (smtp.mailfrom, HELO, CFWS comments) into the
+        trusted header; an encoded-word embedded in that plaintext must stay opaque, or
+        the decoded text could close the comment and forge a `dmarc=pass` clause."""
+        # A plaintext authserv-id followed by encoded verdicts is not a whole-header
+        # encoding: no real MTA sends this shape, and trusting it would let any sender
+        # hide a verdict in an encoded-word, so it fails closed like an unparseable header.
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "mx.ourserver.com; =?utf-8?Q?dmarc=3Dpass_header=2Efrom=3Dexample=2Ecom?="
+            ],
+        )
+        self.assertFalse(ok, reason)
+        # Embedded-comment injection: the sender controls the comment copied after a
+        # spf=fail verdict; decoding it would splice "( x); dmarc=pass header.from=..."
+        # into the header and authenticate an allowlisted domain it never passed.
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "mx.ourserver.com; spf=fail smtp.mailfrom=x@evil.test "
+                "(=?utf-8?Q?x=29=3B_dmarc=3Dpass_header.from=3Dexample.com_=28?=)"
+            ],
+        )
+        self.assertFalse(ok, reason)
+
     def test_dkim_pass_aligned_authenticates(self):
         ok, reason = self._verify(
             "admin@example.com",

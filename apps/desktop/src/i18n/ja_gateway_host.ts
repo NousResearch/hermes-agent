@@ -4,6 +4,8 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const jaGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'ゲートウェイ設定は利用できません',
   unavailableDesc: 'デスクトップ IPC ブリッジはゲートウェイ設定を公開していません。',
+  clientLabel: 'デスクトップクライアント名',
+  clientLabelHelp: '任意。対応するゲートウェイはこの名前をターンごとに保存し、モデルと共有します。空欄にすると共有を停止します。半角英数字、スペース、ハイフン、アンダースコアが使えます。',
   webappHostTitle: 'Hermes ホスト',
   webappHostDesc:
     'Webapp は常にそれを配信する Hermes ホスト上で動作します。下の保存済み接続はこのマシンの一覧で、Hermes Desktop アプリと共有されます。他のゲートウェイにはこのホスト経由で接続します。',

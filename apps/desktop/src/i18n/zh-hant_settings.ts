@@ -904,6 +904,8 @@ export const zhHantSettings = {
       loading: '正在載入閘道設定...',
       unavailableTitle: '閘道設定不可用',
       unavailableDesc: '桌面 IPC 橋接器未公開閘道設定。',
+      clientLabel: '桌面用戶端名稱',
+      clientLabelHelp: '選填。支援此功能的閘道會在每輪對話中儲存此名稱並與模型分享。留空即可停止分享。限英文字母、數字、空格、連字號及底線。',
       webappHostTitle: 'Hermes 主機',
       webappHostDesc:
         'Webapp 一律在提供它的 Hermes 主機上執行。下方已儲存的連線是這台機器的清單，與 Hermes Desktop 應用程式共用；其他閘道透過此主機連線。',

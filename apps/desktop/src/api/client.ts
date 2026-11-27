@@ -11,6 +11,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 import { desktopClientIdentity } from '@/lib/client-identity'
+import { readDesktopClientLabel } from '@/lib/desktop-client-label'
 
 import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } from './dial-readiness'
@@ -461,6 +462,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // turn's multi-question clarify as ONE request; undeclared, one card per question. An older
     // owner refuses the unknown key, so it rides only where `client.capabilities` advertised it.
     if (method === 'prompt.submit' && this.backendClarifyBatch) { params = { ...params, clarify_batch: true } }
+
+    if ((method === 'prompt.submit' || method === 'prompt.replace_queued') && this.backendDesktopClientLabel) {
+      const label = readDesktopClientLabel()
+      if (label) { params = { ...params, desktop_client_label: label } }
+    }
 
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)

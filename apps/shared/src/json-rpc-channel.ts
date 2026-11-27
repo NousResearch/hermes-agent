@@ -229,6 +229,7 @@ export class JsonRpcRequestChannel {
   private backendCountsDeclines = false
   /** The bound generation's canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
   private backendClarifyBatch = false
+  private backendDesktopClientLabel = false
   /** The generation the client label was announced on: once per connection, not per `gateway.ready`. */
   private announcedTo: JsonRpcTransport | null = null
   /** The bound generation's backend keeps `client.activity` reports (`client.capabilities`). */
@@ -272,6 +273,10 @@ export class JsonRpcRequestChannel {
     return this.backendClientActivity
   }
 
+  get desktopClientLabel(): boolean {
+    return this.backendDesktopClientLabel
+  }
+
   get connected(): boolean {
     return this.transport !== null
   }
@@ -283,6 +288,7 @@ export class JsonRpcRequestChannel {
     this.lastLivenessAt = Date.now()
     this.backendCountsDeclines = false
     this.backendClarifyBatch = false
+    this.backendDesktopClientLabel = false
     this.backendClientActivity = false
 
     // First on the socket, before the owner's own requests: the backend reads frames in order, and its
@@ -588,6 +594,7 @@ export class JsonRpcRequestChannel {
         if (this.transport === transport) {
           this.backendCountsDeclines = result?.declines_not_shown === true
           this.backendClarifyBatch = result?.canonical_clarify_batch === true
+          this.backendDesktopClientLabel = result?.desktop_client_label === true
           this.backendClientActivity = result?.client_activity === true
         }
       })

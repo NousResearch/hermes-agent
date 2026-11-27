@@ -4,6 +4,8 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const zhGatewayHost: GatewayHostTranslations = {
   unavailableTitle: '网关设置不可用',
   unavailableDesc: '桌面 IPC 桥未暴露网关设置。',
+  clientLabel: '桌面客户端名称',
+  clientLabelHelp: '可选。支持此功能的网关会在每轮对话中保存此名称并与模型共享。留空可停止共享。仅限英文字母、数字、空格、连字符和下划线。',
   webappHostTitle: 'Hermes 主机',
   webappHostDesc:
     'Webapp 始终运行在提供它的 Hermes 主机上。下方已保存的连接是这台机器的列表，与 Hermes Desktop 应用共享；其他网关通过此主机访问。',

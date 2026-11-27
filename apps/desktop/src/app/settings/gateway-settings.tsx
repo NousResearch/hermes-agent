@@ -17,6 +17,7 @@ import type {
 } from '@/global'
 import { useI18n } from '@/i18n'
 import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
+import { LABEL_MAX_LENGTH, readDesktopClientLabel, saveDesktopClientLabel, validDesktopClientLabel } from '@/lib/desktop-client-label'
 import { ExternalLink } from '@/lib/external-link'
 import { hostHas } from '@/lib/host-capabilities'
 import {
@@ -174,6 +175,28 @@ interface GatewaySettingsProps {
   subpage?: string
 }
 
+function DesktopClientLabelSetting() {
+  const { t } = useI18n()
+  const g = t.settings.gateway
+  const [saved, setSaved] = useState(readDesktopClientLabel)
+  const [draft, setDraft] = useState(saved)
+  const label = draft.trim()
+  return <ListRow title={g.clientLabel} description={g.clientLabelHelp} action={
+    <form className="flex items-center gap-2" onSubmit={event => {
+      event.preventDefault()
+      if (label && !validDesktopClientLabel(label)) { return }
+      try {
+        saveDesktopClientLabel(label)
+        setSaved(label)
+        setDraft(label)
+      } catch (error) { notifyError(error, g.saveFailed) }
+    }}>
+      <Input aria-label={g.clientLabel} maxLength={LABEL_MAX_LENGTH} value={draft} onChange={event => setDraft(event.target.value)} />
+      <Button type="submit" disabled={label === saved || (!!label && !validDesktopClientLabel(label))}>{t.common.save}</Button>
+    </form>
+  } />
+}
+
 export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
   useSettingDeepLink('gateway', page => subpage === undefined || page === subpage)
 
@@ -186,6 +209,7 @@ export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsPr
   if (!embedded && subpage === 'devices') {
     return (
       <SettingsContent>
+        <DesktopClientLabelSetting />
         <ConnectionsRegistrySection />
       </SettingsContent>
     )
@@ -1477,6 +1501,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           mounting registry editors in connection-only or recovery views. */}
       {embedded || standalone ? null : (
         <>
+          <DesktopClientLabelSetting />
           <ConnectionsRegistrySection />
           {/* Per-connection driver for the transactional managed SSH update
               engine (#95942). Renders only when SSH sources are registered and

@@ -248,6 +248,7 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     unattended: bool = False
     surface: str | None = None
     voice_context: str | None = None
+    desktop_client_label: str | None = None
     interrupted: bool = False
     voice_turn: bool = False
     # Desktop composer presentation, committed per admission (``display_v1``): a hidden widget

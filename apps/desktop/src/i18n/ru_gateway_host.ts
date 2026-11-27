@@ -4,6 +4,8 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const ruGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Настройки шлюза недоступны',
   unavailableDesc: 'IPC-мост приложения не предоставляет настройки шлюза.',
+  clientLabel: 'Название клиента Desktop',
+  clientLabelHelp: 'Необязательно. Совместимые шлюзы сохраняют это имя с каждым сообщением и передают его модели. Оставьте поле пустым, чтобы отключить передачу. Допустимы латинские буквы, цифры, пробел, дефис и подчёркивание.',
   webappHostTitle: 'Хост Hermes',
   webappHostDesc:
     'Webapp всегда работает на хосте Hermes, который её обслуживает. Сохранённые подключения ниже — список этого компьютера, общий с приложением Hermes Desktop; другие шлюзы доступны через этот хост.',

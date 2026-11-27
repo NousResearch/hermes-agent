@@ -5,6 +5,8 @@ export const esGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Ajustes del gateway no disponibles',
   unavailableDesc:
     'Los ajustes de conexión solo se pueden cambiar desde la app Hermes Desktop en el equipo que la ejecuta.',
+  clientLabel: 'Nombre del cliente Desktop',
+  clientLabelHelp: 'Opcional. Los gateways compatibles guardan este nombre con cada turno y lo comparten con el modelo. Déjalo vacío para dejar de compartirlo. Usa A–Z, 0–9, espacios, guiones o guiones bajos.',
   webappHostTitle: 'Host de Hermes',
   webappHostDesc:
     'La Webapp siempre se ejecuta en el host de Hermes que la sirve. Las conexiones guardadas de abajo son la lista de esta máquina, compartida con la app Hermes Desktop; los demás gateways se alcanzan a través de este host.',

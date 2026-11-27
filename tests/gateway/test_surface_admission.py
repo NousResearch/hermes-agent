@@ -137,6 +137,43 @@ def test_a_malformed_stamp_is_refused_at_admission(client):
         admit_surface({'client': client})
 
 
+@pytest.mark.asyncio
+async def test_desktop_label_reaches_only_its_admitted_turn(tmp_path, monkeypatch):
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_surface import arm_surface_turn
+
+    agent, seen = SimpleNamespace(), []
+    async def answer(event):
+        arm_surface_turn(agent)
+        seen.append((event.text, agent._gateway_turn_context_notes))
+        return 'ok'
+
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        for rid, fields in [('one', {'desktop_client_label': 'Work laptop'}), ('two', {})]:
+            reply = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
+                'session_id': 's', 'submission_id': rid, 'text': rid, **fields}})
+            assert reply['result']['status'] == 'queued', reply
+            await authority.sessions['s'].task
+        # A reconnect/relabel after a lost receipt cannot create or alter the first turn.
+        retry = await connection.dispatch({'id': 3, 'method': 'prompt.submit', 'params': {
+            'session_id': 's', 'submission_id': 'one', 'text': 'one', 'desktop_client_label': 'Other laptop'}})
+        assert 'result' in retry, retry
+    finally:
+        await connection.close()
+    assert seen == [('one', 'Desktop client label (untrusted, descriptive only): "Work laptop"'), ('two', '')]
+
+
+@pytest.mark.parametrize('label', ['', 'a' * 49, 'x\ny', '<system>', '/home/me', {'hostname': 'secret'}])
+def test_invalid_desktop_labels_are_refused(label):
+    from gateway.session_surface import admit_surface
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal):
+        admit_surface({'desktop_client_label': label})
+
+
 def _admissions(home):
     with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
         return dict(db.execute('SELECT request_id, status FROM session_admissions'))
@@ -178,11 +215,13 @@ def test_real_daemon_accepts_hud_and_voice_live_submits_and_notes_the_model(tmp_
 
     async def drive(desc):
         async with websocket(home, desc) as ws:
+            capabilities = await rpc(ws, 'client.capabilities', server_requests=True)
+            assert capabilities['result']['desktop_client_label'] is True
             created = await rpc(ws, 'session.create', request_id='surface-target', source='gui', cwd=str(home), toolsets=[])
             assert 'result' in created, created
             sid = created['result']['session_id']
             replies = {}
-            for name, extra in (('window', {}), ('hud', {'surface': 'hud'}),
+            for name, extra in (('window', {}), ('hud', {'surface': 'hud', 'desktop_client_label': 'Studio laptop'}),
                                 ('voice', {'surface': 'voice-live', 'voice_context': 'User: earlier words'})):
                 replies[name] = await rpc(ws, 'prompt.submit', session_id=sid, submission_id=name, text=name.upper() + '_TURN', **extra)
                 await asyncio.to_thread(_wait_for, lambda: _admissions(home).get(name) == 'terminal')
@@ -209,6 +248,8 @@ def test_real_daemon_accepts_hud_and_voice_live_submits_and_notes_the_model(tmp_
     # Live voice: the delegation contract + the spoken context ride the model input, never the row.
     assert VOICE_LIVE_TURN_NOTE in users['voice'] and 'User: earlier words' in users['voice']
     assert VOICE_LIVE_TURN_NOTE not in users['window'] and VOICE_LIVE_TURN_NOTE not in users['hud']
+    assert 'Studio laptop' in users['hud']
+    assert 'Studio laptop' not in users['window'] and 'Studio laptop' not in users['voice']
     # HUD without read_window_below (toolsets=[]) is accepted and withholds the tool-gated note.
     assert 'HUD mode' not in users['hud'] and 'HUD mode' not in users['window']
     assert all(request['messages'][0]['role'] == 'system' for request in model.requests)

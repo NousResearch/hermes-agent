@@ -5,6 +5,8 @@
 export interface GatewayHostTranslations {
   unavailableTitle: string
   unavailableDesc: string
+  clientLabel: string
+  clientLabelHelp: string
   webappHostTitle: string
   webappHostDesc: string
   /** Finishing a saved gateway's sign-in from the address a browser on another machine landed on. */

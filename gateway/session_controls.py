@@ -899,7 +899,7 @@ class AuthorityConnection:
         if ref.session_id not in self.subscriptions:
             raise AuthorityRefusal('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
-                                   'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
+                                   'surface', 'voice_context', 'desktop_client_label', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
                                    'turn_author', 'api_text', 'model_override', 'clarify_batch'}
         if forbidden:
             raise AuthorityRefusal('invalid_params')

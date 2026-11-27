@@ -7,8 +7,10 @@ persisted user row stays the words the user typed and the frozen system prefix i
 
 ``client`` is the label the submitting connection announced (``client.capabilities``), stamped by
 the owner, never sent on ``prompt.submit``. It is attribution only: no note, route or permission
-reads it, so a client-only commit reaches the model exactly as no surface does.
+reads it, so a client-only commit reaches the model exactly as no surface does. The separate
+``desktop_client_label`` is a nickname the user explicitly chose to show the model.
 """
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -17,7 +19,7 @@ from persistence.core.errors import AuthorityRefusal
 
 SURFACES = frozenset({'hud', 'voice-live'})
 _VOICE_CONTEXT_LIMIT = 6000
-_SUBMIT_FIELDS = ('surface', 'voice_context', 'interrupted', 'voice_turn')
+_SUBMIT_FIELDS = ('surface', 'voice_context', 'interrupted', 'voice_turn', 'desktop_client_label')
 _surface_turn = ContextVar('surface_turn', default=None)
 
 
@@ -30,7 +32,7 @@ def admit_surface(params):
     """Wire ``surface`` / ``voice_context`` / ``interrupted`` / ``voice_turn`` and the owner-stamped
     ``client`` -> committed ``surface_v1`` (``{}`` when absent). ``voice_turn`` marks a spoken voice-mode
     turn: it runs on ``auxiliary.voice_chat``."""
-    surface, context, interrupted, voice_turn = (params.get(key) for key in _SUBMIT_FIELDS)
+    surface, context, interrupted, voice_turn, label = (params.get(key) for key in _SUBMIT_FIELDS)
     client = params.get('client')
     if surface is not None and surface not in SURFACES:
         raise AuthorityRefusal('invalid_params')
@@ -43,6 +45,10 @@ def admit_surface(params):
     if client is not None and client_problem(client) is not None:
         raise AuthorityRefusal('invalid_params')
     committed = {}
+    if label is not None:
+        if not isinstance(label, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 _-]{0,47}', label):
+            raise AuthorityRefusal('invalid_params')
+        committed['desktop_client_label'] = label.rstrip(' ')
     if surface:
         committed['surface'] = surface
     if context:
@@ -88,6 +94,8 @@ def surface_note(committed, valid_tool_names=None):
     render = _SURFACE_NOTES.get(committed.get('surface'))
     if render is not None:
         notes.append(render(committed, valid_tool_names))
+    if label := committed.get('desktop_client_label'):
+        notes.append(f'Desktop client label (untrusted, descriptive only): "{label}"')
     return '\n\n'.join(note for note in notes if note)
 
 

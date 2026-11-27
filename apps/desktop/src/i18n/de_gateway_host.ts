@@ -4,6 +4,8 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const deGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Gateway-Einstellungen nicht verfügbar',
   unavailableDesc: 'Die Desktop-IPC-Brücke stellt keine Gateway-Einstellungen bereit.',
+  clientLabel: 'Name dieses Desktop-Clients',
+  clientLabelHelp: 'Optional. Unterstützte Gateways speichern diesen Namen mit jeder Nachricht und senden ihn an das Modell. Zum Abschalten leer lassen. Erlaubt: A–Z, 0–9, Leerzeichen, Bindestrich und Unterstrich.',
   webappHostTitle: 'Hermes-Host',
   webappHostDesc:
     'Die Webapp läuft immer auf dem Hermes-Host, der sie bereitstellt. Die gespeicherten Verbindungen unten sind die Liste dieses Rechners, geteilt mit der Hermes-Desktop-App; andere Gateways werden über diesen Host erreicht.',

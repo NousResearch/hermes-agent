@@ -4,6 +4,8 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const frGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Paramètres du gateway indisponibles',
   unavailableDesc: "Le pont IPC du desktop n'expose pas les paramètres du gateway.",
+  clientLabel: 'Nom du client Desktop',
+  clientLabelHelp: 'Facultatif. Les passerelles compatibles enregistrent ce nom à chaque tour et le transmettent au modèle. Laissez le champ vide pour ne plus le partager. Caractères autorisés : A–Z, 0–9, espaces, tirets et tirets bas.',
   webappHostTitle: 'Hôte Hermes',
   webappHostDesc:
     'La Webapp s’exécute toujours sur l’hôte Hermes qui la sert. Les connexions enregistrées ci-dessous sont la liste de cette machine, partagée avec l’app Hermes Desktop ; les autres passerelles sont atteintes via cet hôte.',

@@ -1556,8 +1556,9 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
             if _install_one(home, feature, install=_install_into(home, consent=True), say=report, process_env=True,
                             wait=startup_lock_wait(gateway_start=gateway_start)):
                 installed.append(feature.plugin)
-                if not gateway_start and feature.platform and _gateway_serves(home) \
-                        and not _running_gateway_serves(home, feature.platform):
+                # A plugin the install kept off (plugins.disabled) is served by no restart: its notice said so.
+                if not gateway_start and feature.platform and not _plugin_lists(home, feature.plugin)[1] \
+                        and _gateway_serves(home) and not _running_gateway_serves(home, feature.platform):
                     report(f"Restart the gateway (`hermes gateway restart`) so it serves {feature.label}.")
         return installed
     except Exception as exc:  # never take agent/gateway start down

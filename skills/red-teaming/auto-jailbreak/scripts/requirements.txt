@@ -1,0 +1,4 @@
+# Moteur de red-teaming PyRIT — dependances.
+# La lib Microsoft PyRIT tire le reste (transformers, datasets, sqlalchemy...).
+pyrit==1.0.1
+litellm>=1.95.0

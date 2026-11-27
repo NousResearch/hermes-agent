@@ -75,6 +75,11 @@ def _merge_project_facts_commands(root: Path, recipe) -> None:
     existing = {c.strip() for c in (*recipe.bootstrap, *recipe.build, *recipe.test) if c}
     for command in facts_commands:
         command = command.strip()
+        # Runtime recipe detection inspects real Python test files. Do not let
+        # the cheap prompt-time pytest-config hint override that verdict or add
+        # a second runner to a pure-unittest project.
+        if recipe.kind in {"python", "fastapi", "flask"} and command == "pytest":
+            continue
         if command and command not in existing:
             recipe.test.append(command)
             existing.add(command)

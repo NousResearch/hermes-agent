@@ -550,6 +550,12 @@ def _manifest_kind(data: Mapping, key: str, plugin_dir: Path) -> str:
     return kind
 
 
+def _env_name_list(value: Any) -> list:
+    """A manifest's ``requires_env`` / ``optional_env`` as a list: an empty key, a number or a boolean
+    declares no env names, so no reader has to unpack a non-list."""
+    return value if isinstance(value, list) else []
+
+
 def parse_manifest_file(
     manifest_file: Path, plugin_dir: Path, source: str, prefix: str
 ) -> Optional[PluginManifest]:
@@ -572,7 +578,8 @@ def parse_manifest_file(
         return PluginManifest(
             name=name, version=str(data.get("version", "")),
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
-            requires_env=data.get("requires_env") or [], optional_env=data.get("optional_env") or [],
+            requires_env=_env_name_list(data.get("requires_env")),
+            optional_env=_env_name_list(data.get("optional_env")),
             provides_tools=data.get("provides_tools", []),
             # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
             # must keep declaring the same thing (#108371).

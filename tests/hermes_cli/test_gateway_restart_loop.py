@@ -1313,6 +1313,185 @@ class TestLifecycleGuardModule:
         check_gateway_lifecycle("daily ops", "relative-script.sh")
 
 
+class TestParseOnlyShellInvocation:
+    """`sh -n script` syntax-checks without executing, so the script's contents
+    must not be read as commands-to-run (#124700)."""
+
+    @pytest.mark.parametrize("shell", ["sh", "bash", "dash", "ksh", "zsh"])
+    def test_dash_n_script_mentioning_lifecycle_is_allowed(self, tmp_path, shell):
+        """The reported case: `bash -n ~/bin/arm-health-watchdog.sh` on a script
+        that merely mentions a lifecycle command. `-n` parses and executes
+        nothing, so blocking it only makes the risky scripts un-inspectable."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "arm-health-watchdog.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n# doc: restart with hermes gateway restart\nexit 0\n",
+            encoding="utf-8",
+        )
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"{shell} -n {script}"
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize(
+        "invocation",
+        [
+            "bash -o noexec {script}",
+            "sudo bash -n {script}",
+        ],
+    )
+    def test_other_noexec_spellings_are_allowed(self, tmp_path, invocation):
+        """`-o noexec` is the long spelling of `-n`; a wrapper chain
+        resolves to the same parse-only shell (the script it names is only
+        syntax-checked, never executed)."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart-wrapper.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                invocation.format(script=script)
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize(
+        "invocation",
+        [
+            "bash +o noexec {script}",
+            "sh +o noexec {script}",
+            "dash +o noexec {script}",
+            "sudo bash +o noexec {script}",
+            "timeout 30 bash +o noexec {script}",
+            "env bash +O noexec {script}",
+        ],
+    )
+    def test_plus_o_noexec_still_blocks(self, tmp_path, invocation):
+        """POSIX `+o optname` clears the option, so `bash +o noexec script` EXECUTES
+        the script (probe-verified on bash/sh/dash): it must not be read as parse-only
+        or the lifecycle command it runs would bypass the guard. The `+o` spelling
+        still consumes its value-option slot, so a later `-n` keeps its meaning."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart-plus-o.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                invocation.format(script=script)
+            )
+            is True
+        )
+
+    def test_plus_o_noexec_dash_n_is_parse_only(self, tmp_path):
+        """`+o noexec` only clears the (unset) noexec option; the trailing `-n` then
+        turns no-exec parsing ON, so the invocation still executes nothing and must
+        not be blocked (the `+o` pair must not end the option-area walk)."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "syntax-check.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash +o noexec -n {script}"
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize("invocation", ["bash --noexec {script}"])
+    def test_refused_noexec_flag_is_not_parse_only(self, tmp_path, invocation):
+        """`--noexec` is refused by the shell before the script runs (invalid
+        option, rc=2) — it is not a spelling of no-exec parsing, and an exemption
+        keyed on it would be dead code masking that refusal: read the named script
+        like any executed one instead."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart-refused.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                invocation.format(script=script)
+            )
+            is True
+        )
+
+    def test_executed_script_still_blocked_without_dash_n(self, tmp_path):
+        """Regression guard: without `-n` the script runs, so its lifecycle
+        command must stay blocked (existing behavior unchanged)."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
+            is True
+        )
+
+    def test_dash_n_after_the_operand_is_a_script_argument(self, tmp_path):
+        """`bash script.sh -n` passes `-n` to the script as a positional
+        parameter — the shell still executes the script, so it must stay
+        blocked. Only the option area counts."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {script} -n"
+            )
+            is True
+        )
+
+    def test_dash_n_does_not_mask_a_real_command_in_another_segment(self, tmp_path):
+        """`-n` exempts only the script the same shell invocation names; a
+        lifecycle command in a `;`-separated segment still runs and stays
+        blocked."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "check.sh"
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash -n {script}; hermes gateway restart"
+            )
+            is True
+        )
+
+    def test_cron_prompt_referencing_parse_only_check_is_allowed(self, tmp_path, monkeypatch):
+        """The cron facet of #124700: a job whose prompt names a parse-only
+        syntax check of a script that mentions a lifecycle command is a
+        reminder for a human, not a scheduled lifecycle operation."""
+        from cron.lifecycle_guard import check_gateway_lifecycle
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        script = tmp_path / "arm-health-watchdog.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n# doc: restart with hermes gateway restart\nexit 0\n",
+            encoding="utf-8",
+        )
+        check_gateway_lifecycle(
+            f"remind me to check the watcher script:\nbash -n {script}", None
+        )
+
+
 # ---------------------------------------------------------------------------
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path
 # ---------------------------------------------------------------------------

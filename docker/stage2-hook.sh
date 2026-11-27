@@ -684,6 +684,19 @@ removed = collect_generations(root) + collect_runtime_generations(install_state_
 print("[stage2] collected", len(removed), "unused dependency generations")
 ' || echo "[stage2] Warning: dependency refresh failed; continuing"
 
+# --- Ensure default catalog plugins are installed before services start ---
+# Runs a bounded foreground pass as the hermes user so default plugins (and
+# their Python dependency generations) are live for the very first session.
+# Skipped when HERMES_CONFIG_BACKEND=remote (same gate as config migration
+# above); any non-zero exit logs a warning and continues so boot never stalls.
+if [ "$_config_backend" = "remote" ]; then
+    echo "[stage2] HERMES_CONFIG_BACKEND=remote: skipping default plugins preflight"
+else
+    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -m hermes_cli.default_plugins ensure \
+        --json --timeout "${HERMES_DEFAULT_PLUGINS_TIMEOUT:-300}" \
+        || echo "[stage2] Warning: default plugins not settled; continuing"
+fi
+
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering
 # rotated refresh tokens on container restart.

@@ -230,22 +230,24 @@ Select **Custom endpoint** and follow the prompts. It will ask for the base URL 
 
 ## Timeouts
 
-Hermes automatically detects local endpoints (localhost, LAN IPs) and relaxes its streaming timeouts. No configuration needed for most setups.
+Hermes automatically detects local endpoints (localhost, LAN IPs) and relaxes its streaming timeouts by default. No configuration needed for most setups.
 
-If you still hit timeout errors (e.g. very large contexts on slow hardware), you can override the streaming read timeout:
+If you still hit stale-stream timeouts (e.g. very large contexts on slow hardware), raise the local stale-stream timeout in `config.yaml`:
 
-```bash
-# In your .env — raise from the 120s default to 30 minutes
-HERMES_STREAM_READ_TIMEOUT=1800
+```yaml
+agent:
+  local_stream_stale_timeout: 1800  # seconds; default is 900 (15 minutes)
 ```
 
-| Timeout | Default | Local auto-adjustment | Env var override |
-|---------|---------|----------------------|------------------|
+The `HERMES_LOCAL_STREAM_STALE_TIMEOUT` environment variable, if set, overrides the YAML value; prefer the YAML setting for persistent configuration.
+
+| Timeout | Default | Local auto-adjustment | Override |
+|---------|---------|----------------------|----------|
 | Stream read (socket-level) | 120s | Raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
-| Stale stream detection | 180s | Disabled entirely | `HERMES_STREAM_STALE_TIMEOUT` |
+| Stale stream detection | 180s | Raised to 900s (15 min) when the base stale timeout is the 180s default | `agent.local_stream_stale_timeout` or `HERMES_LOCAL_STREAM_STALE_TIMEOUT` |
 | API call (non-streaming) | 1800s | No change needed | `HERMES_API_TIMEOUT` |
 
-The stream read timeout is the one most likely to cause issues — it's the socket-level deadline for receiving the next chunk of data. During prefill on large contexts, local models may produce no output for minutes while processing the prompt. The auto-detection handles this transparently.
+The stream read timeout is the socket-level deadline for receiving the next chunk of data, and stale stream detection is a separate deadline: the longest allowed interval without any stream chunk, whether before the first chunk or between later ones (not a total response deadline). During prefill on large contexts, local models may produce no output for minutes while processing the prompt; the local auto-adjustments cover this up to those limits. Raising only `HERMES_STREAM_READ_TIMEOUT` does not raise the stale-stream timeout. The local ceiling applies only while the resolved base stale timeout is still 180s; a base stale timeout set to any other value (via `HERMES_STREAM_STALE_TIMEOUT` or a provider stale timeout) takes precedence over it.
 
 :::tip A silent first turn is usually prefill, not a hang
 Hermes sends its system prompt and tool schemas on every call, so on slower hardware the first turn can involve minutes of silence while the model processes that prompt before generating anything. That's prefill at work, not a stalled session. See [Slow first response (prefill)](./local-ollama-setup.md#slow-first-response-prefill) in the Ollama guide for mitigations like keeping the model loaded and trimming the fixed prompt with `hermes prompt-size`.

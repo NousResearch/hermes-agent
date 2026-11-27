@@ -892,7 +892,11 @@ def load_hermes_dotenv(
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not).
     *home_elsewhere* is a caller's answer to :func:`_home_runs_elsewhere` for the home; None asks."""
     from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_cli.terminal_notify import claim_osc7577_token
 
+    # Every entry point loads its env here first: the pane's OSC 7577 token leaves os.environ before a
+    # secret source (or anything after it) can start a child that inherits it.
+    claim_osc7577_token()
     # The private bootstrap supplies credentials explicitly; do not rehydrate
     # profile behavior, external secret plugins, or managed env in this worker.
     if worker_config_snapshot() is not None:

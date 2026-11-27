@@ -71,6 +71,8 @@ _GATEWAY_START = _STANDIN + textwrap.dedent("""
     lcm.LEFT_CORE = (lcm.LeftCoreFeature(plugin="standin", label="Stand-in", in_use=in_use,
                                          unchanged="nothing changes", platform="standin"),)
     mpm.catalog_source = lambda name: name
+    # Not the bounded gateway-start budget (its own test below): this start waits for the pass to finish.
+    lcm._GATEWAY_START_LOCK_WAIT = 600.0
     called = []
     lcm._install_into = lambda home, consent=None: real_install_into(
         home, before=lambda: (called.append(1), wait_for("placed")))
@@ -301,7 +303,6 @@ def test_a_gateway_start_waits_one_bounded_budget_for_another_installer(standin,
     profile has credentials for two platforms it owes waited up to five minutes per row for it, serving
     nothing meanwhile (Docker: ~70 s before api_server answered). It now waits one budget, then starts."""
     import threading
-    import time
     from gateway.run_startup import recover_left_core_at_gateway_start
     home, calls, _ = standin
     rows = tuple(lcm.LeftCoreFeature(plugin=name, label=name.title(), unchanged="nothing changes", platform=name,
@@ -309,6 +310,13 @@ def test_a_gateway_start_waits_one_bounded_budget_for_another_installer(standin,
     monkeypatch.setattr(lcm, "LEFT_CORE", rows)
     monkeypatch.setattr(lcm, "_GATEWAY_START_LOCK_WAIT", 4.0, raising=False)
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda *a, **k: home)
+    from hermes_cli import default_plugins
+    waits, real_lock = [], default_plugins.installer_lock
+
+    def counted_lock(wait):
+        waits.append(wait)
+        return real_lock(wait)
+    monkeypatch.setattr(default_plugins, "installer_lock", counted_lock)
     held = tmp_path / "held"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "PYTHONPATH"))}
     env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(lcm.__file__).parents[1]))
@@ -316,16 +324,51 @@ def test_a_gateway_start_waits_one_bounded_budget_for_another_installer(standin,
     try:
         from tests.waiting import wait_until
         wait_until(held.exists, timeout=60, what="the other installer to hold the lock")
-        started, result = time.monotonic(), []
+        result = []
         worker = threading.Thread(target=lambda: result.append(recover_left_core_at_gateway_start()), daemon=True)
         worker.start()
-        worker.join(timeout=30)
-        elapsed = time.monotonic() - started
+        worker.join(timeout=120)
         assert not worker.is_alive(), "the gateway start still waits for the other installer"
     finally:
         holder.kill()
         holder.wait(timeout=30)
-    assert elapsed < 7.0, f"each row waited its own budget: {elapsed:.1f} s"
+    # What the start was allowed to wait, not the wall clock (a loaded host adds seconds of its own):
+    # both rows asked for the lock, and their waits add up to one budget, never one budget each.
+    assert len(waits) == 2 and sum(waits) <= 4.0, f"each row waited its own budget: {waits}"
     assert result == [False] and calls == []
     notices = lcm.claim_kept_notices()
     assert any("another Hermes process is still installing plugins" in n for n in notices), notices
+
+
+@pytest.mark.parametrize("gate", ["env", "config"])
+def test_catalog_platforms_makes_no_network_fetch_when_lazy_installs_off(tmp_path, monkeypatch, gate):
+    """Gateway start runs ``catalog_platforms.recover_in`` on every profile: when lazy installs are
+    disabled (``HERMES_DISABLE_LAZY_INSTALLS=1`` or ``security.allow_lazy_installs: false``), neither
+    ``pending_entries`` nor ``recover_in`` may fetch the live catalog over the network."""
+    import hermes_cli.plugin_catalog as catalog
+    from hermes_cli import catalog_platforms
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("FLUXER_BOT_TOKEN=tok\n", encoding="utf-8")
+    monkeypatch.delenv("FLUXER_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    if gate == "env":
+        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    else:
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        (home / "config.yaml").write_text("security:\n  allow_lazy_installs: false\n", encoding="utf-8")
+    catalog_platforms._attempted.clear()
+
+    def _forbid_fetch(**kwargs):
+        raise AssertionError("fetch_live_catalog must not be called when lazy installs are off")
+
+    monkeypatch.setattr(catalog, "fetch_live_catalog", _forbid_fetch)
+
+    pending = [entry.name for entry in catalog_platforms.pending_entries(home)]
+    assert "fluxer-platform" in pending
+
+    notices: list[str] = []
+    installed = catalog_platforms.recover_in(home, report=notices.append)
+    assert installed == []
+    assert any("fluxer-platform" in msg and "hermes plugins install" in msg for msg in notices), notices

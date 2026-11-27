@@ -25,6 +25,7 @@ import { recordStreamedItems } from './library-items'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleOnboardingEvent } from './onboarding'
+import { handlePluginCardEvent } from './plugin-card'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
@@ -96,6 +97,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleToolEvent,
   handleInputRequestEvent,
   handleDesktopBridgeEvent,
+  handlePluginCardEvent,
   handleStatusEvent
 ]
 

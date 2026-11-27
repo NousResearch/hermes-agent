@@ -320,7 +320,9 @@ class TestPublicUrlOverride:
             "HERMES_DASHBOARD_PUBLIC_URL", "https://from-env.example",
         )
         patch_config("https://from-config.example")
-        redirect_uri = self._redirect_uri(gated_app_direct)
+        # The browser is on the public URL; the proxy forwards its host.
+        redirect_uri = self._redirect_uri(
+            gated_app_direct, headers={"x-forwarded-host": "from-env.example"})
         assert redirect_uri == "https://from-env.example/auth/callback", (
             "env var must override config.yaml — Fly secret injection "
             "depends on this precedence"

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, inherit_parent_acl, read_bytes_or_none
-from pm.workspace import enabled_plugin_dirs, _is_member_candidate
+from pm.workspace import enabled_plugin_dirs, select_workspace_members
 
 
 _METADATA_LOCK_HOLDER = threading.local()
@@ -32,16 +32,15 @@ def _metadata_records(data: bytes | None) -> dict:
     return records
 
 
-def candidate_members(extra_dirs=(), **selection):
+def candidate_members(extra_dirs=(), *, python: Path | None = None, target_env=None, **selection):
     selected = enabled_plugin_dirs(**selection)
     enabled = {path.resolve() for path in (enabled_plugin_dirs() if selection else selected)}
-    members = [source for source in selected
-               if _admitted(source, new=source.resolve() not in enabled) and _is_member_candidate(source)]
+    admitted = [source for source in selected if _admitted(source, new=source.resolve() not in enabled)]
     for directory in extra_dirs:
         directory = Path(directory)
-        if directory not in members and _is_member_candidate(directory):
-            members.append(directory)
-    return members
+        if directory not in admitted:
+            admitted.append(directory)
+    return select_workspace_members(admitted, python=python, target_env=target_env)
 
 
 class SelectionChanged(ValueError):
@@ -212,8 +211,10 @@ class StagedPlugin:
         self.members = {}
         if self.active:
             sources[self.target.resolve()] = self.staged
-            self.members = {identity: source for identity, source in sources.items()
-                            if _admitted(source, new=source == self.staged) and _is_member_candidate(source)}
+            admitted = {identity: source for identity, source in sources.items()
+                        if _admitted(source, new=source == self.staged)}
+            kept = set(select_workspace_members(admitted.values()))
+            self.members = {identity: source for identity, source in admitted.items() if source in kept}
 
     def publish(self, project: Path) -> None:
         import os

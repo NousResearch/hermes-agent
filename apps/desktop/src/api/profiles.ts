@@ -28,6 +28,10 @@ export function getConnectionServedProfiles(connectionId: string): Promise<{ gat
   })
 }
 
+// Matches CREATE_RPC_TIMEOUT (hermes_cli/profile_provision_gateway.py): fresh profile creation
+// seeds bundled skills (up to 60s) and runs the bounded default-plugins preflight (120s).
+export const PROFILE_CREATE_TIMEOUT_MS = 300_000
+
 export function createProfile(
   body: ProfileCreatePayload,
   scope?: ProfileScope
@@ -36,7 +40,8 @@ export function createProfile(
     ...(scope === undefined ? {} : capabilityScoped(scope)),
     path: '/api/profiles',
     method: 'POST',
-    body
+    body,
+    timeoutMs: PROFILE_CREATE_TIMEOUT_MS
   })
 }
 

@@ -33,7 +33,7 @@ export interface FsIpcDeps {
   expandUserPath: (value: string) => string
   resolveRequestedPathForIpc: (value: string, options: { purpose: string }) => string
   directoryExists: (value: string) => boolean
-  resolveGitBinary: () => string
+  resolveGitBinary: () => string | null
 }
 
 export function registerFsIpc({

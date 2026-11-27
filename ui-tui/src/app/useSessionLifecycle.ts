@@ -23,6 +23,7 @@ import { type GatewayClient } from '../gatewayClient.js'
 import { t } from '../i18n/runtime.js'
 import { launchRouteServes, localCreationOptions } from '../launchOptions.js'
 import { migratePendingInputs } from '../lib/pendingInputs.js'
+import { markSessionPersisted } from '../lib/programResume.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection } from '../types.js'
 
@@ -740,6 +741,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
               setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
               writeActiveSessionFile(storedSid)
+
+              if (r.messages?.length || r.message_count) {
+                markSessionPersisted(storedSid) // stored history (message_count covers a hydrating resume)
+              }
+
               patchUiState({
                 busy: running,
                 info,

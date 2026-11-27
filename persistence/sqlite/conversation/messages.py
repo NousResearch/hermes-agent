@@ -47,7 +47,7 @@ from ._store.messages_sql import _parse_tool_calls
 from ._store.prune_rewrite import rewrite_pruned_rows, rewritten_held_row_ids
 from ._store.rewind import plan_user_turn_rewind, retain_refused_turn_for_display, rewind_user_turn
 from ._store.rules import DB_ROW_SNAPSHOT, RESTORED_FROM_STORE, SPILLOVER_SQL_FILTER
-from ._store.search import get_anchored_view
+from ._store.search import SUPERSEDED_ORIGINAL_SQL, get_anchored_view
 from ._store.todo import get_latest_todo_result
 from ._store.transcript_repair import _active_logical_message_row, transcript_row_snapshot
 from ._errors import refusals
@@ -628,11 +628,12 @@ class SQLiteMessageRepository:
         with _refusals(holder):
             with holder._read_ctx_with_timeout(1.0) as conn:
                 row = conn.execute(
-                    "SELECT session_id, active, compacted FROM messages WHERE id = ?", (message_id,)).fetchone()
+                    f"SELECT m.session_id, m.active, m.compacted, {SUPERSEDED_ORIGINAL_SQL} AS superseded"
+                    " FROM messages m WHERE m.id = ?", (message_id,)).fetchone()
         if row is None:
             return None
         return MessageStorageState(session_id=SessionId(row["session_id"]),
-                                   visibility=_visibility(row["active"], row["compacted"]))
+                                   visibility=_visibility(row["active"], row["compacted"]), superseded=bool(row["superseded"]))
 
     def latest_row_id(self, session_id: SessionId, *, role: str = "user", offset: int = 0,
                       require_text: bool = True) -> Optional[MessageId]:

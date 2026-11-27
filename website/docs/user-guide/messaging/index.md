@@ -363,6 +363,7 @@ Details:
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
+- `idle_compact_after_seconds` sets [`compression.idle_compact_after_seconds`](../configuration.md#context-compression) for that channel only: a positive value compacts this channel's idle chats after that many seconds (in the background, before the next message), `0` turns idle compaction off there even when the global value is on. Unset keeps the global value. It is a channel policy, so it also applies after `/new`; like the other `channel_overrides` fields, an edit takes effect after a gateway restart.
 
 ## Per-Platform and Per-Room Intentional Silence
 

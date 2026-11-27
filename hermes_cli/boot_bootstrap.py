@@ -268,7 +268,10 @@ def run_boot_bootstrap(project_root: Path) -> dict:
     record = record_path(project_root)
     known = read_last_known(record)
     if known.get("identity") == identity:
-        return {"home": _retry_owed_migration(record, identity, known)}
+        outcome = _retry_owed_migration(record, identity, known)
+        if outcome == "skipped":
+            _recheck_default_plugins(post_update)
+        return {"home": outcome}
     if _home_runs_elsewhere():
         return {"home": "runs-elsewhere"}
     lock = _RecordLock(record)
@@ -284,6 +287,20 @@ def run_boot_bootstrap(project_root: Path) -> dict:
         return {"home": results}
     finally:
         lock.release()
+
+
+def _recheck_default_plugins(post_update) -> None:
+    """Every start of an already-maintained revision re-asks the default-plugin step: the live catalog
+    can add a default without a new revision. The step is cheap when this revision and catalog are
+    settled and only starts a detached child otherwise, so a start never waits on the network. It is
+    not recorded: the revision's maintenance record stays as it was."""
+    step = dict(post_update.BOOT_HOME_STEPS).get("install_default_plugins")
+    if step is None or _home_runs_elsewhere():
+        return
+    try:
+        step()
+    except (Exception, SystemExit):  # health: allow BLE001 -- a recheck never stops a start (ConfigBackendUnavailable is a SystemExit)
+        logger.debug("default plugin recheck failed", exc_info=True)
 
 
 def _owed_steps(known: dict) -> list[str]:

@@ -485,3 +485,57 @@ class TestHomeWorkingDirGuard:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
         assert result is not None and "Package rules" in result
+
+
+class TestContainerWorkspaceMount:
+    """Docker ``docker_mount_cwd_to_workspace``: the agent's pwd is the container-side
+    /workspace, so container-absolute tool paths must map back to the host working
+    dir before discovery (#138115)."""
+
+    @pytest.fixture
+    def docker_env(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+
+    def test_container_absolute_path_discovers_hints(self, project, docker_env):
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": "/workspace/frontend/index.ts"}
+        )
+        assert result is not None
+        assert "Frontend rules" in result
+
+    def test_terminal_command_container_path_discovers_hints(self, project, docker_env):
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call("terminal", {"command": "cd /workspace/frontend && ls"})
+        assert result is not None
+        assert "Frontend rules" in result
+
+    def test_container_root_itself_maps_to_loaded_working_dir(self, project, docker_env):
+        """The bare mount point is the (pre-loaded) working dir — no hint, no crash."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker.check_tool_call("read_file", {"path": "/workspace"}) is None
+
+    def test_no_mapping_without_mount_flag(self, project, monkeypatch):
+        """Docker without the cwd mount: /workspace/... stays a foreign host path."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker.check_tool_call(
+            "read_file", {"path": "/workspace/frontend/index.ts"}
+        ) is None
+
+    def test_no_mapping_on_local_backend(self, project, monkeypatch):
+        """Local backend keeps today's behavior even if a /workspace dir exists on the host."""
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker.check_tool_call(
+            "read_file", {"path": "/workspace/frontend/index.ts"}
+        ) is None
+
+    def test_container_path_outside_mount_never_remaps(self, project, docker_env):
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker.check_tool_call(
+            "read_file", {"path": "/etc/frontend/index.ts"}
+        ) is None

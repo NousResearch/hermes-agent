@@ -204,13 +204,13 @@ def check_env_vars():
             if token and uid.isdigit():
                 try:
                     import requests
-                    r = requests.get(
+                    with requests.get(
                         f"https://discord.com/api/v10/users/{uid}",
                         headers={"Authorization": f"Bot {token}"},
                         timeout=3,
-                    )
-                    if r.status_code == 200:
-                        label = f"{r.json().get('username', '?')} ({mask(uid)})"
+                    ) as r:
+                        if r.status_code == 200:
+                            label = f"{r.json().get('username', '?')} ({mask(uid)})"
                 except Exception:
                     pass
             user_labels.append(label)
@@ -313,26 +313,25 @@ def check_bot_permissions(token):
 
     try:
         headers = {"Authorization": f"Bot {token}"}
-        r = requests.get("https://discord.com/api/v10/users/@me", headers=headers, timeout=5)
+        with requests.get("https://discord.com/api/v10/users/@me", headers=headers, timeout=5) as r:
+            if r.status_code == 401:
+                check("Bot login", False, "invalid token (401)")
+                return False
+            if r.status_code != 200:
+                check("Bot login", False, f"HTTP {r.status_code}")
+                return False
 
-        if r.status_code == 401:
-            check("Bot login", False, "invalid token (401)")
-            return False
-        if r.status_code != 200:
-            check("Bot login", False, f"HTTP {r.status_code}")
-            return False
-
-        bot = r.json()
-        bot_name = bot.get("username", "?")
-        check("Bot login", True, f"{bot_name[:3]}{'*' * (len(bot_name) - 3)}")
+            bot = r.json()
+            bot_name = bot.get("username", "?")
+            check("Bot login", True, f"{bot_name[:3]}{'*' * (len(bot_name) - 3)}")
 
         # Check guilds
-        r2 = requests.get("https://discord.com/api/v10/users/@me/guilds", headers=headers, timeout=5)
-        if r2.status_code != 200:
-            warn("Guilds", f"HTTP {r2.status_code}")
-            return ok
+        with requests.get("https://discord.com/api/v10/users/@me/guilds", headers=headers, timeout=5) as r2:
+            if r2.status_code != 200:
+                warn("Guilds", f"HTTP {r2.status_code}")
+                return ok
 
-        guilds = r2.json()
+            guilds = r2.json()
         check("Guilds", True, f"{len(guilds)} guild(s)")
 
         for g in guilds[:5]:

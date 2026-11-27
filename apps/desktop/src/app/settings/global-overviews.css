@@ -825,9 +825,10 @@
 :root[data-shell='portal']:not(.dark) [data-page-surface] .settings-agent-link::before {
   background: var(--portal-surface-brand);
   mix-blend-mode: normal;
+  opacity: 0.55;
   mask:
     url('../../assets/settings-agent-lattice.avif') -9.55rem 50% / 18.175rem no-repeat luminance,
-    linear-gradient(to right, var(--portal-raw-black) 18%, transparent 56%);
+    linear-gradient(to right, var(--portal-raw-black) 8%, transparent 32%);
   mask-composite: intersect;
 }
 

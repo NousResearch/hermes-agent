@@ -492,13 +492,14 @@
   font-size: var(--portal-type-micro-size);
 }
 
-/* Give overflowing page scrollers a quiet resting scrollbar cue so clipped content is discoverable. */
-:root[data-shell='portal'] [data-page-surface] ::-webkit-scrollbar-thumb {
-  background: var(--portal-stroke-divider);
+/* Give overflowing page surfaces (Agent Overview/Settings, Settings, Capabilities, Routines,
+   Library) a visible resting scrollbar thumb; sidebar keeps its fade indicator. */
+:root[data-shell='portal'] :is([data-page-surface], [data-zone-page]) ::-webkit-scrollbar-thumb {
+  background: var(--portal-stroke-control);
 }
 
-:root[data-shell='portal'] [data-page-surface] :hover::-webkit-scrollbar-thumb {
-  background: var(--portal-stroke-control);
+:root[data-shell='portal'] :is([data-page-surface], [data-zone-page]) :hover::-webkit-scrollbar-thumb {
+  background: var(--ui-text-quaternary);
 }
 
 /* ── Touch (DESIGN.md › Responsive) ───────────────────────────────────────────

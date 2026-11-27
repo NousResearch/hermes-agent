@@ -694,11 +694,12 @@ interface AgentInstructionsProps {
 }
 
 function AgentInstructions({ content, loading, path, status, onOpen }: AgentInstructionsProps) {
+  const { t } = useI18n()
   const c = useAgentSettingsCopy()
 
   return (
     <Section onOpen={onOpen} title={c.instructions}>
-      <div className="agent-instructions-preview">
+      <button className="agent-instructions-preview" onClick={onOpen} type="button">
         {loading ? (
           // The preview clamps to three lines; hold all three while SOUL.md loads.
           <p aria-hidden className="agent-instructions-skeleton">
@@ -710,15 +711,21 @@ function AgentInstructions({ content, loading, path, status, onOpen }: AgentInst
           <p>{content || status}</p>
         )}
         <span className="agent-instructions-source">
-          SOUL.md
-          {path && (
-            <>
-              <span aria-hidden>·</span>
-              <PathText path={path} />
-            </>
-          )}
+          <span className="agent-instructions-path">
+            SOUL.md
+            {path && (
+              <>
+                <span aria-hidden>·</span>
+                <PathText path={path} />
+              </>
+            )}
+          </span>
+          <span className="agent-instructions-edit">
+            {t.preview.edit}
+            <Codicon aria-hidden name="chevron-right" size="0.875rem" />
+          </span>
         </span>
-      </div>
+      </button>
     </Section>
   )
 }

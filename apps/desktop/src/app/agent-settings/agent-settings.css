@@ -332,17 +332,25 @@
 }
 
 .agent-instructions-preview {
+  display: block;
+  width: 100%;
   padding: 16px;
   color: var(--ui-text-primary);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-body-size);
   line-height: 1.55;
+  text-align: start;
+  cursor: pointer;
 }
 
 .agent-instructions-preview:hover {
   background: var(--portal-surface-row-hover);
 }
 
+.agent-instructions-preview:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
 .agent-instructions-preview p {
   display: -webkit-box;
   overflow: hidden;
@@ -366,13 +374,36 @@
 .agent-instructions-source {
   display: flex;
   min-width: 0;
-  gap: 0.375em;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   margin-top: 10px;
   white-space: nowrap;
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-meta-size);
 }
 
+.agent-instructions-path {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375em;
+  overflow: hidden;
+}
+
+.agent-instructions-edit {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.125rem;
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-body);
+  font-weight: 500;
+}
+
+.agent-instructions-preview:hover .agent-instructions-edit {
+  color: var(--ui-text-primary);
+}
 .agent-management-error {
   display: flex;
   align-items: center;

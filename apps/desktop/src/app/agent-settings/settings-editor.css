@@ -53,7 +53,7 @@
 }
 /* Sub-nav counts (895:13886 "Tools 13"): 11px, quiet, right-aligned. */
 .agent-settings-nav-count {
-  color: var(--ui-text-tertiary);
+  color: var(--ui-text-secondary);
   font-size: var(--portal-type-micro-size);
   font-variant-numeric: tabular-nums;
 }

@@ -115,11 +115,27 @@
 
 /* The machine // agent line: kept where Figma has none, in the signal font of the sidebar's tags. */
 :root[data-shell='portal'] .portal-conversation-agent {
-  color: var(--ui-text-quaternary);
+  padding: 0.1875rem 0.4375rem;
+  border-radius: var(--portal-radius-control);
+  color: var(--ui-text-tertiary);
   font-family: var(--portal-font-mono);
   font-size: var(--portal-type-caption-size);
   letter-spacing: var(--portal-tracking-caption);
   text-transform: uppercase;
+}
+
+:root[data-shell='portal'] button.portal-conversation-agent {
+  cursor: pointer;
+}
+
+:root[data-shell='portal'] button.portal-conversation-agent:hover {
+  background: var(--portal-surface-row-hover);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal'] button.portal-conversation-agent:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
 }
 
 /* Compact and short windows (breakpoints.ts: max-width 639.98px; max-height 30rem) dock the composer

@@ -41,8 +41,7 @@ export const usePortalZoneHeader: ZoneHeaderHook = (node, options) => {
  *  chat's Agent settings rides the band (PortalBandAgentSettings); an extra tile keeps its own here. */
 export function PortalConversationHeader({ paneId }: { paneId: string }) {
   const { pathname } = useLocation()
-  const { chat, label, sessionId } = useConversationAgent(paneId)
-
+  const { chat, label, open, sessionId } = useConversationAgent(paneId)
   // Route overlays cover the chat but keep its host alive. Covered chrome must
   // leave the tab order without replacing the draft-owning body underneath.
   if (isOverlayView(appViewForPath(pathname))) {
@@ -55,7 +54,17 @@ export function PortalConversationHeader({ paneId }: { paneId: string }) {
   // and only its controls take it.
   return (
     <header className="@container/conversation" data-slot="portal-conversation-header">
-      <span className="portal-conversation-agent hidden min-w-0 truncate @min-[30rem]/conversation:block">{label}</span>
+      {open ? (
+        <button
+          className="portal-conversation-agent hidden min-w-0 truncate @min-[30rem]/conversation:block"
+          onClick={open}
+          type="button"
+        >
+          {label}
+        </button>
+      ) : (
+        <span className="portal-conversation-agent hidden min-w-0 truncate @min-[30rem]/conversation:block">{label}</span>
+      )}
       <ChatItemsButton chat={chat} sessionId={sessionId} />
       {paneId !== 'workspace' && <PortalAgentSettingsButton paneId={paneId} />}
     </header>

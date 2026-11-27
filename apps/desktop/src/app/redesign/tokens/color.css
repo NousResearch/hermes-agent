@@ -348,6 +348,7 @@
   /* Light's waiting fill is the dark ink at .64: white reads on it, black does not. */
   --portal-badge-ok-fill: color-mix(in srgb, var(--portal-status-online) 12%, transparent);
   --portal-badge-waiting-ink: var(--portal-raw-pure-white);
+  --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));
   --portal-panel-action: var(--portal-raw-ink-2);
   --portal-panel-action-hover: var(--portal-raw-ink-5);
   --portal-surface-collection: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);

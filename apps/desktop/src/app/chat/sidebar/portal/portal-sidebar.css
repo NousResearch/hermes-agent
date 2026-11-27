@@ -591,6 +591,18 @@ button.portal-section-title:hover {
   flex: none;
 }
 
+/* Keep Group chat rows on the exact same title and age typography as Pinned & Agent chat rows. */
+.portal-sidebar [data-slot='group-chats-section'] [data-slot='row-button'] > span:last-child > span:first-child > span:first-child {
+  font-size: var(--portal-type-ui-size);
+  font-weight: var(--portal-sidebar-row-weight);
+}
+
+.portal-sidebar [data-slot='group-chats-section'] [data-slot='row-button'] > span:last-child > span:first-child > span:last-child {
+  font-family: var(--portal-sidebar-meta-font);
+  font-size: var(--portal-sidebar-caption);
+  letter-spacing: var(--portal-sidebar-caption-tracking);
+  text-transform: uppercase;
+}
 /* Chat row states (Web Application Redesign 1252:38769): the open chat takes a quiet fill; a row
    under the pointer or keyboard focus, or with its menu open, takes a rule and no fill. Both, and a
    chat with unread news, read in full ink. */

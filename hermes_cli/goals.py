@@ -1165,8 +1165,10 @@ class GoalManager:
             raise _GoalSuperseded("the stored goal could not be verified") from exc
         if stored is not None:
             changed = {name for name, value in asdict(stored).items() if before[name] != value}
-            if (stored.status != "active" or "created_at" in changed
-                    or (self._state.status == "done" and changed & {"goal", "contract", "gates", "subgoals"})):
+            # A gate edit during execution invalidates that pass before its intermediate save
+            # can adopt the new list as the baseline. Those gates have not run this turn.
+            if (stored.status != "active" or "created_at" in changed or "gates" in changed
+                    or (self._state.status == "done" and changed & {"goal", "contract", "subgoals"})):
                 self._state = None if stored.status == "cleared" else stored
                 raise _GoalSuperseded
             for name in changed:

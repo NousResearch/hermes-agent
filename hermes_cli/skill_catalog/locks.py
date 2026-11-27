@@ -64,16 +64,17 @@ def _redirect(path):
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
 
 
-def _windows_open(path, root=None):
+def _windows_open(path, root=None, *, create=True):
     current = Path(path.anchor) if root is None else root
     for part in path.relative_to(current).parts[:-1]:
         current /= part
-        current.mkdir(exist_ok=True)
+        if create:
+            current.mkdir(exist_ok=True)
         if _redirect(current):
             raise OSError(errno.ELOOP, "Redirected coordination directory")
     kernel, _ = _windows_api()
-    # OPEN_ALWAYS, OPEN_REPARSE_POINT: inspect the entry, never follow its final redirect.
-    handle = kernel.CreateFileW(str(path), 0xC0000000, 7, None, 4, 0x00200000, None)
+    # OPEN_ALWAYS or OPEN_EXISTING, OPEN_REPARSE_POINT: inspect the entry, never follow its final redirect.
+    handle = kernel.CreateFileW(str(path), 0xC0000000, 7, None, 4 if create else 3, 0x00200000, None)
     if handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -84,31 +85,32 @@ def _windows_open(path, root=None):
     return fd
 
 
-def _posix_open(path, root=None):
+def _posix_open(path, root=None, *, create=True):
     root = Path(path.anchor) if root is None else root
     directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for part in path.relative_to(root).parts[:-1]:
-            try:
-                os.mkdir(part, mode=0o700, dir_fd=directory)
-            except FileExistsError:
-                pass
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                             dir_fd=directory)
             os.close(directory)
             directory = child
-        return os.open(path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        return os.open(path.name, os.O_RDWR | (os.O_CREAT if create else 0) | os.O_NOFOLLOW | os.O_CLOEXEC
                        | os.O_NONBLOCK, 0o600, dir_fd=directory)
     finally:
         os.close(directory)
 
 
-def _open_file(path, root=None):
+def _open_file(path, root=None, *, create=True):
     path = path.absolute()
-    if root is not None:
+    if create and root is not None:
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(root)
-    fd = _windows_open(path, root) if os.name == "nt" else _posix_open(path, root)
+    fd = _windows_open(path, root, create=create) if os.name == "nt" else _posix_open(path, root, create=create)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
@@ -118,6 +120,34 @@ def _open_file(path, root=None):
     except BaseException:
         os.close(fd)
         raise
+
+
+def lease_held(path: Path, *, root=None) -> bool:
+    """Observe whether a writer holds *path*, creating neither it nor any directory.
+
+    Lock files are never unlinked, so a missing file has no holder. Inspection of a
+    foreign home stays a pure read: a deleted or incomplete profile is never
+    materialized, and only a held lease counts as authority there.
+    """
+    try:
+        fd = _open_file(Path(path), root, create=False)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise _unavailable() from None
+    try:
+        try:
+            _try_lock(fd, False)
+        except OSError as exc:
+            if exc.errno not in _CONTENTION:
+                raise _unavailable() from None
+            return True
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            raise _unavailable() from None
 
 
 class FileLease:

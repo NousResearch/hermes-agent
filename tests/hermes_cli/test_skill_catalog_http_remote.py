@@ -120,6 +120,33 @@ def test_oversized_body_selected_remote_profile_refuses_until_lease_dies(client,
     assert len(spawned) == 1
 
 
+@pytest.mark.parametrize('remote', ['other'], indirect=True)
+def test_oversized_body_refuses_for_lease_held_through_interrupted_delete(client, remote, monkeypatch):
+    import json
+    from hermes_constants import mark_named_profile_deleted
+    from hermes_cli.web_routers import skills
+    _source, process = remote
+    # A delete interrupted while another process still holds the OS lease leaves a
+    # tombstoned dir with live authority: refuse, and never materialize that home.
+    other = get_hermes_home() / 'profiles/other'
+    mark_named_profile_deleted(other, incomplete=True)
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    raw = json.dumps(dict(identifier='ordinary')).encode()
+    padded = raw + b' ' * (262145 - len(raw))
+    large = client.post('/api/skills/hub/install', content=padded, headers={'content-type': 'application/json'})
+    assert process.is_alive()
+    assert large.status_code == 413, large.text
+    assert large.json()['error']['code'] == 'request_too_large'
+    assert spawned == []
+    process.terminate()
+    process.join(5)
+    assert not process.is_alive()
+    stock = client.post('/api/skills/hub/install', content=padded, headers={'content-type': 'application/json'})
+    assert stock.status_code == 200, stock.text
+    assert len(spawned) == 1
+
+
 @pytest.mark.platforms('posix')
 def test_dead_remote_owner_does_not_retain_http_catalog_authority(client, remote):
     source, process = remote

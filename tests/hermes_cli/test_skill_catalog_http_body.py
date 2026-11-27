@@ -81,6 +81,33 @@ def test_oversized_body_selected_profile_never_spawns_stock(client, monkeypatch,
         manager.unload()
 
 
+@pytest.mark.parametrize('route, expected', [('review', 405), ('install', 200)])
+def test_oversized_body_ignores_deleted_profile_residue_and_materializes_nothing(client, monkeypatch, route, expected):
+    from hermes_constants import get_hermes_home, mark_named_profile_deleted
+    from hermes_cli import profiles
+    from hermes_cli.web_routers import skills
+
+    home = get_hermes_home()
+    monkeypatch.setattr(profiles, '_get_default_hermes_home', lambda: home)
+    deleted = home / 'profiles/deleted'
+    deleted.mkdir(parents=True)
+    mark_named_profile_deleted(deleted)
+    ghost = home / 'profiles/ghost'
+    ghost.mkdir()
+    spawned = []
+    monkeypatch.setattr(skills, 'spawn_profile_action', lambda *a, **kw: spawned.append(kw) or {'ok': True})
+    raw = json.dumps(dict(identifier='ordinary')).encode()
+    response = client.post('/api/skills/hub/' + route, content=raw + b' ' * (CAP + 1 - len(raw)),
+                           headers={'content-type': 'application/json'})
+    assert response.status_code == expected, response.text
+    assert len(spawned) == (1 if route == 'install' else 0)
+    # Inspecting foreign homes is a pure read: no coordination tree in a tombstoned
+    # or marker-less dir, and nothing beside the tombstone itself.
+    assert list(deleted.iterdir()) == []
+    assert list(ghost.iterdir()) == []
+    assert [path.name for path in (home / 'profiles/.deleted').iterdir()] == ['deleted']
+
+
 def test_exact_body_limit_still_routes_to_provider(client, catalog):
     _entry, plan = catalog
     response = client.post('/api/skills/hub/review', content=_padded(plan, CAP))

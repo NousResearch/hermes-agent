@@ -17,7 +17,7 @@ from pathlib import Path
 import psutil
 
 from hermes_cli.skill_catalog.identity import source_id
-from hermes_cli.skill_catalog.locks import FileLease, writer_hold
+from hermes_cli.skill_catalog.locks import FileLease, lease_held, writer_hold
 from hermes_cli.skill_catalog import validation as v
 from hermes_cli.skill_catalog.validation import CatalogError
 
@@ -193,6 +193,10 @@ class Projection:
             if exc.code != "busy":
                 raise
             return False
+
+    def _held(self):
+        """A writer's presence observed without creating this home's coordination tree."""
+        return lease_held(self.directory / "presence.lock", root=self.home)
 
     def _load(self):
         if self._absent():

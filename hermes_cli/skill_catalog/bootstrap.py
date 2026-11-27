@@ -101,13 +101,14 @@ def live_authority_anywhere():
     from hermes_cli.skill_catalog.validation import CatalogError
     homes = {get_hermes_home(), _get_default_hermes_home()}
     try:
-        # A live lease is authority even in an otherwise incomplete profile dir.
+        # A held lease is authority even in an incomplete or tombstoned profile dir, so
+        # inspect every dir; the inspection is a pure read that never materializes one.
         homes.update(path for path in _get_profiles_root().iterdir() if path.is_dir())
     except FileNotFoundError:
         pass
     except OSError:
         raise CatalogError('ownership_state_unavailable', 'Catalog coordination is unavailable.') from None
-    return any(Service(home).entries() or not Projection(home)._absent() for home in homes)
+    return any(Service(home).entries() or Projection(home)._held() for home in homes)
 
 
 def discovery_possible(profile):

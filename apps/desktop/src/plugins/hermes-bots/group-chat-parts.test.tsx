@@ -39,7 +39,11 @@ const MEMBERS: GroupMember[] = [
 
 /** Render the composer the way a room does: value owned by the caller (the
  *  draft atom in production), popover scoped to the seated members. */
-async function mount(initial = '', members: GroupMember[] = MEMBERS) {
+async function mount(
+  initial = '',
+  members: GroupMember[] = MEMBERS,
+  props: { disabled?: boolean; handleFor?: (member: GroupMember) => string | undefined } = {}
+) {
   const { GroupMentionInput } = await import('./group-chat-parts')
   const onChange = vi.fn()
   const onSubmitDraft = vi.fn()
@@ -50,6 +54,7 @@ async function mount(initial = '', members: GroupMember[] = MEMBERS) {
     return (
       <GroupMentionInput
         aria-label="Message Core"
+        {...props}
         members={members}
         onChange={next => {
           onChange(next)
@@ -190,14 +195,29 @@ describe('display-name mentions', () => {
     expect(options().some(label => label.startsWith('@여름'))).toBe(true)
   })
 
-  it('inserts the handle, not the display name', async () => {
-    const { input, onChange } = await mount('', NAMED)
+  it('inserts the display name the room writes for it', async () => {
+    // The room passes the tag it will insert; a name that survives the
+    // @-token is the name, so the room hands back the display name here.
+    const { input, onChange } = await mount('', NAMED, {
+      handleFor: member => String(member.display_name || '').trim() || member.handle
+    })
 
     typeInto(input, '@여')
     const option = screen.getAllByRole('button').find(button => button.textContent?.startsWith('@여름'))
     fireEvent.mouseDown(option!)
 
-    expect(onChange).toHaveBeenLastCalledWith('@scout ')
+    expect(onChange).toHaveBeenLastCalledWith('@여름 ')
+  })
+
+  it('inserts the highlighted name on Tab', async () => {
+    const { input, onChange } = await mount('', NAMED, {
+      handleFor: member => String(member.display_name || '').trim() || member.handle
+    })
+
+    typeInto(input, '@도')
+    fireEvent.keyDown(input, { key: 'Tab' })
+
+    expect(onChange).toHaveBeenLastCalledWith('@도윤 ')
   })
 
   it('still matches the handle and shows it beside the name', async () => {

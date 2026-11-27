@@ -58,6 +58,10 @@ optional_env:
     description: "Incoming-webhook URL for meeting-summary delivery in webhook mode (the URL is the credential)"
     prompt: "Incoming webhook URL (or empty)"
     password: true
+  - name: TEAMS_INCOMING_WEBHOOK_URLS
+    description: "Comma-separated incoming webhook URLs (each URL is a credential)"
+    prompt: "Incoming webhook URLs (or empty)"
+    password: true
   - name: TEAMS_GRAPH_ACCESS_TOKEN
     description: "Microsoft Graph access token for meeting-summary delivery in graph mode"
     prompt: "Graph access token (or empty)"

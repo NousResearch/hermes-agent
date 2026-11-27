@@ -1,6 +1,6 @@
 name: playbox-terminal
 repo: https://github.com/Epistetechnician/hermes-playbox-plugin
-sha: f8de032f76e1fc7353fb23630c1fc37ddaa3d5f9
+sha: c74be8cb18b9930026d47dbee78a24c85a186f43
 description: 'Playbox governed microVM terminal backend (NVIDIA OpenShell / libkrun) and certified
   RL trajectory exporter (`hermes config set terminal.backend playbox`; `hermes playbox-export`).
   Runs every command in an isolated host-side microVM with signed expiring Biscuit grants, default

@@ -15,7 +15,7 @@ LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
 TUI_KEYS = set(json.loads((LOCALES_DIR / "_keys.tui.json").read_text(encoding="utf-8")))
 
 
-@pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
+@pytest.mark.parametrize("lang", sorted({*i18n.SUPPORTED_LANGUAGES, "sv"} - {"en"}))
 def test_bundled_tui_pack_mirrors_tui_key_export(lang: str):
     pack = i18n_layers.parse_locale_file(LOCALES_DIR / f"{lang}.tui.yaml")
     missing = TUI_KEYS - set(pack)

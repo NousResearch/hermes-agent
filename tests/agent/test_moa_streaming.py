@@ -113,6 +113,82 @@ def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch
     assert client.chat.completions.preset_name == "review"
 
 
+def test_build_moa_facade_root_preset_missing_in_profile_scope_raises(monkeypatch, tmp_path):
+    """A preset that exists in the ROOT config but is invisible in the
+    profile-scoped config must raise MoAPresetNotFoundError instead of silently
+    downgrading to the hardcoded default preset (#80318).
+
+    Kanban workers run with HERMES_HOME=<root>/profiles/<name>, so load_config()
+    reads the profile config and misses root-authored presets. Before the fix
+    build_moa_facade() silently fell back to the in-code default preset
+    (openai-codex:gpt-5.5 + openrouter:deepseek-v4-pro + claude-opus-4.8),
+    running unrelated models the user never selected.
+    """
+    root = tmp_path / "root"
+    (root / "profiles" / "reviewer").mkdir(parents=True)
+    (root / "config.yaml").write_text(
+        """\
+moa:
+  default_preset: Speed Quality
+  presets:
+    Speed Quality:
+      reference_models:
+        - provider: opencode-go
+          model: deepseek-v4-flash
+        - provider: opencode-go
+          model: mimo-v2.5
+      aggregator:
+        provider: opencode-go
+        model: deepseek-v4-flash
+""".strip(),
+        encoding="utf-8",
+    )
+    # Profile config without a moa block — the scoping bug.
+    (root / "profiles" / "reviewer" / "config.yaml").write_text(
+        """\
+model:
+  default: Speed Quality
+  provider: moa
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "reviewer"))
+
+    from agent.errors import MoAPresetNotFoundError
+    from agent.moa_loop import build_moa_facade
+
+    agent = SimpleNamespace(
+        provider="moa",
+        model="Speed Quality",
+        tool_progress_callback=None,
+    )
+
+    with pytest.raises(MoAPresetNotFoundError) as excinfo:
+        build_moa_facade(agent, "Speed Quality")
+    assert "exists in the root config" in str(excinfo.value)
+
+
+def test_build_moa_facade_unknown_name_still_falls_back_to_default(monkeypatch, tmp_path):
+    """A name that exists NOWHERE (drifted model name during fallback restore)
+    must keep the historical silent downgrade to the default preset — not raise.
+    Guards the restore path that previously crashed (#MoA restore path)."""
+    home = tmp_path / ".hermes"
+    _write_cfg(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent.moa_loop import build_moa_facade
+
+    agent = SimpleNamespace(
+        provider="moa",
+        model="totally-unknown-model-name",
+        tool_progress_callback=None,
+    )
+
+    client = build_moa_facade(agent, None)
+
+    assert client.chat.completions.preset_name == "review"
+
+
 def test_create_wraps_completed_aggregator_response_as_delta_chunk(monkeypatch, tmp_path):
     """When an aggregator adapter returns a completed response despite
     stream=True (Codex Responses compatibility shape), MoA must return a

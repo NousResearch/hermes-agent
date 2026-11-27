@@ -1236,13 +1236,19 @@ def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
     return None
 
 
-def worker_handoff_guard(expected_run_id: Optional[int]) -> tuple[str, tuple]:
+def worker_handoff_guard(expected_run_id: Optional[int], expected_goal=None) -> tuple[str, tuple]:
     """A Goal handoff may return from its judge after its lease expired but before it is reaped.
     Claim writes mirror ``tasks.claim_expires`` onto the run and ending a run clears
-    ``current_run_id``, so the run pin and the task lease decide."""
-    if expected_run_id is None:
-        return "", ()
-    return " AND current_run_id = ? AND (NOT goal_mode OR claim_expires >= ?)", (int(expected_run_id), int(time.time()))
+    ``current_run_id``, so the run pin and the task lease decide. A human can
+    also edit the requirements without changing the run that the judge saw."""
+    guard, params = "", ()
+    if expected_run_id is not None:
+        guard = " AND current_run_id = ? AND (NOT goal_mode OR claim_expires >= ?)"
+        params = (int(expected_run_id), int(time.time()))
+    if expected_goal is not None:
+        guard += " AND goal_mode AND title IS ? AND body IS ?"
+        params += expected_goal
+    return guard, params
 
 
 @contextlib.contextmanager

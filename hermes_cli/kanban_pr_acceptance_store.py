@@ -13,8 +13,8 @@ def _snapshot(conn, task_id, guard, params):
     return tuple(row) if row else None
 
 
-def prepare_acceptance(conn, task_id, expected_run_id, metadata):
-    snapshot = _snapshot(conn, task_id, *worker_handoff_guard(expected_run_id))
+def prepare_acceptance(conn, task_id, expected_run_id, metadata, expected_goal=None):
+    snapshot = _snapshot(conn, task_id, *worker_handoff_guard(expected_run_id, expected_goal))
     if snapshot is None:
         return False
     run_id, status, contract = snapshot
@@ -27,7 +27,7 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     # Publication binds once. Retrying cannot replace the task's PR with a green sibling.
     if match and contract == match[1]:
         with write_txn(conn):
-            guard, params = worker_handoff_guard(expected_run_id)
+            guard, params = worker_handoff_guard(expected_run_id, expected_goal)
             updated = conn.execute(
                 "UPDATE tasks SET completion_contract=? WHERE id=?"
                 " AND current_run_id IS ? AND status=? AND completion_contract=?" + guard,

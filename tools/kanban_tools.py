@@ -754,7 +754,8 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                expected_goal=(task.title, task.body) if task and task.goal_mode else None)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -801,7 +802,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
             _check(False, (task.last_failure_error if task else None) or
-                   f"could not complete {tid} (unknown id, stale run, or already terminal)")
+                   f"could not complete {tid} (task, run or judged requirements changed)")
         run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has
@@ -824,18 +825,19 @@ def _handle_block(args: dict, **kw) -> str:
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
         task = kb.get_task(conn, tid)
-        parents = None
+        parents = expected_goal = None
         if task and task.goal_mode:
             _check(kind in KANBAN_EXTERNAL_BLOCK_KINDS,
                    "goal_mode tasks can only block on a genuine dependency or missing human input")
             if owned_kanban_task() == tid:
+                expected_goal = task.title, task.body
                 if kind == "dependency":
                     parents = kb.unsatisfied_parents(conn, tid)
                 reason, error = kanban_goal_block_reason(task, reason, kind, parents=parents or (), judge=judge_goal)
                 _check(error is None, error)
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
-                           expected_open_parents=parents)
-        _check(ok, f"could not block {tid} (task, run or parent state changed)")
+                           expected_open_parents=parents, expected_goal=expected_goal)
+        _check(ok, f"could not block {tid} (task, run, requirements or parent state changed)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
         if kind == "dependency" and landed_kind != kind:
@@ -896,11 +898,13 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        task = kb.get_task(conn, tid)
+        _goal_gate("kanban_request_review", task, tid, summary)
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
-                expected_run_id=_worker_run_id(tid), with_reason=True)
+                expected_run_id=_worker_run_id(tid), with_reason=True,
+                expected_goal=(task.title, task.body) if task and task.goal_mode else None)
         except kb.ArtifactPreservationError as artifact_err:
             # Same contract as kanban_complete (#22923): the transition rolled
             # back, the task is untouched and retryable — say so explicitly or

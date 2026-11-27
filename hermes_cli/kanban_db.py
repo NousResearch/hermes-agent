@@ -2641,7 +2641,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    fire_lifecycle_hook: bool = True, force: bool = False, expected_goal: Optional[tuple[str, Optional[str]]] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2671,7 +2671,7 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
-    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
+    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata, expected_goal)
     if acceptance is False:
         return False
     with write_txn(conn):
@@ -2680,7 +2680,7 @@ def complete_task(
         if not _parents_satisfied(conn, task_id):
             return False
         # The receipt and completion settle under one lease observation and write lock.
-        run_guard, run_params = _worker_handoff_guard(expected_run_id)
+        run_guard, run_params = _worker_handoff_guard(expected_run_id, expected_goal)
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance, run_guard, run_params):
             return False
         trow = conn.execute(
@@ -3123,7 +3123,7 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
-    expected_open_parents: Optional[list[tuple[str, str]]] = None,
+    expected_open_parents: Optional[list[tuple[str, str]]] = None, expected_goal: Optional[tuple[str, Optional[str]]] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3191,7 +3191,7 @@ def block_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """
-        run_guard, run_params = _worker_handoff_guard(expected_run_id)
+        run_guard, run_params = _worker_handoff_guard(expected_run_id, expected_goal)
         if conn.execute(sql + run_guard, (*params, task_id, *run_params)).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
@@ -3250,7 +3250,7 @@ def redact_review_value(value: Any) -> Any:
 def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
-    expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False, expected_goal=None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3329,7 +3329,7 @@ def request_review(
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
-            run_guard, run_params = _worker_handoff_guard(expected_run_id)
+            run_guard, run_params = _worker_handoff_guard(expected_run_id, expected_goal)
             params: tuple[Any, ...] = (
                 *(() if reviewer is None else (reviewer,)), task_id,
                 *run_params,
@@ -3349,7 +3349,7 @@ def request_review(
             )
             if cur.rowcount != 1:
                 return _ret(
-                    False, "task is not in running/ready or the worker no longer holds its current run",
+                    False, "task, run or judged requirements changed before review handoff",
                 )
             if isinstance(metadata, dict):
                 staged_copies = _stage_completion_artifacts(

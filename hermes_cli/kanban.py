@@ -874,12 +874,12 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     return (verdict, None if verdict == "done" else reason)
 
 
-def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: str,
+def _goal_gate_error(task, tid: str, evidence: str, handoff: str, blocked_hint: str,
                      continue_hint: str) -> Optional[str]:
     """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
     applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
     None to allow."""
-    verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)
+    verdict, rejection = _goal_mode_handoff_rejection(task, evidence)
     if verdict == "blocked":
         return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
                 f"the goal unachievable — {rejection}. {blocked_hint}")
@@ -906,17 +906,19 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
+            task = kb.get_task(conn, tid)
             gate_err = _goal_gate_error(
-                conn, tid, _stripped_or_none(summary) or _stripped_or_none(args.result) or "", "completion",
+                task, tid, _stripped_or_none(summary) or _stripped_or_none(args.result) or "", "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
                 "Provide evidence matching the task's acceptance criteria.")
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
-            fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            fail_msg[tid] = f"cannot complete {tid} (task, run or judged requirements changed)"
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
+                                        expected_goal=(task.title, task.body) if task and task.goal_mode else None,
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
@@ -1012,7 +1014,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
                     return False
                 # Successful blocks already record the reason in the transaction's run/event.
                 return kb.block_task(conn, tid, reason=effective_reason, kind=kind, expected_run_id=run_id,
-                                     expected_open_parents=parents)
+                                     expected_open_parents=parents, expected_goal=(task.title, task.body))
             return _commented(conn, reason, author, "BLOCKED", lambda _: kb.block_task(
                 conn, tid, reason=reason, kind=kind, expected_run_id=run_id))(tid)
 
@@ -1058,14 +1060,16 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
     if rc:
         return rc
     with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, tid)
         gate_err = _goal_gate_error(
-            conn, tid, summary or "", "review handoff",
+            task, tid, summary or "", "review handoff",
             "Record the block with kanban block instead of requesting review.",
             "Provide acceptance evidence matching the task.")
         if gate_err:
             return _err(gate_err)
         ok, reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
+            expected_goal=(task.title, task.body) if task and task.goal_mode else None,
             expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)
         if not ok:
             return _err(f"cannot request review for {tid}: {reason or 'not running/ready?'}")

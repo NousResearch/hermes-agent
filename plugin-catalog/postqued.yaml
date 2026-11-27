@@ -1,0 +1,19 @@
+name: postqued
+title: Postqued
+repo: https://github.com/postqued/postqued-agent
+sha: 343e623a7b904c13eaea6f0d39d670f048b4eec9
+subdir: agent-plugin
+version: "1.0.0"
+description: "Plan, upload, schedule, publish and analyze social media posts through Postqued's hosted MCP server (Streamable HTTP at https://mcp.postqued.com/mcp, OAuth sign-in, no keys in config): TikTok, Instagram, LinkedIn, YouTube, X, Facebook, Threads, Pinterest, Bluesky and Mastodon, with analytics, comment replies, internal approvals and client review across every workspace the user belongs to. Bundles the postqued workflow skill, which validates every publish with a dry run and asks before going live. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Postqued's hosted server (mcp.postqued.com, backed by api.postqued.com) and acts on the user's Postqued account with their own workspace role; the tool set is served by that server at runtime and is not covered by the pinned sha. Published and scheduled posts go out publicly to the user's connected social accounts, engagement tools reply to, like, hide or delete comments from those accounts, collaboration tools send real invitation emails and can remove collaborators and reviewers, and account tools can disconnect social accounts. Sign-in uses Hermes's own MCP OAuth (auth: oauth, then hermes mcp login postqued), so Hermes stores the token; the package stores no credentials, runs no code and sends no telemetry. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Postqued
+tier: community
+category: tools
+docs_url: https://github.com/postqued/postqued-agent/tree/main/agent-plugin#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

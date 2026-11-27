@@ -6,6 +6,9 @@ loads automatically when you work in that directory; read it before editing ther
 goes in `website/docs/developer-guide/`.
 
 **Never give up on the right solution.**
+## About
+
+This project is an open-source AI research agent.
 
 ## What Hermes Is
 

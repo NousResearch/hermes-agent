@@ -154,13 +154,12 @@ def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
 
 
 def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
-    uri = db_file.as_uri() + "?mode=ro"
-    other = sqlite3.connect(uri, uri=True, timeout=1.0)
-    try:
-        other.row_factory = sqlite3.Row
+    """Read another board's ``kanban.db`` read-only through the one guarded
+    board connect — a sibling board is a board database like any other, so the
+    same refusal (and the same open path) covers it."""
+    from hermes_cli.kanban_db_connect import connect_closing  # late: import cycle
+    with connect_closing(db_file, readonly=True) as other:
         return _conn_uses_path(other, task_id, key, exclude_task_id=False)
-    finally:
-        other.close()
 
 
 def _workspace_in_use_by_other(

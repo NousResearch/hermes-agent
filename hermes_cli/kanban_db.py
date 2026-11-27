@@ -398,13 +398,38 @@ def _require_slug(slug: str) -> str:
     return normed
 
 
+def _refuse_shared_board_if_hosted() -> None:
+    """Refuse here when this process serves hosted tenants: the one board root a
+    single-user machine shares across every profile cannot serve a shared
+    deployment, whose tenants each get their own agents' boards. This is the one
+    boundary every path to the shared board crosses — resolving the root (this
+    module, whose ``kanban_db_path`` lands here) and opening its database
+    (:func:`hermes_cli.kanban_db_connect.connect`) — so the storage port's local
+    store, the CLI, the model tools, the assignee API and the dispatcher's claim
+    policy all refuse the same way, whoever calls them. Locally (no hosted boot
+    profile) nothing changes."""
+    from hermes_kanban_port import _hosted_process
+    if _hosted_process(None):
+        raise LookupError(
+            "the local kanban board keeps one board root shared across every profile of a "
+            "single-user machine; it refuses to open in a hosted process")
+
+
 def kanban_home() -> Path:
     """``HERMES_KANBAN_HOME`` else ``get_default_hermes_root()``. Shared across
     profiles BY DESIGN: resolving through the active profile's HERMES_HOME would
-    fork the board per profile and break the dispatcher/worker handoff."""
-    override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    fork the board per profile and break the dispatcher/worker handoff.
+    Refuses wherever the process serves hosted tenants (see
+    ``_refuse_shared_board_if_hosted``): this resolution is the one boundary every
+    path to the shared board crosses."""
+    _refuse_shared_board_if_hosted()
+    from hermes_cli.kanban_db_home import scoped_home_override
+    override = scoped_home_override()  # a context-scoped pin (see kanban_db_home)
     if override:
         return Path(override).expanduser()
+    env_override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
 
@@ -4070,40 +4095,6 @@ def read_worker_log(
         return None
 
 
-# --- Assignee enumeration (known profiles + per-profile board stats) ---
-
-def list_profiles_on_disk() -> list[str]:
-    """Profiles with a ``config.yaml`` plus the implicit ``default``; reads paths
-    directly to avoid importing ``hermes_cli.profiles`` at startup."""
-    try:
-        from hermes_constants import get_default_hermes_root
-        default_root = get_default_hermes_root()
-        profiles_dir = default_root / "profiles"
-    except Exception:
-        return []
-
-    names: set[str] = set()
-    if default_root.exists():
-        names.add("default")
-    if profiles_dir.is_dir():
-        try:
-            names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())  # config-reader: ok — profile directory discovery marker
-        except OSError:
-            pass
-    return sorted(names)
-
-
-def known_assignees(conn: sqlite3.Connection) -> list[dict]:
-    """``{"name", "on_disk", "counts"}`` for every on-disk profile or task
-    assignee, so a fresh profile appears in pickers before it has a task."""
-    on_disk = set(list_profiles_on_disk())
-    counts = _counts_by_assignee(conn)
-    return [
-        {"name": name, "on_disk": name in on_disk, "counts": counts.get(name, {})}
-        for name in sorted(on_disk | set(counts))
-    ]
-
-
 # --- Runs (attempt history on a task) ---
 
 def list_runs(
@@ -4216,6 +4207,7 @@ from hermes_cli.kanban_db_workspace import (
     _managed_scratch_path_info,
     _scratch_workspace,
 )
+from hermes_cli.kanban_db_profiles import known_assignees, list_profiles_on_disk
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,

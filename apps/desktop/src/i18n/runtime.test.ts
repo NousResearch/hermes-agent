@@ -30,6 +30,13 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('notifications.updateReadyMessage', 2)).toContain('2')
   })
 
+  it('translates corrected Russian runtime entries', () => {
+    setRuntimeI18nLocale('ru')
+
+    expect(translateNow('settings.model.tasks.review.label')).toBe('Ревью')
+    expect(translateNow('starmap.importSuccess', 21)).toBe('Загружена карта с 21 узлом.')
+  })
+
   it('keeps translated settings field copy addressable from schema keys', () => {
     const field = ['display', 'show_reasoning'].join('.')
 

@@ -49,12 +49,15 @@ FAILURE_TOLERANT_TOOL_NAMES = frozenset({
     "terminal", "execute_code", "process_manage", "process", "browser_navigate", "web_extract",
 })
 
-# A successful call to one of these marks progress for every failing signature still counted
-# this turn: the next retry is a new experiment (edit -> re-run), not a replay.
-PROGRESS_RESET_TOOL_NAMES = frozenset({
-    "write_file", "patch", "terminal", "execute_code", "browser_click", "browser_type", "browser_press",
+# Tools whose success is itself a state change: the next retry of a failing call
+# is a new experiment (edit -> re-run), not a replay. Read-only or bookkeeping
+# tools are deliberately absent — a successful `terminal ls`, `todo` update or
+# `memory` write changes nothing the failing call depends on, so it must not
+# restart another tool's failure streak (#160736).
+MUTATION_TOOL_NAMES = frozenset({
+    "write_file", "patch", "execute_code", "browser_click", "browser_type", "browser_press",
     "browser_navigate", "process_manage", "process", "delegate_task", "send_message", "cronjob",
-    "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
+    "cronjob_manage", "skill_manage",
 })
 
 _BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled")
@@ -419,9 +422,11 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts.pop(tool_name, None)
         # A successful mutation is progress for every failing signature still counted
         # this turn. Pure loops never mutate between attempts, so the replay detector keeps its teeth.
-        if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
+        # The per-tool failure counts are NOT cleared here: only the tool that just
+        # succeeded drops its own count (above), so an unrelated success cannot hide
+        # a dead endpoint behind another tool's streak (#160736).
+        if tool_name in MUTATION_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
-            self._same_tool_failure_counts.clear()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)

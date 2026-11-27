@@ -40,6 +40,76 @@ def test_commit_build_refuses_without_gui_advice(commit_build, git_present):
     assert refusal.update_command == ""
 
 
+@pytest.mark.platforms("posix")
+def test_root_cannot_update_user_owned_install(tmp_path, monkeypatch):
+    from hermes_cli.update_contract import ROOT_UPDATE_MESSAGE
+
+    class UserStat:
+        st_uid = 1000
+
+    monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
+    monkeypatch.setattr(type(tmp_path), "stat", lambda self: UserStat())
+    _neutralize_host_install_markers(monkeypatch, tmp_path)
+    refusal = evaluate_update_admission(tmp_path)
+
+    assert refusal is not None
+    assert refusal.code == "root-owned-install"
+    assert refusal.message == ROOT_UPDATE_MESSAGE
+
+
+@pytest.mark.platforms("posix")
+def test_root_can_update_root_owned_install(tmp_path, monkeypatch):
+    class RootStat:
+        st_uid = 0
+
+    monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
+    monkeypatch.setattr(type(tmp_path), "stat", lambda self: RootStat())
+    _neutralize_host_install_markers(monkeypatch, tmp_path)
+
+    assert evaluate_update_admission(tmp_path) is None
+
+
+def _neutralize_host_install_markers(monkeypatch, tmp_path) -> None:
+    """Pin the ownership-admission tests to Layer 0 only.
+
+    These tests exercise the root/install-owner gate, but ``evaluate_update_admission``
+    also consults host state below it: the baked ``/etc/hermes/image-provenance.json``
+    marker (a verifier host that itself runs an image-managed install flips the
+    admissible case into an unrelated ``image-marker`` refusal) and the
+    ``HERMES_MANAGED`` signal. Both describe the HOST, not the fixture, so they are
+    neutralized here.
+    """
+    monkeypatch.setattr("hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+
+
+@pytest.mark.platforms("posix")
+def test_root_owned_admission_yields_to_baked_image_marker(tmp_path, monkeypatch):
+    """A valid baked image marker outranks root-owned admission.
+
+    Inter-layer contract: the ownership gate (Layer 0) admits a root-owned
+    install, but an image-managed host (Layer 1) still refuses in-place
+    updates — verifier hosts that are themselves image-managed installs see
+    ``image-marker``, not ``None``, here.
+    """
+    marker = tmp_path / "image-provenance.json"
+    marker.write_text(json.dumps({
+        "schema": 1, "deployment_kind": "image", "manager": "docker", "image": "hermes:test",
+    }))
+    monkeypatch.setattr("hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", marker)
+
+    class RootStat:
+        st_uid = 0
+
+    monkeypatch.setattr("hermes_cli.update_contract.os.geteuid", lambda: 0)
+    monkeypatch.setattr(type(tmp_path), "stat", lambda self: RootStat())
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+
+    refusal = evaluate_update_admission(tmp_path)
+    assert refusal is not None
+    assert refusal.code == "image-marker"
+
+
 @pytest.mark.parametrize("passive", [False, True])
 def test_commit_build_never_checks_upstream_or_reuses_source_cache(commit_build, monkeypatch, passive):
     from hermes_cli import banner, source_check

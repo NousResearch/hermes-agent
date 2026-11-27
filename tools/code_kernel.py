@@ -633,8 +633,14 @@ def _stderr_reader(kernel: SessionKernel) -> None:
         kernel.stderr.append(chunk, MAX_STDERR_BYTES)
 
 
-def _bind_rpc_socket(kernel: SessionKernel) -> str:
-    """Bind the tool-RPC listener: loopback TCP on Windows, 0600 UDS elsewhere."""
+def _bind_rpc_socket(kernel: SessionKernel, prefer_dir: Optional[str] = None) -> str:
+    """Bind the tool-RPC listener: loopback TCP on Windows, 0600 UDS elsewhere.
+
+    *prefer_dir* puts the socket inside a directory the caller is about to expose to a
+    sandbox, so it becomes the sandbox's only route out. Falls back to the socket-safe root
+    when the preferred path would break the 108-byte AF_UNIX limit; the planner binds the
+    socket wherever it ends up.
+    """
     if _IS_WINDOWS:
         kernel.sock_path = None
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -644,6 +650,10 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
     else:
         from hermes_constants import socket_safe_tmpdir
         sock_tmpdir = socket_safe_tmpdir()
+        if prefer_dir:
+            candidate = os.path.join(prefer_dir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+            if len(candidate) < 100:
+                sock_tmpdir = prefer_dir
         rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(kernel.sock_path)
@@ -685,11 +695,17 @@ def _parent_process_handle(child_env: dict[str, str]):
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
     from tools.code_execution_env import _build_child_env
+    from tools.code_execution_sandbox import load_sandbox_config, plan_kernel_sandbox, sandbox_enabled
     from tools.code_execution_tool import generate_hermes_tools_module
     kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
-    rpc_endpoint = _bind_rpc_socket(kernel)
+    # Confinement decision is made before the socket binds: a sandboxed kernel needs its RPC
+    # socket inside the one directory the sandbox exposes, and needs to know before spawning
+    # whether that is in effect (``sandbox_enabled`` is the same predicate ``plan`` applies).
+    sandbox_cfg = load_sandbox_config()
+    confined = sandbox_enabled(sandbox_cfg)
+    rpc_endpoint = _bind_rpc_socket(kernel, prefer_dir=kernel.tmpdir if confined else None)
     for name, src in (("hermes_tools.py", generate_hermes_tools_module(list(sandbox_tools))),
                       ("hermes_kernel_runner.py", KERNEL_RUNNER_SOURCE)):
         Path(kernel.tmpdir, name).write_text(src, encoding="utf-8")
@@ -706,9 +722,20 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     # and hands that group to the owner-death supervisor: the whole group dies the moment this
     # process dies, by any cause. A kernel-only death pipe let a cell's subprocesses outlive the host.
     from hermes_cli.process_identity import spawn_owned
+    plan = plan_kernel_sandbox(
+        [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
+        kernel_dir=kernel.tmpdir, rpc_socket=kernel.sock_path or "",
+        child_cwd=child_cwd or kernel.tmpdir, config=sandbox_cfg,
+    )
+    if plan.enabled:
+        logger.info("execute_code: kernel %s confined with bwrap (network=%s)",
+                    kernel.key, "open" if sandbox_cfg.allow_network else "blocked")
+    elif sandbox_cfg.enabled:
+        # Opted in but could not confine: say so once per kernel instead of degrading quietly.
+        logger.warning("execute_code: kernel %s NOT confined (%s)", kernel.key, plan.reason)
     try:
         kernel.proc = spawn_owned(
-            [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")], purpose="code-kernel",
+            list(plan.argv), purpose="code-kernel",
             # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
             cwd=child_cwd or kernel.tmpdir, env=child_env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,

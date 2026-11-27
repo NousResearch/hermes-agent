@@ -252,6 +252,13 @@ let
           The working directory for the agent. The module also writes this
           path to config.yaml as `terminal.cwd`. The terminal and file tools
           of the agent use that value.
+
+          The default differs per module (your home directory on
+          Home Manager, `<stateDir>/workspace` on NixOS). A shell subcommand
+          with an optional project path also accepts it explicitly:
+          if `hermes skills trust` reports "Not inside a git checkout" while
+          you are standing in a repository, pass the repository path
+          explicitly (`hermes skills trust /path/to/repo`).
         '';
       };
 

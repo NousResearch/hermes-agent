@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -26,6 +27,47 @@ _MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache
 
 def _member_ignored(directory, names):
     return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
+
+
+# Build inputs are only READ from the core checkout and plugin dirs, so their copies take the
+# contents, mode and times but never BSD file flags (#157508). ``shutil.copy2``/``copystat`` also
+# replay ``st_flags`` through ``os.chflags`` on macOS: a checkout locked with ``chflags -R schg``
+# then fails every file AND directory with EPERM (a non-root user cannot set ``schg``), and a
+# copied ``uchg`` would make the snapshot itself unwritable. ``copytree`` calls ``copystat`` on
+# directories and symlinks whatever its ``copy_function``, hence the small walk below.
+def _copy_times_and_mode(src: Path, dst: Path) -> None:
+    st = os.stat(src)
+    os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    os.chmod(dst, stat.S_IMODE(st.st_mode))
+
+
+def _copy_file(src: Path, dst: Path) -> Path:
+    """``shutil.copy2`` without file flags (or extended attributes)."""
+    shutil.copyfile(src, dst)
+    _copy_times_and_mode(src, dst)
+    return dst
+
+
+def _copy_tree(src: Path, dst: Path, *, symlinks: bool = False, ignore=None) -> Path:
+    """``shutil.copytree`` (fresh *dst*) without file flags: links are recreated when *symlinks*,
+    else followed; *ignore* has copytree's ``(directory, names)`` contract. A directory's mode and
+    times are applied after its entries, so a read-only source directory still fills."""
+    src, dst = Path(src), Path(dst)
+    names = os.listdir(src)
+    ignored = set(ignore(os.fspath(src), names)) if ignore is not None else set()
+    os.makedirs(dst)
+    for name in names:
+        if name in ignored:
+            continue
+        entry, target = src / name, dst / name
+        if symlinks and entry.is_symlink():
+            os.symlink(os.readlink(entry), target)
+        elif entry.is_dir():
+            _copy_tree(entry, target, symlinks=symlinks, ignore=ignore)
+        else:
+            _copy_file(entry, target)
+    _copy_times_and_mode(src, dst)
+    return dst
 
 
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
@@ -135,7 +177,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
                      or entry.name in _ROOT_DATA_DIRS
                      or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
-            shutil.copytree(entry, target, ignore=ignore)
+            _copy_tree(entry, target, ignore=ignore)
     for name in files:
         entry = source / name
         if not entry.is_file() or entry.is_symlink():
@@ -144,7 +186,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
             raise InstallError("venv", f"build input escapes the core project: {name}")
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(entry, target)
+        _copy_file(entry, target)
 
 
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
@@ -620,8 +662,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
     pyproject = declaration.pyproject
     if pyproject is not None:
         member = root / "plugin-sources" / key
-        shutil.copytree(plugin_dir, member, symlinks=True,
-                        ignore=_member_ignored)
+        _copy_tree(plugin_dir, member, symlinks=True, ignore=_member_ignored)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
         # plugin enabled in two profiles would declare one name twice and fail
@@ -883,7 +924,7 @@ def lock_and_sync(
         # Sibling generations keep external relative paths at the same depth;
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
-        shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
+        _copy_tree(replay, root, symlinks=True, ignore=_member_ignored)
         # A generation recorded before the cutoff left the user's machine still carries it.
         manifest = root / "pyproject.toml"
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")

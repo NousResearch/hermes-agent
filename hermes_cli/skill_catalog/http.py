@@ -48,10 +48,17 @@ _discovery_executor = None
 
 
 async def _discovery_required(profile, deadline):
-    """Stock authority checks precede bounded off-loop manifest discovery."""
+    """Stock authority checks precede catalog capacity, with all I/O off-loop."""
     global _discovery_executor
     from hermes_cli.skill_catalog.bootstrap import discovery_possible, discovery_required
-    if not discovery_possible(profile):
+    try:
+        # Use the server's bounded pool before catalog-specific capacity: a stock
+        # profile must stay usable while eligible manifest discovery is saturated.
+        possible = await asyncio.wait_for(run_in_threadpool(discovery_possible, profile),
+                                          max(0, deadline - time.monotonic()))
+    except TimeoutError:
+        raise CatalogError('timeout', 'Catalog discovery timed out.') from None
+    if not possible:
         return False
     if not _discovery_slots.acquire(blocking=False):
         raise CatalogError('busy', 'Catalog discovery is busy.')

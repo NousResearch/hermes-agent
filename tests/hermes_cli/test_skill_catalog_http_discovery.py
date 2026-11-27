@@ -41,6 +41,37 @@ def test_slow_discovery_leaves_concurrent_request_runnable(client, catalog, monk
     asyncio.run(run())
 
 
+def test_slow_config_preflight_leaves_ticker_runnable(client, monkeypatch):
+    from hermes_cli.skill_catalog import bootstrap
+    from hermes_cli.web_server import app
+    ticked = threading.Event()
+    observations = []
+    original = bootstrap.load_config_readonly
+    loop_thread = threading.get_ident()
+
+    def delayed_config():
+        started = time.monotonic()
+        observations.append((threading.get_ident(), ticked.wait(0.5), time.monotonic() - started))
+        return original()
+
+    monkeypatch.setattr(bootstrap, 'load_config_readonly', delayed_config)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        ticker = loop.call_later(0.05, ticked.set)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url='http://test', headers=client.headers) as http:
+                result = await http.get('/api/skills/hub/official')
+                assert result.status_code == 200, result.text
+        finally:
+            ticker.cancel()
+    asyncio.run(run())
+    print('config preflight ticker observations:', observations)
+    assert observations
+    assert all(thread != loop_thread and tick for thread, tick, _delay in observations)
+
+
 def test_no_consent_skips_manifest_discovery(client, monkeypatch):
     from hermes_cli.skill_catalog import bootstrap
     from hermes_cli.config import atomic_config_write
@@ -52,7 +83,8 @@ def test_no_consent_skips_manifest_discovery(client, monkeypatch):
     assert calls == []
 
 
-def test_discovery_obeys_request_deadline(client, catalog, monkeypatch):
+@pytest.mark.parametrize('phase', ['discovery_required', 'discovery_possible'])
+def test_discovery_obeys_request_deadline(client, catalog, monkeypatch, phase):
     from hermes_cli.skill_catalog import bootstrap, http
     from hermes_cli.skill_catalog.validation import CatalogError
     entered, release = threading.Event(), threading.Event()
@@ -62,7 +94,7 @@ def test_discovery_obeys_request_deadline(client, catalog, monkeypatch):
         assert release.wait(5)
         return False
 
-    monkeypatch.setattr(bootstrap, 'discovery_required', discovery)
+    monkeypatch.setattr(bootstrap, phase, discovery)
 
     async def run():
         try:

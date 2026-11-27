@@ -86,6 +86,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import DiscordAdapter
+from tests.gateway._discord_sdk_fixtures import make_dm, make_thread
 
 
 @pytest.fixture(autouse=True)
@@ -140,16 +141,14 @@ def _make_interaction(
     ``channel_name`` attaches a ``.name`` to the channel so channel-name /
     ``#name`` allow/ignore matching can be exercised (mirrors on_message).
     """
-    import discord
-
     response = SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock())
 
     if in_dm:
-        channel = discord.DMChannel()
+        channel = make_dm(channel_id=channel_id)
     elif in_thread:
-        channel = discord.Thread()
-        channel.id = channel_id
-        channel.parent_id = parent_channel_id
+        if parent_channel_id is None:
+            raise ValueError("Thread interaction fixture requires a parent channel ID")
+        channel = make_thread(channel_id=channel_id, parent_id=parent_channel_id)
         if channel_name is not None:
             channel.name = channel_name
     elif channel_id is None:

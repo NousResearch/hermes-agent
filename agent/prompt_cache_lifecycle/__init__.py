@@ -80,6 +80,7 @@ from agent.prompt_cache_lifecycle.warmer import (
     prompt_cache_warming_disabled,
     reset_prompt_cache_session,
     session_totals_lock,
+    start_in_flight_prompt_cache_warming,
     start_prompt_cache_warming,
 )
 
@@ -112,5 +113,6 @@ __all__ = [
     "replay_output_cap",
     "reset_prompt_cache_session",
     "session_totals_lock",
+    "start_in_flight_prompt_cache_warming",
     "start_prompt_cache_warming",
 ]

@@ -416,3 +416,58 @@ def test_the_tier_check_never_reads_the_old_clock_and_a_cleared_in_flight_mark(t
                 worker.join(10)
                 warmer.cancel()
                 db.close()
+
+
+def _next_request(agent):
+    return {"model": agent.model, "max_tokens": 100, "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "OLD PREFIX"}]},
+        {"role": "assistant", "content": "x"},
+        {"role": "user", "content": [{"type": "text", "text": "NEXT REQUEST", "cache_control": {"type": "ephemeral"}}]}]}
+
+
+def test_a_reply_generating_past_the_entrys_lifetime_keeps_its_own_prompt_warm(tmp_path, monkeypatch):
+    """A request whose reply takes longer than the 5m entry lives (a long generation): a keep-alive
+    replaying that same request goes out while the reply streams, and the reply landing afterwards
+    keeps the renewal instead of moving the window back to its own send (issue #160322)."""
+    import time
+
+    from agent.prompt_cache_clock import cache_certainly_warm, record_attempt_sent
+
+    with _endpoint() as (client, server):
+        agent, warmer, run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            request = _next_request(agent)
+            t0 = time.time()
+            record_attempt_sent(agent, request)
+            pcw.start_in_flight_prompt_cache_warming(agent, request)
+            run = warmer._run
+            assert run is not None and run.timer is not None
+            run.timer.cancel()
+            with monkeypatch.context() as clock:
+                clock.setattr(time, "time", lambda: t0 + 250)
+                warmer._refresh(run)
+            assert server.requests[-1]["messages"][-1]["content"][0]["text"] == "NEXT REQUEST"
+            usage = SimpleNamespace(input_tokens=0, output_tokens=9_000, cache_read_input_tokens=_READ,
+                                    cache_creation_input_tokens=400)
+            record_cache_response(agent, normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode),
+                                  model=agent.model, provider=agent.provider, base_url=agent.base_url,
+                                  api_mode=agent.api_mode)  # the loop's fold: from the agent's attempt
+            window = cache_window(agent)
+            assert window.refreshed_at == pytest.approx(t0 + 250, abs=1)
+            assert cache_certainly_warm(window, now=t0 + 390)
+        finally:
+            warmer.cancel()
+            db.close()
+
+
+def test_a_route_that_never_proved_a_cache_arms_nothing_for_the_request_in_flight(tmp_path):
+    with _endpoint() as (client, _server):
+        agent, warmer, _run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
+        try:
+            warmer.cancel("new request in flight")
+            agent._prompt_cache_clock, agent._prompt_cache_clock_restored = None, True  # no reply has cached yet
+            assert warmer.start_in_flight(_next_request(agent)) == "this route has not proven a cache window"
+            assert warmer._run is None
+        finally:
+            db.close()

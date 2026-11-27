@@ -131,6 +131,12 @@ class _Run:
     tool_spent_usd: float = 0.0
     #: Whether the keep-alive in flight was reserved against the tool wait (else the idle budget).
     inflight_tool: bool = False
+    #: Armed when the request went out (:meth:`PromptCacheWarmer.start_in_flight`): it keeps that request's
+    #: prompt warm while the reply generates, booked like a tool wait (never on the idle budget).
+    awaiting_reply: bool = False
+    #: That request's ``prompt_cache_clock.attempt_facts`` (the agent's ``_prompt_cache_attempt``): each
+    #: keep-alive moves its send time on, so the reply folds from the latest renewal, not from its send.
+    attempt: Optional[dict[str, Any]] = None
     #: ``prompt_cache_clock.response_upstream`` of the reply that last cached this prefix.
     upstream: Optional[str] = None
     #: Rough size of the stable system + tools prefix: a miss that read at least half of it was a routing blip.
@@ -188,6 +194,9 @@ class PromptCacheWarmer:
         #: Whether the armed request carries ``cache_control`` markers (Anthropic spec: a miss is a priced
         #: write) or not (OpenAI spec: a miss re-reads the prefix at the input rate).
         self._marked = True
+        #: ``(cached, uncached)`` prompt tokens of the latest reply: the size estimate for the next request,
+        #: whose own usage is unknown until its reply lands.
+        self._last_split: Optional[tuple[int, int]] = None
         #: The route ``(provider, base_url, model)`` whose keep-alive missed: the cache does not live as
         #: long as assumed there, so nothing is warmed again this session (new user messages and
         #: compactions included). A model/provider switch is a different cache and clears it.
@@ -242,26 +251,9 @@ class PromptCacheWarmer:
                 self._carry_ended_budget()
                 return self._stop("warm budget spent this turn")
             self._spent = None
-        if getattr(agent, "_skip_prompt_cache_warming", False):
-            return self._stop("the parent agent keeps this prefix warm")
-        api_mode = getattr(agent, "api_mode", None)
-        if api_mode not in WARMABLE_API_MODES:
-            return self._stop("only Anthropic Messages and Chat Completions requests are warmed")
-        # Marker caching is Anthropic-spec only; an OpenAI-spec route caches automatically and proves it
-        # with the reply's cached tokens (no read or write folded = no window below).
-        if getattr(agent, "_cache_disabled", False) or (
-                api_mode == "anthropic_messages" and not getattr(agent, "_use_prompt_caching", False)):
-            return self._stop("prompt caching disabled")
-        if "_moa_prepared_request" in api_kwargs or getattr(agent, "provider", "") == "moa":
-            return self._stop("MoA requests are not replayable")
-        if getattr(agent, "_interrupt_requested", False):
-            return self._stop("turn interrupted")
-        if api_mode == "anthropic_messages" and not has_cache_markers(api_kwargs):
-            return self._stop("request carries no cache markers")
-        if not is_replayable(api_kwargs):
-            return self._stop("request cannot be replayed safely (budget thinking)")
-        # An OpenAI-spec automatic cache bills a miss at the plain input rate (no write surcharge).
-        self._marked = has_cache_markers(api_kwargs)
+        refused = self._refusal(api_kwargs)
+        if refused is not None:
+            return self._stop(refused)
         window = guaranteed_window(agent)
         if window is None or cache_warming_delay_s(window[1]) is None:
             return self._stop("cache window not guaranteed warm")
@@ -269,13 +261,12 @@ class PromptCacheWarmer:
         if window is None:
             return self._stop(f"learned: {learned}")
         cached_tokens, uncached_tokens = self._prompt_split(response)
+        self._last_split = (cached_tokens, uncached_tokens)
         if cached_tokens + uncached_tokens <= 0:
             return self._stop("prompt size unavailable")
-        client = getattr(agent, "_anthropic_client" if api_mode == "anthropic_messages" else "client", None)
-        if client is None:
-            return self._stop("no provider client")
-        if not replay_cap_honoured(client, api_kwargs, getattr(agent, "model", ""), api_mode):
-            return self._stop("the client cannot bound the replay's output cap")
+        client, refused = self._replay_client(api_kwargs)
+        if refused is not None:
+            return self._stop(refused)
         # Economics before the deep copy: an unpriced/cheap model never pays for the copy either. Nothing
         # is spent yet on the tool wait this run may cover; admission checks the idle budget's spend.
         decision = self._decide(cached_tokens, uncached_tokens, observed_warm_usd=budget.last_warm_usd)
@@ -284,13 +275,77 @@ class PromptCacheWarmer:
             return self._stop(decision.stop_reason)
         from agent.prompt_cache_clock import context_witness, response_upstream
 
+        # The loop mutates message dicts in place between requests (cache-marker redecoration,
+        # tool-result eviction); the replay must send exactly what wrote the entry.
+        run = _Run(
+            api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=getattr(agent, "model", ""),
+            cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
+            deadline_at=window[0], is_current=self._currency(), api_mode=agent.api_mode,
+            witness=context_witness(agent), billing=self._billing_snapshot(),
+            idle_ok=human_paced(agent), budget=budget,
+            upstream=response_upstream(response),
+            stable_prefix_tokens=_stable_prefix_tokens(api_kwargs, agent.api_mode),
+        )
+        return self._arm(run)
+
+    def start_in_flight(self, api_kwargs: dict[str, Any]) -> Optional[str]:
+        """Arm keep-alives for the request going out now, replaying that same request while its reply
+        generates: a reply longer than the entry's lifetime (a long generation, a slow upstream) would
+        otherwise find its own prefix gone and the next request re-writes all of it. The entry lives
+        from this send for the tier the request asks; the route must already have proven it caches (the
+        clock holds an earlier reply's evidence on it). Spending is bounded like a tool wait: together
+        the keep-alives cost no more than the one rewrite they prevent. The reply replaces the run
+        (:meth:`start`), the turn's end cancels it. Returns the reason nothing was armed."""
+        from agent.prompt_cache_clock import context_witness
+
+        self._clear_run()
+        agent = self.agent
+        refused = self._refusal(api_kwargs) or self._in_flight_refusal()
+        if refused is not None:
+            return self._stop(refused, lifecycle=True)
+        window = _in_flight_window(agent, api_kwargs)
+        if window is None or cache_warming_delay_s(window[1]) is None:
+            return self._stop("this route has not proven a cache window", lifecycle=True)
+        window, learned = learned_window(agent, window, self._marked)
+        if window is None:
+            return self._stop(f"learned: {learned}", lifecycle=True)
+        client, refused = self._replay_client(api_kwargs)
+        if refused is not None:
+            return self._stop(refused, lifecycle=True)
+        # The whole prompt of this request is in the cache once it is sent: an earlier reply's size bounds it.
+        cached_tokens = sum(self._last_split or (0, 0))
+        decision = self._decide(cached_tokens, 0)
+        if decision.action != "warm":
+            return self._stop(decision.stop_reason, lifecycle=True)
+        turn = getattr(agent, "_user_turn_count", None)
+        with self._lock:
+            budget = self._budget if self._budget is not None and self._budget.turn == turn else _Budget(turn)
+        run = _Run(
+            api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=getattr(agent, "model", ""),
+            cached_tokens=cached_tokens, uncached_tokens=0, ttl_s=window[1], deadline_at=window[0],
+            is_current=self._currency(), api_mode=agent.api_mode, witness=context_witness(agent),
+            billing=self._billing_snapshot(), budget=budget, awaiting_reply=True,
+            attempt=getattr(agent, "_prompt_cache_attempt", None),
+            stable_prefix_tokens=_stable_prefix_tokens(api_kwargs, agent.api_mode),
+        )
+        return self._arm(run)
+
+    def _arm(self, run: _Run) -> Optional[str]:
+        with self._lock:
+            self._run = run
+            self._schedule(run)
+            return None if self._run is run else self._inactive_reason
+
+    def _currency(self) -> Callable[[], bool]:
+        """Whether the prompt a run was armed on is still the live one: no reply folded since (the epoch,
+        not the counter alone: a reset zeroes ``session_api_calls``, which the new session's own requests
+        then raise back to the armed value), the same model, no interrupt."""
+        agent = self.agent
         api_calls = getattr(agent, "session_api_calls", 0)
         model = getattr(agent, "model", "")
         epoch = getattr(agent, "_session_reset_epoch", 0)
 
         def _is_current() -> bool:
-            # The epoch, not the counter alone: a reset zeroes session_api_calls, which the new
-            # session's own requests then raise back to the armed value.
             return (
                 getattr(agent, "_session_reset_epoch", 0) == epoch
                 and getattr(agent, "session_api_calls", None) == api_calls
@@ -298,20 +353,49 @@ class PromptCacheWarmer:
                 and not getattr(agent, "_interrupt_requested", False)
             )
 
-        # The loop mutates message dicts in place between requests (cache-marker redecoration,
-        # tool-result eviction); the replay must send exactly what wrote the entry.
-        run = _Run(
-            api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=model,
-            cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
-            deadline_at=window[0], is_current=_is_current, api_mode=api_mode,
-            witness=context_witness(agent), billing=self._billing_snapshot(),
-            idle_ok=human_paced(agent), budget=budget,
-            upstream=response_upstream(response), stable_prefix_tokens=_stable_prefix_tokens(api_kwargs, api_mode),
-        )
+        return _is_current
+
+    def _refusal(self, api_kwargs: dict[str, Any]) -> Optional[str]:
+        """Why this request can never be warmed (route, caching, replay safety), or ``None``. Sets
+        whether it carries cache markers: an OpenAI-spec automatic cache bills a miss at the plain input
+        rate (no write surcharge)."""
+        agent = self.agent
+        if getattr(agent, "_skip_prompt_cache_warming", False):
+            return "the parent agent keeps this prefix warm"
+        api_mode = getattr(agent, "api_mode", None)
+        if api_mode not in WARMABLE_API_MODES:
+            return "only Anthropic Messages and Chat Completions requests are warmed"
+        # Marker caching is Anthropic-spec only; an OpenAI-spec route caches automatically and proves it
+        # with the reply's cached tokens (no read or write folded = no window).
+        if getattr(agent, "_cache_disabled", False) or (
+                api_mode == "anthropic_messages" and not getattr(agent, "_use_prompt_caching", False)):
+            return "prompt caching disabled"
+        if "_moa_prepared_request" in api_kwargs or getattr(agent, "provider", "") == "moa":
+            return "MoA requests are not replayable"
+        if getattr(agent, "_interrupt_requested", False):
+            return "turn interrupted"
+        if api_mode == "anthropic_messages" and not has_cache_markers(api_kwargs):
+            return "request carries no cache markers"
+        if not is_replayable(api_kwargs):
+            return "request cannot be replayed safely (budget thinking)"
+        self._marked = has_cache_markers(api_kwargs)
+        return None
+
+    def _in_flight_refusal(self) -> Optional[str]:
         with self._lock:
-            self._run = run
-            self._schedule(run)
-            return None if self._run is run else self._inactive_reason
+            if self._missed_route is not None and not self.warming_disabled:
+                self._missed_route = None  # a model/provider switch: a different cache, warmed afresh
+            return WARMING_DISABLED if self.warming_disabled else None
+
+    def _replay_client(self, api_kwargs: dict[str, Any]) -> tuple[Any, Optional[str]]:
+        agent = self.agent
+        api_mode = agent.api_mode
+        client = getattr(agent, "_anthropic_client" if api_mode == "anthropic_messages" else "client", None)
+        if client is None:
+            return None, "no provider client"
+        if not replay_cap_honoured(client, api_kwargs, getattr(agent, "model", ""), api_mode):
+            return None, "the client cannot bound the replay's output cap"
+        return client, None
 
     def end_turn(self) -> None:
         """The turn settled: a machine session stops warming (its next request is a guess nobody
@@ -425,7 +509,7 @@ class PromptCacheWarmer:
         # A timer can fire late after sleep or a blocked interpreter. Keep half of the planned
         # pre-expiry margin for that: a late refresh is a full-price write, not a warm.
         run.refresh_deadline_at = run.next_warm_at + margin / 2
-        if not self._tool_running() and (run.budget.ended or run.budget.used >= WARM_BUDGET):
+        if not self._booked_on_run(run) and (run.budget.ended or run.budget.used >= WARM_BUDGET):
             # Step 2 decides at the moment the next keep-alive would have gone out.
             self._end_budget(run, "warm budget spent", due_at=run.next_warm_at)
             return
@@ -470,6 +554,11 @@ class PromptCacheWarmer:
         """A tool call is executing: the model is certain to send the next request when it returns."""
         return getattr(self.agent, "_executing_tools", False) is True
 
+    def _booked_on_run(self, run: _Run) -> bool:
+        """A keep-alive now spends this run's wait (a tool call executing, or the reply to the request
+        the run was armed on still generating), not the user turn's idle budget."""
+        return run.awaiting_reply or self._tool_running()
+
     def _admit(self, run: _Run, decision: CacheWarmingDecision) -> Optional[float]:
         """The one send admission: ownership, cancellation, currency, deadline and the spend it draws on
         checked, the keep-alive reserved (count and estimated cost), and the run marked in flight, in one
@@ -490,7 +579,7 @@ class PromptCacheWarmer:
                 self._stop(WARMING_DISABLED)
                 return None
             budget = run.budget
-            run.inflight_tool = self._tool_running()
+            run.inflight_tool = self._booked_on_run(run)
             if run.inflight_tool:
                 if run.tool_spent_usd + decision.warm_cost > decision.miss_cost:
                     self._stop("tool-wait refreshes would cost more than the cache write they prevent")
@@ -521,7 +610,7 @@ class PromptCacheWarmer:
         decision = self._evaluate(run)
         self._last_decision = decision
         if decision.action != "warm":
-            if decision.economics_available and not decision.within_miss and not self._tool_running():
+            if decision.economics_available and not decision.within_miss and not self._booked_on_run(run):
                 with self._lock:
                     if self._run is run:  # the idle budget's money is spent: step 2/3 decides now
                         self._end_budget(run, decision.stop_reason, due_at=run.next_warm_at)
@@ -543,6 +632,8 @@ class PromptCacheWarmer:
         finally:
             run.refreshing = False
         miss = self._record(run, message, decision, sent_at, reserved)
+        if miss is None or miss.startswith("cache refresh missed"):
+            self._carry_renewal(run, sent_at)
         self._set_in_flight(None)  # the reply is folded: the clock is the touch again (a miss renewed nothing)
         if miss is not None and not miss.startswith("cache refresh missed"):
             self._stop_if_current(run, miss)
@@ -587,6 +678,16 @@ class PromptCacheWarmer:
                 return
             run.deadline_at, run.ttl_s = window
             self._schedule(run)
+
+    def _carry_renewal(self, run: _Run, sent_at: float) -> None:
+        """A keep-alive of the request still awaiting its reply read (or re-wrote) that request's whole
+        prompt at ``sent_at``: the reply, folded later from the agent's attempt, counts its entry from
+        there. Untouched once the reply replaced the run (its fold already happened)."""
+        with self._lock:
+            agent = self.agent
+            if (run.awaiting_reply and run.attempt is not None and self._run is run
+                    and getattr(agent, "_prompt_cache_attempt", None) is run.attempt):
+                run.attempt = agent._prompt_cache_attempt = dict(run.attempt, sent_at=sent_at)
 
     def _miss_ends_warming(self, run: _Run, message: Any) -> bool:
         """Whether this keep-alive miss ends warming for the session. Not when the reply came from another
@@ -787,7 +888,7 @@ class PromptCacheWarmer:
             agent.session_estimated_cost_usd += amount
 
     def _evaluate(self, run: _Run) -> CacheWarmingDecision:
-        spent = run.tool_spent_usd if self._tool_running() else run.budget.spent_usd
+        spent = run.tool_spent_usd if self._booked_on_run(run) else run.budget.spent_usd
         return self._decide(run.cached_tokens, run.uncached_tokens,
                             spent_usd=spent, observed_warm_usd=run.budget.last_warm_usd)
 
@@ -870,6 +971,23 @@ class PromptCacheWarmer:
 
     def _prefix(self) -> str:
         return getattr(self.agent, "log_prefix", "") or ""
+
+
+def _in_flight_window(agent: Any, api_kwargs: dict[str, Any]) -> Optional[tuple[float, float]]:
+    """``(deadline, tier seconds)`` of the entry the request going out now writes or reads: from its send,
+    for the tier it asks (the clock's tier when it names none), on a route an earlier reply proved caches
+    (a proven or declared window on the clock, expired or not); ``None`` otherwise."""
+    from agent.prompt_cache_clock import DECLARED, PROVEN, attempt_facts, cache_window
+    from agent.prompt_caching import TTL_SECONDS
+
+    window = cache_window(agent)
+    if window is None or window.confidence not in (PROVEN, DECLARED):
+        return None
+    facts = getattr(agent, "_prompt_cache_attempt", None) or attempt_facts(api_kwargs) or {}
+    ttl_s = TTL_SECONDS.get(facts.get("marker_ttl") or facts.get("openai_ttl") or window.tier or "")
+    if ttl_s is None:
+        return None
+    return float(facts.get("sent_at") or time.time()) + ttl_s, float(ttl_s)
 
 
 def _stable_prefix_tokens(api_kwargs: dict[str, Any], api_mode: str) -> int:
@@ -964,6 +1082,7 @@ def reset_prompt_cache_session(agent: Any) -> None:
             warmer._missed_route = None  # a new session id: nothing remembered for it
             warmer._miss_streak = (0, 0)
             warmer._budget, warmer._spent, warmer._compacted, warmer._offloaded = None, None, False, False
+            warmer._last_split = None
 
 
 def prompt_cache_warming_disabled(agent: Any) -> bool:
@@ -981,6 +1100,16 @@ def start_prompt_cache_warming(agent: Any, api_kwargs: Any, response: Any) -> No
         get_prompt_cache_warmer(agent).start(api_kwargs, response)
     except Exception:
         logger.debug("prompt cache warming did not arm", exc_info=True)
+
+
+def start_in_flight_prompt_cache_warming(agent: Any, api_kwargs: Any) -> None:
+    """Called as a turn-loop request goes out (after its attempt is stamped on the clock)."""
+    if not isinstance(api_kwargs, dict):
+        return
+    try:
+        get_prompt_cache_warmer(agent).start_in_flight(api_kwargs)
+    except Exception:
+        logger.debug("prompt cache warming did not arm for the request in flight", exc_info=True)
 
 
 def end_turn_prompt_cache_warming(agent: Any) -> None:

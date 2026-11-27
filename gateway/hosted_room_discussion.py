@@ -40,7 +40,7 @@ Payload = Mapping[str, Any]
 DecisionStatus = Literal["idle", "task", "settled", "bounded", "route"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
-_MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
+_MENTION_RE = re.compile(r"@(\w[\w.:-]*)", re.UNICODE)
 # Openers of Hermes' own control frames (agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
 # compaction handoff, runtime/system notes, background-process and prior-context frames). A member reply is
 # republished to every peer inside a role=user prompt, so a reply reproducing one of these reads as harness
@@ -347,8 +347,18 @@ def is_pass_text(value: Any) -> bool:
 def resolve_mentions(
     texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
 ) -> tuple[DiscussionMember, ...]:
-    """Resolve member handles deterministically against the frozen roster."""
+    """Resolve member handles deterministically against the frozen roster.
+
+    A member answers to its ASCII handle and to its display name, so a Korean
+    roster is addressable as typed: ``@문여울`` routes to ``patch-pilot``.
+    Handles win a name collision — they are the identity the driver publishes.
+    """
     by_handle = {member.handle.casefold(): member for member in members}
+    by_name = {
+        str(member.display_name).strip().casefold(): member.handle
+        for member in members
+        if str(member.display_name or "").strip()
+    }
     mentioned: set[str] = set()
     everyone = False
     for text in texts:
@@ -358,6 +368,8 @@ def resolve_mentions(
                 everyone = True
             elif handle in by_handle:
                 mentioned.add(handle)
+            elif handle in by_name:
+                mentioned.add(by_name[handle])
     if everyone or (default_all and not mentioned):
         return tuple(members)
     return tuple(member for member in members if member.handle.casefold() in mentioned)

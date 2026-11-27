@@ -134,10 +134,12 @@ interface MentionToken {
  *  fallback); `onBack` is where the Back button routes — the main tile's
  *  closer, or clearing the in-panel workspace atom. */
 /** The active @-token at the caret: text from the nearest '@' (that begins a
- *  word) up to the caret, or null when the caret isn't inside a mention. */
+ *  word) up to the caret, or null when the caret isn't inside a mention.
+ *  Unicode-aware on purpose: a roster seats Korean names (한채린), and an
+ *  ASCII-only token closed the popover the moment the user typed one. */
 function mentionTokenAt(text: string, caret: number): MentionToken | null {
   const upto = String(text || '').slice(0, caret)
-  const match = /(^|\s)@([a-z0-9._-]*)$/i.exec(upto)
+  const match = /(^|\s)@([\p{L}\p{N}._-]*)$/u.exec(upto)
 
   if (!match) {
     return null
@@ -152,6 +154,8 @@ function mentionTokenAt(text: string, caret: number): MentionToken | null {
 /** One row of the mention popover: the handle inserted, plus its subtitle. */
 interface MentionOption {
   handle: string
+  /** The name the row reads as when it differs from the handle (a Korean display name). */
+  label?: string
   meta: string
 }
 
@@ -230,9 +234,16 @@ export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft,
         continue
       }
 
+      // `displayName` title-cases a bare handle ("alpha" → "Alpha"); that is not
+      // a human name, so only a genuinely different name becomes the row label.
+      const friendly = display && display.toLowerCase() !== tag.toLowerCase() ? display : ''
+
       options.push({
         handle: tag,
-        meta: display
+        label: friendly || undefined,
+        // The inserted token stays the handle (the parser's identity); show it
+        // beside the display name so the row still says what will be written.
+        meta: friendly ? `@${tag}` : ''
       })
     }
   }
@@ -291,8 +302,8 @@ export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft,
               }}
               onMouseEnter={() => setSelected(index)}
             >
-              <span className="font-medium">{`@${option.handle}`}</span>
-              <span className="truncate text-[0.65rem] text-(--ui-text-quaternary)">{option.meta}</span>
+              <span className="font-medium">{`@${option.label ?? option.handle}`}</span>
+              {option.meta && <span className="truncate text-[0.65rem] text-(--ui-text-quaternary)">{option.meta}</span>}
             </RowButton>
           ))}
         </div>

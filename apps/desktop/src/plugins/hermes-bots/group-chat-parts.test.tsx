@@ -39,7 +39,7 @@ const MEMBERS: GroupMember[] = [
 
 /** Render the composer the way a room does: value owned by the caller (the
  *  draft atom in production), popover scoped to the seated members. */
-async function mount(initial = '') {
+async function mount(initial = '', members: GroupMember[] = MEMBERS) {
   const { GroupMentionInput } = await import('./group-chat-parts')
   const onChange = vi.fn()
   const onSubmitDraft = vi.fn()
@@ -50,7 +50,7 @@ async function mount(initial = '') {
     return (
       <GroupMentionInput
         aria-label="Message Core"
-        members={MEMBERS}
+        members={members}
         onChange={next => {
           onChange(next)
           setValue(next)
@@ -171,6 +171,42 @@ describe('insertion', () => {
     expect(options().some(label => label.startsWith('@alpha'))).toBe(true)
     expect(options().some(label => label.startsWith('@builder'))).toBe(true)
     expect(options().some(label => label.startsWith('@undefined'))).toBe(false)
+  })
+})
+
+describe('display-name mentions', () => {
+  // A roster can seat human names; the popover must open on one and still
+  // insert the handle the room parser resolves.
+  const NAMED: GroupMember[] = [
+    { display_name: '여름', handle: 'scout', name: 'scout', title: '' },
+    { display_name: '도윤', handle: 'reviewer', name: 'reviewer', title: '' }
+  ]
+
+  it('opens on a non-ASCII query and lists the display name', async () => {
+    const { input } = await mount('', NAMED)
+
+    typeInto(input, '@여')
+
+    expect(options().some(label => label.startsWith('@여름'))).toBe(true)
+  })
+
+  it('inserts the handle, not the display name', async () => {
+    const { input, onChange } = await mount('', NAMED)
+
+    typeInto(input, '@여')
+    const option = screen.getAllByRole('button').find(button => button.textContent?.startsWith('@여름'))
+    fireEvent.mouseDown(option!)
+
+    expect(onChange).toHaveBeenLastCalledWith('@scout ')
+  })
+
+  it('still matches the handle and shows it beside the name', async () => {
+    const { input } = await mount('', NAMED)
+
+    typeInto(input, '@sco')
+    const row = screen.getAllByRole('button').find(button => button.textContent?.startsWith('@여름'))
+
+    expect(row?.textContent).toContain('@scout')
   })
 })
 

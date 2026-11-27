@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -96,11 +97,11 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
       return onClose()
     }
 
-    if (key.upArrow) {
+    if (isListUp(input, key)) {
       return setIdx(i => Math.max(0, i - 1))
     }
 
-    if (key.downArrow) {
+    if (isListDown(input, key)) {
       return setIdx(i => Math.min(view.length - 1, i + 1))
     }
 

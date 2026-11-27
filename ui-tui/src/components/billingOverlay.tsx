@@ -7,6 +7,7 @@ import { useRef, useState } from 'react'
 import type { BillingOverlayState } from '../app/interfaces.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import type { Theme } from '../theme.js'
 
 import { ActionRow, footer, MenuRow, type MenuRowSpec, UsageBars, useMenu } from './overlayPrimitives.js'
@@ -324,11 +325,11 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
       return
     }
 
-    if (key.upArrow && sel > 0) {
+    if (isListUp(ch, key) && sel > 0) {
       setSel(v => v - 1)
     }
 
-    if (key.downArrow && sel < rows.length - 1) {
+    if (isListDown(ch, key) && sel < rows.length - 1) {
       setSel(v => v + 1)
     }
 
@@ -469,15 +470,15 @@ function ConfirmScreen({
       return pay()
     }
 
-    if (lower === 'n') {
+    if (lower === 'n' && !key.ctrl && !key.meta) {
       return back()
     }
 
-    if (key.upArrow) {
+    if (isListUp(ch, key)) {
       setSel(0)
     }
 
-    if (key.downArrow) {
+    if (isListDown(ch, key)) {
       setSel(1)
     }
 
@@ -613,15 +614,15 @@ function StepUpScreen({
       return allow()
     }
 
-    if (lower === 'n') {
+    if (lower === 'n' && !key.ctrl && !key.meta) {
       return decline()
     }
 
-    if (key.upArrow) {
+    if (isListUp(ch, key)) {
       setSel(0)
     }
 
-    if (key.downArrow) {
+    if (isListDown(ch, key)) {
       setSel(1)
     }
 
@@ -830,12 +831,12 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       return onPatch({ screen: 'overview' })
     }
 
-    if (key.upArrow && row > 0) {
+    if (isListUp(ch, key) && row > 0) {
       setRow(v => v - 1)
       setField(row - 1 === 0 ? 'threshold' : 'reloadTo')
     }
 
-    if (key.downArrow && row < FIELD_ROWS + actionRows.length - 1) {
+    if (isListDown(ch, key) && row < FIELD_ROWS + actionRows.length - 1) {
       setRow(v => v + 1)
       setField(row + 1 === 0 ? 'threshold' : 'reloadTo')
     }

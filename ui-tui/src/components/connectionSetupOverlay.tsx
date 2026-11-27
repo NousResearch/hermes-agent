@@ -21,6 +21,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import { $uiSessionId } from '../app/uiStore.js'
 import type { Translations } from '../i18n/types.js'
 import { useT } from '../i18n/useT.js'
+import { isListDown, isListUp } from '../lib/listNavigation.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import type { Theme } from '../theme.js'
 
@@ -55,6 +56,9 @@ const isSending = (operation: ConnectionOperationSnapshot | null, answered: Answ
 }
 
 interface InputKey {
+  ctrl: boolean
+  meta: boolean
+  super?: boolean
   downArrow: boolean
   escape: boolean
   leftArrow: boolean
@@ -181,9 +185,9 @@ interface NavHandlers {
   setFocus: (update: (value: number) => number) => void
 }
 
-function handleNavKey(key: InputKey, h: NavHandlers): void {
-  const up = key.upArrow && !key.shift
-  const down = key.downArrow && !key.shift
+export function handleNavKey(ch: string, key: InputKey, h: NavHandlers): void {
+  const up = isListUp(ch, key)
+  const down = isListDown(ch, key)
   const back = () => (h.row - 1 + h.rows) % h.rows
   const forward = () => (h.row + 1) % h.rows
 
@@ -513,7 +517,7 @@ export function ConnectionSetupOverlay({ cols, t }: ConnectionSetupOverlayProps)
 
   // A single input owner guarantees every key causes exactly one action. Esc skips the row in every
   // phase; Ctrl+C reaches the global handler, which interrupts the turn.
-  useInput((_ch, key) => {
+  useInput((ch, key) => {
     // Every row is answered and the settling frame has not landed. Esc closes the card here, so no
     // silence from the gateway can leave it with no way out. The id is remembered, so the settle
     // that follows still writes its transcript lines and this card cannot return.
@@ -549,7 +553,7 @@ export function ConnectionSetupOverlay({ cols, t }: ConnectionSetupOverlayProps)
       return
     }
 
-    handleNavKey(key, {
+    handleNavKey(ch, key, {
       confirm: () => (action === 1 ? skip() : phase === 'retry' ? tryAgain() : connect()),
       rows,
       selectorFocused,

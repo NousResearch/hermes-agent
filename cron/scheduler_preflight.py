@@ -319,6 +319,17 @@ def has_credential_platform(adapters, owned=None) -> bool:
         getattr(platform, "value", platform) != "local" for platform in adapters or ())
 
 
+def _shared_route_serves(job: dict, part: str) -> bool:
+    """*part* resolves to a target an exact primary route maps to this profile, the same test delivery's
+    ``SharedRouteAdapters`` applies; a bare platform with no origin or home resolves to nothing."""
+    target = _delivery._resolve_single_delivery_target(job, part)
+    if not target:
+        return False
+    served = object()
+    platform = str(target["platform"]).lower()
+    return shared_route_adapters_for_current_home({platform: served}).get(platform, target) is served
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
@@ -331,7 +342,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     lane_values = [deliver_value]
     if failure_deliver_value != deliver_value:
         lane_values.append(failure_deliver_value)
-    platform_parts: list[str] = []
+    platform_parts: list[tuple[str, str]] = []
     for lane_value in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
@@ -342,15 +353,15 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 continue
             if _delivery.parse_room_deliver_token(part) is not None:
                 continue  # Group Chat posts write the room store directly; no adapter needed.
-            platform_parts.append(part.split(":", 1)[0].strip())
+            platform_parts.append((part.split(":", 1)[0].strip(), part))
     if not platform_parts:
         return None
 
     connected: Optional[set] = None
-    for platform_name in platform_parts:
+    for platform_name, part in platform_parts:
         if not _delivery._is_known_delivery_platform(platform_name):
-            if _delivery_platform_routed_from_primary_gateway(platform_name):
-                continue  # a satellite without the plugin rides the primary's bot (#97476)
+            if _shared_route_serves(job, part):
+                continue  # a satellite without the plugin rides the primary's bot for this exact target
             unknown = f"delivery platform '{platform_name}' is not a known cron delivery target"
             if hint := _delivery.moved_platform_hint(platform_name):
                 return unknown + hint

@@ -715,10 +715,9 @@ def _resolve_single_delivery_target(
             platform_key, rest, pass_unresolved_references=True)
         if resolution_error and moved_platform_hint(platform_key) and (
                 _preflight._delivery_platform_routed_from_primary_gateway(platform_key)):
-            # No plugin here to parse it, but the primary's bot may serve it: the exact route match at send
-            # time decides, and a miss names the install.
-            chat_id, _, thread_id = rest.partition(":")
-            thread_id, resolution_error = thread_id or None, None
+            # No plugin here to parse it, but the primary's bot may serve it: the ref as written must match an
+            # exact route at send time (a miss names the install), so nothing is guessed from its shape.
+            chat_id, thread_id, resolution_error = rest, None, None
         if resolution_error:
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
             return None

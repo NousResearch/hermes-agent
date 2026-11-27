@@ -153,7 +153,7 @@ def test_satellite_route_rides_the_primarys_bot_without_the_plugin(tmp_path, mon
     token = set_hermes_home_override(str(home))
     try:
         assert platform_registry.get(feature.platform) is None
-        assert _preflight_check_delivery(job) is None
+        assert (_preflight_check_delivery(job) is None) is reached
         adapters = shared_route_adapters_for_current_home(primary_adapters)
         with patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=run_now):
@@ -167,3 +167,18 @@ def test_satellite_route_rides_the_primarys_bot_without_the_plugin(tmp_path, mon
     else:
         assert error and f"plugins install {feature.plugin}" in error
         assert sent == []
+
+
+@pytest.mark.parametrize("deliver", ["{p}", "{p}:chat-2"], ids=["bare", "unrouted"])
+@pytest.mark.parametrize("feature", _MOVED, ids=[f.platform for f in _MOVED])
+def test_satellite_preflight_blocks_a_target_no_route_serves(tmp_path, monkeypatch, feature, deliver):
+    """The primary routing the platform here is not enough: a bare platform with no saved origin or home, or a
+    chat no route maps here, reaches nothing, so preflight blocks it with the install instead of running."""
+    from cron.scheduler_preflight import _preflight_check_delivery
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(str(_satellite(tmp_path, monkeypatch, feature.platform)))
+    try:
+        error = _preflight_check_delivery({"id": "j1", "name": "Report", "deliver": deliver.format(p=feature.platform)})
+    finally:
+        reset_hermes_home_override(token)
+    assert error and f"plugins install {feature.plugin}" in error

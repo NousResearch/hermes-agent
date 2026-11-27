@@ -1,0 +1,17 @@
+name: kosa8
+title: "kosa8 Cloud"
+repo: https://github.com/kosa8ai/hermes-kosa8
+sha: b7ee11f4996b6c4227d35f8a75d2d398c38ebade
+description: "Terminal backend that runs Hermes's terminal, file and code tools in a kosa8 Cloud sandbox (a microVM with its own kernel) instead of on the Hermes machine. Select it with `hermes config set terminal.backend kosa8`. Disclosure — every command, file read and file write is an HTTPS call to the kosa8 Cloud API (https://api.kosa8.com by default, or the configured base_url) and runs inside the remote sandbox; the plugin runs no shell on the Hermes machine and reads no local files beyond its own config. One stored credential, the kosa8 Cloud API key (KOSA8_API_KEY), read through Hermes's secret scope. kosa8 Cloud is a paid service (plans from $29 a month); sandboxes count toward the account's plan, sleep after the configured idle time and can be given a lifetime (ttl). No telemetry."
+maintainer: kosa8ai
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: "https://github.com/kosa8ai/hermes-kosa8/blob/b7ee11f4996b6c4227d35f8a75d2d398c38ebade/README.md"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [KOSA8_API_KEY]

@@ -1,0 +1,22 @@
+name: apparent
+title: Apparent
+repo: https://github.com/tryapparent/apparent
+sha: 306a4f2b14fd6340bcaf8eb61b5e30fea5986738
+subdir: hermes/catalog
+description: "Record from the Hermes composer and inspect screen, voice and drawing recordings as timestamped instructions and visual evidence. Disclosure — A user click launches the separately installed local Apparent app through the local Hermes shell route without an additional Hermes confirmation; native onboarding and OS capture consent remain. The Desktop half reads the request-specific local bridge HMAC key to authenticate the loopback receipt. When the recording is saved, the plugin sends a prompt into the conversation where recording started (if that composer is empty; otherwise it inserts the text into the draft) asking the agent to inspect the recording and carry out its spoken instructions, and it may create a new conversation or a hidden local helper session to do so. Local chats receive an exact bundle path; SSH chats receive only an existing Connect ID. The Agent tool runs the separately installed Apparent CLI (apparent fetch/inspect) outside the terminal sandbox and without an extra approval prompt, with only PATH, HOME, TMPDIR and APPARENT_CONFIG passed to it. Connect uses that CLI's configured endpoint (default https://hosted.tryapparent.com) and existing sign-in/read grants. Transcripts and images go to the configured model provider. No automatic native installation, login, upload enablement, permission changes or plugin self-update."
+maintainer: simonvanlaak
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.4.0"
+docs_url: https://github.com/tryapparent/apparent/blob/306a4f2b14fd6340bcaf8eb61b5e30fea5986738/hermes/catalog/README.md
+platforms: [linux, macos]
+known_issues:
+  - Requires a separately installed compatible Apparent app on the recording computer; catalogue installation does not install the recorder. SSH inspection requires a receiving CLI and existing Connect read access.
+  - Installed Linux local and SSH inspection passed; the current complete installed macOS composer workflow and all real typed-draft route-switch cases remain unverified.
+  - Reply-video delivery from an SSH backend to the Desktop client is separate; a backend-local file link alone does not establish client playback.
+capabilities:
+  provides_tools: [apparent_inspect]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

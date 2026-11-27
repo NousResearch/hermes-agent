@@ -3,7 +3,8 @@
 from copy import deepcopy
 import json
 
-from agent.message_sanitization import coalesce_tool_call_id, deterministic_call_id, uniquify_tool_call_ids
+from agent.message_sanitization import deterministic_call_id, uniquify_tool_call_ids
+from session_rules.turns import coalesce_tool_call_id
 from agent.transports.types import ToolCall
 from tools.connectors import is_connector_name
 from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
@@ -35,6 +36,7 @@ def expand_local_tool_batches(tool_calls: list, *, provider_data: dict | None = 
             expanded.append(call)
             continue
         parent_id = coalesce_tool_call_id(call)
+        output_index = getattr(call, "_codex_output_index", None)
         children = []
         for index, entry in enumerate(entries):
             arguments = json.dumps({"calls": [entry]}, ensure_ascii=False)
@@ -43,10 +45,12 @@ def expand_local_tool_batches(tool_calls: list, *, provider_data: dict | None = 
                 child.function.arguments = arguments
             else:
                 # A new entry must not inherit the parent's Responses item id or
-                # provider signature. IDs are deterministic for stable replay.
+                # provider signature, only its response-local output position.
+                # IDs are deterministic for stable replay.
                 child = ToolCall(
                     id=deterministic_call_id(TOOL_CALL_NAME, parent_id + arguments, index),
                     name=TOOL_CALL_NAME, arguments=arguments,
+                    provider_data={"_codex_output_index": output_index} if type(output_index) is int else None,
                 )
             expanded.append(child)
             children.append(child)
@@ -65,6 +69,34 @@ def replace_native_tool_blocks(provider_data: dict, replacements: dict) -> None:
                          ("bedrock_content_blocks", _bedrock_children)):
         if blocks := provider_data.get(key):
             provider_data[key] = [child for block in blocks for child in replace(block, replacements)]
+
+
+def prune_native_tool_blocks(provider_data: dict, emitted: list, kept: list) -> None:
+    """Drop the native tool blocks of calls in ``emitted`` but not in ``kept``.
+
+    A guardrail that drops a call (duplicate, delegate cap) leaves it without a
+    result, and the native sidecars replay ahead of tool_calls: Converse then
+    rejects the turn ("Expected toolResult blocks ... for the following Ids").
+    Only blocks naming a dropped call go; thinking/text blocks, signatures,
+    unattributable tool blocks and block order are kept exactly.
+    """
+    kept_ids = {coalesce_tool_call_id(tc) for tc in kept}
+    dropped = {coalesce_tool_call_id(tc) for tc in emitted} - kept_ids - {""}
+    if not dropped:
+        return
+    for key, tool_id in (("anthropic_content_blocks", _anthropic_tool_id),
+                         ("bedrock_content_blocks", _bedrock_tool_id)):
+        if blocks := provider_data.get(key):
+            provider_data[key] = [block for block in blocks if tool_id(block) not in dropped]
+
+
+def _anthropic_tool_id(block):
+    return block.get("id") if isinstance(block, dict) and block.get("type") == "tool_use" else None
+
+
+def _bedrock_tool_id(block):
+    tool = block.get("toolUse") if isinstance(block, dict) else None
+    return tool.get("toolUseId") if isinstance(tool, dict) else None
 
 
 def _anthropic_children(block, replacements):

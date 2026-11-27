@@ -7,13 +7,32 @@ MRO unchanged.
 """
 import logging
 import uuid
-from contextlib import suppress
-from typing import Any, Dict, Generator, List, Optional
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
+from typing import Any, Dict, Generator, Iterator, List, Optional
 
 from agent.lazy_forward import forward as _forward
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+_FORK_ORIGIN: ContextVar[str] = ContextVar("hermes_detached_fork_origin", default="")
+
+
+def detached_fork_origin() -> str:
+    return _FORK_ORIGIN.get()
+
+
+@contextmanager
+def bind_detached_fork_origin(origin: str) -> Iterator[None]:
+    """Scope the fork label without replacing a worker's binding for the same fork."""
+    if origin == detached_fork_origin():
+        yield
+        return
+    token = _FORK_ORIGIN.set(origin)
+    try:
+        yield
+    finally:
+        _FORK_ORIGIN.reset(token)
 
 
 class TurnFacadeMixin:
@@ -32,6 +51,10 @@ class TurnFacadeMixin:
         prelude: Optional[Generator]=None,
     ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        # An agent built before a plugin began running its profile elsewhere (a cached gateway or
+        # dashboard session agent) runs no further turn on this host: same refusal as ``__init__``.
+        from hermes_cli.profiles_run_elsewhere import require_home_runs_here
+        require_home_runs_here()
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
         # Foreground priority is retained if the review does not acknowledge within the bounded deadline
@@ -41,6 +64,7 @@ class TurnFacadeMixin:
         cancel_background_review_for_live_turn(self)
 
         from agent import relay_runtime
+        from agent.agent_init_session import agent_interface
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
         from agent.auxiliary_client import scoped_runtime_main
         from agent.conversation_loop import run_conversation
@@ -136,12 +160,14 @@ class TurnFacadeMixin:
             # usage into session_model_usage (task dimension) — the fix for aux spend being invisible in
             # analytics (issue #23270).
             acct_token = set_accounting_context(
-                getattr(self, "_session_db", None), getattr(self, "session_id", None)
+                getattr(self, "_session_db", None), getattr(self, "session_id", None),
+                persistence=agent_interface(self),
             )
 
-            # Keep the ContextVar scope local (agent tokens may be observed from another thread).
-            # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+            # Use the builder's turn label, not skill/memory write provenance. An ordinary turn
+            # masks any inherited fork context, while a fork worker already owns its binding.
+            with (bind_detached_fork_origin(getattr(self, "_turn_origin", None) or ""),
+                  bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self)):
                 try:
                     if lease is not None:
                         lease.start()

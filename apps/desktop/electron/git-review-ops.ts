@@ -93,6 +93,14 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string; stderr:
   })
 }
 
+function requireGit(gitBin: string | null | undefined): string | undefined {
+  if (gitBin === null) {
+    throw new Error('git is not available')
+  }
+
+  return gitBin
+}
+
 function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
   // locations or PATH — never renderer/user input, and the Windows tuple below is
@@ -126,6 +134,7 @@ function gitFor(cwd, gitBin) {
 }
 
 async function reviewCwd(repoPath, purpose, gitBin) {
+  requireGit(gitBin)
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose })
   let root
 
@@ -319,6 +328,10 @@ function statusLetter(file) {
 const isStaged = file => Boolean(file.index && file.index !== ' ' && file.index !== '?')
 
 async function reviewList(repoPath, scope, baseRef, gitBin) {
+  if (gitBin === null) {
+    return { files: [], base: null }
+  }
+
   let cwd
 
   try {
@@ -412,6 +425,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
 }
 
 async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
+  if (gitBin === null) {
+    return ''
+  }
+
   let cwd
 
   try {
@@ -460,6 +477,10 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
 // a full-add for a clean tracked file (so a pristine file shows no diff); it only
 // all-adds a genuinely untracked file.
 async function fileDiffVsHead(repoPath, filePath, gitBin) {
+  if (gitBin === null) {
+    return ''
+  }
+
   let cwd
 
   try {
@@ -495,7 +516,7 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
 async function reviewStage(repoPath, filePath, gitBin) {
   const cwd = await reviewCwd(repoPath, 'Review stage', gitBin)
 
-  await gitFor(cwd, gitBin).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
+  await gitFor(cwd, requireGit(gitBin)).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
 
   return { ok: true }
 }
@@ -503,7 +524,7 @@ async function reviewStage(repoPath, filePath, gitBin) {
 async function reviewUnstage(repoPath, filePath, gitBin) {
   const cwd = await reviewCwd(repoPath, 'Review unstage', gitBin)
 
-  await gitFor(cwd, gitBin).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
+  await gitFor(cwd, requireGit(gitBin)).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
 
   return { ok: true }
 }
@@ -512,7 +533,7 @@ async function reviewUnstage(repoPath, filePath, gitBin) {
 // confirms first. Restores tracked files and removes untracked ones.
 async function reviewRevert(repoPath, filePath, gitBin) {
   const cwd = await reviewCwd(repoPath, 'Review revert', gitBin)
-  const git = gitFor(cwd, gitBin)
+  const git = gitFor(cwd, requireGit(gitBin))
 
   if (filePath) {
     await git.raw(['checkout', 'HEAD', '--', filePath])
@@ -527,6 +548,10 @@ async function reviewRevert(repoPath, filePath, gitBin) {
 
 // Resolve a ref to a commit sha (captures the turn baseline for "Last turn").
 async function reviewRevParse(repoPath, ref, gitBin) {
+  if (gitBin === null) {
+    return null
+  }
+
   let cwd
 
   try {
@@ -547,7 +572,7 @@ async function reviewRevParse(repoPath, ref, gitBin) {
 // setting upstream on the first push.
 async function reviewCommit(repoPath, message, push, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review commit' })
-  const git = gitFor(cwd, gitBin)
+  const git = gitFor(cwd, requireGit(gitBin))
   const status = await git.status()
 
   if (status.staged.length === 0) {
@@ -575,6 +600,10 @@ async function reviewCommit(repoPath, message, push, gitBin) {
 // the names of untracked files (which carry no diff), and recent commit
 // subjects for style. Diff is capped so the payload stays bounded. Reads only.
 async function reviewCommitContext(repoPath, gitBin) {
+  if (gitBin === null) {
+    return { diff: '', recent: '' }
+  }
+
   let cwd
 
   try {
@@ -622,7 +651,7 @@ async function reviewCommitContext(repoPath, gitBin) {
 
 async function reviewPush(repoPath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review push' })
-  const git = gitFor(cwd, gitBin)
+  const git = gitFor(cwd, requireGit(gitBin))
   const status = await git.status()
 
   if (status.tracking) {
@@ -637,7 +666,11 @@ async function reviewPush(repoPath, gitBin) {
 // gh availability + auth + whether this branch already has a PR. Reads only;
 // drives the PR button's enabled/label state. `ghReady` is false when gh is
 // missing OR not authenticated — either way the PR action can't run.
-async function reviewShipInfo(repoPath, ghBin) {
+async function reviewShipInfo(repoPath, ghBin, gitBin?: string | null) {
+  if (gitBin === null) {
+    return { ghReady: false, pr: null }
+  }
+
   let cwd
 
   try {
@@ -706,7 +739,11 @@ const prPayload = pr => ({
 // branches we actually have sessions on rather than listing the repo's newest
 // PRs and hoping ours are in the page — on a busy repo they are not. One
 // GraphQL request per 50 branches; reads only.
-async function reviewPrList(repoPath, ghBin, branches, numbers) {
+async function reviewPrList(repoPath, ghBin, branches, numbers, gitBin?: string | null) {
+  if (gitBin === null) {
+    return { ghReady: false, prs: [] }
+  }
+
   let cwd
 
   try {
@@ -777,8 +814,9 @@ async function reviewPrList(repoPath, ghBin, branches, numbers) {
 // letting gh fill title/body from the commits. Returns the new PR url.
 async function reviewCreatePr(repoPath, gitBin, ghBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review create PR' })
+  const usableGit = requireGit(gitBin)
 
-  await reviewPush(repoPath, gitBin).catch(() => undefined)
+  await reviewPush(repoPath, usableGit).catch(() => undefined)
 
   const created = await runGh(['pr', 'create', '--fill'], cwd, ghBin)
 
@@ -799,6 +837,10 @@ async function reviewCreatePr(repoPath, gitBin, ghBin) {
 // Compact working-tree status for the composer coding rail: branch, ahead/behind,
 // per-state change counts, +/- vs HEAD, and a capped changed-file list.
 async function repoStatus(repoPath, gitBin) {
+  if (gitBin === null) {
+    return null
+  }
+
   let cwd
 
   try {

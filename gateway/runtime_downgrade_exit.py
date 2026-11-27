@@ -5,7 +5,7 @@ leaves this process serving every local session from code the tree no longer has
 cannot attach to it, and older ``hermes gateway run`` refuses because this process still holds the
 profile. Nothing on the older side knows how to stop it. So the gateway watches its own tree, using the boot
 revision ``gateway.code_skew`` records. Once the checkout has provably moved (two consecutive
-reads, never while an update holds the tree) to code whose state-store modules lack the runtime
+reads, never while an update holds the tree) to code whose schema sources lack the runtime
 ledger, it logs why and stops with the normal drain (a hard exit if that stop fails on the older
 tree). The stop is a plain stop, never a restart of this process, but it exits with the
 service-restart code (75): systemd relaunches on any exit, while the launchd plist's
@@ -24,7 +24,7 @@ from typing import Callable, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_cli._startup_fast import project_root_str
-from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
+from hermes_cli.update_downgrade_guard import SCHEMA_SOURCES, defines_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,11 @@ _PROJECT_ROOT = Path(project_root_str())
 
 
 def tree_predates_runtime(root: Path = _PROJECT_ROOT) -> bool:
-    """True only when the checkout's state-store modules are readable and none defines the ledger."""
+    """True only when the checkout's schema sources (the state-store modules, the SQLite backend's schema)
+    are readable and none defines the ledger."""
     try:
         sources = [path.read_text(encoding="utf-8-sig", errors="replace")
-                   for pattern in STATE_MODULES for path in root.glob(pattern)]
+                   for pattern in SCHEMA_SOURCES for path in root.glob(pattern)]
     except OSError:
         return False  # mid-checkout or unreadable: proves nothing
     return bool(sources) and not defines_runtime(sources)

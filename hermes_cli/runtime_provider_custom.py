@@ -65,14 +65,101 @@ def _key_env_secret(entry: dict[str, Any], label: str) -> str:
     return value
 
 
+def _is_model_base_url(model_cfg: dict[str, Any], base_url: str) -> bool:
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    return bool(cfg_base_url) and cfg_base_url == _clean(base_url).rstrip("/")
+
+
 def _model_cfg_key_env_for(model_cfg: dict[str, Any], base_url: str) -> str:
     """``model.key_env`` for a bare ``provider: custom`` runtime, only when ``base_url`` IS the
     configured ``model.base_url`` — the key was declared for that endpoint, never for a direct alias
     or CUSTOM_BASE_URL pointing elsewhere."""
-    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
-    if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
-        return ""
-    return _key_env_secret(model_cfg, "model")
+    return _key_env_secret(model_cfg, "model") if _is_model_base_url(model_cfg, base_url) else ""
+
+
+def main_endpoint_key_for(model_cfg: Any, base_url: str) -> str:
+    """The credential the runtime authenticates the configured main endpoint with, for a metadata
+    probe of *base_url* (context length, the local server fingerprint, aux pricing, the catalog); ""
+    unless *base_url* is ``model.base_url``, so it never reaches another host.
+
+    For the custom routes this is the runtime's order, through the runtime's own helpers rather
+    than a copy of them: a ``providers:`` / ``custom_providers:`` entry ``model.provider`` names at
+    this URL takes the named route (the pool owning it, then the entry's own credential;
+    ``model.key_env`` never applies); a bare ``custom`` route takes the pool owning the URL, then
+    the first usable ``model.api_key`` / ``model.key_env``, then an owning entry's or the
+    host-gated env keys. One exception is openrouter.ai without an owning pool: on the bare
+    ``custom`` and implicit routes, inference uses OpenRouter credential precedence rather than
+    the model block's. Elsewhere ``auto`` / unset gets the first usable model-block or host-gated
+    env key; other providers get the model block's usable key, not their built-in env/OAuth lookup.
+
+    Not ``resolve_runtime_provider`` itself: a probe must not count or rotate a pool row, mint a
+    ``key_cmd`` token or install a plugin. So a pool yields the row its strategy would select
+    (``choose``) without recording it, and a credential source (``key_cmd``) yields "": it owns its
+    endpoint, so no saved key goes beside it. Loading a pool still makes the runtime's own
+    ``auth.json`` housekeeping writes: seeding config-backed rows, binding an unbound manual row's
+    ``base_url``, pruning a dead manual row older than 24h, and re-persisting a row that carries a
+    ``status_cleared_at`` reset marker (on every load, so not idempotent).
+    """
+    return main_endpoint_probe_selection(model_cfg, base_url) or ""
+
+
+def main_endpoint_probe_selection(model_cfg: Any, base_url: str) -> Optional[str]:
+    """:func:`main_endpoint_key_for`, keeping "the runtime chose to send no bearer" apart from "no
+    credential found": a pool owning the route that selected a keyless row (a loopback row with a
+    legacy short key, sent as ``no-key-required``) is ``""``, while nothing selected is None. A caller
+    with further fallbacks (the catalog probe) stops at ``""``; the runtime never reaches them.
+    """
+    if not isinstance(model_cfg, dict) or not _is_model_base_url(model_cfg, base_url):
+        return None
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    try:
+        return _main_endpoint_probe_key(_rp(), model_cfg, base_url)
+    except ConfigBackendUnavailable:  # a SystemExit on purpose; an optional probe goes keyless instead
+        logger.debug("Config backend unavailable; probing %s without a key", base_url)
+        return None
+
+
+def _main_endpoint_probe_key(rp, model_cfg: dict[str, Any], base_url: str) -> Optional[str]:
+    provider = _clean(model_cfg.get("provider")).lower()
+    implicit = provider in ("", "auto")
+    entry = None if implicit else rp._get_named_custom_provider(provider)
+    if entry and _clean(entry.get("base_url")).rstrip("/") == _clean(base_url).rstrip("/"):
+        return _named_entry_probe_key(rp, entry, base_url)
+    custom = not implicit and (provider == "custom" or rp._resolves_to_custom(provider))
+    return _model_block_probe_key(rp, model_cfg, base_url, custom=custom, env_keys=custom or implicit)
+
+
+def _named_entry_probe_key(rp, entry: dict[str, Any], base_url: str) -> Optional[str]:
+    """:func:`_resolve_named_custom_runtime`'s credential for *entry*, as a probe sends it; a pool's
+    pick as :func:`_pool_probe_key` returns it, else the entry's own string key or None."""
+    pooled = _pool_probe_key(rp, base_url, entry.get("provider_key") or entry.get("name"))
+    if pooled is not None:
+        return pooled
+    key = _named_entry_key(rp, entry, base_url, str(entry.get("name") or "custom"))
+    return key if isinstance(key, str) and key else None
+
+
+def _model_block_probe_key(rp, model_cfg: dict[str, Any], base_url: str, *, custom: bool,
+                           env_keys: bool) -> Optional[str]:
+    """``_resolve_openrouter_runtime``'s credential for the bare route at ``model.base_url``; a pool's
+    pick as :func:`_pool_probe_key` returns it, else the first usable string key or None."""
+    if custom and (pooled := _pool_probe_key(rp, base_url, None)) is not None:
+        return pooled
+    declared, entry_key = _owning_entry_credential(rp, base_url) if custom else (False, "")
+    implicit = rp._host_gated_env_key_candidates(base_url, ollama=True) if env_keys and not declared else []
+    candidates = (_clean(model_cfg.get("api_key") or model_cfg.get("api")), _key_env_secret(model_cfg, "model"), *implicit)
+    key = next((c for c in candidates if rp.has_usable_secret(c)), "") or entry_key
+    return key if isinstance(key, str) and key else None
+
+
+def _pool_probe_key(rp, base_url: str, provider_name: Any) -> Optional[str]:
+    """The key of the row the custom pool owning *base_url* would select, None when no pool serves it; a loopback
+    endpoint's unusable legacy key is "" (the runtime sends its ``no-key-required`` placeholder)."""
+    picked = _custom_pool_pick(rp, base_url, provider_name, probe=True)
+    if picked is None:
+        return None
+    key = picked[2]
+    return "" if not rp.has_usable_secret(key) and rp._loopback_hostname(base_url_hostname(base_url)) else key
 
 
 def _entry_url(entry: dict[str, Any]) -> str:
@@ -573,44 +660,62 @@ def _entry_credential(rp, entry: dict[str, Any], name: str) -> Any:
     return next((c for c in candidates if rp.has_usable_secret(c)), "")
 
 
-def _try_resolve_from_custom_pool(
-    base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None,
-) -> Optional[dict[str, Any]]:
-    """Runtime dict from the first credential pool that owns this custom endpoint, else None. A pool
-    the owning entry shares with a same-named built-in yields only the entry's rows (entry_scoped_pool)."""
-    rp = _rp()
+def _custom_pool_pick(rp, base_url: str, provider_name: Any, *, probe: bool = False) -> Optional[tuple[str, Any, str]]:
+    """``(pool_key, pool, key)`` from the first credential pool that owns this custom endpoint, else
+    None. A pool the owning entry shares with a same-named built-in yields only the entry's rows,
+    and only those bound to this endpoint's origin (entry_scoped_pool). ``probe`` takes the row the
+    pool's strategy would select (``choose``) without counting it or rotating the pool."""
     try:
         # A frozen route's entry owns the pool, never the live one (a live URL edit would drop it).
         frozen = rp._FROZEN_RUNTIME_CONFIG.get()
         scope = {} if frozen is None else {"config": frozen}
         raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name, **scope))
         owner = _owning_entry(rp, base_url, provider_name)
-    except Exception:
+    except Exception:  # an unreadable config or auth store leaves the route to its config credential
+        logger.debug("Custom pool lookup for %s failed", base_url, exc_info=True)
         raw_keys, owner = [], None
     # Order-preserving dedupe of normalized keys.
     candidates = list(dict.fromkeys(k for k in (str(key or "").strip().lower() for key in raw_keys) if k))
     for pool_key in candidates:
         try:
-            if (pool := entry_scoped_pool(rp.load_pool(pool_key), pool_key, owner)) is None:
+            if (pool := entry_scoped_pool(rp.load_pool(pool_key), pool_key, owner, base_url)) is None:
                 continue
-            entry = pool.select() if pool.has_credentials() else None
+            entry = (pool.choose() if probe else pool.select()) if pool.has_credentials() else None
             pool_api_key = rp._pool_entry_api_key(entry) if entry is not None else ""
-            if not pool_api_key:
-                continue
-            if not rp.has_usable_secret(pool_api_key) and rp._loopback_hostname(base_url_hostname(base_url)):
-                # Legacy configs used short placeholder keys ('123', 'm') for local no-auth
-                # services; has_usable_secret's 4-char floor rejects them. Every other path
-                # substitutes "no-key-required" for a loopback endpoint — this was the one gap.
-                # Every OTHER resolution path in this file already substitutes "no-key-required" for a
-                # loopback endpoint with no usable secret (the config-based custom_providers fallback a few
-                # hundred lines below, and the "actual" provider's local-offline exemption further down) --
-                # this pool path was the one gap (issue #86864).
-                pool_api_key = "no-key-required"
-            return rp._runtime(provider_label, api_mode_override or rp._detect_api_mode_for_url(base_url) or "chat_completions",
-                               base_url, pool_api_key, source=f"pool:{pool_key}", credential_pool=pool)
-        except Exception:
+            if pool_api_key:
+                return pool_key, pool, pool_api_key
+        except Exception:  # one unreadable pool must not hide the next candidate's
+            logger.debug("Custom pool %s unreadable", pool_key, exc_info=True)
             continue
     return None
+
+
+def _named_entry_key(rp, entry: dict[str, Any], base_url: str, name: str) -> Any:
+    """A named entry's credential when no pool serves it: its own (:func:`_entry_credential`), else,
+    for an entry that declares none, the host-gated env keys."""
+    return _entry_credential(rp, entry, name) or next(
+        (c for c in ([] if entry_declares_credential(entry) else rp._host_gated_env_key_candidates(base_url, ollama=False))
+         if rp.has_usable_secret(c)), "")
+
+
+def _try_resolve_from_custom_pool(
+    base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Runtime dict from the first credential pool that owns this custom endpoint (see
+    :func:`_custom_pool_pick`), else None."""
+    rp = _rp()
+    picked = _custom_pool_pick(rp, base_url, provider_name)
+    if picked is None:
+        return None
+    pool_key, pool, pool_api_key = picked
+    if not rp.has_usable_secret(pool_api_key) and rp._loopback_hostname(base_url_hostname(base_url)):
+        # Legacy configs used short placeholder keys ('123', 'm') for local no-auth services;
+        # has_usable_secret's 4-char floor rejects them. Every other resolution path substitutes
+        # "no-key-required" for a loopback endpoint with no usable secret; this pool path was the
+        # one gap (issue #86864).
+        pool_api_key = "no-key-required"
+    return rp._runtime(provider_label, api_mode_override or rp._detect_api_mode_for_url(base_url) or "chat_completions",
+                       base_url, pool_api_key, source=f"pool:{pool_key}", credential_pool=pool)
 
 
 def _custom_provider_request_overrides(custom_provider: dict[str, Any]) -> dict[str, Any]:
@@ -802,10 +907,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # minted per request (short-lived bearers would go stale mid-session); both wire clients accept a
     # callable api_key (the Entra ID contract). A declared credential that resolves to nothing gets no
     # implicit host-gated env key: on the entry's built-in's host that is another account's key.
-    api_key: Any = explicit_key if rp.has_usable_secret(explicit_key) else (
-        _entry_credential(rp, custom_provider, str(custom_provider.get("name", requested_provider) or "custom"))
-        or next((c for c in ([] if entry_declares_credential(custom_provider)
-                             else rp._host_gated_env_key_candidates(base_url, ollama=False)) if rp.has_usable_secret(c)), ""))
+    api_key: Any = explicit_key if rp.has_usable_secret(explicit_key) else _named_entry_key(
+        rp, custom_provider, base_url, str(custom_provider.get("name", requested_provider) or "custom"))
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)

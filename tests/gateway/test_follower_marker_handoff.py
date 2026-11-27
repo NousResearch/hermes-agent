@@ -62,8 +62,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     follower = await authority.submit(actor, Submission('two', ref, {'text': 'two'}, 'queue'))
     follower_queued.set()
     assert await asyncio.wait_for(first, 10) == 'reply to one'
-    from hermes_state_runtime import get_session_admission
     await async_wait_until(
-        lambda: get_session_admission(authority.db, admission_id=follower.admission_id)['status'] == 'terminal',
+        lambda: authority.persistence.admissions.get(admission_id=follower.admission_id).status == 'terminal',
         timeout=10, what='the follower to settle')
     assert slot_at_follower == [None], "the follower's marker overwrote turn one's before its reply was ledgered"

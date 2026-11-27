@@ -206,6 +206,19 @@ class GatewayRuntimeInitMixin:
         # here it ran before the control socket, adapters and the code_sha stamp — so the first
         # restart of the day (the ``hermes update`` one) looked hung and failed fleet verification.
 
+    @property
+    def persistence(self):
+        """The storage interface handle for the active profile scope, borrowed from ``session_store`` as
+        ``_session_db`` is (the store closes it); without a session store, the runner's own handle on the scope's
+        store, as ``_session_db`` opens it. None while ``_session_db`` is pinned."""
+        from gateway.run import _SESSION_DB_UNPINNED
+        if getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED) is not _SESSION_DB_UNPINNED:
+            return None
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return self._open_session_db_for_active_scope()
+        return getattr(store, "persistence", None)
+
     def _init_registries_and_clocks(self) -> None:
         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""
         from gateway.run import (Dict, List, Optional, asyncio, time)

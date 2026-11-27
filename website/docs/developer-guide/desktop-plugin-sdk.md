@@ -1432,9 +1432,12 @@ host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
-host.openWorkspace(id, { render, title?, minWidth?, onClose? })
+host.openWorkspace(id, { render, title?, minWidth?, onClose?, approvalScope? })
                                            // dock a plugin-rendered tab into the MAIN
-                                           //   workspace zone and reveal it; returns a disposer
+                                           //   workspace zone and reveal it; returns a disposer.
+                                           //   approvalScope: 'per-profile' (a room of several
+                                           //   profiles) shows a per-profile approvals hint in
+                                           //   the statusbar instead of the active profile's mode
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
@@ -1457,6 +1460,9 @@ host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Ca
 host.toolsets.list(profile?)               // toolsets + enabled state
 host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
 host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail reads
+host.setProfileBackend({ plugin, profile, purpose?, prepare? | url, token })  // run a profile's backend yourself → { applied }
+host.clearProfileBackend({ plugin, profile, beforeApply? })  // give it back to this computer's backend → { applied }
+host.profileBackendFeatures                // { prepare, purpose, beforeApply }: what this build supports
 host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
 host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
 host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
@@ -1487,6 +1493,71 @@ programmatically. Feature-detect it (`typeof host.openWorkspace ===
 'function'`) and fall back to a regular contributed pane on older desktop
 builds — Bot Mode's group-chat rooms are the reference consumer (main-window
 takeover when available, in-panel view otherwise).
+
+`host.setProfileBackend()` routes one profile to a backend your plugin runs on
+this computer, typically a sandbox behind a loopback proxy. The app asks the
+user first in a native dialog that names your plugin and the profile, says the
+chats will run "on this computer", and shows your optional `purpose` (one line,
+at most 160 characters) as your plugin's own words. It accepts only
+`http://127.0.0.1`, `localhost` or `[::1]` addresses and refuses a profile that
+already connects to a remote host or runs through another plugin. It resolves
+`{ applied: false }` when the user declines.
+
+- Pass `url` and `token` for a backend that is already running, or `prepare`
+  to start it only after the user agrees: the app confirms, awaits
+  `prepare()` for `{ url, token }`, then switches without asking again. The
+  profile stays on this computer's backend until then. A Cancel never calls
+  `prepare`; if it throws, nothing changes and the error propagates.
+- A hook (`prepare`, `beforeApply`) may run for up to 10 minutes. The composer
+  and the queue hold messages for as long as it runs. A hook that has not
+  returned after 10 minutes loses the hold, and messages then go to the backend
+  the profile is still on. The user's answer is kept for 5 minutes: when a hook
+  returns later than that, the app asks once more before it switches.
+- On a switch, only that profile's chats reconnect, in place, in every open
+  window; each window stays on the profile it shows. A window connected to
+  another gateway is left as it is, also when the profile it shows there has
+  the same name. The profile rail marks it
+  Sandboxed, the app lists profiles from this computer for it, and it stops
+  copying desktop plugins out of that profile's home.
+- `host.clearProfileBackend()` routes the profile back after the same kind of
+  confirm. Pass `beforeApply` to stop your backend in between (and clear core's
+  `profiles_run_elsewhere` marker): the app asks, awaits `beforeApply()`, then
+  switches back without asking again. A profile that had its own local entry
+  (saved SSH settings) gets it back.
+- The app skips that home's desktop plugins only while the profile is routed
+  to your backend or marked. After the switch back the home is this computer's
+  again and is read like any other profile's: desktop plugins found in it are
+  copied out and loaded, and Hermes's own backend uses its `config.yaml`,
+  hooks, cron jobs and skills. If your sandbox can write the home, grant
+  `plugins/` and `desktop-plugins/` read-only inside it, and treat whatever
+  else it can write there as input the user's own backend will trust.
+- While core's `profiles_run_elsewhere/<profile>.json` marker names a profile,
+  the app refuses to start it on this computer, so a lost route fails closed.
+- While the profile's connection is down, the app asks
+  `GET /api/plugins/<plugin>/status` on the profile's route. Answer
+  `{ "state": "starting" | "restarting" | "stopping" }` for a planned
+  transition and `"running"` once the backend is back: the status bar and
+  composer then show "Restarting sandbox…" instead of offline. A request the
+  restart or the switch cut off waits for the backend and is sent again only
+  when a second run cannot repeat work: it was never written to the socket, it
+  is a read the app repeats (`session.resume`, `session.history`), or it
+  carries a `submission_id` or `input_id`. Any other request fails with the
+  connection's error, as it does without a plugin, and nothing sends it again.
+  Any other answer is a failure. With no planned transition, a request whose
+  connection went silent (a heartbeat timeout) is not sent again: its caller
+  gets the error.
+- The composer keeps a message away from a backend that is about to go away.
+  During a switch (`"starting"`, `"stopping"`) the message stays in the composer
+  until the profile is on its new backend. During a switch the composer also
+  does not take `host.composer.submit` or other requests sent through it:
+  nothing is sent or queued, although the call still returns `true` while a
+  composer is visible.
+  During `"restarting"` a message waits in the chat's queue and is sent when the
+  backend is back, so report `"restarting"` only when the same backend returns
+  with the same sessions.
+
+Feature-detect with `typeof host.setProfileBackend === 'function'` and
+`host.profileBackendFeatures`.
 
 `host.paneVisibility(paneId)` returns a readonly reactive atom that is `true`
 while a contributed pane is actually on screen: present in the layout tree,
@@ -2261,7 +2332,7 @@ async def action(body: dict):
 
 Routes mount under `/api/plugins/<id>/` (`GET /api/plugins/<id>/board`, …).
 Backend code runs inside the gateway process, so it can import from the
-hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
+hermes-agent codebase directly (`persistence_assembly`, `hermes_cli.config`, …). See
 [Extending the Dashboard → Backend API routes](../user-guide/features/extending-the-dashboard.md#backend-api-routes)
 for the full backend reference — the mount is identical.
 
@@ -2491,7 +2562,7 @@ pipeline as a trust boundary.
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
-| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches` |
+| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches`, `PROFILE_ID_ARG_RE` (the profile-id grammar) |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.
 

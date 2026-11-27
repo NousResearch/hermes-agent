@@ -6,11 +6,14 @@ import { type CanonicalGroupMessages } from './canonical-group-locales'
 import { type CrossGatewayGroupMessages } from './cross-gateway-locales'
 import { type GroupChatMessages } from './group-chat-locales'
 import type { RosterChromeMessages } from './roster-chrome-locales'
+import { type TeammateWaitMessages } from './teammate-wait-locales'
 
 export type BotsMessages = {
   canonical: { [K in keyof CanonicalGroupMessages]: string }
   /** Group chats seating bots from more than one connected machine. */
   crossGateway: { [K in keyof CrossGatewayGroupMessages]: CrossGatewayGroupMessages[K] }
+  /** The "Waiting on teammates" strip above a Bot Chat composer (`teammate-waits.tsx`). */
+  waiting: TeammateWaitMessages
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string
@@ -298,11 +301,6 @@ export type BotsMessages = {
   }
   /** Skills hub + MCP setup surfaces embedded in the bot editor. */
   tools: {
-    installHint: (name: string) => string
-    installed: (name: string) => string
-    installFailed: (name: string) => string
-    searchHint: string
-    resizeHint: string
     addServerFailed: string
     noTarget: string
     setKeyFailed: (name: string) => string
@@ -318,9 +316,7 @@ export type BotsMessages = {
     setupFailed: string
     signIn: string
     setUp: string
-    skillsHub: string
     filterSkills: string
-    searchHub: string
     noMcpServers: string
   }
 

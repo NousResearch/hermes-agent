@@ -18,22 +18,24 @@ import json
 import os
 import random
 import re
+import socket
 import sys
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
+import urllib.error
 from urllib.parse import urlparse
+import urllib.request
 
 # Optional: prefer `requests` if installed (better redirects, streaming, header handling)
 try:
     import requests  # type: ignore[import-not-found]
+    import urllib3  # type: ignore[import-not-found]
     HAS_REQUESTS = True
 except ImportError:  # pragma: no cover - exercised via stdlib fallback
     HAS_REQUESTS = False
-    import urllib.error
-    import urllib.request
 
 
 # =============================================================================
@@ -50,6 +52,11 @@ DEFAULT_RETRIES = 3                # total attempts including the first
 RETRY_BASE_DELAY = 1.0             # seconds — exponential backoff base
 RETRY_MAX_DELAY = 30.0             # seconds — cap on backoff
 RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504, 522, 524}
+# Answers that say the request was not processed, so even a workflow
+# submission may be sent again. Any 5xx can come from a proxy that already
+# forwarded the request to a server that queued it, so submissions never replay them.
+NOT_PROCESSED_STATUS_CODES = {408, 429}
+_REPLAYABLE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 # Streaming download chunk size (bytes)
 DOWNLOAD_CHUNK_SIZE = 1 << 16  # 64 KiB
@@ -415,6 +422,31 @@ class HTTPResponse:
         return json.loads(self.body.decode("utf-8", errors="replace"))
 
 
+class RequestNotSent(ConnectionError):
+    """The connection failed before any request bytes left (refused, DNS, connect timeout)."""
+
+
+@dataclass
+class _Attempt:
+    """What the transport observed during one attempt."""
+    redirected: bool = False
+
+
+def _may_resend(outcome: HTTPResponse | Exception, trace: _Attempt, replayable: bool) -> bool:
+    """Whether sending the request again cannot duplicate work the server accepted.
+
+    A followed redirect means the original request was answered, so nothing seen
+    afterwards proves a submission was rejected.
+    """
+    if replayable:
+        return isinstance(outcome, Exception) or outcome.status in RETRY_STATUS_CODES
+    if trace.redirected:
+        return False
+    if isinstance(outcome, Exception):
+        return isinstance(outcome, RequestNotSent)
+    return outcome.status in NOT_PROCESSED_STATUS_CODES
+
+
 def _sleep_backoff(attempt: int, base: float = RETRY_BASE_DELAY, cap: float = RETRY_MAX_DELAY) -> None:
     """Sleep with full-jitter exponential backoff."""
     delay = min(cap, base * (2 ** attempt))
@@ -440,8 +472,14 @@ def http_request(
     """Single entry point for all HTTP traffic.
 
     Behavior:
-      - Retries on connection errors and on HTTP statuses in RETRY_STATUS_CODES,
-        with exponential backoff + jitter.
+      - Bodyless GET/HEAD/OPTIONS retry on connection errors and HTTP statuses
+        in RETRY_STATUS_CODES, with exponential backoff + jitter.
+      - Other requests (workflow submissions) retry only when the request
+        provably was not processed: RequestNotSent (the first connection
+        failed) or a status in NOT_PROCESSED_STATUS_CODES. A timeout, a dropped
+        connection, a failed redirect or any 5xx after sending is an unknown
+        outcome — the job may be queued — so it is returned or raised, never replayed. Multipart uploads never retry: their file
+        stream is consumed by the first attempt.
       - For cross-host redirects, drops Authorization-style headers (so signed
         URLs don't leak the API key to S3/CloudFront).
       - When `stream=True` and `sink` is a Path, streams the response body to
@@ -463,22 +501,30 @@ def http_request(
                 "Install with: pip install requests"
             )
 
+    # client_id routes events, but does not deduplicate workflow submissions.
+    replayable = method.upper() in _REPLAYABLE_METHODS and all(
+        body is None for body in (json_body, data, files, form)
+    )
+    if files is not None or form is not None:
+        retries = min(retries, 1)
+
     last_exc: Exception | None = None
     for attempt in range(retries):
+        trace = _Attempt()
         try:
             resp = _http_once(
                 method=method, url=url, headers=headers,
                 json_body=json_body, data=data, files=files, form=form,
                 timeout=timeout, follow_redirects=follow_redirects,
-                stream=stream, sink=sink,
+                stream=stream, sink=sink, trace=trace,
             )
-            if resp.status in RETRY_STATUS_CODES and attempt + 1 < retries:
+            if attempt + 1 < retries and _may_resend(resp, trace, replayable):
                 _sleep_backoff(attempt)
                 continue
             return resp
         except (TimeoutError, ConnectionError, OSError) as e:
             last_exc = e
-            if attempt + 1 < retries:
+            if attempt + 1 < retries and _may_resend(e, trace, replayable):
                 _sleep_backoff(attempt)
                 continue
             raise
@@ -503,7 +549,12 @@ if HAS_REQUESTS:
         critical when ComfyUI Cloud's `/api/view` redirects to a signed S3 URL.
         """
 
+        def __init__(self, trace: _Attempt | None = None):
+            super().__init__()
+            self.trace = trace or _Attempt()
+
         def rebuild_auth(self, prepared_request, response):  # type: ignore[override]
+            self.trace.redirected = True
             super().rebuild_auth(prepared_request, response)
             try:
                 old_url = response.request.url
@@ -524,9 +575,9 @@ def _http_once(
     *, method: str, url: str, headers: dict[str, str],
     json_body: Any, data: bytes | None, files: dict | None, form: dict | None,
     timeout: float, follow_redirects: bool,
-    stream: bool, sink: Path | None,
+    stream: bool, sink: Path | None, trace: _Attempt,
 ) -> HTTPResponse:
-    """One HTTP attempt. No retry."""
+    """One HTTP attempt. No retry; redirects followed are recorded on `trace`."""
     if HAS_REQUESTS:
         kwargs: dict[str, Any] = {
             "method": method, "url": url, "headers": headers,
@@ -543,7 +594,7 @@ def _http_once(
             kwargs["stream"] = True
 
         # Use the subclass that strips sensitive headers cross-host
-        with _StripSensitiveOnRedirectSession() as s:
+        with _StripSensitiveOnRedirectSession(trace) as s:
             try:
                 r = s.request(**kwargs)
                 if stream and sink is not None:
@@ -564,11 +615,33 @@ def _http_once(
             except requests.exceptions.RequestException as e:
                 # Convert to TimeoutError / ConnectionError so the retry loop
                 # picks them up uniformly with the stdlib path.
+                # After a redirect the original request was delivered, so nothing is "not sent".
+                if not trace.redirected and _requests_never_sent(e):
+                    raise RequestNotSent(str(e)) from e
                 if isinstance(e, requests.exceptions.Timeout):
                     raise TimeoutError(str(e)) from e
                 raise ConnectionError(str(e)) from e
 
     # ---------- stdlib fallback ----------
+    return _http_once_stdlib(method=method, url=url, headers=headers, json_body=json_body, data=data,
+                             timeout=timeout, follow_redirects=follow_redirects, stream=stream, sink=sink,
+                             trace=trace)
+
+
+def _requests_never_sent(e: Exception) -> bool:
+    """True when requests failed while connecting (to the host or its proxy), before any request byte."""
+    if isinstance(e, requests.exceptions.ConnectTimeout):
+        return True
+    reason = getattr(e.args[0], "reason", None) if e.args else None
+    if isinstance(reason, urllib3.exceptions.ProxyError):
+        reason = reason.original_error
+    return isinstance(reason, urllib3.exceptions.NewConnectionError)
+
+
+def _http_once_stdlib(
+    *, method: str, url: str, headers: dict[str, str], json_body: Any, data: bytes | None,
+    timeout: float, follow_redirects: bool, stream: bool, sink: Path | None, trace: _Attempt,
+) -> HTTPResponse:
     if json_body is not None:
         body_bytes = json.dumps(json_body).encode("utf-8")
         headers.setdefault("Content-Type", "application/json")
@@ -587,6 +660,7 @@ def _http_once(
         def redirect_request(self, req2, fp, code, msg, hdrs, newurl):
             if not self.follow:
                 return None
+            trace.redirected = True
             new_host = (urlparse(newurl).hostname or "").lower()
             if new_host != self.original_host:
                 # Build a new request with cleaned headers
@@ -599,7 +673,8 @@ def _http_once(
             return super().redirect_request(req2, fp, code, msg, hdrs, newurl)
 
     original_host = (urlparse(url).hostname or "").lower()
-    opener = urllib.request.build_opener(_RedirectHandler(original_host, follow_redirects))
+    redirects = _RedirectHandler(original_host, follow_redirects)
+    opener = urllib.request.build_opener(redirects)
 
     try:
         resp = opener.open(req, timeout=timeout)
@@ -610,6 +685,12 @@ def _http_once(
             body=e.read() or b"",
             url=getattr(e, "url", url),
         )
+    except urllib.error.URLError as e:
+        # Refused or unresolvable: no byte was sent. A timeout here is ambiguous
+        # (connect or read), so it stays a plain unknown-outcome error.
+        if not trace.redirected and isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
+            raise RequestNotSent(str(e)) from e
+        raise
 
     final_url = resp.geturl()
     final_status = resp.status

@@ -3,7 +3,7 @@ already closed by compression must adopt the LIVE continuation tip instead of
 dying with ``session_persistence_failed`` and a misleading "full disk" dialog.
 
 The store resolves the continuation chain transitively via the canonical API
-``SessionDB.get_compression_tip`` (bounded walk, excludes branch/delegate/tool
+``lineage.tip`` (bounded walk, excludes branch/delegate/tool
 children, prefers live children over stale closed siblings). This suite proves
 the agent flush path:
 
@@ -21,13 +21,17 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
-def _flush_agent(db, session_id):
-    """Bind the real flush methods onto a stand-in over a live SessionDB."""
+
+def _flush_agent(store, session_id):
+    """Bind the real flush methods onto a stand-in whose store is the writer handle."""
     agent = SimpleNamespace(
-        _session_db=db,
+        _session_db=store,
+        persistence=store,
         _session_db_created=True,
         _persist_disabled=False,
         session_id=session_id,
@@ -53,43 +57,43 @@ def _flush_agent(db, session_id):
     )
     return agent
 
-def _build_compression_chain(db: SessionDB, chain: list[str]) -> tuple[str, str]:
+def _build_compression_chain(store, chain: list[str]) -> tuple[str, str]:
     """Create ``chain[0] -> ... -> chain[-1]`` where every session except the
     last is compression-ended and the last is live. Returns (root, live_head).
     """
     for i, sid in enumerate(chain):
         parent = chain[i - 1] if i > 0 else None
-        db.create_session(sid, source="tui", parent_session_id=parent)
+        seed_session(store, sid, "tui", parent_session_id=parent)
         if i < len(chain) - 1:
-            db.end_session(sid, "compression")
+            store.sessions.end(sid, "compression")
     return chain[0], chain[-1]
 
 def test_flush_adopts_unique_live_continuation(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("parent", source="tui")
-        db.append_message("parent", "user", "before split")
-        db.end_session("parent", "compression")
-        db.create_session("child", source="tui", parent_session_id="parent")
+        seed_session(store, "parent", "tui")
+        seed_messages(store, "parent", {"role": "user", "content": "before split"})
+        store.sessions.end("parent", "compression")
+        seed_session(store, "child", "tui", parent_session_id="parent")
 
-        agent = _flush_agent(db, "parent")
+        agent = _flush_agent(store, "parent")
         messages = [{"role": "user", "content": "steered after compression"}]
         result = agent._flush_messages_to_session_db(messages, [])
 
         assert result is True, "flush must succeed after adopting the continuation"
         assert agent.session_id == "child"
-        durable = db.get_messages_as_conversation("child")
+        durable = conversation(store, "child")
         assert any(
             m.get("content") == "steered after compression" for m in durable
         ), "the user message must land in the child session, not be lost"
         # The compression-closed parent stays immutable.
-        parent_rows = db.get_messages_as_conversation("parent")
+        parent_rows = conversation(store, "parent")
         assert not any(
             m.get("content") == "steered after compression" for m in parent_rows
         )
         assert agent._compression_adoption_failed is False
     finally:
-        db.close()
+        store.close()
 
 def test_flush_adopts_live_head_across_compression_chain(tmp_path: Path) -> None:
     """A stale writer behind a chain of >=2 compressions adopts the live head.
@@ -98,31 +102,31 @@ def test_flush_adopts_live_head_across_compression_chain(tmp_path: Path) -> None
     -> tip(live)`) that a depth-1 live-child lookup cannot resolve, because the
     direct child is itself already compression-ended.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        root, head = _build_compression_chain(db, ["root", "mid", "tip"])
+        root, head = _build_compression_chain(store, ["root", "mid", "tip"])
 
-        agent = _flush_agent(db, root)
+        agent = _flush_agent(store, root)
         messages = [{"role": "user", "content": "steered after double rotation"}]
         result = agent._flush_messages_to_session_db(messages, [])
 
         assert result is True, "flush must succeed by adopting the chain head"
         assert agent.session_id == head, "agent must move to the live chain head"
-        durable = db.get_messages_as_conversation(head)
+        durable = conversation(store, head)
         assert any(
             m.get("content") == "steered after double rotation" for m in durable
         ), "the user message must land in the chain head, not be lost"
     finally:
-        db.close()
+        store.close()
 
 def test_flush_fails_closed_when_no_continuation(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("parent", source="tui")
-        db.append_message("parent", "user", "before split")
-        db.end_session("parent", "compression")
+        seed_session(store, "parent", "tui")
+        seed_messages(store, "parent", {"role": "user", "content": "before split"})
+        store.sessions.end("parent", "compression")
 
-        agent = _flush_agent(db, "parent")
+        agent = _flush_agent(store, "parent")
         messages = [{"role": "user", "content": "steered after compression"}]
         result = agent._flush_messages_to_session_db(messages, [])
 
@@ -131,20 +135,20 @@ def test_flush_fails_closed_when_no_continuation(tmp_path: Path) -> None:
         assert agent._compression_adoption_failed is True
         assert agent._last_persistence_error_cause == "compression_closed"
     finally:
-        db.close()
+        store.close()
 
 def test_flush_fails_closed_when_tip_is_stale_closed(tmp_path: Path) -> None:
     """The canonical tip walk may land on a stale closed sibling (e.g.
     ``ws_orphan_reap``) — a non-live tip must NOT be adopted; fail closed."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("parent", source="tui")
-        db.append_message("parent", "user", "before split")
-        db.end_session("parent", "compression")
-        db.create_session("stale", source="tui", parent_session_id="parent")
-        db.end_session("stale", "ws_orphan_reap")
+        seed_session(store, "parent", "tui")
+        seed_messages(store, "parent", {"role": "user", "content": "before split"})
+        store.sessions.end("parent", "compression")
+        seed_session(store, "stale", "tui", parent_session_id="parent")
+        store.sessions.end("stale", "ws_orphan_reap")
 
-        agent = _flush_agent(db, "parent")
+        agent = _flush_agent(store, "parent")
         messages = [{"role": "user", "content": "steered after compression"}]
         result = agent._flush_messages_to_session_db(messages, [])
 
@@ -152,35 +156,34 @@ def test_flush_fails_closed_when_tip_is_stale_closed(tmp_path: Path) -> None:
         assert agent.session_id == "parent"
         assert agent._compression_adoption_failed is True
     finally:
-        db.close()
+        store.close()
 
 def test_flush_adopts_exactly_once_no_retry_loop(tmp_path: Path, monkeypatch) -> None:
     """Adoption budget: the tip lookup runs at most once per flush, and a
     second closed-parent write after adoption fails closed instead of looping.
     """
-    from hermes_state_errors import CompressionSessionClosedError
+    from persistence import CompressionClosed
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        _build_compression_chain(db, ["root", "tip"])
+        _build_compression_chain(store, ["root", "tip"])
 
-        agent = _flush_agent(db, "root")
+        agent = _flush_agent(store, "root")
 
         tip_calls = {"count": 0}
-        orig_tip = SessionDB.get_compression_tip
 
-        def _counting_tip(self, session_id):
+        def _counting_tip(session_id):
             tip_calls["count"] += 1
-            return orig_tip(self, session_id)
-
-        monkeypatch.setattr(SessionDB, "get_compression_tip", _counting_tip)
+            return store.lineage.tip(session_id)
 
         # Every batch write raises closed — including the post-adoption retry
         # against the live tip (simulating the tip rotating again mid-flush).
-        def _always_closed(self, *, session_id, messages, **kwargs):
-            raise CompressionSessionClosedError(session_id)
+        def _always_closed(session_id, messages, **kwargs):
+            raise CompressionClosed(session_id, session_id)
 
-        monkeypatch.setattr(SessionDB, "append_messages_batch", _always_closed)
+        agent.persistence = SimpleNamespace(
+            read_only=False, scope=store.scope, sessions=store.sessions,
+            lineage=SimpleNamespace(tip=_counting_tip), messages=SimpleNamespace(append_batch=_always_closed))
 
         messages = [{"role": "user", "content": "steered after compression"}]
         result = agent._flush_messages_to_session_db(messages, [])
@@ -189,15 +192,16 @@ def test_flush_adopts_exactly_once_no_retry_loop(tmp_path: Path, monkeypatch) ->
         assert tip_calls["count"] == 1, "tip lookup must happen exactly once"
         assert agent._compression_adoption_failed is True
     finally:
-        db.close()
+        store.close()
 
 # ---------------------------------------------------------------------------
 # Diagnostics: the failure must never read like a disk problem.
 # ---------------------------------------------------------------------------
 
 def test_compression_closed_error_classifies_as_compression_closed() -> None:
-    from hermes_state import classify_persistence_error
-    from hermes_state_errors import CompressionSessionClosedError, PERSISTENCE_ERROR_CAUSES
+    from persistence.sqlite._state.errors import (
+        PERSISTENCE_ERROR_CAUSES, CompressionSessionClosedError, classify_persistence_error,
+    )
 
     cause = classify_persistence_error(CompressionSessionClosedError("session-abc"))
     assert cause == "compression_closed"

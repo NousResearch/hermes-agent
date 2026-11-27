@@ -1,0 +1,47 @@
+name: oikos
+title: Oikos
+repo: https://github.com/ousiaresearch/oikos
+sha: dce93799b2e8c7e2d6ac4839dbd6483663435207
+description: >-
+  Pixel habitat page for Hermes Desktop: each of your Hermes profiles becomes a resident with its own
+  home and routines on a 9-district pixel-art map, and live gateway activity (turns, tool use,
+  subagents, approval prompts) shows up as residents walking to stations. Desktop-only:
+  desktop/plugin.js uses one route, a sidebar row, a palette command and a status-bar chip through the
+  plugin SDK; no agent tools, hooks, middleware, env vars, backend or credentials. Disclosure: reads
+  the profile list through host.profiles.list() (or the profiles.list gateway RPC) and keeps each
+  profile's name, display name and description; reads the gateway, profile, focusedSessionId,
+  activeSessionId and busy state atoms (sessions are shown by the first 8 characters of their id, no
+  session title is read); and from gateway events uses only the event type, session id, profile tag,
+  tool name and subagent id/index, never tool arguments, previews, results, paths, commands, message
+  or reasoning text. World state, text the user types in Oikos and short activity labels built from
+  tool names are kept in the plugin's own ctx.storage only. Model use is off by default; if the user
+  opts in on the Chronicle tab, it calls the gateway RPC llm.oneshot through host.request (task
+  "oikos_mind", no session_id; model from auxiliary.oikos_mind, else Hermes's automatic choice, which
+  may be paid) about every 3 minutes while its page is visible. Each request carries up to six
+  residents' names, built-in or user-typed citizen personas (Hermes profile descriptions are replaced
+  by a fixed placeholder), mood, needs, item ids, up to 3 notes the model itself wrote, and station
+  ids, time and weather; chat, station tasks, typed memories, profile descriptions and all Hermes
+  session content are never sent. Spend is limited by Oikos's own estimated counters (default 10
+  requests an hour, about 20,000 estimated tokens a day, a reload lease), which are not a
+  billing cap enforced by Hermes or the provider. No direct third-party network requests, shell, telemetry or
+  self-updater; optional model requests go through Hermes and its configured provider. The bundle embeds LimeZu pixel art (Modern Exteriors, Modern Interiors, Character
+  Generator 2.0) as base64 PNG sheets, credited in THIRD_PARTY_NOTICES.md; the art is not under the
+  MIT code licence.
+maintainer: ousiaresearch
+tier: community
+category: desktop
+version: "0.1.0"
+docs_url: https://github.com/ousiaresearch/oikos#readme
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/ousiaresearch/oikos/dce93799b2e8c7e2d6ac4839dbd6483663435207/docs/banner.png
+screenshots: []
+known_issues:
+  - Desktop-only. After installing, make sure the Desktop switch on the Oikos row in Settings → Plugins is on.
+  - The optional model mind is off by default and uses the gateway RPC llm.oneshot rather than the documented ctx.llm plugin route (Oikos has no Python half), so oikos_mind is not listed in the Models settings; it was tested only against a mock gateway, and any failure falls back to the deterministic scheduler.
+  - Model spend limits are Oikos's own character-based estimates, not a hard cap: Hermes may retry a call internally, clearing Desktop storage resets the counters, and two Desktop windows deciding in the same instant can each send one request.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

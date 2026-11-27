@@ -5,6 +5,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
+from tests.fixtures.storage_read import session_row
 
 
 @pytest.mark.parametrize("mode", ["idle", "daily", "both", "none"])
@@ -28,14 +29,14 @@ def test_old_reset_config_cannot_rotate_durable_conversation(tmp_path, mode):
     routed = store.get_or_create_session(source)
     assert routed.session_id == old.session_id
     assert [{"role": m["role"], "content": m["content"]} for m in store.load_transcript(routed.session_id)] == messages
-    assert store._db.get_session(old.session_id)["end_reason"] is None
+    assert session_row(store.persistence, old.session_id)["end_reason"] is None
     # Missing routing indexes must recover the same durable transcript too.
-    store._db.replace_gateway_routing_entries({}, scope=store._routing_scope())
+    store.persistence.routing.replace_routing_entries({}, routing_scope=store._routing_scope())
     store._entries.clear()
     recovered = store.get_or_create_session(source)
     assert recovered.session_id == old.session_id
     explicit = store.reset_session(recovered.session_key)
     assert explicit.session_id != old.session_id
-    assert store._db.get_session(old.session_id)["end_reason"] == "session_reset"
+    assert session_row(store.persistence, old.session_id)["end_reason"] == "session_reset"
     assert [{"role": m["role"], "content": m["content"]} for m in store.load_transcript(old.session_id)] == messages
-    store._db.close()
+    store.close_all_db_handles()

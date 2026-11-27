@@ -118,7 +118,7 @@ terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 
 ### Opt-in: --dangerously-skip-permissions (isolated environments only)
 
-This disables permission prompts for the whole run — grants filesystem, shell, and network access with no prompts. Acceptable only in a throwaway worktree or isolated container.
+This disables permission prompts for the whole run — grants filesystem, shell, and network access with no prompts. Use it only when bypass was explicitly requested, and only with the whole Claude Code process inside an isolation boundary — a container, a VM, or the [sandbox runtime](https://code.claude.com/docs/en/sandbox-environments#sandbox-runtime) — run as a non-root user, where you know which files, network and credentials the session can reach. A git worktree (including `claude -w`) isolates file edits only; it is not a filesystem, network or credential sandbox. Neither is the built-in Bash sandbox (`/sandbox`) on its own: file tools, MCP servers and hooks still run on the host. Even in a container, whatever is mounted or stored there — including Claude Code's own login in `~/.claude` — stays reachable.
 ```
 ❯ 1. No, exit                    ← DEFAULT (safe choice)
   2. Yes, I accept
@@ -283,9 +283,9 @@ Automatically falls back to the specified model when the default is overloaded (
 ### Permission & Safety
 | Flag | Effect |
 |------|--------|
-| `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Throwaway worktree / isolated container only — see "Opt-in" above |
+| `--dangerously-skip-permissions` | Opt-in only: disables ALL permission prompts (file writes, bash, network). Container, VM or sandbox runtime only; a worktree is not a sandbox — see "Opt-in" above |
 | `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
-| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
+| `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` (`bypassPermissions` is the same bypass as `--dangerously-skip-permissions` — same rule, see "Opt-in" above) |
 | `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
 | `--disallowedTools <tools...>` | Blacklist specific tools |
 | `--tools <tools...>` | Override built-in tool set (`""` = none, `"default"` = all, or tool names) |

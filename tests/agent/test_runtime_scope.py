@@ -634,19 +634,19 @@ def test_claim_fence_reads_the_claimed_admission(tmp_path):
     """The fence a turn binds is the one the claim stamped on its admission row."""
     from contextlib import closing
 
-    import hermes_state_runtime as rt
-    from hermes_state import SessionDB
-    from tests.hermes_state.test_target_advance_fence import _local_session
+    from gateway.session_authority import admission_row
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.persistence_sqlite.authority.test_target_advance_fence import _local_session
 
-    with closing(SessionDB(tmp_path / "state.db")) as db:
-        rt.begin_runtime_epoch(db, instance_id="owner")
-        epoch = rt.begin_runtime_epoch(db, instance_id="owner")  # a restarted owner: epoch 2
+    with closing(open_persistence(profile_scope(home=tmp_path))) as db:
+        db.runtime.begin_epoch(instance_id="owner")
+        epoch = db.runtime.begin_epoch(instance_id="owner")  # a restarted owner: epoch 2
         sid = _local_session(db, epoch, tmp_path)
         for n in range(3):
-            rt.admit_session_input(db, epoch=epoch, principal_id="human", session_id=sid,
-                                   request_id=f"r{n}", payload={"text": "hi"})
-            row = rt.claim_session_input(db, epoch=epoch, session_id=sid)
-            rt.settle_session_input(db, epoch=epoch, admission_id=row["admission_id"],
-                                    generation=row["generation"], outcome="completed", result={})
+            db.admissions.admit(epoch=epoch, principal_id="human", session_id=sid,
+                                request_id=f"r{n}", payload={"text": "hi"})
+            row = admission_row(db.admissions.claim(epoch=epoch, session_id=sid))
+            db.admissions.settle(epoch=epoch, admission_id=row["admission_id"],
+                                 generation=row["generation"], outcome="completed", result={})
         assert (epoch, row["generation"]) == (2, 3)
-        assert claim_fence(row) == Fence(2, 3) == Fence(epoch, db.get_session(sid)["runtime_generation"])
+        assert claim_fence(row) == Fence(2, 3) == Fence(epoch, db.sessions.get(sid).runtime_generation)

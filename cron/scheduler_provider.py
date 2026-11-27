@@ -199,9 +199,15 @@ class CronScheduler(ABC):
 
     def claim_fire(self, job_id: str, *, force: bool = False, manual: bool = False) -> dict | None:
         """Durably claim one fire + create its audit attempt. Transports call this synchronously
-        before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread."""
+        before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread. Nothing
+        is claimed for a profile a plugin runs elsewhere (``hermes_cli.profiles_run_elsewhere``)."""
         from cron.executions import create_execution, finish_execution, set_execution_occurrence
         from cron.jobs import claim_job_for_fire
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+        from hermes_constants import get_hermes_home
+
+        if run_elsewhere_for_home(get_hermes_home()) is not None:
+            return None
 
         execution = create_execution(job_id, source=self.name)
         claim_kwargs = {"return_job": True}
@@ -547,7 +553,7 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home, has_credential_platform,
+            has_credential_platform, shared_route_adapters_for_current_home,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
@@ -571,7 +577,7 @@ class InProcessCronScheduler(CronScheduler):
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
             owned = (profile_bot_platforms or {}).get(profile_name)
             if not has_credential_platform(tick_adapters, owned) and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                return shared_route_adapters_for_current_home(adapters)
             return tick_adapters
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.

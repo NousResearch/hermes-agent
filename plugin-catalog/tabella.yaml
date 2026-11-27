@@ -1,6 +1,6 @@
 name: tabella
 repo: https://github.com/dyiapanis/tabella
-sha: e6e53da87b7a2d6ed81dc675c578dafd72a01b0c
+sha: 56de1f134d58bfe70abbb2102d5c9f62d1affa9a
 description: |
   Read, create and convert documents — .docx, .xlsx, .pptx, .pdf, .odt, .ods, .odp — from structured JSON or HTML/CSS, with OCR for scanned files.
 
@@ -15,8 +15,8 @@ tier: community
 category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/dyiapanis/tabella#readme
-version: "2.0.7"
-image: https://raw.githubusercontent.com/dyiapanis/tabella/e6e53da87b7a2d6ed81dc675c578dafd72a01b0c/docs/banner.jpg
+version: "2.0.8"
+image: https://raw.githubusercontent.com/dyiapanis/tabella/56de1f134d58bfe70abbb2102d5c9f62d1affa9a/docs/banner.jpg
 readme: true
 platforms:
   - linux

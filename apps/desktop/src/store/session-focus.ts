@@ -9,6 +9,7 @@ import { $selectedStoredSessionId } from './session'
 // A chat surface: the primary's workspace or a session tile. Everything else a
 // zone can show — the sessions list, Files, Terminal, a preview tab — is chrome.
 export const TILE_PANE_PREFIX = 'session-tile:'
+const PLUGIN_PANE_PREFIX = 'plugin-workspace:'
 
 const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith(TILE_PANE_PREFIX))
 
@@ -18,26 +19,42 @@ const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boole
 // statusbar follow this chat, so they would jump projects mid-click.
 // Remember the pane: a preview can replace its group's active chat tab.
 const $lastContentPane = atom<null | string>(null)
+export const $lastApprovalContentPane = atom<null | string>(null)
+
+export const isApprovalContentPane = (paneId?: string): paneId is string =>
+  isChatPane(paneId) || Boolean(paneId?.startsWith(PLUGIN_PANE_PREFIX))
+
+// Chrome owns focus: follow the remembered group when it fronts another
+// content pane (⌘1..9, drag-to-split) so a preview covering it later keeps it.
+const remember = (
+  store: typeof $lastContentPane,
+  isContent: (paneId?: string) => boolean,
+  tree: ReturnType<typeof $layoutTree.get>,
+  groupId: null | string | undefined,
+  active?: string
+) => {
+  if (!groupId || isContent(active)) {
+    store.set(active ?? null)
+
+    return
+  }
+
+  const last = store.get()
+  const content = last && tree ? findGroupOfPane(tree, last) : null
+
+  if (content && isContent(content.active)) {
+    store.set(content.active)
+  }
+}
 
 const rememberContentPane = () => {
   const groupId = $activeTreeGroup.get()
   const tree = $layoutTree.get()
   const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
-  if (!groupId || isChatPane(active)) {
-    $lastContentPane.set(active ?? null)
-
-    return
-  }
-
-  // Chrome owns focus: follow the remembered group when it fronts another
-  // chat (⌘1..9, drag-to-split) so a preview covering it later keeps it.
-  const last = $lastContentPane.get()
-  const content = last && tree ? findGroupOfPane(tree, last) : null
-
-  if (content && isChatPane(content.active)) {
-    $lastContentPane.set(content.active)
-  }
+  remember($lastContentPane, isChatPane, tree, groupId, active)
+  // `$lastContentPane` keeps chats only; approval scope also remembers plugin workspaces.
+  remember($lastApprovalContentPane, isApprovalContentPane, tree, groupId, active)
 }
 
 $activeTreeGroup.subscribe(rememberContentPane)

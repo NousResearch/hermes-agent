@@ -11,8 +11,11 @@ from unittest.mock import patch
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
-from hermes_state import SessionDB
-from hermes_state_delegate_children import delegate_descendant_ids
+from persistence import SessionId
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 from tui_gateway import server
 
 
@@ -35,15 +38,19 @@ def _chat_ids(tid: str) -> list:
         conn.close()
 
 
+def _create(db, session_id: str, source: str, **kwargs) -> None:
+    db.sessions.create(NewSession(session_id=SessionId(session_id), source=source, **kwargs))
+
+
 def test_parent_reclaims_a_subscription_bound_to_its_own_subagent(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session(session_id="parent", source="desktop")
-        db.create_session(session_id="child", source="subagent", parent_session_id="parent",
-                          model_config={"_delegate_from": "parent"})
-        db.create_session(session_id="other", source="desktop")
-        db.create_session(session_id="other-child", source="subagent", parent_session_id="other",
-                          model_config={"_delegate_from": "other"})
+        _create(db, "parent", "desktop")
+        _create(db, "child", "subagent", parent_session_id=SessionId("parent"),
+                model_config={"_delegate_from": "parent"})
+        _create(db, "other", "desktop")
+        _create(db, "other-child", "subagent", parent_session_id=SessionId("other"),
+                model_config={"_delegate_from": "other"})
         mine, theirs = _subscribed_task("child"), _subscribed_task("other-child")
 
         with patch.object(server, "_get_db", lambda: db):
@@ -53,17 +60,17 @@ def test_parent_reclaims_a_subscription_bound_to_its_own_subagent(tmp_path):
         assert _chat_ids(mine) == ["parent"]
         assert _chat_ids(theirs) == ["other-child"]  # another session's subagent is left alone
         # A subagent's own tab never claims its parent's (or siblings') subscriptions.
-        assert delegate_descendant_ids(db, "child") == []
+        assert db.lineage.delegate_descendant_ids(SessionId("child")) == ()
     finally:
         db.close()
 
 
 def test_a_transient_db_error_does_not_end_the_reclaim(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session(session_id="parent", source="desktop")
-        db.create_session(session_id="child", source="subagent", parent_session_id="parent",
-                          model_config={"_delegate_from": "parent"})
+        _create(db, "parent", "desktop")
+        _create(db, "child", "subagent", parent_session_id=SessionId("parent"),
+                model_config={"_delegate_from": "parent"})
         tid = _subscribed_task("child")
         session = {"session_key": "parent"}
         real_count = kbn.count_notify_subs
@@ -87,16 +94,16 @@ def test_a_transient_db_error_does_not_end_the_reclaim(tmp_path):
 def test_reclaims_a_subscription_bound_to_a_misrouted_childs_continuation(tmp_path):
     """A child resumed as the chat compressed into an unmarked continuation; the pre-fix resolver subscribed
     the card under that tip, and v33 rightly leaves the continuation unmarked."""
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session(session_id="parent", source="desktop")
-        db.append_message("parent", "user", "parent question")
-        db.create_session(session_id="child", source="subagent", parent_session_id="parent",
-                          model_config={"_delegate_from": "parent"})
-        db.append_message("child", "assistant", "child work")
-        db.publish_compression_child(parent_session_id="child", child_session_id="child-tip", source="subagent",
-                                     messages=[{"role": "user", "content": "typed after misrouted resume"}],
-                                     require_compression_lease=False)
+        _create(db, "parent", "desktop")
+        db.messages.append(SessionId("parent"), NewMessage(role="user", content="parent question"))
+        _create(db, "child", "subagent", parent_session_id=SessionId("parent"),
+                model_config={"_delegate_from": "parent"})
+        db.messages.append(SessionId("child"), NewMessage(role="assistant", content="child work"))
+        db.lineage.publish_compression_child(
+            SessionId("child"), CompressionChild(session_id=SessionId("child-tip"), source="subagent"),
+            [NewMessage(role="user", content="typed after misrouted resume")], require_compression_lease=False)
         tid = _subscribed_task("child-tip")
 
         with patch.object(server, "_get_db", lambda: db):

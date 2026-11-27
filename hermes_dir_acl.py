@@ -452,6 +452,14 @@ def make_user_dir(path: str | Path, mode: int = 0o777, *, parents: bool = False,
     return target
 
 
+def repair_user_dir(path: str | Path) -> None:
+    """:func:`make_user_dir`'s existing-leaf repair without its ``mkdir``: elevated, an existing
+    directory gets the same once-per-object grant attempt; a missing *path* stays missing."""
+    target = Path(path)
+    if process_is_elevated() and target.is_dir():
+        _grant_dirs(target, [target])
+
+
 def _grant_dirs(target: Path, to_grant: list[Path], fresh: set[Path] = frozenset()) -> None:
     """Grant *to_grant*; a dir in *fresh* (this call created it) is always granted, an existing
     one once per verified object identity."""

@@ -7,7 +7,8 @@ import { resetServerRequestsForTests } from '@/store/server-requests'
 import { $themePicks, cancelThemePick, pickTheme } from '@/store/theme-pick'
 import { $pendingSkinApply } from '@/themes/backend-sync'
 
-import { handleServerRequest, type ServerRequestContext } from './server-requests'
+import type { ServerRequestContext } from './server-request-context'
+import { handleServerRequest } from './server-requests'
 
 // SAFETY: the set_theme handlers read only activeSessionIdRef, sessionInterrupted and updateSessionState.
 const deps = {

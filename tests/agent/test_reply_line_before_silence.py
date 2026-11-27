@@ -13,6 +13,7 @@ from unittest.mock import patch
 from agent.persisted_turn_receipt import persisted_turn_receipt
 from tests.agent import test_empty_response_recovery_persistence as _recovery
 from tests.agent import test_hold_stream_exits as _held_exits
+from tests.fixtures.storage_read import conversation
 
 real_loop = _recovery.real_loop
 held = _held_exits.held
@@ -33,7 +34,7 @@ def _reply_then_marker(answer=ANSWER):
 
 
 def _stored_final(real_loop):
-    rows = real_loop.db.get_messages_as_conversation(real_loop.sid)
+    rows = conversation(real_loop.db, real_loop.sid)
     return [m for m in rows if m.get("role") == "assistant" and not m.get("tool_calls")][-1]["content"]
 
 
@@ -67,7 +68,7 @@ def test_a_crash_left_turn_recovers_the_reply_not_the_warning(real_loop):
     _register_todo(real_loop.agent)
     real_loop.agent._silence_marker_needs_reply = True
     real_loop.run(_reply_then_marker(), "when is my meeting?")
-    history = real_loop.db.get_messages_as_conversation(real_loop.sid)
+    history = conversation(real_loop.db, real_loop.sid)
     origin = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", user_id="u1")
 
     assert GatewayRunner._crash_left_reply(object(), history, 0, origin) == ANSWER

@@ -4,6 +4,7 @@ import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
+import { setSessionsWaitingOnCard } from './session-card-wait'
 import { ambientRequestFor } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
 
@@ -87,21 +88,141 @@ export interface ApprovalRequest extends KeyedPrompt {
   choices?: string[]
   command: string
   description: string
+  /** What the card asks for; absent means a command (`ApprovalRequestParams.kind`). */
+  kind?: ApprovalKind
   requestId?: string
+  /** One short line under the folder or site. */
+  risk?: string
   serverRequestId?: string
   smartDenied?: boolean
+  /** The folder (`access`) or site (`network`) the card names. */
+  target?: ApprovalTarget
 }
+
+// A sandbox asks for a folder (`access`) or a site (`network`) through the same
+// `approval` request and answer as a command. These cards can outlive the turn
+// that raised them: the sandbox, not the agent loop, waits on the answer.
+export type ApprovalKind = 'command' | 'access' | 'network'
+export type ApprovalAccessLevel = 'read' | 'read_write'
+
+export interface ApprovalAccessTarget {
+  access?: ApprovalAccessLevel
+  path: string
+}
+
+export interface ApprovalNetworkTarget {
+  host: string
+  /** A display name for the site, e.g. the Hermes tool that uses it. */
+  label?: string
+}
+
+export type ApprovalTarget = ApprovalAccessTarget | ApprovalNetworkTarget
+
+type ApprovalKindFields = Pick<ApprovalRequest, 'kind' | 'risk' | 'target'>
+
+// Code points that draw nothing, end the line or reorder the text around them: controls, format
+// characters (zero-width, bidirectional marks, overrides and isolates), unassigned and private-use
+// code points, line and paragraph separators, and the blank glyphs. A card shows them as escapes,
+// as the gateway does for a command (agent/redact_approval_display.py).
+const HIDDEN_CHARS = /[\p{C}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/gu
+
+function escapeHiddenChar(char: string): string {
+  const code = char.codePointAt(0) ?? 0
+  const hex = code.toString(16)
+
+  return code < 0x100
+    ? `\\x${hex.padStart(2, '0')}`
+    : code < 0x10000
+      ? `\\u${hex.padStart(4, '0')}`
+      : `\\U${hex.padStart(8, '0')}`
+}
+
+/** The sender's sentence about a request, as the user reads it: trimmed, with hidden characters
+ *  made visible. */
+const wireText = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim().replace(HIDDEN_CHARS, escapeHiddenChar) : undefined
+
+// A space separator other than U+0020 is drawn like a space, and U+2423 is the mark `nameText`
+// puts where a space would not be seen: in a name both are shown as escapes.
+const LOOKALIKE_SPACES = /(?! )[\p{Zs}\u2423]/gu
+
+/** A folder, a site or a site's label as the user reads it: the name whole, so that two names
+ *  that differ only in spacing never read the same. Nothing is trimmed; a space at either end is
+ *  shown as "␣". A name of white space only is no name. */
+const nameText = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim()
+    ? value
+        .replace(HIDDEN_CHARS, escapeHiddenChar)
+        .replace(LOOKALIKE_SPACES, escapeHiddenChar)
+        .replace(/^ +| +$/g, spaces => '\u2423'.repeat(spaces.length))
+    : undefined
+
+/** `name` for a place that may draw a run of spaces as one blank (a system notification, a
+ *  toast): each space after the first of a run becomes a no-break space, which is always drawn. */
+export const withSpaceRuns = (name: string): string =>
+  name.replace(/ {2,}/g, spaces => ` ${'\u00a0'.repeat(spaces.length - 1)}`)
+
+/** The kind, target and risk an approval payload carries (live request params,
+ *  `approval.pending` entries, resume snapshots). Missing or unknown kinds read
+ *  as a command, so an older or newer backend never gets a blank card. */
+export function approvalKindFields(raw: Record<string, unknown> | null | undefined): ApprovalKindFields {
+  if (!raw || (raw.kind !== 'access' && raw.kind !== 'network')) {
+    return {}
+  }
+
+  const risk = wireText(raw.risk)
+  const fields: ApprovalKindFields = { kind: raw.kind, ...(risk ? { risk } : {}) }
+
+  if (raw.kind === 'access') {
+    const path = nameText(raw.path)
+    const access = raw.access === 'read' || raw.access === 'read_write' ? raw.access : undefined
+
+    return path ? { ...fields, target: { path, ...(access ? { access } : {}) } } : fields
+  }
+
+  const host = nameText(raw.host)
+  const label = nameText(raw.label)
+
+  return host ? { ...fields, target: { host, ...(label ? { label } : {}) } } : fields
+}
+
+export const isCommandApproval = (request: Pick<ApprovalRequest, 'kind'>): boolean =>
+  !request.kind || request.kind === 'command'
+
+/** A folder or site request that names no folder or site. It is refused and never parked:
+ *  its card would offer Allow for something the user cannot read. */
+export const approvalNamesNothing = (request: Pick<ApprovalRequest, 'kind' | 'target'>): boolean =>
+  !isCommandApproval(request) && !request.target
+
+export const accessTarget = (request: ApprovalRequest): ApprovalAccessTarget | null =>
+  request.kind === 'access' && request.target && 'path' in request.target && !('host' in request.target)
+    ? (request.target as ApprovalAccessTarget)
+    : null
+
+export const networkTarget = (request: ApprovalRequest): ApprovalNetworkTarget | null =>
+  request.kind === 'network' && request.target && 'host' in request.target
+    ? (request.target as ApprovalNetworkTarget)
+    : null
+
+/** How a network card names its site: the sender's label, else the host. */
+export const networkTargetName = (target: ApprovalNetworkTarget): string => target.label || target.host
 
 interface ApprovalGateway {
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>
 }
 
 interface PendingApprovalPayload {
+  access?: unknown
   allow_permanent?: boolean
   choices?: unknown
   command?: unknown
   description?: unknown
+  host?: unknown
+  kind?: unknown
+  label?: unknown
+  path?: unknown
   request_id?: unknown
+  risk?: unknown
   smart_denied?: boolean
 }
 
@@ -130,6 +251,16 @@ export interface VaultUnlockRequest extends KeyedPrompt {
 
 const EMPTY_APPROVALS: ApprovalRequest[] = []
 const $approvalQueues = atom<Record<string, ApprovalRequest[]>>({})
+
+// A folder or site card marks its session as waiting for as long as it is parked. Whatever
+// parks or removes a card, the set of waiting sessions follows the queues.
+$approvalQueues.listen(queues => {
+  setSessionsWaitingOnCard(
+    Object.entries(queues)
+      .filter(([sessionId, queue]) => sessionId && queue.some(request => !isCommandApproval(request)))
+      .map(([sessionId]) => sessionId)
+  )
+})
 const $approvalStackSizes = atom<Record<string, number>>({})
 // A replay started before a response/reset cannot resurrect the answered card.
 let approvalRevision = 0
@@ -146,6 +277,10 @@ const approval = {
     $approvalQueues.set({})
   },
   set(request: ApprovalRequest) {
+    if (approvalNamesNothing(request)) {
+      return
+    }
+
     const key = keyFor(request.sessionId)
     const queues = $approvalQueues.get()
     const queue = queues[key] ?? EMPTY_APPROVALS
@@ -162,7 +297,9 @@ const approval = {
 
     $approvalQueues.set({ ...queues, [key]: next })
   },
-  clear(sessionId?: string | null, requestId?: string) {
+  // Drops `requestId` (or every approval) from the session's queue; `drop`
+  // picks the entries instead when given.
+  clear(sessionId?: string | null, requestId?: string, drop?: (item: ApprovalRequest) => boolean) {
     if (sessionId === undefined) {
       approvalRevision += 1
     } else {
@@ -179,7 +316,11 @@ const approval = {
         continue
       }
 
-      const remaining = requestId ? queue.filter(item => item.requestId !== requestId) : EMPTY_APPROVALS
+      const remaining = drop
+        ? queue.filter(item => !drop(item))
+        : requestId
+          ? queue.filter(item => item.requestId !== requestId)
+          : EMPTY_APPROVALS
 
       if (remaining.length === queue.length) {
         continue
@@ -236,6 +377,11 @@ export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 
 export async function receiveApprovalRequest(gateway: ApprovalGateway | null, request: ApprovalRequest): Promise<void> {
+  // Nothing is parked for it, so nothing is acknowledged either.
+  if (approvalNamesNothing(request)) {
+    return
+  }
+
   // A prompt restored from `approval.pending` must not clobber the live server
   // request that already carries the same queue entry (it knows how to answer).
   const current = $approvalQueues.get()[keyFor(request.sessionId)]?.find(item => item.requestId === request.requestId)
@@ -331,7 +477,8 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
         requestId: pending.request_id,
         sessionId,
-        smartDenied: pending.smart_denied === true
+        smartDenied: pending.smart_denied === true,
+        ...approvalKindFields(pending as Record<string, unknown>)
       })
     })
   )
@@ -360,13 +507,18 @@ function isRequestTimeoutError(error: unknown): boolean {
   return error instanceof Error && /request timed out/i.test(error.message)
 }
 
+/** `reason`: why the user denied a folder or site card, passed back with the
+ *  answer. Command approvals never send one. */
 export async function answerApproval(
   gateway: ApprovalGateway | null,
   request: Pick<ApprovalRequest, 'requestId' | 'serverRequestId' | 'sessionId'>,
   choice: string,
-  all = false
+  all = false,
+  reason?: string
 ): Promise<void> {
-  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
+  const why = reason?.trim() ? { reason: reason.trim() } : {}
+
+  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}), ...why })) {
     return
   }
 
@@ -377,6 +529,7 @@ export async function answerApproval(
   const params = {
     all,
     choice,
+    ...why,
     ...(request.requestId ? { request_id: request.requestId } : {}),
     session_id: request.sessionId ?? undefined
   }
@@ -414,6 +567,10 @@ export const sessionApprovalRequests = (sessionId: string | null) =>
   computed($approvalQueues, all => all[keyFor(sessionId)] ?? EMPTY_APPROVALS)
 export const sessionApprovalRequest = (sessionId: string | null) =>
   computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
+/** True while the session holds a command approval. Folder and site cards are
+ *  not about the turn's tool rows, so they never stand in for them. */
+export const sessionCommandApprovalPending = (sessionId: string | null) =>
+  computed($approvalQueues, all => (all[keyFor(sessionId)] ?? EMPTY_APPROVALS).some(isCommandApproval))
 /** A session's sudo card, else the app-level one (a Bot Screen package install is raised with no
  *  session: it belongs to the connection, not to a turn, so whichever chat is focused shows it). */
 export const sessionSudoRequest = (sessionId: string | null) =>
@@ -519,9 +676,14 @@ export function sessionAwaitingInput(sessionId: string | null) {
   )
 }
 
-// Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
-// or every parked prompt when no session is given (global reset / tests).
-export function clearAllPrompts(sessionId?: string | null): void {
+// Drop in-flight prompts for `sessionId` across every kind — or every parked
+// prompt when no session is given (global reset / tests). `turn-end` is for a
+// turn that ended on its own (complete, error, running→false): folder and site
+// approvals outlive it because the sandbox, not the turn, waits on them. Stop,
+// close and reclaim use `all`.
+export type ClearPromptsMode = 'all' | 'turn-end'
+
+export function clearAllPrompts(sessionId?: string | null, mode: ClearPromptsMode = 'all'): void {
   if (sessionId === undefined) {
     approval.reset()
     sudo.reset()
@@ -533,7 +695,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
     return
   }
 
-  approval.clear(sessionId)
+  approval.clear(sessionId, undefined, mode === 'turn-end' ? isCommandApproval : undefined)
   sudo.clear(sessionId)
   secret.clear(sessionId)
   vaultUnlock.clear(sessionId)

@@ -154,7 +154,7 @@ async def _hung_open(monkeypatch, sid, release):
     monkeypatch.setattr(session_open._Open, '_deliver',
                         lambda self, *a: (delivered.append(a), entered.set(), release.wait(20)))
     ref = SessionRef('p', sid)
-    gate = session_open.open_local(SimpleNamespace(db=None), ref)
+    gate = session_open.open_local(SimpleNamespace(persistence=None), ref)
     gate.fire(SimpleNamespace(ignore_user_config=False), 'route')
     opening = gate.delivery
     import asyncio
@@ -212,7 +212,7 @@ async def test_opens_behind_a_hung_open_stay_bounded_and_fire_once_after_it(monk
         ref, first, delivered = await _hung_open(monkeypatch, 'reopened', release)
         before = len(asyncio.all_tasks())
         for n in range(40):
-            gate = session_open.open_local(SimpleNamespace(db=None), ref)
+            gate = session_open.open_local(SimpleNamespace(persistence=None), ref)
             gate.fire(SimpleNamespace(ignore_user_config=False), f'route-{n}')
         for _ in range(20):  # yields only: each queued delivery reaches its wait on the hung one
             await asyncio.sleep(0)
@@ -238,7 +238,7 @@ async def test_a_finished_open_is_freed_while_the_next_one_still_runs(monkeypatc
     release, hold = threading.Event(), threading.Event()
     try:
         ref, first, _delivered = await _hung_open(monkeypatch, 'chained', release)
-        gate = session_open.open_local(SimpleNamespace(db=None), ref)
+        gate = session_open.open_local(SimpleNamespace(persistence=None), ref)
         gate.fire(SimpleNamespace(ignore_user_config=False), 'again')
         second, first_ref = gate.delivery, weakref.ref(first)
         monkeypatch.setattr(session_open._Open, '_deliver', lambda self, *a: hold.wait(20))
@@ -280,7 +280,7 @@ async def test_a_profile_with_no_consumer_starts_no_delivery_thread(monkeypatch,
     for consumer in (False, True):
         if consumer:
             manager._hooks['on_session_open'] = [lambda **kw: None]
-        gate = session_open.open_local(SimpleNamespace(db=None), SessionRef(str(tmp_path), f's-{consumer}'))
+        gate = session_open.open_local(SimpleNamespace(persistence=None), SessionRef(str(tmp_path), f's-{consumer}'))
         gate.fire(SimpleNamespace(ignore_user_config=False), 'route')
         await asyncio.wait({gate.delivery.task}, timeout=5)
         assert len(threads) == consumer, (consumer, threads)
@@ -298,10 +298,28 @@ async def test_a_profile_with_no_consumer_starts_no_delivery_thread(monkeypatch,
     t.start()
     held.wait(5)
     try:
-        gate = session_open.open_local(SimpleNamespace(db=None), SessionRef(str(tmp_path), 's-reload'))
+        gate = session_open.open_local(SimpleNamespace(persistence=None), SessionRef(str(tmp_path), 's-reload'))
         gate.fire(SimpleNamespace(ignore_user_config=False), 'route')
         await asyncio.wait({gate.delivery.task}, timeout=5)
         assert len(threads) == 2, threads
     finally:
         done.set()
         t.join(5)
+
+
+def test_the_open_reason_reads_the_session_through_the_store(tmp_path):
+    """``create`` while the session has no messages, ``resume`` once it has one: the reason is read from the
+    session row through the profile's storage handle (no receipt here, so the logical row is the transcript)."""
+    from gateway import session_open
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    from tests.gateway.fixtures.storage_handles import storage_handle
+
+    store = storage_handle(tmp_path)
+    try:
+        seed_session(store, 's-fresh', 'tui')
+        seed_session(store, 's-used', 'tui')
+        seed_messages(store, 's-used', {'role': 'user', 'content': 'hello'})
+        assert session_open._reason(store, 's-fresh') == 'create'
+        assert session_open._reason(store, 's-used') == 'resume'
+    finally:
+        store.close()

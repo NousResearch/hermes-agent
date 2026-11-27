@@ -24,15 +24,15 @@ _PENDING = {}
 _UNBOUNDED_TURN_WAIT_S = 5.0
 
 
-def _reason(db, session_id):
+def _reason(store, session_id):
     """``create`` while the conversation has no messages yet, else ``resume``. A local session's
     messages live on its current transcript (a reset moves them to a child row), named by its receipt."""
-    from hermes_state_local import local_receipt
     try:
-        target = local_receipt(db, session_id)['entry']['session_id']
+        target = store.bindings.receipt(session_id).entry['session_id']
     except Exception:  # health: allow BLE001 -- no readable receipt: the logical row is the transcript
         target = session_id
-    return 'resume' if (db.get_session(target) or {}).get('message_count') else 'create'
+    row = store.sessions.get(target)
+    return 'resume' if row is not None and row.message_count else 'create'
 
 
 class _Open:
@@ -45,8 +45,8 @@ class _Open:
     one thread however often the session is opened meanwhile. An open is setup, so the joined opens
     fire once, after the running one, with the latest gate's payload."""
 
-    def __init__(self, ref, db, ahead):
-        self.ref, self.db, self.ahead = ref, db, ahead
+    def __init__(self, ref, store, ahead):
+        self.ref, self.store, self.ahead = ref, store, ahead
         # The profile's ``plugins.hook_callback_timeout``, read by the delivery (off-loop, in that
         # profile's scope, only for a session that loads plugins); 0 until then.
         self.callback_timeout = 0.0
@@ -86,7 +86,7 @@ class _Open:
                 if has_hook('on_session_open'):  # plugins not loaded until now: none of them consumes it
                     self.callback_timeout = _resolve_hook_callback_timeout()
                     invoke_hook('on_session_open', session_id=sid, platform=SURFACES.get(policy.source, policy.source),
-                                reason=_reason(self.db, sid))
+                                reason=_reason(self.store, sid))
         except Exception:  # health: allow BLE001 -- fail-open observer: an open never fails on a plugin
             logger.warning('on_session_open delivery failed for %s', sid, exc_info=True)
 
@@ -113,10 +113,11 @@ class _Gate:
 def open_local(authority, ref):
     """Register *ref*'s open before anything can start its next turn; the caller fires or releases
     the returned gate."""
+    from gateway.session_persistence import authority_persistence
     key = (ref.profile_id, ref.session_id)
     delivery = _live(key)
     if delivery is None or not delivery.joinable():
-        delivery = _PENDING[key] = _Open(ref, authority.db, delivery)
+        delivery = _PENDING[key] = _Open(ref, authority_persistence(authority), delivery)
         delivery.task.add_done_callback(lambda _done, mine=delivery: _PENDING.pop(key)
                                         if _PENDING.get(key) is mine else None)
     elif not delivery.coalesced:

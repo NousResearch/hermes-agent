@@ -12,7 +12,8 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
-from hermes_state import AsyncSessionDB, SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 def _src(chat_id="67890", user_id="12345", thread_id="topic-b", chat_type="dm"):
@@ -26,11 +27,11 @@ def _runner(db, source):
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})
     runner._voice_mode = {}
-    runner._session_db = AsyncSessionDB(db)
     runner._running_agents = {}
     runner._is_user_authorized = lambda _source: True
     entry = MagicMock(session_id="current", session_key=build_session_key(source))
     runner.session_store = MagicMock()
+    runner.session_store.persistence = db  # what ``runner.persistence`` borrows
     runner._async_session_store = SimpleNamespace(
         _store=runner.session_store, get_or_create_session=AsyncMock(return_value=entry),
         load_transcript=AsyncMock(return_value=[]), switch_session=AsyncMock(return_value=entry),
@@ -41,14 +42,13 @@ def _runner(db, source):
 
 def _row(db, sid, title, **origin):
     src = _src(**origin)
-    db.create_session(sid, "telegram", user_id=src.user_id, chat_id=src.chat_id,
-                      chat_type=src.chat_type, thread_id=src.thread_id, session_key=build_session_key(src))
-    db.set_session_title(sid, title)
+    seed_session(db, sid, "telegram", title=title, user_id=src.user_id, chat_id=src.chat_id,
+                 chat_type=src.chat_type, thread_id=src.thread_id, session_key=build_session_key(src))
 
 
 @pytest.mark.asyncio
 async def test_resume_from_another_topic_of_the_same_private_chat_switches(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     _row(db, "topic_a_work", "Topic A Work", thread_id="topic-a")
     caller = _src(thread_id="topic-b")
     runner = _runner(db, caller)
@@ -69,7 +69,7 @@ async def test_resume_from_another_topic_of_the_same_private_chat_switches(tmp_p
     {"chat_id": "-1001", "chat_type": "group", "thread_id": "topic-a"},         # forum topic, same user
 ])
 async def test_resume_across_threads_stays_refused_outside_the_callers_own_dm(tmp_path, origin):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     _row(db, "foreign", "Foreign Work", **origin)
     caller_kind = {"chat_id": origin["chat_id"], "chat_type": "group"} if origin.get("chat_type") else {}
     caller = _src(thread_id="topic-b", **caller_kind)

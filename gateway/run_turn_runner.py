@@ -85,7 +85,8 @@ _LEDGER_PASSTHROUGH_KEYS = (
 # Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
 # so the authority's ``message.complete`` carries the same error card the TUI path builds;
 # ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
-_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
+_FAILURE_DESCRIPTOR_KEYS = (
+    "free_tier", "failure_retryable", "failure_resets_at", "usage_window_message", "primary_auth_failure")
 
 
 def _finite_viewer_turn() -> bool:
@@ -175,18 +176,18 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     from agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     auth_permanent = FailoverReason.auth_permanent.value
     if isinstance(exc, LocalRuntimeUnavailableError):
         # The chosen model is configured; its local server is down. Not a credential verdict, so
         # the client must not offer "Update API key" or sign-in: the sentence names the fix.
         return f"⚠️ {exc}", exc.error_code, exc.retryable
-    if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
+    if isinstance(exc, AuthorityRefusal) and exc.reason == 'launch_credentials_unavailable':
         # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
         # the shared refusal copy names /new, never a resend.
         from agent.turn_failure_copy import launch_credentials_copy
         return launch_credentials_copy(exc), 'launch_credentials_unavailable', False
-    if isinstance(exc, RuntimeStoreError):
+    if isinstance(exc, AuthorityRefusal):
         # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
         # daemon restart): keep it in the reply so clients can act on it, and do not suggest
         # /login — the profile's own credentials were never in play.
@@ -248,7 +249,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             owner_id = (source.chat_id if getattr(source, 'platform', None) == Platform.LOCAL
                         else authority.logical_owner(ctx.session_id))
             if owner_id in authority.sessions:
-                generation = authority.db.get_session(owner_id)["runtime_generation"]
+                from gateway.session_persistence import authority_persistence
+                from persistence.core.errors import StoreUnavailable
+                if (store := authority_persistence(authority)) is None:
+                    raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
+                # A live session without its row fails the turn with the error reading the absent row raises.
+                if (row := store.sessions.get(owner_id)) is None:
+                    raise TypeError("'NoneType' object is not subscriptable")
+                generation = row.runtime_generation
                 self._approval_owner = (authority, owner_id, generation)
 
 
@@ -296,7 +304,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # no drafts, edits, native stream or commentary bubbles; the rewrite goes out as one plain
         # final while the typing indicator runs (the agent also withholds every delta).
         held = stream_held()
-        want_stream_deltas = not held and not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+        # show_reasoning keeps the 💭 block ABOVE the answer by sending them as one message: suppress
+        # the final answer's live deltas so the normal combined send fires (reasoning prepended) rather
+        # than streaming the answer and trailing the reasoning after it. Interim tool-progress
+        # commentary is unaffected. LOCAL viewers stream normally (they read reasoning off their event
+        # stream, never the projected block). getattr: a partial test runner has no resolver → stream.
+        _resolve_reasoning = getattr(self._runner, "_show_reasoning_for_source", None)
+        _reasoning_leads = bool(_resolve_reasoning(ctx.source)) if callable(_resolve_reasoning) else False
+        want_stream_deltas = (not held and not ctx.scheduled_heartbeat and not _reasoning_leads
+                              and scfg.enabled_for(plat_streaming))
         # A finite (`-z`, `chat -q`) viewer prints only the terminal reply, like the classic quiet
         # CLI that never wired commentary. Commentary it cannot see must not be recorded as a
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.
@@ -388,8 +404,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # The agent's own streaming may be feeding an execution observer rather than this
                 # adapter, so ``already_streamed`` alone does not mean the consumer saw the deltas.
                 # Deduplicate only against deltas this consumer actually accepted; otherwise the
-                # commentary would be dropped (``on_segment_break`` carries no text).
-                if already_streamed and stream_consumer.stream_deltas_enabled:
+                # commentary would be dropped (``on_segment_break`` carries no text). A local route's
+                # viewer is that adapter's only audience and already took the deltas through
+                # ``message.delta``: handing it the text again records the streamed answer as a sent
+                # commentary, so a final that repeats it is suppressed (message.complete "").
+                if already_streamed and (stream_consumer.stream_deltas_enabled or local_viewer_route):
                     stream_consumer.on_segment_break()
                 else:
                     stream_consumer.on_commentary(text)
@@ -542,7 +561,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # A platform send can't be retracted; a local viewer withdraws the keyed notice.
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
-        agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        agent.reasoning_config, agent.service_tier = reasoning_config, turn_route.get("service_tier")
         _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
         agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
         _surface = getattr(runner, "_daybreak_surface", None)  # read by Daybreak delegation routes
@@ -1177,9 +1196,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx = self._ctx
         try:
             # run_sync is off-loop (executor); sync DB is fine.
-            binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(session_id=agent_session_id)
-            if binding and binding.get("thread_id"):
-                ctx.source.thread_id = str(binding["thread_id"])
+            binding = self._runner.persistence.routing.get_topic_binding_for_session(session_id=agent_session_id)
+            if binding and binding.thread_id:
+                ctx.source.thread_id = str(binding.thread_id)
                 logger.debug(
                     "Restored source.thread_id=%s from binding after session split %s → %s",
                     ctx.source.thread_id, ctx.session_id, agent_session_id,
@@ -1231,7 +1250,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 src = ctx.source
                 if (
                     getattr(src, "platform", None) == Platform.TELEGRAM and getattr(src, "chat_type", None) == "dm"
-                    and getattr(src, "thread_id", None) is None and runner._session_db is not None
+                    and getattr(src, "thread_id", None) is None and runner.persistence is not None
                 ):
                     self._restore_telegram_thread_id_after_split(agent_session_id)
                 runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
@@ -1300,12 +1319,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, refused_turn_result
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         policy = policy_for_source(self._runner, self._ctx.source)
         with ExitStack() as scope:
             try:
                 scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 result = refused_turn_result(policy, exc)
                 if result is None:
                     raise
@@ -1385,6 +1404,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # fallback was resolved before any agent exists (#74349); one-shot per turn.
             pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
             runner._pre_agent_fallback_notice = None
+            from agent.primary_auth_fallback import failure_for_route, route_snapshot, take_pending_primary_auth_failure
+            pending_primary_auth = take_pending_primary_auth_failure()
+            resolved_route = route_snapshot(runtime_kwargs)
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
             if policy and policy.model and not pending_fallback_notice:
@@ -1395,6 +1417,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
             from gateway.session_cli_turn import one_turn_route
             model, runtime_kwargs = one_turn_route(self, policy, model, runtime_kwargs)
+            # Another route runs (an API caller's or a one-turn override): its refusals are its own.
+            pending_primary_auth = failure_for_route(pending_primary_auth, resolved_route, runtime_kwargs)
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1416,7 +1440,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         from gateway.session_cli_turn import one_turn_reasoning
         reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
-        runner._service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
+        service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
             runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key))
         from gateway.session_api_turn import api_execution
         api = api_execution.get()
@@ -1427,16 +1451,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 reasoning_config = requested_reasoning
             tier = _request_service_tier(api['settings'].get('model_options'))
             if tier is not _REQUEST_OPTION_MISSING:
-                runner._service_tier = tier
+                service_tier = tier
+        # The tier stays turn-local (turn_route): one runner serves concurrent turns of every profile.
         runner._reasoning_config = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
-        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs, tier=service_tier)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
+        # Set every turn (None clears it): a cached agent must not keep a login failure that resolved.
+        from agent.primary_auth_fallback import attach_primary_auth_failure
+        attach_primary_auth_failure(agent, pending_primary_auth)
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None

@@ -10,25 +10,29 @@ import sys
 import pytest
 
 import hermes_cli.main as main_mod
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView
+from persistence_assembly import Persistence, open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 SID = "20260929_120000_abcdef"
 
 
-def _shape(db, **flags):
+def _shape(db, view=TranscriptView.ACTIVE):
     return [(m["role"], m["content"], m.get("active", 1), m.get("compacted", 0))
-            for m in db.get_messages(SID, **flags)]
+            for m in transcript_rows(db, SID, TranscriptRead(view=view))]
 
 
-def _seed_compacted_session() -> SessionDB:
+def _seed_compacted_session() -> Persistence:
     """8 turns compacted to a summary + 2-row live tail: few live rows, many stored rows."""
-    src = SessionDB()
-    src.create_session(SID, source="cli")
+    src = open_persistence(profile_scope())
+    seed_session(src, SID, "cli")
     for i in range(1, 5):
-        src.append_message(SID, "user", f"question {i}")
-        src.append_message(SID, "assistant", f"answer {i}")
-    tail = src.get_messages(SID)[-2:]
-    src.archive_and_compact(SID, [{"role": "user", "content": "[summary]"}, *tail], tail_count=2)
+        seed_messages(src, SID, {"role": "user", "content": f"question {i}"},
+                      {"role": "assistant", "content": f"answer {i}"})
+    tail = transcript_rows(src, SID)[-2:]
+    src.messages.compact(SID, [NewMessage.from_live(m) for m in ({"role": "user", "content": "[summary]"}, *tail)],
+                         carried_tail_count=2)
     return src
 
 
@@ -39,18 +43,18 @@ def _export(monkeypatch, backup, *selection):
 
 def test_jsonl_backup_round_trips_compaction_archived_turns(tmp_path, monkeypatch):
     src = _seed_compacted_session()
-    shown, live = _shape(src, include_compacted=True), _shape(src)
+    shown, live = _shape(src, TranscriptView.DISPLAY), _shape(src)
     src.close()
     assert len(shown) > len(live)
 
     backup = tmp_path / "backup.jsonl"
     _export(monkeypatch, backup)
 
-    dst = SessionDB(db_path=tmp_path / "restored.db")
+    dst = open_persistence(profile_scope(home=tmp_path / "restored"))
     try:
         payload = [json.loads(line) for line in backup.read_text(encoding="utf-8-sig").splitlines() if line]
-        assert dst.import_sessions(payload)["ok"]
-        assert _shape(dst, include_compacted=True) == shown, "display history must survive the backup"
+        assert dst.maintenance.import_sessions(payload).ok
+        assert _shape(dst, TranscriptView.DISPLAY) == shown, "display history must survive the backup"
         assert _shape(dst) == live, "archived turns must not come back as live context"
     finally:
         dst.close()
@@ -69,17 +73,20 @@ def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monke
 
     src = _seed_compacted_session()
     live = len(_shape(src))
-    stored = len(_shape(src, include_inactive=True))
-    src.end_session(SID, "user_exit")  # bulk filters match ended sessions
+    stored = len(_shape(src, TranscriptView.ALL))
+    src.sessions.end(SID, "user_exit")  # bulk filters match ended sessions
     src.close()
     cfg = load_config()
     cfg.setdefault("sessions", {})["max_export_messages"] = 0 if disabled else live + 1
     save_config(cfg)
     assert stored > live + 1
+    from persistence.sqlite.conversation import sessions as session_repository
+    from persistence.sqlite.housekeeping import _portability
     scans = []
-    real_search = SessionDB.search_sessions
-    monkeypatch.setattr(SessionDB, "search_sessions",
-                        lambda self, *a, **kw: scans.append(1) or real_search(self, *a, **kw))
+    real_search = session_repository.search_sessions
+    for module in (session_repository, _portability):
+        monkeypatch.setattr(module, "search_sessions",
+                            lambda *a, **kw: scans.append(1) or real_search(*a, **kw))
 
     backup = tmp_path / "backup.jsonl"
     if disabled:

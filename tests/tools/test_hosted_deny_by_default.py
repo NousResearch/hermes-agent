@@ -259,11 +259,12 @@ def test_the_memory_store_itself_never_touches_the_host_file_in_a_hosted_scope()
 
 def test_session_search_reads_no_host_history():
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools.registry import registry
-    db = SessionDB(get_hermes_home() / "state.db")
-    db.create_session("private-host-history", source="cli")
-    db.append_message("private-host-history", role="user", content="HOST-HISTORY-PRIVATE")
+    db = open_persistence(profile_scope(home=get_hermes_home()))
+    seed_session(db, "private-host-history", "cli")
+    seed_messages(db, "private-host-history", {"role": "user", "content": "HOST-HISTORY-PRIVATE"})
     try:
         with bind_state(A):
             result = registry.dispatch("session_search", {"session_id": "private-host-history"})
@@ -273,10 +274,10 @@ def test_session_search_reads_no_host_history():
 
 
 def test_recall_never_opens_the_profile_state_db(monkeypatch):
-    import hermes_state_registry
+    import persistence_assembly
     from run_agent import AIAgent
     opened = []
-    monkeypatch.setattr(hermes_state_registry, "acquire", lambda *a, **k: opened.append(1) or object())
+    monkeypatch.setattr(persistence_assembly, "open_persistence", lambda *a, **k: opened.append(1) or object())
     agent = SimpleNamespace(_persist_disabled=False, _session_db=None)
     with bind_state(A):
         assert AIAgent._get_session_db_for_recall(agent) is None

@@ -38,6 +38,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
+from dataclasses import replace
 from difflib import SequenceMatcher
 
 from scripts.code_health.config import RULES_BY_ID, TARGETS
@@ -280,14 +281,39 @@ def _owned_base_hits(base: dict[str, FileMeasure],
     return owned
 
 
-def _line_survival(hf: FileMeasure | None, bf: FileMeasure | None) -> tuple[set[int], set[int]]:
+def module_renames(moves: dict[str, str]) -> Callable[[str], str]:
+    """Head code with every moved module named as it was: a line a move only renamed is unchanged."""
+    if not moves:
+        return lambda code: code
+    old_of: dict[str, str] = {}
+    for old, new in moves.items():
+        old_of.setdefault(new, old)
+        old_of.setdefault(new.replace(".", "/"), old.replace(".", "/"))
+    names = re.compile(r"(?<![\w./])(" + "|".join(map(re.escape, sorted(old_of, key=len, reverse=True)))
+                       + r")(?!\w)")
+    return lambda code: names.sub(lambda m: old_of[m.group(1)], code)
+
+
+def _spelled_as_base(fm: FileMeasure, renamed: Callable[[str], str]) -> FileMeasure:
+    """``fm`` with each hit's text renamed the same way, so an old violation on a renamed line keeps its debt."""
+    hits: Counter[Hit] = Counter()
+    hit_lines: dict[Hit, list[int]] = {}
+    for hit, count in fm.hits.items():
+        key = Hit(hit.rule, hit.scope, renamed(hit.text))
+        hits[key] += count
+        hit_lines.setdefault(key, []).extend(fm.hit_lines.get(hit, []))
+    return replace(fm, hits=hits, hit_lines=hit_lines)
+
+
+def _line_survival(hf: FileMeasure | None, bf: FileMeasure | None,
+                   renamed: Callable[[str], str]) -> tuple[set[int], set[int]]:
     """(head lines, base lines) that are the same unchanged lines (code only: comments and
-    whitespace ignored)."""
+    whitespace ignored; module names as the base spelled them)."""
     # Line matching only places hits; without any on either side it is pure cost.
     if hf is None or bf is None or not (hf.hit_lines or bf.hit_lines):
         return set(), set()
-    old = [bf.code_line(n) for n in range(1, len(bf.lines) + 1)]
-    new = [hf.code_line(n) for n in range(1, len(hf.lines) + 1)]
+    old = [renamed(bf.code_line(n)) for n in range(1, len(bf.lines) + 1)]
+    new = [renamed(hf.code_line(n)) for n in range(1, len(hf.lines) + 1)]
     # autojunk off: `except Exception:` and `pass` are frequent lines, never noise here.
     blocks = SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks()
     kept = {b.b + i + 1 for b in blocks for i in range(b.size)}
@@ -349,7 +375,7 @@ class _Departures:
 
 def _moved_unit_lines(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
                       base_of: dict[str, str | None], match: dict[Key, tuple[str, Unit]],
-                      same_body: set[Key]) -> dict[str, set[int]]:
+                      same_body: set[Key], renamed: Callable[[str], str]) -> dict[str, set[int]]:
     """Head lines of a unit moved to another file AND edited that are unchanged lines of its
     origin: its existing hits stay old there, exactly as in an edit in place."""
     kept: dict[str, set[int]] = defaultdict(set)
@@ -360,8 +386,8 @@ def _moved_unit_lines(base: dict[str, FileMeasure], head: dict[str, FileMeasure]
         new_span, old_span = _span(hf.units[qual]), _span(origin)
         if new_span is None or old_span is None:
             continue
-        old = [bf.code_line(n) for n in old_span]
-        new = [hf.code_line(n) for n in new_span]
+        old = [renamed(bf.code_line(n)) for n in old_span]
+        new = [renamed(hf.code_line(n)) for n in new_span]
         for block in SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks():
             kept[hpath].update(new_span[block.b + i] for i in range(block.size))
     return kept
@@ -414,19 +440,23 @@ def _spend_departures(head: dict[str, FileMeasure], splits: dict[str, Split],
 
 
 def compare(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
-            changes: list[Change]) -> list[Finding]:
+            changes: list[Change], moves: dict[str, str] | None = None) -> list[Finding]:
+    renamed = module_renames(moves or {})
+    if moves:
+        head = {path: _spelled_as_base(fm, renamed) for path, fm in head.items()}
+        base = {path: _spelled_as_base(fm, renamed) for path, fm in base.items()}
     base_of = {c.new: c.old for c in changes if c.new}
     head_of = {c.old: c.new for c in changes if c.old}
     matcher = _Matcher(base, head, base_of, head_of)
     match = matcher.run()
     owner_of = _owners(head_of, match)
     owned = _owned_base_hits(base, owner_of)
-    moved_kept = _moved_unit_lines(base, head, base_of, match, matcher.same_body)
+    moved_kept = _moved_unit_lines(base, head, base_of, match, matcher.same_body, renamed)
     splits: dict[str, Split] = {}
     survived: dict[str, set[int]] = {}
     for path, hf in head.items():
         bpath = base_of.get(path, path)
-        kept, survived_lines = _line_survival(hf, base.get(bpath) if bpath else None)
+        kept, survived_lines = _line_survival(hf, base.get(bpath) if bpath else None, renamed)
         if bpath:
             survived[bpath] = survived_lines
         unchanged = {qual for hpath, qual in matcher.same_body if hpath == path}

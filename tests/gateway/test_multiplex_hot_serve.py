@@ -68,7 +68,11 @@ def _runner(tmp_path, monkeypatch):
         runner._profile_adapters.setdefault(profile_name, {})[Platform.DISCORD] = _Adapter(token)
         return 1
 
+    async def _prepare(profile_name, profile_home, claimed, batch):  # the boot sweep's per-profile step
+        await runner._start_one_profile_adapters(profile_name, profile_home, claimed)
+
     runner._start_one_profile_adapters = _start
+    runner._prepare_one_profile_adapters = _prepare
     runner._adapter_credential_fingerprint = lambda adapter: getattr(adapter, "token", None)
     runner._started = started
     # The control socket's identify verb reads the runtime descriptor + ticket store that
@@ -205,7 +209,7 @@ async def test_parked_profile_boot_and_reconcile(tmp_path, monkeypatch, caplog):
     marker = secondary / "gateway.parked"
     marker.touch()
     # Boot uses the real directory enumerator and config loaders, no bot/network.
-    del runner._start_one_profile_adapters
+    del runner._start_one_profile_adapters, runner._prepare_one_profile_adapters
     runner._register_config_hooks = lambda *a, **kw: None
     caplog.set_level("INFO")
     with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
@@ -506,7 +510,7 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
     from types import SimpleNamespace
 
     runner, home = _runner(tmp_path, monkeypatch)
-    del runner._start_one_profile_adapters  # instance stub off: exercise the real method
+    del runner._start_one_profile_adapters, runner._prepare_one_profile_adapters  # exercise the real methods
     runner._register_config_hooks = lambda *a, **kw: None
     runner._configure_profile_adapter = lambda *a: None
     runner._sync_voice_mode_state_to_adapter = lambda *a: None

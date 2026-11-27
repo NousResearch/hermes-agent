@@ -1,7 +1,9 @@
-"""The desktop's welcome trial: free inference on ``nous/welcome`` for a first install, once per OS user.
+"""The welcome trial: free inference on ``nous/welcome`` for a first install, once per OS user.
 
-Only the backend the desktop spawned on this machine can claim it, only when this OS user has never
-used Hermes here (``install_state``), and only with no provider and no Nous identity yet. The claim
+Two surfaces may claim it: the backend the desktop spawned on this machine, and first-run ``hermes
+setup`` when a person answers it in a real terminal (``_CLAIM_SURFACES``; never a container, CI, a
+piped or spawned run). Either way only when this OS user has never used Hermes here (``install_state``)
+and with no provider and no Nous identity yet. The claim
 mints a guest stamped with ``WELCOME_CLAIM_FLAG`` in the mint's own write and writes the OS user's
 marker, so the trial is never claimed twice for that user. Another OS account on the same computer is
 a separate first install. A claim that is lost later (the guest is reaped, ``auth.json`` is
@@ -14,6 +16,7 @@ Enforcement is client-side; the account service's own entitlement check follows 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any, Optional
@@ -57,15 +60,38 @@ def _machine_is_used(assume_fresh: bool) -> bool:
     return not assume_fresh and probe().existing and not trial_reserved()
 
 
+def _person_at_cli_setup() -> bool:
+    """A person is answering ``hermes setup`` on this machine: an interactive stdin, outside a
+    container, not CI, and not a run the dashboard or Desktop spawned. stdout is not checked: a user
+    who logs the installer through ``tee`` is still at the keyboard."""
+    from hermes_cli.setup import is_interactive_stdin, is_noninteractive
+    from hermes_constants import is_container
+
+    return (is_interactive_stdin() and not is_noninteractive()
+            and not is_container() and not os.environ.get("CI"))
+
+
+# Where a claim may come from: the desktop's local backend, or a person at CLI setup on this machine.
+_CLAIM_SURFACES: dict[str, tuple[str, Callable[[], bool]]] = {
+    "desktop": ("not the desktop's local backend", lambda: anon_auth.on_local_desktop_backend()),
+    "cli_setup": ("no person at an interactive terminal", _person_at_cli_setup),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class _Ask:
     assume_fresh: bool
     configured: Optional[bool]  # the caller's provider_configured() answer, when it has one
+    surface: str = "desktop"
+
+
+def _surface_blocked(ask: _Ask) -> bool:
+    return not _CLAIM_SURFACES[ask.surface][1]()
 
 
 # Cheapest first; the last one reads the disk. Each is a reason the trial cannot be claimed.
 _CLAIM_BLOCKERS: tuple[tuple[str, Callable[[_Ask], bool]], ...] = (
-    ("not the desktop's local backend", lambda _ask: not anon_auth.on_local_desktop_backend()),
+    ("surface", _surface_blocked),
     ("guests are switched off", lambda _ask: not anon_auth.guest_allowed()),
     ("a Nous identity exists", lambda _ask: _has_nous_identity()),
     ("a provider is configured",
@@ -74,26 +100,31 @@ _CLAIM_BLOCKERS: tuple[tuple[str, Callable[[_Ask], bool]], ...] = (
 )
 
 
-def claim_blocker(*, assume_fresh: bool = False, configured: Optional[bool] = None) -> Optional[str]:
+def claim_blocker(*, assume_fresh: bool = False, configured: Optional[bool] = None,
+                  surface: str = "desktop") -> Optional[str]:
     """Why the trial cannot be claimed here, or None when it can. *assume_fresh* is the unpackaged
     desktop's ``--fresh-install`` switch: it skips only the machine check. *configured* is a
-    ``provider_configured()`` answer the caller already has, so the ladder is not walked twice."""
-    ask = _Ask(assume_fresh, configured)
-    return next((reason for reason, blocks in _CLAIM_BLOCKERS if blocks(ask)), None)
+    ``provider_configured()`` answer the caller already has, so the ladder is not walked twice.
+    *surface* names who asks (``_CLAIM_SURFACES``); every other check is the same for both."""
+    ask = _Ask(assume_fresh, configured, surface)
+    reason = next((reason for reason, blocks in _CLAIM_BLOCKERS if blocks(ask)), None)
+    return _CLAIM_SURFACES[surface][0] if reason == "surface" else reason
 
 
-def claim_desktop_free_tier(*, assume_fresh: bool = False, force: bool = False) -> Optional[dict[str, Any]]:
+def claim_desktop_free_tier(*, assume_fresh: bool = False, force: bool = False,
+                            surface: str = "desktop") -> Optional[dict[str, Any]]:
     """Claim the trial when nothing blocks it: mint the guest, stamp the claim, mark the machine.
     Returns the claimed state, or None when the trial is not available here. A failed mint raises
     the coded ``AuthError`` from :func:`anon_auth.ensure_portal_identity` (memoised with its cooldown;
     *force* is the user's own retry). Held under the OS user's claim lock from the checks to the
-    marker write, so two installs starting together claim once."""
+    marker write, so two installs starting together claim once. ``surface="cli_setup"`` is the
+    first-run CLI setup's "Free, start now" choice."""
     from hermes_cli import install_state
 
     with install_state.claim_lock():
         install_state.probe.cache_clear()  # another install may have claimed since this process looked
         settle_interrupted_claim()
-        if reason := claim_blocker(assume_fresh=assume_fresh):
+        if reason := claim_blocker(assume_fresh=assume_fresh, surface=surface):
             logger.debug("welcome trial not claimed: %s", reason)
             return None
         state = anon_auth.ensure_portal_identity(explicit=True, force=force, welcome_claim=True)

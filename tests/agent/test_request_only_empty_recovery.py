@@ -23,8 +23,9 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE
     from agent.model_metadata import estimate_tokens_rough
     from agent.usage_anchor import anchored_context_tokens
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
+    from tests.fixtures.storage_read import transcript_rows
 
     reasoning = "I should look this up.\n<tool_call>\nlookup({})\n</tool_call>"
     stages = (["tool"] if after_tool else []) + ["empty", "tool", "answer", "answer"]
@@ -119,7 +120,7 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
         agent.compression_enabled = False
         agent.tool_delay = 0
         agent.session_id = "request-only-recovery"
-        agent._session_db = SessionDB(tmp_path / "recovery.db")
+        agent._session_db = agent.persistence = open_persistence(profile_scope(home=tmp_path))
         agent.tools = [{"type": "function", "function": {
             "name": "lookup", "description": "Look up a number",
             "parameters": {"type": "object", "properties": {}},
@@ -152,7 +153,7 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
             assert requests[retry_index + 1][:len(original)] == original
             assert hinted_rebuilds == [hint]
 
-            stored = agent._session_db.get_messages(agent.session_id)
+            stored = transcript_rows(agent._session_db, agent.session_id)
             for history in (result["messages"], stored):
                 serialized = json.dumps(history, default=str)
                 assert hint not in serialized

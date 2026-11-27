@@ -22,6 +22,47 @@ export interface DeepLinkProtocolOptions {
   log: (line: string) => void
 }
 
+/**
+ * `hermes://launch` opens and focuses the app and does nothing else: nothing it carries
+ * (path, query) is read or reaches the renderer. Checked on the raw URL before any path
+ * decoding, so a malformed tail cannot stop the launch. A window not yet revealed is left to
+ * its own reveal (showing it early exposes a blank pre-paint frame); once revealed — the repair
+ * page included — it is restored and focused.
+ * Returns true when the link was a launch link (handled), false for every other link.
+ */
+export function handleLaunchDeepLink(
+  url: string,
+  schemes: readonly string[],
+  window: { ready: boolean; activate: () => void }
+): boolean {
+  let parsed: URL
+
+  try {
+    parsed = new URL(url)
+  } catch {
+    return false
+  }
+
+  if (!schemes.includes(parsed.protocol.replace(/:$/, '')) || parsed.hostname !== 'launch') {
+    return false
+  }
+
+  if (window.ready) {
+    window.activate()
+  }
+
+  return true
+}
+
+/** The first `<scheme>://` URL in a launch's argv, if any. */
+export function extractDeepLink(argv: unknown, schemes: readonly string[]): string | null {
+  if (!Array.isArray(argv)) {
+    return null
+  }
+
+  return argv.find(a => typeof a === 'string' && schemes.some(s => a.startsWith(`${s}://`))) || null
+}
+
 export function registerDeepLinkProtocol(options: DeepLinkProtocolOptions): void {
   const { app, protocol, env, defaultApp, argv, execPath, resolve, log } = options
 

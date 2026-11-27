@@ -7,6 +7,7 @@ import json
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
+from tools import delegate_tool_config
 from tools.delegation_redaction import (
     parent_copy, redact_child_result, redact_child_text, redact_child_value, redact_summary,
 )
@@ -282,12 +283,11 @@ def _apply_summary_budget(results: list[dict[str, Any]], parent_agent) -> None:
     """Trim subagent summaries in-place so a batch can't overflow the parent's context window (full text spilled to
     disk). Per-summary cap = MIN(dynamic headroom budget, static ``delegation.max_summary_chars`` ceiling; 0 =
     disabled); over-cap summaries become head+tail plus a pointer to the spill file."""
-    from tools.delegate_tool import _load_config
     summaries = [r for r in results if isinstance(r, dict) and isinstance(r.get("summary"), str) and r["summary"]]
     if not summaries:
         return
     try:
-        static_ceiling = int(_load_config().get("max_summary_chars", DEFAULT_MAX_SUMMARY_CHARS))
+        static_ceiling = int(delegate_tool_config._load_config().get("max_summary_chars", DEFAULT_MAX_SUMMARY_CHARS))
     except (TypeError, ValueError):
         static_ceiling = DEFAULT_MAX_SUMMARY_CHARS
     candidates = [c for c in (static_ceiling, _parent_summary_char_budget(parent_agent, len(summaries))) if c and c > 0]
@@ -397,8 +397,11 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
     if children_cost_total <= 0.0:
         return
     try:
-        current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
-        parent_agent.session_estimated_cost_usd = current + children_cost_total
+        from agent.prompt_cache_lifecycle import session_totals_lock
+
+        with session_totals_lock(parent_agent):  # a keep-alive's reply adds to the same total under it
+            current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            parent_agent.session_estimated_cost_usd = current + children_cost_total
         if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
             parent_agent.session_cost_source = "subagent"
         if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:

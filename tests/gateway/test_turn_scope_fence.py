@@ -2,7 +2,7 @@
 
 The fence is the owner epoch and runtime generation the claim stamped on the admission row, so a
 store can reject a superseded owner's late write. Real GatewayRunner, DiscordAdapter,
-SessionAuthority and drain over a real SessionDB; only the agent's conversation is a stand-in.
+SessionAuthority and drain over a real state.db; only the agent's conversation is a stand-in.
 """
 import pytest
 
@@ -15,7 +15,6 @@ async def test_each_claimed_turn_binds_its_admission_fence(monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_results import execution_result
     from hermes_scope import LOCAL_OWNER, Fence, TurnScope, current_scope
-    from hermes_state_runtime import list_session_admissions
 
     runner, adapter, _sent = _owner(monkeypatch)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
@@ -34,13 +33,13 @@ async def test_each_claimed_turn_binds_its_admission_fence(monkeypatch):
         await adapter.handle_message(MessageEvent(text=text, source=source, message_id=text))
         await _until(lambda: text in seen)
     owner = runner.session_store.peek_session_id(key)
-    await _until(lambda: [r['status'] for r in list_session_admissions(
-        authority.db, session_id=owner, pending_only=False)] == ['terminal', 'terminal'])
-    rows = {r['request_id']: r for r in list_session_admissions(authority.db, session_id=owner, pending_only=False)}
+    await _until(lambda: [r.status for r in authority.persistence.admissions.list(
+        session_id=owner, pending_only=False)] == ['terminal', 'terminal'])
+    rows = {r.request_id: r for r in authority.persistence.admissions.list(session_id=owner, pending_only=False)}
     for text in ('A', 'B'):
         scope = seen[text]
         assert isinstance(scope, TurnScope), f'turn {text} ran without a TurnScope: {scope!r}'
-        assert (scope.session, scope.turn) == (owner, rows[text]['admission_id'])
-        assert scope.fence == Fence(authority.epoch, rows[text]['generation'])
+        assert (scope.session, scope.turn) == (owner, rows[text].admission_id)
+        assert scope.fence == Fence(authority.epoch, rows[text].generation)
         assert (scope.owner, scope.can_administer) == (LOCAL_OWNER, True)
     assert seen['B'].fence.generation == seen['A'].fence.generation + 1

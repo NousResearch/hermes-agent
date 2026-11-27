@@ -9,9 +9,11 @@ and so do a manual cron run's finished text and the early per-task failure notic
 """
 import pytest
 
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row
 from tests.gateway.test_completion_admission import pending
 from tests.gateway.test_session_end_delegations import _admissions, _local
-from tests.gateway.test_unviewed_completion_notes import _process_event, _target, _turns
+from tests.gateway.test_unviewed_completion_notes import _process_event, _restart, _target, _turns
 from tests.gateway.test_unviewed_delegation_failure_turn import _batch, _fail, _notes
 from tools import async_delegation as delegation
 
@@ -37,7 +39,7 @@ async def test_finished_delegation_resumes_the_parent_with_no_viewer(tmp_path, m
         assert _notes(authority, target, 'deleg_done') == []
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -52,7 +54,7 @@ async def test_finished_process_resumes_the_parent_with_no_viewer(tmp_path, monk
         assert len(seen) == 1 and seen[0][0].startswith('[finished] RESULT_proc_done')
         assert _notes(authority, target, 'proc_done') == []
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -60,20 +62,19 @@ async def test_finished_process_resumes_the_parent_with_no_viewer(tmp_path, monk
 async def test_row_ended_without_the_user_reopens_for_the_result(tmp_path, monkeypatch, reason):
     """The orphan reaper ends the row of a viewer that vanished (a sleeping laptop): that is not the
     user's close, so the result reopens the row and runs as the turn."""
-    from hermes_state_local import end_idle_local_session
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
-        assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                      target_id=target, reason=reason)
+        assert authority.persistence.bindings.end_idle(epoch=authority.epoch, session_id=ref.session_id,
+                                                       target_id=target, reason=reason)
         evt = dict(pending(route, 'deleg_reaped'), parent_session_id=target)
         assert await runner._deliver_async_delegation_group([evt]) is True
         seen = _turns(runner, authority, target, 'deleg_reaped')
         await authority._drain(ref)
         assert len(seen) == 1
-        assert authority.db.get_session(target)['ended_at'] is None, 'the turn reopened the row'
+        assert session_row(authority.persistence, target)['ended_at'] is None, 'the turn reopened the row'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -95,7 +96,7 @@ async def test_result_in_a_chat_the_user_closed_stays_a_note(tmp_path, monkeypat
         await authority._drain(ref)
         assert len(seen) == 1 and 'deleg_closed1' in seen[0][0]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -110,7 +111,7 @@ async def test_successful_manual_cron_run_stays_a_note(tmp_path, monkeypatch):
         await authority._drain(ref)
         assert seen == [] and len(_notes(authority, target, 'deleg_cron_ok')) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def test_resume_predicate_covers_results_not_diagnostics():
@@ -143,7 +144,7 @@ async def test_successes_do_not_spend_the_failure_wake_budget(tmp_path, monkeypa
         assert len(seen) == 2 * UNATTENDED_WAKE_LIMIT + 2, 'failures are still bounded'
         assert len(_notes(authority, target, 'deleg_stepfail')) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -152,30 +153,22 @@ async def test_successes_do_not_spend_the_failure_wake_budget(tmp_path, monkeypa
 async def test_close_pending_across_a_restart_still_decides(tmp_path, monkeypatch, reason, resumes):
     """The user exits while the result is queued (the close waits for the idle FIFO), then the gateway
     restarts: recovery re-arms the stored close, but the in-memory dispatch refusal is gone."""
-    from gateway.config import GatewayConfig
-    from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.session_viewer_close import _PendingClose, _store_and_settle
-    from hermes_state import AsyncSessionDB, SessionDB
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     target = _target(runner, authority, ref)
     evt = _process_event(authority, ref, target, 'proc_pending_close')
     assert await runner._deliver_completion_notification('[finished] RESULT_proc_pending_close', evt) is True
     authority.pending_closes[ref.session_id] = close = _PendingClose(reason)
     await _store_and_settle(authority, ref.session_id, authority.sessions[ref.session_id], close)
-    assert authority.db.get_session(target)['ended_at'] is None, 'the queued result holds the close'
-    authority.db.close()
+    assert session_row(authority.persistence, target)['ended_at'] is None, 'the queued result holds the close'
     delegation._reset_for_tests()  # the next process starts with no refusals
-    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
-    runner.session_store._db = db = SessionDB(tmp_path / 'state.db')
-    runner._session_db = AsyncSessionDB(db)
-    restarted = await initialize_session_authority(runner, profile_id='default', instance_id='lc7b', db=db)
+    runner, restarted = await _restart(tmp_path, monkeypatch, authority)
     try:
         recover_local_sessions(restarted, schedule=True)
         seen = _turns(runner, restarted, target, 'proc_pending_close')
         await restarted._drain(ref)
         assert len(seen) == int(resumes) and len(_notes(restarted, target, 'proc_pending_close')) == 1 - int(resumes)
-        assert restarted.db.get_session(target)['end_reason'] == reason, 'the close settled after it'
+        assert session_row(restarted.persistence, target)['end_reason'] == reason, 'the close settled after it'
     finally:
-        db.close()
+        close_stores_under(restarted.persistence.scope.profile_dir)

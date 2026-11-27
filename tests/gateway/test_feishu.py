@@ -1509,7 +1509,7 @@ class TestWebhookSecurity(unittest.TestCase):
         encrypt_key = "test_secret"
         adapter = self._make_adapter(encrypt_key)
         body = b'{"type":"event"}'
-        timestamp = "1700000000"
+        timestamp = str(int(time.time()))
         nonce = "abc123"
         content = f"{timestamp}{nonce}{encrypt_key}" + body.decode("utf-8")
         sig = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -2031,7 +2031,6 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
         )
-        adapter._resolve_source_chat_type = Mock(return_value="group")
         adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter
@@ -2262,7 +2261,6 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
         )
-        adapter._resolve_source_chat_type = Mock(return_value="group")
         adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
         adapter._dispatch_inbound_event = AsyncMock()
         return adapter

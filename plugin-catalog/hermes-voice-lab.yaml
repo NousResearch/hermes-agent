@@ -1,7 +1,7 @@
 name: hermes-voice-lab
 title: Voice Lab
 repo: https://github.com/Adolanium/hermes-voice-lab
-sha: 80a40f41b559b0f9b6373f6502a88b5d13000e03
+sha: b49bf4cad79df7d7f668e6367f5e5c1c71379b7f
 subdir: plugin
 description: "A voice you can play inside Hermes, made by a physical model of a throat, tongue, lips and nose with air pushed through them in real time: no samples and no TTS model. Drag her tongue and lips on a side-profile portrait with a live cutaway, play notes and sing lyrics from the keyboard, beatbox on pads. The agent plays her too: it speaks lines, writes songs and beats, changes her voice, and jams with you (play a phrase, pause, and Hermes sings an answer). Disclosure — local synthesis only, no network calls. Agent renders and the optional read-aloud provider run node runtime/render.mjs (the plugin's own bundled script; fixed argv, no shell, 120 s timeout) and write WAVs and projects under the plugin's data folder; Desktop export and import use only a folder the user grants. With Jam switched on, each phrase you play is sent to the focused conversation as your message. MIDI access only on request. runtime/voice_lab_engine.wasm is built from the repo's Rust source in GitHub Actions and attested; desktop/plugin.js is the esbuild bundle of src/ and inlines the same engine. Optional read-aloud provider, off unless tts.provider is set to voice-lab. No telemetry."
 maintainer: Adolanium
@@ -9,11 +9,11 @@ tier: community
 category: voice
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Adolanium/hermes-voice-lab#readme
-version: "0.4.1"
+version: "0.5.0"
 screenshots:
-  - https://raw.githubusercontent.com/Adolanium/hermes-voice-lab/80a40f41b559b0f9b6373f6502a88b5d13000e03/docs/media/voice-lab-jam.png
-  - https://raw.githubusercontent.com/Adolanium/hermes-voice-lab/80a40f41b559b0f9b6373f6502a88b5d13000e03/docs/media/voice-lab-play.png
-  - https://raw.githubusercontent.com/Adolanium/hermes-voice-lab/80a40f41b559b0f9b6373f6502a88b5d13000e03/docs/media/voice-lab-sing.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-voice-lab/b49bf4cad79df7d7f668e6367f5e5c1c71379b7f/docs/media/voice-lab-jam.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-voice-lab/b49bf4cad79df7d7f668e6367f5e5c1c71379b7f/docs/media/voice-lab-play.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-voice-lab/b49bf4cad79df7d7f668e6367f5e5c1c71379b7f/docs/media/voice-lab-sing.png
 attested_binaries:
   - runtime/voice_lab_engine.wasm
 capabilities:

@@ -9,6 +9,7 @@ import threading
 
 from agent.model_metadata import _MSG_TOKENS_CACHE, estimate_messages_tokens_rough
 from run_agent import AIAgent
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _pinned_ids() -> set[int]:
@@ -51,13 +52,13 @@ def test_compression_evicts_the_bodies_the_summary_replaced(tmp_path, monkeypatc
 
     from agent import conversation_compression
     from agent.conversation_compression import CompressionCommitFence
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("S", source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, "S", "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
-                        platform="cli", quiet_mode=True, session_db=db, session_id="S",
+                        platform="cli", quiet_mode=True, persistence=db, session_id="S",
                         skip_context_files=True, skip_memory=True)
     agent.context_compressor = MagicMock()
     dropped = "pre-compression tool output " * 5000

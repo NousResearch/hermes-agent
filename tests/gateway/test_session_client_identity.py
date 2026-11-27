@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under
 
 from tests.gateway.test_session_client_env import _home, _owner
 
@@ -17,10 +18,9 @@ TERN = {'name': 'hermes-tern', 'version': '0.4.1+g1a2b'}
 def _create(owner, actor, home, request_id, source='tui', **extra):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': source, 'cwd': str(home),
                                               'toolsets': [], **extra})
-    return ref, restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
+    return ref, restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy)
 
 
 def _info(owner, ref, policy, monkeypatch):
@@ -48,7 +48,23 @@ async def test_a_named_client_reaches_session_info_and_launch_request(tmp_path, 
         assert CANONICAL_METHODS['session.info'].result.model_fields['client']
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
+async def test_a_client_kind_is_echoed_only_when_the_owner_knows_it(tmp_path, monkeypatch):
+    """A known kind rides the label; an unknown one (a newer client's) is accepted and read without it."""
+    home = _home(tmp_path)
+    owner, connection = await _owner(home, monkeypatch)
+    try:
+        for request_id, kind, echoed in (('phone', 'mobile', {**TERN, 'kind': 'mobile'}), ('watch', 'watch', TERN)):
+            ref, policy = _create(owner, connection.actor, home, request_id, client={**TERN, 'kind': kind})
+            info = _info(owner, ref, policy, monkeypatch)
+            assert info['client'] == echoed
+            assert info['launch_request']['client'] == {**TERN, 'kind': kind}  # the request as sent
+    finally:
+        await connection.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -64,7 +80,7 @@ async def test_a_create_without_client_keeps_its_request_and_info_shape(tmp_path
         assert 'client' not in info and 'client' not in info['launch_request']
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -73,18 +89,19 @@ async def test_a_create_without_client_keeps_its_request_and_info_shape(tmp_path
     {'name': 'Hermes'}, {'name': '-x'}, {'name': 'a b'}, {'name': 'x' * 65}, {'name': 7},
     {'name': 'x', 'version': ''}, {'name': 'x', 'version': 'v 1'}, {'name': 'x', 'version': 'v' * 65},
     {'name': 'x', 'version': None}, {'name': 'x', 'version': 1}, {'name': 'x', 'version': 'caf\u00e9'},
+    {'name': 'x', 'kind': 7}, {'name': 'x', 'kind': None}, {'name': 'x', 'kind': ''}, {'name': 'x', 'kind': 'k' * 33},
 ])
 async def test_a_malformed_client_is_refused_as_invalid_params(tmp_path, monkeypatch, bad):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     try:
-        with pytest.raises(RuntimeStoreError) as exc:
+        with pytest.raises(AuthorityRefusal) as exc:
             _create(owner, connection.actor, home, 'bad', client=bad)
         assert (exc.value.reason, exc.value.field) == ('invalid_params', 'client')
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.parametrize('source', ['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'])
@@ -110,7 +127,7 @@ def test_the_client_label_changes_no_policy_decision(tmp_path, monkeypatch, sour
 async def test_an_exact_retry_must_repeat_the_same_client(tmp_path, monkeypatch):
     """The label is part of the exact-retry identity, like every other create field."""
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     params = {'request_id': 'retry', 'source': 'tui', 'cwd': str(home), 'toolsets': [], 'client': dict(TERN)}
@@ -118,13 +135,13 @@ async def test_an_exact_retry_must_repeat_the_same_client(tmp_path, monkeypatch)
         ref = create_local_session(owner, connection.actor, dict(params))
         assert create_local_session(owner, connection.actor, json.loads(json.dumps(params))) == ref
         for other in ({**params, 'client': {'name': 'other'}}, {k: v for k, v in params.items() if k != 'client'}):
-            with pytest.raises(RuntimeStoreError) as exc:
+            with pytest.raises(AuthorityRefusal) as exc:
                 create_local_session(owner, connection.actor, other)
             # main's refusal for any changed field of a resumed request id
             assert (exc.value.reason, exc.value.field) == ('invalid_params', 'request_id')
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -134,20 +151,19 @@ async def test_a_named_session_restores_after_restart(tmp_path, monkeypatch):
     from dataclasses import fields
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_policy import LocalSessionPolicy, restore_policy
-    from hermes_state_local import local_receipt
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     try:
         ref, policy = _create(owner, connection.actor, home, 'restart', client=dict(TERN))
-        stored = local_receipt(owner.db, ref.session_id)['policy']
+        stored = owner.persistence.bindings.receipt(ref.session_id).policy
         assert set(stored) == {f.name for f in fields(LocalSessionPolicy)}
         assert json.loads(stored['request_json'])['client'] == TERN
         owner.sessions.clear()
         assert restore_local_session(owner, ref.session_id) == ref
-        assert restore_policy(local_receipt(owner.db, ref.session_id)['policy']) == policy
+        assert restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy) == policy
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -159,14 +175,14 @@ async def test_runtime_describe_advertises_the_client_parameter(tmp_path, monkey
     conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
     try:
         described = (await conn.dispatch({'id': 0, 'method': 'runtime.describe', 'params': {}}))['result']
-        assert 'session-client-v1' in described['capabilities']
+        assert {'session-client-v1', 'client-identity-v1', 'client-activity-v1'} <= set(described['capabilities'])
         assert 'client' in described['session_create']['parameters']
         refused = await conn.dispatch({'id': 1, 'method': 'session.create', 'params': {
             'request_id': 'w', 'source': 'tui', 'client': {'name': 'x', 'extra': 1}}})
         assert refused['error']['message'] == 'invalid_params', refused
     finally:
         await conn.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -188,7 +204,7 @@ async def test_a_named_create_and_resume_return_snapshots_that_match_their_contr
             assert reply['result']['info']['client'] == TERN
     finally:
         await conn.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def test_the_classic_clis_new_does_not_repeat_another_clients_name():
@@ -244,4 +260,4 @@ async def test_each_profile_home_sees_only_its_own_sessions_client(tmp_path, mon
     finally:
         for conn, owner in ((conn_a, owner_a), (conn_b, owner_b)):
             await conn.close()
-            owner.db.close()
+            close_stores_under(owner.persistence.scope.profile_dir)

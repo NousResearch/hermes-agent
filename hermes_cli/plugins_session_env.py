@@ -47,7 +47,7 @@ def register_session_env(scope: str, names: Iterable[str], resolver: Resolver, *
     token = object()
     keys = frozenset(_env_key(n) for n in names)
     with _LOCK:
-        clash = next(((sorted(keys & held)[0], holder) for other, holder, held, _ in _REGISTRATIONS.values()
+        clash = next(((min(keys & held), holder) for other, holder, held, _ in _REGISTRATIONS.values()
                       if other == scope and holder != owner and keys & held), None)
         if clash is None:
             _REGISTRATIONS[token] = (scope, owner, keys, resolver)

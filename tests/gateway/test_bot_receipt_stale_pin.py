@@ -8,7 +8,8 @@ import time
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from gateway.session_ingress_media import native_inputs_root
+from persistence.core.errors import AuthorityRefusal
 from tests.gateway.test_bot_receipt_refusal import _refuse, _scan_warnings
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']
@@ -33,8 +34,8 @@ def _age(path, seconds):
 
 
 def _rows(bot):
-    return [row['request_id'] for row in
-            list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False)]
+    return [row.request_id for row in
+            bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False)]
 
 
 @pytest.mark.asyncio
@@ -62,7 +63,7 @@ async def test_a_pin_inside_the_grace_window_is_left_alone(bot, caplog):
     with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
         await recover_bot_deliveries(bot.authority)
     assert path.exists()
-    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+    with pytest.raises(AuthorityRefusal, match='unknown_execution'):
         await deliver(bot.connection, dict(id=KEY, profile='default', message='secret text'))
     assert _rows(bot) == []
 
@@ -74,10 +75,10 @@ async def test_an_old_pin_whose_admission_committed_stays_and_still_warns(bot, m
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
         await real(self, *args)
-        raise RuntimeStoreError('stale_epoch')
+        raise AuthorityRefusal('stale_epoch')
     monkeypatch.setattr(type(bot.authority), 'admit_automation', committed_then_refused)
     bot.authority._schedule = lambda ref: None
-    with pytest.raises(RuntimeStoreError, match='stale_epoch'):
+    with pytest.raises(AuthorityRefusal, match='stale_epoch'):
         await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     before = read_delivery_result(bot.home, KEY)
     _age(bot.home / 'runtime' / 'bot_live_delivery' / f'{KEY}.json', HOUR)
@@ -113,7 +114,7 @@ async def test_a_legacy_migration_pin_left_by_a_transient_refusal_is_requeued_an
     path = _legacy(bot, KEY, 1, 'never-run text')
     _legacy(bot, OTHER, 2, 'later')
     refusing = _refuse(monkeypatch, 'runtime_draining')
-    with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+    with pytest.raises(AuthorityRefusal, match='runtime_draining'):
         await recover_bot_deliveries(bot.authority)
     with _locked(bot.home):
         pin = _read(path) or {}
@@ -159,17 +160,17 @@ async def test_a_committed_pin_on_a_deleted_bot_chat_is_kept_and_the_resend_does
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
         await real(self, *args)
-        raise RuntimeStoreError('stale_epoch')
+        raise AuthorityRefusal('stale_epoch')
     monkeypatch.setattr(type(bot.authority), 'admit_automation', committed_then_refused)
-    with pytest.raises(RuntimeStoreError, match='stale_epoch'):
+    with pytest.raises(AuthorityRefusal, match='stale_epoch'):
         await deliver(bot.connection, dict(id=KEY, profile='default', message='run once'))
     monkeypatch.setattr(type(bot.authority), 'admit_automation', real)
     for _ in range(250):
-        rows = list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False)
-        if rows and all(row['status'] == 'terminal' for row in rows):
+        rows = bot.authority.persistence.admissions.list(session_id=bot.chat, pending_only=False)
+        if rows and all(row.status == 'terminal' for row in rows):
             break
         await asyncio.sleep(0.02)
-    assert bot.authority.db.delete_session(bot.chat)
+    assert bot.authority.persistence.sessions.delete(bot.chat, media_root=str(native_inputs_root()))
     path = bot.home / 'runtime' / 'bot_live_delivery' / f'{KEY}.json'
     _age(path, HOUR)
     await recover_bot_deliveries(bot.authority)
@@ -177,6 +178,6 @@ async def test_a_committed_pin_on_a_deleted_bot_chat_is_kept_and_the_resend_does
     chat = create_local_session(bot.authority, bot.connection.actor, {
         'request_id': 'bot2', 'source': 'gui', 'cwd': str(bot.home), 'model': 'fixture', 'toolsets': []})
     title_new_session(bot.authority, chat, 'Bot Chat')
-    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+    with pytest.raises(AuthorityRefusal, match='unknown_execution'):
         await deliver(bot.connection, dict(id=KEY, profile='default', message='run once'))
-    assert list_session_admissions(bot.authority.db, session_id=chat.session_id, pending_only=False) == []
+    assert bot.authority.persistence.admissions.list(session_id=chat.session_id, pending_only=False) == []

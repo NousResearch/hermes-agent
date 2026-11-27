@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import filecmp
 import os
 import shutil
 import subprocess
@@ -18,16 +19,37 @@ from pm.registry import get_package, walk
 from pm.store import current_target
 from pm.testenv import DEVELOPER_TOOLS
 
-def _bundle_package_names() -> list[str]:
+# The browser tool installs it on first use; Squirrel.Mac before Electron 44.7 can't download a 1 GiB update ZIP.
+_FIRST_USE_ON_MACOS = frozenset({"chromium"})
+
+
+def _bundle_package_names(target: str | None = None) -> list[str]:
+    target = current_target() if target is None else target
+    left_out = _FIRST_USE_ON_MACOS if target.startswith("darwin-") else frozenset()
     names = [
         n
         for n in _lockfile().names()
         # Developer tools (just) are never part of a user install.
-        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS
+        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS and n not in left_out
     ]
     if "python" not in names:
         names.append("python")
     return names
+
+
+def _tools_for_builder(names: list[str], store: Path, target: str) -> list[str]:
+    """Admit entries whose glibc floor exceeds this builder after proving they came from the compatible userland."""
+    from pm.build_operations import verified_tools
+
+    staged = [name for name in names
+              if get_package(name).minimum_glibc.get(target) is not None
+              and get_package(name).native_abi_reason(target)]
+    if staged:
+        # The compatible PM installed and probed these exact entries in this job's
+        # payload store. Recheck lock, target, tree digests and links without executing
+        # them on the old libc. Never substitute a missing entry or mint its facts.
+        verified_tools(staged, source_store=store, target=target)
+    return [name for name in names if name not in staged]
 
 
 def _arch_guard(store_dir: Path) -> list[str]:
@@ -91,6 +113,33 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, ignore=ignore, symlinks=True)
 
 
+def link_cache_to_venv(cache: Path, site_packages: Path) -> int:
+    """Replace each unpacked-wheel file the venv holds byte for byte with a relative link to it.
+
+    The payload venv was installed from these same archives, so most of the cache is a second
+    copy. Squirrel.Mac before Electron 44.7 holds the whole update ZIP in one buffer and crashes
+    past 1 GiB, so the macOS ZIP ships each file once. The uv seed copies the bytes back out.
+    """
+    archives = cache / "archive-v0"
+    linked = 0
+    for bucket in sorted(archives.iterdir()) if archives.is_dir() else ():
+        if bucket.is_symlink() or not bucket.is_dir():
+            continue
+        for directory, _dirs, names in os.walk(bucket):
+            for name in names:
+                path = Path(directory) / name
+                installed = site_packages / path.relative_to(bucket)
+                if (path.is_symlink() or installed.is_symlink() or not installed.is_file()
+                        or not filecmp.cmp(path, installed, shallow=False)):
+                    continue
+                staging = path.with_name(f".{name}.link")
+                os.symlink(os.path.relpath(installed, path.parent), staging)
+                os.replace(staging, path)
+                linked += 1
+    filecmp.clear_cache()
+    return linked
+
+
 def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = False,
                      cache: Path | None = None) -> None:
     """Publish the same PM dependency graph as source installs, ready offline."""
@@ -152,6 +201,8 @@ def prune_staged_store(store_dir: Path, names: list[str]) -> None:
     """Prune this build's store, never the ambient user's tool store."""
     facts = Facts(store_dir / "facts.json", strict=True)
     facts.retain({package.name for package in walk(names)})
+    # No other checkout shares a build's store: only the selected pins are live here.
+    facts.drop_dead_pins(lambda name, row: row["entry"] == facts.get(name)["entry"])
     keep = facts.entries_in_use()
     for entry in store_dir.iterdir():
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
@@ -204,12 +255,13 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     ]
     from pm import prepare_tools, stage_tools
 
-    with _phase(f"preparing {len(names)} pinned tools"):
-        prepare_tools(names, out=Path(tools) if tools is not None else store_dir,
+    local = _tools_for_builder(names, store_dir, current_target())
+    with _phase(f"preparing {len(local)} pinned tools"):
+        prepare_tools(local, out=Path(tools) if tools is not None else store_dir,
                       target=current_target(), cache=cache)
     if tools is not None:
         with _phase("copying verified tools into the payload store"):
-            stage_tools(names, source_store=Path(tools), out=store_dir, target=current_target())
+            stage_tools(local, source_store=Path(tools), out=store_dir, target=current_target())
 
     # Prune the staged store BEFORE the venv sync and packaging: drop the
     # fetch-<sha> download-cache archives (needed only at install time — dead
@@ -299,6 +351,10 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     site = dependency_site(venv_dir, python_fact["version"], current_target())
     (site / "hermes-agent.pth").write_text(
         Path(os.path.relpath(repo_dir, site)).as_posix() + "\n", encoding="utf-8")
+    # An MSIX holds no links, and uv's Windows cache uses pointer files instead.
+    if not current_target().startswith("win32-"):
+        linked = link_cache_to_venv(payload_cache, site)
+        print(f"✓ uv-cache: {linked} files the venv holds byte for byte ship once, as links into it")
     from scripts.bundles.payload import relativize_links
     relativize_links(out)
     from scripts.bundles.bytecode import bake_bytecode

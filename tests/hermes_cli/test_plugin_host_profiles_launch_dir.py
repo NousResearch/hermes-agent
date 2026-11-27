@@ -40,3 +40,21 @@ def test_profile_extraction_ignores_a_hermes_cli_package_in_the_launch_directory
     assert not (launch_dir / "shadow-imported.txt").exists()
     assert [p.name for p in profiles] == ["cwdprobe"]
     assert profiles[0].base_url == "https://cwdprobe.example/v1"
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_extraction_cache_skips_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """The extraction cache is best-effort: a dead profile home is skipped, never recreated, and the
+    extracted payload is still returned (#155595 U3)."""
+    import hermes_constants
+    from hermes_cli import plugin_host_profiles
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    plugin_dir = tmp_path / "plugin-src" / "deadprobe"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(plugin_host_profiles, "_extract", lambda *_a: {"profiles": []})
+    assert plugin_host_profiles._cached_extraction(plugin_dir, "_hermes_test_deadprobe") == {"profiles": []}
+    assert not home.exists()

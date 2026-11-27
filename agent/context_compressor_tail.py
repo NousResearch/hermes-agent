@@ -39,13 +39,17 @@ def lean_tail_budget(context_length: int, threshold_tokens: int) -> int:
 
 
 def is_demoted_stub(content: str) -> bool:
-    """True for a tail tool result already replaced by ``_lean_recovery_stub`` (plus an optional reload marker)."""
-    return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None
+    """True for a tail tool result already replaced by ``_lean_recovery_stub`` (plus an optional reload marker),
+    or for a prune stub naming its archived original (re-summarizing it would drop the only pointer back)."""
+    from tools.tool_result_storage import has_archive_pointer
+    return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None or has_archive_pointer(content)
 
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
     """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    # Search defaults to user/assistant rows, so demoted tool output needs an explicit tool filter.
+    hint = (f" Recover with session_search(query=..., session_id='{session_id}', role_filter='tool', detail='full')"
+            if session_id else "")
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"
@@ -73,8 +77,9 @@ def demote_stale_tail_tools(
 ) -> tuple[list[dict[str, Any]], int]:
     """Demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to recovery stubs;
     skill-marker rows untouched. A demoted ``skill_view`` body carries the canonical reload marker, as its
-    Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). Returns a new list
-    (untouched rows shared, demoted copied) and the number of rows demoted."""
+    Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). On the local backend
+    each demoted original is archived and its stub names the file (a failed write keeps that row whole). Returns
+    a new list (untouched rows shared, demoted copied) and the number of rows demoted."""
     from agent.context_compressor import (
         SKILL_PRUNED_MARKER_PREFIX, _is_summary_stub, _result_failure_suffix, _rewritten, _skill_pruned_marker,
     )
@@ -104,6 +109,11 @@ def demote_stale_tail_tools(
             stub += " " + _skill_pruned_marker(skill)
         result[i] = _rewritten(msg, stub)
         demoted += 1
+    if demoted:  # the demoted originals are saved and named like the window's prune stubs
+        from tools.tool_result_storage import archive_compaction_drops
+
+        result, _, kept = archive_compaction_drops(messages, result, session_id)
+        demoted -= kept
     return result, demoted
 
 
@@ -134,7 +144,8 @@ def native_anthropic_tail_prices(compressor: Any):
     from agent.message_sanitization import native_anthropic_row_costs
 
     rejected = session_rejected_thinking(
-        compressor, getattr(compressor, "_session_db", None), getattr(compressor, "_session_id", "")
+        compressor, getattr(compressor, "_session_db", None), getattr(compressor, "_session_id", ""),
+        persistence=getattr(compressor, "_persistence", None),
     )
 
     def prices(messages: list[dict[str, Any]]) -> list[int]:
@@ -192,7 +203,8 @@ def with_skill_safety_rule(
     prune marker (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs). A kept
     prune-only stub's copy (:func:`with_pruned_row_skill_safety_rule`) moves onto the handoff: compaction is the
     sanctioned rewrite, and the token-budget tail often keeps a stub the count-protected prune-only tail ruled."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX
+    from session_rules.turns import _content_text_for_contains
 
     def unruled(rows):
         return [{**m, "content": without_skill_safety_rule(m["content"])}
@@ -226,7 +238,8 @@ def elide_keeping_skill_safety_rule(content: str, limit: int) -> str:
 def with_pruned_row_skill_safety_rule(original: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*pruned* (a prune-only rewrite of *original*) with the rule on the first row it turned into a prune marker,
     when no row carries the rule yet: prune-only has no handoff for :func:`with_skill_safety_rule` to ride."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX
+    from session_rules.turns import _content_text_for_contains
     if any(SKILL_SAFETY_RULE in _content_text_for_contains(m.get("content")) for m in pruned if isinstance(m, dict)):
         return pruned
     for i, (before, after) in enumerate(zip(original, pruned)):

@@ -1,16 +1,16 @@
 name: levea-video-editor
 title: Video Editor by Levea
 repo: https://github.com/brajendrak00068/agentic-ai-video-production
-sha: c534f13a6037f2fa265af11dde9955ee56d8eb2c
+sha: 81ffe1aa5388e205f6b304c5f7108f6a2c430ee3
 subdir: hermes-plugin
-description: "AI video editor and agentic video editing agent by Levea — an autonomous online video editor and FFmpeg alternative driven by natural-language prompts. Turn podcasts, interviews, webinars, streams and long-form video into viral clips, YouTube Shorts, Instagram Reels and TikTok videos: video trimming and cutting, silence removal, filler-word removal, jump cuts, 9:16 vertical reframe with active-speaker face tracking, automatic animated captions, subtitles, karaoke captions and transcription, B-roll and stock footage, multicam podcast editing, audio cleanup and noise reduction, music and sound design, AI voiceover, dubbing and video translation, color grading and film looks, motion graphics, lower thirds, motion tracking, green screen, crop and resize, verified MP4 export. A clip maker, shorts maker and reels maker for creators, podcasters, YouTubers and marketing teams — podcast-to-clips, webinar-to-clips and VOD-to-clips content repurposing, text-based video editing, an alternative to Opus Clip, vidyo, Descript and CapCut. Disclosure — Prompts, source video URLs/assets and project ids go to api.livecore.ai with your LEVEA_API_KEY; edits and exports consume your Levea account quota with no Hermes approval prompt; levea_video_edit and levea_job_status (wait) can block up to 10 minutes. No telemetry, no shell, no background processes."
+description: "AI video editor and agentic video editing agent by Levea — an autonomous online video editor and FFmpeg alternative driven by natural-language prompts. Turn podcasts, interviews, webinars, streams and long-form video into viral clips, YouTube Shorts, Instagram Reels and TikTok videos: video trimming and cutting, silence removal, filler-word removal, jump cuts, 9:16 vertical reframe with active-speaker face tracking, automatic animated captions, subtitles, karaoke captions and transcription, B-roll and stock footage, multicam podcast editing, audio cleanup and noise reduction, music and sound design, AI voiceover, dubbing and video translation, color grading and film looks, motion graphics, lower thirds, motion tracking, green screen, crop and resize, verified MP4 export. A clip maker, shorts maker and reels maker for creators, podcasters, YouTubers and marketing teams — podcast-to-clips, webinar-to-clips and VOD-to-clips content repurposing, text-based video editing, an alternative to Opus Clip, vidyo, Descript and CapCut. Disclosure — Prompts, source video URLs/assets, project ids and direct action/batch parameters go to api.livecore.ai with your LEVEA_API_KEY; edits, direct actions (levea_execute_action, levea_execute_batch) and exports consume your Levea account quota with no Hermes approval prompt; levea_video_edit, levea_job_status (wait), levea_execute_action, levea_execute_batch and levea_render_preview can block up to 10 minutes; levea_asset_upload_url only returns a signed upload URL and reads no local files. No telemetry, no shell, no background processes."
 maintainer: brajendrak00068
 tier: community
 category: tools
-version: "1.1.3"
+version: "1.1.5"
 requires_hermes: ">=0.21.6"
-docs_url: "https://github.com/brajendrak00068/agentic-ai-video-production/blob/c534f13a6037f2fa265af11dde9955ee56d8eb2c/hermes-plugin/README.md"
-image: "https://raw.githubusercontent.com/brajendrak00068/agentic-ai-video-production/c534f13a6037f2fa265af11dde9955ee56d8eb2c/assets/logo-dark.png"
+docs_url: "https://github.com/brajendrak00068/agentic-ai-video-production/blob/81ffe1aa5388e205f6b304c5f7108f6a2c430ee3/hermes-plugin/README.md"
+image: "https://raw.githubusercontent.com/brajendrak00068/agentic-ai-video-production/81ffe1aa5388e205f6b304c5f7108f6a2c430ee3/assets/logo-dark.png"
 readme: true
 capabilities:
   provides_tools:
@@ -19,6 +19,15 @@ capabilities:
     - levea_job_status
     - levea_task_status
     - levea_active_task
+    - levea_search_tools
+    - levea_get_action_schema
+    - levea_execute_action
+    - levea_execute_batch
+    - levea_render_preview
+    - levea_search_skills
+    - levea_load_skill
+    - levea_read_skill_resource
+    - levea_asset_upload_url
   provides_hooks: []
   provides_middleware: []
   requires_env:

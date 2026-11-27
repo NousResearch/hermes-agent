@@ -7,14 +7,21 @@ import path from 'node:path'
 import { afterEach, test, vi } from 'vitest'
 
 import {
+  fileDiffVsHead,
   gitFor,
   repoStatus,
   resolveRenamePath,
   REVIEW_FILE_CAP,
+  reviewCommit,
+  reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
   reviewList,
+  reviewPrList,
+  reviewPush,
   reviewRevert,
+  reviewRevParse,
+  reviewShipInfo,
   reviewStage,
   reviewUnstage,
   simpleGitHostEnv
@@ -394,4 +401,29 @@ test('Review revert rejects outside a repository', async () => {
 
   tempDirs.push(dir)
   await assert.rejects(() => reviewRevert(dir, 'missing.txt', 'git'))
+})
+
+test('gitBin=null degrades reads and refuses mutations without spawning git or gh', async () => {
+  const dir = makeRepo()
+
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'modified\n')
+  mockExecFile.mockClear()
+
+  assert.equal(await repoStatus(dir, null), null)
+  assert.deepEqual(await reviewList(dir, 'uncommitted', null, null), { files: [], base: null })
+  assert.equal(await reviewDiff(dir, 'tracked.txt', 'uncommitted', null, false, null), '')
+  assert.equal(await fileDiffVsHead(dir, 'tracked.txt', null), '')
+  assert.equal(await reviewRevParse(dir, 'HEAD', null), null)
+  assert.deepEqual(await reviewCommitContext(dir, null), { diff: '', recent: '' })
+  assert.deepEqual(await reviewShipInfo(dir, 'gh', null), { ghReady: false, pr: null })
+  assert.deepEqual(await reviewPrList(dir, 'gh', ['main'], [], null), { ghReady: false, prs: [] })
+
+  await assert.rejects(reviewStage(dir, 'tracked.txt', null), /git is not available/)
+  await assert.rejects(reviewUnstage(dir, 'tracked.txt', null), /git is not available/)
+  await assert.rejects(reviewRevert(dir, 'tracked.txt', null), /git is not available/)
+  await assert.rejects(reviewCommit(dir, 'msg', false, null), /git is not available/)
+  await assert.rejects(reviewPush(dir, null), /git is not available/)
+  await assert.rejects(reviewCreatePr(dir, null, 'gh'), /git is not available/)
+  assert.equal(mockExecFile.mock.calls.length, 0)
+  assert.equal(fs.readFileSync(path.join(dir, 'tracked.txt'), 'utf8'), 'modified\n')
 })

@@ -1,0 +1,19 @@
+name: sleek
+title: Sleek
+repo: https://github.com/sleekdotdesign/mcp
+sha: 08fe1f57ce275847330226544d85bc6044391e95
+subdir: hermes
+version: "1.0.0"
+description: "Design mobile app screens with Sleek's hosted MCP server (https://sleek.design/api/mcp). Agent Plugins v1 package (plugin.json + mcp.json + one skill), configuration only. Disclosure — every tool call goes to sleek.design and acts on the Sleek account you sign in with; the tool set is served by that server at runtime and is not covered by the pinned sha; design runs spend your workspace's AI credits; delete_project permanently deletes a project. Sign-in is OAuth through Hermes: after `hermes mcp add sleek --url https://sleek.design/api/mcp --auth oauth`, the first tool call opens the browser; Hermes stores and refreshes the tokens. The package marks the server untrusted; the native OAuth entry replaces that setting, so the install steps set trust: untrusted on it too, and Hermes then asks before write-capable calls and refuses them in unattended runs."
+maintainer: Sleek
+tier: community
+category: tools
+docs_url: https://github.com/sleekdotdesign/mcp/tree/08fe1f57ce275847330226544d85bc6044391e95/hermes
+requires_hermes: ">=0.22.3"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

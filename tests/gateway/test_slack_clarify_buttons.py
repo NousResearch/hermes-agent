@@ -82,7 +82,6 @@ def _clear_clarify_state():
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
-        cm._notify_cbs.clear()
 
 
 # ===========================================================================
@@ -345,7 +344,7 @@ class TestSlackClarifyOtherFlow:
 
         # Now the gateway text-intercept (platform-agnostic) resolves from the
         # user's next typed message. We exercise that leveraged path directly.
-        assert cm.resolve_text_response_for_session("sk-other", "my custom answer") is True
+        assert cm.attempt_text_response("cidO", "my custom answer") == cm.TEXT_RESOLVED
         with cm._lock:
             entry = cm._entries.get("cidO")
         assert entry.response == "my custom answer"

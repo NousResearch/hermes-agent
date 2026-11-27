@@ -1,6 +1,6 @@
 """A handoff moves its conversation into a Telegram DM topic; a lost race never splits a topic.
 
-Real ``SessionStore`` + ``SessionDB``: a topic's route and its persisted binding must agree after
+Real ``SessionStore`` and its store: a topic's route and its persisted binding must agree after
 every handoff, ``/resume`` or refusal, and no two topics may route to one session.
 """
 
@@ -11,7 +11,8 @@ import pytest
 
 from gateway.config import HomeChannel, Platform
 from gateway.session import SessionStore, build_session_key
-from hermes_state import AsyncSessionDB
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.test_telegram_topic_mode import _make_event, _make_runner, _make_source
 
 CHAT = "208214988"
@@ -21,22 +22,22 @@ def _real_runner(tmp_path):
     runner = _make_runner()
     store = SessionStore(tmp_path / "sessions", runner.config)
     runner.session_store, runner._async_session_store = store, None
-    db = store._db
-    db.enable_telegram_topic_mode(chat_id=CHAT, user_id=CHAT)
-    runner._session_db = AsyncSessionDB(db)
+    db = store.persistence
+    db.routing.enable_topic_mode(chat_id=CHAT, user_id=CHAT)
+    runner.persistence = runner._session_db = db
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM, chat_id=CHAT, name="DM", thread_id=None)
     runner._handle_message = AsyncMock(return_value=None)
     runner._clear_conversation_scope = MagicMock()
-    db.create_session("cli-a", source="cli")
-    db.append_message("cli-a", "user", "cli work")
+    seed_session(db, "cli-a", "cli")
+    seed_messages(db, "cli-a", {"role": "user", "content": "cli work"})
     return runner, store, db
 
 
 def _topic(store, db, thread_id):
     """(route, binding) of one topic."""
-    binding = db.get_telegram_topic_binding(chat_id=CHAT, thread_id=thread_id)
-    return store.peek_session_id(build_session_key(_make_source(thread_id=thread_id))), binding and binding["session_id"]
+    binding = db.routing.get_topic_binding(chat_id=CHAT, thread_id=thread_id)
+    return store.peek_session_id(build_session_key(_make_source(thread_id=thread_id))), binding and binding.session_id
 
 
 async def _handoff(runner):
@@ -55,8 +56,8 @@ async def test_repeat_handoff_moves_the_topic_and_a_refusal_opens_no_topic(tmp_p
     if bound_in == "same_profile":
         assert await _handoff(runner) is None
     else:
-        db.bind_telegram_topic(chat_id=CHAT, thread_id="900", user_id=CHAT, session_key="agent:work:x",
-                               session_id="cli-a", profile_name="work")
+        db.routing.bind_topic(chat_id=CHAT, thread_id="900", user_id=CHAT, session_key="agent:work:x",
+                              session_id="cli-a", profile_name="work")
 
     result = await _handoff(runner)
 
@@ -83,17 +84,16 @@ async def test_binding_race_after_the_check_keeps_route_and_binding_together(tmp
     src = _make_source(thread_id="800")
     key = build_session_key(src)
     own = store.get_or_create_session(src).session_id
-    db.bind_telegram_topic(chat_id=CHAT, thread_id="800", user_id=CHAT, session_key=key, session_id=own)
+    db.routing.bind_topic(chat_id=CHAT, thread_id="800", user_id=CHAT, session_key=key, session_id=own)
     race_key = build_session_key(_make_source(thread_id="999"))
 
     def bind_elsewhere(session_id):
-        db.bind_telegram_topic(chat_id=CHAT, thread_id="999", user_id=CHAT, session_key=race_key,
-                               session_id=session_id)
+        db.routing.bind_topic(chat_id=CHAT, thread_id="999", user_id=CHAT, session_key=race_key,
+                              session_id=session_id)
 
     if command == "resume":
-        db.create_session("other", source="telegram", user_id=CHAT, chat_id=CHAT, chat_type="dm",
-                          thread_id="800", session_key=key)
-        db.set_session_title("other", "Other Work")
+        seed_session(db, "other", "telegram", title="Other Work", user_id=CHAT, chat_id=CHAT, chat_type="dm",
+                     thread_id="800", session_key=key)
         check = runner._telegram_topic_switch_conflict
 
         async def check_then_race(source, session_id):
@@ -105,7 +105,7 @@ async def test_binding_race_after_the_check_keeps_route_and_binding_together(tmp
         reply = await runner._handle_resume_command(_make_event("/resume Other Work", thread_id="800"))
         assert "already linked" in reply
         assert _topic(store, db, "800") == (own, own)
-        assert db.get_session(own)["ended_at"] is None
+        assert session_row(db, own)["ended_at"] is None
         return
 
     runner.config.platforms[Platform.TELEGRAM].home_channel.thread_id = "800"
@@ -121,4 +121,4 @@ async def test_binding_race_after_the_check_keeps_route_and_binding_together(tmp
     assert await _handoff(runner) is None
     runner._handle_message.assert_awaited_once()
     assert _topic(store, db, "800") == ("cli-a", "cli-a")
-    assert db.get_telegram_topic_binding(chat_id=CHAT, thread_id="999") is None
+    assert db.routing.get_topic_binding(chat_id=CHAT, thread_id="999") is None

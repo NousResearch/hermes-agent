@@ -89,7 +89,7 @@ export function useVoiceConversation({
 }: VoiceConversationOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
-  const { handle, level } = useMicRecorder(voiceCopy)
+  const { handle, levelStore } = useMicRecorder(voiceCopy)
   // The scope's session owner (a Bot's own connection + profile) picks the TTS
   // voice; a ref keeps the long-lived turn closures below reading the current
   // value.
@@ -1117,5 +1117,5 @@ export function useVoiceConversation({
     wasEnabledRef.current = enabled
   }, [enabled, end, start])
 
-  return { end, level, muted, start, status, stopTurn, toggleMute }
+  return { end, levelStore, muted, start, status, stopTurn, toggleMute }
 }

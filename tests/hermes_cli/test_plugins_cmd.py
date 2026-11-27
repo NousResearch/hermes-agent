@@ -977,3 +977,15 @@ def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
     monkeypatch.setattr('hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
     assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
     assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_plugins_dir_refuses_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    from hermes_cli.plugins_cmd import _plugins_dir
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        _plugins_dir()
+    assert not home.exists()

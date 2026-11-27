@@ -80,7 +80,7 @@ def test_real_agent_keeps_one_split_and_marks_the_session_prompt_on_the_first_ca
     import os
     from pathlib import Path
 
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
     from tests.agent.test_prompt_cache_prefix_contract import _prefix_breaks
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
@@ -93,7 +93,7 @@ def test_real_agent_keeps_one_split_and_marks_the_session_prompt_on_the_first_ca
         write_hermes_home(home, srv.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW + route)
         srv.push(ToolCall("terminal", {"command": "echo one"}), ToolCall("terminal", {"command": "echo two"}), Text("done"))
         agent = AIAgent(provider="custom:cacherelay", base_url=srv.base_url, api_key="sk-fake-e2e", model="fake-model",
-                        session_db=SessionDB(db_path=home / "state.db"), session_id="tail", quiet_mode=True,
+                        persistence=open_persistence(profile_scope(home=home)), session_id="tail", quiet_mode=True,
                         platform="cli", ephemeral_system_prompt="You are a focused subagent.\nCONTEXT:\ntask text")
         agent.run_conversation("go", conversation_history=[], task_id="t")
         session_prompt = agent._cached_system_prompt

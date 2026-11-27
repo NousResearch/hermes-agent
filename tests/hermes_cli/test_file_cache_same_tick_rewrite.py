@@ -70,10 +70,11 @@ def test_a_long_lived_signature_does_not_change_when_the_file_settles(tmp_path, 
     """``always_digest`` is for signatures compared much later (profile reconnects, parse-failure
     records): one taken while the file was fresh still matches the unchanged file once it settles."""
     import utils
+    import utils.files
     path = tmp_path / "config.yaml"
     path.write_text("model: a\n")
     fresh = utils.file_cache_version(path, always_digest=True)
-    monkeypatch.setattr(utils, "mtime_is_racy", lambda _mtime_ns: False)
+    monkeypatch.setattr(utils.files, "mtime_is_racy", lambda _mtime_ns: False)
     assert utils.file_cache_version(path, always_digest=True) == fresh
     path.write_text("model: b\n")
     assert utils.file_cache_version(path, always_digest=True) != fresh
@@ -95,8 +96,8 @@ def test_an_mtime_restoring_rewrite_still_gets_a_content_digest(tmp_path):
 _WORKER_PROBE = r"""
 import json, os, sys
 from pathlib import Path
-import utils
-utils.RACY_MTIME_WINDOW_NS = int(sys.argv[1])
+import utils.files
+utils.files.RACY_MTIME_WINDOW_NS = int(sys.argv[1])
 home = Path(os.environ["HERMES_HOME"])
 (home / "config.yaml").write_text("agent:\n  max_turns: 17\nskills:\n  external_dirs: []\n")
 from agent.safe_worker_policy import _bind_safe_worker_policy
@@ -142,3 +143,37 @@ def test_a_frozen_config_worker_opens_config_yaml_no_more_while_the_file_is_fres
     racy = _worker_config_opens(tmp_path, 10**15)
     settled = _worker_config_opens(tmp_path, 0)
     assert racy == settled, (racy, settled)
+
+
+_SNAPSHOT_KEY_PROBE = r"""
+import json, os
+from pathlib import Path
+import utils.files
+utils.files.RACY_MTIME_WINDOW_NS = 10**15
+cfg = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+cfg.write_text("agent:\n  max_turns: 17\n")
+def keys():
+    return [list(utils.file_cache_version(cfg)), list(utils.file_cache_version(cfg, always_digest=True))]
+unbound = keys()
+from agent.safe_worker_policy import _bind_worker_config
+_bind_worker_config({"agent": {"max_turns": 3}})
+bound = keys()
+from hermes_cli.config_backend import config_cache_version
+from hermes_cli import free_tier_bootstrap
+print(json.dumps({"unbound": unbound, "bound": bound, "config_layer": [
+    config_cache_version(cfg)[-1], free_tier_bootstrap._config_stamp()[0][-1]]}))
+"""
+
+
+def test_utils_keys_config_yaml_alike_in_a_frozen_worker_while_the_config_layer_stays_stat_only(tmp_path):
+    """The frozen-snapshot rule belongs to the config layer: ``utils`` hashes a fresh ``config.yaml``
+    whether or not a worker snapshot is bound, and the config layer's own keys skip the digest."""
+    home = tmp_path / "home"
+    home.mkdir()
+    out = subprocess.run([sys.executable, "-c", _SNAPSHOT_KEY_PROBE], cwd=Path(__file__).resolve().parents[2],
+                         env={**os.environ, "HERMES_HOME": str(home)}, capture_output=True, text=True,
+                         timeout=120, check=True)
+    keys = json.loads(out.stdout.strip().splitlines()[-1])
+    assert keys["bound"] == keys["unbound"]
+    assert all(key[-1] for key in keys["bound"])
+    assert keys["config_layer"] == ["", ""]

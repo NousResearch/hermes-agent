@@ -29,7 +29,6 @@ import os
 import pty  # windows-footgun: ok — dev profiling script, POSIX pty by design
 import select
 import signal
-import sqlite3
 import sys
 import tempfile
 import time
@@ -64,14 +63,13 @@ KEYS = {
 
 
 def pick_longest_session(db: Path) -> str:
-    conn = sqlite3.connect(db)
-    row = conn.execute(
-        "SELECT id FROM sessions s ORDER BY "
-        "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) DESC LIMIT 1"
-    ).fetchone()
-    if not row:
+    from persistence_assembly import open_persistence_reader
+
+    with open_persistence_reader(db) as store:
+        session_id = store.sessions.longest_session_id()
+    if not session_id:
         sys.exit(f"no sessions in {db}")
-    return row[0]
+    return session_id
 
 
 def drain(fd: int, timeout: float) -> bytes:

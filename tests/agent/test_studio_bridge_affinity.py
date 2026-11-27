@@ -41,8 +41,9 @@ from uuid import uuid4
 import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_seed import seed_session
 
 # The bridge stamps its rows with the ``source`` carried by ``bridge.chat``
 # while ``AIAgent.platform`` is the bridge's own platform name; the two need
@@ -73,7 +74,7 @@ def _bridge_session_key(
 
 @pytest.fixture()
 def db(tmp_path):
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = open_persistence(profile_scope(home=tmp_path))
     try:
         yield session_db
     finally:
@@ -94,7 +95,7 @@ def _bridge_agent(session_db, session_id: str, *, declared_key: str | None):
             verbose_logging=False,
             skip_context_files=True,
             skip_memory=True,
-            session_db=session_db,
+            persistence=session_db,
             session_id=session_id,
             platform=BRIDGE_PLATFORM,
             gateway_session_key=declared_key,
@@ -125,9 +126,7 @@ def _reply_scope(
     agent = _bridge_agent(session_db, session_id, declared_key=declared_key)
     # Then the bridge writes the row, which is when the scope's row reads
     # finally have something to find.
-    session_db.create_session(
-        session_id=session_id, source=row_source, model="test/model"
-    )
+    seed_session(session_db, session_id, row_source, model="test/model")
     return resolve_prompt_cache_scope(agent)
 
 
@@ -190,7 +189,7 @@ class TestStudioBridgeAffinity:
 
         child_id = _runtime_session_id()
         child = _bridge_agent(db, child_id, declared_key=key)
-        db.create_session(session_id=child_id, source="tool", model="test/model")
+        seed_session(db, child_id, "tool", model="test/model")
 
         assert resolve_prompt_cache_scope(child) == child_id
         assert child_id != conversation
@@ -201,9 +200,7 @@ class TestStudioBridgeAffinity:
         session_id = _runtime_session_id()
         agent = _bridge_agent(db, session_id, declared_key=key)
         agent._persist_disabled = True
-        db.create_session(
-            session_id=session_id, source=BRIDGE_ROW_SOURCE, model="test/model"
-        )
+        seed_session(db, session_id, BRIDGE_ROW_SOURCE, model="test/model")
 
         assert resolve_prompt_cache_scope(agent) == session_id
 
@@ -214,20 +211,19 @@ class TestUndeclaredBridgeIsUnchanged:
     def test_the_undeclared_shape_resolves_to_the_physical_id(self, db):
         session_id = _runtime_session_id()
         agent = _bridge_agent(db, session_id, declared_key=None)
-        db.create_session(
-            session_id=session_id, source=BRIDGE_ROW_SOURCE, model="test/model"
-        )
+        seed_session(db, session_id, BRIDGE_ROW_SOURCE, model="test/model")
 
         assert resolve_prompt_cache_scope(agent) == session_id
 
     def test_an_undeclared_compression_rotation_still_walks_its_lineage(self, db):
         root = _runtime_session_id()
-        db.create_session(session_id=root, source=BRIDGE_ROW_SOURCE, model="test/model")
-        db.end_session(root, "compression")
+        seed_session(db, root, BRIDGE_ROW_SOURCE, model="test/model")
+        db.sessions.end(root, "compression")
         rotated = _runtime_session_id()
-        db.create_session(
-            session_id=rotated,
-            source=BRIDGE_ROW_SOURCE,
+        seed_session(
+            db,
+            rotated,
+            BRIDGE_ROW_SOURCE,
             model="test/model",
             parent_session_id=root,
         )

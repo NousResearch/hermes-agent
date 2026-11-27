@@ -298,6 +298,17 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
         return False
 
 
+def adopt_published_dependencies() -> bool:
+    """Whether this process just moved onto a dependency generation published after it booted."""
+    from pm.environments_adopt import adopt_published
+    from pm.paths import repo_root
+    try:
+        return adopt_published(repo_root())
+    except (OSError, RuntimeError, ValueError):  # unreadable selection: keep the restart remedy
+        logger.debug("dependency generation adoption failed", exc_info=True)
+        return False
+
+
 class PluginLoaderMixin:
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
@@ -514,12 +525,21 @@ class PluginLoaderMixin:
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
         """Report missing dependencies without installing during discovery.
 
-        Plugin admission and PM repair own dependency changes.
+        Plugin admission and PM repair own dependency changes. When the generation PM selected since this
+        process booted carries them (a platform plugin installed at gateway start, or by Desktop while the
+        gateway runs), this process adopts it first (``pm.environments_adopt.adopt_published``: only when
+        nothing it already imported would change), so the plugin loads now instead of after a restart.
         """
         missing = missing_python_dependencies(manifest)
         if not missing:
             return
         key = manifest_key(manifest)
+        if installed_in_selected_environment(missing) and adopt_published_dependencies():
+            missing = missing_python_dependencies(manifest)
+            if not missing:
+                logger.info("Plugin %s: loaded its Python dependencies from the dependency environment "
+                            "published after this process started.", key)
+                return
         if installed_in_selected_environment(missing):
             logger.warning(
                 "Plugin %s's Python dependencies were installed after this process started: %s. "

@@ -6,7 +6,7 @@ description: "Complete reference of all environment variables used by Hermes Age
 
 # Environment Variables Reference
 
-Hermes reads environment variables from the process environment and, for user-managed secrets, from `~/.hermes/.env`. Keep API keys, bot tokens, OAuth secrets, and other credentials in `.env`; prefer `config.yaml` for non-secret behaviour settings when a config key exists. Some variables below are process-only overrides or internal bridge variables and should not be committed to `.env` just because they are documented here.
+Hermes reads environment variables from the process environment and, for user-managed secrets, from `~/.hermes/.env`. Keep API keys, bot tokens, OAuth secrets, and other credentials in `.env`; prefer `config.yaml` for non-secret behaviour settings when a config key exists. Some variables below are process-only overrides or internal bridge variables and should not be committed to `.env` just because they are documented here. Values written by the platform YAML bridge (and the Telegram/Signal mention fallbacks) are refreshed when that config changes, including across a daemon replacement. After a successful full YAML load, a removed key also retracts its unchanged bridge-owned value; failed loads do not trigger this cleanup. For a setting the platform YAML bridge copies into the environment (mention gating, reactions, allowlists and the other bridged platform keys), an explicit key in `config.yaml` replaces a value inherited from the process environment (a launcher, a service manager, a parent shell); a value set in your `.env`, the managed `.env` or an external secret source still takes precedence over `config.yaml`. A setting an adapter reads from its environment directly, outside the bridge (for example `WHATSAPP_REPLY_PREFIX`), still prefers the environment value. The bridge tracks what it wrote in `HERMES_BRIDGED_<NAME>` variables holding a SHA-256 digest of the value, never the value itself, and they are removed from every agent subprocess; a process export whose value happens to equal the bridge's own earlier write is treated as the bridge's and follows `config.yaml`.
 
 ## LLM Providers
 
@@ -256,7 +256,7 @@ These variables configure the [Tool Gateway](../user-guide/features/tool-gateway
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |
-| `SUDO_PASSWORD` | Enable sudo without interactive prompt |
+| `SUDO_PASSWORD` | Enable sudo without interactive prompt. Sent to the backend that runs the command; see [Sudo Support](../user-guide/features/tools.md#sudo-support) |
 
 For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
 
@@ -320,7 +320,11 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `TELEGRAM_CRON_THREAD_ID` | Forum topic ID to receive cron deliveries; overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron only. Use in topic mode so replies to cron messages open a new session instead of hitting the system lobby (#24409). |
 | `TELEGRAM_WEBHOOK_URL` | Public HTTPS URL for webhook mode (enables webhook instead of polling) |
 | `TELEGRAM_WEBHOOK_PORT` | Local listen port for webhook server (default: `8443`) |
+| `TELEGRAM_WEBHOOK_HOST` | Local bind host for the webhook server. Default: unset → dual-stack bind on all interfaces (IPv4+IPv6). Set explicitly on IPv6-only deployments (e.g. Fly.io 6PN). Equivalent to `platforms.telegram.extra.webhook_host`. |
 | `TELEGRAM_WEBHOOK_SECRET` | Secret token Telegram echoes back in each update for verification. **Required whenever `TELEGRAM_WEBHOOK_URL` is set** — the gateway refuses to start without it (GHSA-3vpc-7q5r-276h). Generate with `openssl rand -hex 32`. |
+| `TELEGRAM_ALLOW_BOTS` | Allow messages from other bots to be processed (`none` = reject all bot messages, `mentions` = allow only when the bot is @mentioned, `all` = allow all bot messages; default: `none`). Equivalent to `telegram.allow_bots`. |
+| `TELEGRAM_GUEST_MODE` | Let non-allowlisted groups trigger the bot only by an explicit @mention, every turn (default: `false`). Equivalent to `telegram.guest_mode`. |
+| `TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES` | Passively observe unmentioned group messages into shared session context, in allowlisted chats/topics only (default: `false`). Equivalent to `telegram.observe_unmentioned_group_messages`. |
 | `TELEGRAM_REACTIONS` | Enable emoji reactions on messages during processing (default: `false`) |
 | `TELEGRAM_REQUIRE_MENTION` | Require an explicit trigger before responding in Telegram groups. Equivalent to `telegram.require_mention` in `config.yaml`. |
 | `TELEGRAM_MENTION_PATTERNS` | JSON array, newline-separated list, or comma-separated list of regex wake-word patterns accepted when Telegram group mention gating is enabled. Equivalent to `telegram.mention_patterns`. |
@@ -769,7 +773,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Delay between split chunks when a single Telegram message exceeds the length limit (default: `2.0`). |
 | `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into a single MessageEvent — same pattern as Telegram's text batching. |
 | `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | Grace window before flushing queued Telegram media (default: `0.6`). |
-| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | Seconds after a turn starts during which a plain Telegram text follow-up joins the queue instead of interrupting or redirecting that turn (default `3`; `0` disables the grace). Commands and media are not held. |
+| `HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS` | Seconds after a turn starts during which a plain Telegram text or voice-note follow-up joins the queue instead of interrupting or redirecting that turn (default `3`; `0` disables the grace). Commands and other media are not held. |
 | `HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | Override the underlying `python-telegram-bot` HTTP timeouts (seconds). |
 | `HERMES_TELEGRAM_INIT_TIMEOUT` | Per-attempt cap (seconds) on the Telegram `initialize()` connect chain during gateway startup, so an unreachable fallback-IP chain can't block startup indefinitely (default: `30`). |
 | `HERMES_TELEGRAM_HTTP_POOL_SIZE` | Max concurrent HTTP connections to the Telegram API. |
@@ -810,7 +814,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Optional explicit path to a standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Relay uses its normal user configuration followed by the higher-precedence machine-wide system configuration. When set, this file replaces the user configuration while the system configuration still applies above it. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored; `hermes update` / `hermes migrate relay` converts them into `<hermes home>/relay-plugins.toml` and sets this variable — see the [migration note and full example](../user-guide/features/built-in-plugins.md#nemo-relay-native-integration-migration-note). See [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about). |
+| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Optional explicit path to a standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Relay uses its normal user configuration followed by the higher-precedence machine-wide system configuration. When set, this file replaces the user configuration while the system configuration still applies above it. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored; `hermes update` / `hermes migrate relay` converts them into `<hermes home>/relay-plugins.toml` and sets this variable. See the [NeMo Relay guide](../integrations/nemo-relay.md) for setup and the [migration note](../user-guide/features/built-in-plugins.md#nemo-relay-native-integration-migration-note) for older settings. |
 
 ## Agent Behavior
 
@@ -855,6 +859,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_REDACT_SECRETS` | `true`/`false` — control secret redaction in tool output, logs, and chat responses (default: `true`). |
 | `HERMES_WRITE_SAFE_ROOT` | Optional directory prefix that **hard-blocks** `write_file`/`patch` writes outside the listed roots (no approval prompt). Supports multiple directories separated by `os.pathsep` (`:` on Unix, `;` on Windows). See [HERMES_WRITE_SAFE_ROOT](#hermes_write_safe_root) below. |
 | `HERMES_DISABLE_LAZY_INSTALLS` | Internal PM policy used by tests and install probes. Truthy values refuse on-demand installation. It overrides the user-facing `security.allow_lazy_installs` setting. Do not put it in `.env`. |
+| `HERMES_INSTALL_STATE_DIR` | Set by a launcher that starts Hermes on an interpreter it prepared, for that process and its children: the absolute path of a folder that stands in for `installs/<key>` in the Hermes data folder. Later locks and markers go there. Hermes reads nothing from it at start: the process is not restarted, repairs nothing and selects no recorded dependency environment (a sealed install still uses the environment it ships). `hermes pm install --extra`, `hermes pm repair` and every other command that would build a dependency environment are refused in such a process. The launcher keeps the interpreter's environment in place while the process runs: a Hermes process that runs on one of the install's environments holds its lease, and a launcher that is not one uses an interpreter it controls. Launch-only: a value in `.env` or from a secret source is ignored. A sandbox launcher uses it where the install's own state can be seen but neither read nor locked. |
 | `HERMES_DISABLE_FILE_STATE_GUARD` | Set to `1` to turn off the "file changed since you read it" guard on `patch`/`write_file`. |
 | `HERMES_BUNDLED_SKILLS` | Comma-separated override for the list of bundled skills loaded at startup. |
 | `HERMES_OPTIONAL_SKILLS` | Comma-separated list of optional-skill names to auto-install on first run. |
@@ -864,7 +869,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_OAUTH_TRACE` | Set to `1` to log OAuth token exchange and refresh attempts. Includes redacted timing info. |
 | `HERMES_AGENT_HELP_GUIDANCE` | Append additional guidance text to the system prompt for custom deployments. |
 | `HERMES_AGENT_LOGO` | Override the ASCII banner logo at CLI startup. |
-| `DELEGATION_MAX_CONCURRENT_CHILDREN` | Max parallel subagents per `delegate_task` batch (default: `3`, floor of 1, no ceiling). Also configurable via `delegation.max_concurrent_children` in `config.yaml` — the config value takes priority. |
+| `DELEGATION_MAX_CONCURRENT_CHILDREN` | Max parallel subagents per `delegate_task` batch (default: `10`, floor of 1, no ceiling). Read only when no `delegation.max_concurrent_children` value is loaded: under `--ignore-user-config` or `--safe-mode`, or with the key set to `null` in `config.yaml`. Any config value, including the shipped default, takes priority. |
 
 ### HERMES_WRITE_SAFE_ROOT {#hermes_write_safe_root}
 

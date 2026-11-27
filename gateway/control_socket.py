@@ -231,6 +231,12 @@ class GatewayControlServer:
     async def start(self) -> bool:
         """Bind and start serving. Returns True on success, False otherwise."""
         try:
+            # Build one default ``identify`` answer before accepting. A fresh process's first answer
+            # pays every lazy cost (the code-identity git walk, the first psutil process probe),
+            # which a loaded host stretches past a client's identify deadline; warm, it takes
+            # milliseconds. It also pins the code identity the gateway booted with, not a checkout
+            # an update swapped in before the first client asked.
+            await asyncio.to_thread(build_identify_payload)
             return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
         except Exception as exc:
             await self.stop()
@@ -362,7 +368,8 @@ class GatewayControlServer:
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": handler(params) if wants_params else handler()}
         except Exception as exc:
-            response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
+            from storage_user_copy import error_type_name
+            response = {"ok": False, "error": f"{error_type_name(exc)}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
         if request_id is not None:
             response["id"] = request_id
         try:
@@ -534,14 +541,19 @@ def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) ->
     return query_gateway_control(home, "identify", timeout=timeout)
 
 
-def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
-    """Ask the gateway serving ``home`` to drain and exit for an update. Returns the ACK ``{"pausing",
-    "already_stopping", "pid", "drain_timeout"}`` or None when no gateway answers (old gateway without
-    the verb, no/dead socket) — the caller then uses the legacy signal/tree-kill pause path.
+def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT,
+                             force: bool = False) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to restart for an update. Returns the ACK ``{"pausing",
+    "already_stopping", "pid", "drain_timeout", "force", "waiting_on"}`` or None when no gateway
+    answers (old gateway without the verb, no/dead socket) — the caller then uses the legacy
+    signal/tree-kill pause path.
 
+    Default: restart when idle (the gateway keeps serving and never interrupts live work). ``force``
+    stops live work now; a gateway that predates it answers without ``"force": true``.
     Step 2 of the socket migration (#92091).
     """
-    return query_gateway_control(home, "pause-for-update", timeout=timeout)
+    return query_gateway_control(home, "pause-for-update", params={"force": True} if force else None,
+                                 timeout=timeout)
 
 
 def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dict[str, Any]]:

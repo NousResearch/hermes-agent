@@ -162,14 +162,14 @@ class TestUpdateCwdWindowsMsys:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: _extract_cwd_from_output rollback when marker is invalid
+# End-to-end: _update_cwd rejects a stale marker when marker is invalid
 # ---------------------------------------------------------------------------
 
 @pytest.mark.platforms("windows")
 class TestExtractCwdFromOutputWindowsMsys:
     def test_stale_msys_marker_does_not_clobber_cwd(self, tmp_path):
         """When the cwd marker in stdout points at a non-existent path,
-        ``LocalEnvironment._extract_cwd_from_output`` must roll back to
+        ``LocalEnvironment._update_cwd`` must keep
         the previous cwd instead of propagating a bad value."""
         original = tmp_path / "starting"
         original.mkdir()
@@ -186,7 +186,7 @@ class TestExtractCwdFromOutputWindowsMsys:
             "returncode": 0,
         }
 
-        env._extract_cwd_from_output(result)
+        env._update_cwd(result)
 
         assert env.cwd == str(original)
 
@@ -208,7 +208,7 @@ class TestExtractCwdFromOutputWindowsMsys:
             "returncode": 0,
         }
 
-        env._extract_cwd_from_output(result)
+        env._update_cwd(result)
 
         assert env.cwd == str(new_dir)
 
@@ -276,6 +276,18 @@ class TestGitBashCoreutilsOnPath:
         # Non-existent dirs (mingw32, usr/local/bin) are excluded.
         assert "/pg/mingw32/bin" not in norm
 
+    @pytest.mark.platforms("windows")
+    def test_derives_ucrt64_dirs_from_portablegit_2_56_layout(self, monkeypatch):
+        """Git for Windows 2.56 moved the MSYS2 tree from mingw64/ to ucrt64/."""
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "/pg/usr/bin/bash.exe")
+        existing = {"/pg/ucrt64/bin", "/pg/usr/bin", "/pg/bin"}
+        monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
+
+        norm = [d.replace("\\", "/") for d in _git_bash_bin_dirs()]
+
+        assert norm.index("/pg/ucrt64/bin") < norm.index("/pg/usr/bin")
+
     @pytest.mark.platforms("linux")
     def test_empty_off_windows(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
@@ -304,8 +316,8 @@ class TestWrapCommandWindowsNativeCwd:
         env._snapshot_ready = True
         wrapped = env._wrap_command("pwd", r"C:\Users\liush")
 
-        assert "builtin cd -- /c/Users/liush || exit 126" in wrapped
-        assert r"builtin cd -- C:\Users\liush || exit 126" not in wrapped
+        assert "builtin cd -- /c/Users/liush " in wrapped
+        assert r"builtin cd -- C:\Users\liush" not in wrapped
 
     def test_init_session_bootstrap_rewrites_backslash_snapshot_paths(self, monkeypatch):
         captured = {}

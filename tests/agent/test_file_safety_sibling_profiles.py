@@ -15,7 +15,7 @@ import agent.file_safety as fs
 
 READ_DENIED = (
     "auth.json", ".anthropic_oauth.json", "auth/google_oauth.json", "mcp-tokens/github.json",
-    "webhook_subscriptions.json", ".env", "vault/vault.key",
+    "webhook_subscriptions.json", ".env", "vault/vault.key", "google_token.json", "google_client_secret.json",
 )
 WRITE_DENIED = (
     ".env", ".anthropic_oauth.json", "auth/google_oauth.json", "bws_cache.enc.json",
@@ -63,3 +63,19 @@ def test_sibling_profile_ordinary_and_control_files_stay_usable(default_profile_
     assert fs.is_write_denied(str(notes)) is False
     for rel in WRITABLE_CONTROL_FILES:
         assert fs.is_write_denied(str(_touch(sibling, rel))) is False, f"#45947 regression: {rel}"
+
+
+def test_migration_backups_are_denied_only_under_a_hermes_home(default_profile_with_sibling, tmp_path):
+    """``backend_migration/`` is a credential store directly under a Hermes or profile home; a project's own
+    ``backend_migration/`` (or ``backend_migration.json``) is ordinary for the file tools."""
+    sibling = default_profile_with_sibling
+    root = sibling.parent.parent
+    for home in (root, sibling):
+        backup = _touch(home, "backend_migration/env.bak")
+        assert fs.get_read_block_error(str(backup)), backup
+        assert fs.is_write_denied(str(backup)), backup
+    project = tmp_path / "work" / "some-project"
+    for rel in ("backend_migration/README.md", "backend_migration.json"):
+        path = _touch(project, rel)
+        assert fs.get_read_block_error(str(path)) is None, path
+        assert not fs.is_write_denied(str(path)), path

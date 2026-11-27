@@ -25,6 +25,7 @@ Exit 0 = every entry passed, 1 = at least one failed (one ``::error file=<entry>
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -68,6 +69,12 @@ def _file_fetches_github(path: str) -> bool:
 _SELF_UPDATE_WRITE = (r"writeTextFile|renamePath|writeFile\(|writeFileSync|renameSync|copyFileSync"
                       r"|cpSync|createWriteStream")
 _SCRIPT_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts", "*.jsx", "*.tsx", "*.mts", "*.cts")
+# Maintainer-reviewed exceptions to the self-updater gate: a file that downloads a THIRD-PARTY tool
+# pinned by checksum (not the plugin's own code) and unpacks it into its cache, or a file the grep
+# misreads because it fetches nothing (a URL it only records, a test with a fake fetch). Keyed by
+# repo + pinned sha + path + the file's sha256, so a re-pin or any edit to the file is gated
+# again. It lives under scripts/ci/, which an entry PR may not touch (catalog_changed_entries.py).
+_SELF_UPDATER_ALLOWLIST = Path(__file__).resolve().with_name("catalog_self_updater_allowlist.json")
 # 600s: listed repos reach >1 GB (hermes-jackal-verified 1.43 GB, hindsight 741 MB); 120s would
 # false-fail a re-pin on a slow runner.
 _CLONE_SECONDS = 600
@@ -95,7 +102,9 @@ def _substituted(output: bytes) -> str:
     return os.fsdecode(output.replace(b"\0", b"")).rstrip("\n")
 
 
-_FIELDS = ("REPO", "SHA", "SUBDIR", "ATTESTED", "BAD")
+_FIELDS = ("REPO", "SHA", "SUBDIR", "ATTESTED", "DEFAULT", "PLATFORMS", "BAD")
+# Flip to True (or pass --fail-on-default-rebuild) to make default: true venv rebuilds a hard CI error.
+_FAIL_ON_DEFAULT_PLUGIN_REBUILD = False
 
 
 def _read_fields(entry: str) -> dict[str, str]:
@@ -199,7 +208,18 @@ def _check_payloads(plugin_dir: str) -> None:
         raise EntryRejected(f"unscannable executable payload (README rule 17): {found}")
 
 
-def _check_self_updater(plugin_dir: str) -> None:
+def _allowlisted(path: str, plugin_dir: str, repo: str, sha: str) -> bool:
+    rel = os.path.relpath(path, plugin_dir)
+    try:
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return any(row.get("repo") == repo and row.get("sha") == sha and row.get("path") == rel
+               and row.get("sha256") == digest
+               for row in json.loads(_SELF_UPDATER_ALLOWLIST.read_text(encoding="utf-8-sig")))
+
+
+def _check_self_updater(plugin_dir: str, repo: str = "", sha: str = "") -> None:
     # SELF-UPDATER GATE (README rule 3): the pin is the only update path. A desktop bundle that
     # both fetches from GitHub AND writes/renames plugin files is a self-updater; either half
     # alone is fine (a plugin may read the API, or manage its own data files). NUL-delimited
@@ -218,13 +238,84 @@ def _check_self_updater(plugin_dir: str) -> None:
     writers = subprocess.run(["xargs", "-r0", "grep", "-lZE", _SELF_UPDATE_WRITE],
                              input=real, stdout=subprocess.PIPE, check=False,
                              timeout=_VALIDATE_SECONDS).stdout
-    found = _substituted(writers).replace("\n", " ")
+    flagged = [p for p in writers.split(b"\0")
+               if p and not _allowlisted(os.fsdecode(p), plugin_dir, repo, sha)]
+    found = _substituted(b"\0".join(flagged)).replace("\n", " ")
     if found:
         raise EntryRejected("self-updating code in catalog build (fetches GitHub AND writes "
                             f"plugin files): {found}")
 
 
-def validate_entry(entry: str, workroot: str) -> None:
+def _workspace_root() -> Path:
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if workspace:
+        return Path(workspace).resolve()
+    return Path(__file__).resolve().parents[2]
+
+
+def _escape_gha_property(value: str) -> str:
+    """Escape a GitHub Actions workflow-command property value (e.g. ``file=...``)."""
+    return (
+        value.replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(":", "%3A")
+        .replace(",", "%2C")
+    )
+
+
+def _escape_gha_data(value: str) -> str:
+    """Escape a GitHub Actions workflow-command message body."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _check_default_venv_rebuild(
+    entry: str,
+    plugin_dir: str,
+    *,
+    platforms: list[str] | None = None,
+    fail_on_rebuild: bool = False,
+) -> None:
+    """Warn (or fail when *fail_on_rebuild* is set) if a ``default: true`` plugin triggers a PM venv rebuild."""
+    root = _workspace_root()
+    ci_dir = str(Path(__file__).resolve().parent)
+    for path_entry in (str(root), ci_dir):
+        if path_entry not in sys.path:
+            sys.path.append(path_entry)
+    from catalog_default_plugin_lint import check_default_plugin_venv_rebuild
+
+    try:
+        result = check_default_plugin_venv_rebuild(
+            Path(plugin_dir),
+            project_root=root,
+            platforms=platforms or None,
+        )
+    except (OSError, ValueError) as exc:
+        detail = str(exc).replace("\r", " ").replace("\n", " ")
+        message = f"default: true plugin could not be checked for venv rebuild impact: {detail}"
+        if fail_on_rebuild:
+            raise EntryRejected(message) from exc
+        print(f"::warning file={_escape_gha_property(entry)}::{_escape_gha_data(message)}")
+        return
+
+    if not result.triggers_rebuild:
+        return
+
+    reason = result.reason.replace("\r", " ").replace("\n", " ")
+    guidance = result.guidance.replace("\r", " ").replace("\n", " ")
+    summary = f"default: true plugin triggers a PM venv rebuild ({reason}). {guidance}"
+    if fail_on_rebuild:
+        raise EntryRejected(summary)
+    print(f"::warning file={_escape_gha_property(entry)}::{_escape_gha_data(summary)}")
+    print(
+        f"⚠ default: true venv rebuild warning for {entry}:\n"
+        f"  Trigger: {reason}\n"
+        f"  Impact & how to avoid: {guidance}",
+        file=sys.stderr,
+    )
+
+
+def validate_entry(entry: str, workroot: str, *, fail_on_default_rebuild: bool = False) -> None:
     """Run every gate on one entry; raises EntryRejected on the first failure."""
     # A symlinked or missing entry file is not a catalog entry.
     if os.path.islink(entry) or not os.path.isfile(entry):
@@ -249,13 +340,28 @@ def validate_entry(entry: str, workroot: str) -> None:
     validate = ["hermes", "plugins", "validate", "--install-deps", plugin_dir]
     if _run(validate, timeout=_VALIDATE_SECONDS).returncode != 0:
         raise EntryRejected("hermes plugins validate failed")
-    _check_self_updater(plugin_dir)
+    _check_self_updater(plugin_dir, repo, sha)
     _check_attested(fields["ATTESTED"], plugin_dir, repo, sha)
     _check_payloads(plugin_dir)
+    if fields.get("DEFAULT") == "true":
+        platforms = list(filter(None, fields.get("PLATFORMS", "").split("\n")))
+        _check_default_venv_rebuild(
+            entry,
+            plugin_dir,
+            platforms=platforms,
+            fail_on_rebuild=fail_on_default_rebuild,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
-    argparse.ArgumentParser(description="Validate changed catalog entries at their pins.").parse_args(argv)
+    parser = argparse.ArgumentParser(description="Validate changed catalog entries at their pins.")
+    parser.add_argument(
+        "--fail-on-default-rebuild",
+        action="store_true",
+        default=_FAIL_ON_DEFAULT_PLUGIN_REBUILD,
+        help="fail the gate instead of warning when a default: true plugin triggers a PM venv rebuild",
+    )
+    args = parser.parse_args(argv)
     # Line-buffered so log lines interleave with the children's output in order.
     sys.stdout.reconfigure(line_buffering=True, errors="surrogateescape")  # type: ignore[attr-defined]
     failed = False
@@ -263,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     for entry in filter(None, os.environ["CHANGED_FILES"].split("\n")):
         print(f"::group::validate {entry}")
         try:
-            validate_entry(entry, workroot)
+            validate_entry(entry, workroot, fail_on_default_rebuild=args.fail_on_default_rebuild)
             print(f"✅ PASS: {entry}")
         except EntryRejected as rejected:
             print(f"::error file={entry}::{rejected}")

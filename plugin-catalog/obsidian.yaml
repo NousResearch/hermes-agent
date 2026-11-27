@@ -1,0 +1,18 @@
+name: obsidian
+title: Obsidian
+repo: https://github.com/obsidianmd/obsidian-skills
+sha: a53f5910cd68e7bad88ea52f2f4eb95b9aa40800
+subdir: plugins/obsidian
+version: "1.2.3"
+description: "Official Obsidian skills for Obsidian Flavored Markdown, Bases, JSON Canvas, the Obsidian CLI, Obsidian Headless (Sync and Publish), Defuddle web extraction and Knap templates. Agent Plugins v1 package (plugin.json + skills/), instructions only: no code, MCP servers, hooks or background processes. Disclosure: the obsidian-cli skill runs the obsidian command, which controls the user's running Obsidian desktop app and can read, write, move and delete notes in the vault; obsidian-headless runs ob, which signs in to the user's Obsidian account and syncs or publishes vaults; defuddle fetches the web pages the user asks for. Defuddle, Knap and Obsidian Headless aren't bundled, and the skills ask before installing them from npm."
+maintainer: Obsidian
+tier: verified
+category: tools
+docs_url: https://help.obsidian.md/skills
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

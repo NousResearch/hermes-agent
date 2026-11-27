@@ -25,17 +25,17 @@ class _Conn:
 def cli(tmp_path, monkeypatch):
     from hermes_cli import goals
     from hermes_cli.gateway_session_store import GatewaySessionStore
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=tmp_path / 'owner.db')
-    monkeypatch.setattr(goals, '_get_session_db', lambda: db)  # the "gateway's" store
+    from persistence_assembly import open_persistence, profile_scope
+    store_handle = open_persistence(profile_scope(home=tmp_path))
+    monkeypatch.setattr(goals, '_get_session_db', lambda: store_handle)  # the "gateway's" store
     conn = _Conn()
     store = GatewaySessionStore.__new__(GatewaySessionStore)
     store.connection = conn
     from hermes_cli.cli_loops_mixin import CLILoopsMixin
     obj = CLILoopsMixin.__new__(CLILoopsMixin)
     obj._session_db, obj._gateway_session_open, obj.session_id = store, True, 'sid-1'
-    yield SimpleNamespace(cli=obj, conn=conn, db=db)
-    db.close()
+    yield SimpleNamespace(cli=obj, conn=conn, db=store_handle)
+    store_handle.close()
 
 
 def test_goal_manager_is_the_gateways(cli):
@@ -45,7 +45,7 @@ def test_goal_manager_is_the_gateways(cli):
     state = mgr.set('ship it')
     assert state.goal == 'ship it' and mgr.is_active()
     assert mgr.status_line() == '⊙ Goal (active, 0/20 turns): ship it'
-    assert json.loads(cli.db.get_meta('goal:sid-1'))['goal'] == 'ship it'
+    assert json.loads(cli.db.state_meta.get('goal:sid-1'))['goal'] == 'ship it'
     with pytest.raises(IndexError, match='index out of range'):
         mgr.remove_subgoal(4)
     assert cli.cli._get_goal_manager() is mgr  # cached per session id, like main

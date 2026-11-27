@@ -165,7 +165,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
 
     # The next unrelated input remains its own turn instead of alternation repair
     # merging the failed mutating request into it.
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     replay = [*transcript_rows, {"role": "user", "content": "unrelated question"}]
     assert repair_message_sequence(None, replay) == 0

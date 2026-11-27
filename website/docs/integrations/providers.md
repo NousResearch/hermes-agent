@@ -309,6 +309,40 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
 
+### OpenAI GPT-6.2 Astra and Sol
+
+Select `gpt-6.2-astra` or `gpt-6.2-sol` with `hermes model` under **OpenAI API**
+(API key) or **OpenAI Codex** (ChatGPT subscription). Explicit model selections are unchanged.
+When no model is configured, OpenAI API defaults to `gpt-6.2-sol`. Codex can use the
+account's catalog when available, with `gpt-6-sol` as its curated offline fallback.
+The Codex picker shows GPT-6.2 when the account's catalog offers it.
+If your ChatGPT plan doesn't include GPT-6.2, select `gpt-6-sol` instead.
+
+If your plan includes GPT-6.2 but the optional [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md)
+rejects it on an older binary, update the binary Hermes launches (including any explicit
+`model.codex_bin` path) to a compatible release, such as [0.169.1](https://github.com/openai/codex/releases/tag/rust-v0.169.1).
+Alternatively, use `/codex-runtime auto` and start a fresh session to use Hermes' native route.
+Neither option changes your plan's model access.
+
+Both models use Responses for tool calling, accept text and images, and support reasoning
+efforts `low`, `medium`, `high`, `xhigh`, and `max`. An explicit `none` or `minimal` effort
+is clamped to `low`; disabling reasoning omits the unsupported disable field.
+
+The direct API has a 1,050,000-token window, a 922,000-token input cap, and 128,000 maximum
+output tokens. Codex uses its account catalog's window instead, with offline defaults of
+272,000 for Astra and 500,000 for Sol from OpenAI's Codex catalog. Hermes does not invent
+`-900k` or `-pro` picker variants for either model.
+
+`/fast` supports both models. Fast supports US and EU processing; Ultrafast supports US
+processing only and remains account-gated on Codex. Direct API cost estimates use the served
+tier, including the Ultrafast launch discount through February 28, 2027, Pacific time.
+Codex usage stays subscription-included, not an API invoice.
+
+Sources: [Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra),
+[Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[migration guide](https://developers.openai.com/api/docs/guides/latest-model), and
+[Codex catalog](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
+
 ### xAI (Grok) — Responses API + Prompt Caching
 
 xAI is wired through the Responses API (`codex_responses` transport) for automatic reasoning support on Grok 4 models — no `reasoning_effort` parameter needed, the server reasons by default. Set `XAI_API_KEY` in `~/.hermes/.env` and pick xAI in `hermes model`, or drop `grok` as a shortcut into `/model grok-4-fast-reasoning`.
@@ -1337,7 +1371,11 @@ providers:
 
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
 
-An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:`, in any case) that sets its own `api`/`base_url` **is** what that name means: `--provider openrouter`, `/model`, `hermes model` and the dashboard save it as `custom:openrouter` and every turn goes to your endpoint. When the entry declares a key (`api_key` or `key_env`), that key is used and the built-in's env key is never sent; an entry with no key falls back to the built-in's env key, the same as `custom:<name>`. A same-named block without an endpoint (for example `providers.openrouter: {request_timeout_seconds: 300}`) only tunes the built-in. `hermes doctor` warns when `model.provider` names a built-in that such an entry takes over.
+An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:`, in any case) that sets its own `api`/`base_url` **is** what that name means: `--provider openrouter`, `/model`, `hermes model` and the dashboard save it as `custom:openrouter` and every turn goes to your endpoint. When the entry declares a key (`api_key`, `key_env` or `key_cmd`), that key is used and the built-in's own key is never sent. An entry with no key gets the built-in's env and pooled keys only while its address is on the built-in's own host (scheme, host and port); anywhere else (a proxy, a mirror, another region's host such as Kimi's `.cn` endpoint) it sends no key, because a built-in's key is never sent to a host other than its own unless you say so. To use the built-in's key on your endpoint, name it: `key_env: DEEPSEEK_API_KEY` (the built-in's variable), or add the endpoint's key with `hermes auth add deepseek` while the entry is configured, which records the entry's address. A same-named block without an endpoint (for example `providers.openrouter: {request_timeout_seconds: 300}`) only tunes the built-in. `hermes doctor` warns when `model.provider` names a built-in that such an entry takes over.
+
+:::note Migration: built-in keys and same-named entries
+Earlier releases sent the built-in's env key (for example `DEEPSEEK_API_KEY`) to a key-less `providers.deepseek` entry on any address. Now that key stays on the built-in's own host. If such an entry now gets `401`, add `key_env: DEEPSEEK_API_KEY` (use your provider's variable) to the entry. Hermes logs one warning per entry naming the remedy when this happens. Pooled keys added before addresses were recorded (`hermes auth add`, the dashboard) for a built-in's pool belong to the built-in's own address. To use one on the entry's host, re-add it with `hermes auth add <name>` while the entry is configured.
+:::
 
 #### Command-minted credentials (`key_cmd`)
 

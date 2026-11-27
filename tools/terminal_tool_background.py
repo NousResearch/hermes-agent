@@ -93,7 +93,7 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty, persist_on_release: bool = False):
+           session_key, effective_pty, persist_on_release: bool = False, allow_cwd_fallback: bool = False):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key,
                   persist_on_release=persist_on_release)
@@ -101,7 +101,7 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
             restore_login_path=True, **common)
-    return process_registry.spawn_via_env(env=env, **common)
+    return process_registry.spawn_via_env(env=env, allow_cwd_fallback=allow_cwd_fallback, **common)
 
 
 def _apply_async_support(proc_session, result_data, notify_on_complete, watch_patterns):
@@ -152,6 +152,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
+    cwd_key: Optional[str] = None,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
@@ -174,7 +175,7 @@ def spawn_background_process(
     )
 
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        workdir=workdir, default_cwd=cwd, session_key=cwd_key or session_key, env_type=env_type,
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
@@ -183,11 +184,19 @@ def spawn_background_process(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
+            allow_cwd_fallback=not workdir,  # a named workdir is refused, never swapped for a parent
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if persist_on_release:
             result_data["persist_on_release"] = True
+        if effective_cwd:
+            from tools.environments.local import _msys_to_windows_path
+            from tools.terminal_tool_result import _cwd_fallback_note
+            # spawn_local resolves a dead cwd itself; spawn_via_env records where the sandbox fell back.
+            used = getattr(proc_session, "cwd", None)
+            if used and used not in (effective_cwd, _msys_to_windows_path(effective_cwd)):
+                result_data["cwd_fallback"] = _cwd_fallback_note({"requested": effective_cwd, "used": used})
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:

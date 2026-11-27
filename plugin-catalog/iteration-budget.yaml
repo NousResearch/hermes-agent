@@ -1,0 +1,23 @@
+name: iteration-budget
+repo: https://github.com/Naverene/hermes-iteration-budget
+sha: 205bebc4075a9cda88bea460c9bb6622c2270d23
+description: "Surface the per-turn iteration budget to the model so it wraps up before the cap. Disclosure — local code only; appends an iteration-budget status line to the newest tool result or user message of every outbound model request (never the system prompt), and with `enforce` on (off by default) blocks new tool calls once the cap is reached; no network calls, files, credentials or subprocesses."
+maintainer: Naverene
+tier: community
+category: general
+requires_hermes: ">=0.23.2"
+version: "1.0.2"
+title: "Iteration Budget"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_api_request
+    - post_tool_call
+    - pre_tool_call
+    - subagent_start
+    - on_session_reset
+  provides_middleware:
+    - llm_request
+  requires_env: []

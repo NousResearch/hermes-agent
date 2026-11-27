@@ -1,0 +1,23 @@
+name: meragpt
+title: meraGPT Decider
+repo: https://github.com/Sandeep85Das/meragpt-hermes-plugin
+sha: "189c73e5122e5d04ed886bceb98e48fe4f3ef36c"
+version: "0.2.0"
+description: "Typed decisions with calibrated probabilities (Decider), typed JSON extraction from documents and photos (Extractor), rewriting AI drafts so they read as human while keeping the facts (Restyler), and predicting the web searches an AI assistant runs for a question (Fanout), through the meraGPT API with your own key. Native plugin: four tools and one workflow skill. Disclosure: every tool call sends its input to https://meragpt.com/v1 (Okyasoft Pte Ltd); the API key is read only through Hermes's secret scope (MERAGPT_API_KEY); calls are billed per token from the user's meraGPT credit after $1 of free credit."
+maintainer: Sandeep85Das
+tier: community
+category: tools
+docs_url: https://meragpt.com/docs
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - meragpt_decide
+    - meragpt_extract
+    - meragpt_restyle
+    - meragpt_fanout
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MERAGPT_API_KEY

@@ -1,9 +1,9 @@
 name: huntapi
 title: HuntAPI
 repo: https://github.com/huntapi/hermes-plugin-huntapi
-sha: 6c244ae6cc6e2318e959905bb77b1a0ee5bb17a7
-version: "1.0.0"
-description: "Tools to read the metadata of public videos and download their video or audio, through the HuntAPI media API. Disclosure — sends the tool arguments to api.huntapi.com with your HUNTAPI_API_KEY, and calls can use HuntAPI credits. Reads the key only through Hermes's secret scope. Registers 4 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+sha: 30132cc8c94a0e20d29db4e6d1ffa3be5538f3f3
+version: "1.1.0"
+description: "Tools to read the metadata of public videos and download their video or audio, through the HuntAPI media API. Disclosure — sends the tool arguments to api.huntapi.com with your HUNTAPI_API_KEY, and calls use HuntAPI credits (1 per metadata read or download; job status and usage are free). Downloads run as jobs on HuntAPI's servers and return a link to the file on HuntAPI's storage; the plugin downloads nothing. Reads the key only through Hermes's secret scope. Registers 5 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
 maintainer: huntapi
 tier: community
 category: tools
@@ -17,6 +17,7 @@ capabilities:
     - huntapi_video_download
     - huntapi_audio_download
     - huntapi_job_status
+    - huntapi_usage
   provides_hooks: []
   provides_middleware: []
   requires_env:

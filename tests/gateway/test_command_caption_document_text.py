@@ -68,7 +68,6 @@ async def test_feishu_self_mentioned_command_caption_on_a_text_file_stays_a_comm
     adapter._fetch_message_text = AsyncMock(return_value=None)
     adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
     adapter._resolve_sender_profile = AsyncMock(return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None})
-    adapter._resolve_source_chat_type = MagicMock(return_value="group")
     adapter.build_source = MagicMock(return_value=SimpleNamespace(thread_id=None))
     adapter._dispatch_inbound_event = AsyncMock()
     message = SimpleNamespace(

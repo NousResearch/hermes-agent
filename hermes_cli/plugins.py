@@ -143,6 +143,10 @@ VALID_HOOKS: set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
+    # api_server_request: once per authenticated API server request that starts an agent turn. Kwargs:
+    # headers (minus Authorization/Proxy-Authorization/Cookie), method, path. Return a dict of strings:
+    # the turn's RAM-only request context, which middleware receives as ``request_context`` (agent/request_context.py).
+    "api_server_request",
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.

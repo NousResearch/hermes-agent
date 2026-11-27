@@ -42,8 +42,11 @@ def observer_payload(**kwargs: Any) -> dict[str, Any]:
 
 
 def middleware_payload(**kwargs: Any) -> dict[str, Any]:
+    from agent import request_context
+
     kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
     kwargs.setdefault("middleware_schema_version", MIDDLEWARE_SCHEMA_VERSION)
+    kwargs.setdefault("request_context", request_context.current())
     return kwargs
 
 

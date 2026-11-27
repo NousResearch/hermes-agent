@@ -1,6 +1,7 @@
 """Task graph initialization and atomic decomposition persistence."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from typing import Any, Optional
@@ -164,6 +165,38 @@ def decompose_triage_task(
     if auto_promote:
         recompute_ready(conn)
     return child_ids
+
+
+def decomposed_child_ids(conn: sqlite3.Connection, task_ids: list[str]) -> set[str]:
+    """The subset of ``task_ids`` that originated from a decomposition.
+
+    A decomposed child's ``created`` event carries ``from_decompose_of``
+    (manual and auto decompose alike); ``created_by = 'auto-decomposer'`` is
+    the same fact stamped on the row. Auto-decompose skips these when a bulk
+    move parks them back in triage (#140323) so a settled graph is never
+    re-fanned-out geometrically; the manual CLI stays the explicit override.
+    """
+    hits: set[str] = set()
+    for start in range(0, len(task_ids), 500):
+        chunk = task_ids[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"SELECT task_id, payload FROM task_events "
+            f"WHERE kind = 'created' AND task_id IN ({marks})", chunk,
+        ):
+            try:
+                payload = json.loads(row["payload"]) if row["payload"] else None
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict) and payload.get("from_decompose_of"):
+                hits.add(row["task_id"])
+        hits.update(
+            row["id"] for row in conn.execute(
+                f"SELECT id FROM tasks WHERE created_by = 'auto-decomposer' AND id IN ({marks})",
+                chunk,
+            )
+        )
+    return hits
 
 
 def _insert_decomposed_child(

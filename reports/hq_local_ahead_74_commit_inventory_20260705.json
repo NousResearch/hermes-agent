@@ -1,0 +1,2688 @@
+[
+  {
+    "sha": "cf5cf315a5f2b5b8f5ea4d5987e4d6edbc85859e",
+    "short": "cf5cf315a",
+    "date": "2026-06-29",
+    "subject": "fix(desktop): tolerate delayed clarify responses",
+    "files": [
+      [
+        "A",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/ja.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh-hant.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 147,
+    "deletions": 7,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "1492c1718e0567ea574f3aff868ea39726d66d1e",
+    "short": "1492c1718",
+    "date": "2026-06-30",
+    "subject": "fix(desktop): distinguish lost gateway and bound tool result events",
+    "files": [
+      [
+        "M",
+        "agent/tool_executor.py"
+      ],
+      [
+        "M",
+        "apps/desktop/electron/titlebar-overlay-width.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/gateway/hooks/use-gateway-boot.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-message-stream.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/boot-failure-overlay.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/gateway-connecting-overlay.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/ja.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh-hant.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/boot.ts"
+      ],
+      [
+        "M",
+        "tests/run_agent/test_tool_call_incremental_persistence.py"
+      ]
+    ],
+    "topdirs": [
+      "agent",
+      "apps",
+      "tests"
+    ],
+    "insertions": 171,
+    "deletions": 36,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "agent",
+      "tests"
+    ]
+  },
+  {
+    "sha": "18e8f44655aa7a75073bc2addf86c1dcb21d4734",
+    "short": "18e8f4465",
+    "date": "2026-06-30",
+    "subject": "fix(desktop): bound live terminal output events",
+    "files": [
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tui_gateway"
+    ],
+    "insertions": 69,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "tests"
+    ]
+  },
+  {
+    "sha": "d7e347c1f611bb51ad9befccfe477112998586a7",
+    "short": "d7e347c1f",
+    "date": "2026-07-01",
+    "subject": "merge: bring fork main candidate onto latest upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 45437,
+    "deletions": 20069,
+    "binary_files": 3,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "a73b6e64845e0d11a210f27312b4d5663585c1d9",
+    "short": "a73b6e648",
+    "date": "2026-06-28",
+    "subject": "feat(desktop): add file-backed session pins bridge",
+    "files": [
+      [
+        "M",
+        "apps/desktop/electron/main.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/electron/preload.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/src/global.d.ts"
+      ],
+      [
+        "A",
+        "apps/desktop/src/store/layout.test.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/layout.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 285,
+    "deletions": 0,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "c1710d52ef7554da4acc20ef9e5544fa572c1ab1",
+    "short": "c1710d52e",
+    "date": "2026-06-28",
+    "subject": "fix(gateway): harden Windows restart path",
+    "files": [
+      [
+        "M",
+        "gateway/run.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_restart_drain.py"
+      ]
+    ],
+    "topdirs": [
+      "gateway",
+      "tests"
+    ],
+    "insertions": 124,
+    "deletions": 15,
+    "binary_files": 0,
+    "area_tags": [
+      "gateway",
+      "tests"
+    ]
+  },
+  {
+    "sha": "723cdf2ab9fdb06582f7d48f2f2c70ce4699cec7",
+    "short": "723cdf2ab",
+    "date": "2026-06-28",
+    "subject": "feat(desktop): sort numbered sessions consistently",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/chat/sidebar/index.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/command-center/index.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/command-palette/index.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/session.test.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/session.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 71,
+    "deletions": 17,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "2bd04450727fe18d4a468bb9f74aa3090cba7a2a",
+    "short": "2bd044507",
+    "date": "2026-06-29",
+    "subject": "fix(desktop): explain prompt submit timeouts",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/index.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/utils.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/ja.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh-hant.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 65,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "b7c7d78e78c6639a9e47bb8ccb8ad2452bdbb837",
+    "short": "b7c7d78e7",
+    "date": "2026-06-29",
+    "subject": "feat(clarify): restore native multi-select prompts",
+    "files": [
+      [
+        "M",
+        "agent/agent_runtime_helpers.py"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/clarify.ts"
+      ],
+      [
+        "M",
+        "gateway/platforms/base.py"
+      ],
+      [
+        "M",
+        "gateway/platforms/whatsapp_cloud.py"
+      ],
+      [
+        "M",
+        "gateway/run.py"
+      ],
+      [
+        "M",
+        "plugins/platforms/discord/adapter.py"
+      ],
+      [
+        "M",
+        "plugins/platforms/telegram/adapter.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_discord_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_telegram_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "agent",
+      "apps",
+      "gateway",
+      "plugins",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 1266,
+    "deletions": 187,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "gateway",
+      "tools",
+      "agent",
+      "tests"
+    ]
+  },
+  {
+    "sha": "336352acd1a4a37b7d6c8533befcee71f41e3688",
+    "short": "336352acd",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): harden constrained-choice semantics",
+    "files": [
+      [
+        "M",
+        "apps/desktop/electron/update-relaunch.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/electron/update-relaunch.test.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "gateway/platforms/base.py"
+      ],
+      [
+        "M",
+        "gateway/platforms/whatsapp_cloud.py"
+      ],
+      [
+        "M",
+        "gateway/run.py"
+      ],
+      [
+        "M",
+        "plugins/platforms/discord/adapter.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_discord_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_telegram_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_whatsapp_cloud.py"
+      ],
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "gateway",
+      "plugins",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 573,
+    "deletions": 82,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "gateway",
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "33f588e8791ce9119bbb3c75a5310ec00a9daa53",
+    "short": "33f588e87",
+    "date": "2026-06-29",
+    "subject": "fix(desktop): tolerate slow backend readiness during startup",
+    "files": [
+      [
+        "M",
+        "apps/desktop/electron/backend-ready.test.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/electron/main.cjs"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 23,
+    "deletions": 4,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "3f17156b710b61c133c33ff55f2a2a043693f25c",
+    "short": "3f17156b7",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): keep multi-select choice UX visible",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "tests",
+      "tools"
+    ],
+    "insertions": 39,
+    "deletions": 9,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "f2f675a469cca7f0796bc87a4c42825e5520b76f",
+    "short": "f2f675a46",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): enforce multi-select response bounds",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 21,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "cb041000169cae06afd5c7ddc0aff2d6630016e3",
+    "short": "cb0410001",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): reject empty required multi-select replies",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 57,
+    "deletions": 9,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "d5e24331d301154b587f5747b02fd044ffccbacc",
+    "short": "d5e24331d",
+    "date": "2026-06-29",
+    "subject": "style(desktop): satisfy clarify lint spacing",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 1,
+    "deletions": 0,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "65fda9573f04ad33144e98cc992bbc78346a9565",
+    "short": "65fda9573",
+    "date": "2026-06-21",
+    "subject": "chore: checkpoint HQ Hermes workspace updates",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/settings/index.tsx"
+      ],
+      [
+        "A",
+        "apps/desktop/src/app/settings/skill-toggle-settings.test.tsx"
+      ],
+      [
+        "A",
+        "apps/desktop/src/app/settings/skill-toggle-settings.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/settings/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/ja.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh-hant.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/lib/chat-messages.test.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/lib/chat-messages.ts"
+      ],
+      [
+        "A",
+        "apps/desktop/src/lib/skill-mode-prefix.test.ts"
+      ],
+      [
+        "A",
+        "apps/desktop/src/lib/skill-mode-prefix.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/session.ts"
+      ],
+      [
+        "A",
+        "gateway/run.py.bak_hq_restart_stability_20260614_083640"
+      ],
+      [
+        "M",
+        "hermes_cli/_subprocess_compat.py"
+      ],
+      [
+        "A",
+        "references/hq-harness-dashboard-adapter-build-packet.md"
+      ],
+      [
+        "A",
+        "references/hq-health-dashboard-harness-integration-build-packet.md"
+      ],
+      [
+        "A",
+        "scripts/hq_harness_dashboard_adapter.py"
+      ],
+      [
+        "A",
+        "scripts/hq_harness_validator.py"
+      ],
+      [
+        "A",
+        "scripts/hq_health_dashboard.py"
+      ],
+      [
+        "A",
+        "skills/devops/hermes-agent-cli/SKILL.md"
+      ],
+      [
+        "A",
+        "tests/agent/test_eval_gate.py"
+      ],
+      [
+        "A",
+        "tests/cron/test_eval_gate_pre_dispatch.py"
+      ],
+      [
+        "A",
+        "tests/cron/test_scheduler_silent_delivery.py"
+      ],
+      [
+        "A",
+        "tests/scripts/test_hq_harness_dashboard_adapter.py"
+      ],
+      [
+        "A",
+        "tests/scripts/test_hq_harness_validator.py"
+      ],
+      [
+        "A",
+        "tests/scripts/test_hq_health_dashboard_harness_integration.py"
+      ],
+      [
+        "M",
+        "tools/environments/local.py"
+      ],
+      [
+        "M",
+        "tools/process_registry.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "gateway",
+      "hermes_cli",
+      "references",
+      "scripts",
+      "skills",
+      "tests",
+      "tools"
+    ],
+    "insertions": 19103,
+    "deletions": 6,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "gateway",
+      "tools",
+      "cli/config",
+      "tests",
+      "skills",
+      "scripts"
+    ]
+  },
+  {
+    "sha": "6a1f376ecfc73cc83d021cd826e706007d843b60",
+    "short": "6a1f376ec",
+    "date": "2026-06-23",
+    "subject": "feat: add safe desktop control routing status surface",
+    "files": [
+      [
+        "M",
+        "hermes_cli/tools_config.py"
+      ],
+      [
+        "M",
+        "tests/hermes_cli/test_tools_config.py"
+      ],
+      [
+        "A",
+        "tests/tools/test_desktop_control_routing.py"
+      ],
+      [
+        "A",
+        "tools/computer_use/routing.py"
+      ],
+      [
+        "A",
+        "website/docs/developer-guide/desktop-control-routing.md"
+      ],
+      [
+        "M",
+        "website/sidebars.ts"
+      ]
+    ],
+    "topdirs": [
+      "hermes_cli",
+      "tests",
+      "tools",
+      "website"
+    ],
+    "insertions": 626,
+    "deletions": 4,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "cli/config",
+      "tests",
+      "docs"
+    ]
+  },
+  {
+    "sha": "2d76f95eae96759bea1fef60a77189a13addb58c",
+    "short": "2d76f95ea",
+    "date": "2026-06-23",
+    "subject": "feat(computer-use): add safe input proposals",
+    "files": [
+      [
+        "A",
+        "tests/tools/test_computer_use_capabilities.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_desktop_control_routing.py"
+      ],
+      [
+        "A",
+        "tools/computer_use/capabilities.py"
+      ],
+      [
+        "A",
+        "tools/computer_use/proposals.py"
+      ],
+      [
+        "M",
+        "tools/computer_use/routing.py"
+      ],
+      [
+        "A",
+        "tools/computer_use/windows_uia_readonly.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 1291,
+    "deletions": 3,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "6e5145ef1f8d48d07a572c0d89ec490ed395c3be",
+    "short": "6e5145ef1",
+    "date": "2026-06-23",
+    "subject": "feat(computer-use): add browser input executor",
+    "files": [
+      [
+        "A",
+        "tests/tools/test_browser_input_execution.py"
+      ],
+      [
+        "A",
+        "tools/computer_use/browser_input.py"
+      ],
+      [
+        "M",
+        "tools/computer_use/capabilities.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 306,
+    "deletions": 0,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "9f85bc2b6efb5d574093a50b81b13792a6c60947",
+    "short": "9f85bc2b6",
+    "date": "2026-06-23",
+    "subject": "feat(computer-use): add Windows UIA read-only enumeration",
+    "files": [
+      [
+        "A",
+        "tests/tools/test_windows_uia_readonly.py"
+      ],
+      [
+        "M",
+        "tools/computer_use/windows_uia_readonly.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 409,
+    "deletions": 16,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "0590ae4feff50d845072798795857c1d30a5190a",
+    "short": "0590ae4fe",
+    "date": "2026-06-23",
+    "subject": "feat(computer-use): add safe local CDP browser backend",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_browser_input_execution.py"
+      ],
+      [
+        "A",
+        "tests/tools/test_local_cdp_browser_backend.py"
+      ],
+      [
+        "M",
+        "tools/computer_use/browser_input.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 231,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "4202eaf956c98eeb4f6b2479e966c4945186df91",
+    "short": "4202eaf95",
+    "date": "2026-07-01",
+    "subject": "chore: normalize fork main total whitespace",
+    "files": [
+      [
+        "M",
+        "tests/cli/test_cli_approval_ui.py"
+      ]
+    ],
+    "topdirs": [
+      "tests"
+    ],
+    "insertions": 0,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "tests"
+    ]
+  },
+  {
+    "sha": "efa2f10aec2ccbda35628d918e494416f1488d5c",
+    "short": "efa2f10ae",
+    "date": "2026-06-13",
+    "subject": "feat: add HQ harness evidence dashboard integration",
+    "files": [
+      [
+        "M",
+        "scripts/hq_harness_validator.py"
+      ],
+      [
+        "M",
+        "tests/scripts/test_hq_harness_validator.py"
+      ]
+    ],
+    "topdirs": [
+      "scripts",
+      "tests"
+    ],
+    "insertions": 4,
+    "deletions": 153,
+    "binary_files": 0,
+    "area_tags": [
+      "tests",
+      "scripts"
+    ]
+  },
+  {
+    "sha": "a12326a224f4b95c2069cd2732de552f3355e686",
+    "short": "a12326a22",
+    "date": "2026-06-23",
+    "subject": "feat(hq): add eval gate quality harness",
+    "files": [
+      [
+        "A",
+        "agent/eval_gate.py"
+      ],
+      [
+        "M",
+        "cron/scheduler.py"
+      ],
+      [
+        "M",
+        "gateway/run.py"
+      ],
+      [
+        "M",
+        "hermes_cli/config.py"
+      ],
+      [
+        "M",
+        "hermes_cli/plugins.py"
+      ],
+      [
+        "A",
+        "references/hq-eval-gate-build-packet-20260620.md"
+      ],
+      [
+        "A",
+        "references/hq-harness-awesome-patterns-mapping.md"
+      ],
+      [
+        "A",
+        "references/hq-intention-tool-graph-prototype.md"
+      ],
+      [
+        "A",
+        "references/hq-interactive-coder-policy.md"
+      ],
+      [
+        "A",
+        "references/hq-ledgeragent-execution-state-mapping.md"
+      ],
+      [
+        "A",
+        "references/hq-lifelong-eval-fixture-plan.md"
+      ],
+      [
+        "A",
+        "references/hq-memory-quality-gate-review-prep.md"
+      ],
+      [
+        "A",
+        "references/hq-memory-trust-gate-integration-plan.md"
+      ],
+      [
+        "A",
+        "references/hq-memory-trust-gate-tam-pattern.md"
+      ],
+      [
+        "A",
+        "references/hq-runtime-budget-policy-v0.md"
+      ],
+      [
+        "A",
+        "references/hq-self-improvement-replay-protocol.md"
+      ],
+      [
+        "A",
+        "references/hq-stamina-bench-fixture-plan.md"
+      ],
+      [
+        "A",
+        "references/hq-trace-code-state-space-metrics.md"
+      ],
+      [
+        "A",
+        "reports/hq_memory_trust_gate_audit_latest.md"
+      ],
+      [
+        "A",
+        "scripts/hq_coder_depth_classifier.py"
+      ],
+      [
+        "M",
+        "scripts/hq_harness_validator.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_pre_gateway_dispatch.py"
+      ],
+      [
+        "M",
+        "tests/scripts/test_hq_harness_validator.py"
+      ]
+    ],
+    "topdirs": [
+      "agent",
+      "cron",
+      "gateway",
+      "hermes_cli",
+      "references",
+      "reports",
+      "scripts",
+      "tests"
+    ],
+    "insertions": 1533,
+    "deletions": 163,
+    "binary_files": 0,
+    "area_tags": [
+      "gateway",
+      "cron",
+      "agent",
+      "cli/config",
+      "tests",
+      "reports",
+      "scripts"
+    ]
+  },
+  {
+    "sha": "2e42f2504f7902fda00445d1860e81e5495611c8",
+    "short": "2e42f2504",
+    "date": "2026-07-01",
+    "subject": "merge: refresh fork main total candidate with latest upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 814,
+    "deletions": 34,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "7987663d0f1d1d799b059912412e890c90008289",
+    "short": "7987663d0",
+    "date": "2026-07-01",
+    "subject": "fix: stabilize fork main total verification on Windows",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/settings/index.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/lib/icons.ts"
+      ],
+      [
+        "M",
+        "cron/scheduler.py"
+      ],
+      [
+        "M",
+        "gateway/platforms/base.py"
+      ],
+      [
+        "M",
+        "hermes_cli/tools_config.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_platform_base.py"
+      ],
+      [
+        "M",
+        "tools/kanban_tools.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "cron",
+      "gateway",
+      "hermes_cli",
+      "tests",
+      "tools"
+    ],
+    "insertions": 46,
+    "deletions": 11,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "gateway",
+      "cron",
+      "tools",
+      "cli/config",
+      "tests"
+    ]
+  },
+  {
+    "sha": "9a17d6b243da86beb1d3f9e93d568b09f87c1474",
+    "short": "9a17d6b24",
+    "date": "2026-07-01",
+    "subject": "merge: refresh fork main total candidate with latest upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 113,
+    "deletions": 7,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "7be1b00e810c9a40be62d05ef28e5767cf2c4a13",
+    "short": "7be1b00e8",
+    "date": "2026-07-01",
+    "subject": "test: keep Windows env for gateway config bridge subprocess",
+    "files": [
+      [
+        "M",
+        "tests/gateway/test_config_env_bridge_authority.py"
+      ]
+    ],
+    "topdirs": [
+      "tests"
+    ],
+    "insertions": 21,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "tests"
+    ]
+  },
+  {
+    "sha": "8ebe8c492fb4e44c8bbd3db4b7ff631545c3644a",
+    "short": "8ebe8c492",
+    "date": "2026-07-01",
+    "subject": "merge: refresh fork main total candidate with latest upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 726,
+    "deletions": 75,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "0e90dea3be7678ac61a838c104a4cdca4765b362",
+    "short": "0e90dea3b",
+    "date": "2026-07-01",
+    "subject": "test: normalize profile isolation path assertions on Windows",
+    "files": [
+      [
+        "M",
+        "tests/test_profile_isolation_runtime.py"
+      ]
+    ],
+    "topdirs": [
+      "tests"
+    ],
+    "insertions": 2,
+    "deletions": 3,
+    "binary_files": 0,
+    "area_tags": [
+      "tests"
+    ]
+  },
+  {
+    "sha": "46193b8b83850a8836b51a73b8ff258f03975eda",
+    "short": "46193b8b8",
+    "date": "2026-07-01",
+    "subject": "docs: fix desktop control routing MDX links",
+    "files": [
+      [
+        "M",
+        "website/docs/developer-guide/desktop-control-routing.md"
+      ]
+    ],
+    "topdirs": [
+      "website"
+    ],
+    "insertions": 3,
+    "deletions": 3,
+    "binary_files": 0,
+    "area_tags": [
+      "docs"
+    ]
+  },
+  {
+    "sha": "74bb8c18fe8b19b93265e41d54ec4dd025f82043",
+    "short": "74bb8c18f",
+    "date": "2026-07-01",
+    "subject": "merge: refresh fork main total candidate with latest upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 703,
+    "deletions": 10,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "b4d1beb4e1290f0957c957a03286dea7715e6795",
+    "short": "b4d1beb4e",
+    "date": "2026-07-01",
+    "subject": "test: make new runtime guard tests Windows portable",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_base_environment.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_skill_manager_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "tests"
+    ],
+    "insertions": 13,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "tests"
+    ]
+  },
+  {
+    "sha": "dba26fbac16fb195c6a6de4dd75b86cb160bd7b0",
+    "short": "dba26fbac",
+    "date": "2026-06-29",
+    "subject": "fix(desktop): tolerate delayed clarify responses",
+    "files": [
+      [
+        "A",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/ja.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh-hant.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 147,
+    "deletions": 7,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "307924c72c94ab1dada91373f62201452219c229",
+    "short": "307924c72",
+    "date": "2026-06-30",
+    "subject": "fix(desktop): distinguish lost gateway and bound tool result events",
+    "files": [
+      [
+        "M",
+        "agent/tool_executor.py"
+      ],
+      [
+        "M",
+        "apps/desktop/electron/titlebar-overlay-width.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/gateway/hooks/use-gateway-boot.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/boot-failure-overlay.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/gateway-connecting-overlay.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/ja.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh-hant.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/boot.ts"
+      ],
+      [
+        "M",
+        "tests/run_agent/test_tool_call_incremental_persistence.py"
+      ]
+    ],
+    "topdirs": [
+      "agent",
+      "apps",
+      "tests"
+    ],
+    "insertions": 170,
+    "deletions": 35,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "agent",
+      "tests"
+    ]
+  },
+  {
+    "sha": "6527445b197bdb62408ceeaf5186c3cbbb2ea86a",
+    "short": "6527445b1",
+    "date": "2026-06-30",
+    "subject": "fix(desktop): bound live terminal output events",
+    "files": [
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tui_gateway"
+    ],
+    "insertions": 69,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "tests"
+    ]
+  },
+  {
+    "sha": "3051d4f0d3af7e34e1da91d36fde5db12fd889d7",
+    "short": "3051d4f0d",
+    "date": "2026-06-29",
+    "subject": "fix(desktop): explain prompt submit timeouts",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/index.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/utils.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/ja.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh-hant.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 65,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "b3123618c1731628f05f409847fbe3c0758ab570",
+    "short": "b3123618c",
+    "date": "2026-06-29",
+    "subject": "feat(clarify): restore native multi-select prompts",
+    "files": [
+      [
+        "M",
+        "agent/agent_runtime_helpers.py"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/clarify.ts"
+      ],
+      [
+        "M",
+        "gateway/platforms/base.py"
+      ],
+      [
+        "M",
+        "gateway/platforms/whatsapp_cloud.py"
+      ],
+      [
+        "M",
+        "gateway/run.py"
+      ],
+      [
+        "M",
+        "plugins/platforms/discord/adapter.py"
+      ],
+      [
+        "M",
+        "plugins/platforms/telegram/adapter.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_discord_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_telegram_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "agent",
+      "apps",
+      "gateway",
+      "plugins",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 1266,
+    "deletions": 187,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "gateway",
+      "tools",
+      "agent",
+      "tests"
+    ]
+  },
+  {
+    "sha": "13c8445f4b0a743680598d82af4552c33c92a6d4",
+    "short": "13c8445f4",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): harden constrained-choice semantics",
+    "files": [
+      [
+        "M",
+        "apps/desktop/electron/update-relaunch.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/electron/update-relaunch.test.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "gateway/platforms/base.py"
+      ],
+      [
+        "M",
+        "gateway/platforms/whatsapp_cloud.py"
+      ],
+      [
+        "M",
+        "gateway/run.py"
+      ],
+      [
+        "M",
+        "plugins/platforms/discord/adapter.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_discord_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_telegram_clarify_buttons.py"
+      ],
+      [
+        "M",
+        "tests/gateway/test_whatsapp_cloud.py"
+      ],
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_gateway.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "gateway",
+      "plugins",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 573,
+    "deletions": 82,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "gateway",
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "2e7d5564391c3a19bfeb5e859436a216499af6bf",
+    "short": "2e7d55643",
+    "date": "2026-06-29",
+    "subject": "fix(desktop): tolerate slow backend readiness during startup",
+    "files": [
+      [
+        "M",
+        "apps/desktop/electron/backend-ready.test.cjs"
+      ],
+      [
+        "M",
+        "apps/desktop/electron/main.cjs"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 23,
+    "deletions": 4,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "45e737a75c270ab25f2593c1978ee4c00031de9d",
+    "short": "45e737a75",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): keep multi-select choice UX visible",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "tests",
+      "tools"
+    ],
+    "insertions": 39,
+    "deletions": 9,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "e78c7f85b7e6595924706cc3212b088deefae7a5",
+    "short": "e78c7f85b",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): enforce multi-select response bounds",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 21,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "fa522dae999e81f0cdfcf3336534415e00e2e304",
+    "short": "fa522dae9",
+    "date": "2026-06-29",
+    "subject": "fix(clarify): reject empty required multi-select replies",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "apps",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 57,
+    "deletions": 9,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "c11ada21e2ab0db29ca4c49e0f63a7f02c7a66b4",
+    "short": "c11ada21e",
+    "date": "2026-06-29",
+    "subject": "style(desktop): satisfy clarify lint spacing",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 1,
+    "deletions": 0,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "edfa58b503d04d12e7d98b889cf050f20a61ebde",
+    "short": "edfa58b50",
+    "date": "2026-07-01",
+    "subject": "fix(desktop): drop unused clarify import",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 0,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "d4ba30a2712a7fa2579db8a8eeb294ae9b0ab873",
+    "short": "d4ba30a27",
+    "date": "2026-07-01",
+    "subject": "fix(clarify): enforce constrained selection responses",
+    "files": [
+      [
+        "M",
+        "agent/tool_executor.py"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "tests/run_agent/test_run_agent.py"
+      ],
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "agent",
+      "apps",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 92,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "tools",
+      "agent",
+      "tests"
+    ]
+  },
+  {
+    "sha": "35aa9f3951632f522a1f5042bd6eb318b473cc45",
+    "short": "35aa9f395",
+    "date": "2026-07-01",
+    "subject": "fix(clarify): reject mixed constrained responses",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 95,
+    "deletions": 26,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "13eaee13cb9ee7d9184036a3a8527a2fc5ade878",
+    "short": "13eaee13c",
+    "date": "2026-07-02",
+    "subject": "style(desktop): satisfy restaged prompt submit lint",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/index.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 2,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "2aa38fba59fd3a98dae2323a63822dd41571e927",
+    "short": "2aa38fba5",
+    "date": "2026-07-02",
+    "subject": "fix(clarify): cover task report scope choices",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 12,
+    "deletions": 4,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "76f87f8a9622f4511d26a4e26563ef5e7c579298",
+    "short": "76f87f8a9",
+    "date": "2026-07-02",
+    "subject": "merge: bring fork main candidate onto latest upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 34027,
+    "deletions": 2470,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "61505325ed26ee071f27eb2743481f9dcae34bd2",
+    "short": "61505325e",
+    "date": "2026-06-29",
+    "subject": "fix(desktop): tolerate delayed clarify responses",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 10,
+    "deletions": 0,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "aaf04e0f5124a6aea546349140e228b624426fb2",
+    "short": "aaf04e0f5",
+    "date": "2026-07-01",
+    "subject": "fix(desktop): drop unused clarify import",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 0,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "e8368cfc773982b525d40b7605faf289dd9e581c",
+    "short": "e8368cfc7",
+    "date": "2026-07-01",
+    "subject": "fix(clarify): enforce constrained selection responses",
+    "files": [
+      [
+        "M",
+        "agent/tool_executor.py"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "tests/run_agent/test_run_agent.py"
+      ],
+      [
+        "M",
+        "tests/test_tui_gateway_server.py"
+      ],
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "agent",
+      "apps",
+      "tests",
+      "tools",
+      "tui_gateway"
+    ],
+    "insertions": 92,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop",
+      "tools",
+      "agent",
+      "tests"
+    ]
+  },
+  {
+    "sha": "6f30293743a54e720d24f77fab23946b980ec7c4",
+    "short": "6f3029374",
+    "date": "2026-07-01",
+    "subject": "fix(clarify): reject mixed constrained responses",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 95,
+    "deletions": 26,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "8ba27ee186c0468e739b101fbebf6ac9176174bb",
+    "short": "8ba27ee18",
+    "date": "2026-07-02",
+    "subject": "style(desktop): satisfy restaged prompt submit lint",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/index.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 2,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "ff795c13b9d524d88091146bd8812b36fb115e33",
+    "short": "ff795c13b",
+    "date": "2026-07-02",
+    "subject": "fix(clarify): cover task report scope choices",
+    "files": [
+      [
+        "M",
+        "tests/tools/test_clarify_tool.py"
+      ],
+      [
+        "M",
+        "tools/clarify_tool.py"
+      ]
+    ],
+    "topdirs": [
+      "tests",
+      "tools"
+    ],
+    "insertions": 12,
+    "deletions": 4,
+    "binary_files": 0,
+    "area_tags": [
+      "tools",
+      "tests"
+    ]
+  },
+  {
+    "sha": "9cbdedefff9565717f97e82fe0ca4d6e1037b868",
+    "short": "9cbdedeff",
+    "date": "2026-07-02",
+    "subject": "fix(clarify): honor configured Desktop clarify timeout",
+    "files": [
+      [
+        "M",
+        "tui_gateway/server.py"
+      ]
+    ],
+    "topdirs": [
+      "tui_gateway"
+    ],
+    "insertions": 11,
+    "deletions": 0,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "51150b9c781657e5ffdb8e595dc3b7d29d270a55",
+    "short": "51150b9c7",
+    "date": "2026-07-02",
+    "subject": "fix(clarify): resolve latest-origin Desktop integration",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 0,
+    "deletions": 10,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "2d43187f7bcb8954489335b10ac30c723c159df5",
+    "short": "2d43187f7",
+    "date": "2026-07-02",
+    "subject": "style(desktop): sort project store imports",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/store/projects.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 2,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "4607d1758192915a87547659d1f2c3432646e7d6",
+    "short": "4607d1758",
+    "date": "2026-07-02",
+    "subject": "fix(desktop): expire stale clarify requests",
+    "files": [
+      [
+        "A",
+        "apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/en.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/types.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/i18n/zh.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 182,
+    "deletions": 3,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "6b950d6252e1cecb03a489cddf0ef971ed650c3a",
+    "short": "6b950d625",
+    "date": "2026-07-02",
+    "subject": "merge: bring total candidate onto latest upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 5405,
+    "deletions": 301,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "ea9c92334699215623b9a1c20dc28d46f49d4ede",
+    "short": "ea9c92334",
+    "date": "2026-07-02",
+    "subject": "test(config): expect platform-native Hermes home",
+    "files": [
+      [
+        "M",
+        "tests/hermes_cli/test_config.py"
+      ]
+    ],
+    "topdirs": [
+      "tests"
+    ],
+    "insertions": 8,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "tests"
+    ]
+  },
+  {
+    "sha": "e9db66991e8300e5f82d7288c34de87d613f1e14",
+    "short": "e9db66991",
+    "date": "2026-07-03",
+    "subject": "merge: refresh total candidate onto current upstream main",
+    "files": [],
+    "topdirs": [],
+    "insertions": 1160,
+    "deletions": 307,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "533cca9ab2ad943a6d3d345b8c36b3029a916a67",
+    "short": "533cca9ab",
+    "date": "2026-07-03",
+    "subject": "merge: record active main stack as integrated into total candidate",
+    "files": [],
+    "topdirs": [],
+    "insertions": 0,
+    "deletions": 0,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "52206678ebdd98ed19a3ba79af68b11336e872e6",
+    "short": "52206678e",
+    "date": "2026-07-03",
+    "subject": "merge: refresh total candidate before active apply",
+    "files": [],
+    "topdirs": [],
+    "insertions": 91,
+    "deletions": 2,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "2875dad0c5ff4ab9c4988cb6c07bfe1a5782aab9",
+    "short": "2875dad0c",
+    "date": "2026-07-03",
+    "subject": "fix: harden desktop ws loop stall diagnostics",
+    "files": [
+      [
+        "M",
+        "hermes_cli/web_server.py"
+      ],
+      [
+        "M",
+        "tests/test_tui_gateway_ws.py"
+      ],
+      [
+        "M",
+        "tests/test_web_server.py"
+      ],
+      [
+        "M",
+        "tests/tui_gateway/test_inline_rpc_gil_starvation.py"
+      ],
+      [
+        "A",
+        "tests/tui_gateway/test_loop_monitor.py"
+      ],
+      [
+        "A",
+        "tui_gateway/loop_monitor.py"
+      ],
+      [
+        "M",
+        "tui_gateway/server.py"
+      ],
+      [
+        "M",
+        "tui_gateway/ws.py"
+      ]
+    ],
+    "topdirs": [
+      "hermes_cli",
+      "tests",
+      "tui_gateway"
+    ],
+    "insertions": 250,
+    "deletions": 37,
+    "binary_files": 0,
+    "area_tags": [
+      "cli/config",
+      "tests"
+    ]
+  },
+  {
+    "sha": "545277df45d40c160963c86ddf03b5b86c48cb98",
+    "short": "545277df4",
+    "date": "2026-07-03",
+    "subject": "feat: gate desktop haptics debug telemetry",
+    "files": [
+      [
+        "A",
+        "apps/desktop/src/components/haptics-provider.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/haptics-provider.tsx"
+      ],
+      [
+        "A",
+        "apps/desktop/src/lib/haptics.test.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/lib/haptics.ts"
+      ],
+      [
+        "A",
+        "apps/desktop/src/test/setup.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/vite.config.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 207,
+    "deletions": 5,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "10b092d823bb9378a420f6d6ceccff3a602f2c64",
+    "short": "10b092d82",
+    "date": "2026-07-03",
+    "subject": "test: sync desktop renderer expectations",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/app/chat/composer/attachments.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/messaging/index.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/session/hooks/use-preview-routing.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/settings/model-settings.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/app/settings/toolset-config-panel.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/tool/fallback-model.test.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/pane-shell/pane-shell.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/store/panes.test.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 28,
+    "deletions": 20,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "d00f0f4e9019714abba75b1ee87640e9ef0c02bd",
+    "short": "d00f0f4e9",
+    "date": "2026-07-03",
+    "subject": "chore: clean up desktop build warnings",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/styles.css"
+      ],
+      [
+        "M",
+        "apps/desktop/vite.config.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 7,
+    "deletions": 6,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "8bcbc51792a2ff38b7d0123da0d261da303a8e6c",
+    "short": "8bcbc5179",
+    "date": "2026-07-04",
+    "subject": "perf(desktop): import Tabler icons directly",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/lib/icons.ts"
+      ],
+      [
+        "M",
+        "apps/desktop/src/vite-env.d.ts"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 121,
+    "deletions": 114,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "dc065158fa78d18612892ef6ff1b70f0e98df7a0",
+    "short": "dc065158f",
+    "date": "2026-07-04",
+    "subject": "chore(hq): stage active main update integration",
+    "files": [],
+    "topdirs": [],
+    "insertions": 10925,
+    "deletions": 644,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "d6c19f820a7f4905018c97dcafc923aabdfaca49",
+    "short": "d6c19f820",
+    "date": "2026-07-04",
+    "subject": "fix(desktop): restore clarify keyboard shortcuts",
+    "files": [
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.test.tsx"
+      ],
+      [
+        "M",
+        "apps/desktop/src/components/assistant-ui/clarify-tool.tsx"
+      ]
+    ],
+    "topdirs": [
+      "apps"
+    ],
+    "insertions": 140,
+    "deletions": 1,
+    "binary_files": 0,
+    "area_tags": [
+      "desktop"
+    ]
+  },
+  {
+    "sha": "55e9e47eb126e66f4a5501a84d25a4e8a10f8940",
+    "short": "55e9e47eb",
+    "date": "2026-07-04",
+    "subject": "merge: integrate origin/main security drift",
+    "files": [],
+    "topdirs": [],
+    "insertions": 294,
+    "deletions": 11,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  },
+  {
+    "sha": "8b97f5e51aff74daaaa97cd11e467b621a1ca119",
+    "short": "8b97f5e51",
+    "date": "2026-07-05",
+    "subject": "merge: integrate latest origin/main drift",
+    "files": [],
+    "topdirs": [],
+    "insertions": 829,
+    "deletions": 21,
+    "binary_files": 0,
+    "area_tags": [
+      "misc"
+    ]
+  }
+]

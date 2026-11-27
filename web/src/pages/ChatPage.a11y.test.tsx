@@ -224,9 +224,11 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", () => {});
   vi.stubGlobal("matchMedia", () => ({
     addEventListener() {},
+    addListener() {},
     matches: false,
     media: "",
     removeEventListener() {},
+    removeListener() {},
   }));
   vi.stubGlobal("crypto", {
     getRandomValues: (values: Uint8Array) => {
@@ -320,5 +322,55 @@ describe("ChatPage composer screen-reader accessibility (#36784)", () => {
     expect(handler({ key: "Tab", type: "keyup" })).toBe(true);
     // Ordinary typing still flows into the terminal untouched.
     expect(handler({ key: "a", type: "keydown" })).toBe(true);
+  });
+
+  it("sends the committed character without the temporary dead-key accent", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    const { Terminal } = await vi.importActual<typeof import("@xterm/xterm")>(
+      "@xterm/xterm",
+    );
+    const host = document.createElement("div");
+    container.append(host);
+    const terminal = new Terminal({ screenReaderMode: true });
+    const canvasContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    try {
+      terminal.open(host);
+      terminal.attachCustomKeyEventHandler(FakeTerminal.keyHandlers[0]);
+      const textarea = terminal.textarea;
+      if (!textarea) throw new Error("xterm did not create its input textarea");
+      const send = vi.fn();
+      terminal.onData(send);
+
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Dead" }));
+      textarea.dispatchEvent(new CompositionEvent("compositionstart"));
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "¨" }));
+      textarea.value = "¨";
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      const keydown = new KeyboardEvent("keydown", {
+        key: "e",
+        isComposing: true,
+        cancelable: true,
+      });
+      Object.defineProperty(keydown, "keyCode", { value: 69 });
+      textarea.dispatchEvent(keydown);
+
+      textarea.dispatchEvent(new CompositionEvent("compositionupdate", { data: "ë" }));
+      textarea.value = "ë";
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { data: "ë" }));
+
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith("ë"));
+      expect(send).toHaveBeenCalledExactlyOnceWith("ë");
+      expect(keydown.defaultPrevented).toBe(false);
+    } finally {
+      terminal.dispose();
+      canvasContext.mockRestore();
+    }
   });
 });

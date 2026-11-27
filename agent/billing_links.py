@@ -51,6 +51,7 @@ _PROVIDERS: tuple[_Provider, ...] = (
     _Provider("Mistral", "https://console.mistral.ai/billing", ("mistral",), ("api.mistral.ai",)),
     _Provider("Together AI", "https://api.together.ai/settings/billing", ("together",), ("api.together.ai", "api.together.xyz")),
     _Provider("Fireworks AI", "https://fireworks.ai/account/billing", ("fireworks",), ("fireworks.ai",)),
+    _Provider("Baseten", "https://app.baseten.co/settings/billing", ("baseten",), ("inference.baseten.co", "baseten.co")),
     _Provider("Perplexity", "https://www.perplexity.ai/settings/api", ("perplexity",), ("perplexity.ai",)),
     _Provider("Google AI", "https://aistudio.google.com/app/billing", ("google", "gemini"), ("generativelanguage.googleapis.com",)),
     _Provider("Cohere", "https://dashboard.cohere.com/billing", ("cohere",)),

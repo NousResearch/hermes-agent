@@ -230,7 +230,7 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
 # (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model.
 _VENDOR_SLUG_PROVIDERS = {
     "openrouter", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "lmstudio", "nous", "nvidia",
-    "fireworks", "deepinfra",
+    "fireworks", "deepinfra", "baseten",
 }
 
 

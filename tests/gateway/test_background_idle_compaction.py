@@ -25,6 +25,9 @@ SMALL_HISTORY = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{
                   "timestamp": time.time() - 3600} for i in range(6)]
 
 
+KEY = "agent:main:telegram:dm:c1"  # the session key of ``_source()``
+
+
 def _source(chat_id="c1"):
     return SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, user_id="u1", chat_type="dm")
 
@@ -70,11 +73,11 @@ def make_runner():
         runner = object.__new__(GatewayRunner)
         runner.config = GatewayConfig()
         now = datetime.now()
-        entry = SessionEntry(session_key="k1", session_id=agent.session_id, created_at=now, updated_at=now,
+        entry = SessionEntry(session_key=KEY, session_id=agent.session_id, created_at=now, updated_at=now,
                              origin=_source(), platform=Platform.TELEGRAM, chat_type="dm")
-        runner.session_store = _Store({"k1": entry}, history)
+        runner.session_store = _Store({KEY: entry}, history)
         runner.session_authority = None
-        runner._agent_cache = {"k1": (agent, "sig")}
+        runner._agent_cache = {KEY: (agent, "sig")}
         runner._agent_cache_lock = threading.Lock()
         runner.compacted = []
 
@@ -130,21 +133,41 @@ async def test_an_evicted_idle_chat_compacts_at_release(make_runner):
     runner = make_runner(agent)
     runner._agent_cache.clear()
 
-    await runner._compact_then_release_job("k1", agent)
+    await runner._compact_then_release_job(KEY, agent)
 
     assert runner.compacted == [("s1", "idle")]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["policy off", "not idle long enough", "below the floor", "input buffered"])
+@pytest.mark.parametrize("case", ["policy off", "not idle long enough", "below the floor", "input buffered",
+                                  "codex compacts its own thread"])
 async def test_the_background_run_leaves_the_chat_alone(make_runner, case):
     agent = _idle_agent("s1", idle_after=0 if case == "policy off" else 120,
                         idle_for=30.0 if case == "not idle long enough" else 600.0)
+    if case == "codex compacts its own thread":
+        agent.api_mode, agent.codex_app_server_auto_compaction = "codex_app_server", "native"
     runner = make_runner(agent, SMALL_HISTORY if case == "below the floor" else BIG_HISTORY)
     if case == "input buffered":
-        runner.adapters = {Platform.TELEGRAM: SimpleNamespace(_pending_text_batches={"k1": object()})}
+        # Batches are keyed by the adapter's own batch key (here with a sender suffix), not the session key.
+        runner.adapters = {Platform.TELEGRAM: SimpleNamespace(
+            _pending_text_batches={"telegram:c1:from:u1": SimpleNamespace(source=_source())})}
 
     await _scan(runner)
+
+    assert runner.compacted == []
+
+
+@pytest.mark.asyncio
+async def test_input_that_arrives_while_the_job_waits_for_a_slot_cancels_it(make_runner):
+    """The claim checked the adapters, but a job may wait behind other summaries: input buffered
+    by the time it runs must not be summarised past."""
+    from gateway.run_watchers_idle import IDLE_ACTION
+
+    agent = _idle_agent("s1")
+    runner = make_runner(agent)
+    runner.adapters = {Platform.TELEGRAM: SimpleNamespace(_pending_messages={KEY: object()})}
+
+    await runner._compact_claimed_session(KEY, runner.session_store.entries[KEY], agent, IDLE_ACTION)
 
     assert runner.compacted == []
 

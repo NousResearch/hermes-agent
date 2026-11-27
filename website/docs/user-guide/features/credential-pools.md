@@ -224,6 +224,9 @@ does not trigger this; an explicit `/model` switch cancels a pending switch-back
 one Claude model cools that credential down for *that model only* — the same key keeps serving every
 other Claude model, and `ANTHROPIC_API_KEY` / borrowed Claude Code tokens honour the same per-model
 cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the whole credential.
+A Claude subscription 429 that names a spent account-wide plan window (`five_hour`, `seven_day` in
+`anthropic-ratelimit-unified-representative-claim`) also benches the whole credential, for every model,
+until that window's reset; the pool rotates on the first such 429 instead of retrying the spent account.
 
 **A dead OAuth login is reported, not benched.** When a refresh token is rejected for good
 (`invalid_grant`, `invalid_token`, `refresh_token_reused` — the token was revoked, or another program

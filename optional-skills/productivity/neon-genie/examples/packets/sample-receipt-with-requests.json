@@ -1,0 +1,109 @@
+{
+  "status": "PROPOSED",
+  "profiles_loaded": [
+    "core",
+    "product_architecture",
+    "privacy"
+  ],
+  "claims_by_label": {
+    "OBSERVED": [],
+    "INFERRED": [],
+    "SPECULATIVE": [],
+    "NOT_COMPUTABLE": [
+      "critical_integration_access"
+    ]
+  },
+  "not_computable_fields": [
+    "critical_integration_access"
+  ],
+  "promotion_state": "SPEC_COMPLETE",
+  "human_review_required": true,
+  "authority": "advisory_only",
+  "grants_execution": false,
+  "data_requests": [
+    {
+      "request_id": "dr-product-access",
+      "field": "critical_integration_access",
+      "why_decision_critical": "Integration feasibility cannot be OBSERVED without declared access",
+      "sensitivity": "private",
+      "suggested_source": "Operator environment credentials or access inventory",
+      "blocks_promotion": true,
+      "status": "open",
+      "attempted_queries": []
+    }
+  ],
+  "open_blocking_requests": [
+    {
+      "request_id": "dr-product-access",
+      "field": "critical_integration_access",
+      "why_decision_critical": "Integration feasibility cannot be OBSERVED without declared access",
+      "sensitivity": "private",
+      "suggested_source": "Operator environment credentials or access inventory",
+      "blocks_promotion": true,
+      "status": "open",
+      "attempted_queries": []
+    }
+  ],
+  "research_attempts": [],
+  "evidence_protocol": "find_request_not_computable",
+  "note": "Packaging receipt only. Does not authorize spend, publish, or execution. Open blocking data requests present; do not promote until satisfied or waived.",
+  "privacy": {
+    "contract_version": "1.0.0",
+    "mode": "local_only",
+    "telemetry": "disabled",
+    "training_use": "none_by_neon_genie",
+    "retention": {
+      "artifact_path": "out/neon-genie/example",
+      "automatic_expiry": null,
+      "host_provider_retention": "NOT_COMPUTABLE",
+      "repository_retention": "operator_selected_output_path"
+    },
+    "egress": {
+      "allowed": false,
+      "approved_domains": [],
+      "approved_tool_classes": []
+    },
+    "redaction": {
+      "enabled": true,
+      "blocked_categories": [
+        "credentials",
+        "secrets",
+        "government_ids",
+        "private_keys"
+      ]
+    },
+    "consents": [],
+    "data_sources_used": [],
+    "external_actions": [],
+    "privacy_warnings": [],
+    "deletion_instructions": "Delete the operator-selected output directory: out/neon-genie/example.",
+    "unknowns": {
+      "host_providers": "NOT_COMPUTABLE",
+      "provider_retention": "NOT_COMPUTABLE",
+      "provider_processing": "NOT_COMPUTABLE"
+    },
+    "learning_ledger": {
+      "location": "local_operator_selected_path",
+      "default_path": "out/neon-genie/learning-ledger.jsonl",
+      "auto_apply_forbidden": true,
+      "ships_with_skill": false,
+      "disclosure": "Learning ledger entries are local operator artifacts under the chosen output path; they are never auto-applied to the skill corpus and must not contain raw secrets or private source payloads."
+    }
+  },
+  "privacy_mode": "local_only",
+  "data_sources_used": [],
+  "external_actions": [],
+  "artifact_paths": [
+    "out/neon-genie/example"
+  ],
+  "telemetry_status": "disabled",
+  "retention_statement": "Artifacts remain at the operator-selected output location. Host/provider retention is NOT_COMPUTABLE.",
+  "privacy_warnings": [],
+  "deletion_instructions": "Delete the operator-selected output directory: out/neon-genie/example.",
+  "privacy_unknowns": {
+    "host_providers": "NOT_COMPUTABLE",
+    "provider_retention": "NOT_COMPUTABLE",
+    "provider_processing": "NOT_COMPUTABLE"
+  },
+  "learning_ledger_disclosure": "Learning ledger entries are local operator artifacts under the chosen output path; they are never auto-applied to the skill corpus and must not contain raw secrets or private source payloads."
+}

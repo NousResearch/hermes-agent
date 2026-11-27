@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agentic Service Graph",
+  "type": "object",
+  "required": [
+    "requested_outcome",
+    "actions",
+    "authority_gates",
+    "exception_paths",
+    "completion_proof"
+  ],
+  "properties": {
+    "requested_outcome": {},
+    "actions": {},
+    "authority_gates": {},
+    "exception_paths": {},
+    "completion_proof": {}
+  },
+  "additionalProperties": true
+}

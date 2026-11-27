@@ -1,0 +1,14 @@
+{
+  "input": {
+    "gap": "closed_crm_pipeline",
+    "sensitivity": "private",
+    "data_request_emitted": false,
+    "claim_label_emitted": "OBSERVED",
+    "claim_source": "model_prior_only"
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "gate": "R",
+    "reason": "Silent invent of private facts as OBSERVED is forbidden"
+  }
+}

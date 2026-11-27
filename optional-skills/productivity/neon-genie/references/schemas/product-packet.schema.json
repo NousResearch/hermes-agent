@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Product Packet",
+  "type": "object",
+  "required": [
+    "target_user",
+    "job_to_be_done",
+    "product_boundary",
+    "system_inventory",
+    "core_loops",
+    "conflict_scan",
+    "experience_architecture",
+    "validation_path",
+    "completion_proof",
+    "promotion_state"
+  ],
+  "properties": {
+    "target_user": {},
+    "job_to_be_done": {},
+    "product_boundary": {},
+    "system_inventory": {},
+    "core_loops": {},
+    "conflict_scan": {},
+    "experience_architecture": {},
+    "validation_path": {},
+    "completion_proof": {
+      "description": "Externally checkable acceptance criteria for the product intent"
+    },
+    "promotion_state": {},
+    "proof_path": {
+      "description": "Ordered eng/operator steps to obtain completion_proof"
+    }
+  },
+  "additionalProperties": true
+}

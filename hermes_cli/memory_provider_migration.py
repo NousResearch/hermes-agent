@@ -112,6 +112,7 @@ def _plugin_choice(home: Path):
     from gateway.config_loader import read_yaml_layers
     from hermes_constants import get_hermes_home, hermes_home_key
     from plugins.plugin_loader import PluginChoice
+    from hermes_cli.managed_scope import is_key_managed
     from pm.plugins_state import read_home_selection
     # The active home (agent start) keeps the scope it already has; any other (the update scan) gets its
     # own files only: no vault or helper is asked for secrets just to learn there is nothing to migrate.
@@ -119,7 +120,10 @@ def _plugin_choice(home: Path):
     try:
         with nullcontext() if bound else bind_profile_scope(home, hydrate_secrets=False):
             config = read_yaml_layers(home)
-        raw = "" if bound else str(((read_home_selection(home) or {}).get("memory") or {}).get("provider") or "")
+        # The user's own value, before expansion; a managed pin wins over it and expands against the
+        # process environment only, so a pinned provider is known here whatever the user file says.
+        raw = "" if bound or is_key_managed("memory.provider") else str(
+            ((read_home_selection(home) or {}).get("memory") or {}).get("provider") or "")
     except Exception:  # health: allow BLE001 -- malformed config.yaml: the loader turns nothing on from it either
         logger.debug("memory provider migration: unreadable config for %s", home, exc_info=True)
         return PluginChoice()

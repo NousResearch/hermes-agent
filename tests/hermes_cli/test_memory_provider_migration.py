@@ -826,3 +826,21 @@ def test_an_unusable_lock_met_by_cron_is_explained_as_such_to_the_next_watched_s
     said: list[str] = []
     assert mig.recover_at_startup("retaindb", say=said.append) is False
     assert len(said) == 1 and "lock could not be taken" in said[0] and "Permission denied" in said[0]
+
+
+def test_a_managed_pin_over_a_user_reference_is_migrated_by_the_scan(tmp_path, monkeypatch):
+    """An administrator's pinned `memory.provider` wins over the user's `${MEMORY_BACKEND}` and expands
+    against the process environment only, so the update scan knows it and migrates it."""
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("memory:\n  provider: retaindb\n", encoding="utf-8")
+    profile = tmp_path / "launch" / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("memory:\n  provider: ${MEMORY_BACKEND}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+    installs: list[str] = []
+    assert mig.migrate_home(profile, install=lambda n: installs.append(n) or (profile / "plugins" / n).mkdir(
+        parents=True) or {"ok": True}, say=lambda s: None) == "retaindb"
+    assert installs == ["retaindb"]

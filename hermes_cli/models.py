@@ -1848,6 +1848,41 @@ def _provider_models_cache_path() -> Path:
     return get_hermes_home() / "provider_models_cache.json"
 
 
+def _api_key_env_catalog_identity(provider: str) -> bool:
+    """True when this provider's catalog is keyed only by env API keys.
+
+    Home-wide ``auth.json`` digests must not ride along: an unrelated OAuth refresh would
+    invalidate the disk cache, and the GUI non-blocking picker would fall back to curated
+    seed models (e.g. Cursor's ``auto`` / ``composer-2.5``).
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pcfg = PROVIDER_REGISTRY.get(provider)
+        if (
+            pcfg is not None
+            and getattr(pcfg, "auth_type", "") == "api_key"
+            and (getattr(pcfg, "api_key_env_vars", ()) or ())
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        from providers import list_providers
+
+        for profile in list_providers():
+            names = {profile.name, *(getattr(profile, "aliases", ()) or ())}
+            if provider not in names:
+                continue
+            if getattr(profile, "auth_type", "") == "api_key" and (
+                getattr(profile, "env_vars", ()) or ()
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _credential_fingerprint(provider: str) -> str:
     """Short hash of the credentials ``provider_model_ids(provider)`` would see right now.
 
@@ -1927,6 +1962,24 @@ def _credential_fingerprint(provider: str) -> str:
         for rel in process_profile.catalog_credential_files:
             path = os.path.expanduser(rel)
             _mtime_part(path, path)
+    elif _api_key_env_catalog_identity(provider):
+        # Env API keys (and optional base_url env) already contribute above. Plugin-only
+        # profiles may live outside PROVIDER_REGISTRY — fold their env_vars in once.
+        try:
+            from providers import list_providers
+
+            seen = set(parts)
+            for profile in list_providers():
+                names = {profile.name, *(getattr(profile, "aliases", ()) or ())}
+                if provider not in names:
+                    continue
+                for ev in getattr(profile, "env_vars", ()) or ():
+                    part = f"{ev}={os.environ.get(str(ev), '')}"
+                    if part not in seen:
+                        parts.append(part)
+                        seen.add(part)
+        except Exception:
+            pass
     else:
         try:
             from hermes_constants import get_hermes_home

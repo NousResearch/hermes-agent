@@ -855,14 +855,17 @@ class PromptCacheWarmer:
         A keep-alive of a request still awaiting its reply also moves that request's attempt send time
         to its own, in the same locked step, so the reply (folded by :func:`fold_reply` under this lock)
         counts its entry from the latest renewal. One whose reply was already folded (``settled``) is
-        folded after it as an ordinary later read of the same prompt, unless a rewrite intervened."""
+        folded after it as an ordinary later read of the same prompt, unless a rewrite intervened or a request
+        sent after it has folded since (an older send never shortens newer coverage)."""
         from agent.prompt_cache_clock import attempt_facts, context_witness, record_cache_response, response_upstream
         from agent.turn_usage import cache_clock_column
 
         agent, b = self.agent, run.billing
         with self._lock:
             if run.settled:
-                stale = context_witness(agent) != run.witness
+                # Only as the latest send: a later request already folded counts from its own send.
+                latest = getattr(agent, "_prompt_cache_clock", None)
+                stale = context_witness(agent) != run.witness or float(getattr(latest, "sent_at", 0.0) or 0.0) > sent_at
             else:
                 stale = self._run is not run or self._stale_reason(run) is not None
             if stale:

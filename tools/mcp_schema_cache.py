@@ -24,9 +24,28 @@ def _cache_path() -> Path:
     return get_hermes_home() / "cache" / _CACHE_FILENAME
 
 
+def normalize_tools_filter(config: dict) -> dict:
+    """Normalized ``mcp_servers.<name>.tools`` filter: always a dict.
+
+    A bare string (or name list) is the natural include-list shorthand,
+    e.g. ``tools: search_x,query_docs``. Left un-normalized, a non-dict
+    reaches ``config.get("tools").get(...)`` as an ``AttributeError`` and
+    the server registers 0 tools with no actionable error.
+    """
+    raw = config.get("tools") if isinstance(config, dict) else None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        names = [n for chunk in raw.replace("\n", ",").split(",") for n in chunk.split() if n]
+        return {"include": names} if names else {}
+    if isinstance(raw, (list, tuple, set)):
+        return {"include": [str(n) for n in raw]}
+    return {}
+
+
 def config_fingerprint(config: dict) -> str:
     """Stable hash of the connection-defining parts of an MCP server config."""
-    tools_filter = config.get("tools") or {}
+    tools_filter = normalize_tools_filter(config)
     payload = {
         "command": config.get("command"),
         "args": config.get("args") or [],

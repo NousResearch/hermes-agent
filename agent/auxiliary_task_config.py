@@ -3,6 +3,7 @@
 Built-in slot defaults come from ``DEFAULT_CONFIG``; plugin-registered tasks
 (``PluginContext.register_auxiliary_task``) layer their declared ``defaults``
 under the user's block and may inherit another slot via ``inherit_from``.
+``auxiliary.default`` supplies a dynamic route to every unpinned task.
 """
 
 from __future__ import annotations
@@ -48,15 +49,6 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
     A task registered with ``inherit_from`` is resolved here, at read time, over the base task's
     effective config, so it follows the base's current settings (and the active profile's config)
     until the user pins a route on the task itself. ``_seen`` guards re-registration cycles."""
-    if not task:
-        return {}
-    config = _task_config(str(task), _seen)
-    if getattr(task, "route_authoritative", False):
-        return {key: value for key, value in config.items() if key not in _AUX_ROUTE_KEYS}
-    return config
-
-
-def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     aux = _SESSION_AUXILIARY.get()
     if aux is None:
         try:
@@ -65,6 +57,41 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
         except ImportError:
             return {}
         aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    return resolve_auxiliary_task_config(aux, task, _seen)
+
+
+def resolve_auxiliary_task_config(
+    auxiliary: Any, task: str, _seen: frozenset = frozenset(),
+) -> dict[str, Any]:
+    """Resolve *task* against an already-loaded ``auxiliary`` mapping.
+
+    Bespoke auxiliary forks use this entry point so one config snapshot drives
+    both their policy and route, while regular calls use
+    :func:`_get_auxiliary_task_config` to load the active profile lazily.
+    """
+    if not task or str(task) == "default":
+        return {}
+    aux = auxiliary if isinstance(auxiliary, dict) else {}
+    config = _task_config(aux, str(task), _seen)
+    default_config = aux.get("default", {})
+    if not isinstance(default_config, dict):
+        default_config = {}
+    # Apply the global route only after plugin defaults / inherit_from have
+    # resolved. Otherwise the global route looks like a task-local pin and
+    # incorrectly defeats a plugin's declared base task.
+    default_route = {
+        key: value for key, value in default_config.items()
+        if key in _AUX_ROUTE_KEYS
+        and value != ""
+        and not (key == "provider" and str(value or "").strip().lower() == "auto")
+    }
+    config = _layer_over_inherited(default_route, config)
+    if getattr(task, "route_authoritative", False):
+        return {key: value for key, value in config.items() if key not in _AUX_ROUTE_KEYS}
+    return config
+
+
+def _task_config(aux: dict[str, Any], task: str, _seen: frozenset) -> dict[str, Any]:
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
@@ -81,7 +108,7 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
                                    "ignoring inheritance", task)
                 if not _inherit or task in _seen:
                     return {**_defaults, **task_config}
-                base = _get_auxiliary_task_config(_inherit, _seen | {task})
+                base = resolve_auxiliary_task_config(aux, _inherit, _seen | {task})
                 if _core_rooted(_inherit, entries) and not _holds_task_override(_entry.get("plugin")):
                     base = {k: v for k, v in base.items() if k not in _INHERITED_ROUTE_KEYS}
                 return _layer_over_inherited({**base, **_defaults}, task_config)
@@ -120,18 +147,33 @@ _AUX_ROUTE_KEYS = frozenset({"provider", "model", "base_url", "api_key", "api_mo
 _INHERITED_ROUTE_KEYS = _AUX_ROUTE_KEYS | {"extra_body", "fallback_chain"}
 
 
+def auxiliary_task_route_is_pinned(config: Any) -> bool:
+    """Whether *config* selects a task-bound route unit.
+
+    Credentials and wire mode count even without provider/model/base_url: they
+    were entered for the task's previous/main route and must never be attached
+    to a later ``auxiliary.default`` endpoint.
+    """
+    if not isinstance(config, dict):
+        return False
+    provider = str(config.get("provider") or "").strip().lower()
+    if provider not in ("", "auto"):
+        return True
+    return any(bool(str(config.get(key) or "").strip()) for key in (
+        "model", "base_url", "api_key", "key_env", "api_key_env", "api_mode",
+    ))
+
+
 def _layer_over_inherited(inherited: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     """Merge a task's own ``auxiliary.<task>`` block over its inherited base.
 
     The picker, "reset to auto" and the dashboard persist ``provider: auto`` plus ``""`` for
     model/base_url/api_key/reasoning_effort when the operator expresses no preference, so those
     placeholders mean "follow the base", not "override it with nothing". Once the operator pins a
-    route (a non-auto provider, a model or a base_url) the whole route comes from the task's own
-    block. Non-route keys (timeout, extra_body, ...) override per key; only ``""`` is dropped,
-    never other falsy values (``reasoning_effort: false`` is an explicit choice)."""
-    provider = str(user.get("provider") or "").strip().lower()
-    pinned = (provider not in ("", "auto") or bool(str(user.get("model") or "").strip())
-              or bool(str(user.get("base_url") or "").strip()))
+    route (provider/model/endpoint, credential reference, or wire mode) the whole route comes from
+    the task's own block. Non-route keys (timeout, extra_body, ...) override per key; only ``""``
+    is dropped, never other falsy values (``reasoning_effort: false`` is an explicit choice)."""
+    pinned = auxiliary_task_route_is_pinned(user)
     merged = {k: v for k, v in inherited.items() if not (pinned and k in _AUX_ROUTE_KEYS)}
     for key, value in user.items():
         if value == "" and not (pinned and key in _AUX_ROUTE_KEYS):

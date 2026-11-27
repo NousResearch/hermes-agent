@@ -740,6 +740,28 @@ def test_review_runtime_passes_auxiliary_curator_credentials(curator_env):
     assert binding.explicit_base_url == "http://localhost:11434/v1"
 
 
+def test_review_runtime_inherits_auxiliary_default_route(curator_env):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "default": {
+                "provider": "custom",
+                "model": "cheap-curator",
+                "api_key": "default-key",
+                "base_url": "https://default.example/v1",
+                "timeout": 999,
+            },
+            "curator": {"provider": "auto", "model": "", "timeout": 23},
+        },
+    }
+
+    binding = curator._resolve_review_runtime(cfg)
+    assert (binding.provider, binding.model) == ("custom", "cheap-curator")
+    assert binding.explicit_api_key == "default-key"
+    assert binding.explicit_base_url == "https://default.example/v1"
+
+
 def test_review_runtime_strips_blank_aux_credentials(curator_env):
     curator = curator_env["curator"]
     cfg = {
@@ -798,12 +820,8 @@ def test_review_runtime_legacy_auxiliary_carry_credentials(curator_env):
     assert binding.explicit_base_url == "http://legacy/v1"
 
 
-def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env):
-    """Only one of slot provider/model set → fall back to the main pair.
-
-    Prevents half-configured overrides from sending an empty side to
-    resolve_runtime_provider.
-    """
+def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env, monkeypatch):
+    """A concrete provider may use its default model; model-only stays on main."""
     curator = curator_env["curator"]
     base_main = {"provider": "openrouter", "default": "openai/gpt-5.5"}
 
@@ -811,8 +829,10 @@ def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env)
         "model": dict(base_main),
         "auxiliary": {"curator": {"provider": "openrouter", "model": ""}},
     }
+    monkeypatch.setattr("agent.auxiliary_client._get_aux_model_for_provider",
+                        lambda _provider: "provider/default-model")
     b = curator._resolve_review_runtime(cfg_provider_only)
-    assert (b.provider, b.model) == ("openrouter", "openai/gpt-5.5")
+    assert (b.provider, b.model) == ("openrouter", "provider/default-model")
 
     cfg_model_only = {
         "model": dict(base_main),

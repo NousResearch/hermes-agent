@@ -13,6 +13,7 @@ export interface AuxTaskMeta {
 // not listed here: the backend appends them to `/api/model/auxiliary` with the
 // plugin's own `label`/`hint` and `auxTaskRows` folds them in after these.
 export const BUILTIN_AUX_TASKS: readonly AuxTaskMeta[] = [
+  { key: "default", label: "Default", hint: "Shared route for unpinned tasks" },
   { key: "vision", label: "Vision", hint: "Image analysis" },
   { key: "compression", label: "Compression", hint: "Context compaction" },
   { key: "approval", label: "Approval", hint: "Smart auto-approve" },
@@ -53,4 +54,28 @@ export function auxTaskLabel(
   key: string,
 ): string {
   return auxTaskRows(tasks).find((t) => t.key === key)?.label ?? key;
+}
+
+/** Human-readable inherited route, or null when it still resolves to main/auto. */
+export function effectiveAuxRoute(
+  assignment: AuxiliaryTaskAssignment | null | undefined,
+): string | null {
+  const route = assignment?.effective;
+  if (!route) return null;
+  const provider = route.provider?.trim() || "";
+  const model = route.model?.trim() || "";
+  const baseUrl = route.base_url?.trim() || "";
+  if ((!provider || provider === "auto") && !model && !baseUrl) return null;
+  return `${provider || "custom"} · ${model || "(provider default)"}`;
+}
+
+/** Runtime-compatible stored-route check for dashboard labels. */
+export function auxTaskIsUnpinned(
+  assignment: AuxiliaryTaskAssignment | null | undefined,
+): boolean {
+  if (!assignment) return true;
+  const provider = assignment.provider?.trim().toLowerCase() || "";
+  return (!provider || provider === "auto")
+    && !assignment.model?.trim()
+    && !assignment.base_url?.trim();
 }

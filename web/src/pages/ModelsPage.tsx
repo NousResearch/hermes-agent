@@ -14,7 +14,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { auxTaskLabel, auxTaskRows } from "@/lib/aux-tasks";
+import { auxTaskIsUnpinned, auxTaskLabel, auxTaskRows, effectiveAuxRoute } from "@/lib/aux-tasks";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
@@ -621,13 +621,8 @@ function AuxiliaryTasksModal({
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
           {auxTaskRows(aux?.tasks).map((t) => {
             const cur = aux?.tasks.find((a) => a.task === t.key);
-            const isAuto =
-              !cur || cur.provider === "auto" || !cur.provider;
-            const eff = cur?.effective;
-            const effRoute =
-              eff?.provider && eff.provider !== "auto"
-                ? `${eff.provider} · ${eff.model || "(provider default)"}`
-                : "auto (use main model)";
+            const isAuto = auxTaskIsUnpinned(cur);
+            const effRoute = effectiveAuxRoute(cur);
             return (
               <div
                 key={t.key}
@@ -642,7 +637,9 @@ function AuxiliaryTasksModal({
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
                     {isAuto && t.inheritFrom
-                      ? `inherits ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute}`
+                      ? `inherits ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute || "auto (use main model)"}`
+                      : isAuto && cur?.inherits_default && effRoute && t.key !== "default"
+                        ? `inherits Default · ${effRoute}`
                       : isAuto
                         ? "auto (use main model)"
                         : `${cur?.provider} · ${cur?.model || "(provider default)"}`}

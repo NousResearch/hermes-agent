@@ -13,11 +13,26 @@ here (they're stdin-driven curses prompts).
 from __future__ import annotations
 
 from hermes_cli.config import load_config
-from hermes_cli.main_provider_setup import _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _format_aux_current, _reset_aux_to_auto, _save_aux_choice
+from hermes_cli.main_provider_setup import (
+    _DELEGATION_TASK_KEY, _aux_task_cfg_for_display, _delegation_cfg_as_task,
+    _format_aux_current, _reset_aux_to_auto, _save_aux_choice,
+)
 
 # ── Default config ──────────────────────────────────────────────────────────
 
 # ── _format_aux_current ─────────────────────────────────────────────────────
+
+
+def test_unpinned_builtin_display_follows_auxiliary_default():
+    cfg = {"auxiliary": {
+        "default": {"provider": "openrouter", "model": "vendor/cheap"},
+        "compression": {"provider": "auto", "model": "", "timeout": 17},
+    }}
+
+    assert _format_aux_current(_aux_task_cfg_for_display(cfg, "compression")) == \
+        "openrouter · vendor/cheap"
+    assert _format_aux_current(_aux_task_cfg_for_display(cfg, "default")) == \
+        "openrouter · vendor/cheap"
 
 # ── _save_aux_choice ────────────────────────────────────────────────────────
 

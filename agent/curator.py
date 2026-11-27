@@ -1063,11 +1063,19 @@ def _resolve_review_runtime(cfg: dict[str, Any]) -> _ReviewRuntimeBinding:
         api_key, base_url = ((str(v).strip() or None) if v is not None else None for v in (slot.get("api_key"), slot.get("base_url")))
         return _ReviewRuntimeBinding(provider, model, api_key, base_url, _merge_request_overrides({}, slot.get("extra_body")))
 
-    task = _subdict(cfg, "auxiliary", "curator")
+    from agent.auxiliary_task_config import resolve_auxiliary_task_config
+
+    auxiliary = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+    task = resolve_auxiliary_task_config(auxiliary, "curator")
     task_provider = (task.get("provider") or "").strip() or None
     task_model = (task.get("model") or "").strip() or None
-    if task_provider and task_provider != "auto" and task_model:
-        return _slot(task_provider, task_model, task)
+    if task_provider and task_provider != "auto":
+        if not task_model:
+            from agent.auxiliary_client import _get_aux_model_for_provider
+
+            task_model = _get_aux_model_for_provider(task_provider) or None
+        if task_model:
+            return _slot(task_provider, task_model, task)
     legacy = _subdict(cfg, "curator", "auxiliary")
     if legacy.get("provider") and legacy.get("model"):
         logger.info("curator: using deprecated curator.auxiliary.{provider,model} config — please migrate to auxiliary.curator.{provider,model}")

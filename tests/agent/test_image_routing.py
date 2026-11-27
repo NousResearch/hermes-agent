@@ -66,6 +66,14 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
 
+    def test_auto_auxiliary_default_is_the_defacto_vision_route(self):
+        cfg = {"auxiliary": {
+            "default": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
+            "vision": {"provider": "auto", "model": ""},
+        }}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+
     def test_auto_unset_aux_backend_native_remains_default(self):
         """No configured aux backend -> native for vision-capable mains
         (the unconfigured-install default is unchanged)."""

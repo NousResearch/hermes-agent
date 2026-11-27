@@ -140,8 +140,11 @@ def _load_review_credentials_cfg() -> Optional[dict[str, Any]]:
     """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
     and no model/base_url) so the reviewer inherits the parent's credentials."""
     try:
+        from agent.auxiliary_task_config import resolve_auxiliary_task_config
         from hermes_cli.config import load_config_readonly
-        review = (load_config_readonly().get("auxiliary") or {}).get("review") or {}
+
+        auxiliary = load_config_readonly().get("auxiliary") or {}
+        review = resolve_auxiliary_task_config(auxiliary, "review")
     except Exception:
         return None
     if not isinstance(review, dict):

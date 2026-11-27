@@ -720,7 +720,9 @@ DEFAULT_CONFIG = {
     #       extra_body:
     #         provider: {order: [anthropic, google], sort: throughput}  # or price | latency
     #         plugins: [{id: pareto-router, min_coding_score: 0.5}]
-    # Each task is independent — main-agent provider_routing and openrouter.min_coding_score
+    # auxiliary.default is a dynamic route inherited by every unpinned task; task-specific
+    # route fields override it. Task policy (timeouts, enabled flags, extra_body, fallback chains)
+    # is never inherited from default. Main-agent provider_routing and openrouter.min_coding_score
     # do NOT propagate to aux calls by design.
     "auxiliary": {
         # Same-provider retries for a transient blip (reset/timeout/5xx/408) on ANY aux call before
@@ -739,6 +741,12 @@ DEFAULT_CONFIG = {
         # and aggregated. Case-insensitive URL substrings; some vendor endpoints are always
         # stream-only.
         "stream_only_base_urls": [],
+        # Shared route for unpinned auxiliary tasks. This is not an executable task and does not
+        # affect delegation.*. Empty/auto means tasks continue to inherit the main route.
+        "default": {
+            "provider": "auto", "model": "", "base_url": "", "api_key": "",
+            "api_mode": "", "reasoning_effort": "",
+        },
         # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url
         # overrides provider; api_key falls back to OPENAI_API_KEY (OpenAI hosts only); reasoning_effort:
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =

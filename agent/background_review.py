@@ -259,10 +259,11 @@ _REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
 
 
 def _task_block(cfg: Any) -> dict[str, Any]:
-    """``cfg["auxiliary"]["background_review"]`` as a dict (``{}`` on any shape mismatch)."""
+    """Effective ``auxiliary.background_review`` from one config snapshot."""
+    from agent.auxiliary_task_config import resolve_auxiliary_task_config
+
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    task = aux.get("background_review", {})
-    return task if isinstance(task, dict) else {}
+    return resolve_auxiliary_task_config(aux, "background_review")
 
 
 def _background_review_task_config(task_cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -346,18 +347,26 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = Non
     task_provider, task_model, task_base_url, task_api_key = (
         str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
     )
-    if not (task_provider and task_provider != "auto" and task_model) or (
-        task_provider == (agent.provider or "") and task_model == (agent.model or "")  # same as parent
+    if not (task_provider and task_provider != "auto") or (
+        task_model and task_provider == (agent.provider or "") and task_model == (agent.model or "")
     ):
         return parent
     try:
+        if not task_model:
+            from agent.auxiliary_client import _get_aux_model_for_provider
+
+            task_model = _get_aux_model_for_provider(task_provider) or None
+            if not task_model:
+                raise ValueError(f"provider {task_provider!r} has no default auxiliary model")
         from hermes_cli.runtime_provider import resolve_runtime_provider
         rp = resolve_runtime_provider(
             requested=task_provider, target_model=task_model,
             explicit_api_key=task_api_key, explicit_base_url=task_base_url,
         )
+        resolved_model = rp.get("model") or task_model
         return {
-            "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
+            "provider": rp.get("provider") or task_provider,
+            "model": resolved_model,
             **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
             "request_overrides": dict(rp.get("request_overrides") or {}),
             "args": list(rp.get("args") or []), "routed": True,
@@ -367,7 +376,9 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = Non
         return parent
 
 
-def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: str, error: Exception) -> None:
+def _warn_review_routing_fallback(
+    agent: Any, task_provider: str, task_model: Optional[str], error: Exception,
+) -> None:
     """The configured review route could not be resolved, so the fork runs on the main model. That
     was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
     User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""

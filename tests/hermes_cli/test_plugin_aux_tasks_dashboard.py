@@ -45,7 +45,10 @@ def _write_home(home: Path, plugins: dict, compression_model: str) -> None:
     # ``side`` follows auxiliary.compression's route only with the operator's task-override grant.
     (home / "config.yaml").write_text(json.dumps({
         "plugins": {"enabled": list(plugins), "entries": {"side": {"llm": {"allow_task_override": True}}}},
-        "auxiliary": {"compression": {"provider": "openrouter", "model": compression_model}},
+        "auxiliary": {
+            "default": {"provider": "openrouter", "model": f"{compression_model}-default"},
+            "compression": {"provider": "openrouter", "model": compression_model},
+        },
     }))
 
 
@@ -53,6 +56,8 @@ _SIDE = ("register_auxiliary_task('side_task', display_name='Side model', "
          "description='side model for side', inherit_from='compression')")
 _ALPHA = ("register_auxiliary_task('alpha_task', display_name='Alpha side model', "
           "description='side model for alpha_plugin', defaults={'timeout': 7})")
+_OWN = ("register_auxiliary_task('own_task', display_name='Own side model', "
+        "description='plugin-declared route', defaults={'provider': 'openrouter', 'model': 'vendor/own'})")
 
 
 @pytest.fixture
@@ -61,7 +66,7 @@ def two_profile_homes(tmp_path, monkeypatch):
     with its own ``auxiliary.compression`` model."""
     home_a = tmp_path / ".hermes"
     home_b = home_a / "profiles" / "b"
-    _write_home(home_a, {"side": _SIDE, "alpha_plugin": _ALPHA}, "vendor/model-a")
+    _write_home(home_a, {"side": _SIDE, "alpha_plugin": _ALPHA, "own_plugin": _OWN}, "vendor/model-a")
     _write_home(home_b, {"side": _SIDE}, "vendor/model-b")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home_a))
@@ -96,6 +101,17 @@ def test_listing_is_per_profile_and_carries_inheritance(two_profile_homes):
     assert side_a["provider"] == "auto"
     assert side_a["effective"] == {"provider": "openrouter", "model": "vendor/model-a", "base_url": ""}
     assert side_b["effective"]["model"] == "vendor/model-b"
+    # Unpinned built-ins expose their real runtime route instead of claiming
+    # they use the main model while following auxiliary.default.
+    assert rows_a["approval"]["effective"] == {
+        "provider": "openrouter", "model": "vendor/model-a-default", "base_url": ""}
+    assert rows_a["approval"]["inherits_default"] is True
+    assert rows_a["compression"]["inherits_default"] is False
+    assert rows_a["alpha_task"]["inherits_default"] is True
+    assert side_a["inherits_default"] is False
+    assert rows_a["own_task"]["inherits_default"] is False
+    assert rows_a["own_task"]["effective"]["model"] == "vendor/own"
+    assert rows_b["approval"]["effective"]["model"] == "vendor/model-b-default"
 
 
 def test_pin_persists_per_profile_and_is_honored_by_resolution(two_profile_homes):

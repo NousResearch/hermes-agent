@@ -51,6 +51,7 @@ def _clear_stale_openai_base_url():
 
 # (task_key, display_name, short_description)
 _AUX_TASKS: list[tuple[str, str, str]] = [
+    ("default", "Default", "shared route for unpinned auxiliary tasks"),
     ("vision", "Vision", "image/screenshot analysis"),
     ("compression", "Compression", "context summarization"),
     ("approval", "Approval", "smart command approval"),
@@ -134,14 +135,14 @@ def _aux_task_cfg(cfg: dict, task: str) -> dict:
 
 
 def _aux_task_cfg_for_display(cfg: dict, task: str) -> dict:
-    """The routing dict to *display* for *task*. A plugin task registered with ``inherit_from``
-    shows its resolved route (base included), so the menu never reports "auto" while the task
-    actually runs on the base's provider; every other task shows exactly what is stored."""
+    """The route *task* resolves to now; ``default`` itself stays its stored route."""
+    if task in {_DELEGATION_TASK_KEY, "default"}:
+        return _aux_task_cfg(cfg, task)
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        if any(e.get("key") == task and e.get("inherit_from") for e in get_plugin_auxiliary_tasks()):
-            from agent.auxiliary_client import _get_auxiliary_task_config
-            return _get_auxiliary_task_config(task)
+        from agent.auxiliary_task_config import resolve_auxiliary_task_config
+
+        auxiliary = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+        return resolve_auxiliary_task_config(auxiliary, task)
     return _aux_task_cfg(cfg, task)
 
 

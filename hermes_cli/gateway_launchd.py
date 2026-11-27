@@ -96,23 +96,50 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
 
 
-# EIO from `launchctl bootstrap` = label *already* registered (stale load); recoverable, not an unmanageable domain.
+# EIO from `launchctl bootstrap` = label *already* registered (stale load) OR disabled in launchd's
+# override DB; recoverable either way, not proof the domain is unmanageable.
 _LAUNCHCTL_BOOTSTRAP_EIO = 5
 
 
+def _launchctl_enable(domain: str, label: str, *, timeout: int = 30) -> None:
+    """Re-enable a label launchd has disabled (best effort, idempotent when already enabled).
+
+    A disabled label (System Settings → General → Login Items, a migration that disabled the old
+    backend, an uninstall) answers ``launchctl bootstrap`` with the same EIO (5) as a stale
+    registration. Without this the bootout + retry below fails identically and callers degrade to a
+    detached gateway that ``hermes update`` can never restart.
+    """
+    subprocess.run(
+        ["launchctl", "enable", f"{domain}/{label}"],
+        check=False, timeout=timeout, **_gw()._CAPTURE_TEXT)
+
+
+def _launchctl_label_disabled(domain: str, label: str, *, timeout: int = 10) -> bool:
+    """True when launchd's override DB marks ``label`` disabled (``launchctl print-disabled``)."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "print-disabled", domain],
+            check=False, timeout=timeout, **_gw()._CAPTURE_TEXT)
+    except subprocess.TimeoutExpired:
+        return False
+    return f'"{label}" => disabled' in (result.stdout or "")
+
+
 def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 30) -> None:
-    """Bootstrap a launchd job, recovering from a stale still-registered label (EIO 5). Without the
-    bootout + retry that case is misread as an unmanageable domain and degrades to detached, silently
-    losing auto-start and crash-restart."""
+    """Bootstrap a launchd job, recovering from a stale or disabled label (EIO 5). Without the
+    enable + bootout + retry those cases are misread as an unmanageable domain and degrade to
+    detached, silently losing auto-start and crash-restart."""
     bootstrap = ["launchctl", "bootstrap", domain, str(plist_path)]
     try:
         subprocess.run(bootstrap, check=True, timeout=timeout)
     except subprocess.CalledProcessError as exc:
         if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
             raise
-        # Stale registration — bootout the leftover label and bootstrap once more.
+        # Two causes share EIO: a stale still-registered label and one disabled in the override DB.
+        # `enable` is idempotent for the first and the fix for the second; bootout clears the first.
         # Captured: the bootout is best-effort (a drained job may already be
         # unloaded), so its expected 3/113/125 stderr must not leak to the terminal.
+        _launchctl_enable(domain, label, timeout=timeout)
         subprocess.run(
             ["launchctl", "bootout", f"{domain}/{label}"],
             check=False, timeout=timeout, **_gw()._CAPTURE_TEXT)
@@ -1041,8 +1068,12 @@ def launchd_status(deep: bool = False):
         print("  Run: hermes gateway start")
 
     if not service_listed:
-        print("✗ Gateway service is not loaded")
-        print("  Service definition exists locally but launchd has not loaded it.")
+        if _launchctl_label_disabled(_gw()._launchd_domain(), label):
+            print("✗ Gateway service is disabled in launchd's login-item overrides")
+            print("  (System Settings → General → Login Items, or a previous install/migration)")
+        else:
+            print("✗ Gateway service is not loaded")
+            print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")

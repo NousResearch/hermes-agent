@@ -1043,6 +1043,16 @@ def _resolve_delivery_targets(
     return targets
 
 
+def _origin_unresolved(job: dict, *, for_failure: bool = False) -> bool:
+    """``deliver: origin`` with nothing to deliver to (no origin, no home): not a failure. An origin
+    ``resolve_cron_destination`` refused (its platform left core, no route serves it) is not this
+    case; the run still reports the install."""
+    moved_errors: list = []
+    return (_normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure)) == "origin"
+            and not _resolve_delivery_targets(job, for_failure=for_failure, moved_errors=moved_errors)
+            and not moved_errors)
+
+
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     targets = _resolve_delivery_targets(job)

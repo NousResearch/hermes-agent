@@ -3062,10 +3062,7 @@ def _save_compose_deliver(
 
     if not d.should_deliver:
         return
-    d.unresolved_origin = (
-        _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
-        and not _resolve_delivery_targets(job, for_failure=not d.success, skipped=(skipped := [])) and not skipped
-    )
+    d.unresolved_origin = _origin_unresolved(job, for_failure=not d.success)
     execution_id = job.get('execution_id')
     if execution_id and not job.get('no_agent'):
         from cron.delivery_queue import enqueue
@@ -3130,11 +3127,7 @@ def _deliver_crash_failure(
     except Exception as delivery_exc:
         delivery_error = str(delivery_exc)
         logger.error("Delivery failed for job %s: %s", job["id"], delivery_exc)
-    unresolved_origin = bool(
-        not delivery_error
-        and normalized_deliver == "origin"
-        and not _resolve_delivery_targets(job, for_failure=True, skipped=(skipped := [])) and not skipped
-    )
+    unresolved_origin = not delivery_error and _origin_unresolved(job, for_failure=True)
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
         normalized_deliver=normalized_deliver, incident_acked=False, success=False,
@@ -4322,8 +4315,8 @@ from cron.scheduler_tick import tick
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
 from cron.scheduler_delivery import (
-    _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
-    _resolve_delivery_targets,
+    _deliver_result, _delivery_lane_value, _normalize_deliver_value, _origin_unresolved,
+    _resolve_delivery_target, _resolve_delivery_targets,
 )
 from cron.scheduler_script import (
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,

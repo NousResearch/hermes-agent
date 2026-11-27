@@ -323,9 +323,19 @@ def has_credential_platform(adapters, owned=None) -> bool:
 
 
 def shared_route_serves(target: dict) -> bool:
-    """An exact primary route maps *target* to the profile being served (``SharedRouteAdapters.serves``)."""
+    """The primary's bot serves *target* for the profile being served: an exact primary route maps it here
+    (``SharedRouteAdapters.serves``) and the profile has no bot of its own, so cron rides the primary's
+    adapters (``has_credential_platform`` on the configured platforms, as the ticker reads the live ones)."""
     routes, dispatch_routes = _primary_route_tables_for_current_home()
-    return SharedRouteAdapters({}, routes, dispatch_routes=dispatch_routes).serves(target["platform"], target)
+    if not SharedRouteAdapters({}, routes, dispatch_routes=dispatch_routes).serves(target["platform"], target):
+        return False
+    try:
+        from gateway.config import load_gateway_config
+        connected = load_gateway_config().get_connected_platforms()
+    except Exception:
+        logger.debug("shared-route check: gateway config unavailable", exc_info=True)
+        return True  # the route decides, as when nothing reads this profile's bots
+    return not has_credential_platform(connected)
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:

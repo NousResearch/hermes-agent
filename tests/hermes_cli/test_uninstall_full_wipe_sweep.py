@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import plistlib
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -12,7 +11,9 @@ import pytest
 from hermes_cli import uninstall
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only sweep")
+pytestmark = pytest.mark.platforms("macos")
+
+
 def test_remove_dashboard_launchd_jobs_boots_out_and_deletes_matching_plists(
         monkeypatch, tmp_path, capsys):
     agents_dir = tmp_path / "LaunchAgents"
@@ -33,7 +34,7 @@ def test_remove_dashboard_launchd_jobs_boots_out_and_deletes_matching_plists(
                     agents_dir)
     serve = job("com.user.hermes-serve", ["hermes", "serve"], agents_dir)
     unrelated = job("com.user.keep", ["/usr/bin/say", "hello"], agents_dir)
-    daemon = job("io.nousresearch.hermes-agent.dashboard", ["hermes_cli.main", "dashboard"],
+    daemon = job("io.nousresearch.hermes-agent.dashboard", ["python", "-m", "hermes_cli.main", "dashboard"],
                  daemons_dir)
 
     booted = []
@@ -53,8 +54,6 @@ def test_remove_dashboard_launchd_jobs_boots_out_and_deletes_matching_plists(
 
 
 def test_remove_dashboard_launchd_jobs_skips_malformed_plists(monkeypatch, tmp_path):
-    if sys.platform != "darwin":
-        pytest.skip("macOS-only sweep")
     agents_dir = tmp_path / "LaunchAgents"
     agents_dir.mkdir()
     (agents_dir / "broken.plist").write_text("<plist><dict>&", encoding="utf-8")
@@ -65,8 +64,39 @@ def test_remove_dashboard_launchd_jobs_skips_malformed_plists(monkeypatch, tmp_p
     assert uninstall.remove_dashboard_launchd_jobs() == []
     assert (agents_dir / "broken.plist").exists()  # skipped, not aborted
 
+def test_remove_dashboard_launchd_jobs_does_not_open_or_delete_system_third_party_plists(
+        monkeypatch, tmp_path):
+    agents_dir = tmp_path / "LaunchAgents"
+    agents_dir.mkdir()
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-only sweep")
+    def job(label, args):
+        path = agents_dir / f"{label}.plist"
+        path.write_bytes(plistlib.dumps({"Label": label, "ProgramArguments": args}))
+        return path
+
+    crowdstrike = job("com.crowdstrike.falcon.UserAgent", ["hermes", "dashboard"])
+    hermes = job("com.nousresearch.hermes-dashboard", ["hermes", "dashboard"])
+    opened: list[str] = []
+    real_open = open
+
+    def track_open(path, *args, **kwargs):
+        if Path(path).parent == agents_dir:
+            opened.append(Path(path).name)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "hermes_cli.main_dashboard._launchd_plist_dirs", lambda: [("system-agent", agents_dir)]
+    )
+    monkeypatch.setattr(uninstall.subprocess, "run", lambda *args, **kwargs: None)
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr("builtins.open", track_open)
+        removed = uninstall.remove_dashboard_launchd_jobs()
+
+    assert removed == [hermes]
+    assert opened == [hermes.name]
+    assert crowdstrike.exists()
+    assert not hermes.exists()
+
 def test_full_uninstall_sweeps_macos_caches_and_dashboard_launchd(monkeypatch, tmp_path):
     """The full-wipe step must reach the caches + launchd sweep, keep-data must not."""
     project_root = tmp_path / "hermes-agent"

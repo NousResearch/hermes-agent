@@ -730,6 +730,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                     uid for uid in target.get("userIds", [])
                     if uid in (resp_data.get("invalidStaffIdList") or [])
                     or uid in (resp_data.get("flowControlledStaffIdList") or [])
+                    or uid in (resp_data.get("filteredStaffIdList") or [])
                 ]
                 if rejected:
                     error_msg = (
@@ -836,7 +837,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a local image file via DingTalk media upload and native image message.
@@ -875,7 +876,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a document as a native DingTalk file message via media upload.

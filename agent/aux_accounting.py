@@ -52,7 +52,10 @@ class ServingCredential:
         return bool(base_url) and self.base_url.rstrip("/") == str(base_url).rstrip("/")
 
 
-def set_accounting_context(session_db: Any, session_id: Optional[str], *, persistence: Any = None):
+def set_accounting_context(
+    session_db: Any, session_id: Optional[str], *, persistence: Any = None,
+    on_usage: Optional[Any] = None,
+):
     """Publish the active session's accounting handles; returns the token for ``reset_accounting_context``.
 
     ``None`` handles (no DB / no session id) clear the context. Usage records through the
@@ -61,7 +64,7 @@ def set_accounting_context(session_db: Any, session_id: Optional[str], *, persis
     if session_db is None or not session_id:
         return _accounting.set(None)
     from agent.agent_init_session import writer_interface
-    return _accounting.set((session_db, writer_interface(persistence, session_db), session_id))
+    return _accounting.set((session_db, writer_interface(persistence, session_db), session_id, on_usage))
 
 
 def reset_accounting_context(token) -> None:
@@ -113,7 +116,8 @@ def record_aux_usage(
         ctx = _accounting.get()
         if ctx is None:
             return
-        session_db, store, session_id = ctx
+        session_db, store, session_id, *rest = ctx
+        on_usage = rest[0] if rest else None
         raw_usage = getattr(response, "usage", None)
         if raw_usage is None:
             return
@@ -127,6 +131,8 @@ def record_aux_usage(
             or usage.reasoning_tokens
         ):
             return
+        if callable(on_usage):
+            on_usage(usage.total_tokens)
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
         try:

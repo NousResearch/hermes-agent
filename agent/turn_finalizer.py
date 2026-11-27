@@ -21,6 +21,7 @@ from session_rules.turns import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 from agent.review_signals import build_review_signals, skill_review_due
+from agent.processed_token_budget import turn_processed_tokens
 from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
@@ -126,17 +127,27 @@ def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
     _pending_verification_response, _pending_verification_response_previewed, logger,
 ) -> tuple[Any, Any, bool, Any]:
-    """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
+    """Iteration or processed-token budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback, interrupted)``."""
-    budget_exhausted = (
+    from agent.processed_token_budget import PROCESSED_TOKEN_BUDGET_EXIT_PREFIX
+
+    token_budget_exhausted = str(_turn_exit_reason).startswith(
+        PROCESSED_TOKEN_BUDGET_EXIT_PREFIX
+    )
+    iteration_budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
+    budget_exhausted = iteration_budget_exhausted or token_budget_exhausted
     preserved_verification_fallback = False
     if (
         final_response is None and budget_exhausted and not interrupted and not failed
-        and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
+        and (
+            token_budget_exhausted
+            or str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
+        )
     ):
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        if iteration_budget_exhausted and not token_budget_exhausted:
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         if _pending_verification_response:
             # A verification gate withheld a composed answer, then the budget ran out:
             # preserve it rather than make another fallible call. The explicit pending
@@ -148,6 +159,14 @@ def _resolve_budget_fallback(
                 # Reuses the candidate the user already saw sealed as an interim (#130396).
                 agent._reused_response_text = final_response
             preserved_verification_fallback = True
+        elif token_budget_exhausted:
+            used = turn_processed_tokens(agent)
+            maximum = int(getattr(agent, "max_processed_tokens_per_turn", 0) or 0)
+            final_response = (
+                f"Processed-token budget reached ({used:,}/{maximum:,}) before the task "
+                "finished. The transcript and tool results were saved as a resumable "
+                "checkpoint; continue the objective in another bounded turn."
+            )
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
             agent._emit_diagnostic_status(
@@ -619,7 +638,8 @@ def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
 
 
 def _mirror_turn_to_memory(
-    agent, *, original_user_message, final_response, interrupted, messages, review_memory, review_skills, vetoed,
+    agent, *, original_user_message, final_response, interrupted, completed, messages,
+    review_memory, review_skills, vetoed,
 ) -> None:
     """External-memory sync (+ next prefetch), then the background memory/skill review. A prompt a
     ``pre_llm_call`` hook vetoed never leaves the host, so neither runs for that turn."""
@@ -636,6 +656,7 @@ def _mirror_turn_to_memory(
     if (
         final_response
         and not interrupted
+        and completed
         and not getattr(agent, "skip_background_review", False)
         and (review_memory or review_skills)
     ):
@@ -718,6 +739,7 @@ def finalize_turn(
         and not failed
         and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+        and not str(_turn_exit_reason).startswith("processed_token_budget_exhausted(")
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)
@@ -839,6 +861,10 @@ def finalize_turn(
         **result_model_fields(agent),
         "provider": agent.provider,
         "base_url": agent.base_url,
+        "turn_processed_tokens": turn_processed_tokens(agent),
+        "max_processed_tokens_per_turn": getattr(
+            agent, "max_processed_tokens_per_turn", None
+        ),
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_TOKEN_KEYS},
         # Gateway SessionEntry persists an API reading, never the preflight display seed.
         "last_prompt_tokens": (
@@ -899,7 +925,8 @@ def finalize_turn(
 
     _mirror_turn_to_memory(
         agent, original_user_message=original_user_message, final_response=final_response,
-        interrupted=interrupted, messages=messages, review_memory=_should_review_memory,
+        interrupted=interrupted, completed=completed, messages=messages,
+        review_memory=_should_review_memory,
         review_skills=_should_review_skills, vetoed=vetoed,
     )
 

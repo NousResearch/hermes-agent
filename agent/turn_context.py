@@ -670,6 +670,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_tool_guardrail_halt_decision", None),
     ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
+    ("_processed_token_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0),
 )
@@ -715,6 +716,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         agent._replay_startup_warnings()
 
     agent.iteration_budget = IterationBudget(agent.max_iterations)
+    from agent.processed_token_budget import reset_turn_processed_tokens
+    reset_turn_processed_tokens(agent)
     # Wall-clock run budget: stamped only when configured (one wrap-up notice per run).
     agent._run_budget_started_at = (
         time.time() if getattr(agent, "run_budget_seconds", None) else None

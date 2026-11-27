@@ -44,6 +44,7 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
         assert 'sidecar-plugin' not in enabled
         assert config_path.read_bytes() == before
         assert 'dependency install skipped (non-interactive)' in output
+        assert '--yes-deps' in output
 
 
 def test_empty_python_dependencies_install_and_enable_without_consent(admission_env, monkeypatch, capsys):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name

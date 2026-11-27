@@ -26,12 +26,28 @@ def _console():
     return Console()
 
 
+def _prompt_valid(c, read, prompt: str, validate) -> str:
+    """Re-prompt until ``validate`` accepts the answer, so a bad value is
+    rejected right after it is typed instead of after the whole wizard."""
+    from agent.vault_store import VaultError
+
+    while True:
+        value = read(prompt).strip()
+        try:
+            validate(value)
+            return value
+        except VaultError as exc:
+            c.print(f"[red]{exc}[/]")
+
+
 def _cmd_add(args) -> None:
     from agent.vault_store import (
         LOGIN_IDENTIFIER_TYPES,
         VAULT_KINDS,
         VaultError,
         get_vault_store,
+        normalize_origin,
+        normalize_otp_secret,
     )
 
     c = _console()
@@ -54,9 +70,7 @@ def _cmd_add(args) -> None:
 
     try:
         if kind == "login":
-            origin = ""
-            while not origin:
-                origin = input("Site origin (e.g. https://github.com): ").strip()
+            origin = _prompt_valid(c, input, "Site origin (e.g. https://github.com): ", normalize_origin)
             id_type = ""
             while id_type not in LOGIN_IDENTIFIER_TYPES:
                 id_type = (
@@ -71,8 +85,12 @@ def _cmd_add(args) -> None:
             password = ""
             while not password:
                 password = getpass.getpass("Password (hidden): ")
-            otp_secret = getpass.getpass(
-                "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ")
+            otp_secret = _prompt_valid(
+                c,
+                getpass.getpass,
+                "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ",
+                normalize_otp_secret,
+            )
             # identifier_type/identifier are stored as metadata (not secret);
             # add_item moves them out of the encrypted payload.
             secret = {
@@ -88,9 +106,9 @@ def _cmd_add(args) -> None:
             from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
 
             fields = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
-            origin = ""
-            while not origin:
-                origin = input("Site origin the item may be filled on (e.g. https://shop.example.com): ").strip()
+            origin = _prompt_valid(
+                c, input, "Site origin the item may be filled on (e.g. https://shop.example.com): ", normalize_origin
+            )
             c.print(f"[dim]{kind} fields are filled only on that origin; card values are read hidden.[/]")
             secret = {}
             for field in fields:

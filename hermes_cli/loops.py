@@ -506,7 +506,7 @@ class LoopManager:
         """Claim a due tick; returns the message to inject, or None.
 
         The message is the wakeup-framed prompt, or the raw command when the loop's prompt is
-        itself a slash command (``/loop 10m /recap``). Marks ``awaiting_response`` so the tick
+        itself a slash command (``/loop 10m /status``). Marks ``awaiting_response`` so the tick
         can't double-fire; drivers MUST follow up with ``complete_tick`` (or ``abandon_tick``).
         """
         s = self._state
@@ -628,7 +628,7 @@ def goal_blocks_loop_tick(session_id: str) -> bool:
 LOOP_HELP = (
     "Usage: /loop [interval] <prompt> [--times N] [--until <condition>]\n"
     "  /loop 5m check the deploy status      — first run now, then every 5m\n"
-    "  /loop every 10m /recap                — loop a slash command\n"
+    "  /loop every 10m /status               — show session status\n"
     "  /loop keep fixing tests until green   — self-paced (backs off while output is unchanged)\n"
     "  /loop 2m poll CI --times 30           — stop after 30 runs\n"
     "  /loop 5m watch the queue --until queue is empty\n"

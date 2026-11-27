@@ -42,8 +42,10 @@ While a loop stands, every surface keeps it in view with a live countdown to the
 Loop a slash command just as easily:
 
 ```
-/loop 10m /recap
+/loop 10m /status
 ```
+
+This periodically shows the current session status, just like running `/status` directly.
 
 ## The two cadence modes
 

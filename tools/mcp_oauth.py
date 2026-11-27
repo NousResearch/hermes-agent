@@ -242,13 +242,13 @@ _reserved_sockets: dict[int, socket.socket] = {}
 _MAX_RESERVED_SOCKETS = 8
 
 
-def _bind_reserved(port: int) -> int | None:
-    """Bind ``127.0.0.1:port`` (0 = ephemeral) and park it until the waiter adopts it; None if taken.
+def _bind_reserved(port: int, bind_host: str = "127.0.0.1") -> int | None:
+    """Bind ``bind_host:port`` (0 = ephemeral) and park it until the waiter adopts it; None if taken.
     The cap evicts ephemeral parks only: losing a pinned CIMD port (the only ones the published
     document declares) mid-flow would reopen the race."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        sock.bind(("127.0.0.1", port))
+        sock.bind((bind_host, port))
     except OSError:
         sock.close()
         if port:
@@ -265,9 +265,9 @@ def _bind_reserved(port: int) -> int | None:
     return bound
 
 
-def _reserve_callback_port() -> int:
+def _reserve_callback_port(bind_host: str = "127.0.0.1") -> int:
     """Pick an ephemeral callback port and keep its socket bound (parked)."""
-    return _bind_reserved(0)  # type: ignore[return-value]  # port 0 never returns None
+    return _bind_reserved(0, bind_host)  # type: ignore[return-value]  # port 0 never returns None
 
 
 def _cached_client_info(storage: "HermesTokenStorage | None") -> dict | None:
@@ -845,12 +845,14 @@ class _CallbackServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def _start_callback_server(port: int, handler_cls: type) -> HTTPServer:
-    """Bind the callback listener on *port*, adopting a parked reserved socket (closes the select→bind
-    TOCTOU window). ``allow_reuse_address`` is set BEFORE binding (a no-op afterwards) so a lingering
-    TIME_WAIT socket from a previous flow cannot block the next."""
+def _start_callback_server(port: int, handler_cls: type, bind_host: str = "127.0.0.1") -> HTTPServer:
+    """Bind the callback listener on *port* at *bind_host*, adopting a parked reserved socket (closes
+    the select→bind TOCTOU window). ``allow_reuse_address`` is set BEFORE binding (a no-op afterwards)
+    so a lingering TIME_WAIT socket from a previous flow cannot block the next. ``bind_host`` widens the
+    listener for a proxied callback (``oauth.bind_host``): a reverse proxy on another host cannot reach
+    a loopback-bound socket."""
     try:
-        server = _CallbackServer(("127.0.0.1", port), handler_cls, bind_and_activate=False)
+        server = _CallbackServer((bind_host, port), handler_cls, bind_and_activate=False)
         reserved = _reserved_sockets.pop(port, None)
         if reserved is not None:
             server.socket.close()
@@ -923,7 +925,8 @@ async def _close_callback_server(server: HTTPServer) -> None:
         raise cancelled
 
 
-def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float = 300.0):
+def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float = 300.0,
+                          bind_host: str = "127.0.0.1"):
     """Callback waiter bound to one flow's port. ``timeout`` is where ``oauth.timeout`` applies (mcp 2.0
     dropped the provider's own). ``cimd_url`` only tailors the timeout message: a server refusing the
     document aborts at the authorization endpoint, so no redirect arrives and a bare "timed out" would
@@ -953,7 +956,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
             "OAuth callback requires an interactive session but none is available (non-interactive/background "
             "context); skipping browser authorization without binding a callback listener.")
         handler_cls, result = _make_callback_handler()
-        server = _start_callback_server(port, handler_cls)
+        server = _start_callback_server(port, handler_cls, bind_host)
         # serve_forever/shutdown, not a bare handle_request thread: a thread parked in handle_request's
         # select() keeps the listening socket alive past server_close() (the kernel holds the file for
         # the duration of the poll), so a cancelled flow — e.g. the handshake timeout firing mid-login —
@@ -1018,7 +1021,7 @@ def _is_valid_cimd_url(url: str) -> bool:
 _assigned_cimd_ports: list[int] = []
 
 
-def _pick_cimd_port() -> int | None:
+def _pick_cimd_port(bind_host: str = "127.0.0.1") -> int | None:
     """Reserve a pinned CIMD callback port, or None when none is usable. Holding the bound socket makes
     contention cooperative: a sibling finds the bind refused and moves down the range. Once every pinned
     port belongs to this process the range wraps rather than falling back to DCR — a reused port only
@@ -1029,7 +1032,7 @@ def _pick_cimd_port() -> int | None:
     minutes between selection and the browser redirect arriving.
     """
     for port in _CIMD_PORTS:
-        if port not in _assigned_cimd_ports and _bind_reserved(port) is not None:
+        if port not in _assigned_cimd_ports and _bind_reserved(port, bind_host) is not None:
             _assigned_cimd_ports.append(port)
             return port
     return _assigned_cimd_ports[0] if _assigned_cimd_ports else None
@@ -1044,6 +1047,13 @@ def _server_declined_cimd(storage: HermesTokenStorage | None) -> bool:
     except (AttributeError, TypeError, ValueError):
         return False
     return metadata is not None and getattr(metadata, "client_id_metadata_document_supported", None) is not True
+
+
+def _bind_host(cfg: dict) -> str:
+    """``oauth.bind_host`` — the address the callback listener binds. Default loopback; set it to a
+    LAN address (or 0.0.0.0) when a reverse proxy on another host forwards ``oauth.redirect_uri`` here."""
+    host = cfg.get("bind_host")
+    return host.strip() if isinstance(host, str) and host.strip() else "127.0.0.1"
 
 
 def _maybe_use_cimd(cfg: dict, storage: HermesTokenStorage | None = None) -> tuple[str, int] | None:
@@ -1066,7 +1076,7 @@ def _maybe_use_cimd(cfg: dict, storage: HermesTokenStorage | None = None) -> tup
         or _cached_client_info(storage) is not None
         or (storage is not None and storage.cimd_rejected())
         or _server_declined_cimd(storage))
-    port = None if ineligible else _pick_cimd_port()
+    port = None if ineligible else _pick_cimd_port(_bind_host(cfg))
     return None if port is None else (url, port)
 
 
@@ -1123,7 +1133,7 @@ def _configure_callback_port(cfg: dict, storage: HermesTokenStorage | None = Non
     if cimd is not None:
         cfg["_cimd_url"], port = cimd
     else:
-        port = int(cfg.get("redirect_port", 0)) or cached_port or _reserve_callback_port()
+        port = int(cfg.get("redirect_port", 0)) or cached_port or _reserve_callback_port(_bind_host(cfg))
         # A cached port may be a pinned CIMD port from an earlier login; claim it from siblings.
         if port in _CIMD_PORTS and port not in _assigned_cimd_ports:
             _assigned_cimd_ports.append(port)

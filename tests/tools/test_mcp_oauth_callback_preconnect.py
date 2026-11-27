@@ -34,8 +34,8 @@ def _running_waiter(monkeypatch, timeout=10, hold_cleanup=None):
     started, done, servers, out = threading.Event(), threading.Event(), [], {}
     original_start = mo._start_callback_server
 
-    def recording_start(port, handler_cls):
-        server = original_start(port, handler_cls)
+    def recording_start(port, handler_cls, bind_host="127.0.0.1"):
+        server = original_start(port, handler_cls, bind_host)
         if hold_cleanup is not None:
             real_shutdown = server.shutdown
 

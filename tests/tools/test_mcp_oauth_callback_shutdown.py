@@ -35,8 +35,8 @@ def test_callback_shutdown_does_not_block_mcp_event_loop(monkeypatch):
     outcome = {}
     original_start = oauth._start_callback_server
 
-    def instrumented_start(callback_port, handler):
-        server = original_start(callback_port, handler)
+    def instrumented_start(callback_port, handler, bind_host="127.0.0.1"):
+        server = original_start(callback_port, handler, bind_host)
         original_shutdown = server.shutdown
 
         def delayed_shutdown():
@@ -97,8 +97,8 @@ def test_cancelled_cleanup_still_closes_the_listener(monkeypatch):
     servers = []
     original_start = oauth._start_callback_server
 
-    def instrumented_start(callback_port, handler):
-        server = original_start(callback_port, handler)  # kept referenced: a GC'd socket would free the port
+    def instrumented_start(callback_port, handler, bind_host="127.0.0.1"):
+        server = original_start(callback_port, handler, bind_host)  # kept referenced: a GC'd socket would free the port
         original_shutdown = server.shutdown
 
         def held_shutdown():
@@ -156,8 +156,8 @@ def test_loop_teardown_during_cleanup_still_closes_the_listener(monkeypatch):
     servers = []
     original_start = oauth._start_callback_server
 
-    def recording_start(callback_port, handler):
-        servers.append(original_start(callback_port, handler))  # kept referenced: a GC'd socket would free the port
+    def recording_start(callback_port, handler, bind_host="127.0.0.1"):
+        servers.append(original_start(callback_port, handler, bind_host))  # kept referenced: a GC'd socket would free the port
         return servers[-1]
 
     monkeypatch.setattr(oauth, "_start_callback_server", recording_start)
@@ -193,8 +193,8 @@ def test_cleanup_failure_still_ends_the_waiter(monkeypatch):
     servers = []
     original_start = oauth._start_callback_server
 
-    def failing_close_start(callback_port, handler):
-        server = original_start(callback_port, handler)
+    def failing_close_start(callback_port, handler, bind_host="127.0.0.1"):
+        server = original_start(callback_port, handler, bind_host)
         real_close = server.server_close
 
         def failing_close():

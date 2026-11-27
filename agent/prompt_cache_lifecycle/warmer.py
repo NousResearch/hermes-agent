@@ -18,7 +18,7 @@ from agent.prompt_cache_lifecycle.economics import (
     CacheWarmingDecision,
     evaluate_economics,
 )
-from agent.prompt_cache_lifecycle.in_flight import in_flight_window, request_tokens
+from agent.prompt_cache_lifecycle.in_flight import in_flight_window, request_split
 from agent.prompt_cache_lifecycle.edge import (
     EdgeDecision,
     _compaction_reason,
@@ -312,9 +312,10 @@ class PromptCacheWarmer:
         client, refused = self._replay_client(api_kwargs)
         if refused is not None:
             return self._stop(refused, lifecycle=True)
-        # The whole prompt of this request is in the cache once it is sent; its reply's usage is not known yet.
-        cached_tokens = request_tokens(api_kwargs)
-        decision = self._decide(cached_tokens, 0)
+        # Its reply's usage is not known yet: the prefix through the last cache marker is cached once it is
+        # sent, anything after it is re-billed as plain input on every replay.
+        cached_tokens, uncached_tokens = request_split(api_kwargs)
+        decision = self._decide(cached_tokens, uncached_tokens)
         if decision.action != "warm":
             return self._stop(decision.stop_reason, lifecycle=True)
         turn = getattr(agent, "_user_turn_count", None)
@@ -322,7 +323,7 @@ class PromptCacheWarmer:
             budget = self._budget if self._budget is not None and self._budget.turn == turn else _Budget(turn)
         run = _Run(
             api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=getattr(agent, "model", ""),
-            cached_tokens=cached_tokens, uncached_tokens=0, ttl_s=window[1], deadline_at=window[0],
+            cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1], deadline_at=window[0],
             is_current=self._currency(), api_mode=agent.api_mode, witness=context_witness(agent),
             billing=self._billing_snapshot(), budget=budget, awaiting_reply=True,
             attempt=getattr(agent, "_prompt_cache_attempt", None),

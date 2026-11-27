@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: fold-laundry
+description: Book and track laundry pickup in LA and San Francisco.
+source: https://foldlaundry.com/ai
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint; PKCE S256; loopback redirects on any port).
+# Public tools (coverage, pricing, estimates, guest booking, order tracking)
+# work without signing in; account tools return 401 and Hermes's
+# mcp_oauth_manager runs the browser flow the first time one is used.
+
+transport:
+  type: http
+  url: https://foldlaundry.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - fold laundry
+    - laundry pickup
+    - dry cleaning
+  hosts:
+    - foldlaundry.com
+
+post_install: |
+  Fold serves Los Angeles and San Francisco. Try "Is 94110 covered by
+  Fold?" or "How much is 20 lb of wash and fold?" — no sign-in needed.
+
+  To book with your saved address, card and preferences, Hermes opens a
+  browser once to connect your Fold account (or run
+  `hermes mcp login fold-laundry`). Disconnect any time in the Fold app
+  under Account → Connected AI assistants.

@@ -1,0 +1,18 @@
+name: disk-space-auditor
+title: Disk Space Auditor
+repo: https://github.com/KellerAI/disk-space-auditor
+sha: ea3a26c936144384a99e04868a66ee5075a6a820
+description: "Skills-only plugin. Audits disk usage on the computer the agent runs on, finds the biggest folders and likely leftovers, and proposes cleanup ranked by risk; deletes only items the user approves one by one. Disclosure: runs size, listing and approved delete commands through the host's terminal tool; ships no scripts; no network calls, no model calls of its own, no stored credentials, no telemetry."
+maintainer: KellerAI
+tier: community
+category: general
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/KellerAI/disk-space-auditor#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

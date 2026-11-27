@@ -23,6 +23,7 @@ def _ensure_discord_mock():
     discord_mod.Client = MagicMock
     discord_mod.File = MagicMock
     discord_mod.DMChannel = type("DMChannel", (), {})
+    discord_mod.TextChannel = type("TextChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
@@ -102,6 +103,7 @@ class FakeThread:
 @pytest.fixture
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "TextChannel", FakeTextChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)
 
@@ -129,6 +131,63 @@ def adapter(monkeypatch):
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
     adapter.handle_message = AsyncMock()
     return adapter
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_skips_existing_thread_without_api_calls(adapter, caplog):
+    """An existing Discord thread cannot host another child thread."""
+    parent = FakeThread(channel_id=77)
+    parent.create_thread = AsyncMock()
+    parent.send = AsyncMock()
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=parent),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.create_handoff_thread("77", "next session")
+
+    assert result is None
+    parent.create_thread.assert_not_awaited()
+    parent.send.assert_not_awaited()
+    assert "both create paths failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_skips_non_text_channel_without_api_calls(adapter, caplog):
+    """Voice/category-like channels are rejected before Discord API calls."""
+    parent = SimpleNamespace(create_thread=AsyncMock(), send=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=parent),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.create_handoff_thread("88", "next session")
+
+    assert result is None
+    parent.create_thread.assert_not_awaited()
+    parent.send.assert_not_awaited()
+    assert "both create paths failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handoff_thread_still_creates_under_text_channel(adapter):
+    """The supported guild-text path must retain its existing behaviour."""
+    created = SimpleNamespace(id=12345)
+    parent = FakeTextChannel(channel_id=99)
+    parent.create_thread = AsyncMock(return_value=created)
+    adapter._client = SimpleNamespace(
+        get_channel=MagicMock(return_value=parent),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.create_handoff_thread("99", "next session")
+
+    assert result == "12345"
+    parent.create_thread.assert_awaited_once_with(
+        name="next session",
+        auto_archive_duration=1440,
+        reason="Hermes session handoff",
+    )
 
 
 def make_message(*, channel, content: str, mentions=None, msg_type=None):

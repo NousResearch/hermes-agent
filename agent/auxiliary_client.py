@@ -3515,7 +3515,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
 
     def _rotate(fallback_status: int) -> bool:
         from agent.agent_runtime_helpers import extract_api_error_context  # heavy: not on the aux import path
-        # The bench reads the same error context the main loop's does (provider reset, Claude plan window).
+        # The provider's own error context (reset, Claude plan window), as the main loop extracts it.
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=fallback_status if status_code is None else status_code,
             error_context=extract_api_error_context(exc), api_key_hint=failed_api_key or None,

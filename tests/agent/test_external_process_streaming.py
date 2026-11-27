@@ -49,8 +49,13 @@ def test_streaming_capability_preserves_positional_plugin_construction():
     ("external_process", None, "https://proxy.invalid/v1", False, True, False),
     ("external_process", False, "process://fixture", False, True, False),
     ("external_process", True, "process://fixture", True, True, False),
-    ("external_process", True, "acp://fixture", False, True, False),
-    ("external_process", True, "acp+tcp://127.0.0.1:9000", False, True, False),
+    # ACP stays buffered by default; a profile whose client streams the session may opt in.
+    ("external_process", None, "acp://fixture", False, True, False),
+    ("external_process", False, "acp://fixture", False, True, False),
+    ("external_process", True, "acp://fixture", False, True, True),
+    ("external_process", True, "acp+tcp://127.0.0.1:9000", False, True, True),
+    ("external_process", None, "acp+tcp://127.0.0.1:9000", False, True, False),
+    ("external_process", True, "acp://fixture", True, True, False),
     ("api_key", None, "https://provider.invalid/v1", False, True, True),
     ("api_key", False, "https://provider.invalid/v1", False, True, False),
 ])

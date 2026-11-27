@@ -420,7 +420,7 @@ def test_the_tier_check_never_reads_the_old_clock_and_a_cleared_in_flight_mark(t
 
 def _next_request(agent):
     return {"model": agent.model, "max_tokens": 100, "messages": [
-        {"role": "user", "content": [{"type": "text", "text": "OLD PREFIX"}]},
+        {"role": "user", "content": [{"type": "text", "text": "OLD PREFIX " * 2000}]},
         {"role": "assistant", "content": "x"},
         {"role": "user", "content": [{"type": "text", "text": "NEXT REQUEST", "cache_control": {"type": "ephemeral"}}]}]}
 
@@ -461,13 +461,20 @@ def test_a_reply_generating_past_the_entrys_lifetime_keeps_its_own_prompt_warm(t
             db.close()
 
 
-def test_a_route_that_never_proved_a_cache_arms_nothing_for_the_request_in_flight(tmp_path):
+def test_an_automatic_cache_that_never_proved_itself_arms_nothing_for_the_request_in_flight(tmp_path):
+    """No markers (an OpenAI-spec automatic cache) and no reply on the clock yet: nothing says this
+    request is cached, so nothing is kept warm; a marked request declares its tier and is."""
     with _endpoint() as (client, _server):
         agent, warmer, _run, db = _armed(tmp_path, client, sid=uuid.uuid4().hex)
         try:
             warmer.cancel("new request in flight")
             agent._prompt_cache_clock, agent._prompt_cache_clock_restored = None, True  # no reply has cached yet
-            assert warmer.start_in_flight(_next_request(agent)) == "this route has not proven a cache window"
+            agent._prompt_cache_attempt = None
+            unmarked = {"model": agent.model, "max_tokens": 100,
+                        "messages": [{"role": "user", "content": "OLD PREFIX " * 2000}]}
+            assert warmer.start_in_flight(unmarked) == "no cache window to keep warm (no markers, nothing proven)"
             assert warmer._run is None
+            assert warmer.start_in_flight(_next_request(agent)) is None
         finally:
+            warmer.cancel()
             db.close()

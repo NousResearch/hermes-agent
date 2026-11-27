@@ -194,9 +194,6 @@ class PromptCacheWarmer:
         #: Whether the armed request carries ``cache_control`` markers (Anthropic spec: a miss is a priced
         #: write) or not (OpenAI spec: a miss re-reads the prefix at the input rate).
         self._marked = True
-        #: ``(cached, uncached)`` prompt tokens of the latest reply: the size estimate for the next request,
-        #: whose own usage is unknown until its reply lands.
-        self._last_split: Optional[tuple[int, int]] = None
         #: The route ``(provider, base_url, model)`` whose keep-alive missed: the cache does not live as
         #: long as assumed there, so nothing is warmed again this session (new user messages and
         #: compactions included). A model/provider switch is a different cache and clears it.
@@ -261,7 +258,6 @@ class PromptCacheWarmer:
         if window is None:
             return self._stop(f"learned: {learned}")
         cached_tokens, uncached_tokens = self._prompt_split(response)
-        self._last_split = (cached_tokens, uncached_tokens)
         if cached_tokens + uncached_tokens <= 0:
             return self._stop("prompt size unavailable")
         client, refused = self._replay_client(api_kwargs)
@@ -305,15 +301,15 @@ class PromptCacheWarmer:
             return self._stop(refused, lifecycle=True)
         window = _in_flight_window(agent, api_kwargs)
         if window is None or cache_warming_delay_s(window[1]) is None:
-            return self._stop("this route has not proven a cache window", lifecycle=True)
+            return self._stop("no cache window to keep warm (no markers, nothing proven)", lifecycle=True)
         window, learned = learned_window(agent, window, self._marked)
         if window is None:
             return self._stop(f"learned: {learned}", lifecycle=True)
         client, refused = self._replay_client(api_kwargs)
         if refused is not None:
             return self._stop(refused, lifecycle=True)
-        # The whole prompt of this request is in the cache once it is sent: an earlier reply's size bounds it.
-        cached_tokens = sum(self._last_split or (0, 0))
+        # The whole prompt of this request is in the cache once it is sent; its reply's usage is not known yet.
+        cached_tokens = _request_tokens(api_kwargs)
         decision = self._decide(cached_tokens, 0)
         if decision.action != "warm":
             return self._stop(decision.stop_reason, lifecycle=True)
@@ -975,19 +971,32 @@ class PromptCacheWarmer:
 
 def _in_flight_window(agent: Any, api_kwargs: dict[str, Any]) -> Optional[tuple[float, float]]:
     """``(deadline, tier seconds)`` of the entry the request going out now writes or reads: from its send,
-    for the tier it asks (the clock's tier when it names none), on a route an earlier reply proved caches
-    (a proven or declared window on the clock, expired or not); ``None`` otherwise."""
+    for the tier it asks (clamped by the route's ceiling; the clock's tier when it names none). A request
+    with ``cache_control`` markers declares its tier (the clock's Anthropic-spec rule); an automatic cache
+    must have proven itself on the clock first (a proven or declared window, expired or not). ``None``
+    otherwise."""
     from agent.prompt_cache_clock import DECLARED, PROVEN, attempt_facts, cache_window
-    from agent.prompt_caching import TTL_SECONDS
+    from agent.prompt_caching import TTL_SECONDS, route_ttl_ceiling
 
     window = cache_window(agent)
-    if window is None or window.confidence not in (PROVEN, DECLARED):
-        return None
     facts = getattr(agent, "_prompt_cache_attempt", None) or attempt_facts(api_kwargs) or {}
-    ttl_s = TTL_SECONDS.get(facts.get("marker_ttl") or facts.get("openai_ttl") or window.tier or "")
-    if ttl_s is None:
+    proven = window is not None and window.confidence in (PROVEN, DECLARED)
+    if not proven and facts.get("marker_ttl") is None:
+        return None
+    tier = facts.get("marker_ttl") or facts.get("openai_ttl") or getattr(window, "tier", None) or ""
+    ceiling = route_ttl_ceiling(getattr(agent, "provider", "") or "", getattr(agent, "base_url", "") or "")
+    ttl_s = min(TTL_SECONDS.get(tier, 0), TTL_SECONDS.get(ceiling or "", float("inf")))
+    if not ttl_s:
         return None
     return float(facts.get("sent_at") or time.time()) + ttl_s, float(ttl_s)
+
+
+def _request_tokens(api_kwargs: dict[str, Any]) -> int:
+    """Rough prompt size of a request payload (messages and tools, plus an Anthropic ``system``)."""
+    from agent.chat_completion_helpers import estimate_request_context_tokens
+
+    system = api_kwargs.get("system")
+    return estimate_request_context_tokens(api_kwargs) + (estimate_request_context_tokens([system]) if system else 0)
 
 
 def _stable_prefix_tokens(api_kwargs: dict[str, Any], api_mode: str) -> int:
@@ -1082,7 +1091,6 @@ def reset_prompt_cache_session(agent: Any) -> None:
             warmer._missed_route = None  # a new session id: nothing remembered for it
             warmer._miss_streak = (0, 0)
             warmer._budget, warmer._spent, warmer._compacted, warmer._offloaded = None, None, False, False
-            warmer._last_split = None
 
 
 def prompt_cache_warming_disabled(agent: Any) -> bool:

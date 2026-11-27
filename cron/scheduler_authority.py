@@ -2,11 +2,58 @@
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
+
+# Seconds to wait before each re-attach after an attach that failed before anything was sent
+# (two retries). A gateway whose event loop is briefly busy answers the control socket's
+# session-ticket request (5 s budget) or the WebSocket open (10 s) a few seconds late; one
+# such miss used to fail the whole run.
+ATTACH_RETRY_DELAYS = (2.0, 5.0)
 
 
 class CronExecutionUnknown(RuntimeError):
     """The owner may have accepted this fire; never book it as failed or re-fire."""
+
+
+def _attach_failed_transiently(exc):
+    """True for a gateway attach that failed before any frame was sent and may work on a retry:
+    a socket timeout or refusal (the control socket's session-ticket answer, discovery), or the
+    WebSocket open that ``connect_gateway`` reports as a plain ``GatewayClientError`` caused by
+    one. A definite verdict is not: ``GatewayUnavailableError`` (draining, inaccessible, not
+    ready), a protocol mismatch, or an owner refusal."""
+    from hermes_cli.gateway_client import GatewayClientError
+    if isinstance(exc, OSError):  # TimeoutError, ConnectionRefusedError, ...
+        return True
+    return type(exc) is GatewayClientError and isinstance(exc.__cause__, OSError)
+
+
+def _attach_failure_text(exc):
+    """The failure text for an attach that never sent the run. It names the gateway, not the
+    model service: the bare ``TimeoutError: timed out`` was classified as a provider timeout
+    and the notice told the operator to add a backup model provider."""
+    attempts = len(ATTACH_RETRY_DELAYS) + 1
+    return (f'Gateway did not answer before the run was sent ({type(exc).__name__}, '
+            f'{attempts} attempts); the job was not started')
+
+
+async def _attach_with_retry(connect, sent, run):
+    """``run(client)`` inside ``connect()``. An attach that fails transiently is retried while
+    ``sent()`` is False, i.e. before ``observe`` has journaled and sent ``submit``: a re-attach
+    can never admit the run twice. Anything after that point keeps its fail-closed handling."""
+    from hermes_cli.gateway_client import GatewayClientError
+    for delay in (*ATTACH_RETRY_DELAYS, None):
+        try:
+            async with connect() as client:
+                return await run(client)
+        except (OSError, GatewayClientError) as exc:
+            if delay is None or sent() or not _attach_failed_transiently(exc):
+                raise
+            logger.warning('Cron gateway attach failed before the run was sent (%s: %s); '
+                           'retrying in %.0fs', type(exc).__name__, exc, delay)
+            await asyncio.sleep(delay)
 
 
 def journal_path(job_id, request_id):
@@ -131,8 +178,9 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             delay = min(delay * 2, 2.0)
 
     async def remote():
-        async with connect_gateway() as client:
-            return await observe(lambda op, data: client.rpc('cron.' + op, **data))
+        return await _attach_with_retry(
+            connect_gateway, lambda: attempted,
+            lambda client: observe(lambda op, data: client.rpc('cron.' + op, **data)))
 
     try:
         if owner is not None:
@@ -149,7 +197,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     except Exception as exc:
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
-        error = f'{error_type_name(exc)}: {exc}'
+        error = _attach_failure_text(exc) if _attach_failed_transiently(exc) else f'{error_type_name(exc)}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
 
 def reconcile_pending(*, allow_connect=True):

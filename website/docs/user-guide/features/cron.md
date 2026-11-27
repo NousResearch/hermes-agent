@@ -56,6 +56,13 @@ Recovery never creates another admission for it. Paused jobs are not automatical
 when their completed result is recovered. `hermes cron run` exits nonzero for a known synchronous
 execution failure; background dispatch is not a terminal success/failure verdict.
 
+A run whose attach to the gateway fails before anything is sent (the session-ticket answer or the
+WebSocket open times out or is refused, typically while the gateway is busy) is attached again up to
+twice, 2 s and then 5 s later. Nothing was admitted yet, so a retry cannot run the job twice. If all
+three attaches fail, the run fails with "Gateway did not answer before the run was sent", not a
+model-service timeout, and the job runs again at its next scheduled time. A failure after the run
+was sent is never retried this way and keeps the recovery rules above.
+
 ## Creating scheduled tasks
 
 ### In chat with `/cron`

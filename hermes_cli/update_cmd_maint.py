@@ -470,6 +470,29 @@ def _verify_and_restore_state_dbs_post_update() -> None:
             _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
 
 
+def _expire_provider_model_catalogs() -> None:
+    """Revalidate on demand after update, preserving same-account offline fallbacks."""
+    from hermes_cli.backup import _sibling_profile_homes
+    from hermes_cli.models import _provider_models_cache_path, _read_json_cache, _write_json_cache
+    from hermes_cli.models_cache_lock import write_under_cache_lock
+    from hermes_cli.update_cmd import get_hermes_home
+
+    def expire_rows(path: Path) -> None:
+        cache = _read_json_cache(path)
+        if not cache:
+            return
+        for entry in cache.values():
+            if isinstance(entry, dict) and "at" in entry:
+                entry["at"] = 0
+        _write_json_cache(path, cache, indent=None)
+
+    home = get_hermes_home()
+    for profile_home in (home, *(path for _, path in _sibling_profile_homes(home))):
+        path = _provider_models_cache_path(profile_home)
+        if path.is_file():
+            write_under_cache_lock(path, lambda path=path: expire_rows(path))
+
+
 def _invalidate_live_plugin_catalog_caches() -> None:
     """Drop the cached live plugin catalog under the active home AND every sibling profile's.
 
@@ -1032,6 +1055,11 @@ def _run_post_update_maintenance(
         from hermes_cli.model_catalog import seed_cache_from_checkout
         if seed_cache_from_checkout(_m().PROJECT_ROOT):
             print("  ✓ Model catalog cache refreshed from checkout")
+
+    # Account-scoped provider catalogs are separate from the bundled catalog above. Revalidate
+    # them on demand so the updater need not contact providers or resolve their credentials.
+    with _best_effort('Provider model catalog expiry failed: %s'):
+        _expire_provider_model_catalogs()
 
     # Drop the cached live plugin catalog under every profile: the checkout is shared, so a
     # pre-update snapshot must not out-vote the pins/entries this update just installed for the

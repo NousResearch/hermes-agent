@@ -1843,9 +1843,9 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
     threading.Thread(target=lambda: ctx.run(_refresh), daemon=True, name=f"model-cache-swr-{cache_key}").start()
 
 
-def _provider_models_cache_path() -> Path:
+def _provider_models_cache_path(home: Optional[Path] = None) -> Path:
     from hermes_constants import get_hermes_home
-    return get_hermes_home() / "provider_models_cache.json"
+    return (home if home is not None else get_hermes_home()) / "provider_models_cache.json"
 
 
 def _credential_fingerprint(provider: str) -> str:

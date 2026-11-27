@@ -14,7 +14,7 @@ def _flag(parser, *names, help, **kw):
 # Registry sources, then provider filters (GitHub taps stored under source="github").
 _SOURCE_CHOICES = [
     "all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub", "browse-sh",
-    "nvidia", "openai", "anthropic", "huggingface", "voltagent", "gstack", "minimax"]
+    "local-dir", "nvidia", "openai", "anthropic", "huggingface", "voltagent", "gstack", "minimax"]
 
 
 def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
@@ -169,6 +169,30 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
+
+    skills_local = skills_subparsers.add_parser(
+        "local", help="Manage local skill folders (e.g. another agent tool's skills directory)",
+        description="Point the Skills Hub at local directories of already-installed skill folders "
+            "(each a <name>/SKILL.md subfolder), so they can be browsed/installed/imported without "
+            "vendoring them into Hermes. Nothing here is copied until you run install/import-all.")
+    local_subparsers = skills_local.add_subparsers(dest="local_action")
+    local_subparsers.add_parser("list", help="List configured local skill directories")
+    local_add = local_subparsers.add_parser("add", help="Add a local directory of skill folders")
+    local_add.add_argument("path", help="Directory containing <name>/SKILL.md subfolders")
+    local_rm = local_subparsers.add_parser("remove", help="Remove a configured local directory")
+    local_rm.add_argument("path", help="Directory previously added with 'local add'")
+
+    skills_import_all = skills_subparsers.add_parser(
+        "import-all", help="Install every skill exposed by a source in one go",
+        description="Bulk-install every skill a source can enumerate (currently 'local-dir' and "
+            "'official'), e.g. to pull in every skill folder from a directory added with "
+            "'hermes skills local add'. Each skill still goes through the normal security scan; "
+            "use --force to install past a caution/blocked verdict.")
+    skills_import_all.add_argument("source", choices=["local-dir", "official"],
+        help="Source to bulk-import from")
+    skills_import_all.add_argument("--category", default="", help="Category folder to install into")
+    _flag(skills_import_all, "--force", help="Install despite blocked scan verdict")
+    add_yes_flag(skills_import_all, "Skip confirmation prompt (needed in TUI mode)")
 
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser(

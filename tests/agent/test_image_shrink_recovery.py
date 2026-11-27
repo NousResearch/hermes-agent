@@ -21,8 +21,10 @@ import base64
 import sys
 from types import SimpleNamespace
 
+import pytest
 
-from agent.turn_recovery import _image_error_max_dimension
+
+from agent.turn_recovery import _default_shrink_dimension, _image_error_max_dimension
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -96,6 +98,98 @@ class TestImageTooLargeClassification:
         result = classify_api_error(err, provider="openai-codex", model="gpt-5.6-sol")
         assert result.reason == FailoverReason.image_too_large
         assert result.retryable is True
+
+    def test_deepseek_400_dimension_rejection_message(self):
+        """DeepSeek rejects an over-tall image (8192 px/side, 4096 with 15+ images)
+        with a format-looking "unsupported image" 400 that names no size at all.
+        It used to fall through to format_error / non-retryable, so the shrink
+        recovery was bypassed and the session kept failing over (#122449)."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                ".messages[30].image[1]: You have uploaded an unsupported image. "
+                "Please make sure your image is valid and has one of the following "
+                "formats: webp, png, jpeg, and gif."
+            ),
+        )
+        result = classify_api_error(err, provider="deepseek", model="deepseek-vl2")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
+    def test_kimi_corrupt_wording_stays_out_of_shrink_channel(self):
+        """The new DeepSeek pattern is the full sentence fragment on purpose: the
+        bare "unsupported image" would also match Kimi/Moonshot's corrupt-bytes
+        "invalid or unsupported image format" wording, stealing a case Pillow
+        cannot decode into the shrink pass (#122449)."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "Invalid request: prepare image failed: input image is invalid, "
+                "failed to decode image: invalid or unsupported image format"
+            ),
+        )
+        result = classify_api_error(err, provider="kimi-coding", model="kimi-k2")
+        assert result.reason != FailoverReason.image_too_large
+
+    def test_deepseek_wording_is_route_gated(self):
+        """The DeepSeek dimension-rejection fragment only means too large on a
+        DeepSeek-family route. The same wording elsewhere is a codec rejection:
+        routing it into the shrink ladder swallows the failure (a valid small
+        image shrinks to changed=False, so no retry fires) instead of stripping
+        the undecodable part (#122449 review)."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                ".messages[30].image[1]: You have uploaded an unsupported image. "
+                "Please make sure your image is valid and has one of the following "
+                "formats: webp, png, jpeg, and gif."
+            ),
+        )
+        result = classify_api_error(err, provider="openai", model="gpt-5.6")
+        assert result.reason != FailoverReason.image_too_large
+
+    def test_codec_rejections_strip_instead_of_shrinking(self):
+        """azure/Google/Anthropic reject an image whose codec they cannot decode
+        with "unsupported image" wordings of their own. Undecodable bytes want
+        the strip-and-retry rung (image_corrupt), never the shrink ladder
+        (#122449 review)."""
+        cases = [
+            ("azure", "Invalid request: the media item is an unsupported image. Supported formats: PNG, JPEG, WebP."),
+            ("google", "Invalid request: request contains an unsupported image (avif)."),
+            ("anthropic", "Invalid request: the image format is not supported. Only PNG, JPEG, GIF and WebP images are supported."),
+        ]
+        for provider, message in cases:
+            err = _FakeApiError(status_code=400, message=message)
+            result = classify_api_error(err, provider=provider, model="m")
+            assert result.reason == FailoverReason.image_corrupt, (provider, result.reason)
+
+    def test_tail_verdicts_survive_an_appended_deepseek_phrase(self):
+        """The image rule list runs ahead of the 400 tail rules, so an ungated
+        "uploaded an unsupported image" phrase appended to a decisive body used
+        to steal its verdict — a rate limit stopped rotating credentials, an
+        overflow stopped compacting (#122449 review). The route gate restores
+        the tails."""
+        rate = _FakeApiError(
+            status_code=400,
+            message=(
+                "Rate limit exceeded. Please try again in 8s. "
+                "Also note: you uploaded an unsupported image."
+            ),
+        )
+        result = classify_api_error(rate, provider="openai", model="gpt-5.6")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+        overflow = _FakeApiError(
+            status_code=400,
+            message=(
+                "This model's maximum context length is 8192 tokens. However, "
+                "you uploaded an unsupported image."
+            ),
+        )
+        result = classify_api_error(overflow, provider="openai", model="gpt-5.6")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
 
     def test_unrelated_400_still_not_image_too_large(self):
         """The new "media" patterns must not widen into ordinary 400s."""
@@ -257,6 +351,28 @@ class TestImagePatchBudgetShrink:
         assert _image_error_max_dimension(_FakeApiError(
             status_code=400, message="request exceeds the limit of 100 images per minute",
         )) is None
+
+
+class TestDefaultShrinkDimension:
+    """When the rejection names no ceiling, the shrink fallback must clear the
+    route's real floor: DeepSeek drops to 4096 px/side for 15+-image requests,
+    below the generic 8000 px, so the single shrink retry would otherwise
+    re-send an oversized payload (#122449)."""
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url,expected",
+        [
+            ("deepseek", "deepseek-vl2", "https://api.deepseek.com/v1", 4000),
+            # Aggregator re-exporting DeepSeek models: route detected via the model substring.
+            ("openrouter", "deepseek/deepseek-vl2", "https://openrouter.ai/api/v1", 4000),
+            ("", "", "https://api.deepseek.com/v1", 4000),
+            ("anthropic", "claude-sonnet-4-6", "https://api.anthropic.com", 8000),
+            ("", "", "", 8000),
+        ],
+    )
+    def test_per_route_default(self, provider, model, base_url, expected):
+        agent = SimpleNamespace(provider=provider, model=model, base_url=base_url)
+        assert _default_shrink_dimension(agent) == expected
 
 
 # ─── Shrink helper ───────────────────────────────────────────────────────────

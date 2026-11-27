@@ -177,6 +177,16 @@
   --portal-row-chrome: 1.875rem;
   --portal-row-panel: 2.5rem;
 
+  /* Shared icon glyph box and chat stage/composer/transcript spacing tokens. */
+  --portal-icon-size: 1rem;
+  --portal-composer-dock-floor: 1.875rem;
+  --portal-composer-dock-fade: 1rem;
+  --portal-stage-header-height: 3rem;
+  --portal-composer-row: 1.125rem;
+  --portal-composer-gap: 1rem;
+  --portal-conversation-turn-gap: 1.875rem;
+  --portal-conversation-prompt-clearance: 0.75rem;
+
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
   --page-nav-width: var(--portal-panel-width);
   --page-panel-inset: var(--portal-frame-inset);

@@ -267,9 +267,17 @@
   --portal-status-online: var(--portal-raw-green-60);
   --portal-status-pending: var(--portal-raw-orange);
   --portal-status-error-ink: var(--portal-raw-danger-soft);
-
   /* The one focus ring's colour (geometry in shape.css). */
   --portal-focus-ring-color: var(--portal-text-brand);
+  /* Interactive control state fills and strokes. */
+  --portal-surface-brand-pressed: color-mix(in srgb, var(--portal-surface-brand) 80%, var(--portal-raw-black));
+  --portal-surface-brand-tile-hover: color-mix(in srgb, var(--portal-surface-brand) 85%, var(--portal-raw-black));
+  --portal-surface-brand-tile-pressed: color-mix(in srgb, var(--portal-surface-brand) 70%, var(--portal-raw-black));
+  --portal-surface-brand-chip-hover: color-mix(in srgb, var(--portal-surface-brand) 85%, var(--portal-text-on-brand));
+  --portal-surface-control-toggled: color-mix(in srgb, var(--portal-surface-brand) 22%, transparent);
+  --portal-surface-switch-hover: color-mix(in srgb, var(--ui-base) 20%, transparent);
+  --portal-stroke-checkbox-hover: color-mix(in srgb, var(--ui-base) 45%, transparent);
+  --portal-surface-card-inline: color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background));
 
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
   --portal-brand-fill: var(--portal-surface-brand);
@@ -366,6 +374,7 @@
   --portal-status-pending: color-mix(in srgb, var(--portal-raw-orange) 70%, var(--portal-raw-black));
   --portal-status-error-ink: var(--portal-raw-danger);
   --portal-text-danger: var(--portal-raw-danger);
+  --portal-surface-card-inline: color-mix(in srgb, var(--ui-base) 2%, var(--ui-chat-surface-background));
 }
 
 /* Window Glass (macOS default): the native material shows only on the canvas — the rails and the

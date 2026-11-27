@@ -4,7 +4,7 @@
 
 .onboarding-v2 .onboarding-heading :is(h1, h2) {
   padding-right: 2rem;
-  font-size: 1.5rem;
+  font-size: var(--portal-type-display-lg-size);
   line-height: 1.25;
 }
 

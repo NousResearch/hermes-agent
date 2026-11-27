@@ -12,8 +12,6 @@
   --message-text-indent: 0px;
   --paragraph-gap: 0.75rem;
   --turn-block-gap: 1.25rem;
-  --portal-conversation-turn-gap: 1.875rem;
-  --portal-conversation-prompt-clearance: 0.75rem;
   --portal-conversation-fill: var(--portal-raw-ink-5);
   /* The tool-steps row takes the same fill under its dashed edge (1089:8401: light/5). Figma draws the
      dash at light/10 (16292:16175), about 1.3:1 on the navy stage: the row is a control, so its edge
@@ -498,14 +496,8 @@
   :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
   border-color: transparent;
   border-radius: var(--portal-radius-surface);
-  background: color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background));
+  background: var(--portal-surface-card-inline);
   box-shadow: none;
-}
-
-:root[data-shell='portal']:not(.dark)
-  [data-slot='aui_thread-content']
-  :is([data-slot='card-stack-surface'], [data-slot='clarify-inline']) {
-  background: color-mix(in srgb, var(--ui-base) 2%, var(--ui-chat-surface-background));
 }
 
 :root[data-shell='portal'] [data-slot='aui_thread-content'] [data-slot='tool-approval-card'] {

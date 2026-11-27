@@ -1,12 +1,3 @@
 {
-  "files": {
-    "app/agent-settings/history.css": 2,
-    "app/chat/stage.css": 3,
-    "app/redesign/portal-composer.css": 3,
-    "app/redesign/portal-controls.css": 6,
-    "app/redesign/portal-floating.css": 1,
-    "app/redesign/portal-shell.css": 4,
-    "components/assistant-ui/thread/redesign.css": 4,
-    "components/onboarding/surface.css": 1
-  }
+  "files": {}
 }

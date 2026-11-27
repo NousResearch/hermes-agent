@@ -173,7 +173,7 @@
   background-color: var(--portal-surface-chrome);
   box-shadow: none;
   color: var(--portal-text-chrome);
-  font-size: 1rem;
+  font-size: var(--portal-icon-size);
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -186,7 +186,7 @@
 }
 
 :root[data-shell='portal'] .portal-chrome-button .codicon[class*='codicon-'] {
-  font-size: 1rem;
+  font-size: var(--portal-icon-size);
 }
 
 :root[data-shell='portal'] .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
@@ -217,12 +217,12 @@
 }
 
 :root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:hover:not(:disabled) {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 85%, var(--portal-raw-black));
+  background-color: var(--portal-surface-brand-tile-hover);
   color: var(--portal-on-brand);
 }
 
 :root[data-shell='portal'] .portal-chrome-button.portal-chrome-button-brand:active:not(:disabled) {
-  background-color: color-mix(in srgb, var(--portal-brand-fill) 70%, var(--portal-raw-black));
+  background-color: var(--portal-surface-brand-tile-pressed);
   color: var(--portal-on-brand);
 }
 

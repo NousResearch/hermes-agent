@@ -27,8 +27,6 @@
    fades in over a short run above the card's top edge, so a line scrolling under the composer
    dissolves instead of being cut mid-glyph (short windows show it most). */
 :root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
-  --portal-composer-dock-floor: 1.875rem;
-  --portal-composer-dock-fade: 1rem;
   isolation: isolate;
   width: calc(var(--portal-conversation-column) + 10px);
   padding-top: var(--portal-composer-dock-fade);
@@ -83,10 +81,6 @@
    over the stage's top edge, out of flow: the photo and the transcript start
    at the panel's top under its rounded corner. Only its controls take the
    pointer; the transcript reserves the row and fades beneath it. */
-:root[data-shell='portal'] {
-  --portal-stage-header-height: 3rem;
-}
-
 :root[data-shell='portal'] [data-slot='portal-conversation-header'] {
   position: absolute;
   z-index: var(--portal-layer-stage-overlay);

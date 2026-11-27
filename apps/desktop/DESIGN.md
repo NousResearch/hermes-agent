@@ -856,6 +856,14 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-status-pending` | `var(--portal-raw-orange)` | `color-mix(in srgb, var(--portal-raw-orange) 70%, var(--portal-raw-black))` |  |
 | `--portal-status-error-ink` | `var(--portal-raw-danger-soft)` | `var(--portal-raw-danger)` |  |
 | `--portal-focus-ring-color` | `var(--portal-text-brand)` | ″ | The one focus ring's colour (geometry in shape.css). |
+| `--portal-surface-brand-pressed` | `color-mix(in srgb, var(--portal-surface-brand) 80%, var(--portal-raw-black))` | ″ | Interactive control state fills and strokes. |
+| `--portal-surface-brand-tile-hover` | `color-mix(in srgb, var(--portal-surface-brand) 85%, var(--portal-raw-black))` | ″ |  |
+| `--portal-surface-brand-tile-pressed` | `color-mix(in srgb, var(--portal-surface-brand) 70%, var(--portal-raw-black))` | ″ |  |
+| `--portal-surface-brand-chip-hover` | `color-mix(in srgb, var(--portal-surface-brand) 85%, var(--portal-text-on-brand))` | ″ |  |
+| `--portal-surface-control-toggled` | `color-mix(in srgb, var(--portal-surface-brand) 22%, transparent)` | ″ |  |
+| `--portal-surface-switch-hover` | `color-mix(in srgb, var(--ui-base) 20%, transparent)` | ″ |  |
+| `--portal-stroke-checkbox-hover` | `color-mix(in srgb, var(--ui-base) 45%, transparent)` | ″ |  |
+| `--portal-surface-card-inline` | `color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background))` | `color-mix(in srgb, var(--ui-base) 2%, var(--ui-chat-surface-background))` |  |
 | `--portal-brand-fill` | `var(--portal-surface-brand)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--portal-on-brand` | `var(--portal-text-on-brand)` | ″ |  |
 | `--portal-brand-ink` | `var(--portal-text-brand)` | ″ |  |
@@ -985,6 +993,14 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-band-trail-inset` | `0.8125rem` | ″ | The band's trailing Agent settings (settings-2 16292:15303) steps 13px in from the trailing cluster's end, which stands 12px off the window or beside the native caption buttons: 25px from the window's end, 10px inside a frame that ends 15px from it. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
 | `--portal-row-panel` | `2.5rem` | ″ | `(hover: hover) and (pointer: fine)` on `:root[data-shell='portal'][data-portal-density='compact']`: `2rem`; `(hover: none), (pointer: coarse)` on `html[data-hermes-desktop-host='browser'][data-shell='portal']`: `var(--portal-touch-target)`. |
+| `--portal-icon-size` | `1rem` | ″ | Shared icon glyph box and chat stage/composer/transcript spacing tokens. |
+| `--portal-composer-dock-floor` | `1.875rem` | ″ |  |
+| `--portal-composer-dock-fade` | `1rem` | ″ |  |
+| `--portal-stage-header-height` | `3rem` | ″ |  |
+| `--portal-composer-row` | `1.125rem` | ″ |  |
+| `--portal-composer-gap` | `1rem` | ″ |  |
+| `--portal-conversation-turn-gap` | `1.875rem` | ″ |  |
+| `--portal-conversation-prompt-clearance` | `0.75rem` | ″ |  |
 | `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--page-panel-inset` | `var(--portal-frame-inset)` | ″ |  |
 | `--portal-chrome-button-size` | `var(--portal-row-chrome)` | ″ |  |

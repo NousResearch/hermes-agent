@@ -142,7 +142,7 @@
 :root[data-shell='portal'] [data-slot='dropdown-menu-shortcut'] {
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-micro-size);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--portal-tracking-ui);
 }
 
 /* ── Menu switches ────────────────────────────────────────────────────────── */

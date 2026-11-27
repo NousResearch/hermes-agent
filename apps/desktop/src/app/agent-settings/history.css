@@ -209,7 +209,7 @@
 .agent-history-selection .codicon {
   width: 16px;
   height: 16px;
-  font-size: 16px;
+  font-size: var(--portal-icon-size);
 }
 .agent-history-checkbox {
   display: flex;
@@ -731,7 +731,7 @@
   margin-inline-start: auto;
 }
 .agent-history-preview-actions .codicon {
-  font-size: 16px;
+  font-size: var(--portal-icon-size);
 }
 /* Item card (878:8022): the overview card fill/stroke, r4; 57px items, 1px 3% dividers. */
 .agent-history-delete-list {

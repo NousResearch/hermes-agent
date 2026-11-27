@@ -54,6 +54,95 @@ print(json.dumps({{"prefix": sys.prefix, "yaml": importlib.util.find_spec("ruame
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
+def test_runtime_bootstrap_uses_pinned_python_when_facts_are_unavailable(tmp_path, monkeypatch):
+    from pm import runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    managed_uv = tmp_path / "store" / "uv"
+    managed_python = tmp_path / "store" / "python"
+    managed_uv.parent.mkdir()
+    managed_uv.touch()
+    managed_python.touch()
+    captured = {}
+    toolchain_calls = []
+
+    class Lockfile:
+        def __init__(self, _path):
+            pass
+
+        def version(self, name):
+            return f"{name}-version"
+
+    class Package:
+        def __init__(self, name):
+            self.name = name
+
+        def store_entry(self, version, target):
+            return f"{self.name}-{version}-{target}"
+
+        def binary(self, _root, _target):
+            return managed_uv if self.name == "uv" else managed_python
+
+    def prepare(uv, python, root, **kwargs):
+        captured.update(uv=uv, python=python, root=root, kwargs=kwargs)
+        return python
+
+    monkeypatch.setattr(runtime, "is_runtime", lambda: False)
+    monkeypatch.setattr(runtime, "_resident_runtime", lambda: None)
+    monkeypatch.setattr(runtime, "prepare_runtime", prepare)
+    monkeypatch.setattr("pm.paths.repo_root", lambda: project)
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda _project: tmp_path / "state")
+    def toolchain(**kwargs):
+        toolchain_calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr("pm._uv._toolchain", toolchain)
+    monkeypatch.setattr("pm.lock.Lockfile", Lockfile)
+    monkeypatch.setattr("pm.paths.lockfile_path", lambda: tmp_path / "uv.lock")
+    monkeypatch.setattr("pm.paths.store_root", lambda: tmp_path / "store")
+    monkeypatch.setattr("pm.store.current_target", lambda: "test-target")
+    monkeypatch.setattr("pm.registry.get_package", lambda name: Package(name))
+
+    assert runtime.runtime_python() == managed_python
+    assert captured["uv"] == managed_uv
+    assert captured["python"] == managed_python
+    assert toolchain_calls == [{"realize": False}]
+
+
+def test_runtime_bootstrap_fails_once_without_managed_python(tmp_path, monkeypatch):
+    from pm import runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    calls = []
+
+    monkeypatch.setattr(runtime, "is_runtime", lambda: False)
+    monkeypatch.setattr(runtime, "_resident_runtime", lambda: None)
+    monkeypatch.setattr("pm.paths.repo_root", lambda: project)
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda _project: tmp_path / "state")
+
+    def toolchain(**kwargs):
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr("pm._uv._toolchain", toolchain)
+    monkeypatch.setattr("pm.lock.Lockfile", lambda _path: type(
+        "Lockfile", (), {"version": lambda _self, _name: "3.14"})())
+    monkeypatch.setattr("pm.paths.lockfile_path", lambda: tmp_path / "uv.lock")
+    monkeypatch.setattr("pm.paths.store_root", lambda: tmp_path / "store")
+    monkeypatch.setattr("pm.store.current_target", lambda: "test-target")
+    monkeypatch.setattr("pm.registry.get_package", lambda _name: type(
+        "Package", (), {
+            "store_entry": lambda _self, version, target: f"{version}-{target}",
+            "binary": lambda _self, _root, _target: None,
+        })())
+
+    with pytest.raises(runtime.InstallError, match="managed Python.*hermes pm install"):
+        runtime.runtime_python()
+    assert calls == [{"realize": False}]
+
+
 def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
     import pm
     from hermes_constants import get_default_hermes_root

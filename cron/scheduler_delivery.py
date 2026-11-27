@@ -440,13 +440,10 @@ def moved_platform_hint(platform_name: str) -> str:
 
 
 def _primary_registration(platform_key: str):
-    """The primary's loaded ``PlatformEntry`` for *platform_key* (``None`` when it has none): what a
-    satellite without the plugin reads a moved platform's ref syntax and home env var name from."""
+    """The primary's loaded ``PlatformEntry`` for *platform_key*, or ``None``: a moved platform's ref syntax."""
     from gateway.platform_registry import platform_registry
     from hermes_constants import get_default_hermes_root, hermes_home_key
-    entry, _loader = platform_registry.snapshot_registration(
-        platform_key, scope=hermes_home_key(get_default_hermes_root()))
-    return entry
+    return platform_registry.snapshot_registration(platform_key, scope=hermes_home_key(get_default_hermes_root()))[0]
 
 
 def _moved_platform_ref(platform_key: str, ref: str) -> tuple[str, Optional[str]]:
@@ -482,14 +479,16 @@ def resolve_cron_destination(
 
 def _resolve_home_env_var(platform_name: str) -> str:
     """Env var name for a platform's cron home channel (``PlatformEntry.cron_deliver_env_var``). A moved
-    platform whose plugin is not loaded here takes the name from the primary's registration, so its home
-    address resolves like an explicit chat and ``resolve_cron_destination`` sends it only where a route serves it."""
+    platform whose plugin is not loaded here takes the name from the primary's registration, else from what core
+    read (a managed worker has no registration), so its home address resolves like an explicit chat and
+    ``resolve_cron_destination`` sends it only where a route serves it."""
     name = platform_name.lower()
     env_var = _plugin_cron_env_var(name)
     if env_var or not moved_platform_hint(name):
         return env_var
+    from hermes_cli.left_core_migration import platform_home_env_var
     entry = _primary_registration(name)
-    return (entry.cron_deliver_env_var or "") if entry is not None else ""
+    return (entry is not None and entry.cron_deliver_env_var) or platform_home_env_var(name)
 
 
 def _get_config_home_channel(platform_name: str):

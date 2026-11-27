@@ -785,6 +785,15 @@ def platform_install_hint(platform: str) -> str:
     return f". {_install_sentence(feature)}" if feature else ""
 
 
+def platform_home_env_var(platform: str) -> str:
+    """Cron home-channel env var (``<PLATFORM>_HOME_CHANNEL``) core read for a platform that left core, when its
+    ``private_env`` keeps it, else ``""``: a process with no registration for the platform (a profile without the
+    plugin, a managed cron worker) still reads the saved home address."""
+    feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+    name = f"{platform.upper()}_HOME_CHANNEL"
+    return name if feature is not None and name in feature.private_env else ""
+
+
 def terminal_backend_install_hint(backend: str) -> str:
     """For a ``terminal.backend`` value that left core: the sentence that names its install command for
     the active home, else ``""``. Appended to "unknown terminal backend" errors."""

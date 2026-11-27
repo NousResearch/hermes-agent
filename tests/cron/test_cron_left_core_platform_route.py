@@ -239,3 +239,36 @@ def test_satellite_home_channel_rides_the_primarys_bot_without_the_plugin(tmp_pa
     preflight, delivered, sent, _unresolved = _run_case(
         tmp_path, feature, "{p}", None, "routed", False, False, home_chat="chat-1")
     assert (preflight, delivered, sent) == (None, None, [("chat-1", None)])
+
+
+_HOME_PLATFORMS = [f for f in LEFT_CORE if f.platform and f"{f.platform.upper()}_HOME_CHANNEL" in f.private_env]
+
+
+@pytest.mark.parametrize("feature", _HOME_PLATFORMS, ids=[f.platform for f in _HOME_PLATFORMS])
+def test_worker_without_any_registration_reads_the_satellite_home(tmp_path, monkeypatch, feature):
+    """A managed cron worker holds no registration for the platform (not this profile's, not the primary's): a bare
+    ``deliver: <platform>`` still reads the profile's ``<PLATFORM>_HOME_CHANNEL`` and passes preflight exactly when
+    a primary route serves that chat, as an explicit ``<platform>:<chat>`` does; the gateway's bot sends it."""
+    import hermes_yaml as yaml
+    from cron.scheduler_delivery import resolve_cron_destination
+    from cron.scheduler_preflight import _preflight_check_delivery
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: tmp_path)
+    home = tmp_path / "profiles" / "fitness"
+    home.mkdir(parents=True)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True, "profile_routes": [
+        {"platform": feature.platform, "profile": "fitness", "chat_id": "chat-1"}]}}), encoding="utf-8")
+    monkeypatch.setattr("gateway.platform_registry.platform_registry.get", lambda _name: None)
+    job = {"id": "j1", "name": "Report", "deliver": feature.platform}
+    verdicts = {}
+    token = set_hermes_home_override(str(home))
+    try:
+        with patch("gateway.config.load_gateway_config", return_value=_config(None)):
+            for chat in ("chat-1", "chat-2"):
+                monkeypatch.setenv(f"{feature.platform.upper()}_HOME_CHANNEL", chat)
+                target, error = resolve_cron_destination(job, feature.platform)
+                verdicts[chat] = (target and target["chat_id"], error is None, _preflight_check_delivery(job) is None)
+    finally:
+        reset_hermes_home_override(token)
+    assert verdicts == {"chat-1": ("chat-1", True, True), "chat-2": (None, False, False)}

@@ -238,6 +238,16 @@ def _feishu_notice(home: Path, *, process_env: bool = False) -> str:
     return " ".join(notes)
 
 
+def _feishu_override_notice(home: Path, *, process_env: bool = False) -> str:
+    """The community ``hermes-tag`` plugin overrides Feishu by importing core's bundled adapter, gone here."""
+    if not plugin_present("hermes-tag", home):
+        return ""
+    return ("The community 'hermes-tag' plugin in this profile extends the Feishu adapter Hermes core no longer "
+            "ships, so its Feishu override cannot load: Feishu runs on the official 'feishu' plugin, with the same "
+            "FEISHU_* settings. Update hermes-tag once it supports the feishu plugin, or remove it "
+            "(`hermes plugins remove hermes-tag`).")
+
+
 def _auth_store(home: Path) -> dict:
     """*home*'s ``auth.json``; ``{}`` when missing, unreadable or invalid (no login we can see)."""
     from utils import read_json_or_empty
@@ -666,6 +676,9 @@ class LeftCoreFeature:
     # (home, *, process_env=False) -> str: one more sentence for every migration outcome in *home* (a
     # credential source core read that the plugin does not, and the command that replaces it), "" = none.
     notice: Callable[..., str] = _no_notice
+    # Same shape: said once per home, when the row's one-time toolset-scope conversion runs, whatever the install
+    # outcome (a plugin the default installer placed earlier gets no outcome line to carry *notice*).
+    converted_notice: Callable[..., str] = _no_notice
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -757,6 +770,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         toolsets=("feishu_doc", "feishu_drive"), own_platform_only=True,
         legacy_toolsets=("hermes-feishu", "hermes-gateway"), native_on_own_platform=True,
         platform="feishu", enable_env=("FEISHU_APP_ID", "FEISHU_APP_SECRET"), notice=_feishu_notice,
+        converted_notice=_feishu_override_notice,
     ),
 )
 
@@ -1289,6 +1303,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
                 _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
             continue
         present = _installed_for_good(home, feature.plugin)
+        converting = not _scope_kept(config, feature)
         try:
             _record_migration(home, feature)
         except Exception as exc:
@@ -1296,6 +1311,8 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
                 f"toolset selection could not be kept ({exc}). Check `hermes tools`"
                 + ("." if present else f" and run `{_install_command(feature.plugin, home)}`."))
             continue
+        if converting and (once := feature.converted_notice(home, process_env=process_env)):
+            say(f"  ⚠ {once}")
         if present or placed_by_default:
             continue
         if backoff and _failed_recently(home, feature.plugin):

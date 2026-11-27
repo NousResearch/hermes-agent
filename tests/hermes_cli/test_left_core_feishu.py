@@ -197,3 +197,32 @@ def test_a_feishu_override_is_reported_only_when_nothing_serves_the_feishu_crede
     monkeypatch.setattr(catalog, "fetch_live_catalog", lambda **kwargs: None)
     assert "hermes-tag" in {entry.name for entry in catalog.load_catalog()}
     assert ("hermes-tag" in {entry.name for entry in catalog_platforms.pending_entries(home)}) is reported
+
+
+@pytest.mark.parametrize("placed", ["left-core", "default"])
+def test_a_hermes_tag_home_is_told_once_feishu_runs_on_the_official_plugin(tmp_path, placed):
+    """``hermes-tag`` overrides Feishu by importing core's bundled adapter. Its home hears where Feishu went
+    exactly once, also when the default installer placed the feishu plugin first (no install outcome line)."""
+    config = "_default_plugins_installed: [feishu]\n" if placed == "default" else ""
+    home = _home(tmp_path, env=_CREDS, config=config)
+    (home / "plugins" / "hermes-tag").mkdir(parents=True)
+    if placed == "default":
+        (home / "plugins" / "feishu").mkdir()
+    said = []
+
+    def install(name):
+        (home / "plugins" / name).mkdir(parents=True)
+        return {"ok": True}
+
+    lcm.migrate_home(home, install=install, say=said.append)
+    lcm.migrate_home(home, install=install, say=said.append)
+    told = [line for line in said if "'hermes-tag'" in line]
+    assert len(told) == 1 and "official 'feishu' plugin" in told[0]
+
+
+def test_a_feishu_home_without_hermes_tag_hears_nothing_about_it(tmp_path):
+    home = _home(tmp_path, env=_CREDS)
+    said = []
+    lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True) or {"ok": True},
+                     say=said.append)
+    assert not [line for line in said if "hermes-tag" in line]

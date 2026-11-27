@@ -36,5 +36,19 @@ class TestExpandParentToolsets(unittest.TestCase):
         )
 
 
+def test_retired_platform_bundle_parent_still_grants_its_core_toolsets():
+    """A parent on the retired ``hermes-qqbot`` preset holds the core tools it carried, so a child asking for
+    ``terminal``/``web`` gets them; the retired name stays out of every listing."""
+    from types import SimpleNamespace
+
+    from tools.delegate_tool_toolsets import _resolve_child_toolsets
+    from toolsets import get_toolset_names
+
+    parent = SimpleNamespace(enabled_toolsets=["hermes-qqbot"], disabled_toolsets=[])
+    child, _disabled = _resolve_child_toolsets(parent, ["terminal", "web"], "leaf")
+    assert child == ["terminal", "web"]
+    assert "hermes-qqbot" not in get_toolset_names()
+
+
 if __name__ == "__main__":
     unittest.main()

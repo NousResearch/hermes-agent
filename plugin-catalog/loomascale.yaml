@@ -1,0 +1,19 @@
+name: loomascale
+title: "LoomaScale — Google Ads & Meta Ads"
+repo: https://github.com/loomascale/agent-plugin
+sha: "ac6adced4077b8a6fb6b725e60a3420af235f382"
+subdir: plugins/loomascale
+version: "1.2.10"
+description: "Audit ad spend and edit campaigns in Google Ads, Meta Ads, LinkedIn Ads, and TikTok Ads, plus GA4, Tag Manager, Search Console, and Merchant Center, and research competitors' public Google and Meta ads, through LoomaScale's hosted MCP server (Streamable HTTP at https://api.loomascale.com/mcp). Bundles five workflow skills: getting started, ads performance audit, cross-source insights, competitor ad research and integration workflows. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Sign-in uses OAuth, which portable packages do not run, so install the connection with `hermes mcp install loomascale` (the `loomascale` MCP catalog entry); that config.yaml server takes precedence over the package's. Disclosure: hosted-only connector with no local code; every tool call goes to api.loomascale.com. Write tools change live campaigns, budgets and bids that spend real ad money; accounts can be set to read-only in the LoomaScale dashboard, and write tools can be pruned with `hermes mcp configure loomascale`. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: LoomaScale
+tier: community
+category: tools
+docs_url: https://github.com/loomascale/agent-plugin/tree/main/plugins/loomascale
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

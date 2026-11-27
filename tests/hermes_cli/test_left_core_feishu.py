@@ -113,7 +113,7 @@ def test_a_feishu_disable_survives_the_automatic_install(tmp_path, monkeypatch):
     from hermes_cli.config import read_user_config_raw
     plugins = read_user_config_raw(home / "config.yaml")["plugins"]
     assert plugins["disabled"] == ["feishu"] and "feishu" not in (plugins.get("enabled") or [])
-    assert "`hermes plugins enable feishu` turns it on" in said[0]
+    assert "so it is installed but off: run `hermes plugins enable feishu` to turn it on" in said[0]
 
 
 def test_a_platform_keeps_exactly_the_feishu_toolsets_it_selected(tmp_path):
@@ -277,8 +277,8 @@ def test_a_present_feishu_the_home_disables_is_said_off_once_and_stays_disabled(
     assert calls == []
     from hermes_cli.config import read_user_config_raw
     assert read_user_config_raw(home / "config.yaml")["plugins"]["disabled"] == ["feishu"]
-    off = [line for line in said if "which now turns Feishu off" in line]
-    assert len(off) == 1 and "`hermes plugins enable feishu` turns it on" in off[0], said
+    off = [line for line in said if "plugins.disabled lists 'feishu'" in line]
+    assert len(off) == 1 and "so it is installed but off: run `hermes plugins enable feishu`" in off[0], said
 
 
 @pytest.mark.parametrize("recorded", ["_default_plugins_installed: [feishu]\n", ""], ids=["default-placed", "user-placed"])

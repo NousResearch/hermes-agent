@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_graph import decompose_triage_task
+from hermes_cli.kanban_db_graph import MAX_DECOMPOSE_CHILDREN, decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
@@ -32,6 +32,11 @@ from hermes_cli.kanban_specify import (
 from hermes_cli.kanban_specify import _profile_author as _specify_author
 
 logger = logging.getLogger(__name__)
+
+# _clean_children rejects over-cap LLM task lists early (advisory "use 2-6" in the
+# prompt is unenforced); MAX_DECOMPOSE_CHILDREN in kanban_db_graph is the same
+# bound enforced again at the DB boundary so no caller can bypass it.
+_MAX_FANOUT_CHILDREN = MAX_DECOMPOSE_CHILDREN
 
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
@@ -240,6 +245,9 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
 def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
     """Validate/normalise the LLM's ``tasks`` list; ``(children, "")`` or ``([], reason)``.
     Unknown assignees route to the default; never assignee=None."""
+    if len(raw_tasks) > _MAX_FANOUT_CHILDREN:
+        return [], (f"decomposer returned {len(raw_tasks)} tasks; the fan-out cap is "
+                    f"{_MAX_FANOUT_CHILDREN}")
     children: list[dict] = []
     for idx, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):

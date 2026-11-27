@@ -31,16 +31,20 @@ _SCRIPT = _launchers._launcher_script("hermes", ROOT, None)
 _JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
 
 
-def _windows_relaunch_command() -> str:
+def _windows_relaunch_command(extra_argv: tuple[str, ...] = ()) -> str:
     """The breakaway ``-c runpy`` wrapper written by the Windows gateway relaunch."""
     root = r"C:\Users\duck\AppData\Local\hermes\hermes-agent"
     main = root + r"\hermes_cli\main.py"
     escaped_root = root.replace("\\", "\\\\")
     escaped_main = main.replace("\\", "\\\\")
+    assigned = ", ".join(
+        [f"'{escaped_main}'", "'gateway'", "'run'"]
+        + [f"'{value.replace(chr(92), chr(92) * 2)}'" for value in extra_argv]
+    )
     source = (
         "import sys, runpy; "
         f"sys.path.insert(0, '{escaped_root}'); "
-        f"sys.argv = ['{escaped_main}', 'gateway', 'run']; "
+        f"sys.argv = [{assigned}]; "
         "sys._hermes_relaunched = True; "
         f"runpy.run_path('{escaped_main}', run_name='__main__')"
     )
@@ -62,6 +66,21 @@ def test_windows_relaunch_bootstrap_argv_is_unescaped() -> None:
         "gateway",
         "run",
     ]
+
+
+def test_windows_relaunch_assigned_argv_items_are_unescaped() -> None:
+    """Assigned sys.argv values carry the source's escapes too, not just run_path's target."""
+    profile = r"C:\Users\duck\profiles\work"
+    command_line = _windows_relaunch_command((profile,))
+    tokens = [t.strip("\"'") for t in shlex.split(command_line, posix=False)]
+    assert inline_bootstrap_argv(tokens) == [
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Users\duck\AppData\Local\hermes\hermes-agent\hermes_cli\main.py",
+        "gateway",
+        "run",
+        profile,
+    ]
+    assert status._gateway_command_subcommand(command_line) == "run"
 
 
 def _payload_launcher(argv: list[str]) -> list[str]:

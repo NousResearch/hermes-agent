@@ -13,12 +13,27 @@ const MAX_ARGV = 64
 // null until the first config read, so an opted-out user never sees a startup report.
 export const $programResumeEnabled = atom<boolean | null>(null)
 
+// Stored session ids the gateway confirmed saved (an inline turn's prompt.submit, a resume with stored
+// history): `--resume` finds only those after a restart. A set: a late reply for another session must
+// not drop this one's proof.
+export const $persistedSessions = atom<ReadonlySet<string>>(new Set())
+
+export const markSessionPersisted = (sid: null | string | undefined): void => {
+  // Tracked only when this pane reports (a launcher prefix): otherwise nothing reads it.
+  if (cachedResumePrefix && sid && !$persistedSessions.get().has(sid)) {
+    $persistedSessions.set(new Set([...$persistedSessions.get(), sid]))
+  }
+}
+
 let cachedToken: null | string = null
 let cachedOwnerPid: null | number = null
 let cachedResumePrefix: null | readonly string[] = null
+// A --safe-mode / --ignore-user-config launch has no bare form (hermes_cli/program_resume.py::resume_argv).
+let cachedSessionOnly = false
 let envConsumed = false
 let reported = false
 let clearSuppressed = false
+let userQuit = false
 
 export const isValidOsc7577Token = (token: null | string | undefined): token is string =>
   typeof token === 'string' && TOKEN_RE.test(token)
@@ -45,9 +60,11 @@ export function consumeProgramResumeEnv(env: NodeJS.ProcessEnv = process.env): v
   const rawPid = env.HERMES_TUI_OWNER_PID
   const rawArgv = env.HERMES_TUI_RESUME_ARGV
 
+  cachedSessionOnly = env.HERMES_TUI_RESUME_SESSION_ONLY === '1'
   delete env.OSC7577_TOKEN
   delete env.HERMES_TUI_OWNER_PID
   delete env.HERMES_TUI_RESUME_ARGV
+  delete env.HERMES_TUI_RESUME_SESSION_ONLY
 
   cachedToken = isValidOsc7577Token(rawToken) ? rawToken : null
 
@@ -112,12 +129,15 @@ const finalizeSequence = (body: string, token: string): null | string => {
   return Buffer.byteLength(seq, 'utf8') <= MAX_BYTES ? seq : null
 }
 
-export function buildTuiResumeArgv(sessionId?: null | string, prefix?: null | readonly string[]): string[] {
-  const base = prefix?.length
-    ? [...prefix]
-    : cachedResumePrefix?.length
-      ? [...cachedResumePrefix]
-      : ['hermes', '--tui']
+// null without the launcher's prefix: only it knows the profile and launcher that bring this home back.
+export function buildTuiResumeArgv(sessionId?: null | string, prefix?: null | readonly string[]): null | string[] {
+  const launch = prefix?.length ? prefix : cachedResumePrefix
+
+  if (!launch?.length || (!sessionId && cachedSessionOnly)) {
+    return null
+  }
+
+  const base = [...launch]
 
   if (sessionId) {
     base.push('--resume', sessionId)
@@ -180,11 +200,19 @@ export const markProgramResumeReported = (): void => {
   reported = true
 }
 
+export const isProgramResumeReported = (): boolean => reported
+
+// die() (/quit, Ctrl+C or Ctrl+D at an idle prompt) and a SIGINT: the user ended Hermes.
+export const markProgramResumeUserQuit = (): void => {
+  userQuit = true
+}
+
 export const suppressProgramResumeClear = (): void => {
   clearSuppressed = true
 }
 
-// Quit: clear the pane's resume record on explicit user exit (never on SIGHUP/SIGTERM/EIO).
+// Tries one clear for a reported record (not after a signal, a dead output stream or OOM suppressed it).
+// The record counts as gone even when the write throws: there is no second chance on a dead stream.
 export function clearProgramResume(
   write: (seq: string) => void,
   opts?: { now?: number; pid?: number; token?: null | string }
@@ -210,10 +238,17 @@ export function clearProgramResume(
   }
 }
 
+// process 'exit': only after a user quit is the record removed; /update (exit 42) and a crash before any quit keep it.
+export const clearProgramResumeOnExit = (write: (seq: string) => void): boolean =>
+  userQuit && clearProgramResume(write)
+
 export function resetProgramResumeStateForTests(): void {
+  $persistedSessions.set(new Set())
+  userQuit = false
   cachedToken = null
   cachedOwnerPid = null
   cachedResumePrefix = null
+  cachedSessionOnly = false
   envConsumed = false
   reported = false
   clearSuppressed = false

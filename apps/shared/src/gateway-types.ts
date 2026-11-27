@@ -414,6 +414,8 @@ export interface PromptSubmitResponse {
   target_profile_home?: string
   outcome?: string | null
   ok?: boolean
+  /** Set when an isolated compute host runs the turn (it writes the session row itself, later). */
+  turn_isolation?: boolean
   /** Set when the submitted text was a bare voice stop phrase consumed
    *  server-side to end the voice chat instead of starting a turn. */
   voice_stopped?: boolean

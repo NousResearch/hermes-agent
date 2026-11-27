@@ -8,14 +8,18 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { useProgramResume } from '../app/useProgramResume.js'
 import { ZERO } from '../domain/usage.js'
 import {
+  $persistedSessions,
   $programResumeEnabled,
   buildTuiResumeArgv,
   clearProgramResume,
+  clearProgramResumeOnExit,
   consumeProgramResumeEnv,
   encodeProgramResume,
   encodeProgramResumeClear,
   isValidOsc7577Token,
   markProgramResumeReported,
+  markProgramResumeUserQuit,
+  markSessionPersisted,
   resetProgramResumeStateForTests,
   suppressProgramResumeClear
 } from '../lib/programResume.js'
@@ -29,6 +33,50 @@ const decodeArgv = (seq: string): string[] => {
   const argvPart = body.split(':').find(part => part.startsWith('argv='))
 
   return argvPart ? argvPart.slice('argv='.length).split(',').map(b64 => Buffer.from(b64, 'base64').toString('utf8')) : []
+}
+
+const PREFIX = ['/usr/local/bin/hermes', '-p', 'default', '--tui']
+
+// useProgramResume rendered against a TTY stand-in: `writes` collects what reaches the terminal and
+// `settle()` re-renders past the hook's settle delay.
+function mountProbe(env: NodeJS.ProcessEnv = {}) {
+  vi.useFakeTimers()
+  vi.setSystemTime(SPEC_TIME * 1000)
+  consumeProgramResumeEnv({
+    HERMES_TUI_OWNER_PID: String(SPEC_PID),
+    HERMES_TUI_RESUME_ARGV: JSON.stringify(PREFIX),
+    OSC7577_TOKEN: SPEC_TOKEN,
+    ...env
+  })
+
+  const writes: string[] = []
+  const ttyOut = Object.assign(new PassThrough(), { columns: 80, isTTY: true, rows: 24 })
+  const origWrite = ttyOut.write.bind(ttyOut)
+  ttyOut.write = ((chunk: unknown, ...rest: unknown[]) => {
+    writes.push(String(chunk))
+
+    return (origWrite as (...args: unknown[]) => boolean)(chunk, ...rest)
+  }) as typeof ttyOut.write
+
+  function Probe() {
+    useProgramResume(ttyOut as unknown as NodeJS.WriteStream)
+
+    return null
+  }
+
+  const app = renderSync(React.createElement(Probe), {
+    patchConsole: false,
+    stderr: Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 }) as unknown as NodeJS.WriteStream,
+    stdin: Object.assign(new PassThrough(), { isTTY: false }) as unknown as NodeJS.ReadStream,
+    stdout: ttyOut as unknown as NodeJS.WriteStream
+  })
+
+  const settle = () => {
+    app.rerender(React.createElement(Probe))
+    vi.advanceTimersByTime(60)
+  }
+
+  return { settle, unmount: () => app.unmount(), writes }
 }
 
 describe('OSC 7577 program resume encoder', () => {
@@ -109,8 +157,21 @@ describe('OSC 7577 program resume encoder', () => {
 
     expect(buildTuiResumeArgv('sess-42')).toEqual(['/usr/local/bin/hermes', '-p', 'work', '--tui', '--resume', 'sess-42'])
 
-    const seq = encodeProgramResume(buildTuiResumeArgv(null), { now: SPEC_TIME })
+    const seq = encodeProgramResume(buildTuiResumeArgv(null)!, { now: SPEC_TIME })
     expect(seq).toContain(`pid=${SPEC_PID}:time=${SPEC_TIME}:`)
+  })
+
+  it('a bypass launch reports only a saved session (no bare form)', () => {
+    const env: NodeJS.ProcessEnv = {
+      HERMES_TUI_RESUME_ARGV: JSON.stringify(['/usr/local/bin/hermes', '-p', 'default', '--tui', '--safe-mode']),
+      HERMES_TUI_RESUME_SESSION_ONLY: '1',
+      OSC7577_TOKEN: SPEC_TOKEN
+    }
+
+    consumeProgramResumeEnv(env)
+    expect(env.HERMES_TUI_RESUME_SESSION_ONLY).toBeUndefined()
+    expect(buildTuiResumeArgv(null)).toBeNull()
+    expect(buildTuiResumeArgv('s1')).toEqual(['/usr/local/bin/hermes', '-p', 'default', '--tui', '--safe-mode', '--resume', 's1'])
   })
 
   it('clears on user quit, stays silent on SIGHUP/SIGTERM/EIO, and never throws on dead tty', () => {
@@ -143,78 +204,119 @@ describe('OSC 7577 program resume encoder', () => {
     ).toBe(false)
   })
 
-  it('tracks session durability transitions across /new, busy, and config disable in useProgramResume', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(SPEC_TIME * 1000)
+  it('argv[0] rules match the Python reporter', () => {
+    // Same table as tests/hermes_cli/test_program_resume.py ARGV0_CASES.
+    const cases: [string, boolean][] = [
+      ['/usr/local/bin/hermes', true],
+      ['hermes', true],
+      ['C:\\Program Files\\hermes.exe', true],
+      ['c:/hermes/hermes.exe', true],
+      ['\\\\server\\share\\hermes.exe', true],
+      ['\\hermes.exe', false],
+      ['C:hermes.exe', true], // no separator: a bare command name
+      ['./hermes', false],
+      ['bin/hermes', false],
+      ['-hermes', false],
+      ['', false],
+      ['/usr/bin/her\x1bmes', false]
+    ]
 
-    consumeProgramResumeEnv({
-      HERMES_TUI_OWNER_PID: String(SPEC_PID),
-      HERMES_TUI_RESUME_ARGV: JSON.stringify(['/usr/local/bin/hermes', '--tui']),
-      OSC7577_TOKEN: SPEC_TOKEN
-    })
-
-    const writes: string[] = []
-    const ttyOut = Object.assign(new PassThrough(), { columns: 80, isTTY: true, rows: 24 })
-    const origWrite = ttyOut.write.bind(ttyOut)
-    ttyOut.write = ((chunk: unknown, ...rest: unknown[]) => {
-      writes.push(String(chunk))
-
-      return (origWrite as (...args: unknown[]) => boolean)(chunk, ...rest)
-    }) as typeof ttyOut.write
-
-    function Probe() {
-      useProgramResume(ttyOut as unknown as NodeJS.WriteStream)
-
-      return null
+    for (const [arg, valid] of cases) {
+      const seq = encodeProgramResume([arg], { now: SPEC_TIME, pid: SPEC_PID, token: SPEC_TOKEN })
+      expect([arg, seq !== null]).toEqual([arg, valid])
     }
+  })
 
-    const app = renderSync(React.createElement(Probe), {
-      patchConsole: false,
-      stderr: Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 }) as unknown as NodeJS.WriteStream,
-      stdin: Object.assign(new PassThrough(), { isTTY: false }) as unknown as NodeJS.ReadStream,
-      stdout: ttyOut as unknown as NodeJS.WriteStream
-    })
-
-    // Not enabled yet ($programResumeEnabled is null): nothing emitted.
-    vi.advanceTimersByTime(100)
-    expect(writes).toEqual([])
-
-    // Enabled on an empty lazy session: emits prefix without --resume.
+  it('reports nothing without the launcher prefix (a home no command can reach)', () => {
+    const probe = mountProbe({ HERMES_TUI_RESUME_ARGV: '' })
+    expect(buildTuiResumeArgv('sess-1')).toBeNull()
     $programResumeEnabled.set(true)
-    patchUiState({ info: { lazy: true, model: 'test', skills: {}, tools: {} }, storedSid: 'lazy-1' })
-    app.rerender(React.createElement(Probe))
-    vi.advanceTimersByTime(60)
-    expect(writes).toHaveLength(1)
-    expect(decodeArgv(writes[0]!)).toEqual(['/usr/local/bin/hermes', '--tui'])
+    patchUiState({ storedSid: 'sess-1' })
+    probe.settle()
+    expect(probe.writes).toEqual([])
+    probe.unmount()
+  })
 
-    // Session becomes durable (busy): emits --resume lazy-1.
-    patchUiState({ busy: true, usage: { ...ZERO, input: 10 } })
-    app.rerender(React.createElement(Probe))
-    vi.advanceTimersByTime(60)
-    expect(writes).toHaveLength(2)
-    expect(decodeArgv(writes[1]!)).toEqual(['/usr/local/bin/hermes', '--tui', '--resume', 'lazy-1'])
+  it('reports --resume only for a session the gateway confirmed saved', () => {
+    const probe = mountProbe()
 
-    // /new creates a fresh lazy session: drops --resume.
-    patchUiState({
-      busy: false,
-      info: { lazy: true, model: 'test', skills: {}, tools: {} },
-      sessionTitle: '',
-      storedSid: 'lazy-2',
-      usage: ZERO
-    })
-    app.rerender(React.createElement(Probe))
-    vi.advanceTimersByTime(60)
-    expect(writes).toHaveLength(3)
-    expect(decodeArgv(writes[2]!)).toEqual(['/usr/local/bin/hermes', '--tui'])
+    probe.settle()
+    expect(probe.writes).toEqual([]) // $programResumeEnabled is null until the first config read
 
-    // Oversized storedSid after an active report clears the stale record.
-    patchUiState({ busy: true, storedSid: 'x'.repeat(2000) })
-    app.rerender(React.createElement(Probe))
-    vi.advanceTimersByTime(60)
-    expect(writes).toHaveLength(4)
-    expect(writes[3]).toContain(':clear=1:mac=')
+    $programResumeEnabled.set(true)
+    // A built agent, a pending submit and token usage are no proof of a state.db row.
+    patchUiState({ busy: true, info: { model: 'test', skills: {}, tools: {} }, storedSid: 'fresh-1', usage: { ...ZERO, input: 10 } })
+    probe.settle()
+    expect(probe.writes.map(decodeArgv)).toEqual([PREFIX])
 
-    app.unmount()
+    markSessionPersisted('fresh-1') // an inline turn's prompt.submit, or a resume with stored history
+    probe.settle()
+    expect(decodeArgv(probe.writes.at(-1)!)).toEqual([...PREFIX, '--resume', 'fresh-1'])
+
+    patchUiState({ busy: false, storedSid: 'fresh-2', usage: ZERO }) // /new
+    probe.settle()
+    expect(decodeArgv(probe.writes.at(-1)!)).toEqual(PREFIX)
+
+    markSessionPersisted('x'.repeat(2000))
+    patchUiState({ storedSid: 'x'.repeat(2000) }) // unreportable: clear the stale record
+    probe.settle()
+    expect(probe.writes.at(-1)).toContain(':clear=1:mac=')
+    probe.unmount()
+  })
+
+  it('tracks saved sessions only when this pane reports', () => {
+    consumeProgramResumeEnv({})
+    markSessionPersisted('s1')
+    expect($persistedSessions.get().size).toBe(0)
+  })
+
+  it('reports again after SIGCONT (back in the foreground)', () => {
+    const probe = mountProbe()
+    $programResumeEnabled.set(true)
+    patchUiState({ storedSid: 'cont-1' })
+    probe.settle()
+    expect(probe.writes).toHaveLength(1)
+
+    process.emit('SIGCONT', 'SIGCONT')
+    probe.settle()
+    expect(probe.writes).toHaveLength(2)
+    expect(decodeArgv(probe.writes[1]!)).toEqual(decodeArgv(probe.writes[0]!))
+
+    probe.unmount()
+    expect(process.listenerCount('SIGCONT')).toBe(0)
+  })
+
+  it('turning display.program_resume off clears the reported record, even right after SIGCONT', () => {
+    const probe = mountProbe()
+    $programResumeEnabled.set(true)
+    patchUiState({ storedSid: 'on-1' })
+    probe.settle()
+    expect(probe.writes).toHaveLength(1)
+
+    process.emit('SIGCONT', 'SIGCONT') // resets the dedupe key before the delayed re-report
+    $programResumeEnabled.set(false)
+    probe.settle()
+    expect(probe.writes).toHaveLength(2)
+    expect(probe.writes[1]).toContain(':clear=1:mac=')
+
+    $programResumeEnabled.set(true)
+    probe.settle()
+    expect(probe.writes.map(decodeArgv).at(-1)).toEqual(PREFIX)
+    probe.unmount()
+  })
+
+  it('clears on exit only after a user quit: /update (42) and a crash keep the record', () => {
+    const out: string[] = []
+    consumeProgramResumeEnv({ OSC7577_TOKEN: SPEC_TOKEN })
+
+    markProgramResumeReported()
+    expect(clearProgramResumeOnExit(seq => void out.push(seq))).toBe(false)
+    expect(out).toEqual([])
+
+    markProgramResumeUserQuit()
+    expect(clearProgramResumeOnExit(seq => void out.push(seq))).toBe(true)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toContain(':clear=1:mac=')
   })
 
   it('suppresses OSC 7577 completely in DASHBOARD_TUI_MODE and non-TTY streams', async () => {

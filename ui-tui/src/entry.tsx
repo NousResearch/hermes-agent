@@ -16,7 +16,12 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
-import { clearProgramResume, consumeProgramResumeEnv, suppressProgramResumeClear } from './lib/programResume.js'
+import {
+  clearProgramResumeOnExit,
+  consumeProgramResumeEnv,
+  markProgramResumeUserQuit,
+  suppressProgramResumeClear
+} from './lib/programResume.js'
 import { clearProgramStatus } from './lib/programStatus.js'
 import { clearNativeTuiFrame, resetTerminalModes } from './lib/terminalModes.js'
 
@@ -48,7 +53,7 @@ process.on('exit', () => {
   const fd = typeof process.stdout.fd === 'number' ? process.stdout.fd : 1
   // Same rule as the classic CLI: a pane back at its shell must not keep listing Hermes as an agent.
   clearProgramStatus(seq => writeSync(fd, seq))
-  clearProgramResume(seq => writeSync(fd, seq))
+  clearProgramResumeOnExit(seq => writeSync(fd, seq))
   resetTerminalModes()
 
   if (NATIVE_MODE) {
@@ -123,6 +128,8 @@ setupGracefulExit({
   onSignal: signal => {
     if (signal === 'SIGHUP' || signal === 'SIGTERM') {
       suppressProgramResumeClear()
+    } else if (signal === 'SIGINT') {
+      markProgramResumeUserQuit() // Ctrl+C reaching us as a signal (raw mode off): the user quit
     }
 
     // The next line in the crash log is the child's `=== SIGTERM received ===`

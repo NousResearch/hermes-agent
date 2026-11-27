@@ -2656,7 +2656,7 @@ def save_env_value_secure(key: str, value: str) -> dict[str, Any]:
 
 def reload_env() -> int:
     """Re-read .env into os.environ (returns the change count); drop a removed var Hermes knows, unless unreadable."""
-    from hermes_cli.config_env_routing import LOADED_PLUGIN_ENV
+    from hermes_cli.config_env_routing import loaded_plugin_env
     from hermes_cli.env_loader import dotenv_unreadable
     env_vars = load_env()
     count = 0
@@ -2664,9 +2664,9 @@ def reload_env() -> int:
         if not is_launch_only_env_key(key) and os.environ.get(key) != value:  # launch-only: never from .env (#135200)
             os.environ[key] = value
             count += 1
-    known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS | LOADED_PLUGIN_ENV
-    for key in known - set(env_vars):
-        if os.environ.pop(key, None) is not None:
+    known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS | loaded_plugin_env()
+    for key in known - set(env_vars):  # launch-only: never read from .env, so never dropped for its absence
+        if not is_launch_only_env_key(key) and os.environ.pop(key, None) is not None:
             count += 1
     return count
 

@@ -102,3 +102,45 @@ def test_a_platform_manifest_with_non_list_env_fields_still_loads_with_the_other
     manager = PluginManager()
     manager.discover_and_load()
     assert {"numenv", "boolenv", "otherplat"} <= {key for key, plugin in manager._plugins.items() if not plugin.error}
+
+
+def _late_platform(home, env_names):
+    plugin = home / "plugins" / "lateplat"
+    plugin.mkdir(parents=True)
+    optional = "".join(f"  - name: {n}\n" for n in env_names)
+    (plugin / "plugin.yaml").write_text(f"name: lateplat\nkind: platform\noptional_env:\n{optional}")
+    (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [lateplat]\n")
+    (home / ".env").write_text("")
+
+
+def test_reload_drops_only_the_reloading_profiles_plugin_env_names(tmp_path, monkeypatch):
+    """A platform plugin loaded for profile B does not make profile A's /reload drop B's names: A's
+    launcher may set that name and A's .env never listed it."""
+    import os
+    from hermes_cli import config
+    from hermes_cli.plugins import PluginManager
+    home_a, home_b = tmp_path / "a", tmp_path / "b"
+    home_a.mkdir()
+    _late_platform(home_b, ["LATEPLAT_ISO_SANDBOX"])
+    (home_a / ".env").write_text("")
+    monkeypatch.setenv("HERMES_HOME", str(home_b))
+    PluginManager().discover_and_load()
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+    monkeypatch.setenv("LATEPLAT_ISO_SANDBOX", "from-launcher")
+    config.reload_env()
+    assert os.environ.get("LATEPLAT_ISO_SANDBOX") == "from-launcher"
+
+
+def test_reload_never_drops_a_launch_only_name_a_plugin_declares(tmp_path, monkeypatch):
+    """Launch-only names are never read from .env, so their absence there must not remove them either."""
+    import os
+    from hermes_cli import config
+    from hermes_cli.plugins import PluginManager
+    home = tmp_path / "home"
+    _late_platform(home, ["HERMES_INSTALL_STATE_DIR"])
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    PluginManager().discover_and_load()
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(tmp_path / "state"))
+    config.reload_env()
+    assert os.environ.get("HERMES_INSTALL_STATE_DIR") == str(tmp_path / "state")

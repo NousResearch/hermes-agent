@@ -20,22 +20,31 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_hermes_home
+
 # Environment-variable shape: what every shell and ``os.getenv`` caller treats as a variable name.
 # Case-sensitive on purpose: a lowercase bare name (``my_flag``) stays a config.yaml top-level key.
 _ENV_SHAPE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
-# Env names the platform plugins loaded in this process declare (``requires_env`` / ``optional_env``):
-# ``reload_env`` drops a removed ``.env`` line for them, as for core's own names, including a plugin
-# installed after ``hermes_cli.config`` read the manifests on disk at import (an in-process install).
-LOADED_PLUGIN_ENV: set[str] = set()
+# Env names the platform plugins loaded in this process declare (``requires_env`` / ``optional_env``),
+# per profile home: ``reload_env`` drops a removed ``.env`` line for the reloading profile's names, as
+# for core's own, including a plugin installed after ``hermes_cli.config`` read the manifests on disk
+# at import (an in-process install). Another profile's plugin names are not this profile's to drop.
+_LOADED_PLUGIN_ENV: dict[str, set[str]] = {}
 
 
 def note_loaded_plugin_env(manifest) -> None:
-    """Add a loading platform plugin's declared env names to :data:`LOADED_PLUGIN_ENV`."""
+    """Record a loading platform plugin's declared env names for the profile loading it."""
+    names = _LOADED_PLUGIN_ENV.setdefault(str(get_hermes_home()), set())
     for entry in (*manifest.requires_env, *manifest.optional_env):
         name = entry.get("name") if isinstance(entry, dict) else entry
         if isinstance(name, str) and name:
-            LOADED_PLUGIN_ENV.add(name)
+            names.add(name)
+
+
+def loaded_plugin_env() -> frozenset[str]:
+    """Env names the active profile's loaded platform plugins declare."""
+    return frozenset(_LOADED_PLUGIN_ENV.get(str(get_hermes_home()), ()))
 
 
 def is_registered_env_name(name: str) -> bool:

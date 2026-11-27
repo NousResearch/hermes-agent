@@ -1,7 +1,7 @@
 ---
 name: obsidian
 description: Read, search, create, and edit notes in the Obsidian vault.
-version: 1.0.0
+version: 1.1.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -14,6 +14,26 @@ metadata:
 # Obsidian Vault
 
 Use this skill for filesystem-first Obsidian vault work: reading notes, listing notes, searching note files, creating notes, appending content, and adding wikilinks.
+
+## Accepted file formats
+
+Only create, copy, or move a file into a vault when its extension is on Obsidian's accepted list: https://obsidian.md/help/file-formats
+
+Compare the extension case-insensitively. Accepted extensions:
+
+- Markdown: `.md`
+- Bases: `.base`
+- JSON Canvas: `.canvas`
+- Images: `.avif`, `.bmp`, `.gif`, `.jpeg`, `.jpg`, `.png`, `.svg`, `.webp`
+- Audio: `.flac`, `.m4a`, `.mp3`, `.ogg`, `.wav`, `.webm`, `.3gp`
+- Video: `.mkv`, `.mov`, `.mp4`, `.ogv`, `.webm`
+- PDF: `.pdf`
+
+`.canvas` is JSON Canvas, not a general `.json` file. Do not write `.json`, `.zip`, office documents, source archives, solution exports, or any other extension into the vault.
+
+Do not use the vault as a temporary file share or drop folder. Put unsupported files in the project directory, a task attachment, or another path outside the vault. An unsupported file can stop the Obsidian app from opening the vault.
+
+Before `write_file`, a copy, or a move, confirm the destination extension is on that list. If it is not, refuse the write and say where the file should go instead.
 
 ## Vault path
 
@@ -46,6 +66,8 @@ Use `search_files` for both filename and content searches. Prefer this over `gre
 ## Create a note
 
 Use `write_file` with the resolved absolute path and the full markdown content. Prefer this over shell heredocs or `echo` because it avoids shell quoting issues and returns structured results.
+
+The destination must use an accepted extension from Accepted file formats. Refuse any other extension.
 
 ## Append to a note
 

@@ -63,7 +63,7 @@ def worker(tmp_path, monkeypatch, request):
                    run_id=task.current_run_id, claim_lock=task.claim_lock,
                    workspace=str(tmp_path), workspaces_root=str(tmp_path), profile='default',
                    branch=None, tenant=None, goal_mode=goal_mode, goal_max_turns=3,
-                   max_runtime_seconds=None, skills=[], context='', goal_text=task.title + '\n' + task.body)
+                   max_runtime_seconds=None, skills=[], context='', goal_text=task.title + '\n\n' + task.body)
     frame = {'text': 'Write the handoff document.',
              'policy': {'source': 'kanban', 'kanban_json': json.dumps(context)}}
     # Binder owns process-global values; monkeypatch restores them after this private-exec seam.
@@ -307,7 +307,7 @@ def test_unavailable_goal_judge_is_not_worker_success(worker, monkeypatch, calle
 
 
 @pytest.mark.parametrize('path', ['partial', 'needs_input'])
-def test_judge_import_failure_is_an_outage_not_a_continue_verdict(worker, monkeypatch, path):
+def test_judge_import_failure_is_an_outage_not_a_continue_verdict(worker, monkeypatch, path, caplog):
     from tests.agent.test_run_agent import _mock_response
     from tools import kanban_tools
 
@@ -340,6 +340,7 @@ def test_judge_import_failure_is_an_outage_not_a_continue_verdict(worker, monkey
         assert (task.status, task.current_run_id) == expected and run.id == run_id
         if path == 'needs_input':
             assert 'judge unavailable' in run.summary.lower()
+    assert any('auxiliary client import failed' in item.getMessage() for item in caplog.records)
 
 
 @pytest.mark.parametrize('action', ['complete', 'request_review'])
@@ -486,6 +487,34 @@ def test_claim_loss_during_judge_prevents_continuation(worker, monkeypatch, call
         with connect_closing() as conn:
             task = kb.get_task(conn, worker.context['task_id'])
             assert task is not None and task.status == 'scheduled'
+
+
+@pytest.mark.parametrize('caller', ['sdk', 'cli-quiet', 'cli-chat'])
+@pytest.mark.parametrize('verdict', ['blocked', 'continue'])
+def test_goal_discards_automatic_verdict_after_criteria_edit(worker, monkeypatch, caller, verdict):
+    from agent import auxiliary_client
+    from tests.agent.test_run_agent import _mock_response
+
+    tid, run_id = worker.context['task_id'], worker.context['run_id']
+    judged = []
+    requirement = 'Stop using the previous acceptance criteria.'
+
+    def judge_transport(**kwargs):
+        judged.append(str(kwargs['messages']))
+        with connect_closing() as other:
+            assert kb.edit_task(other, tid, body=requirement)
+        return _mock_response(content=json.dumps({'verdict': verdict, 'reason': 'Responding to the old criteria.'}))
+
+    monkeypatch.setattr(auxiliary_client, 'call_llm', judge_transport)
+    model = worker.agent.client.chat.completions.create
+    model.side_effect = [_mock_response(content='The first section is ready.'), _mock_response(content='Must not run.')]
+    _run_caller(worker, caller, monkeypatch, expected_exit=1)
+    assert len(judged) == 1 and 'Both sections must exist' in judged[0] and requirement not in judged[0]
+    with connect_closing() as conn:
+        task, run = kb.get_task(conn, tid), kb.latest_run(conn, tid)
+        assert task.body == requirement
+        assert (task.status, task.current_run_id, run.outcome, run.ended_at) == ('running', run_id, None, None)
+    assert model.call_count == 1
 
 
 @pytest.mark.parametrize('parents', ['open', 'finish_during_judge', 'none'])

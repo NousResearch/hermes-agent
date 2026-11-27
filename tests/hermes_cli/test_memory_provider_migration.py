@@ -957,3 +957,61 @@ def test_update_still_migrates_a_provider_that_left_core(tmp_path, monkeypatch):
     work, installs = _update_without_dependency_prompts(tmp_path, monkeypatch, "byterover", tty=False, lazy=True)
     assert mig.migrate_all_homes(say=lambda _m: None) == ["byterover"]
     assert installs == ["byterover"] and (work / "plugins" / "byterover").is_dir()
+
+
+@pytest.mark.parametrize("path", ["startup", "update"])
+def test_lazy_installs_turned_off_while_waiting_for_the_installer_lock_installs_nothing(tmp_path, monkeypatch,
+                                                                                         path):
+    """security.allow_lazy_installs is turned off while the migration waits for another installer: the
+    permission is read again under the lock (from the home's config, as the real gate reads it), so no
+    provider code is fetched and the user gets the profile's install command instead."""
+    import io
+    import threading
+
+    root = tmp_path / ".hermes"
+    work = root / "profiles" / "work"
+    work.mkdir(parents=True)
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    allowed = "memory:\n  provider: byterover\nsecurity:\n  allow_lazy_installs: true\n"
+    (work / "config.yaml").write_text(allowed, encoding="utf-8")
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(work if path == "startup" else root))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: [work])
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "provider_present", lambda n, home: (home / "plugins" / n).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda n: n)
+
+    class _Stream(io.StringIO):
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr("sys.stdin", _Stream())
+    monkeypatch.setattr("sys.stdout", _Stream())
+    installs: list[str] = []
+    monkeypatch.setattr(mig, "_install_into", lambda home, **_kw: lambda n: installs.append(n) or {"ok": True})
+    held = threading.Event()
+    reached, real_lock = _lock_reached(monkeypatch)
+
+    def other_installer():
+        with real_lock(5):
+            held.set()
+            reached.wait(10)
+            (work / "config.yaml").write_text(allowed.replace("true", "false"), encoding="utf-8")
+
+    holder = threading.Thread(target=other_installer)
+    holder.start()
+    assert held.wait(10)
+    said: list[str] = []
+    try:
+        if path == "startup":
+            assert mig.recover_at_startup("byterover", say=said.append) is False
+        else:
+            assert mig.migrate_all_homes(say=said.append) == []
+    finally:
+        reached.set()
+        holder.join(10)
+    assert installs == [] and not (work / "plugins").exists()
+    assert any("allow_lazy_installs is off" in line and "`hermes -p work plugins install byterover`" in line
+               for line in said), said
+    assert not mig._failure_stamp(work, "byterover").exists()

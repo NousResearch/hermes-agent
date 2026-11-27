@@ -153,6 +153,7 @@ class _Outcome(enum.Enum):
     FAILED = "failed"            # the install ran and failed (reported, stamped)
     BUSY = "busy"                # the installer lock was not had: nothing ran (reported, never stamped)
     NOT_WANTED = "not_wanted"    # the user changed the selection or disabled it meanwhile: nothing owed
+    REFUSED = "refused"          # security.allow_lazy_installs was turned off meanwhile: nothing ran (reported)
     BACKED_OFF = "backed_off"    # an install failed while this start waited: not run again
 
 
@@ -240,12 +241,14 @@ def kept_off_sentence(name: str, home: Path) -> str:
 
 def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                      say: Callable[[str], None], wait: float = 900.0, backoff: bool = False,
-                     aside: Optional[Callable[[str], None]] = None) -> _Outcome:
+                     gated: bool = False, aside: Optional[Callable[[str], None]] = None) -> _Outcome:
     """Install *name* into *home* under the installer lock every unattended plugin installer holds
     (:func:`default_plugins.installer_lock`). The home is read again under the lock: another Hermes
     process may have placed the provider while this one waited (nothing reported: that one reports its
     own), the user may have switched to another provider or disabled this one (nothing owed), and with
-    *backoff* (agent start) an install that failed while this one waited is not run again. *say* takes
+    *backoff* (agent start) an install that failed while this one waited is not run again. A *gated* install
+    (an unattended one, which ``security.allow_lazy_installs`` permits) reads that permission again too: it
+    may have been turned off while this one waited, and the policy at install time is the one that counts. *say* takes
     the install's own outcome; *aside* (default *say*) the lines for an install that did not run (a busy
     lock, the backoff), which an unattended start only logs."""
     from hermes_cli.default_plugins import installer_lock
@@ -259,6 +262,9 @@ def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
                 logger.info("memory provider '%s' is no longer selected (or is disabled) for %s; not installing it",
                             name, home)
                 return _Outcome.NOT_WANTED
+            if gated and not _home_allows_lazy_installs(home):
+                aside(_lazy_installs_off_line(name, home))
+                return _Outcome.REFUSED
             if backoff and _failed_recently(home, name):
                 aside(_failed_recently_line(name, home))
                 return _Outcome.BACKED_OFF
@@ -420,10 +426,11 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
                     f"questions apply to all of them.")
             with shared_dependency_answers():
                 for index, home in enumerate(homes):
-                    outcome = _install_pending(home, name, install=_install_into(home), say=labelled(home))
+                    outcome = _install_pending(home, name, install=_install_into(home), say=labelled(home),
+                                               gated=not _interactive())
                     if outcome is _Outcome.PRESENT:
                         installed.append(name)
-                    if outcome in (_Outcome.PRESENT, _Outcome.NOT_WANTED):
+                    if outcome in (_Outcome.PRESENT, _Outcome.NOT_WANTED, _Outcome.REFUSED):  # this home's own answer
                         continue
                     rest = homes[index + 1:]
                     if rest:
@@ -435,6 +442,11 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
         say("  ⚠ Memory provider migration cancelled. Profiles already migrated keep their plugin; "
             "run `hermes plugins install <name>` (with `-p <profile>`) for the rest.")
     return installed
+
+
+def _lazy_installs_off_line(name: str, home: Path) -> str:
+    return (f"  ⚠ Memory provider '{name}' is not installed: security.allow_lazy_installs is off, so Hermes did "
+            f"not fetch it. Run `{_install_command(name, home)}`." + _LABS_NOTICES.get(name, ""))
 
 
 def _busy_line(name: str, home: Path) -> str:
@@ -528,7 +540,7 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
     outcome = _install_pending(home, name, install=_install_into(home, consent=True),
                                say=report if say is not None else defer_startup_notice,
                                wait=0.0 if busy_since is not None else startup_lock_wait(gateway_start=False),
-                               backoff=True, aside=aside)
+                               backoff=True, gated=True, aside=aside)
     if outcome is _Outcome.BUSY:  # nothing ran: a later start in this process (a gateway, Desktop) tries again
         # Recorded (with the real reason: held, or unusable) before the claim is released, so no start
         # slips into the long wait.

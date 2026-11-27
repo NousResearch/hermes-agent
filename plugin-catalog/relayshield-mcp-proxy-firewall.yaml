@@ -1,0 +1,17 @@
+name: relayshield-mcp-proxy-firewall
+title: RelayShield MCP Proxy Firewall
+repo: https://github.com/relayshield/relayshield-mcp
+sha: 73636e62bea0769d2f133b0a27fe66f8d51013ec
+version: "1.1.0"
+description: "Screens a wallet agent's MCP write calls against live threat intel before they reach the wallet. Disclosure: the plugin declares the RelayShield free MCP server (Streamable HTTP at https://relayshieldadmin-relayshield-free-mcp.hf.space/mcp, no sign-in, no keys) and a firewall skill; screening calls go to the hosted RelayShield service. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: RelayShield
+tier: community
+category: tools
+docs_url: https://api.relayshield.net/developers
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

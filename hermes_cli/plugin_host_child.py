@@ -433,8 +433,7 @@ class HostRuntime:
         self.loads.pop(plugin_key, None)
         module_name = self.modules.pop(plugin_key, "")
         if module_name:
-            for name in [m for m in sys.modules if m == module_name or m.startswith(module_name + ".")]:
-                sys.modules.pop(name, None)
+            _evict_module_tree(module_name)
         return {"errors": errors}
 
     def op_shutdown(self, _params: dict[str, Any]) -> None:
@@ -505,6 +504,19 @@ async def _on_behalf_of(awaitable: Any, origin: Optional[int]) -> Any:
     return await awaitable
 
 
+def _evict_module_tree(module_name: str) -> None:
+    """Drop ``module_name`` and its ``module_name.*`` submodules from ``sys.modules``.
+
+    Plugin async code (the ``plugin-host-loop`` thread) and plugin-started threads import while this
+    runs, so the ``list()`` snapshot is load-bearing: iterating the live mapping raises ``RuntimeError:
+    dictionary changed size during iteration`` (the race ``plugins_loader._evict_modules`` was fixed for).
+    """
+    prefix = f"{module_name}."
+    for name in list(sys.modules):  # snapshot first — never iterate the live mapping
+        if name == module_name or name.startswith(prefix):
+            sys.modules.pop(name, None)
+
+
 def _import_plugin(params: dict[str, Any]) -> Any:
     """Import a directory plugin under the module name Hermes assigned, or resolve an entry point."""
     if params.get("entrypoint"):
@@ -536,8 +548,7 @@ def _import_plugin(params: dict[str, Any]) -> Any:
     try:
         spec.loader.exec_module(module)
     except BaseException:
-        for name in [m for m in sys.modules if m == module_name or m.startswith(module_name + ".")]:
-            sys.modules.pop(name, None)
+        _evict_module_tree(module_name)
         raise
     return module
 

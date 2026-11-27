@@ -230,6 +230,44 @@ def test_a_newer_yaml_disable_under_the_old_key_beats_a_gateway_json_enable(tmp_
     assert _qqbot_in_use(home) is False
 
 
+def _gateway_qqbot(home: Path, monkeypatch):
+    """QQ Bot's ``PlatformConfig`` as the gateway loads *home* once the plugin registers ``qqbot``."""
+    from gateway.config import Platform, load_gateway_config
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    added = "qqbot" not in Platform._value2member_map_
+    qqbot = Platform._add_pseudo_member("qqbot") if added else Platform("qqbot")
+    try:
+        return load_gateway_config().platforms.get(qqbot)
+    finally:
+        if added:
+            for value in ("qqbot-platform", "qqbot"):
+                member = Platform._value2member_map_.pop(value, None)
+                if member is not None and member.value == value:
+                    Platform._member_map_.pop(member._name_, None)
+
+
+def test_a_yaml_block_under_the_old_key_replaces_gateway_json_credentials_as_the_gateway_reads_it(
+        tmp_path, monkeypatch):
+    """The gateway maps both spellings to one ``Platform`` and the later block replaces the earlier one whole, so
+    gateway.json's ``qqbot`` credentials and enable do not survive a config.yaml ``qqbot-platform`` block: core
+    never ran QQ Bot for this home, and the migration does not install it either."""
+    import json
+    home = _home(tmp_path, config="platforms:\n  qqbot-platform:\n    extra:\n      markdown_support: true\n")
+    (home / "gateway.json").write_text(json.dumps({"platforms": {"qqbot": {
+        "enabled": True, "extra": {"app_id": "a", "client_secret": "s"}}}}), encoding="utf-8")
+    platform = _gateway_qqbot(home, monkeypatch)
+    assert platform is not None and platform.enabled is False and "app_id" not in platform.extra
+    assert _qqbot_in_use(home) is False
+
+
+def test_the_later_spelling_in_one_layer_wins_as_the_gateway_reads_it(tmp_path, monkeypatch):
+    home = _home(tmp_path, env=_CREDS,
+                 config="platforms:\n  qqbot:\n    enabled: false\n  qqbot-platform:\n    enabled: true\n")
+    platform = _gateway_qqbot(home, monkeypatch)
+    assert platform is not None and platform.enabled is True
+    assert _qqbot_in_use(home) is True
+
+
 @pytest.mark.parametrize("collision", [False, True])
 def test_saved_qqbot_preset_still_selects_core_tools_at_runtime(monkeypatch, collision):
     from cron.scheduler import _resolve_cron_enabled_toolsets

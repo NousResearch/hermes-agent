@@ -1,23 +1,25 @@
 name: openinvest
 repo: https://github.com/longsizhuo/openInvest
-sha: 8083a1d97e26c9c089fd931102a2ec2f226b5890
+sha: 653cc8426a01d767c1cf7a7045306d246492f38f
 subdir: plugin
-description: 'Portfolio ledger, market data and Agent-run investment research. Keep
-  one openInvest entry: new users can connect to the official OAuth MCP; local deployment
-  remains optional and existing local bindings are preserved. Disclosure: hosted ledger/tool
-  data are stored by the operator; de-identified research recording defaults on after
-  webpage notice and can be disabled in account settings. Local Direct inference uses
-  configured model providers. The native plugin registers skills, a routing rule and
-  a pre_llm_call hook; the hook invokes the local digest only for explicitly selected
-  local mode (or a configured legacy local data directory), never for remote/unselected
-  mode. No brokerage execution. Server-side research-default compatibility with rule
-  13 remains for maintainer review.'
+description: >-
+  Personal portfolio ledger, market data and Agent-run research. Connect to the
+  official OAuth MCP or keep a local ledger. The hosted service stores submitted
+  data. De-identified research recording defaults on after the web notice,
+  can retain precise amounts and currencies, and can be disabled in account settings.
+  The local backend runs through uvx and stores local ledgers and configured keys
+  under INVEST_HOME. Market-data and RSS sources receive queries. Direct analysis
+  sends portfolio context to the configured model provider. The optional local
+  session digest can expose holdings in shared chats. The optional daily report
+  and news sentinel consume model quota and require explicit consent.
+  Hosted tools record activity and do not place orders. The local package includes
+  beta operator notes for a separately configured IBKR live-trading setup.
 maintainer: longsizhuo
 tier: community
 category: tools
 title: openInvest
 docs_url: https://openinvest.involutionhell.com/docs/clients
-version: 0.34.4
+version: "0.34.5"
 capabilities:
   provides_tools: []
   provides_hooks:

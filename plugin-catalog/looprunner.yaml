@@ -1,6 +1,6 @@
 name: looprunner
 repo: https://github.com/itxLikhith/looprunner
-sha: 1e56db78508be5d250288c26f17659117025d954
+sha: b371ad3400342844ac13fd9ef7c18abce1c365c0
 description: >-
   Set-and-forget autonomous QA loop runner for any repository. Runs your verify
   command each round, diagnoses failures with the host LLM, applies a minimal fix
@@ -12,7 +12,7 @@ maintainer: itxLikhith
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-version: "0.18.1"
+version: "0.18.0"
 tags: [automation, kanban, qa, testing, ci, security, issues]
 known_issues:
   - "Optional: the heavy multi-agent security scan needs the hermes-security plugin installed. LoopRunner declares it as an advisory dependency and falls back to a built-in LLM review when it is absent."

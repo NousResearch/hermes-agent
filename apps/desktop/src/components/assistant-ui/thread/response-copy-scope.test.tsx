@@ -104,3 +104,38 @@ it.each(['desktop', 'touch'])(
     expect(within(actions).queryByRole('button', { name: /copy full response/i })).toBeNull()
   }
 )
+
+// The disappearing-final-response defect ended a completed, text-bearing turn as
+// a reasoning-only row ("Thought for…") with NO footer — no copy control. Pin
+// that the hydrated tool-heavy turn (assistant tool row + tool rows + the final
+// prose row, each carrying reasoning) renders its answer AND keeps the footer.
+it('a hydrated tool-heavy turn renders its final answer with the copy control', async () => {
+  const storedToolTurn = [
+    { role: 'user', content: 'Run the tools.', timestamp: 1 },
+    {
+      role: 'assistant',
+      content: '',
+      reasoning: 'Thinking Process: plan',
+      tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'terminal', arguments: '{}' } }],
+      timestamp: 2
+    },
+    { role: 'tool', content: 'ok', tool_call_id: 'call-1', timestamp: 3 },
+    { role: 'assistant', content: 'The result is 71.', reasoning: 'Thinking Process: final', timestamp: 4 }
+  ] as never
+
+  const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) }
+  vi.stubGlobal('navigator', { ...navigator, clipboard })
+
+  const { container } = render(
+    <ThreadRuntime messages={toChatMessages(storedToolTurn).map(toRuntimeMessage)}>
+      <Thread />
+    </ThreadRuntime>
+  )
+
+  await waitFor(() => expect(container.textContent).toContain('The result is 71.'))
+
+  const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
+  expect(actions).toBeTruthy()
+  fireEvent.click(within(actions).getByRole('button', { name: /^copy$/i }))
+  await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('The result is 71.'))
+})

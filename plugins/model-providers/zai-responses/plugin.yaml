@@ -1,0 +1,5 @@
+name: zai-responses-provider
+kind: model-provider
+version: 1.0.0
+description: Z.AI / GLM on the native OpenAI Responses API (api.z.ai/api/v1)
+author: ecourn

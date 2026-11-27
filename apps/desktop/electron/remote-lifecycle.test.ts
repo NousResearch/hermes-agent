@@ -2010,6 +2010,27 @@ test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)
   )
 })
 
+test('version probe keeps stderr out and picks the Hermes line, not the first line (#138772)', async () => {
+  let versionProbe = ''
+
+  const noisySsh = fakeSsh([
+    [
+      /--version/,
+      (cmd: string) => {
+        versionProbe = cmd
+
+        // Stdout can still carry non-version lines (shell banners); the
+        // pre-fix probe also merged remote stderr via `2>&1`, letting a
+        // plugin warning masquerade as the version 5,070 times in one log.
+        return 'Claude Subscription DirectSDK (Experimental): Claude Code is not installed\nHermes Agent v0.22.0 (e06df9c2eae6)\n'
+      }
+    ]
+  ])
+
+  assert.equal(await probeHermesVersion(noisySsh, '/x/hermes'), 'Hermes Agent v0.22.0 (e06df9c2eae6)')
+  assert.ok(!/--version 2>&1/.test(versionProbe), 'version probe must not merge remote stderr into stdout')
+})
+
 test('cleanupStale escalates to SIGKILL when the backend survives the graceful wait (#91668 quit-during-active-turn)', async () => {
   // A serve mid-turn (in-flight LLM call, live MCP children) can ride out
   // SIGTERM well past the 5s graceful wait. Before-quit races the whole

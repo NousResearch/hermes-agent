@@ -69,15 +69,20 @@ def _git_unusable() -> bool:
 def _run_git(repo_dir: Path, *args: str) -> str | None:
     if _git_unusable():
         return None
+    # bounded_probe_run, not subprocess.run: it hands the child DEVNULL for stdin and its Windows
+    # timeout path tree-kills and drains. A managed worker's inherited stdin is its control pipe
+    # with a read pending, and git's own startup handle probe (ntdll!NtQueryObject on that pipe)
+    # blocks forever there — before run()'s 3 s timeout could even fire.
+    from hermes_cli._subprocess_compat import bounded_probe_run
+
     try:
-        result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
-            check=False,
-        )
+        result = bounded_probe_run(["git", *args], timeout=3, cwd=str(repo_dir))
     except (OSError, subprocess.SubprocessError):
         return None
+    if result is None or result.returncode != 0:
+        return None
     value = (result.stdout or "").strip()
-    return value if result.returncode == 0 and value else None
+    return value or None
 
 
 def _resolve_repo_dir() -> Path | None:
@@ -237,15 +242,11 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
             status_command.append("-uno")
         dirty = False
         if not _git_unusable():
-            dirty_result = subprocess.run(
-                status_command,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                timeout=3,
-                cwd=str(repo_dir),
-                check=False,
-            )
-            dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
+            from hermes_cli._subprocess_compat import bounded_probe_run
+
+            dirty_result = bounded_probe_run(status_command, timeout=3, cwd=str(repo_dir))
+            dirty = (dirty_result is not None and dirty_result.returncode == 0
+                     and bool((dirty_result.stdout or "").strip()))
     except (OSError, subprocess.SubprocessError):
         dirty = False
 

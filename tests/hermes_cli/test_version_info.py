@@ -300,3 +300,38 @@ def test_a_timed_out_status_probe_never_strands_index_lock(tmp_path):
     _git_version_info(tmp_path, include_untracked=True)
 
     assert not (tmp_path / ".git" / "index.lock").exists()
+
+
+def test_startup_git_probes_never_inherit_stdin_via_subprocess_run(monkeypatch):
+    """Both startup git probes go through the deadlock-safe helper, never ``subprocess.run``.
+
+    ``run()`` leaves the child the caller's stdin, and its Windows post-timeout cleanup calls an
+    unbounded ``communicate()``. A managed worker's stdin is its control pipe with a read pending,
+    and git's own startup handle probe (``ntdll!NtQueryObject`` on that pipe) blocks forever
+    there — before the 3 s timeout can fire — so the worker never reaches its agent turn.
+    """
+    import hermes_cli._subprocess_compat as compat
+    from hermes_cli import version_info
+
+    def probe(argv, **_kwargs):
+        joined = " ".join(argv)
+        if "--porcelain" in joined:
+            return subprocess.CompletedProcess(list(argv), 0, " M a.txt\n", "")
+        if "tag" in joined:
+            return subprocess.CompletedProcess(list(argv), 0, "v9.9.9\n", "")
+        if "rev-list" in joined:
+            return subprocess.CompletedProcess(list(argv), 0, "0\n", "")
+        if "log" in joined:
+            return subprocess.CompletedProcess(list(argv), 0, "1700000000\n", "")
+        return subprocess.CompletedProcess(list(argv), 0, "c" * 40 + "\n", "")
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("a startup git probe went through subprocess.run")
+
+    monkeypatch.setattr(compat, "bounded_probe_run", probe)
+    monkeypatch.setattr(version_info, "_git_unusable", lambda: False)
+    monkeypatch.setattr(version_info.subprocess, "run", fail_run)
+
+    assert version_info._run_git(Path("repo"), "rev-parse", "HEAD") == "c" * 40
+    info = version_info._git_version_info(Path("repo"))
+    assert (info.base_version, info.distance, info.dirty) == ("9.9.9", 0, True)

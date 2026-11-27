@@ -469,6 +469,15 @@ def _pool_entry_base_url(entry: Any) -> str:
     return getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or ""
 
 
+def _durable_pool_entry_base_url(entry: Any) -> str:
+    """The row's endpoint ignoring any derived runtime override."""
+    from agent.credential_pool_plugin import active_runtime_override
+    override = active_runtime_override(entry)
+    if override is not None and override.base_url:
+        return getattr(entry, "base_url", None) or ""
+    return _pool_entry_base_url(entry)
+
+
 def _nous_entry_key_usable(entry: Any, min_ttl: int) -> bool:
     return _agent_key_is_usable({k: getattr(entry, k, None) for k in ("agent_key", "agent_key_expires_at", "scope")}, min_ttl)
 
@@ -637,14 +646,34 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
 
 def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, requested_provider: str,
                                      model_cfg: Optional[dict[str, Any]] = None, pool: Optional[CredentialPool] = None,
-                                     target_model: Optional[str] = None) -> dict[str, Any]:
+                                     target_model: Optional[str] = None) -> Optional[dict[str, Any]]:
     model_cfg = model_cfg or _get_model_config()
-    api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
-                                                  _pool_entry_base_url(entry).rstrip("/"))
+    effective_model = _effective_model(model_cfg, target_model)
+    prepare: Any = getattr(pool, "prepare_runtime_entry", None)
+    # Route from the row's durable endpoint so an active derived override cannot hide a configured relay.
+    row_base = (_durable_pool_entry_base_url(entry) if callable(prepare) else _pool_entry_base_url(entry)).rstrip("/")
+    api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, row_base)
     declared, entry_key = _owned_url_credential(base_url, model_cfg, provider)
     base_url = _finalize_base_url(provider, api_mode, base_url)
     if declared:  # the URL's owner supplies the key; the built-in's pool rows are another account's
         return _runtime(provider, api_mode, base_url, entry_key, source="config:providers", requested_provider=requested_provider)
+    if callable(prepare):
+        relayed = base_url.rstrip("/") != _finalize_base_url(provider, api_mode, row_base).rstrip("/")
+        # Initial resolution has no dispatched source route. Without a relay, preparation may move the
+        # row; a configured relay stays the active route, and a moved derived credential must be
+        # admitted for that route (never redirecting the session away from it).
+        entry = prepare(entry, source_base_url=None)
+        if entry is None:
+            return None
+        if _pool_entry_base_url(entry).rstrip("/") != row_base:
+            if relayed:
+                entry = prepare(entry, source_base_url=base_url)
+                if entry is None:
+                    return None
+            else:
+                base_url = _finalize_base_url(provider, api_mode, _pool_entry_base_url(entry) or base_url)
+    if not has_usable_secret(_pool_entry_api_key(entry)):
+        return None
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
 
@@ -698,17 +727,35 @@ class PoolKey:
     pool: CredentialPool
     entry: PooledCredential
     api_key: str
+    # The endpoint a typed runtime credential (``PoolRuntimeCredential``) moved the row to: its key is
+    # only valid there. None keeps the caller's endpoint (legacy rows and string hooks).
+    base_url: Optional[str] = None
+
+
+def _prepare_chosen_entry(pool: Any, entry: Any, source_base_url: Optional[str]) -> Any:
+    """The chosen row with its runtime credential installed by the pool's own transaction (typed
+    pairs, legacy strings, route admission). Remembered overrides are restored first so an already
+    derived bearer is reused instead of exchanged again."""
+    from agent.auxiliary_pool_recovery import rehydrate
+    rehydrate(pool)
+    return pool.prepare_runtime_entry(entry, source_base_url=source_base_url)
 
 
 def choose_pool_key(pool: Optional[CredentialPool], provider: str, *, model: Optional[str] = None,
                     endpoint_url: Optional[str] = None, as_called: Any = None,
-                    mode: str = "select") -> Optional[PoolKey]:
+                    mode: str = "select", prepare: bool = True,
+                    admit_for: Optional[str] = None) -> Optional[PoolKey]:
     """The key ``pool`` serves for ``provider``, taken the way a direct pick of the provider takes it:
     the pool's choice among the entries for ``endpoint_url`` (compared through ``as_called``, see
     ``credential_pool_selection.AsCalled``), the provider profile's preparation of its secret, and a
     usable-secret check. ``mode``: ``select`` counts and rotates as the pick is made; ``choose`` makes
     the same pick without touching the pool (the caller ``pool.commit``s it once the key is sent);
-    ``peek`` reads the entry the pool is already on. None when no entry qualifies."""
+    ``peek`` reads the entry the pool is already on. None when no entry qualifies.
+
+    A pool with ``prepare_runtime_entry`` prepares the row there, admitted for ``endpoint_url``;
+    ``admit_for`` is the endpoint a prepared row must serve when no ``endpoint_url`` filters the pick.
+    ``prepare=False`` hands the unprepared row to a caller that prepares it itself (exactly once),
+    so no usable-secret check is made on the durable key here."""
     if pool is None or not pool.has_credentials():
         return None
     model = model or None
@@ -725,10 +772,23 @@ def choose_pool_key(pool: Optional[CredentialPool], provider: str, *, model: Opt
     if provider == "nous":
         if mode == "select":  # a refresh writes the pool; the read-only modes leave it alone
             entry, api_key = _refresh_nous_pool_entry(pool, entry, api_key)
+    elif callable(getattr(pool, "prepare_runtime_entry", None)):
+        if not prepare:
+            return PoolKey(pool, entry, api_key)
+        from agent.credential_pool_plugin import active_runtime_override
+        entry = _prepare_chosen_entry(pool, entry, endpoint_url or admit_for)
+        if entry is None:
+            return None
+        override = active_runtime_override(entry)
+        moved = getattr(override, "base_url", None) if override is not None else None
+        api_key = _pool_entry_api_key(entry)
+        return PoolKey(pool, entry, api_key, moved) if has_usable_secret(api_key) else None
     else:
         from providers import get_provider_profile
         if (profile := get_provider_profile(provider)) is not None:
             api_key = profile.prepare_pool_entry(entry, api_key)
+            if not isinstance(api_key, str):  # a typed pair needs the pool's runtime transaction
+                return None
     return PoolKey(pool, entry, api_key) if has_usable_secret(api_key) else None
 
 
@@ -773,8 +833,13 @@ class PoolChoice:
         if self.picked is None:
             return
         from agent.auxiliary_client import _to_openai_base_url
-        if self.picked.pool.commit(self.picked.entry.id, model=self.model, endpoint_url=self._endpoint_url,
-                                   as_called=_to_openai_base_url) is None:
+        # Match the endpoint actually adopted, never temporarily strip a live override:
+        # lock-free readers of the row must never see its durable grant as a request key.
+        # Round-robin availability is evaluated at this derived endpoint, not the original one.
+        committed = self.picked.pool.commit(
+            self.picked.entry.id, model=self.model,
+            endpoint_url=self.picked.base_url or self._endpoint_url, as_called=_to_openai_base_url)
+        if committed is None:
             logger.info("Credential pool entry %s left the pool before its first request", self.picked.entry.id)
 
 
@@ -794,7 +859,8 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
         pool = None
     if base_url_host_matches(cfg_url, "azure.com"):
         pool = anthropic_foundry_pool(pool, cfg_url)
-    picked = choose_pool_key(pool, provider, model=target_model)
+    # _resolve_runtime_from_pool_entry prepares the row once, with its configured-relay handling.
+    picked = choose_pool_key(pool, provider, model=target_model, prepare=False)
     if picked is None:
         return None
     pool, entry = picked.pool, picked.entry

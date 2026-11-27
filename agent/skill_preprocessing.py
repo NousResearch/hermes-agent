@@ -38,10 +38,26 @@ def substitute_template_vars(content: str, skill_dir: Path | None, session_id: s
     if not content:
         return content
     values = {
-        "HERMES_SKILL_DIR": str(skill_dir) if skill_dir else None,
+        "HERMES_SKILL_DIR": _agent_visible_skill_dir(skill_dir),
         "HERMES_SESSION_ID": str(session_id) if session_id else None,
     }
     return _SKILL_TEMPLATE_RE.sub(lambda m: values[m.group(1)] or m.group(0), content)
+
+
+def _agent_visible_skill_dir(skill_dir: Path | None) -> str | None:
+    """Skill dir as the active terminal backend sees it (#135899): container/synced
+    backends run scripts where the dir is mounted or synced in, so the raw host path
+    dangles there. Translation failure falls back to the host path — the token must
+    still resolve for local backends. ``run_inline_shell`` keeps the host dir as CWD:
+    it executes on the host, not through the terminal backend."""
+    if not skill_dir:
+        return None
+    try:
+        from tools.credential_files import to_agent_visible_skill_path
+        return to_agent_visible_skill_path(str(skill_dir))
+    except Exception:
+        logger.debug("skill template: could not translate skill dir for backend", exc_info=True)
+        return str(skill_dir)
 
 
 def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:

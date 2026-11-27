@@ -2838,6 +2838,7 @@ export interface PetInfoMetaResult {
   displayName?: string | null
   scale?: number | null
   spritesheetRevision?: string | null
+  terminalEnabled?: boolean | null
 }
 /** ``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width. */
 export interface PetCellsParams {

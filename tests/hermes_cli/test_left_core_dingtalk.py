@@ -14,6 +14,7 @@ import pytest
 import hermes_cli.left_core_migration as lcm
 
 _CREDS = "DINGTALK_CLIENT_ID=cid\nDINGTALK_CLIENT_SECRET=sec\n"
+_CORE_ERA = "_config_version: 54\n"  # a config.yaml from before v55: the proof a home ran core's DingTalk
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +68,7 @@ def test_webhook_only_dingtalk_home_migrates(tmp_path, from_env):
     url = "https://oapi.dingtalk.com/robot/send?access_token=fixture"
     env = f"DINGTALK_WEBHOOK_URL={url}\n" if from_env else ""
     config = "" if from_env else f"platforms:\n  dingtalk:\n    enabled: false\n    extra: {{webhook_url: '{url}'}}\n"
-    home = _home(tmp_path, env=env, config=config)
+    home = _home(tmp_path, env=env, config=_CORE_ERA + config)
 
     def install(name):
         (home / "plugins" / name).mkdir(parents=True)
@@ -91,7 +92,7 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use(tmp_path, name):
 
 
 def test_a_dingtalk_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
-    home = _home(tmp_path, env=_CREDS)
+    home = _home(tmp_path, env=_CREDS, config=_CORE_ERA)
     calls, said = [], []
 
     def install(name):
@@ -105,8 +106,23 @@ def test_a_dingtalk_home_gets_the_plugin_once_with_the_labs_notice(tmp_path):
     assert "DingTalk is now a Hermes Labs plugin: built by Nous Research, not supported" in said[0]
 
 
+def test_a_bare_dingtalk_in_plugins_disabled_is_kept_with_one_enable_notice(tmp_path):
+    """Core's adapter ignored a bare ``dingtalk`` in plugins.disabled, so the home still gets the plugin; the
+    automatic install keeps that entry (placed but off) and says so once, naming the enable command."""
+    home = _home(tmp_path, env=_CREDS, config=_CORE_ERA + "plugins:\n  disabled: [dingtalk]\n")
+    said = []
+
+    def install(name):
+        (home / "plugins" / name).mkdir(parents=True)
+        return {"ok": True, "kept_disabled": True}
+
+    assert lcm.migrate_home(home, install=install, say=said.append) == ["dingtalk"]
+    assert len(said) == 1 and said[0].count("plugins.disabled lists 'dingtalk'") == 1, said
+    assert "hermes plugins enable dingtalk" in said[0]
+
+
 def test_a_saved_home_channel_does_not_stop_the_migration(tmp_path):
-    home = _home(tmp_path, env=_CREDS, config="platforms:\n  dingtalk:\n    enabled: true\n"
+    home = _home(tmp_path, env=_CREDS, config=_CORE_ERA + "platforms:\n  dingtalk:\n    enabled: true\n"
                  "    home_channel: {platform: dingtalk, chat_id: cid1, name: Home}\n")
     installed = lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True)
                                  or {"ok": True}, say=lambda message: None)
@@ -204,6 +220,36 @@ def test_a_home_from_v55_on_that_adds_dingtalk_is_told_the_install_command(tmp_p
                             say=said.append) == []
     assert len(said) == 1 and "hermes plugins install dingtalk" in said[0]
     assert (home / "config.yaml").read_bytes() == before
+
+
+@pytest.mark.parametrize("config", ["", "platforms:\n  dingtalk:\n    enabled: true\n"], ids=["no-config", "unstamped"])
+def test_a_home_that_cannot_prove_it_ran_core_dingtalk_is_told_the_install_command(tmp_path, config):
+    """A missing or unstamped config.yaml is not proof of core-era use (a new home whose setup wrote only
+    .env looks the same): Labs code is downloaded only for a home stamped below v55, so this one gets the
+    install command, also after its first stamped save."""
+    from hermes_cli.config import save_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = _home(tmp_path, env=_CREDS, config=config)
+    for _ in range(2):
+        said = []
+        lcm._attempted.clear()
+        (home / "cache" / "left-core.failed-dingtalk").unlink(missing_ok=True)
+        assert lcm.migrate_home(home, install=lambda name: pytest.fail("Labs code is installed only when asked"),
+                                say=said.append) == []
+        assert len(said) == 1 and "hermes plugins install dingtalk" in said[0], said
+        token = set_hermes_home_override(home)
+        try:
+            save_config({"display": {"compact": True}}, merge_existing=True)  # the home's first stamp
+        finally:
+            reset_hermes_home_override(token)
+    assert not (home / "plugins" / "dingtalk").exists()
+
+
+def test_a_home_stamped_below_v55_that_runs_dingtalk_migrates(tmp_path):
+    home = _home(tmp_path, env=_CREDS, config=_CORE_ERA)
+    installed = lcm.migrate_home(home, install=lambda name: (home / "plugins" / name).mkdir(parents=True)
+                                 or {"ok": True}, say=lambda _m: None)
+    assert installed == ["dingtalk"]
 
 
 def test_the_dingtalk_card_installs_the_labs_plugin_once_dingtalk_is_set_up(monkeypatch):

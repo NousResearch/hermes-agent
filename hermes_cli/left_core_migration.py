@@ -267,10 +267,8 @@ _DINGTALK_NOTICE = ("DingTalk is now a Hermes Labs plugin: built by Nous Researc
 
 
 def _dingtalk_notice(home: Path, *, process_env: bool = False) -> str:
-    # As for Yuanbao: a bare ``dingtalk`` that survived the install's enable (a managed overlay pin) now turns it off.
-    if plugin_present("dingtalk", home) and _plugins_listed(home, ("dingtalk",))[1]:
-        return (f"{_DINGTALK_NOTICE} plugins.disabled lists 'dingtalk', which now turns DingTalk off; "
-                "remove it to keep using DingTalk.")
+    # As for Yuanbao: the automatic install keeps a bare ``dingtalk`` in plugins.disabled (which core's adapter
+    # ignored), and its kept-off notice (_install_locked) names the enable command.
     return _DINGTALK_NOTICE
 
 
@@ -671,6 +669,11 @@ class LeftCoreFeature:
     # only while the home's config is below it or when that version's config step found the feature in
     # use (:func:`record_core_use`). A newer home that sets the plugin up itself keeps core's toolsets.
     left_at: int = 0
+    # A Hermes Labs plugin (needs *left_at*): its code is downloaded automatically only for a home that proves
+    # it ran the core feature, a config.yaml stamped below *left_at* or whose step there found it in use. A
+    # missing or unstamped config.yaml is no proof (a new home whose setup wrote only .env looks the same), so
+    # that home, like every newer one, is told the install command.
+    labs: bool = False
     # Provider ids and aliases the plugin's model-provider profiles register. A name nothing resolves to
     # gets :func:`provider_install_hint` appended to its "unknown provider" error, runtime resolution
     # installs the plugin first for a home that uses it (:func:`recover_for_provider`), and those names
@@ -782,7 +785,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         private_env=("DINGTALK_CLIENT_ID", "DINGTALK_ALLOWED_USERS", "DINGTALK_HOME_CHANNEL",
                      "DINGTALK_HOME_CHANNEL_NAME", "DINGTALK_WEBHOOK_URL"),
         platform="dingtalk", enable_env=("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"), notice=_dingtalk_notice,
-        left_at=55,  # a home from v55 on that adds DingTalk is told the install command, never auto-installed
+        left_at=55, labs=True,  # a home that cannot prove it ran core's DingTalk is told the install command
     ),
 )
 
@@ -1142,11 +1145,12 @@ _DEFAULT_INSTALLED_KEY = "_default_plugins_installed"
 _USED_KEY = "_left_core_used"
 
 
-def record_core_use(home: Path, config: dict, version: int) -> bool:
+def record_core_use(home: Path, config: dict, version: int, *, first_stamp: bool = False) -> bool:
     """Config step *version* hook, before it writes *config* (*home*'s raw config.yaml, still showing the
     core-era setup): mark every row that left core at *version* and that *home* uses. Returns whether
-    *config* changed. The launch home's process env counts, as at agent start."""
-    used = [feature for feature in LEFT_CORE if feature.left_at == version
+    *config* changed. The launch home's process env counts, as at agent start. *first_stamp*: *config* is
+    the first stamp of a missing or unstamped file, which proves no core-era use for a :attr:`labs` row."""
+    used = [feature for feature in LEFT_CORE if feature.left_at == version and not (first_stamp and feature.labs)
             and not _marked(config, _USED_KEY, feature) and feature_in_use(feature, home, process_env=True)]
     for feature in used:
         _mark(config, _USED_KEY, feature)
@@ -1158,12 +1162,15 @@ def _predates_split(home: Path, feature: LeftCoreFeature) -> bool:
     config step), that step recorded the feature in use, or config.yaml is missing or unstamped. Every
     config.yaml Hermes writes carries a stamp, and the first save that stamps one records the rows in use
     (``config_version_stamp.note_first_stamp``), so only a home from before the split lacks it; core ran
-    the feature there from its .env alone."""
+    the feature there from its .env alone. A :attr:`~LeftCoreFeature.labs` row takes only the stamp as
+    proof: a missing or unstamped config.yaml is also a new home whose setup wrote only .env."""
     if not feature.left_at:
         return True
     config = _read_config(home)
-    if _marked(config, _USED_KEY, feature) or "_config_version" not in config:
+    if _marked(config, _USED_KEY, feature):
         return True
+    if "_config_version" not in config:
+        return not feature.labs
     try:
         return int(config["_config_version"]) < feature.left_at
     except (TypeError, ValueError):

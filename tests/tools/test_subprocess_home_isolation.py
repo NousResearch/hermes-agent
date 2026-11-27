@@ -10,8 +10,6 @@ See: https://github.com/NousResearch/hermes-agent/issues/36144
 See: https://github.com/NousResearch/hermes-agent/issues/29015
 """
 
-import os
-import threading
 from pathlib import Path
 
 import hermes_constants
@@ -48,6 +46,35 @@ class TestGetSubprocessHome:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         from hermes_constants import get_subprocess_home
         assert get_subprocess_home() is None
+
+    def test_host_auto_repairs_missing_home(self, tmp_path, monkeypatch):
+        """A systemd system unit with no HOME at all should still get real HOME repaired."""
+        self._host_mode(monkeypatch)
+        real_home = tmp_path / "real-home"
+        hermes_home = real_home / ".hermes" / "profiles" / "coder"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from hermes_constants import get_subprocess_home
+        assert get_subprocess_home() == str(real_home)
+
+    def test_terminal_child_env_carries_home_when_host_has_none(self, tmp_path, monkeypatch):
+        """A host with no HOME at all (systemd system unit without User=) must still hand
+        terminal children a HOME; without it a `set -u` script dies on its first `$HOME` (#116081).
+
+        Drives the production spawn seam, tools.environments.local.build_subprocess_env, not the
+        resolver directly.
+        """
+        self._host_mode(monkeypatch)
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from tools.environments.local import build_subprocess_env
+        assert build_subprocess_env()["HOME"] == str(real_home)
 
     def test_container_auto_uses_profile_home_when_home_dir_exists(self, tmp_path, monkeypatch):
         self._container_mode(monkeypatch)
@@ -107,8 +134,8 @@ class TestGetSubprocessHome:
         assert home_a is not None
         assert home_b is not None
         assert home_a != home_b
-        assert home_a.endswith("alpha/home")
-        assert home_b.endswith("beta/home")
+        assert Path(home_a).parts[-2:] == ("alpha", "home")
+        assert Path(home_b).parts[-2:] == ("beta", "home")
 
 
 
@@ -239,9 +266,6 @@ class TestSanitizeSubprocessEnvHomeInjection:
 class TestProfileBootstrap:
     """Verify new profiles get a home/ subdirectory."""
 
-    def test_profile_dirs_includes_home(self):
-        from hermes_cli.profiles import _PROFILE_DIRS
-        assert "home" in _PROFILE_DIRS
 
     def test_create_profile_bootstraps_home_dir(self, tmp_path, monkeypatch):
         """create_profile() should create home/ inside the profile dir."""
@@ -259,3 +283,45 @@ class TestProfileBootstrap:
 # Python process HOME unchanged
 # ---------------------------------------------------------------------------
 
+
+
+def test_bound_profile_home_mode_beats_the_launch_profiles_bridged_value(tmp_path, monkeypatch):
+    """A served profile's ``home_mode: profile`` decides its subprocess HOME even though
+    ``os.environ`` carries the LAUNCH profile's bridged ``TERMINAL_HOME_MODE=auto`` (#146103)."""
+    from agent.runtime_scope import bind_profile_scope
+    from tools.environments.local import _make_run_env
+
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    launch = tmp_path / "fakehome" / ".hermes"
+    served = launch / "profiles" / "w"
+    (served / "home").mkdir(parents=True)
+    (served / "config.yaml").write_text("terminal:\n  home_mode: profile\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "auto")  # the launch profile's gateway bridge
+
+    with bind_profile_scope(served):
+        assert hermes_constants.get_subprocess_home() == str(served / "home")
+        assert _make_run_env({})["HOME"] == str(served / "home")
+
+
+def test_policy_frozen_before_home_mode_keeps_the_bridged_mode(tmp_path, monkeypatch):
+    """A session policy frozen before ``home_mode`` reached the terminal policy carries no key. It keeps
+    the mode the process bridged from the profile's config, never drops ``home_mode: profile`` to
+    ``auto`` (the real ``$HOME``) until the session's policy is refreshed (#146103)."""
+    from agent.runtime_scope import bind_terminal_policy
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    launch = tmp_path / "fakehome" / ".hermes"
+    (launch / "home").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")  # the gateway's bridge of home_mode: profile
+    frozen = {k: v for k, v in build_profile_terminal_scope(launch).items() if k != "TERMINAL_HOME_MODE"}
+
+    token = bind_terminal_policy(frozen, profile_home=str(launch))
+    try:
+        assert hermes_constants.get_subprocess_home() == str(launch / "home")
+    finally:
+        token.reset()

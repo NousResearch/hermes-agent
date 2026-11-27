@@ -1,0 +1,45 @@
+# Nous Hermes plugin catalog entry — second-hands
+#
+# OWNER-SUBMITTED (rule 5): the PR author (zaxcoraider) owns the repo.
+# Exact-SHA pin at a commit that passes `hermes plugins validate` (manifest,
+# loadable, declared tools/hooks match registrations, security scan safe, no
+# core override, desktop surface inside the SDK). No self-updating code (rule 3).
+name: second-hands
+repo: https://github.com/zaxcoraider/hermes-second-hands
+sha: "b9cd7437726b8452ea697d226174fdaf8597ea03"
+description: >-
+  Hands-on task coach: a live camera pane in Hermes Desktop watches your hands
+  step by step and says STOP (on screen, out loud, in chat) before a costly or
+  dangerous mistake. Mistakes must repeat across frames and high-risk STOPs are
+  double-checked by a second model. Demo mode needs no camera or model calls.
+  Disclosure — camera frames (downscaled JPEGs, ~every 2 s while a session is
+  live) and step text go to the user's configured model provider through
+  ctx.llm on the plugin's own auxiliary slots; optional web research uses
+  Hermes's own web_search/web_extract tools; one background thread per live
+  session (stops on finish or after 30 idle minutes); files only under
+  plugin-data/second-hands; no network calls of its own, no shell, no
+  credentials, no telemetry, no self-update.
+maintainer: zaxcoraider
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/zaxcoraider/hermes-second-hands
+title: "Second Hands"
+image: https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/pane-stop.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/chat-card.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/alert-lithium.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/report.png
+  - https://raw.githubusercontent.com/zaxcoraider/hermes-second-hands/b9cd7437726b8452ea697d226174fdaf8597ea03/docs/chat-card-done.png
+platforms: []
+capabilities:
+  provides_tools:
+    - second_hands_start
+    - second_hands_status
+    - second_hands_finish
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

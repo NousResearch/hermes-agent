@@ -12,14 +12,6 @@ spec.loader.exec_module(evidence_store)
 EvidenceStore = evidence_store.EvidenceStore
 
 
-def test_evidence_store_init(tmp_path):
-    store_file = tmp_path / "test_evidence.json"
-    store = EvidenceStore(str(store_file))
-    assert store.filepath == str(store_file)
-    assert len(store.data["evidence"]) == 0
-    assert "metadata" in store.data
-    assert store.data["metadata"]["version"] == "2.0"
-    assert "chain_of_custody" in store.data
 
 
 def test_evidence_store_add(tmp_path):

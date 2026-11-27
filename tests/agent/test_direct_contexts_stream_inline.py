@@ -216,7 +216,7 @@ def test_inline_stream_cross_thread_interrupt_aborts_promptly(stalling_wire, mon
         try:
             interruptible_streaming_api_call(agent, dict(_KW))
             box["outcome"] = "returned"
-        except BaseException as exc:  # noqa: BLE001 — record whatever surfaces
+        except BaseException as exc:
             box["outcome"] = type(exc).__name__
         box["elapsed"] = time.time() - t0
 

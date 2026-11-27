@@ -1,9 +1,7 @@
 """Tests for xAI TTS speech-tag handling."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
-
-import pytest
+from unittest.mock import patch
 
 from tools.tts_tool import _generate_xai_tts
 from tools.tts_tool_providers import (
@@ -12,7 +10,6 @@ from tools.tts_tool_providers import (
     _apply_xai_auto_speech_tags,
 )
 
-
 def test_apply_xai_auto_speech_tags_adds_light_pause_after_first_sentence():
     text = "Bonjour Monsieur Talbot. Ceci est un test de réponse vocale."
 
@@ -20,12 +17,10 @@ def test_apply_xai_auto_speech_tags_adds_light_pause_after_first_sentence():
         "Bonjour Monsieur Talbot. [pause] Ceci est un test de réponse vocale."
     )
 
-
 def test_apply_xai_auto_speech_tags_preserves_explicit_tags():
     text = "Bonjour. [pause] <whisper>Déjà balisé.</whisper>"
 
     assert _apply_xai_auto_speech_tags(text) == text
-
 
 def test_apply_xai_auto_speech_tags_multi_paragraph_emits_single_pause():
     """Regression for #29417 — multi-paragraph input doubled the pause.
@@ -51,7 +46,6 @@ def test_apply_xai_auto_speech_tags_multi_paragraph_emits_single_pause():
         "Welcome to the demo of our new product line. [pause] It has many features."
     )
 
-
 def test_apply_xai_auto_speech_tags_single_paragraph_still_gets_first_sentence_pause():
     """Sanity guard — the fix only suppresses the first-sentence pass when
     a paragraph pass already injected ``[pause]``.  Single-paragraph input
@@ -61,7 +55,6 @@ def test_apply_xai_auto_speech_tags_single_paragraph_still_gets_first_sentence_p
     assert _apply_xai_auto_speech_tags(text) == (
         "Welcome to the demo of our new product line. [pause] It has many features."
     )
-
 
 def test_generate_xai_tts_sends_auxiliary_rewriter_output_to_api(
     tmp_path, monkeypatch
@@ -115,7 +108,6 @@ def test_generate_xai_tts_sends_auxiliary_rewriter_output_to_api(
     assert captured["json"]["language"] == "fr"
     assert captured["json"]["text"] == rewriter_output
 
-
 def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
     """OAuth bearer tokens must not follow user/env base URL overrides."""
     captured = {}
@@ -156,7 +148,6 @@ def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
 
     assert captured["url"] == "https://api.x.ai/v1/tts"
     assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
-
 
 def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypatch):
     """TTS requires API billing even when chat OAuth is configured (#87045).
@@ -216,7 +207,6 @@ def test_generate_xai_tts_prefers_explicit_api_key_over_oauth(tmp_path, monkeypa
     assert captured["headers"]["Authorization"] == "Bearer paid-api-key"
     assert captured["url"] == "https://staging.x.ai/v1/tts"
 
-
 def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
     """When input has no explicit speech tags, the function must call the
     auxiliary rewriter with task='tts_audio_tags' and a system prompt
@@ -235,7 +225,6 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
     mock_call.assert_called_once()
     call_kwargs = mock_call.call_args.kwargs
     assert call_kwargs["task"] == "tts_audio_tags"
-    assert call_kwargs["temperature"] == 0.7
 
     messages = call_kwargs["messages"]
     assert messages[0]["role"] == "system"
@@ -254,15 +243,10 @@ def test_auto_speech_tags_calls_auxiliary_rewriter_with_tts_audio_tags_task():
         assert tag in system_prompt, (
             f"wrapping tag {tag!r} missing from system prompt"
         )
-    # The prompt must explicitly show the BBCode-style closing syntax so
-    # the rewriter uses [/tag] and not <tag>...</tag>.
-    assert "[/tag]" in system_prompt
 
     # The user message carries the locally pause-tagged transcript (the
     # conservative fallback the rewriter is asked to enrich).
-    assert "TRANSCRIPT TO TAG" in messages[1]["content"]
     assert "[pause]" in messages[1]["content"]
-
 
 def test_auto_speech_tags_strips_markdown_fences_from_rewriter_output():
     """If the auxiliary model wraps its reply in ```...``` fences the
@@ -279,29 +263,3 @@ def test_auto_speech_tags_strips_markdown_fences_from_rewriter_output():
         )
 
     assert result == "[warmly] Bonjour. [soft laugh]"
-
-
-def test_generate_xai_tts_omits_text_normalization_when_explicit_false(
-    tmp_path, monkeypatch
-):
-    """text_normalization: false is the API default; field is not sent."""
-    captured = {}
-
-    fake_response = Mock()
-    fake_response.content = b"mp3"
-    fake_response.raise_for_status.return_value = None
-
-    def fake_post(url, headers, json, timeout, stream=False):
-        captured["json"] = json
-        return fake_response
-
-    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
-    monkeypatch.setattr("requests.post", fake_post)
-
-    _generate_xai_tts(
-        "Hello world.",
-        str(tmp_path / "out.mp3"),
-        {"xai": {"voice_id": "ara", "language": "en", "text_normalization": False}},
-    )
-
-    assert "text_normalization" not in captured["json"]

@@ -18,6 +18,8 @@
  *     this via the public `/api/status` field `auth_required: true`.
  */
 
+import { PROFILE_ID_ARG_RE } from '../../shared/src/profile-id'
+
 // Bare + prefixed variants of the session cookies the gateway may set,
 // depending on its deploy shape (HTTPS direct → __Host-, behind a path prefix
 // → __Secure-, loopback HTTP → bare). Mirrors
@@ -35,9 +37,18 @@
 //     AT cookie. A liveness check that looked only at the AT cookie would
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
 import { readStatusCode } from './api-transport'
+import { sharesHostBackend } from './host-backend-singleton'
+import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
+// A gateway's Webapp follows each name with its gateway (`hermes_session_at_<16 hex digits>`), since
+// cookies are not scoped to a port; the dashboard keeps the bare names.
+const GATEWAY_COOKIE_SUFFIX = /_[0-9a-f]{16}$/
+
+function isCookieVariant(name: unknown, variants: string[]): boolean {
+  return typeof name === 'string' && (variants.includes(name) || variants.includes(name.replace(GATEWAY_COOKIE_SUFFIX, '')))
+}
 
 // Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
 // is the built-in root alias; these names cannot be created as profiles.
@@ -106,9 +117,55 @@ function isGatewayAuthRejection(error) {
   return statusCode === 401 || statusCode === 403
 }
 
+/** True when the rejected credential is the app's saved bearer, not the server session. */
+function isStaleAppTokenRejection(error: unknown) {
+  return Boolean(error && typeof error === 'object' && (error as any).appTokenRejected === true)
+}
+
+/**
+ * User-facing copy for a ticket mint that failed as a TRANSPORT fault (the
+ * gateway never answered with a usable HTTP status — timeout, refused
+ * connection, DNS). Distinguishing these lets the user act on the real
+ * problem instead of a blanket "could not reach" (#98647's diagnostic-cost
+ * complaint): a timeout suggests a network/VPN path issue, a refused
+ * connection a stopped gateway, DNS a wrong hostname.
+ */
+export function gatewayTicketTransportMessage(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : ''
+
+  if (['ETIMEDOUT', 'ETIMEOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection timed out or the host could not be resolved. ' +
+      'Check your network/VPN path and the gateway URL, then reconnect.'
+    )
+  }
+
+  if (code === 'ECONNREFUSED') {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection was refused. The gateway process is likely down or listening on another port. ' +
+      'Start the gateway (or fix its URL), then reconnect.'
+    )
+  }
+
+  return 'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+}
+
 function gatewayTicketFailure(error, authMessage, transportMessage) {
   const needsOauthLogin = isGatewayAuthRejection(error)
-  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  const message = needsOauthLogin
+    ? isStaleAppTokenRejection(error)
+      ? 'Reached the gateway over HTTP, but the app token is invalid. ' +
+        "The app's saved gateway bearer is no longer valid. Sign out in the app and sign in again to replace it."
+      : authMessage
+    : transportMessage
+
+  const err = new Error(message)
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
@@ -228,6 +285,8 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
+      // Untagged 401s keep the server OAuth-session wording. A stale app
+      // bearer is named inside gatewayTicketFailure.
       throw gatewayTicketFailure(
         error,
         'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
@@ -259,8 +318,8 @@ function connectionScopeKey(profile) {
 function resolveRemoteSshDashboardProfile(configuredRemoteProfile, poolOrProfileKey) {
   const configured = String(configuredRemoteProfile || '').trim()
 
-  if (configured && configured !== 'default') {
-    return configured
+  if (configured) {
+    return configured === 'default' ? '' : configured
   }
 
   const key = String(poolOrProfileKey || '').trim()
@@ -458,11 +517,7 @@ function normalizeSshConfig(entry) {
   // name used by the remote Hermes installation. Preserve an explicit mapping
   // when it is a valid Hermes profile identifier; otherwise fall back to the
   // historical same-name behavior in the caller.
-  const remoteProfile = String(entry.remoteProfile || '').trim()
-
-  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
-    out.remoteProfile = remoteProfile
-  }
+  Object.assign(out, normalizeRemoteProfileName(entry.remoteProfile))
 
   return out
 }
@@ -487,6 +542,56 @@ function savedProfileSsh(config, profile) {
 
 function profileHasRemoteConnection(config, profile) {
   return Boolean(profileRemoteOverride(config, profile) || profileSshOverride(config, profile))
+}
+
+// Plugin ids follow the profile id grammar (`hermes_constants.PROFILE_ID_RE`).
+const LAUNCHER_PLUGIN_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+/**
+ * The launcher marker on a per-profile remote entry: `{ plugin }` names the
+ * desktop plugin whose host-side launcher runs this profile's backend (a
+ * sandbox behind a loopback reverse proxy). Null for anything else. The entry
+ * keeps `mode: 'remote'` because an unknown mode normalizes to local, which
+ * would start the profile unsandboxed on this host.
+ */
+function normalizeProfileLauncher(value): null | { plugin: string } {
+  const plugin = String(value && typeof value === 'object' ? value.plugin || '' : '').trim()
+
+  return LAUNCHER_PLUGIN_RE.test(plugin) ? { plugin } : null
+}
+
+/** The profile's launcher marker, or null when a plugin does not run it. */
+function profileLauncher(config, profile): null | { plugin: string } {
+  return profileRemoteOverride(config, profile)?.launcher ?? null
+}
+
+/** True when a desktop plugin's launcher runs this profile's backend. */
+function profileIsLaunched(config, profile): boolean {
+  return Boolean(profileLauncher(config, profile))
+}
+
+/** The `launcher` field a stored per-profile entry keeps: only on a URL-remote entry. */
+function profileLauncherField(mode, value): { launcher?: { plugin: string } } {
+  const launcher = mode === 'remote' ? normalizeProfileLauncher(value) : null
+
+  return launcher ? { launcher } : {}
+}
+
+/**
+ * Validate a launcher URL a plugin hands over: http(s) on a loopback address
+ * only. A launcher is a host process; anything else would route a profile to
+ * another machine under the plugin's say-so. Returns the normalized base URL.
+ */
+function normalizeLauncherUrl(rawUrl): string {
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const { hostname } = new URL(baseUrl)
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+
+  if (host !== 'localhost' && host !== '::1' && !/^127(?:\.\d{1,3}){3}$/.test(host)) {
+    throw new Error(`A profile backend must be on this computer (127.0.0.1 or localhost), got ${hostname}.`)
+  }
+
+  return baseUrl
 }
 
 function localProfileEntry(existing) {
@@ -524,7 +629,8 @@ function hostLabelFromBaseUrl(baseUrl) {
  * The config may carry a `profiles` map keyed by name; an entry counts as an
  * override only with a remote-like `mode` (remote or cloud) and a non-empty
  * `url`. Pure: `token` and `headers` are raw stored secrets; main.ts decrypts
- * them. Returns `{ url, authMode, token, headers } | null`.
+ * them. Returns `{ url, authMode, token, headers, launcher? } | null`, where
+ * `launcher` marks an entry a desktop plugin's host launcher serves.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
@@ -546,8 +652,27 @@ function profileRemoteOverride(config, profile) {
     url,
     authMode: normAuthMode(entry.authMode),
     token: entry.token,
-    ...(Object.keys(headers).length > 0 ? { headers } : {})
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...profileLauncherField(entry.mode, entry.launcher),
+    // A URL-remote/cloud host serves every profile via ?profile=, so a Desktop
+    // profile that is only a routing label (e.g. `gris` for the backend's
+    // `main-gris`) can map its explicit self-profile scope into the backend's
+    // namespace — same contract as the managed-SSH `remoteProfile`.
+    ...(normalizeRemoteProfileName(entry.remoteProfile) ?? {})
   }
+}
+
+// Validate a remote profile mapping the same way the SSH path does (a valid
+// Hermes profile identifier, never a reserved alias). Invalid/blank → no
+// mapping, so callers fall back to the historical same-name behavior.
+function normalizeRemoteProfileName(value) {
+  const remoteProfile = String(value || '').trim()
+
+  if (PROFILE_ID_ARG_RE.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+    return { remoteProfile }
+  }
+
+  return null
 }
 
 export interface ProfileRouteOptions {
@@ -559,8 +684,13 @@ export interface ProfileRouteOptions {
   profileRemoteOverride?: boolean
   /** The primary profile's own backend resolves to a remote host. */
   primaryRemoteActive?: boolean
+  /** A desktop plugin's launcher runs the primary profile (a sandbox serving
+   *  only that profile's home), so it cannot host any other profile. */
+  primaryLaunched?: boolean
   /** A stored per-profile entry exists for this profile (local or remote). */
   ownEntry?: boolean
+  /** `HERMES_DESKTOP_ISOLATED_BACKEND=1`: opt out of the host singleton. */
+  isolatedBackend?: boolean
   requestMethod?: null | string
   requestPath?: null | string
 }
@@ -616,7 +746,32 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   // backend's own shutdown, which SIGTERMs its gateway-restart child.
   'POST /api/gateway/restart',
   'POST /api/gateway/start',
-  'POST /api/gateway/stop'
+  'POST /api/gateway/stop',
+  // Profile-owned state that used to ride a per-profile backend: with one backend
+  // per host these handlers take `?profile=` and resolve the home per request.
+  // Destructive ones (memory reset, curator run, hook delete, checkpoint prune,
+  // import) REFUSE an unnamed profile while several are served, so the query is
+  // not optional here.
+  'GET /api/memory',
+  'PUT /api/memory/provider',
+  'POST /api/memory/reset',
+  'GET /api/curator',
+  'PUT /api/curator/paused',
+  'POST /api/curator/run',
+  'GET /api/logs',
+  'GET /api/portal',
+  'GET /api/hermes/update/check',
+  'POST /api/local-models/activate',
+  'GET /api/dashboard/themes',
+  'PUT /api/dashboard/theme',
+  'GET /api/dashboard/font',
+  'PUT /api/dashboard/font',
+  'GET /api/dashboard/plugins',
+  // Web Access: each handler takes `?profile=` and acts on the gateway serving it.
+  'GET /api/webapp-access/status',
+  'POST /api/webapp-access/start',
+  'POST /api/webapp-access/stop',
+  'POST /api/webapp-access/restart'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
@@ -661,6 +816,8 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
   // Every current /api/tools handler accepts `profile`; every /api/profiles
   // handler either aggregates profiles or names its target in the path/body.
   // These are the only whole families safe to route through the primary.
+  // A launched profile's listing never reaches here: the host answers it
+  // first (launched-profile-host.ts).
   if (pathname === '/api/tools' || pathname.startsWith('/api/tools/')) {
     return true
   }
@@ -669,7 +826,59 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return false
   }
 
+  // Whole families whose every handler now takes `?profile=` and resolves the
+  // profile's home per request: webhook subscriptions (`{name}` in the path) and
+  // the /api/ops maintenance routes (doctor, backup/import, hooks, checkpoints,
+  // diagnostics). Their action spawns pass `-p <profile>` to the child, and the
+  // /api/actions poll family above already pins to this same backend.
+  if (pathname === '/api/webhooks' || pathname.startsWith('/api/webhooks/')) {
+    return true
+  }
+
+  if (pathname.startsWith('/api/ops/')) {
+    return true
+  }
+
+  // Session WRITES are scoped by `body.profile` (`rename_session_endpoint` ->
+  // `_with_db(body.profile, ...)`), not by the query. They ARE scopable — just
+  // not through the URL — so they belong on the shared backend with the path
+  // left alone; `apps/desktop/src/api/sessions.ts` always names the owner in
+  // the body. Returning `true` here would append a `?profile=` the handler
+  // ignores and advertise a scope that is not doing the work.
+  if (method !== 'GET' && (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/'))) {
+    return false
+  }
+
   return null
+}
+
+const SAFE_REQUEST_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+/**
+ * True when this is a REST request that CHANGES something and the server cannot
+ * vouch for its profile scope (`localPrimaryRequestScope` → null: no
+ * `?profile=`, no `body.profile`, no target named in the path).
+ *
+ * Such a route has exactly one scope left — the backend process's own
+ * `HERMES_HOME` — so it keeps a pooled, profile-scoped backend even though every
+ * other local request now shares the host one. Mechanical on purpose: the day a
+ * handler learns to read `profile` it joins `LOCAL_PRIMARY_SCOPED_ROUTES` (or a
+ * family above), `localPrimaryRequestScope` stops returning null, and this
+ * predicate stops seeing it — there is no second list to keep in sync.
+ *
+ * A call with no `requestPath` is a BACKEND/descriptor resolution (WebSocket
+ * dial, pool bookkeeping), not a REST call, and is never held back.
+ */
+export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boolean {
+  if (!String(opts.requestPath || '')) {
+    return false
+  }
+
+  if (SAFE_REQUEST_METHODS.has(String(opts.requestMethod || 'GET').toUpperCase())) {
+    return false
+  }
+
+  return localPrimaryRequestScope(opts) === null
 }
 
 /**
@@ -684,11 +893,24 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
  *  3. A profile inheriting the app-global remote shares the primary backend —
  *     one host serves every profile — so it is scoped per request instead.
  *  4. An unknown profile under a remote primary shares that remote backend.
- *     A stored local profile remains isolated in its own backend.
- *  5. A local profile REST request that the primary backend can safely scope
- *     reuses that backend, with `?profile=` when the handler accepts it.
- *  6. Any other local profile gets its own pooled backend, spawned with
- *     `--profile`, so its `HERMES_HOME` scopes it.
+ *     A stored local profile keeps its own pooled backend instead.
+ *  5. A local profile REST request the primary backend can scope reuses that
+ *     backend, with `?profile=` when the handler reads the query (handlers that
+ *     name their target in the path or `body.profile` get no query).
+ *  6. Every other LOCAL profile also shares the one host backend
+ *     (multiplex-only: one `hermes serve` per HOST). The descriptor carries
+ *     `sharedPrimary: true`, and the renderer honours it on BOTH request paths
+ *     (`requestGatewayForProfile` and the session-owner
+ *     `requestGatewayForAgent` family): the profile's calls ride the primary
+ *     socket with a `profile` param, never a second socket to the same
+ *     process (#120005). The two ways out are
+ *     `HERMES_DESKTOP_ISOLATED_BACKEND=1`, which gives this app a private
+ *     backend, and a MUTATING request the server cannot scope at all — that
+ *     one keeps a pooled backend whose HERMES_HOME does the scoping, so a
+ *     destructive call can never fall through to the primary's home.
+ *
+ * A launched primary (a plugin's sandbox) serves only its own home, so under
+ * one every other local profile takes the pooled route of cases 5 and 6.
  *
  * Routing used to be spread across three overlapping predicates that each
  * re-derived part of this table, which is how case 3 ended up registering
@@ -707,7 +929,19 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
     // launched for this Desktop label. Even its "primary" label must travel on
     // the wire: the dashboard's process HERMES_HOME can belong to a different
     // launch profile, so a bare request silently reads that profile instead.
-    return opts.globalRemote
+    if (opts.globalRemote) {
+      return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+    }
+
+    // The same holds for the LOCAL host backend: with one `hermes serve` per
+    // host the app attaches to whatever backend is running, and that process
+    // was launched under some OTHER profile's home whenever another app (or an
+    // earlier boot) registered it. A bare request the server can scope then
+    // resolves to that launch home, not this primary — the Settings → Models
+    // write that landed on the wrong profile's config.yaml (#118431/#118432).
+    // Naming the primary on a scopable route is a no-op for a backend that
+    // did launch as it (current-profile semantics server-side).
+    return localPrimaryRequestScope(opts) === true
       ? { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
       : { backend: 'primary', descriptorProfile: null, scopePath: false }
   }
@@ -718,6 +952,13 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 
   if (opts.globalRemote) {
     return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
+  // A launched primary serves only its own home, though it resolves remote:
+  // every other local profile gets this host's own backend, the pooled route
+  // HERMES_DESKTOP_ISOLATED_BACKEND also takes.
+  if (opts.primaryLaunched) {
+    return { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
 
   if (opts.primaryRemoteActive) {
@@ -742,6 +983,15 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
       descriptorProfile: localScope ? scopedProfile : null,
       scopePath: localScope
     }
+  }
+
+  // 6. Multiplex-only: every other LOCAL profile shares the one host backend
+  //    too, carrying `?profile=` / the `profile` RPC param instead of getting
+  //    a `hermes serve` child of its own — UNLESS this request mutates state
+  //    the server cannot scope, in which case the pooled backend's own
+  //    HERMES_HOME is the only scope left and it keeps one.
+  if (sharesHostBackend({ isolated: opts.isolatedBackend, unscopableRequest: unscopableMutatingRequest(opts) })) {
+    return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
   }
 
   return { backend: 'pool', descriptorProfile: null, scopePath: false }
@@ -835,7 +1085,7 @@ function translateSelfProfileQuery(path, profile, backendProfile) {
  * gateway host serving every profile, scoped per request). An explicit
  * `?profile=` already on the path wins; an empty profile is a no-op.
  */
-function pathWithProfileScope(path, profile) {
+function pathWithProfileScope(path, profile, method?: string) {
   const scopedProfile = connectionScopeKey(profile)
 
   if (!scopedProfile) {
@@ -856,7 +1106,10 @@ function pathWithProfileScope(path, profile) {
     return path
   }
 
-  if (parsed.searchParams.has('profile')) {
+  // A path that already names its profile never also carries the ambient one: the two disagree
+  // whenever the sidebar is on another profile or "All profiles", and the gateway refuses the pair.
+  if (parsed.searchParams.has('profile')
+      || (profileRouteSuffix(parsed.pathname) && !profileCollectionRoute(parsed.pathname, method))) {
     return path
   }
 
@@ -866,19 +1119,22 @@ function pathWithProfileScope(path, profile) {
 }
 
 export interface RegistryBackendRequestScope {
+  mode?: string
   remoteProfile?: null | string
+  sharedPrimary?: boolean
   sharedRemote?: boolean
 }
 
 /**
- * Scope a REST path for a resolved registry backend. Shared remotes serve
- * multiple profiles from one process and need an explicit profile query;
+ * Scope a REST path for a resolved registry backend. Local host backends and
+ * shared remotes need an explicit profile query, including the primary profile
+ * when Desktop attaches to a process launched under a different home;
  * isolated SSH backends already own one profile but may translate a Desktop
  * alias in an existing self-profile filter.
  */
-function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
-  return backend.sharedRemote
-    ? pathWithProfileScope(path, profile)
+function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope, method?: string) {
+  return backend.sharedRemote || backend.sharedPrimary || backend.mode === 'local'
+    ? pathWithProfileScope(path, profile, method)
     : translateSelfProfileQuery(path, profile, backend.remoteProfile)
 }
 
@@ -979,7 +1235,7 @@ function cookiesHaveSession(cookies) {
     return false
   }
 
-  return cookies.some(c => c && AT_COOKIE_VARIANTS.includes(c.name) && c.value)
+  return cookies.some(c => c && isCookieVariant(c.name, AT_COOKIE_VARIANTS) && c.value)
 }
 
 /**
@@ -1000,7 +1256,9 @@ function cookiesHaveLiveSession(cookies) {
     return false
   }
 
-  return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
+  return cookies.some(
+    c => c && c.value && (isCookieVariant(c.name, AT_COOKIE_VARIANTS) || isCookieVariant(c.name, RT_COOKIE_VARIANTS))
+  )
 }
 
 export {
@@ -1018,14 +1276,20 @@ export {
   isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
+  normalizeLauncherUrl,
+  normalizeProfileLauncher,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
+  normalizeRemoteProfileName,
   normalizeSshConfig,
   normAuthMode,
   pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
   profileHasRemoteConnection,
+  profileIsLaunched,
+  profileLauncher,
+  profileLauncherField,
   profileRemoteOverride,
   profileSshOverride,
   remoteRequestMatchesBaseUrl,

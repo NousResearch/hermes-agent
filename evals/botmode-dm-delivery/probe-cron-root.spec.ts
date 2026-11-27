@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { buildAppEnv, createSandbox, launchDesktop, waitForAppReady, writeEnvFile, writeMockProviderConfig, type MockBackendFixture } from './fixtures'
 import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
@@ -7,7 +8,7 @@ import { expect, test } from './test'
 
 const repo = path.resolve(import.meta.dirname, '../../..')
 const python = path.join(process.env.VIRTUAL_ENV || path.join(repo, '.venv'), 'bin', 'python')
-const evidence = process.env.BOT_DM_EVIDENCE || '/tmp/botmode-cron-root/native'
+const evidence = process.env.BOT_DM_EVIDENCE || path.join(os.tmpdir(), 'botmode-cron-root/native')
 let fixture: MockBackendFixture
 let env: Record<string, string>
 
@@ -63,7 +64,7 @@ test('ordinary cron pins an unowned named target under a custom root', async () 
   await composer.fill('initialize default Desktop owner')
   await page.keyboard.press('Enter')
   await expect(page.getByText(MOCK_REPLY).filter({ visible: true }).first()).toBeVisible({ timeout: 60_000 })
-  const discovery = 'from pathlib import Path; import json,os; from tools.bot_live_delivery import find_canonical_owner; h=Path(os.environ["HERMES_HOME"]); print(json.dumps({"default":find_canonical_owner(h),"alpha":find_canonical_owner(h/"profiles"/"alpha")}))'
+  const discovery = 'from pathlib import Path; import json,os; from tools.bot_live_delivery import find_canonical_live_owner; h=Path(os.environ["HERMES_HOME"]); print(json.dumps({"default":find_canonical_live_owner(h),"alpha":find_canonical_live_owner(h/"profiles"/"alpha")}))'
   const before = probe(discovery)
   expect(before.default.surface).toBe('desktop')
   expect(before.alpha).toBeNull()

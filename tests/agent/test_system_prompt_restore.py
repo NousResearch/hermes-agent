@@ -15,13 +15,18 @@ instead of rebuilding).  Covers:
 
 from __future__ import annotations
 
+import json
 import logging
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.conversation_loop import _restore_or_build_system_prompt
 from agent.surface_switch import _SURFACE_NAME_END, _SURFACE_SWITCH_NOTE_PREFIX, identity_line_value
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -38,6 +43,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     # for the legacy restore tests (the reconstruction tests enable it).
     agent._use_prompt_caching = False
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
+    agent.enabled_toolsets = agent.disabled_toolsets = None  # all toolsets, as an unrestricted agent
     return agent
 
 
@@ -231,15 +237,6 @@ class TestStoredPromptReuse:
         # No warnings on the happy path
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
-    def test_present_row_with_unicode_preserved(self):
-        """Non-ASCII bytes in the stored prompt are not mangled."""
-        stored = "Stored prompt with unicode: ☤ ⚗ ◆ — and emoji 🦊"
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
-        agent = _make_agent(session_db=db)
-
-        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-        assert agent._cached_system_prompt == stored
 
     def test_present_row_with_stale_runtime_identity_rebuilds(self, caplog):
         """Stored prompts are cache gold unless their runtime identity is stale.
@@ -281,6 +278,62 @@ class TestStoredPromptReuse:
             agent.session_id, agent._cached_system_prompt
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
+
+
+    def test_rebuilding_an_existing_sessions_prompt_keeps_its_pinned_tools(self, tmp_path):
+        """A continuing session whose stored prompt goes stale (model switch, cwd drift) is rebuilt
+        by whichever surface resumes it — ``-q --resume`` builds without skill_manage. tools[] sits
+        ahead of the prompt and only /new, /reload-mcp and compaction may re-derive it, so the
+        rebuild keeps the pinned array and never persists its own surface's build over the pin."""
+        from unittest.mock import patch as _patch
+
+        from tools.mcp_tool_agent import tool_pin_version
+
+        def _tool(name):
+            return {"type": "function", "function": {"name": name, "description": f"{name} v1", "parameters": {}}}
+
+        from persistence_assembly import open_persistence, profile_scope
+
+        pinned = [_tool("read_file"), _tool("skill_manage"), _tool("terminal")]
+        with open_persistence(profile_scope(home=tmp_path)) as db:
+            seed_session(db, "test-session-id", "tui")
+            db.sessions.update_system_prompt("test-session-id", "Model: old-model\nProvider: openrouter")
+            db.sessions.update_tool_pin("test-session-id", {"version": tool_pin_version(), "tools": pinned})
+            agent = _make_agent(session_db=db)
+            agent.persistence = db
+            agent.side_agent = False
+            agent._bot_mode_protocol = False
+            agent.tools = [_tool("read_file"), _tool("terminal")]  # the -q footprint pruned skill_manage
+            registered = [SimpleNamespace(name=t["function"]["name"]) for t in pinned]
+            with _patch("tools.registry.registry.get_all_entries", return_value=registered):
+                _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+            agent._build_system_prompt.assert_called_once()
+            assert agent.tools == pinned
+            assert "skill_manage" in agent.valid_tool_names
+            assert json.loads(session_row(db, "test-session-id")["tool_names"])["tools"] == pinned
+
+    def test_a_swept_pin_row_is_re_pinned_on_the_next_turn(self, tmp_path):
+        """``hermes sessions recover`` from an older build deleted pin rows it did not know about,
+        leaving ``tool_names`` a hash that resolves to itself. The next turn must pin what it sends,
+        or every later surface hop re-derives tools[] for the rest of the session."""
+        from persistence_assembly import open_persistence, profile_scope
+
+        tools = [{"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}}]
+        with open_persistence(profile_scope(home=tmp_path)) as db:
+            seed_session(db, "test-session-id", "tui")
+            db.sessions.update_system_prompt("test-session-id", "BUILT_PROMPT")
+            raw_holder(db)._execute_write(lambda conn: conn.execute(
+                "UPDATE sessions SET tool_names = ? WHERE id = 'test-session-id'", ("ab" * 32,)))
+            agent = _make_agent(session_db=db)
+            agent.persistence = db
+            agent._persist_disabled = False
+            agent.tools = list(tools)
+            with patch("agent.conversation_loop._stored_prompt_matches_runtime", return_value=True):
+                _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+            assert agent._cached_system_prompt == "BUILT_PROMPT"
+            assert json.loads(session_row(db, "test-session-id")["tool_names"])["tools"] == tools
 
 
 # ---------------------------------------------------------------------------
@@ -343,20 +396,6 @@ class TestSilentFailureWarnings:
             for m in warnings
         ), f"Expected write-failure warning, got: {warnings}"
 
-    def test_no_history_with_null_row_does_not_warn(self, caplog):
-        """First turn (no history) hitting a null row is not surprising — no warn."""
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": None}
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            # Empty history → DB read is skipped entirely
-            _restore_or_build_system_prompt(agent, None, [])
-
-        db.get_session.assert_not_called()
-        # No "rebuilding from scratch" warning because history is empty
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert not any("rebuilding" in m for m in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -364,31 +403,6 @@ class TestSilentFailureWarnings:
 # ---------------------------------------------------------------------------
 
 
-class TestPromptStabilityInvariant:
-    def test_restored_prompt_is_byte_identical_to_stored(self):
-        """The restored prompt must equal the stored bytes exactly — no
-        normalization, trimming, or concat that could shift the prefix.
-
-        This is the core invariant: any byte-level change at this point
-        invalidates KV cache on every prefix-cache backend.
-        """
-        stored = (
-            "You are Hermes Agent.\n"
-            "\n"
-            "Conversation started: Sunday, May 17, 2026\n"
-            "Session ID: 20260517_153500_abc123\n"
-        )
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
-        agent = _make_agent(session_db=db)
-
-        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-
-        # Identity check — must be the same object reference for maximum
-        # confidence we're not slicing/copying/normalizing.
-        assert agent._cached_system_prompt == stored
-        # Byte-level check
-        assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -564,37 +578,22 @@ class TestPerResponseSessionWritePath:
 
     def _agent(self, db, session_id):
         agent = _make_agent(session_db=db, prebuilt_prompt="GROUP_PROMPT")
+        agent.persistence = db
         agent.session_id = session_id
         return agent
 
-    def test_prepersisted_row_stores_the_freshly_built_prompt(self, tmp_path):
-        from hermes_state import SessionDB
-
-        session_id = "gc_run_room42_default_Worker_5f2c1ab9d4e34f7a8b0c6d1e2f3a4b5c"
-        with SessionDB(db_path=tmp_path / "state.db") as db:
-            # What the bridge does before the turn starts.
-            db.create_session(session_id, source="studio")
-            db.append_message(session_id=session_id, role="user", content="hi")
-
-            _restore_or_build_system_prompt(
-                self._agent(db, session_id),
-                None,
-                [{"role": "user", "content": "hi"}],
-            )
-
-            assert db.get_session(session_id)["system_prompt"] == "GROUP_PROMPT"
 
     def test_warning_is_a_first_turn_artifact_not_a_lost_write(
         self, tmp_path, caplog
     ):
         """Second turn of the SAME id restores — so nothing was dropped."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         session_id = "gc_run_room42_default_Worker_9a7e3b1c05d24e6fb83a1c7d9e0f2a4b"
         history = [{"role": "user", "content": "hi"}]
-        with SessionDB(db_path=tmp_path / "state.db") as db:
-            db.create_session(session_id, source="studio")
-            db.append_message(session_id=session_id, role="user", content="hi")
+        with open_persistence(profile_scope(home=tmp_path)) as db:
+            seed_session(db, session_id, "studio")
+            seed_messages(db, session_id, {"role": "user", "content": "hi"})
 
             with caplog.at_level(
                 logging.WARNING, logger="agent.conversation_loop"
@@ -614,6 +613,111 @@ class TestPerResponseSessionWritePath:
             assert second._cached_system_prompt == "GROUP_PROMPT"
             second._build_system_prompt.assert_not_called()
             assert "is null" not in caplog.text
+
+
+def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
+    """A NULL system_prompt row already rebuilds. The capability probe must not gate it."""
+    from agent.conversation_loop import _bot_chat_prompt_stale
+    from persistence_assembly import open_persistence, profile_scope
+
+    agent = SimpleNamespace(
+        _bot_mode_protocol=True,
+        _session_title_hint="Bot Chat",
+        _session_db=None,
+        session_id="test-session-id",
+    )
+    with patch(
+        "tools.bot_mode_probe.stored_prompt_capability_stale", return_value=False
+    ) as probe:
+        assert _bot_chat_prompt_stale(agent, None) is False
+        probe.assert_not_called()
+
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "test-session-id", "tui")
+        row = session_row(db, "test-session-id")
+        assert row is not None and row["system_prompt"] is None
+        restoring = _make_agent(session_db=db, prebuilt_prompt="BUILT")
+        restoring.persistence = db
+        with patch(
+            "tools.bot_mode_probe.stored_prompt_capability_stale", return_value=False
+        ) as probe:
+            _restore_or_build_system_prompt(
+                restoring, None, [{"role": "user", "content": "hi"}]
+            )
+        probe.assert_not_called()
+        restoring._build_system_prompt.assert_called_once()
+
+
+class TestRestoreThroughTheWriterHandle:
+    """An agent carrying a writer handle restores, rebuilds and re-persists its prompt through the handle."""
+
+    @pytest.fixture()
+    def handle(self, tmp_path):
+        from persistence_assembly import open_persistence, profile_scope
+
+        persistence = open_persistence(profile_scope(home=tmp_path))
+        try:
+            yield persistence
+        finally:
+            persistence.close()
+
+    def test_present_row_is_reused_verbatim(self, handle):
+        from persistence.conversation.sessions import NewSession
+
+        stored = "Stored prompt from turn 1, reused byte for byte"
+        handle.sessions.create(NewSession(session_id="test-session-id", source="cli", system_prompt=stored))
+        agent = _make_agent(session_db=MagicMock())
+        agent.persistence = handle
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        agent._session_db.get_session.assert_not_called()
+
+    def test_rebuild_keeps_the_pinned_tools_and_persists_through_the_handle(self, handle):
+        from persistence.conversation.sessions import NewSession
+        from tools.mcp_tool_agent import tool_pin_version
+
+        def _tool(name):
+            return {"type": "function", "function": {"name": name, "description": f"{name} v1", "parameters": {}}}
+
+        pinned = [_tool("read_file"), _tool("skill_manage"), _tool("terminal")]
+        handle.sessions.create(NewSession(
+            session_id="test-session-id", source="tui", system_prompt="Model: old-model\nProvider: openrouter",
+        ))
+        handle.sessions.update_tool_pin("test-session-id", {"version": tool_pin_version(), "tools": pinned})
+        agent = _make_agent(session_db=MagicMock())
+        agent.persistence = handle
+        agent.side_agent = False
+        agent._bot_mode_protocol = False
+        agent.tools = [_tool("read_file"), _tool("terminal")]
+        registered = [SimpleNamespace(name=t["function"]["name"]) for t in pinned]
+        with patch("tools.registry.registry.get_all_entries", return_value=registered):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        agent._build_system_prompt.assert_called_once()
+        assert agent.tools == pinned
+        assert handle.sessions.get("test-session-id").system_prompt == agent._cached_system_prompt
+        agent._session_db.get_session.assert_not_called()
+        agent._session_db.update_system_prompt.assert_not_called()
+
+    def test_bot_chat_title_is_read_through_the_handle(self, tmp_path):
+        from agent.conversation_loop import _bot_chat_prompt_stale
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+        handle = SimpleNamespace(read_only=False, sessions=MagicMock(), scope=SimpleNamespace(profile_dir=tmp_path))
+        handle.sessions.get_title.return_value = BOT_CHAT_TITLE
+        agent = SimpleNamespace(
+            _session_db=MagicMock(), persistence=handle, session_id="sess-1", _session_title_hint="",
+            _bot_mode_protocol=True,
+        )
+        with patch("tools.bot_mode_probe.stored_prompt_capability_stale", return_value=False), \
+                patch("tools.bot_mode_probe.stored_bot_chat_prompt_needs_upgrade", return_value=True) as needs_upgrade:
+            assert _bot_chat_prompt_stale(agent, "STORED") is True
+        needs_upgrade.assert_called_once_with("STORED", tmp_path)
+        handle.sessions.get_title.assert_called_once_with("sess-1")
+        assert agent._session_db.method_calls == []
 
 
 if __name__ == "__main__":

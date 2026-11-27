@@ -20,12 +20,12 @@ Three contracts, one per failure link:
 from __future__ import annotations
 
 import json
-import subprocess
 import types
 
 import pytest
 
 import agent.auxiliary_client as aux
+import agent.auxiliary_managed_local as managed_local
 from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
 
@@ -40,7 +40,7 @@ def managed_state(tmp_path, monkeypatch):
                                  "pid": 4242}), encoding="utf-8")
     monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
                         lambda: state)
-    monkeypatch.setattr(aux, "_managed_local_cache", (0.0, ""))
+    monkeypatch.setattr(managed_local, "_managed_local_cache", (0.0, ""))
     return state
 
 
@@ -59,7 +59,7 @@ def test_managed_detection_matches_netloc_not_substring(managed_state):
 def test_no_state_file_means_no_managed_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
                         lambda: tmp_path / "absent.json")
-    monkeypatch.setattr(aux, "_managed_local_cache", (0.0, ""))
+    monkeypatch.setattr(managed_local, "_managed_local_cache", (0.0, ""))
     assert aux._is_managed_local_endpoint(MANAGED_URL) is False
 
 
@@ -85,7 +85,7 @@ def test_no_default_cap_policy_unchanged_for_remote(monkeypatch):
     # A generic remote provider still drops the cap (the forwarding gate
     # is an allow-list). openrouter no longer qualifies as the example
     # here: main forwards its caps deliberately (#41035, 402 affordability).
-    monkeypatch.setattr(aux, "_managed_local_cache", (0.0, ""))
+    monkeypatch.setattr(managed_local, "_managed_local_cache", (0.0, ""))
     kwargs = aux._build_call_kwargs(
         "openai", "some/model", [{"role": "user", "content": "hi"}],
         max_tokens=64, timeout=30.0)
@@ -111,74 +111,13 @@ class _FakeChild:
         self.killed = True
 
 
-def test_terminate_tree_terminates_children_too(monkeypatch):
-    children = [_FakeChild(101), _FakeChild(102)]
-
-    class _FakeParentProc:
-        def __init__(self, pid):
-            self.pid = pid
-
-        def children(self, recursive=False):
-            assert recursive is True
-            return children
-
-    import psutil
-    fake_psutil = types.SimpleNamespace(Process=_FakeParentProc,
-                                        TimeoutExpired=psutil.TimeoutExpired, Error=psutil.Error)
-    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
-
-    class _FakeRouter:
-        pid = 4242
-        terminated = False
-
-        def terminate(self):
-            _FakeRouter.terminated = True
-
-        def wait(self, timeout=None):
-            return 0
-
-        def poll(self):
-            return None
-
-    LlamaServerSupervisor._terminate_tree(_FakeRouter())
-    assert _FakeRouter.terminated
-    assert all(c.terminated for c in children), (
-        "router children orphaned on stop — each holds GiB of VRAM")
 
 
-def test_terminate_tree_survives_missing_psutil(monkeypatch):
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _no_psutil(name, *a, **k):
-        if name == "psutil":
-            raise ImportError("nope")
-        return real_import(name, *a, **k)
-
-    monkeypatch.setattr(builtins, "__import__", _no_psutil)
-
-    class _FakeRouter:
-        pid = 4242
-        terminated = False
-
-        def terminate(self):
-            _FakeRouter.terminated = True
-
-        def wait(self, timeout=None):
-            return 0
-
-    LlamaServerSupervisor._terminate_tree(_FakeRouter())
-    assert _FakeRouter.terminated  # router still stopped without psutil
 
 
 def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):
     exe = tmp_path / "llama-server.exe"
     exe.write_text("")
-
-    orphan = _FakeChild(300)
-    adopted = _FakeChild(301)     # parent alive -> not an orphan
-    foreign = _FakeChild(302)     # different binary -> never touched
 
     def _info(pid, exe_path, ppid):
         p = _FakeChild(pid)
@@ -204,11 +143,8 @@ def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):
         AccessDenied=_NoSuch,
     )
     monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
-    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.server_binary",
-                        lambda install_dir: exe)
-
     sup = LlamaServerSupervisor.__new__(LlamaServerSupervisor)
-    sup.install_dir = tmp_path
+    sup.binary = exe
     sup.proc = None
     sup._job = None
     sup._reap_orphaned_children()

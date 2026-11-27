@@ -115,7 +115,7 @@ def test_parser_maps_camelCase_payload_fields():
     assert s.current is not None
     assert s.current.tier_name == "Plus"
     assert s.current.cancel_at_period_end is True
-    assert s.current.monthly_credits == Decimal("1000")
+    assert s.current.monthly_credits == Decimal(1000)
 
 
 
@@ -183,9 +183,9 @@ def test_parser_maps_tiers_catalog():
     free, plus = s.tiers
     # The free tier's 0s must survive (coalesce-on-None, not falsy `or`).
     assert free.tier_id == "free" and free.tier_order == 0
-    assert free.dollars_per_month == Decimal("0")
+    assert free.dollars_per_month == Decimal(0)
     assert plus.is_current is True
-    assert plus.dollars_per_month == Decimal("20") and plus.monthly_credits == Decimal("1000")
+    assert plus.dollars_per_month == Decimal(20) and plus.monthly_credits == Decimal(1000)
 
 
 
@@ -210,7 +210,7 @@ def test_preview_parser_charge_now():
     assert p.effect == "charge_now"
     assert p.amount_due_now_cents == 1234
     assert p.target_tier_name == "Ultra"
-    assert p.monthly_credits_delta == Decimal("6000")
+    assert p.monthly_credits_delta == Decimal(6000)
 
 
 

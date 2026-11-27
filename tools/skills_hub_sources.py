@@ -32,12 +32,12 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
             extra={"index_url": parsed["index_url"], "base_url": parsed["base_url"], "files": files, **extra},
         )
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         index_url = self._query_to_index_url(query)
         parsed = self._parse_index(index_url) if index_url else None
         if not parsed:
             return []
-        results: List[SkillMeta] = []
+        results: list[SkillMeta] = []
         for entry in parsed["skills"][:limit]:
             name = entry.get("name")
             if not isinstance(name, str) or not name:
@@ -73,7 +73,7 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
         files = entry.get("files", ["SKILL.md"])
         if not isinstance(files, list) or not files:
             files = ["SKILL.md"]
-        downloaded: Dict[str, str] = {}
+        downloaded: dict[str, str] = {}
         for rel_path in files:
             if not isinstance(rel_path, str) or not rel_path:
                 continue
@@ -106,7 +106,8 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
         return query.rstrip("/") + f"{self.BASE_PATH}/index.json"
 
     def _parse_identifier(self, identifier: str) -> Optional[dict]:
-        raw = identifier[len("well-known:"):] if identifier.startswith("well-known:") else identifier
+        raw = identifier.removeprefix("well-known:")
+        explicit = raw != identifier
         if not raw.startswith(("http://", "https://")):
             return None
         parsed_url = urlparse(raw)
@@ -118,7 +119,9 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
             skill_url = f"{base_url}/{skill_name}"
         else:
             skill_url = clean_url[:-len("/SKILL.md")] if clean_url.endswith("/SKILL.md") else clean_url.rstrip("/")
-            if f"{self.BASE_PATH}/" not in skill_url:
+            # A bare URL is claimed only under BASE_PATH; a ``well-known:`` one is what _wrap_identifier
+            # recorded for an index at any path, so it must read back or check/update lose the skill.
+            if not explicit and f"{self.BASE_PATH}/" not in skill_url:
                 return None
             base_url, skill_name = skill_url.rsplit("/", 1)
         return {"index_url": f"{base_url}/index.json", "base_url": base_url,
@@ -166,7 +169,7 @@ class UrlSource(GuardedFetchMixin, SkillSource):
     # Blocks dangerous (``../evil``) AND useless (``SKILL``, ``README``, empty) candidates before they hit the disk.
     _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         return []  # search is meaningless for a direct URL
 
     def _matches(self, identifier: str) -> bool:
@@ -215,7 +218,7 @@ class UrlSource(GuardedFetchMixin, SkillSource):
         referenced = _referenced_support_paths(text)
         if referenced is None:
             return None
-        files: Dict[str, Union[str, bytes]] = {"SKILL.md": text}
+        files: dict[str, str | bytes] = {"SKILL.md": text}
         base_url = url.rsplit("/", 1)[0] + "/"
         for rel_path in sorted(referenced):
             support_url = urljoin(base_url, quote(rel_path, safe="/"))
@@ -290,7 +293,7 @@ class LobeHubSource(SkillSource):
         return SkillMeta(name=name, description=description, source="lobehub", identifier=f"lobehub/{name}",
                          trust_level="community", tags=tags if isinstance(tags, list) else [])
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         agents = self._agents()
         if agents is None:
             return []
@@ -359,7 +362,7 @@ class BrowseShSource(SkillSource):
     SKILL_DETAIL_URL = "https://browse.sh/api/skills/{slug}"
     _CACHE_KEY = "browse_sh_catalog"
 
-    def _fetch_catalog(self) -> List[Dict]:
+    def _fetch_catalog(self) -> list[dict]:
         def compute():
             data = _get_json(self.CATALOG_URL)
             skills = data.get("skills", []) if isinstance(data, dict) else []
@@ -367,7 +370,7 @@ class BrowseShSource(SkillSource):
 
         return _memo_json(self._CACHE_KEY, compute) or []
 
-    def _item_to_meta(self, item: Dict) -> Optional[SkillMeta]:
+    def _item_to_meta(self, item: dict) -> Optional[SkillMeta]:
         slug = item.get("slug", "")
         name = item.get("name", "")
         description = item.get("description", item.get("title", name))
@@ -383,14 +386,14 @@ class BrowseShSource(SkillSource):
                    "proxies": item.get("proxies", False), "install_count": item.get("installCount", 0)},
         )
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
         def fields(item):
             return (item.get("name", ""), item.get("title", ""), item.get("description", ""),
                     item.get("hostname", ""), item.get("category", ""), item.get("tags", []))
 
         return _first_matching(query.lower(), self._fetch_catalog(), fields, self._item_to_meta, limit)
 
-    def _catalog_item(self, identifier: str) -> Optional[Dict]:
+    def _catalog_item(self, identifier: str) -> Optional[dict]:
         slug = self._slug_from_identifier(identifier)
         return next((i for i in self._fetch_catalog() if i.get("slug") == slug), None) if slug else None
 
@@ -404,7 +407,7 @@ class BrowseShSource(SkillSource):
             return None
         slug = item["slug"]
         md_url = self._resolve_skill_md_url(slug, item)
-        content = _get_text(md_url, follow_redirects=True) if md_url else None
+        content = _get_text(md_url) if md_url else None
         if content is None:
             return None
         meta = self._item_to_meta(item)
@@ -415,9 +418,9 @@ class BrowseShSource(SkillSource):
                       "skill_md_url": md_url},
         )
 
-    def _resolve_skill_md_url(self, slug: str, item: Dict) -> Optional[str]:
+    def _resolve_skill_md_url(self, slug: str, item: dict) -> Optional[str]:
         """``skillMdUrl`` from ``/api/skills/{slug}``; fallback to a ``raw.githubusercontent.com`` ``sourceUrl``."""
-        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug), follow_redirects=True)
+        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug))
         md_url = data.get("skillMdUrl") if isinstance(data, dict) else None
         if isinstance(md_url, str) and md_url.startswith("http"):
             return md_url
@@ -427,4 +430,4 @@ class BrowseShSource(SkillSource):
 
     def _slug_from_identifier(self, identifier: str) -> str:
         """'browse-sh/airbnb.com/search-listings-abc' -> 'airbnb.com/search-listings-abc'."""
-        return identifier[len("browse-sh/"):] if identifier.startswith("browse-sh/") else identifier
+        return identifier.removeprefix("browse-sh/")

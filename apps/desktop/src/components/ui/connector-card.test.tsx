@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ConnectorCard, ConnectorRow, type ConnectorRowProps } from './connector-card'
 import { connectorLogoSource } from './connector-logo'
+import { SetupFormDialog } from './setup-form-dialog'
 
 afterEach(cleanup)
 
@@ -17,20 +18,6 @@ function renderRow(overrides: Partial<ConnectorRowProps> = {}) {
 }
 
 describe('a row in the card', () => {
-  it('offers exactly one verb and gives no reason', () => {
-    const onClick = vi.fn()
-
-    renderRow({ action: { label: 'Connect', onClick } })
-
-    expect(screen.getByText('Connect your apps')).toBeTruthy()
-    // Scoped to a span: the brand glyph is an <svg> carrying its own <title>.
-    expect(screen.getByText('Linear', { selector: 'span' })).toBeTruthy()
-    expect(screen.getAllByRole('button')).toHaveLength(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
-    expect(onClick).toHaveBeenCalledOnce()
-  })
-
   it('says how it stands through the mark, so the verb never has to', () => {
     renderRow({
       action: { label: 'Connect', onClick: vi.fn() },
@@ -39,7 +26,12 @@ describe('a row in the card', () => {
       markLabel: 'Waiting for your browser…'
     })
 
-    expect(screen.getByRole('img', { name: 'Waiting for your browser…' })).toBeTruthy()
+    const announced = screen.getByRole('status')
+
+    // A row that flips while the user reads the card has to be heard, not just seen.
+    expect(announced.getAttribute('aria-live')).toBe('polite')
+    // The cue repeats the mark's own word here; it is announced once.
+    expect(announced.textContent).toBe('Waiting for your browser…')
     expect(screen.getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(false)
   })
 
@@ -56,29 +48,49 @@ describe('a row in the card', () => {
     renderRow({ mark: 'connected', markLabel: 'Connected' })
 
     expect(screen.queryAllByRole('button')).toHaveLength(0)
-    expect(screen.getByRole('img', { name: 'Connected' })).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe('Connected')
   })
 })
 
 describe('credentials under a row', () => {
-  const envFields = [{ name: 'LINEAR_API_KEY', prompt: 'API key', required: true }]
+  const fields = [
+    { default: 'https://api.linear.app', name: 'LINEAR_URL', prompt: 'API URL', required: true, secret: false },
+    { default: '', name: 'LINEAR_API_KEY', prompt: 'API key', required: true, secret: true }
+  ]
 
-  it('stay out of the way until the row asks for them', () => {
-    renderRow({ envFields })
+  const copy = {
+    cancel: 'Cancel',
+    connect: 'Connect',
+    openInBrowser: 'Open in browser',
+    setup: (server: string) => `Set up ${server}`
+  }
 
-    expect(screen.queryByLabelText('API key *')).toBeNull()
-  })
+  it('renders plain and masked inputs, prefills plain defaults, and reports the complete draft', () => {
+    const onConnect = vi.fn()
 
-  it('report each keystroke so the caller owns the draft, and mask the value', () => {
-    const onEnvChange = vi.fn()
+    render(
+      <SetupFormDialog
+        copy={copy}
+        fields={fields}
+        onCancel={vi.fn()}
+        onConnect={onConnect}
+        onOpenBrowser={vi.fn()}
+        open
+        pending={false}
+        server="Linear"
+        status="pending"
+      />
+    )
 
-    renderRow({ envFields, envOpen: true, envRequired: 'Fill in the required credentials first', onEnvChange })
+    const plain = screen.getByLabelText('API URL')
+    const secret = screen.getByLabelText('API key')
 
-    const input = screen.getByLabelText('API key *')
-
-    fireEvent.change(input, { target: { value: 'lin_abc' } })
-    expect(onEnvChange).toHaveBeenCalledWith('LINEAR_API_KEY', 'lin_abc')
-    expect(input.getAttribute('type')).toBe('password')
+    expect(plain.getAttribute('type')).toBe('text')
+    expect(plain.getAttribute('value')).toBe('https://api.linear.app')
+    expect(secret.getAttribute('type')).toBe('password')
+    fireEvent.change(secret, { target: { value: 'lin_abc' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(onConnect).toHaveBeenCalledWith({ LINEAR_API_KEY: 'lin_abc', LINEAR_URL: 'https://api.linear.app' })
   })
 })
 

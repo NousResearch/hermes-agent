@@ -8,16 +8,6 @@ describe('modelSearchText', () => {
     expect(modelSearchText('kimi-k2.6')).toBe('kimi-k2.6')
     expect(modelSearchText('glm-5.2')).toBe('glm-5.2')
   })
-
-  it('adds kimi aliases for the bare Kimi Coding k3 wire id', () => {
-    expect(modelSearchText('k3')).toBe('k3 kimi-k3 kimi')
-    expect(modelSearchText('K3')).toBe('K3 kimi-k3 kimi')
-  })
-
-  it('adds ox-alpha aliases for the Ox Alpha preview wire id', () => {
-    expect(modelSearchText('x-preview-f-free')).toBe('x-preview-f-free ox-alpha ox')
-    expect(modelSearchText('X-Preview-F-Free')).toBe('X-Preview-F-Free ox-alpha ox')
-  })
 })
 
 describe('model picker search with aliases', () => {

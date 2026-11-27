@@ -10,7 +10,7 @@ from gateway.run_turn_runner import TurnRunner
 from gateway.turn_context import TurnContext
 from gateway.session import SessionSource
 from gateway.config import Platform
-from tests.gateway.test_slack_native_streaming import _make_adapter, META
+from tests.gateway.test_slack_native_streaming import _make_adapter, _open_streams, META
 
 
 @pytest.mark.asyncio
@@ -25,7 +25,7 @@ async def test_warning_and_media_failure_do_not_seal_requested_final(tmp_path, m
     assert first.success
     source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", thread_id=META["thread_id"])
     ctx = TurnContext(source=source, user_config=cfg, _run_still_current=lambda: True,
-        _status_adapter=adapter, _status_chat_id="D1", _status_thread_metadata=dict(META))
+        _status_adapter_pinned=adapter, _status_chat_id="D1", _status_thread_metadata=dict(META))
     turn = TurnRunner(SimpleNamespace(), ctx)
     loop = asyncio.get_running_loop()
     scheduled = []
@@ -52,11 +52,11 @@ async def test_warning_and_media_failure_do_not_seal_requested_final(tmp_path, m
     assert media.success is not (setting is True)  # legacy text fallback receipt
     assert client.chat_postMessage.await_count == (0 if setting is True else 2)
     assert client.chat_stopStream.await_count == 0
-    assert "D1" in adapter._active_streams
+    assert _open_streams(adapter, "D1")  # keyed per (team, chat, thread)
     await adapter.send_draft("D1", 7, "Requested final", metadata=META)
     result = await adapter.send("D1", "Requested final", metadata=META)
     assert result.success
     assert client.chat_startStream.await_count == 1
     assert client.chat_stopStream.await_count == 1
-    assert "D1" not in adapter._active_streams
+    assert not _open_streams(adapter, "D1")
     assert client.chat_postMessage.await_count == (0 if setting is True else 2)

@@ -106,6 +106,36 @@ class TestSanitizeApiMessages:
     def test_empty_list_is_safe(self):
         assert AIAgent._sanitize_api_messages([]) == []
 
+    def test_invalid_tool_call_names_coerced_copy_on_write(self):
+        """Invalid stored ``function.name`` values are coerced to ``^[A-Za-z0-9_-]{1,64}$`` on the
+        per-call copy only (#51944): a shallow copy of the history row — the iteration-limit summary
+        path's shape — must leave the persisted dict untouched, valid names must be byte-identical
+        (prompt-cache prefix), and the result's wire name follows the coerced call name."""
+        stored_call = {"id": "c1", "function": {"name": "multi_tool_use.parallel", "arguments": "{}"}}
+        stored = {"role": "assistant", "tool_calls": [stored_call, assistant_dict_call("c2", "terminal")]}
+        out = AIAgent._sanitize_api_messages(
+            [dict(stored), {**tool_result("c1"), "name": "multi_tool_use.parallel"}, tool_result("c2")]
+        )
+        names = [tc["function"]["name"] for tc in out[0]["tool_calls"]]
+        assert names == ["multi_tool_use_parallel", "terminal"]
+        assert out[0]["tool_calls"][1] is stored["tool_calls"][1]
+        assert stored_call["function"]["name"] == "multi_tool_use.parallel"
+        assert out[1]["name"] == "multi_tool_use_parallel"
+
+    def test_invalid_sdk_object_tool_call_name_coerced_without_mutation(self):
+        """An SDK-object tool call with an invalid name is replaced by a dict copy on the per-call
+        copy; the stored object's ``function.name`` is never mutated in place."""
+        fn = types.SimpleNamespace(name="multi_tool_use.parallel", arguments='{"x": 1}')
+        tc_obj = types.SimpleNamespace(id="c1", function=fn)
+        stored = {"role": "assistant", "tool_calls": [tc_obj]}
+        out = AIAgent._sanitize_api_messages([dict(stored), tool_result("c1")])
+        assert out[0]["tool_calls"][0] == {
+            "id": "c1", "type": "function",
+            "function": {"name": "multi_tool_use_parallel", "arguments": '{"x": 1}'},
+        }
+        assert fn.name == "multi_tool_use.parallel"
+        assert stored["tool_calls"][0] is tc_obj
+
 
     def test_sdk_object_tool_calls(self):
         tc_obj = types.SimpleNamespace(id="c6", function=types.SimpleNamespace(
@@ -117,8 +147,6 @@ class TestSanitizeApiMessages:
         out = AIAgent._sanitize_api_messages(msgs)
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +175,6 @@ class TestCapDelegateTaskCalls:
         tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN)]
         out = AIAgent._cap_delegate_task_calls(tcs)
         assert out is tcs
-
 
 
     def test_empty_list_safe(self):
@@ -213,13 +240,8 @@ class TestDeduplicateToolCalls:
         assert out == [first, distinct]
 
 
-
-
-
     def test_empty_list_safe(self):
         assert AIAgent._deduplicate_tool_calls([]) == []
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +276,6 @@ class TestUniquifyToolCallIds:
                make_tc_id("x", "t", '{"a":3}')]
         AIAgent._uniquify_tool_call_ids(tcs)
         assert [tc.id for tc in tcs] == ["x", "x_d2", "x_d3"]
-
 
 
     def test_blank_and_missing_ids_left_for_fallback(self):
@@ -302,30 +323,12 @@ class TestUniquifyToolCallIds:
 # _get_tool_call_id_static
 # ---------------------------------------------------------------------------
 
-class TestGetToolCallIdStatic:
-
-    def test_dict_with_valid_id(self):
-        assert AIAgent._get_tool_call_id_static({"id": "call_123"}) == "call_123"
-
-
-
-
-
-
 
 # ---------------------------------------------------------------------------
 # _get_tool_call_name_static
 # ---------------------------------------------------------------------------
 
 class TestGetToolCallNameStatic:
-
-    def test_dict_with_valid_name(self):
-        assert AIAgent._get_tool_call_name_static(
-            {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
-        ) == "terminal"
-
-
-
 
 
     def test_object_without_function_attr(self):

@@ -1,0 +1,20 @@
+name: linux-notify
+title: Linux Notify
+repo: https://github.com/codepilots/hermes-linux-notify
+sha: "69085429cfa4326219242d376665db18cc038f05"
+description: "Native Linux desktop notifications (libnotify notify-send) when Hermes is waiting on you — approval prompts, clarify questions, sudo password prompts — and when a long turn finishes or stops. Prompt notifications are critical urgency and close themselves once answered from any surface; completion notices only fire for turns over a configurable threshold (default 30s), never for user interrupts or subagents. Works with any freedesktop notification daemon (mako, dunst, swaync, quickshell, GNOME, KDE). Disclosure — no network calls and no telemetry: notifications go only to the local D-Bus session bus by running notify-send and gdbus (argument lists, no shell, 10s/5s timeouts; both inherit Hermes's full process environment, provider keys included) on a short-lived daemon thread per notification. Body text is Hermes's force-redacted on_human_input_request prompt; it never sees typed answers or passwords and does not use pre_approval_request. Observer only, no inbound or approval path; no files read or written, no stored credentials."
+maintainer: codepilots
+tier: community
+category: desktop
+version: "0.1.0"
+readme: true
+platforms: [linux]
+docs_url: https://github.com/codepilots/hermes-linux-notify#readme
+known_issues:
+  - Needs notify-send (libnotify) and a running notification daemon; without gdbus, prompt notifications are not auto-dismissed.
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, on_session_end, subagent_start, on_human_input_request, on_human_input_resolved]
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

@@ -1,113 +1,124 @@
 import { cleanup, render } from '@testing-library/react'
-import type * as React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SessionInfo } from '@/hermes'
 import type { SidebarListRow } from '@/lib/session-date-groups'
+import { $sessionListDensity } from '@/store/session-list-density'
 
+import { SESSION_CARD_ROW_ESTIMATE_PX, sessionRowEstimate } from './session-row-details'
 import { VirtualSessionList } from './virtual-session-list'
 
-const virtualizer = {
-  getTotalSize: () => 68,
-  getVirtualItems: () => [
-    { end: 26, index: 0, start: 0 },
-    { end: 68, index: 1, start: 26 }
-  ],
-  measure: vi.fn(),
+// The virtualizer is mocked with a STABLE instance (the real hook returns
+// one), so the component's measure() effect fires exactly when its deps
+// change — which is the behavior under test: `card` must invalidate cached
+// measurements, or toggling Inbox style leaves the previous mode's row
+// heights in place (#88473).
+const measureSpy = vi.fn()
+let estimateSize: (index: number) => number = () => 0
+
+const stableVirtualizer = {
+  measure: (...args: []) => measureSpy(...args),
+  getVirtualItems: () => [],
+  getTotalSize: () => 0,
   measureElement: vi.fn()
 }
 
-vi.mock('@dnd-kit/sortable', () => ({ useSortable: vi.fn() }))
-vi.mock('@dnd-kit/utilities', () => ({ CSS: { Transform: { toString: vi.fn() } } }))
-vi.mock('@tanstack/react-virtual', () => ({ useVirtualizer: () => virtualizer }))
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: (options: { estimateSize: (index: number) => number }) => {
+    estimateSize = options.estimateSize
 
-vi.mock('@/i18n', () => ({
-  useI18n: () => ({
-    t: {
-      sidebar: {
-        dateDivider: {
-          earlierThisMonth: 'Earlier this month',
-          lastMonth: 'Last month',
-          lastWeek: 'Last week',
-          older: 'Older',
-          today: 'Today',
-          yesterday: 'Yesterday'
-        }
-      }
-    }
-  })
+    return stableVirtualizer
+  }
 }))
 
-vi.mock('./chrome', () => ({
-  SidebarDateDivider: ({ label, ...props }: { label: string } & React.ComponentProps<'div'>) => (
-    <div data-testid={`divider-${label}`} {...props} />
-  )
-}))
-
+vi.mock('./chrome', () => ({ SidebarDateDivider: () => null }))
 vi.mock('./session-row', () => ({ SidebarSessionRow: () => null }))
 
-afterEach(cleanup)
+vi.mock('@/i18n', () => ({
+  useI18n: () => ({ t: { sidebar: { dateDivider: {} } } })
+}))
+
+const session = (id: string) =>
+  ({ archived: false, id, last_active: 0, profile: 'default', started_at: 0 }) as unknown as SessionInfo
 
 const rows: SidebarListRow[] = [
   { key: 'today', kind: 'divider', label: 'Today' },
-  { key: 'older', kind: 'divider', label: 'Older' }
+  { entry: { session: session('s1') }, kind: 'session' },
+  { entry: { session: session('s2') }, kind: 'session' }
 ]
 
-const noop = () => {}
+const defaultProps = {
+  activeSessionId: null,
+  onDeleteSession: () => {},
+  onResumeSession: () => {},
+  onArchiveSession: () => {},
+  onTogglePin: () => {},
+  onToggleUnread: () => {},
+  pinned: false,
+  rows,
+  sortable: false
+}
 
-describe('VirtualSessionList', () => {
-  it('positions measured rows independently within a total-size spacer', () => {
-    const { getByTestId } = render(
-      <VirtualSessionList
-        activeSessionId={null}
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onResumeSession={noop}
-        onTogglePin={noop}
-        onToggleUnread={noop}
-        pinned={false}
-        rows={rows}
-        sortable={false}
-      />
-    )
+function renderList(props: Partial<Parameters<typeof VirtualSessionList>[0]> = {}) {
+  return render(<VirtualSessionList {...defaultProps} {...props} />)
+}
 
-    const firstItem = getByTestId('divider-Today').parentElement
-    const secondItem = getByTestId('divider-Older').parentElement
-    const spacer = firstItem?.parentElement
-
-    expect(firstItem?.dataset.index).toBe('0')
-    expect(firstItem?.style.position).toBe('absolute')
-    expect(firstItem?.style.transform).toBe('translateY(0px)')
-    expect(secondItem?.dataset.index).toBe('1')
-    expect(secondItem?.style.transform).toBe('translateY(26px)')
-    expect(spacer?.className).toBe('relative')
-    expect(spacer?.style.height).toBe('68px')
-    expect(spacer?.style.paddingTop).toBe('')
-    expect(spacer?.style.paddingBottom).toBe('')
+describe('VirtualSessionList row measurement', () => {
+  beforeEach(() => {
+    measureSpy.mockClear()
+    $sessionListDensity.set('compact')
   })
 
-  it('lets wheel overscroll chain to the outer sidebar scroller (#84964)', () => {
-    const { getByTestId } = render(
-      <VirtualSessionList
-        activeSessionId={null}
-        onArchiveSession={noop}
-        onDeleteSession={noop}
-        onResumeSession={noop}
-        onTogglePin={noop}
-        onToggleUnread={noop}
-        pinned={false}
-        rows={rows}
-        sortable={false}
-      />
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('re-measures when the density changes', () => {
+    const { rerender } = renderList()
+
+    const afterMount = measureSpy.mock.calls.length
+
+    $sessionListDensity.set('detailed')
+    rerender(<VirtualSessionList {...defaultProps} />)
+
+    expect(measureSpy.mock.calls.length).toBeGreaterThan(afterMount)
+  })
+
+  it('re-measures when Inbox card mode toggles — stale compact measurements must not survive the switch (#88473)', () => {
+    const { rerender } = renderList()
+
+    const afterMount = measureSpy.mock.calls.length
+
+    rerender(<VirtualSessionList {...defaultProps} card />)
+
+    expect(measureSpy.mock.calls.length).toBeGreaterThan(afterMount)
+  })
+
+  it('routes the estimate by row kind and mode', () => {
+    const { rerender } = renderList()
+
+    // Dividers keep their own fixed estimate in every mode.
+    expect(estimateSize(0)).toBe(28)
+    expect(estimateSize(1)).toBe(sessionRowEstimate('compact'))
+
+    rerender(<VirtualSessionList {...defaultProps} card />)
+
+    expect(estimateSize(0)).toBe(28)
+    expect(estimateSize(1)).toBe(SESSION_CARD_ROW_ESTIMATE_PX)
+  })
+
+  it('estimates a card at or above the tallest four-line card stack (#88473)', () => {
+    // A full Inbox card renders four text lines (header, title, preview,
+    // model/size) where the tallest inline density renders three — plus the
+    // card's own padding, and one more title line when the title wraps on a
+    // narrow sidebar. The estimate must cover that worst case: undersized
+    // estimates paint rows over their neighbours on cold start, before
+    // self-measurement can correct them.
+    const onePreviewLine = 13.5
+    const oneTitleLine = 17.6
+
+    expect(SESSION_CARD_ROW_ESTIMATE_PX).toBeGreaterThanOrEqual(
+      sessionRowEstimate('detailed') + onePreviewLine + oneTitleLine
     )
-
-    const scroller = getByTestId('divider-Today').parentElement?.parentElement?.parentElement
-
-    // The inner virtualized scroller must NOT contain overscroll: it is nested
-    // inside the sidebar's own scroll container, and containing it swallowed
-    // wheel events at the inner scroll boundary — the mid-list wheel dead-zone
-    // at 25+ sessions. Chaining stays inside the sidebar because the OUTER
-    // scroller keeps overscroll-contain.
-    expect(scroller?.className).toContain('overflow-y-auto')
-    expect(scroller?.className).not.toContain('overscroll-contain')
   })
 })

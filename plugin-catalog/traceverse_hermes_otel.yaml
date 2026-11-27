@@ -1,0 +1,31 @@
+name: traceverse_hermes_otel
+repo: https://github.com/Mandark-droid/hermes-otel-plugin
+sha: "735fd3dbe55c414a95557385d6e0d7dd8ddb451f"
+description: "Hermes Agent OpenTelemetry traces and dashboard logs, with local-model cost estimates and optional in-process evaluation, GPU, energy, and CO2 metrics via genai-otel-instrument. Disclosure — Sends OpenTelemetry traces and log records for every turn, LLM call and tool call (session ids, models, token counts, costs, tool names, errors, and the gateway platform and Hermes profile name of the run) to an OTLP endpoint, `http://localhost:4318` unless `HERMES_OTEL_ENDPOINT` points elsewhere; prompt, response and tool argument/result text is included only when `HERMES_OTEL_CAPTURE_CONTENT=true`; if `genai-otel-instrument` is installed it is activated in-process and instruments the LLM client libraries Hermes uses."
+maintainer: Mandark-droid
+tier: community
+category: general
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/Mandark-droid/hermes-otel-plugin/blob/main/README.md
+version: "2.2.1"
+screenshots:
+  - https://raw.githubusercontent.com/Mandark-droid/hermes-otel-plugin/735fd3dbe55c414a95557385d6e0d7dd8ddb451f/docs/img/hermes-jaeger-waterfall.png
+  - https://raw.githubusercontent.com/Mandark-droid/hermes-otel-plugin/735fd3dbe55c414a95557385d6e0d7dd8ddb451f/docs/img/genai-otel-hermes.png
+readme: true
+platforms: []
+title: "Hermes OTel + Eval Metrics"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+    - on_session_reset
+    - pre_llm_call
+    - transform_llm_output
+    - post_api_request
+    - post_tool_call
+    - pre_tool_call
+    - subagent_start
+  provides_middleware: []
+  requires_env: []

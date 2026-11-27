@@ -7,12 +7,11 @@ The lark client is injected per-thread by the feishu_comment event handler.
 
 import logging
 
-from tools.feishu_lark import (  # noqa: F401  (set_client/get_client are imported by feishu_comment)
+from tools.feishu_lark import (
     _check_feishu,
     build_request,
     get_client,
-    lark_call,
-    set_client)
+    lark_call)
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
@@ -192,12 +191,3 @@ for _schema, _handler, _desc, _emoji in (
     registry.register(
         name=_schema["name"], toolset="feishu_drive", schema=_schema, handler=_handler,
         check_fn=_check_feishu, requires_env=[], is_async=False, description=_desc, emoji=_emoji)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-import threading  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

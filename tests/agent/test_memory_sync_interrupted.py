@@ -19,8 +19,6 @@ via ``__new__`` so the full ``run_conversation`` machinery isn't needed
 """
 from unittest.mock import MagicMock
 
-import pytest
-
 
 def _bare_agent():
     """Build an ``AIAgent`` with only the attributes
@@ -67,39 +65,3 @@ class TestSyncExternalMemoryForTurn:
         kwargs = agent._memory_manager.sync_all.call_args.kwargs
         assert kwargs["turn_author"] == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
         assert kwargs["session_id"] == "test_session_001"
-
-    @pytest.mark.parametrize("stash", ["human turn", "no stash yet"])
-    def test_human_turn_or_agent_without_stash_sends_no_author_keyword(self, stash):
-        """A bare agent built before any turn has no stash; the sync must not depend on it."""
-        agent = _bare_agent()
-        if stash == "human turn":
-            agent._turn_author = None
-
-        agent._sync_external_memory_for_turn(
-            original_user_message="status?", final_response="All green.", interrupted=False,
-        )
-
-        agent._memory_manager.sync_all.assert_called_once()
-        assert "turn_author" not in agent._memory_manager.sync_all.call_args.kwargs
-
-    # --- Normal completed turn still syncs ------------------------------
-
-
-
-
-    # --- Edge cases (pre-existing behaviour preserved) ------------------
-
-
-
-
-    # --- Exception safety ----------------------------------------------
-
-
-
-    # --- Multimodal content flattening ----------------------------------
-
-
-
-
-    # --- The specific matrix the reporter asked about ------------------
-

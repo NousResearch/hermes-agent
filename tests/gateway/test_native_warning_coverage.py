@@ -52,7 +52,8 @@ async def test_matrix_download_diagnostic_not_caption_is_suppressed(policy, capt
         if frames:
             assert frames[0]["m.relates_to"]["event_id"] == "$thread"
     else:
-        notice = "I couldn't download and upload the image to Matrix. The source URL was not shown because it may contain private tokens."
+        from agent.i18n import t
+        notice = t("platform.matrix.media.image_download_failed")
         assert [f["body"] for f in frames] == [f"{caption}\n{notice}" if caption else notice]
         assert result.success and result.message_id == "$sent"
     assert "failed to download image" in caplog.text
@@ -165,7 +166,9 @@ async def test_buzz_missing_upload_fallback_and_real_upload_receipts(policy, tmp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lane", ["send", "edit"])
-async def test_discord_truncation_warning_covers_send_and_final_edit(policy, lane):
+async def test_discord_long_send_and_final_edit_deliver_every_chunk_without_a_notice(policy, lane):
+    """Past ``MAX_SPLIT_MESSAGES`` Discord delivers the whole text with no truncation notice, under
+    every warning policy (Teknium's ruling on PR #153476: Discord never cuts a reply off)."""
     adapter = DiscordAdapter(PlatformConfig())
     frames = []
 
@@ -187,9 +190,8 @@ async def test_discord_truncation_warning_covers_send_and_final_edit(policy, lan
     else:
         result = await adapter.edit_message("99", "123", text, finalize=True)
     assert result.success
-    assert frames[0].startswith("Warning: requested result.")
-    assert any("Response truncated" in frame for frame in frames) is (not policy)
-    assert len(frames) == (2 if policy else 3)
+    assert frames == adapter.truncate_message(adapter.format_message(text), adapter.MAX_MESSAGE_LENGTH)
+    assert len(frames) > adapter.MAX_SPLIT_MESSAGES
 
 
 @pytest.mark.asyncio

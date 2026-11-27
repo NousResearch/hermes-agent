@@ -41,6 +41,7 @@ function makeSidebarActions(): SidebarActions {
     onDeleteSession: vi.fn(),
     onLoadMoreMessaging: vi.fn(),
     onLoadMoreSessions: vi.fn(),
+    onRetrySessions: vi.fn(),
     onManageCronJob: vi.fn(),
     onNavigate: vi.fn(),
     onNewSessionInWorkspace: vi.fn(),

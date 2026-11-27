@@ -23,18 +23,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway.server import _session_info
 
 
-def _agent(reasoning_config):
-    return SimpleNamespace(
-        reasoning_config=reasoning_config,
-        service_tier=None,
-        model="glm-5",
-        provider="zai",
-        session_id="sess-key",
-    )
+def _agent(reasoning_config, **overrides):
+    return SimpleNamespace(**{
+        "reasoning_config": reasoning_config,
+        "service_tier": None,
+        "model": "glm-5",
+        "provider": "zai",
+        "session_id": "sess-key",
+        **overrides,
+    })
 
 
 class TestSessionInfoReasoningEffort:
@@ -51,6 +52,21 @@ class TestSessionInfoReasoningEffort:
     def test_unset_reports_empty(self) -> None:
         info = _session_info(_agent(None))
         assert info["reasoning_effort"] == ""
+        assert info["reasoning_effort_wire"] == ""
+
+    def test_wire_level_is_what_the_route_actually_sends(self) -> None:
+        """`ultra` is a Hermes-internal step (#61634): the route clamps it, and the Desktop must be able to
+        say so ("ultra sends max on this route") instead of presenting Ultra as a distinct wire level."""
+        info = _session_info(_agent({"enabled": True, "effort": "ultra"}))
+        assert info["reasoning_effort"] == "ultra"
+        assert info["reasoning_effort_wire"] == "max"
+        # Verbatim levels report themselves, so clients only annotate a real clamp.
+        assert _session_info(_agent({"enabled": True, "effort": "high"}))["reasoning_effort_wire"] == "high"
+        assert _session_info(_agent({"enabled": False}))["reasoning_effort_wire"] == ""
+        # On the Codex app-server ``ultra`` is codex's own harness mode, sent verbatim.
+        app_server = _agent({"enabled": True, "effort": "ultra"}, provider="openai-codex",
+                            model="gpt-5.6-sol", api_mode="codex_app_server")
+        assert _session_info(app_server)["reasoning_effort_wire"] == "ultra"
 
 
 class TestConfigSetReasoningSessionScope:
@@ -100,4 +116,47 @@ class TestLoadReasoningConfigYamlBoolean:
             server, "_load_cfg", return_value={"agent": {"reasoning_effort": "false"}}
         ):
             assert server._load_reasoning_config() == {"enabled": False}
+
+
+class TestSessionNoneReachesDeepSeekWire:
+    """Desktop ``config.set value=none`` must disable DeepSeek V4 thinking.
+
+    ``{effort: "none"}`` without ``enabled: False`` is what ``_session_info``
+    already reports as Off; the profile used to ignore it and send enabled.
+    """
+
+    def test_session_info_effort_none_without_enabled_reports_none(self) -> None:
+        info = _session_info(_agent({"effort": "none"}))
+        assert info["reasoning_effort"] == "none"
+
+    def test_config_set_none_on_lazy_session_pins_disabled_override(self) -> None:
+        session = {"session_key": "k-lazy", "agent": None}
+        with patch.dict(server._sessions, {"s-lazy": session}, clear=False), \
+                patch.object(server, "_write_config_key") as write_key:
+            resp = server._methods["config.set"](
+                "rid-1", {"key": "reasoning", "session_id": "s-lazy", "value": "none"}
+            )
+        assert resp["result"]["value"] == "none"
+        assert session["create_reasoning_override"] == {"enabled": False}
+        write_key.assert_not_called()
+        kw = server._deferred_build_agent_kwargs(session, session_db=None)
+        assert kw["reasoning_config_override"] == {"enabled": False}
+
+    def test_effort_none_override_emits_thinking_disabled(self) -> None:
+        import model_tools
+        import providers
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        profile = providers.get_provider_profile("deepseek")
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4.1-flash-expires-on-0910",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=profile,
+            reasoning_config={"effort": "none"},
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in kwargs
 

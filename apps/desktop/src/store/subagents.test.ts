@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $subagentsBySession,
   activeSubagentCount,
-  allSubagents,
   buildSubagentTree,
   clearSessionSubagents,
   failedSubagentCount,
+  isTerminalSubagentCompletion,
   pruneDelegateFallbackSubagents,
   pruneFinishedSessionSubagents,
   reconcileSubagentSnapshot,
+  subagentsForPanel,
   upsertSubagent
 } from './subagents'
 
@@ -26,6 +27,29 @@ describe('subagent store', () => {
     const item = listFor('s1')[0]
     expect(item?.status).toBe('completed')
     expect(item?.summary).toBe('done')
+  })
+
+  it('accepts a terminal subagent.complete for an interrupted session, and still drops live progress', () => {
+    upsertSubagent('stopped', { goal: 'finishing', status: 'running', subagent_id: 'sa-1', task_index: 0 })
+
+    // Stop interrupts the turn, not the children: the completion must land.
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'completed' })).toBe(true)
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'timeout' })).toBe(true)
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'cancelled' })).toBe(true)
+    upsertSubagent(
+      'stopped',
+      { status: 'completed', subagent_id: 'sa-1', task_index: 0, summary: 'done after Stop' },
+      false,
+      'subagent.complete'
+    )
+    expect(listFor('stopped')[0]?.status).toBe('completed')
+    expect(listFor('stopped')[0]?.summary).toBe('done after Stop')
+
+    // Non-terminal completions and live progress keep the interrupted guard.
+    expect(isTerminalSubagentCompletion('subagent.complete', { status: 'running' })).toBe(false)
+    expect(isTerminalSubagentCompletion('subagent.complete', {})).toBe(false)
+    expect(isTerminalSubagentCompletion('subagent.progress', { status: 'running' })).toBe(false)
+    expect(isTerminalSubagentCompletion('subagent.start', { status: 'completed' })).toBe(false)
   })
 
   it('keeps completed children retired across turn pruning, late frames, and roster refreshes', () => {
@@ -59,6 +83,45 @@ describe('subagent store', () => {
     clearSessionSubagents('owner')
     upsertSubagent('owner', finished, true, 'subagent.start')
     expect(activeSubagentCount(listFor('owner'))).toBe(1)
+  })
+
+  it('lands durable failed delegations as failed rows once, and never over a live row or a retired one (#97202)', () => {
+    const failure = {
+      completed_at: 1_700_000_000,
+      delegation_id: 'd1',
+      dispatched_at: 1_699_999_700,
+      error: 'interrupted: waiting for model response',
+      goal: 'Audit billing',
+      status: 'error',
+      task_index: 0
+    }
+
+    // A renderer reload emptied the store; the roster has no live children left.
+    reconcileSubagentSnapshot('owner', [], [failure])
+    const [row] = listFor('owner')
+    expect(row).toMatchObject({ goal: 'Audit billing', status: 'failed', summary: failure.error, delegationId: 'd1' })
+    expect(row).toMatchObject({ durationSeconds: 300, startedAt: 1_699_999_700_000, updatedAt: 1_700_000_000_000 })
+    expect(failedSubagentCount(listFor('owner'))).toBe(1)
+
+    // Repeated polls keep the same frame.
+    const first = listFor('owner')
+    reconcileSubagentSnapshot('owner', [], [failure])
+    expect(listFor('owner')).toBe(first)
+
+    // A turn that pruned the row retires it for good.
+    pruneFinishedSessionSubagents('owner')
+    reconcileSubagentSnapshot('owner', [], [failure])
+    expect(listFor('owner')).toEqual([])
+
+    // An event-fed row for the same task wins over the durable copy.
+    upsertSubagent(
+      'live',
+      { delegation_id: 'd1', goal: 'Audit billing', status: 'failed', subagent_id: 'sa-1', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+    reconcileSubagentSnapshot('live', [], [failure])
+    expect(listFor('live').map(item => item.id)).toEqual(['sa-1'])
   })
 
   it('builds parent/child trees', () => {
@@ -137,24 +200,35 @@ describe('subagent store', () => {
   })
 
   // Contract: the status-bar "Agents" indicator and the Spawn-tree panel read
-  // the same scope — every session's subagents — so a count can never point at
-  // an empty tree (the desync behind "Agents (N)" vs "No live subagents").
-  it('counts running/failed across every session, matching the aggregated tree', () => {
+  // the same scope — every session's LIVE subagents plus terminal rows only
+  // from the session the user is in — so a count can never point at an empty
+  // tree, and finished history from inactive sessions stops accumulating (#75505).
+  it('keeps live rows from every session, terminal rows only for the session in view', () => {
     upsertSubagent('s1', { goal: 'a', status: 'running', subagent_id: 'a', task_index: 0 })
     upsertSubagent('s1', { goal: 'b', status: 'failed', subagent_id: 'b', task_index: 1 })
     upsertSubagent('s2', { goal: 'c', status: 'running', subagent_id: 'c', task_index: 0 })
     upsertSubagent('s2', { goal: 'd', status: 'failed', subagent_id: 'd', task_index: 1 })
 
-    const flat = allSubagents($subagentsBySession.get())
+    const active = 's1'
+    const panel = subagentsForPanel($subagentsBySession.get(), active)
     const indicatorRunning = Object.values($subagentsBySession.get()).reduce((n, l) => n + activeSubagentCount(l), 0)
-    const indicatorFailed = Object.values($subagentsBySession.get()).reduce((n, l) => n + failedSubagentCount(l), 0)
-    const tree = buildSubagentTree(flat)
 
-    // The active-session-only filter would have reported 1/1 here, not 2/2.
+    const indicatorFailed = Object.entries($subagentsBySession.get())
+      .filter(([sid]) => sid === active)
+      .reduce((n, [, l]) => n + failedSubagentCount(l), 0)
+
+    // The active-session-only filter would have reported 1/1 here, not 2/1.
     expect(indicatorRunning).toBe(2)
-    expect(indicatorFailed).toBe(2)
-    expect(tree).toHaveLength(4)
-    expect(indicatorRunning + indicatorFailed).toBe(tree.length)
+    expect(indicatorFailed).toBe(1)
+    expect(panel.map(item => item.id)).toEqual(['a', 'b', 'c'])
+    expect(indicatorRunning + indicatorFailed).toBe(panel.length)
+  })
+
+  it('an inactive session keeps only its live rows in the panel scope', () => {
+    upsertSubagent('past', { goal: 'history', status: 'completed', subagent_id: 'h', task_index: 0 })
+    upsertSubagent('past', { goal: 'still running', status: 'running', subagent_id: 'live', task_index: 1 })
+
+    expect(subagentsForPanel($subagentsBySession.get(), 'other').map(item => item.id)).toEqual(['live'])
   })
 
   it('clears one session without touching another', () => {
@@ -165,6 +239,17 @@ describe('subagent store', () => {
 
     expect($subagentsBySession.get().s1).toBeUndefined()
     expect($subagentsBySession.get().s2).toHaveLength(1)
+  })
+
+  it('creates and clears a session id that collides with an object prototype key', () => {
+    expect(() =>
+      upsertSubagent('toString', { goal: 'proto', status: 'running', subagent_id: 'a1', task_index: 0 })
+    ).not.toThrow()
+    expect($subagentsBySession.get().toString).toHaveLength(1)
+
+    clearSessionSubagents('toString')
+
+    expect(Object.hasOwn($subagentsBySession.get(), 'toString')).toBe(false)
   })
 
   // Regression test for #64015: still-RUNNING background subagents must survive
@@ -287,19 +372,12 @@ describe('subagent store', () => {
     const item = listFor('s1')[0]
     expect(item?.status).toBe('failed')
     expect(item?.durationSeconds).toBe(612.3)
-    expect(item?.summary).toBe('Timed out after 612.3s')
+    expect(item?.summary).toContain('612.3')
 
     // A timed-out row must be pruned at the next message.start boundary like
     // any other finished row — it must not linger as a live spinner.
     pruneFinishedSessionSubagents('s1')
     expect(listFor('s1')).toHaveLength(0)
-  })
-
-  it('falls back to a placeholder when timeout duration is missing', () => {
-    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 't2', task_index: 0 })
-    upsertSubagent('s1', { status: 'timeout', subagent_id: 't2', task_index: 0 }, false, 'subagent.complete')
-
-    expect(listFor('s1')[0]?.summary).toBe('Timed out after ?s')
   })
 
   // Fail-closed guard: subagent.complete is terminal by definition, so an

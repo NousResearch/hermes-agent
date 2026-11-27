@@ -1,0 +1,24 @@
+name: chronos
+repo: https://github.com/Shikhyy/hermes-agent
+sha: "5b2a4b4a2c43e8a9b1e7bf8d32484a651bffedf0"
+subdir: plugins/chronos
+title: Chronos
+description: "Speculative branching: try several candidate fixes in isolated git worktrees, verify each against the project's tests through Hermes' terminal tool, and merge only a verified winner through Hermes' file tools. Disclosure — runs the project's test suite (the operator's `verifier_command`, or an auto-detected `pytest`, `unittest`, `npm test`, `cargo test` or `go test`) through Hermes' terminal tool inside git worktrees under `HERMES_HOME/plugin-data/chronos/`, so repository test code and model-written candidate files execute on the configured terminal backend; by default `chronos_branch` writes the best passing candidate's files into the working tree through Hermes' `write_file` tool (subject to its denylist and approvals), and `chronos_rewind` checks out an earlier recorded commit (refused on a dirty tree)."
+maintainer: Shikhyy
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/Shikhyy/hermes-agent/blob/5b2a4b4a2c43e8a9b1e7bf8d32484a651bffedf0/plugins/chronos/README.md
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - chronos_branch
+    - chronos_evaluate
+    - chronos_merge
+    - chronos_rewind
+    - chronos_status
+  provides_hooks:
+    - on_session_start
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

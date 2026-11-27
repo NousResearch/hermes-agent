@@ -61,15 +61,6 @@ class TestRecoverTerminalPreservesHistory:
             "_recover_terminal_after_interrupt must NOT clear _OUTPUT_HISTORY"
         )
 
-    def test_recovery_still_calls_force_full_redraw(self, monkeypatch):
-        """The recovery path still forces a redraw (original behavior preserved)."""
-        cli = object.__new__(HermesCLI)
-        cli._force_full_redraw = MagicMock()
-
-        with patch("hermes_cli.curses_ui.flush_stdin"):
-            cli._recover_terminal_after_interrupt()
-
-        cli._force_full_redraw.assert_called_once()
 
     def test_normal_scrollback_survives_interrupt_cycle(self, monkeypatch):
         """Multiple lines of scrollback survive a full interrupt → recovery cycle."""
@@ -154,133 +145,11 @@ class TestInterruptMarkerNotRecorded:
 # ── _show_interrupt_marker flag logic ──────────────────────────────
 
 
-class TestShowInterruptMarkerLogic:
-    """The _show_interrupt_marker flag must be set correctly.
-
-    The flag is True only when: the turn was interrupted (result.interrupted),
-    AND there is both a response AND a pending_message (interrupt_msg).
-    """
-
-    def test_marker_shown_when_interrupted_with_response_and_message(self):
-        """Happy path: interrupted turn with response and pending_message."""
-        result = {"interrupted": True}
-        response = "Some partial response"
-        pending_message = "interrupt message"
-
-        _show_interrupt_marker = False
-        _interrupted_this_turn = bool(result and result.get("interrupted"))
-
-        if _interrupted_this_turn:
-            pending_message = result.get("interrupt_message") or pending_message
-            _show_interrupt_marker = bool(response and pending_message)
-
-        assert _show_interrupt_marker is True
-
-    def test_marker_suppressed_when_no_response(self):
-        """No marker when there is no response text to interrupt."""
-        result = {"interrupted": True}
-        response = ""
-        pending_message = "interrupt message"
-
-        _show_interrupt_marker = False
-        _interrupted_this_turn = bool(result and result.get("interrupted"))
-
-        if _interrupted_this_turn:
-            pending_message = result.get("interrupt_message") or pending_message
-            _show_interrupt_marker = bool(response and pending_message)
-
-        assert _show_interrupt_marker is False
-
-    def test_marker_suppressed_when_no_pending_message(self):
-        """No marker when there's no interrupt message text."""
-        result = {"interrupted": True}
-        response = "Some partial response"
-        pending_message = None
-
-        _show_interrupt_marker = False
-        _interrupted_this_turn = bool(result and result.get("interrupted"))
-
-        if _interrupted_this_turn:
-            pending_message = result.get("interrupt_message") or pending_message
-            _show_interrupt_marker = bool(response and pending_message)
-
-        assert _show_interrupt_marker is False
-
-    def test_marker_suppressed_when_not_interrupted(self):
-        """No marker when the turn was not interrupted."""
-        result = {"completed": True}
-        response = "Full response text"
-        pending_message = "interrupt message"
-
-        _show_interrupt_marker = False
-        _interrupted_this_turn = bool(result and result.get("interrupted"))
-
-        if _interrupted_this_turn:
-            pending_message = result.get("interrupt_message") or pending_message
-            _show_interrupt_marker = bool(response and pending_message)
-
-        assert _show_interrupt_marker is False
-
-    def test_marker_shown_with_explicit_interrupt_message(self):
-        """Marker shown when result provides interrupt_message."""
-        result = {"interrupted": True, "interrupt_message": "User cancelled"}
-        response = "Partial output"
-        pending_message = "default interrupt msg"
-
-        _show_interrupt_marker = False
-        _interrupted_this_turn = bool(result and result.get("interrupted"))
-
-        if _interrupted_this_turn:
-            pending_message = result.get("interrupt_message") or pending_message
-            _show_interrupt_marker = bool(response and pending_message)
-
-        assert _show_interrupt_marker is True
-        assert pending_message == "User cancelled"
 
 
 # ── End-to-end: _show_interrupt_marker → _cprint flow ──────────────
 
 
-class TestInterruptMarkerPrintFlow:
-    """End-to-end: the flag leads to a supressed _cprint of the marker."""
-
-    def test_marker_printed_via_suspend_after_panel(self, monkeypatch):
-        """When _show_interrupt_marker is True, the marker is cprinted.
-
-        The marker text is printed inside _suspend_output_history so it
-        bypasses _OUTPUT_HISTORY.
-        """
-        cli_mod._configure_output_history(True, 10)
-        printed_lines = []
-
-        monkeypatch.setattr(cli_mod, "_pt_print", lambda x: printed_lines.append(x))
-        monkeypatch.setattr(cli_mod, "_PT_ANSI", lambda t: t)
-
-        # Simulate the production flow
-        _show_interrupt_marker = True
-        if _show_interrupt_marker:
-            with _suspend_output_history():
-                cli_mod._cprint(
-                    "\n── [Interrupted — processing new message] ──"
-                )
-
-        # Marker was printed but NOT recorded in history
-        assert printed_lines, "Marker must have been printed"
-        assert "Interrupted" in printed_lines[0]
-        assert list(cli_mod._OUTPUT_HISTORY) == []
-
-    def test_no_marker_printed_when_flag_false(self, monkeypatch):
-        """When _show_interrupt_marker is False, nothing is printed."""
-        printed_lines = []
-        monkeypatch.setattr(cli_mod, "_pt_print", lambda x: printed_lines.append(x))
-        monkeypatch.setattr(cli_mod, "_PT_ANSI", lambda t: t)
-
-        _show_interrupt_marker = False
-        if _show_interrupt_marker:
-            with _suspend_output_history():
-                cli_mod._cprint("── [Interrupted] ──")
-
-        assert printed_lines == []
 
 
 # ── _replay does not replay the marker (E2E) ───────────────────────

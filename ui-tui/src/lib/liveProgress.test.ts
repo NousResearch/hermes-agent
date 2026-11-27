@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Msg } from '../types.js'
 
-import { appendToolShelfMessage, canHoldToolShelf, isTodoDone, mergeToolShelfInto } from './liveProgress.js'
+import { appendToolShelfMessage, canHoldToolShelf, isTodoDone } from './liveProgress.js'
 
 describe('isTodoDone', () => {
   it('only treats non-empty all-completed/cancelled lists as done', () => {
@@ -23,15 +23,6 @@ describe('tool shelf helpers', () => {
     expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', thinking: 'plan' })).toBe(true)
     expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', tools: ['one ✓'] })).toBe(true)
     expect(canHoldToolShelf({ role: 'assistant', text: 'done' })).toBe(false)
-  })
-
-  it('merges source rows into an existing shelf', () => {
-    expect(
-      mergeToolShelfInto(
-        { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
-        { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
-      )
-    ).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓', 'two ✓'] })
   })
 })
 
@@ -107,6 +98,31 @@ describe('appendToolShelfMessage', () => {
       [
         { kind: 'trail', role: 'system', text: '', tools: ['one ✓'] },
         { role: 'assistant', text: 'done' }
+      ],
+      { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
+    )
+
+    expect(merged).toHaveLength(3)
+  })
+
+  it("keeps a tool's image under its own call: the next call starts a new shelf below it", () => {
+    const image: Msg = { images: ['/tmp/a.png'], kind: 'image', role: 'system', text: '' }
+
+    const events: Msg[] = [
+      { kind: 'trail', role: 'system', text: '', tools: ['read_file a.png ✓'] },
+      image,
+      { kind: 'trail', role: 'system', text: '', tools: ['terminal ls ✓'] }
+    ]
+
+    // The live stream (groupedSegments) and settled history both fold through appendToolShelfMessage.
+    expect(events.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])).toEqual(events)
+  })
+
+  it('does not reach past an image to a thinking holder above it', () => {
+    const merged = appendToolShelfMessage(
+      [
+        { kind: 'trail', role: 'system', text: '', thinking: 'plan' },
+        { images: ['/tmp/a.png'], kind: 'image', role: 'system', text: '' }
       ],
       { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
     )

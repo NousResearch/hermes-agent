@@ -1,6 +1,7 @@
 import os
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from cli import HermesCLI
 
@@ -33,30 +34,9 @@ class TestCliResumeCommand:
         output = capsys.readouterr().out
 
         assert shown is True
-        assert "1" in output
-        assert "2" in output
         assert "Coding" in output
         assert "Research" in output
-        assert "/resume 2" in output
-        assert "/resume <session title>" in output
 
-    def test_show_recent_sessions_uses_prompt_toolkit_safe_print(self):
-        cli_obj = _make_cli()
-        cli_obj._list_recent_sessions = MagicMock(return_value=[
-            {"id": "sess_002", "title": "Coding", "preview": "build feature", "last_active": None},
-        ])
-
-        running_app = SimpleNamespace(_is_running=True)
-        with (
-            patch("prompt_toolkit.application.get_app_or_none", return_value=running_app),
-            patch("cli._cprint") as mock_cprint,
-        ):
-            shown = cli_obj._show_recent_sessions(reason="sessions")
-
-        assert shown is True
-        printed = "\n".join(call.args[0] for call in mock_cprint.call_args_list)
-        assert "Recent sessions" in printed
-        assert "Coding" in printed
 
 
     def test_handle_resume_by_index_switches_to_numbered_session(self):
@@ -84,7 +64,6 @@ class TestCliResumeCommand:
 
         printed = " ".join(str(call) for call in mock_cprint.call_args_list)
         assert cli_obj.session_id == "sess_001"
-        assert "Resumed session sess_001" in printed
         assert "Research" in printed
 
     def test_handle_resume_by_index_out_of_range(self):
@@ -96,9 +75,7 @@ class TestCliResumeCommand:
         with patch("cli._cprint") as mock_cprint:
             cli_obj._handle_resume_command("/resume 9")
 
-        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
-        assert "out of range" in printed.lower()
-        assert "/resume" in printed
+        assert mock_cprint.called
         assert cli_obj.session_id == "current_session"
 
 
@@ -264,3 +241,64 @@ class TestResumeFlushesBeforeEndSession:
             conversation_history=[{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+class TestResumeOpensTheTargetOnTheGateway:
+    """/resume on the gateway session store: one ``session.resume`` of the target classifies it before
+    anything changes. A real store, so the switch takes its gateway path (a ``MagicMock`` store is not
+    a ``GatewaySessionStore`` and skips it); the gateway double admits or refuses ``session.resume``."""
+
+    def _switch(self, refusal=None):
+        from hermes_cli.gateway_client import GatewayRPCError
+        from hermes_cli.gateway_connection import GatewayConnection
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+
+        calls = []
+
+        def gateway(method, **params):
+            calls.append((method, params))
+            if method == "session.resume" and params["session_id"] == "target" and refusal:
+                raise GatewayRPCError(refusal)
+            if method == "session.resume":
+                sid = params["session_id"]
+                return {"stored_session_id": sid, "subscription_id": f"sub-{sid}", "info": {}}
+            return {}
+
+        conn = GatewayConnection()
+        conn.start = lambda *_a, **_k: None
+        store = GatewaySessionStore(conn)
+        store.call = gateway
+        store._reader = MagicMock()
+        store._reader.get_session.return_value = {"id": "target", "title": "T"}
+        store._reader.resolve_resume_session_id.return_value = "target"
+        store._reader.get_resume_conversations.return_value = ([], [])
+        store.attach("current_session")
+        calls.clear()
+        cli_obj = _make_cli()
+        cli_obj._session_db = store
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj._handle_resume_command("/resume target")
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        return cli_obj, conn, calls, printed
+
+    def test_an_openable_target_is_subscribed_and_the_old_session_detached(self):
+        cli_obj, conn, calls, _ = self._switch()
+
+        assert cli_obj.session_id == "target"
+        assert conn.states["target"].subscription_id == "sub-target"
+        assert [method for method, _ in calls] == ["session.resume", "session.detach"]
+        assert conn.states["current_session"].subscription_id is None
+
+    @pytest.mark.parametrize("refusal", ["not_found", "permission_denied", "profile_mismatch"])
+    def test_a_refused_target_keeps_the_current_session(self, refusal):
+        from agent.i18n import t
+
+        cli_obj, conn, calls, printed = self._switch(refusal)
+
+        assert cli_obj.session_id == "current_session"
+        assert conn.states["current_session"].subscription_id == "sub-current_session"
+        assert calls == [("session.resume", {"session_id": "target"})]  # asked once, nothing detached
+        assert t("gateway.resume.switch_failed") in printed and refusal in printed

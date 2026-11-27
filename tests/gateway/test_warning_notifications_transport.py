@@ -56,10 +56,10 @@ def test_warning_policy_reaches_slack_transport(tmp_path, monkeypatch, relay, th
         client.chat_update.side_effect = post
     gateway = object.__new__(GatewayRunner)
     gateway.config = None
-    gateway._adapter_for_source = lambda source: adapter
+    gateway._delivery_adapter_for = lambda source: adapter
     gateway._thread_metadata_for_source = lambda source: metadata
     ctx = TurnContext(source=source, user_config=_load_gateway_config(), _run_still_current=lambda: True,
-                      _status_adapter=adapter, _status_chat_id="D1", _status_thread_metadata=metadata)
+                      _status_adapter_pinned=adapter, _status_chat_id="D1", _status_thread_metadata=metadata)
     turn = TurnRunner(gateway, ctx)
     monkeypatch.setattr(run, "safe_schedule_threadsafe", lambda coro, *a, **k: asyncio.run(coro))
     agent = StatusOutputMixin()
@@ -97,6 +97,6 @@ def test_profile_config_isolated_for_callbacks_and_direct_warnings(tmp_path, mon
             adapter = RecordingAdapter()
             adapter.send = AsyncMock()
             gateway = object.__new__(GatewayRunner)
-            gateway._adapter_for_source = lambda source: adapter
+            gateway._delivery_adapter_for = lambda source: adapter
             asyncio.run(gateway._hmwa_hygiene_notify(source, {}, "Compression failed", "failure"))
             assert adapter.send.await_count == int(expected)

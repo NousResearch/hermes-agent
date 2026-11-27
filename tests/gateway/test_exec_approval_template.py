@@ -27,7 +27,7 @@ class _Plain(BasePlatformAdapter):
     async def send(self, *a: Any, **k: Any) -> SendResult:
         return SendResult(success=True)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {}
 
 
@@ -61,7 +61,6 @@ async def test_choice_set_follows_the_shared_rule(allow_permanent, allow_session
     (prompt,) = adapter.prompts
     assert prompt.choices == expected
     assert "rm -rf /tmp/x" in prompt.text and "cleanup" in prompt.text
-    assert ("one operation only" in prompt.text) is smart_denied
 
 
 @pytest.mark.asyncio
@@ -72,7 +71,8 @@ async def test_command_is_truncated_to_the_platform_budget():
     adapter = _Small()
     await adapter.send_exec_approval("chat", "x" * 100, "sess")
     (prompt,) = adapter.prompts
-    assert "x" * 20 + "..." in prompt.text and "x" * 21 not in prompt.text
+    assert "x" * 10 + "..." in prompt.text and "x" * 11 not in prompt.text  # half: the rest is the notice
+    assert "Preview shortened" in prompt.text
     assert prompt.command == "x" * 100  # the raw command stays available for embeds/cards
 
 

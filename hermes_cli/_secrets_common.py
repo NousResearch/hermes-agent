@@ -7,18 +7,34 @@ Import-light on purpose: ``hermes_cli.secrets_cli`` must stay free of the Bitwar
 from __future__ import annotations
 
 import argparse
+import functools
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
 from rich.console import Console
+from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.table import Table
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.secret_prompt import masked_secret_prompt
+
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def console_safe(text: str) -> str:
+    """Make externally-derived text safe for a markup console.
+
+    Strips terminal control characters (C0 other than tab/newline, DEL, C1) so
+    embedded ANSI/OSC sequences cannot reach the terminal, then escapes Rich
+    markup so ``[...]`` sequences print literally.
+    """
+    return _escape_markup(_CONTROL_CHARS_RE.sub("", text))
 
 
 def yn(b: bool) -> str:
@@ -45,6 +61,18 @@ def flag(name: str, help_text: str) -> tuple:
     return arg(name, help_text, action="store_true")
 
 
+def _on_this_host(handler: Callable) -> Callable:
+    """*handler*, refused first for a profile a plugin runs elsewhere (the message and exit code of the
+    commands that run a turn). A source's commands run its CLI with the program, server address and
+    references ``secrets:`` in the profile's config.yaml names, and that backend writes the file."""
+    @functools.wraps(handler)
+    def run(args):
+        from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+        exit_if_profile_runs_elsewhere("secrets")
+        return handler(args)
+    return run
+
+
 def register_subcommands(parent: argparse.ArgumentParser, dest: str, commands: Iterable) -> None:
     """Attach ``(name, help, handler, [arg(...), ...])`` subcommands to ``parent``."""
     sub = parent.add_subparsers(dest=dest)
@@ -52,7 +80,7 @@ def register_subcommands(parent: argparse.ArgumentParser, dest: str, commands: I
         parser = sub.add_parser(name, help=help_text)
         for arg_name, kwargs in arguments:
             parser.add_argument(arg_name, **kwargs)
-        parser.set_defaults(func=func)
+        parser.set_defaults(func=_on_this_host(func))
 
 
 def require_enabled(console: Console, cfg: dict, product: str, command: str) -> bool:
@@ -88,14 +116,14 @@ def print_table(console: Console, columns: Sequence, rows: Iterable,
         table.add_row(*row)
     console.print(table)
     for w in warnings:
-        console.print(f"{indent}[yellow]warning:[/yellow] {w}")
+        console.print(f"{indent}[yellow]warning:[/yellow] {console_safe(w)}")
 
 
 def cli_version(binary: Path) -> str:
     """Return the first line of ``<binary> --version`` or ``"version unknown"``."""
     try:
-        res = subprocess.run([str(binary), "--version"], capture_output=True, text=True, encoding='utf-8',
-                             errors='replace', timeout=5)
+        res = subprocess.run([str(binary), "--version"], env=secret_cli_env(), capture_output=True, text=True, encoding='utf-8',
+                             errors='replace', timeout=5, check=False)
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired):
@@ -103,17 +131,12 @@ def cli_version(binary: Path) -> str:
     return "version unknown"
 
 
-def secret_cli_env() -> dict:
-    """Env for a secret-manager CLI child (``bws`` / ``op``).
+def secret_cli_env(*allow_env: str) -> dict:
+    """Allowlisted env for a secret-manager CLI probe (``bws`` / ``op``): the real HOME
+    (both CLIs keep state there) plus ``allow_env``; callers add the token explicitly."""
+    from agent.secret_sources.base import build_minimal_provider_env
 
-    Intentionally receives tokens — no scrub, no HOME rewrite (both CLIs store state under the
-    real user home).
-    """
-    from tools.environments.local import build_subprocess_env
-
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env.setdefault("NO_COLOR", "1")
-    return env
+    return build_minimal_provider_env(os.environ, allow_env=allow_env)
 
 
 def rotate_token(

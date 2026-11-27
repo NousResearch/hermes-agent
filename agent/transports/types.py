@@ -38,6 +38,7 @@ class ToolCall:
 
     call_id = property(lambda self: self._pd("call_id"))
     response_item_id = property(lambda self: self._pd("response_item_id"))
+    _codex_output_index = property(lambda self: self._pd("_codex_output_index"))
     # Gemini thought_signature; must be replayed on later calls or the API returns HTTP 400.
     extra_content = property(lambda self: self._pd("extra_content"))
 

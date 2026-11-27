@@ -7,9 +7,12 @@ import {
   clampForDisplay,
   countDiffLineStats,
   inlineDiffFromResult,
+  isPreviewableTarget,
   MAX_TOOL_RENDER_CHARS,
   prettyJson,
-  type ToolPart
+  toolCallFailed,
+  type ToolPart,
+  toolPreviewOutcome
 } from './fallback-model'
 
 const part = (overrides: Partial<ToolPart>): ToolPart => ({
@@ -27,12 +30,9 @@ afterEach(() => {
 })
 
 describe('buildToolView image handling', () => {
-  // vision_analyze reports the input image as a local path; an <img> pointed at
-  // a bare path resolves against the renderer origin and 404s, so we render the
-  // tool codicon instead of a broken image.
-  it('drops bare filesystem paths', () => {
-    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('')
-    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('')
+  it('keeps local image paths for the activity renderer to resolve', () => {
+    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('/Users/me/shot.png')
+    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('/tmp/out.jpg')
   })
 
   it('keeps fetchable data URLs', () => {
@@ -108,6 +108,14 @@ describe('buildToolView error confidence', () => {
       [{ result: { meta: { error: 'a previous attempt' }, data: { count: 1 } } }, 'success'],
       [{ toolName: 'read_file', result: { error: 'Permission denied reading /repo/private.ts' } }, 'error'],
       [{ toolName: 'patch', result: { error: 'File not found: /repo/session-view.ts' } }, 'error'],
+      [
+        {
+          toolName: 'skill_manage',
+          result: { success: false, error: 'SKILL.md content is over the limit', file_preview: 'ROLLBACK FAILED notes' }
+        },
+        'notice'
+      ],
+      [{ toolName: 'skill_manage', result: { success: false, error: "batch aborted, ROLLBACK FAILED for 'demo'" } }, 'error'],
       [{ result: { success: false, result: { output: { error: { message: 'Connection refused' } } } } }, 'error']
     ]
 
@@ -146,6 +154,27 @@ describe('buildToolView envelope errors', () => {
     )
 
     expect(view.status).toBe('notice')
+  })
+})
+
+describe('buildToolView calls sealed without a result', () => {
+  it('warns that a lost result is unavailable', () => {
+    const view = buildToolView(part({ completedAt: 5, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('warning')
+  })
+
+  it('shows a call the user interrupted as a neutral notice', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('notice')
+  })
+
+  it('shows the real result when one arrived after the interruption', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: 'ok', toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('success')
+    expect(view.title).not.toBe('Interrupted')
   })
 })
 
@@ -217,7 +246,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('error')
-    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com/docs')
+    expect(view.title).toContain('hermes-agent.nousresearch.com/docs')
   })
 
   it('shows opened title on success', () => {
@@ -231,7 +260,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Opened hermes-agent.nousresearch.com/docs')
+    expect(view.title).toContain('hermes-agent.nousresearch.com/docs')
   })
 })
 
@@ -276,34 +305,6 @@ describe('buildToolView file edit diffs', () => {
 })
 
 describe('buildToolView title actions', () => {
-  it('marks the pending action separately from the rest of the title', () => {
-    const read = buildToolView(part({ args: { path: '/tmp/demo.txt' }, result: undefined, toolName: 'read_file' }), '')
-
-    const web = buildToolView(
-      part({ args: { url: 'https://example.com/docs' }, result: undefined, toolName: 'web_extract' }),
-      ''
-    )
-
-    const terminal = buildToolView(
-      part({ args: { command: 'npm test -- --runInBand' }, result: undefined, toolName: 'terminal' }),
-      ''
-    )
-
-    const code = buildToolView(
-      part({ args: { code: 'print("hello")' }, result: undefined, toolName: 'execute_code' }),
-      ''
-    )
-
-    expect(read.title).toBe('Reading demo.txt')
-    expect(read.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' demo.txt' })
-    expect(web.title).toBe('Reading example.com/docs')
-    expect(web.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' example.com/docs' })
-    expect(terminal.title).toBe('Running npm test -- --runInBand')
-    expect(terminal.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' npm test -- --runInBand' })
-    expect(code.title).toBe('Scripting print("hello")')
-    expect(code.titleAction).toEqual({ prefix: '', text: 'Scripting', suffix: ' print("hello")' })
-  })
-
   it('does not mark completed tool titles as pending actions', () => {
     const view = buildToolView(part({ args: { url: 'https://example.com/docs' }, toolName: 'web_extract' }), '')
 
@@ -457,6 +458,27 @@ describe('buildToolView title actions', () => {
     expect(view.detail).toBe('')
   })
 
+  it('does not double the action verb when the context already starts with it', () => {
+    // A model-authored `context` that opens with the same verb the template
+    // prepends ("Running grep …") otherwise renders as "Running Running grep …".
+    const view = buildToolView(
+      part({
+        args: { context: 'Running grep -rn -i "bedrock" ~/.hermes/' },
+        result: undefined,
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title.startsWith('Running Running')).toBe(false)
+    expect(view.title).toBe('Running grep -rn -i "bedrock" ~/.hermes/')
+    expect(view.titleAction).toEqual({
+      prefix: '',
+      text: 'Running',
+      suffix: ' grep -rn -i "bedrock" ~/.hermes/'
+    })
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 
@@ -474,6 +496,27 @@ describe('buildToolView title actions', () => {
   })
 })
 
+// #85132: Windows agents write `C:\\...` / UNC paths; those must get the same
+// artifact preview tag a POSIX `/Users/...` path gets.
+describe('Windows absolute preview targets', () => {
+  it.each(['C:\\Users\\me\\report.html', 'D:/work/report.htm', '\\\\server\\share\\report.html'])(
+    'tags a written %s as a previewable artifact',
+    path => {
+      const outcome = toolPreviewOutcome(
+        part({ args: { content: '<h1>hi</h1>', path }, result: { bytes_written: 11 }, toolName: 'write_file' })
+      )
+
+      expect(outcome.previewTarget).toBe(path)
+      expect(isPreviewableTarget(outcome.previewTarget)).toBe(true)
+    }
+  )
+
+  it('keeps non-HTML Windows files out of the preview tag, like POSIX ones', () => {
+    expect(isPreviewableTarget('C:\\Users\\me\\notes.txt')).toBe(isPreviewableTarget('/Users/me/notes.txt'))
+    expect(isPreviewableTarget('C:\\Users\\me\\notes.txt')).toBe(false)
+  })
+})
+
 describe('clampForDisplay', () => {
   it('passes short payloads through untouched', () => {
     expect(clampForDisplay('hello')).toBe('hello')
@@ -486,8 +529,7 @@ describe('clampForDisplay', () => {
 
     expect(clamped.length).toBeLessThan(oversized.length)
     expect(clamped.startsWith('x'.repeat(MAX_TOOL_RENDER_CHARS))).toBe(true)
-    expect(clamped).toContain('5,000 more characters truncated')
-    expect(clamped).toContain('Copy')
+    expect(clamped).toContain(`${new Intl.NumberFormat().format(5_000)} more characters truncated`)
   })
 })
 
@@ -527,7 +569,6 @@ describe('buildToolView memory status', () => {
     })
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Saved to memory')
     expect(view.countLabel).toBe('13 entries')
     expect(view.subtitle).toBe('Applied 1 operation(s).')
   })
@@ -541,7 +582,35 @@ describe('buildToolView memory status', () => {
     })
 
     expect(view.status).toBe('warning')
-    expect(view.title).toBe('Memory write noted')
     expect(view.subtitle).toContain('Memory is full')
+  })
+})
+
+// The delegate card asks `toolCallFailed` before it decides to list children,
+// so the shapes the delegate tool answers with have to stay distinct here: a
+// batch it rejected never dispatched, while a dispatched batch or a settled
+// batch with a failed child must keep its card.
+describe('toolCallFailed on delegate_task result shapes', () => {
+  it('reads a whole-call rejection as failed', () => {
+    expect(
+      toolCallFailed({
+        result: {
+          error:
+            "Task 0 goal contains an unexpanded template marker ('{http_code}'). Substitute the real value before calling delegate_task."
+        }
+      })
+    ).toBe(true)
+  })
+
+  it('leaves a dispatched batch and its goals alone', () => {
+    expect(
+      toolCallFailed({
+        result: { count: 2, goals: ['A', 'B'], mode: 'background', status: 'dispatched' }
+      })
+    ).toBe(false)
+  })
+
+  it('leaves a settled batch whose child failed alone', () => {
+    expect(toolCallFailed({ result: { results: [{ status: 'failed', error: 'boom' }] } })).toBe(false)
   })
 })

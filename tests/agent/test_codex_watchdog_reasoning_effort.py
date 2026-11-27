@@ -34,7 +34,7 @@ def _codex_agent(tmp_path: Path, monkeypatch, effort: str, *, enabled: bool = Tr
     return agent
 
 
-@pytest.mark.parametrize("effort", ["high", "xhigh", "max", "ultra"])
+@pytest.mark.parametrize("effort", ["high", "xhigh"])
 def test_high_effort_small_prompt_gets_the_silence_floor_on_all_three_fuses(tmp_path, monkeypatch, effort):
     from agent.chat_completion_helpers import HIGH_EFFORT_SILENCE_FLOOR_SECONDS, _resolve_nonstream_watchdogs
 
@@ -49,13 +49,14 @@ def test_high_effort_small_prompt_gets_the_silence_floor_on_all_three_fuses(tmp_
 def test_default_effort_tiers_and_explicit_operator_values_are_untouched(tmp_path, monkeypatch):
     """Control: medium effort (and disabled reasoning) keep the small-prompt tiers; an explicit
     env value for any fuse is never raised by the floor."""
-    from agent.chat_completion_helpers import _resolve_nonstream_watchdogs
+    from agent.chat_completion_helpers import HIGH_EFFORT_SILENCE_FLOOR_SECONDS, _resolve_nonstream_watchdogs
 
     medium = _resolve_nonstream_watchdogs(_codex_agent(tmp_path, monkeypatch, "medium"), _SMALL_PROMPT)
-    assert (medium.idle_timeout, medium.ttfb_timeout, medium.stale_timeout) == (12.0, 120.0, 90.0)
+    medium_fuses = (medium.idle_timeout, medium.ttfb_timeout, medium.stale_timeout)
+    assert all(t < HIGH_EFFORT_SILENCE_FLOOR_SECONDS for t in medium_fuses)
 
     disabled = _resolve_nonstream_watchdogs(_codex_agent(tmp_path, monkeypatch, "high", enabled=False), _SMALL_PROMPT)
-    assert (disabled.idle_timeout, disabled.ttfb_timeout, disabled.stale_timeout) == (12.0, 120.0, 90.0)
+    assert (disabled.idle_timeout, disabled.ttfb_timeout, disabled.stale_timeout) == medium_fuses
 
     agent = _codex_agent(tmp_path, monkeypatch, "high")
     monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "20")

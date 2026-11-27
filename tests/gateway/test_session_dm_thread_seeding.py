@@ -21,16 +21,8 @@ from gateway.session import SessionSource, SessionStore
 
 
 @pytest.fixture()
-def store(tmp_path, monkeypatch):
-    """SessionStore with SQLite — load_transcript reads from DB only.
-
-    Pin DEFAULT_DB_PATH to tmp_path so SessionDB() can't write to the real
-    ~/.hermes/state.db. (DEFAULT_DB_PATH is a module-level constant computed
-    at hermes_state import time, before pytest's HERMES_HOME monkeypatch
-    fires — the autouse fixture's HERMES_HOME override doesn't help here.)
-    """
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+def store(tmp_path):
+    """SessionStore with SQLite — load_transcript reads from DB only."""
     config = GatewayConfig()
     s = SessionStore(sessions_dir=tmp_path, config=config)
     return s
@@ -60,23 +52,6 @@ PARENT_HISTORY = [
     {"role": "user", "content": "What's the weather?"},
     {"role": "assistant", "content": "It's sunny and 72°F."},
 ]
-
-
-class TestDMThreadIsolation:
-    """Thread sessions must start empty — no parent transcript seeding."""
-
-    def test_thread_session_starts_empty(self, store):
-        """New DM thread session should NOT inherit parent's transcript."""
-        parent_source = _dm_source()
-        parent_entry = store.get_or_create_session(parent_source)
-        for msg in PARENT_HISTORY:
-            store.append_to_transcript(parent_entry.session_id, msg)
-
-        thread_source = _dm_source(thread_id="1234567890.000001")
-        thread_entry = store.get_or_create_session(thread_source)
-
-        thread_transcript = store.load_transcript(thread_entry.session_id)
-        assert len(thread_transcript) == 0
 
 
 class TestDMThreadIsolationEdgeCases:

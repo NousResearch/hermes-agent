@@ -1,12 +1,10 @@
-"""Dashboard plugin-catalog surface: GET /api/dashboard/plugins/catalog merges installed state (via the
-``.hermes-catalog.json`` sidecar) and the install endpoint has NO kill-list bypass."""
+"""Dashboard plugin-catalog surface: GET /api/dashboard/plugins/catalog merges installed state via the
+installer-owned install-metadata ``catalog`` record; the install endpoint has no kill-list bypass."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import plugin_catalog as pc_cat
 
@@ -20,11 +18,8 @@ def client(monkeypatch, tmp_path, _isolate_hermes_home):
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    import hermes_state
-    from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     (catalog_dir / "alpha-plugin.yaml").write_text(yaml.safe_dump({
@@ -42,12 +37,18 @@ def client(monkeypatch, tmp_path, _isolate_hermes_home):
 
 
 def _install(name: str, sidecar: dict | None):
+    """A user-dir plugin; *sidecar* records catalog provenance the way the installer does — on the
+    installer-owned ``.install-metadata.json`` record (an in-tree ``.hermes-catalog.json`` is inert)."""
     from hermes_constants import get_hermes_home
+    from hermes_cli.plugins_cmd import _read_install_metadata, _write_install_metadata
     d = get_hermes_home() / "plugins" / name
     d.mkdir(parents=True)
     (d / "plugin.yaml").write_text(yaml.safe_dump({"name": name, "version": "1.0", "description": "x"}))
     if sidecar:
-        (d / ".hermes-catalog.json").write_text(json.dumps(sidecar))
+        block = {"name": sidecar["catalog_name"], "sha": sidecar["sha"], "tier": sidecar.get("tier", "community")}
+        _write_install_metadata({**_read_install_metadata(), name: {
+            "pinned": True, "revision": sidecar["sha"], "source": "https://github.com/example/alpha-plugin.git",
+            "catalog": block}})
 
 
 def test_catalog_endpoint_merges_installed_state_from_sidecar(client):

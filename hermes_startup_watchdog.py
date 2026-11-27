@@ -9,8 +9,8 @@ live dumps all-thread stacks (``faulthandler``), records the exit in the lifecyc
 
 Slow-but-alive startups are not killed. Order of authority: (1) phase-owned progress
 leases (:func:`report_startup_progress`) — authoritative, prove the *startup path itself*
-is alive, work for I/O-bound phases (schema migration, corruption repair in
-``SessionDB.__init__``) with ~zero CPU; (2) process-wide CPU progress, capped at
+is alive, work for I/O-bound phases (schema migration, corruption repair while the
+session store opens) with ~zero CPU; (2) process-wide CPU progress, capped at
 ``_MAX_CPU_EXTENSIONS`` since an unrelated thread burning CPU must not hide a parked
 startup thread forever. Known limitation: a *spinning* startup deadlock earns the capped
 extensions before firing; the observed class is parked-thread deadlocks. Idle-by-design
@@ -32,10 +32,9 @@ import faulthandler
 import json
 import logging
 import os
-import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -95,19 +94,14 @@ _FIRING = "firing"
 # gateway.run.main / cli.py --gateway) and the disarm site (GatewayRunner)
 # share no object, and only one gateway startup ever runs per process.
 _handle_lock = threading.Lock()
-_handle: Optional["StartupWatchdogHandle"] = None
+_handle: Optional[StartupWatchdogHandle] = None
 
 
 def _process_hermes_home() -> Path:
-    """HERMES_HOME for diagnostic files — stdlib-only replica of the hermes_constants default."""
-    val = os.environ.get("HERMES_HOME", "").strip()
-    if val:
-        return Path(val)
-    if sys.platform == "win32":
-        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "hermes"
-    return Path.home() / ".hermes"
+    """Use the stdlib-only process resolver before application startup."""
+    from hermes_constants import get_process_hermes_home
+
+    return get_process_hermes_home()
 
 
 def get_startup_watchdog_dump_path(home: Optional[Path] = None) -> Path:
@@ -150,7 +144,7 @@ def _append_dump(write, failure_msg: str) -> None:
         logger.debug(failure_msg, exc_info=True)
 
 
-def _write_dump_record(record: Dict[str, Any]) -> None:
+def _write_dump_record(record: dict[str, Any]) -> None:
     """Append a one-line JSON metadata record beside the faulthandler dump."""
     _append_dump(
         lambda fh: fh.write(json.dumps(record, default=str) + "\n"),
@@ -293,7 +287,7 @@ class StartupWatchdogHandle:
         )
         _write_dump_record(
             {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "tag": "startup_watchdog.fired",
                 "pid": os.getpid(),
                 "timeout_s": self.timeout_s,
@@ -501,8 +495,8 @@ def report_startup_progress(expected_s: float, phase: str = "") -> None:
     """Declare a phase-owned progress lease on the armed startup watchdog.
 
     Call from startup phases about to do legitimately long synchronous work — most
-    importantly ``state.db`` schema migrations and corruption repair/backup inside
-    ``SessionDB.__init__`` — with an honest worst case, renewing for multi-step phases.
+    importantly ``state.db`` schema migrations and corruption repair/backup while the
+    session store opens, with an honest worst case, renewing for multi-step phases.
     Per-call duration is clamped to ``_MAX_LEASE_S``. No-op when not armed; never
     raises — safe to call unconditionally from application code.
     """

@@ -8,7 +8,6 @@ the singleton lock and the health telemetry; everything that only needs the
 from __future__ import annotations
 
 import contextlib
-import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
@@ -138,7 +137,9 @@ class _KanbanDispatcher:
         return _board_slugs(self.kb)
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
-        path = self.kb.kanban_db_path(slug)
+        from hermes_cli import kanban_db as _kb
+        with _kb.pin_first_board_resolution():
+            path = self.kb.kanban_db_path(slug)
         try:
             resolved = str(path.expanduser().resolve())
         except Exception:
@@ -185,8 +186,13 @@ class _KanbanDispatcher:
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
-            conn = _kbc().connect(board=slug)
-            return _kbd().dispatch_once(conn, board=slug, **kwargs)
+            # Pin-first: the tick is machine flow — on a box whose env pins
+            # HERMES_KANBAN_DB every enumerated slug must resolve to the pinned
+            # file, or the dispatcher reads per-slug DBs nobody writes.
+            from hermes_cli import kanban_db as _kb
+            with _kb.pin_first_board_resolution():
+                conn = _kbc().connect(board=slug)
+                return _kbd().dispatch_once(conn, board=slug, **kwargs)
         except Exception as exc:
             if self.is_corrupt_board_db_error(exc):
                 self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
@@ -221,18 +227,20 @@ class _KanbanDispatcher:
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
-        for slug in self._board_slugs():
-            conn = None
-            try:
-                conn = _kbc().connect(board=slug)
-                if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
-                    return True
-            except Exception:
-                continue
-            finally:
-                if conn is not None:
-                    with contextlib.suppress(Exception):
-                        conn.close()
+        from hermes_cli import kanban_db as _kb
+        with _kb.pin_first_board_resolution():
+            for slug in self._board_slugs():
+                conn = None
+                try:
+                    conn = _kbc().connect(board=slug)
+                    if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
+                        return True
+                except Exception:
+                    continue
+                finally:
+                    if conn is not None:
+                        with contextlib.suppress(Exception):
+                            conn.close()
         return False
 
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
@@ -243,20 +251,21 @@ class _KanbanDispatcher:
         """
         try:
             from hermes_cli import kanban_decompose as _decomp
+            from hermes_cli.kanban_db import scoped_current_board
         except Exception as exc:  # pragma: no cover
             logger.warning("kanban auto-decompose: import failed (%s); skipping", exc)
             return 0
         attempted = 0
         successes = 0
-        with _default_profile_secret_scope():
+        from hermes_cli import kanban_db as _kb
+        with _default_profile_secret_scope(), _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
                     break
-                # Pin the board via env for the call: the decomposer connects
-                # with no board kwarg (same pattern as the dashboard specify endpoint).
-                prev_env = os.environ.get("HERMES_KANBAN_BOARD")
-                try:
-                    os.environ["HERMES_KANBAN_BOARD"] = slug
+                # The decomposer connects with no board kwarg. Pin the board for this context only: an
+                # env pin is process-wide, so for the whole aux-LLM call every gateway turn, kanban tool
+                # and spawned subprocess that names no board would resolve this one instead.
+                with scoped_current_board(slug):
                     try:
                         triage_ids = _decomp.list_triage_ids()
                     except Exception as exc:
@@ -267,11 +276,6 @@ class _KanbanDispatcher:
                             break
                         attempted += 1
                         successes += self._decompose_one(_decomp, slug, tid)
-                finally:
-                    if prev_env is None:
-                        os.environ.pop("HERMES_KANBAN_BOARD", None)
-                    else:
-                        os.environ["HERMES_KANBAN_BOARD"] = prev_env
         return successes
 
     @staticmethod
@@ -302,14 +306,14 @@ def _default_profile_secret_scope():
     LLM reads ``auxiliary.*`` from ``get_hermes_home()``, so its credentials come
     from that same home. No-op for single-profile gateways.
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
+    from agent.secret_scope import is_multiplex_active, reset_secret_scope, set_secret_scope
     from hermes_constants import get_hermes_home
+    from tui_gateway.launch_profile_policy import owner_secret_scope
 
     if not is_multiplex_active():
         yield
         return
-    token = set_secret_scope(build_profile_secret_scope(Path(get_hermes_home())))
+    token = set_secret_scope(owner_secret_scope(Path(get_hermes_home())), profile_home=str(get_hermes_home()))
     try:
         yield
     finally:

@@ -18,11 +18,11 @@ for k in list(ENV):
 
 def run(argv, code=None, timeout=300):
     t0 = time.perf_counter()
-    r = subprocess.run([PY, *argv] if code is None else [PY, "-c", code], cwd=TREE, env=ENV, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    r = subprocess.run([PY, *argv] if code is None else [PY, "-c", code], cwd=TREE, env=ENV, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
     return time.perf_counter() - t0, r
 
 def warm_pyc():
-    subprocess.run([PY, "-m", "compileall", "-q", "-j", "16", TREE], cwd=TREE, env=ENV, capture_output=True)
+    subprocess.run([PY, "-m", "compileall", "-q", "-j", "16", TREE], cwd=TREE, env=ENV, capture_output=True, check=False)
 
 def med(xs): return round(statistics.median(xs), 4)
 
@@ -38,7 +38,7 @@ for dp, dns, fns in os.walk(TREE):
 results["pyc_files"] = pyc_n; results["pyc_bytes"] = pyc_bytes
 
 # 1. import-time probes: fresh interpreter, measure wall + module count + RSS
-IMPORT_TARGETS = ["run_agent", "cli", "hermes_cli.main", "gateway.run", "tools.registry", "hermes_state", "tui_gateway.server", "hermes_cli.web_server", "model_tools", "agent.prompt_builder"]
+IMPORT_TARGETS = ["run_agent", "cli", "hermes_cli.main", "gateway.run", "tools.registry", "persistence.sqlite", "tui_gateway.server", "hermes_cli.web_server", "model_tools", "agent.prompt_builder"]
 probe = r'''
 import sys, time, os, resource, json
 t0=time.perf_counter()
@@ -59,7 +59,7 @@ for tgt in IMPORT_TARGETS:
     rows = []
     for _ in range(REPS):
         _, r = run([], code=None) if False else (None, None)
-        r = subprocess.run([PY, "-c", probe, tgt], cwd=TREE, env=ENV, capture_output=True, text=True, timeout=300)
+        r = subprocess.run([PY, "-c", probe, tgt], cwd=TREE, env=ENV, capture_output=True, text=True, timeout=300, check=False)
         try: rows.append(json.loads([l for l in (r.stdout + "\n" + r.stderr).splitlines() if l.lstrip().startswith("{") and "\"dt\"" in l][-1].strip()))
         except Exception: rows.append({"dt": None, "mods": None, "rss_kb": None, "err": (r.stderr or r.stdout)[-300:]})
     ok = [x for x in rows if x["dt"] is not None and not x["err"]]
@@ -105,19 +105,20 @@ except Exception as e:
         out["prompt_builder_err"]=repr(e)[:120]+" cands="+",".join(cands)[:120]
     except Exception as e2: out["prompt_builder_err"]=repr(e2)[:160]
 try:
-    import hermes_state, tempfile, uuid
+    import tempfile, uuid
     from pathlib import Path
-    db=hermes_state.SessionDB(Path(tempfile.mkdtemp())/"s.db") if hasattr(hermes_state,"SessionDB") else None
-    if db:
-        sid=str(uuid.uuid4())
-        db.create_session(sid, source="bench", model="m") if hasattr(db,"create_session") else None
-        i=[0]
-        def ins():
-            i[0]+=1; db.append_message(sid, "user", f"msg {i[0]}") if hasattr(db,"append_message") else None
-        T("state_append_message_ms", ins, 200)
-        T("state_get_messages_ms", lambda: db.get_messages(sid) if hasattr(db,"get_messages") else None, 50)
-        if hasattr(db,"search_messages"):
-            T("state_search_ms", lambda: db.search_messages("msg", limit=20), 20)
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
+    db=open_persistence(profile_scope(home=Path(tempfile.mkdtemp())), eager=True)
+    sid=str(uuid.uuid4())
+    db.sessions.create(NewSession(session_id=sid, source="bench", model="m"))
+    i=[0]
+    def ins():
+        i[0]+=1; db.messages.append(sid, NewMessage(role="user", content=f"msg {i[0]}"))
+    T("state_append_message_ms", ins, 200)
+    T("state_get_messages_ms", lambda: db.messages.read_transcript(sid), 50)
+    T("state_search_ms", lambda: db.search.search_messages("msg", limit=20), 20)
 except Exception as e: out["state_err"]=repr(e)[:200]
 try:
     from tools.approval import detect_dangerous_command

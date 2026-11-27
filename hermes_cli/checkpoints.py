@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli.sizefmt import format_bytes as _fmt_bytes
@@ -27,7 +26,7 @@ def _fmt_age(ts: Any) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import store_status
+    from agent.checkpoints.maintenance import store_status
 
     info = store_status()
     base = info["base"]
@@ -64,7 +63,7 @@ def _print_archives(archives) -> None:
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import prune_checkpoints, store_status
+    from agent.checkpoints.maintenance import prune_checkpoints, store_status
 
     delete_orphans = not args.keep_orphans
 
@@ -135,10 +134,11 @@ def _confirmed(args: argparse.Namespace, prompt: str) -> bool:
 
 
 def cmd_clear(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import CHECKPOINT_BASE, clear_all, store_status
+    from agent.checkpoints.manager import _resolve_checkpoint_base
+    from agent.checkpoints.maintenance import clear_all, store_status
 
     info = store_status()
-    if info["total_size_bytes"] == 0 and not Path(CHECKPOINT_BASE).exists():
+    if info["total_size_bytes"] == 0 and not _resolve_checkpoint_base().exists():
         print("Nothing to clear — checkpoint base does not exist.")
         return 0
 
@@ -160,7 +160,7 @@ def cmd_clear(args: argparse.Namespace) -> int:
 
 
 def cmd_clear_legacy(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import clear_legacy, store_status
+    from agent.checkpoints.maintenance import clear_legacy, store_status
 
     info = store_status()
     legacy = info.get("legacy_archives", [])
@@ -218,26 +218,3 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         p_clear = subs.add_parser(name, help=help_text)
         p_clear.add_argument("-f", "--force", action="store_true", help="Skip confirmation prompt")
         p_clear.set_defaults(func=func)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from datetime import datetime  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'cmd_list': ('hermes_cli.plugins_cmd', 'cmd_list'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -1,0 +1,45 @@
+# OpenLTM — long-term memory for Hermes agents.
+#
+# Source of truth: https://github.com/RohiRIK/OpenLtm
+# Plugin lives in the `hermes/openltm_hermes` subdirectory of that repository.
+# The `sha` above is the exact reviewed commit; the version label matches it.
+name: openltm
+repo: https://github.com/RohiRIK/OpenLtm
+sha: 7cd6ed51e7610b232e50f81740eaef6a5d029a6a
+subdir: hermes/openltm_hermes
+description: "Long-term memory for Hermes agents, stored in a local SQLite database. FTS5 full-text search with optional vector (sqlite-vec) recall, importance-weighted decay, a queryable memory graph, and automatic capture: a declarative rule engine classifies corrections, constraints, preferences, decisions, and agent-discovered facts from a conversation and stores each one as a distilled, self-contained fact. Runtime notifications and read-only OpenLTM tool requests are excluded by named guards so ops noise never becomes memory. No cloud, no telemetry, no API keys required; optional semantic recall via a local llama.cpp embedding server. MIT licensed. Disclosure — local SQLite in HERMES_HOME; runs git config to read the repo remote; memory text (with emails, phone numbers, card numbers and IPs masked) goes to Gemini or OpenAI embeddings, or to the llama.cpp server URL you set (default 127.0.0.1:8080), only if selected in openltm.json (default local Ollama); opt-in hive mode (off by default) shares memories between agents through a separate SQLite file, default ~/.openltm/hive/hive.db, and injects other agents' hive memories into recall."
+maintainer: RohiRIK
+tier: community
+category: memory
+docs_url: https://github.com/RohiRIK/OpenLtm/blob/main/docs/10-hermes-plugin.md
+version: "2.24.0"
+image: https://raw.githubusercontent.com/RohiRIK/OpenLtm/7cd6ed51e7610b232e50f81740eaef6a5d029a6a/hermes/plugin-catalog/banner.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - openltm_recall
+    - openltm_learn
+    - openltm_forget
+    - openltm_context
+    - openltm_relate
+    - openltm_graph
+    - openltm_brain_stats
+    - openltm_stale
+    - openltm_collection
+    - openltm_record
+    - openltm_hive_status
+    - openltm_hive_recall
+    - openltm_hive_learn
+    - openltm_hive_forget
+    - openltm_hive_request_access
+  provides_hooks:
+    - system_prompt_block
+    - prefetch
+    - sync_turn
+    - on_turn_start
+    - on_session_switch
+    - on_session_end
+    - on_memory_write
+  provides_middleware: []
+  requires_env: []

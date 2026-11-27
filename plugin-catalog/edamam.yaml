@@ -1,0 +1,16 @@
+name: edamam
+repo: https://github.com/edamam-llc/edamam-skills
+sha: 8b592d82d6984f45ee6cdb8ab986e8a5be298fd8
+version: "0.1.0"
+description: "Official Edamam food & nutrition skills — powered by Edamam’s database of 1,000,000 foods, including 680,000+ with UPC codes, 120,000 restaurant foods, and 100,000 common foods and meals. Accessed via Edamam's hosted Food MCP. Available now: barcode lookup — give it a UPC/EAN number or a photo of a barcode and it returns the product name, the serving basis (per 100 g vs. per serving), calories, macros, and a full nutrient breakdown, with diet and health labels. Deterministic data from real barcodes in Edamam’s database. More food and nutrition skills are being added over time. Send your query and your Edamam API credentials to Edamam's MCP server. You supply those credentials yourself (a free or paid Edamam Food Database API key) in your Hermes config; they are not bundled in the plugin. Disclosure — ships a skill only; barcode numbers you look up (and the Edamam API credentials you configure) go to Edamam's hosted MCP server at mcp.edamam.com, which you register in your own Hermes config."
+maintainer: Edamam
+tier: community
+category: tools
+requires_hermes: ">=0.20.5"
+docs_url: https://github.com/edamam-llc/edamam-skills#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,59 @@
+{
+  "description": "Run shell commands on the OS/shell/backend named in your environment section. The cwd and env persist between calls: activate a virtualenv or export once. Output is truncated, full text saved to a file; never pipe through head/tail just to shorten output.\n\nForeground (default) returns when done; to wait a fixed time, sleep in the foreground, never a background or polling loop. Health-check background servers separately; use process_manage for jobs. Trust the result's \"cwd\" after a cd. Do not use it to read, search or edit text files (cat, head, tail, sed -n, grep, find, sed -i, echo >, heredocs): read_file, search_files, patch and write_file do that and are tracked; for several files or counts, call them in parallel or loop in execute_code.",
+  "name": "terminal",
+  "parameters": {
+    "properties": {
+      "background": {
+        "default": false,
+        "description": "Only for commands that must keep running after this call returns; returns a session_id.",
+        "type": "boolean"
+      },
+      "command": {
+        "type": "string"
+      },
+      "heartbeat": {
+        "default": 0,
+        "description": "With background=true: also notify every N seconds (min 60) with new output; quiet ticks are skipped. For bounded jobs you must react to mid-run, never servers. Implies notify=true; 0 = off.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "notify": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "With background=true. true: one notification on exit; use it for anything that ends (builds, tests, deploys), or the job runs silently. ['pattern', ...]: notify when a line matches, only for one-shot readiness on processes that never exit; rate-limited. Omit for servers/daemons."
+      },
+      "persist_on_release": {
+        "default": false,
+        "description": "With background=true: survive session end, /new, compression and other cleanup (not host exit). Only for jobs the user explicitly wants to outlive the conversation.",
+        "type": "boolean"
+      },
+      "pty": {
+        "default": false,
+        "description": "With background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
+        "type": "boolean"
+      },
+      "timeout": {
+        "description": "Max seconds (default 180, foreground max 600). Finishing early returns at once, so set it generously. Above 600s the command runs as a tracked background process with notify_on_complete=true (the result says so; do not re-run it).",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "workdir": {
+        "description": "Absolute working directory for this command only.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "type": "object"
+  }
+}

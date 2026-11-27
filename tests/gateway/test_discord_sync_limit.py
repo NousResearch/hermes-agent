@@ -50,7 +50,6 @@ def adapter():
     adapter._client.application_id = "test_app_id"
 
     adapter._sleep_between_command_sync_mutations = AsyncMock()
-    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
     adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
     adapter._patchable_app_command_payload = MagicMock(side_effect=lambda p: p)
 
@@ -80,7 +79,6 @@ async def test_safe_sync_deletes_before_creating():
     adapter._client.http = AsyncMock()
     adapter._client.application_id = "test_app_id"
     adapter._sleep_between_command_sync_mutations = AsyncMock()
-    adapter._existing_command_to_payload = MagicMock(side_effect=lambda cmd: {"name": cmd.name})
     adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda p: p)
     adapter._patchable_app_command_payload = MagicMock(side_effect=lambda p: p)
 
@@ -91,10 +89,10 @@ async def test_safe_sync_deletes_before_creating():
     # So: delete cmd_0 (1 deletion), create cmd_new (1 creation)
 
     existing_commands = [
-        SimpleNamespace(id=f"id_{i}", name=f"cmd_{i}", type=1)
+        {"id": f"id_{i}", "name": f"cmd_{i}", "type": 1}
         for i in range(100)
     ]
-    adapter._client.tree.fetch_commands = AsyncMock(return_value=existing_commands)
+    adapter._client.http.get_global_commands = AsyncMock(return_value=existing_commands)
 
     adapter._client.tree.get_commands = MagicMock(
         return_value=[
@@ -138,3 +136,17 @@ async def test_safe_sync_deletes_before_creating():
         f"Deletions must happen before creations to avoid exceeding 100-command limit. "
         f"Last delete at index {last_delete_idx}, first create at index {first_create_idx}"
     )
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_command_sync_state_skips_a_deleted_or_renamed_profile_home(adapter, tmp_path, monkeypatch, move):
+    """A late sync-state write never recreates the profile home it was bound to (#155595 U3)."""
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    assert adapter._read_command_sync_state() == {}
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        adapter._record_command_sync_attempt("test_app_id", "fp")
+    assert not home.exists()

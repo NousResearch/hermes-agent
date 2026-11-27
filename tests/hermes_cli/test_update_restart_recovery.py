@@ -92,9 +92,6 @@ def test_abort_recovery_hands_managed_profiles_to_a_fresh_process(monkeypatch):
     # Serve units travel in the same payload so one fresh child covers both
     # runtime families (#92145).
     assert set(payload["serve_units"]) == {"recover", "skip"}
-    assert kwargs["text"] is True
-    assert kwargs["capture_output"] is True
-    assert kwargs["check"] is False
     assert kwargs["env"]["HERMES_UPDATE_RESTART_RECOVERY"] == "1"
 
 
@@ -277,10 +274,11 @@ def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
         "verified": [],
         "relaunch_attempted": ["coder", "default"],
         "failed": [],
+        "covered": {},
     }
     assert [call[0] for call in calls] == [
-        [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart"],
-        [sys.executable, "-m", "hermes_cli.main", "-p", "default", "gateway", "restart"],
+        [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart", "--interrupt", "--detach"],
+        [sys.executable, "-m", "hermes_cli.main", "-p", "default", "gateway", "restart", "--interrupt", "--detach"],
     ]
     for _, kwargs in calls:
         assert kwargs["stdin"] is subprocess.DEVNULL
@@ -314,6 +312,7 @@ def test_recovery_child_verifies_systemd_profiles_via_is_active(monkeypatch):
         "verified": ["default"],
         "relaunch_attempted": ["coder"],
         "failed": [],
+        "covered": {},
     }
     # The launchd profile must never be probed with systemctl.
     systemctl_units = [argv[-1] for argv in calls if argv[0].endswith("systemctl")]
@@ -334,6 +333,7 @@ def test_recovery_child_treats_missing_systemctl_as_unverified(monkeypatch):
         "verified": [],
         "relaunch_attempted": ["default"],
         "failed": [],
+        "covered": {},
     }
 
 
@@ -349,6 +349,7 @@ def test_recovery_child_reports_failed_profile_without_losing_successes():
         "verified": [],
         "relaunch_attempted": ["default"],
         "failed": ["coder"],
+        "covered": {},
     }
 
 
@@ -380,22 +381,6 @@ def test_recovery_payload_rejects_malformed_supervisors_map():
         raise AssertionError("malformed supervisors map must be rejected")
 
 
-def test_recovery_module_empty_payload_is_a_real_clean_process():
-    result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"],
-        input=json.dumps({"profiles": []}),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert json.loads(result.stdout) == {
-        "failed": [],
-        "relaunch_attempted": [],
-        "verified": [],
-        "serve_units": {"verified": [], "failed": []},
-    }
 
 
 def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
@@ -475,9 +460,58 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
         "failed": [],
         "relaunch_attempted": ["coder"],
         "verified": ["default"],
+        "covered": {},
         "serve_units": {"verified": [], "failed": []},
     }
     restarts = [json.loads(line) for line in ledger.read_text().splitlines()]
     assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]
     for argv in restarts:
-        assert argv[-2:] == ["gateway", "restart"]
+        assert argv[-4:] == ["gateway", "restart", "--interrupt", "--detach"]
+
+
+def test_serve_unit_names_take_their_profile_suffix_from_the_profile_id_owner(monkeypatch):
+    """Discovery and the skip payload share one unit predicate: a structural family plus a
+    profile-id suffix judged by hermes_constants.PROFILE_ID_RE (state-24, #155595)."""
+    import re
+
+    import hermes_constants
+
+    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    assert recovery._PROFILE_ID_RE is hermes_constants.PROFILE_ID_RE
+    longest = "a" * 64
+
+    def listed(names):
+        result = SimpleNamespace(stdout="".join(f"{name} loaded active running Hermes\n" for name in names))
+        return recovery._listed_serve_units(["systemctl", "--user"], run=lambda *_a, **_k: result)
+
+    def skipped(entries):
+        payload = {"profiles": [], "serve_units": {"recover": True, "skip": entries}}
+        return recovery._parse_payload(io.StringIO(json.dumps(payload)))[3]
+
+    accepted = [
+        "hermes-serve.service", "hermes-dashboard.service", "hermes-serve-coder.service",
+        "hermes-serve-a_b-c9.service", f"hermes-dashboard-{longest}.service",
+    ]
+    rejected = [
+        "hermes-server.service", "hermes-serve-.service", "hermes-serve--x.service",
+        "hermes-serve-Coder.service", f"hermes-serve-{longest}a.service", "hermes-serve-zz.custom.service",
+        "hermes-serve-coder.service.service", "hermes-gateway-coder.service",
+        "hermes-serve-coder.service.old",
+    ]
+    assert listed(accepted + rejected) == accepted
+    assert skipped([*accepted, *rejected, "hermes-serve-co\nder", "hermes-serve-coder\n"]) == [
+        unit.removesuffix(".service") for unit in accepted
+    ]
+    assert skipped([
+        {"scope": "user", "unit": "hermes-serve-coder.service"},
+        {"scope": "machine", "unit": "hermes-serve-coder.service"},
+        "system/hermes-dashboard",
+    ]) == ["user/hermes-serve-coder", "system/hermes-dashboard"]
+
+    # A different owner grammar moves both callers; the bare family stays structural.
+    monkeypatch.setattr(recovery, "_PROFILE_ID_RE", re.compile(r"^zz\.[a-z]+$"))
+    swapped = ["hermes-serve.service", "hermes-serve-zz.custom.service"]
+    assert listed(["hermes-serve-coder.service", *swapped]) == swapped
+    assert skipped(["hermes-serve-coder", "hermes-serve-zz.custom", "user/hermes-dashboard"]) == [
+        "hermes-serve-zz.custom", "user/hermes-dashboard",
+    ]

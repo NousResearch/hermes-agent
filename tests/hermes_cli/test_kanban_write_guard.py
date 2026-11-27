@@ -7,6 +7,9 @@ import pytest
 from hermes_cli import kanban_db
 from hermes_cli import kanban_db_connect as kbc
 
+# These probe the kanban guard against the real root on purpose.
+pytestmark = pytest.mark.allow_real_home_io
+
 
 def test_connect_succeeds_under_test_home(tmp_path, monkeypatch):
     """When HERMES_HOME is a temp dir, kanban connect succeeds normally."""

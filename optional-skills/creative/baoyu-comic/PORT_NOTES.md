@@ -11,7 +11,7 @@ Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.56.
 | Metadata namespace | `openclaw` | `hermes` (with `tags` + `homepage`) |
 | Trigger | Slash commands / CLI flags | Natural language skill matching |
 | User config | EXTEND.md file (project/user/XDG paths) | Removed — not part of Hermes infra |
-| User prompts | `AskUserQuestion` (batched) | `clarify` tool (one question at a time) |
+| User prompts | `AskUserQuestion` (batched) | `clarify` tool (batched, up to 5 questions) |
 | Image generation | baoyu-imagine (Bun/TypeScript, supports `--ref`) | `image_generate` — **prompt-only**, returns a URL; no reference image input; agent must download the URL to the output directory |
 | PDF assembly | `scripts/merge-to-pdf.ts` (Bun + `pdf-lib`) | Removed — the PDF merge step is out of scope for this port; pages are delivered as PNGs only |
 | Platform support | Linux/macOS/Windows/WSL/PowerShell | Linux/macOS only |

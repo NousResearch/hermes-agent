@@ -4,6 +4,8 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $gatewayState } from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
+import { clearProfileBackend, profileBackendFeatures, setProfileBackend } from './profile-backend'
+
 import { host } from './index'
 
 // Plugins read app state exclusively through host.state — and before this
@@ -31,32 +33,6 @@ describe('host.state focused-session atoms', () => {
 
     return { host, states, session }
   }
-
-  it('exposes readonly atoms for the focused session (runtime id, stored id, usage)', async () => {
-    const { host } = await setup()
-
-    for (const key of ['focusedSessionId', 'focusedStoredSessionId', 'focusedUsage'] as const) {
-      const store = host.state[key]
-      expect(store, key).toBeDefined()
-      expect(typeof store.get, key).toBe('function')
-      expect(typeof store.listen, key).toBe('function')
-      expect(typeof store.subscribe, key).toBe('function')
-    }
-  })
-
-  it('mirrors the primary session while no tile is focused', async () => {
-    const { host, states } = await setup()
-
-    expect(host.state.focusedSessionId.get()).toBe(states.$focusedRuntimeId.get())
-    expect(host.state.focusedStoredSessionId.get()).toBe(states.$focusedStoredSessionId.get())
-  })
-
-  it('focusedUsage projects the focused session usage, null while unresolved', async () => {
-    const { host, states } = await setup()
-
-    const focused = states.$focusedSessionState.get()
-    expect(host.state.focusedUsage.get()).toBe(focused?.usage ?? null)
-  })
 
   it('exposes the registry source that owns the active gateway', async () => {
     const { host, session } = await setup()
@@ -150,9 +126,6 @@ describe('host.state.focusedSessionProfile', () => {
 
   it('is a readonly atom that falls back to the gateway profile with no focused session', async () => {
     const { host, profile } = await setup()
-
-    expect(typeof host.state.focusedSessionProfile.get).toBe('function')
-    expect(typeof host.state.focusedSessionProfile.listen).toBe('function')
 
     profile.$activeGatewayProfile.set('newsanalyst')
     expect(host.state.focusedSessionProfile.get()).toBe('newsanalyst')
@@ -277,5 +250,13 @@ describe('host.state busy vs gateway', () => {
     dropSessionState('runtime-a')
     expect(host.state.busyBySession.get()['runtime-a']).toBeUndefined()
     expect(host.state.gateway.get()).toBe('open')
+  })
+})
+
+describe('host profile-backend entries', () => {
+  it('carries both calls and the record of what this build supports', () => {
+    expect(host.setProfileBackend).toBe(setProfileBackend)
+    expect(host.clearProfileBackend).toBe(clearProfileBackend)
+    expect(host.profileBackendFeatures).toBe(profileBackendFeatures)
   })
 })

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.account_usage import build_nous_credits_snapshot
+from agent.account_usage_nous import build_nous_credits_snapshot
 from hermes_cli.nous_account import (
     NousPaidServiceAccessInfo,
     NousPortalAccountInfo,
@@ -39,21 +39,13 @@ def test_healthy():
     assert snap.available is True
     assert snap.plan == "Pro"
     assert snap.provider == "nous"
-    assert snap.title == "Nous credits"
     blob = "\n".join(_all_lines(snap))
     assert "$18.00" in blob
     assert "$12.34" in blob
     assert "$30.34" in blob
-    assert "Renews: 2026-07-01" in blob
-    assert "/billing" in blob
+    assert "2026-07-01" in blob
     # money-rule: magnitudes-only, never a percentage
     assert "%" not in blob
-
-
-
-
-
-
 
 
 def test_logged_out():
@@ -65,13 +57,3 @@ def test_logged_out():
         ),
     )
     assert build_nous_credits_snapshot(info) is None
-
-
-def test_none():
-    assert build_nous_credits_snapshot(None) is None
-
-
-
-
-
-

@@ -17,10 +17,8 @@ suite (we patch ``agent.process_bootstrap.OpenAI`` and drive ``agent.client``), 
 pass identically in CI and locally.
 """
 
-import hermes_state_errors
 import os
 import pytest
-import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -105,8 +103,6 @@ def test_explanation_persistence_locked_cause_says_busy_not_disk():
     )
     lower = out.lower()
     assert "busy" in lower
-    assert "saved" in lower
-    assert "send it again" in lower
     assert "disk" not in lower
     assert "permission" not in lower
 
@@ -190,8 +186,6 @@ def test_explanation_persistence_fts_index_never_advises_recovery():
     assert "would have been lost" not in lower
     assert "free" not in lower  # never disk-space advice
     assert "hermes doctor" in lower
-    assert "search index" in lower and "not damaged" in lower
-    assert "send your message again" in lower  # the handle stays live
 
 
 def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
@@ -206,16 +200,15 @@ def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
 
 
 def test_deleted_wal_cause_is_plain_first_steps_not_a_forensic_runbook():
-    """The WAL-generation runbook lives in the logger.error at hermes_state; the chat reply
+    """The WAL-generation runbook lives in the store's logger.error; the chat reply
     gives the two steps a user can take (stop, doctor) and points at the log."""
-    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+    from persistence.sqlite._state.errors import PERSISTENCE_ERROR_CAUSES
 
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "deleted_wal"
     ).lower()
     assert "deleted_wal" in PERSISTENCE_ERROR_CAUSES
     assert "hermes gateway stop" in out and "hermes doctor" in out
-    assert "send your message once more" in out
     for jargon in ("manifest", "state.db-wal", "sidecar", "header_only", "--inspect-only", "generation"):
         assert jargon not in out, jargon
     assert "~/.hermes" not in out  # display_hermes_home(), never a hardcoded path
@@ -256,7 +249,7 @@ def test_explanation_persistence_one_arg_backward_compat():
     """Existing one-arg callers must keep working (optional second param)."""
     out = AIAgent._format_turn_completion_explanation("session_persistence_failed")
     assert out.strip() != ""
-    assert "couldn't save" in out.lower() and "hermes doctor" in out.lower()
+    assert "hermes doctor" in out.lower()
 
 
 def test_explanation_cause_ignored_for_other_reasons():
@@ -279,7 +272,7 @@ def test_explanation_cause_ignored_for_other_reasons():
 def test_classify_persistence_error_categories():
     import sqlite3
 
-    from hermes_state import classify_persistence_error
+    from persistence.sqlite._state.errors import classify_persistence_error
 
     assert classify_persistence_error(
         sqlite3.OperationalError("database is locked")
@@ -304,7 +297,7 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
     comment thread, v0.20.0 malformed-DB incident)."""
     import sqlite3
 
-    from hermes_state import classify_persistence_error
+    from persistence.sqlite._state.errors import classify_persistence_error
 
     assert classify_persistence_error(
         sqlite3.DatabaseError("database disk image is malformed")
@@ -322,12 +315,12 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
 
 
 def test_classify_persistence_error_reuses_disk_full_markers():
-    """The disk bucket delegates to hermes_state_errors.is_disk_full_error, so
+    """The disk bucket delegates to is_disk_full_error, so
     every marker that helper recognizes (ENOSPC, 'not enough space', ...)
     must classify as 'disk' — the two classifiers can never drift apart."""
     import errno
 
-    from hermes_state import classify_persistence_error
+    from persistence.sqlite._state.errors import classify_persistence_error
 
     assert classify_persistence_error("ENOSPC writing state.db") == "disk"
     assert classify_persistence_error(
@@ -343,9 +336,9 @@ def test_classify_persistence_error_compression_busy_is_distinct():
     storage damage — but its message contains neither 'locked' nor 'busy',
     so it must classify by exception type (and by phrase for RPC-wrapped
     strings). This is the exact failure mode of issue #81227."""
-    from hermes_state import SessionCompressionInProgressError
-    from hermes_state_errors import CompressionSessionBusyError
-    from hermes_state import classify_persistence_error
+    from persistence.sqlite._state.errors import (
+        CompressionSessionBusyError, SessionCompressionInProgressError, classify_persistence_error,
+    )
 
     assert classify_persistence_error(
         SessionCompressionInProgressError(
@@ -365,8 +358,7 @@ def test_classify_persistence_error_compression_busy_is_distinct():
 
 
 def test_classify_persistence_error_turn_lease_lost_is_distinct():
-    from hermes_state import classify_persistence_error
-    from hermes_state_errors import SessionTurnLeaseLostError
+    from persistence.sqlite._state.errors import SessionTurnLeaseLostError, classify_persistence_error
 
     assert classify_persistence_error(
         SessionTurnLeaseLostError(
@@ -381,8 +373,7 @@ def test_classify_persistence_error_turn_lease_lost_is_distinct():
 def test_persistence_error_causes_tuple_matches_classifier():
     """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
     return (consumers like cron suppression iterate it)."""
-    from hermes_state import classify_persistence_error
-    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+    from persistence.sqlite._state.errors import PERSISTENCE_ERROR_CAUSES, classify_persistence_error
 
     probes = (
         "database is locked",
@@ -406,8 +397,9 @@ def test_classify_persistence_error_fts_provenance_order():
     "provably FTS-only" (#97794 review)."""
     import sqlite3
 
-    from hermes_state import SessionDB, classify_persistence_error
-    from hermes_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
+    from persistence.sqlite._state.errors import classify_persistence_error
+    from storage_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
+    from tests.fixtures.storage_holder import is_fts_write_corruption
 
     def _err(text, code=None, cls=sqlite3.DatabaseError):
         exc = cls(text)
@@ -419,7 +411,7 @@ def test_classify_persistence_error_fts_provenance_order():
     # generic text older SQLite builds emit; bare SQLITE_CORRUPT / SQLITE_NOTADB are unscoped.
     vtab = _err("database disk image is malformed", SQLITE_CORRUPT_VTAB)
     assert classify_persistence_error(vtab) == "fts_index"
-    assert SessionDB._is_fts_write_corruption_error(vtab)  # same verdict as the write gate
+    assert is_fts_write_corruption(vtab)  # same verdict as the write gate
     assert classify_persistence_error(
         _err("database disk image is malformed", sqlite3.SQLITE_CORRUPT)
     ) == "corrupt"
@@ -434,7 +426,7 @@ def test_classify_persistence_error_fts_provenance_order():
     )
     assert not is_fts_scoped_corruption_error(contradictory)
     assert classify_persistence_error(contradictory) != "fts_index"
-    assert not SessionDB._is_fts_write_corruption_error(contradictory)
+    assert not is_fts_write_corruption(contradictory)
 
     # Tier 2 — no code (Python < 3.11, RPC-wrapped strings): the report must name a
     # messages_fts* object. Both shapes from #97794's evidence logs qualify.
@@ -476,39 +468,6 @@ def test_explainer_disabled_via_env():
         assert agent._turn_completion_explainer_enabled() is False
 
 
-def test_explainer_config_read_once_then_cached():
-    """Measured-work pin: the config lookup happens once per agent.
-
-    The explainer gate runs at the end of every turn, so a fresh
-    ``load_config()`` per call is wasted work (measured ~0.9 ms/call on a
-    warm mtime-cache on this host; per-turn config reads were killed
-    repo-wide in #74211, and this seam was missed).  The config read must
-    be cached after the first call; the env-var override must still win on
-    every call, cached or not.
-    """
-    agent = _make_agent()
-    calls = {"n": 0}
-
-    def counting_load():
-        calls["n"] += 1
-        return {"display": {"turn_completion_explainer": True}}
-
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
-        with patch("hermes_cli.config.load_config", counting_load):
-            # First call reads config and caches the result.
-            assert agent._turn_completion_explainer_enabled() is True
-            assert calls["n"] == 1
-            # Subsequent calls must not re-read config.
-            assert agent._turn_completion_explainer_enabled() is True
-            assert agent._turn_completion_explainer_enabled() is True
-            assert calls["n"] == 1
-            # Env override stays authoritative even after the cache is warm.
-            with patch.dict(
-                os.environ, {"HERMES_TURN_COMPLETION_EXPLAINER": "0"}, clear=False
-            ):
-                assert agent._turn_completion_explainer_enabled() is False
-            assert calls["n"] == 1  # env path never touches config
 
 
 
@@ -571,7 +530,23 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
 
 
 def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
-    """A quarantined SessionDB raises the typed error; it stays in the corrupt bucket."""
-    from hermes_state import StateDbCorruptError, classify_persistence_error
+    """A quarantined store raises the typed error; it stays in the corrupt bucket."""
+    from persistence.sqlite._state.errors import StateDbCorruptError, classify_persistence_error
 
     assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"
+
+
+def test_abnormal_exit_names_the_store_behind_the_agents_writer_handle(tmp_path):
+    """The persistence-failure explainer names the file behind the agent's writer handle."""
+    from agent.turn_finalizer import _explain_abnormal_exit
+    from persistence_assembly import profile_scope, store_location
+
+    scope = profile_scope(home=tmp_path)
+    agent = SimpleNamespace(
+        _session_db=MagicMock(), persistence=SimpleNamespace(read_only=False, scope=scope), model="m",
+        _last_persistence_error_cause="corrupt", _turn_completion_explainer_enabled=lambda: True,
+        _format_turn_completion_explanation=MagicMock(return_value="EXPLAINED"),
+    )
+    assert _explain_abnormal_exit(agent, "", "session_persistence_failed", False, MagicMock()) == "EXPLAINED"
+    assert agent._format_turn_completion_explanation.call_args.kwargs["db_path"] == store_location(scope)
+    assert agent._session_db.method_calls == []

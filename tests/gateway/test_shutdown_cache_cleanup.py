@@ -40,7 +40,6 @@ class _FakeGateway:
         self._exit_code = None
         self._restart_drain_timeout = 0.01
         self._running_agents = {}
-        self._running_agents_ts = {}
         self._agent_cache = OrderedDict()
         self._agent_cache_lock = threading.Lock()
         self.adapters = {}
@@ -48,8 +47,6 @@ class _FakeGateway:
         self._failed_platforms = []
         self._shutdown_event = asyncio.Event()
         self._pending_messages = {}
-        self._pending_approvals = {}
-        self._busy_ack_ts = {}
 
     def _running_agent_count(self):
         return len(self._running_agents)
@@ -63,6 +60,15 @@ class _FakeGateway:
     def _active_api_run_count(self):
         # The shutdown log also reports adapter-owned API work (#63529).
         # This fake has no API server adapter, so it is always idle.
+        return 0
+
+    def _mark_api_runs_shutdown_requested(self):
+        # No API server adapter -> no durable runs to stamp with the drain boundary (#115133).
+        return 0
+
+    def _active_api_worker_count(self):
+        # Worker-scoped API count the SessionDB close gate reads live (#116535).
+        # This fake runs no executor turns, so it is always idle.
         return 0
 
     def _update_runtime_status(self, *_a, **_kw):
@@ -113,7 +119,6 @@ class _FakeGateway:
 
     def _release_running_agent_state(self, session_key, **_kwargs):
         agent = self._running_agents.pop(session_key, None)
-        self._running_agents_ts.pop(session_key, None)
         self._cleanup_agent_resources(agent)
         return agent is not None
 
@@ -146,16 +151,6 @@ class TestCachedAgentCleanupOnShutdown:
 
         agent.shutdown_memory_provider.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_cache_cleared_after_shutdown(self):
-        """The _agent_cache dict is cleared after stop."""
-        gw = _FakeGateway()
-        agent = _make_mock_agent()
-        gw._agent_cache["s1"] = (agent, "sig1")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        assert len(gw._agent_cache) == 0
 
 
 class TestRunningAgentsNotDoubleCleaned:

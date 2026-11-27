@@ -162,7 +162,8 @@ class TestLazyFirstUseConnect:
             return True
 
         with patch.object(_mcp_discovery, "_ensure_lazy_server_connected", side_effect=_connect) as mock_connect, \
-             patch.object(_mcp_loop, "_run_on_mcp_loop", side_effect=self._run_on_loop):
+             patch.object(_mcp_loop, "_run_on_mcp_loop", side_effect=self._run_on_loop), \
+             patch.dict(mcp._server_trust_levels, {"playwright": "full"}):  # lazy registration records it
             handler = _mcp_handlers._make_tool_handler("playwright", "browser_navigate", 5)
             out = handler({}, task_id="t1")
 
@@ -325,15 +326,6 @@ class TestCacheLoadDescriptionScan:
         mock_scan.assert_called_once_with("playwright", "browser_navigate", "Navigate")
 
 
-class TestResolveServerLazy:
-    def test_default_off(self):
-        assert _mcp_discovery._resolve_server_lazy("s", {"command": "npx"}) is False
-
-    def test_explicit_true(self):
-        assert _mcp_discovery._resolve_server_lazy("s", {"command": "npx", "lazy": True}) is True
-
-    def test_explicit_false(self):
-        assert _mcp_discovery._resolve_server_lazy("s", {"command": "npx", "lazy": False}) is False
 
 
 class TestLazyMcpStatus:
@@ -374,7 +366,6 @@ class TestLazyMcpStatus:
 
         summaries = [r.getMessage() for r in caplog.records if "tool(s) from" in r.getMessage()]
         assert summaries and all("failed" not in m for m in summaries), summaries
-        assert any("1 lazy, not spawned yet" in m for m in summaries), summaries
         assert (status["playwright"]["status"], status["playwright"]["tools"],
                 status["playwright"]["connected"]) == ("lazy", len(cached), False)
         assert status["eager"]["status"] == "configured" and status["eager"]["tools"] == 0

@@ -21,6 +21,9 @@ import type {
 import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
+  cronAgoLabel,
+  cronNextRunOverdueMs,
+  cronSchedulerStaleAgeS,
   cronJobFormFromJob,
   cronLastResult,
   focusCronField,
@@ -530,6 +533,7 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const schedulerStaleAgeS = cronSchedulerStaleAgeS(jobs);
   const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -664,16 +668,24 @@ export default function CronPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     api
-      .getCronDeliveryTargets()
-      .then((res) => setDeliveryTargets(res.targets))
-      .catch(() =>
+      .getCronDeliveryTargets(resourceProfile)
+      .then((res) => {
+        if (!cancelled) setDeliveryTargets(res.targets);
+      })
+      .catch(() => {
         // Fall back to local-only so the modal still works if the endpoint fails.
-        setDeliveryTargets([
-          { id: "local", name: "Local", home_target_set: true, home_env_var: null },
-        ]),
-      );
-  }, []);
+        if (!cancelled) {
+          setDeliveryTargets([
+            { id: "local", name: "Local", home_target_set: true, home_env_var: null },
+          ]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resourceProfile]);
 
   useEffect(() => {
     jobsActiveRef.current = true;
@@ -888,6 +900,15 @@ export default function CronPage() {
           detail={jobsLoadError}
           onRetry={() => loadJobs(selectedProfile)}
         />
+      )}
+
+      {schedulerStaleAgeS !== null && (
+        <p className="text-sm text-warning font-medium" data-testid="cron-scheduler-stale">
+          {(t.cron.schedulerLastTicked ?? en.cron.schedulerLastTicked!).replace(
+            "{when}",
+            cronAgoLabel(schedulerStaleAgeS),
+          )}
+        </p>
       )}
 
       <Segmented
@@ -1181,9 +1202,18 @@ export default function CronPage() {
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>
-                    <span>
-                      {t.cron.next}: {formatTime(job.next_run_at)}
-                    </span>
+                    {cronNextRunOverdueMs(job) === null ? (
+                      <span>
+                        {t.cron.next}: {formatTime(job.next_run_at)}
+                      </span>
+                    ) : (
+                      <span
+                        className="text-warning font-medium"
+                        data-testid="cron-next-run-overdue"
+                      >
+                        {t.cron.overdueSince ?? en.cron.overdueSince!}: {formatTime(job.next_run_at)}
+                      </span>
+                    )}
                   </div>
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">

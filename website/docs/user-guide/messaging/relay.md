@@ -41,8 +41,8 @@ Relay is for deployments where a hosted or shared connector service manages
 the platform side — for example multi-tenant hosting where one shared bot
 fronts many users' agents, or setups where you don't want bot tokens on the
 gateway machine. If you run your own bots directly, use the native platform
-adapters ([Telegram](/user-guide/messaging/telegram),
-[Discord](/user-guide/messaging/discord), etc.) instead.
+adapters ([Telegram](./telegram.md),
+[Discord](./discord.md), etc.) instead.
 
 ## Enrollment
 
@@ -205,6 +205,11 @@ not-yet-provisioned race and retried normally.
 
 **Nothing changed after enrolling** — the gateway reads `GATEWAY_RELAY_*` at
 startup. Restart it (`hermes gateway restart`).
+
+**Inbound attachments are missing and the log says a `/relay/media/` URL "is not on
+the relay origin"** — the gateway sends its bearer only to the origin of `GATEWAY_RELAY_URL`, but
+the connector mints re-host URLs from its `PUBLIC_BASE_URL`. Point both at the same
+scheme, host and port.
 
 **A feature (buttons, media, threads…) silently degrades to plain text** — the
 connector for your platform did not advertise that operation in its handshake

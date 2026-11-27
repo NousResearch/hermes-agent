@@ -28,7 +28,7 @@ def _router_plugin_module():
 
 @pytest.fixture
 def transport():
-    import agent.transports.codex  # noqa: F401
+    import agent.transports.codex
     return get_transport("codex_responses")
 
 
@@ -161,15 +161,16 @@ class TestHostResolvedProfile:
         self, transport, seeded_catalog
     ):
         # A providers.my-proxy entry pointed at api.router.com rides the same
-        # host mandate onto this transport; the vocabulary must follow the
-        # host, not the config-entry name.
+        # host mandate onto this transport under the runtime's ``custom:<name>``
+        # identity; the vocabulary must follow the host, not the config-entry
+        # name — and not the generic custom declaration either.
         kw = transport.build_kwargs(
             model="grok-4.6",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             base_url="https://api.router.com/v1",
             session_id="sid",
-            provider="my-proxy",
+            provider="custom:my-proxy",
             reasoning_config={"effort": "max"},
         )
         assert kw["reasoning"]["effort"] == "xhigh"
@@ -232,3 +233,16 @@ class TestCatalogIngestValidation:
             ],
         )
         assert profile.fetch_models() == ["b", "a", "c"]
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_catalog_mirror_skips_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """The disk mirror is best-effort: a dead profile home is skipped, never recreated (#155595 U3)."""
+    import hermes_constants
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    _profile, mod = _router_plugin_module()
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    mod._save_disk({"m": ["low"]})  # never raises
+    assert not home.exists()

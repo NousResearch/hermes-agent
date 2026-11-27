@@ -17,7 +17,6 @@ stamp, so connectors keep rendering plain text.
 """
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -67,8 +66,6 @@ def _adapter(extra=None, descriptor=None, transport=None):
 
 
 class TestDescriptorBit:
-    def test_default_false(self):
-        assert _descriptor().supports_block_formatting is False
 
     def test_from_json_reads_flag(self):
         payload = dict(

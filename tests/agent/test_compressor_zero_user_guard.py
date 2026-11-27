@@ -30,6 +30,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+import itertools
 
 
 @pytest.fixture()
@@ -122,7 +123,7 @@ class TestCompressAlwaysKeepsAUserTurn:
         with patch.object(c, "_generate_summary", return_value=mocked):
             out = c.compress(messages, current_tokens=90_000)
 
-        for prev, cur in zip(out, out[1:]):
+        for prev, cur in itertools.pairwise(out):
             assert not (
                 prev.get("role") == "user" and cur.get("role") == "user"
             ), "compression introduced consecutive user-role messages"
@@ -163,7 +164,7 @@ def _has_nonempty_user_text(messages: list[dict]) -> bool:
     ``role="assistant"`` summary does not satisfy backends that require an
     actual user query, so checking role and content together is the point.
     """
-    from agent.context_compressor import _content_text_for_contains
+    from session_rules.turns import _content_text_for_contains
 
     return any(
         m.get("role") == "user"

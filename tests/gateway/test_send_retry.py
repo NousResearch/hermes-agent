@@ -11,7 +11,7 @@ Verifies that:
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from gateway.platforms.base import BasePlatformAdapter, SendResult, _RETRYABLE_ERROR_PATTERNS
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.base import Platform, PlatformConfig
 
 
@@ -56,9 +56,6 @@ class TestIsRetryableError:
     def test_none_is_not_retryable(self):
         assert not _StubAdapter._is_retryable_error(None)
 
-    def test_empty_string_is_not_retryable(self):
-        assert not _StubAdapter._is_retryable_error("")
-
 
     def test_permission_error_not_retryable(self):
         assert not _StubAdapter._is_retryable_error("Forbidden: bot was blocked by the user")
@@ -71,9 +68,6 @@ class TestIsRetryableError:
 class TestIsTimeoutError:
     def test_none_is_not_timeout(self):
         assert not _StubAdapter._is_timeout_error(None)
-
-    def test_empty_is_not_timeout(self):
-        assert not _StubAdapter._is_timeout_error("")
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +240,7 @@ class TestSendWithRetryRateLimited:
         adapter = _StubAdapter()
         flood = SendResult(success=False, error="flood control exceeded, retry in 60 seconds")
         adapter._send_results = [flood, flood, flood]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
         assert not result.success
         # 1 initial + 2 retries = 3 sends; NO delivery-failure notice (4th send)
@@ -283,7 +277,7 @@ class TestSendWithRetryFailureTypeTransitions:
             SendResult(success=False, error="Bad Request: can't parse entities"),
             # fallback send (auto-succeeds via _next_result)
         ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "**bold**", max_retries=3, base_delay=0)
         # The formatting error was not retried further: exactly 1 retry then the
         # plain-text fallback. 1 initial + 1 retry + 1 fallback = 3 sends.

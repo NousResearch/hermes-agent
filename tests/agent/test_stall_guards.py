@@ -19,9 +19,7 @@ from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
-    STALL_GUARD_REPEATABLE_TOOLS,
     ToolCallGuardrailController,
-    is_stall_guard_repeatable,
 )
 
 
@@ -97,13 +95,6 @@ def test_allowlisted_pollers_never_fire():
             assert c.observe_call(tool, {"id": "j1"}, "Generating").notice is None
 
 
-def test_allowlist_membership_contract():
-    # The module constant drives the exemption; suffix conventions extend it.
-    for tool in STALL_GUARD_REPEATABLE_TOOLS:
-        assert is_stall_guard_repeatable(tool)
-    assert is_stall_guard_repeatable("acme_get_result")
-    assert not is_stall_guard_repeatable("web_search")
-    assert not is_stall_guard_repeatable("terminal")
 
 
 def test_resets_per_turn():
@@ -466,5 +457,31 @@ def test_promoted_reasoning_detector_ignores_stated_answers():
         "structured reasoning answer",
         "",
         None,
+    ):
+        assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_thai_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Thai is unsegmented (no spaces between words), so the tail-boundary check falls back to
+    # sentence punctuation, an em/en dash, or a run of ellipsis dots (#116495).
+    for tail in (
+        "พร้อมแล้ว — จะให้ผมส่ง JANUS...",  # verbatim tail from the issue
+        "ผมจะตรวจโค้ดให้เดี๋ยวนี้เลยครับ",
+        "เข้าใจแล้ว. ต่อไปจะลองรันเทสต์ดูครับ",
+        "คิดอยู่… ขอเริ่มจากไฟล์แรกก่อนนะครับ",
+        "บั๊กอยู่ตรงนี้\nจะแก้ให้เลยครับ",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail
+
+
+def test_promoted_reasoning_detector_ignores_thai_stated_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "คำตอบคือ 42 ครับ",  # "the answer is 42"
+        "ตรวจสอบแล้ว. คำตอบคือ 42 ครับ",
+        "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
     ):
         assert not promoted_reasoning_announces_action(text), text

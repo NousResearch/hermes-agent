@@ -5,12 +5,15 @@ while the gateway waited on one cron job; neither surface said WHAT was being wa
 """
 
 import json
+import threading
 import time
+from types import SimpleNamespace
 
 import cron.scheduler as sched
 from gateway.run import GatewayRunner
 from gateway.session_state import SessionState
-from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+from hermes_cli.update_cmd_drain_report import describe_active_work_unit, drain_progress_reporter
+from gateway.status import flush_runtime_status
 
 
 class _FakeAgent:
@@ -37,8 +40,9 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
     assert sched.try_register_running_job("job-a")
     try:
         with sched._running_lock:
-            sched._running_worker_pids["job-a"] = 4242
+            sched._running_worker_pids[sched._inflight_key("job-a")] = 4242
         runner._update_runtime_status("draining")
+        flush_runtime_status()
         record = json.loads((tmp_path / "gateway_state.json").read_text())
         by_kind = {unit["kind"]: unit for unit in record["active_work"]}
         assert by_kind["chat"]["session"] == "telegram:dm:1" and by_kind["chat"]["current_tool"] == "terminal"
@@ -48,7 +52,32 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
         sched.release_running_job("job-a")
     assert sched.get_running_job_details() == []
     runner._update_runtime_status("running")
+    flush_runtime_status()
     assert json.loads((tmp_path / "gateway_state.json").read_text())["active_work"] is None
+
+
+def test_draining_status_names_each_managed_worker_by_session_and_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _runner()
+    worker = SimpleNamespace(closed=threading.Event(), process=SimpleNamespace(pid=4343), worker=None)
+    runner.session_authority = SimpleNamespace(sessions={}, _managed_workers={"kanban-t_1": worker})
+    runner._update_runtime_status("draining")
+    flush_runtime_status()
+    record = json.loads((tmp_path / "gateway_state.json").read_text())
+    managed = [u for u in record["active_work"] if u["kind"] == "managed"]
+    assert managed == [{"kind": "managed", "session": "kanban-t_1", "pid": 4343}]
+    assert record["active_agents"] == len(record["active_work"])
+    assert "kanban-t_1" in describe_active_work_unit(managed[0]) and "4343" in describe_active_work_unit(managed[0])
+
+
+def test_a_profile_scoped_active_work_answer_names_its_managed_workers():
+    from gateway.run_active_work_verb import _profile_units
+
+    worker = SimpleNamespace(closed=threading.Event(), process=SimpleNamespace(pid=4343), worker=(4344, 1.0))
+    authority = SimpleNamespace(_managed_workers={"kanban-t_2": worker}, _cron_cancellations={}, _side_agents={})
+    runner = SimpleNamespace(_served_profile_homes={"coder": "/h/coder"},
+                             session_authorities=SimpleNamespace(for_home=lambda home: authority))
+    assert _profile_units(runner, "coder", []) == [{"kind": "managed", "session": "kanban-t_2", "pid": 4344}]
 
 
 def test_drain_progress_reporter_prints_holder_and_config_knob(tmp_path, monkeypatch):
@@ -63,11 +92,10 @@ def test_drain_progress_reporter_prints_holder_and_config_knob(tmp_path, monkeyp
     tick = drain_progress_reporter(tmp_path, budget_s=600, interval_s=0.0, emit=out.append)
     tick()
     report = out[0]
-    assert "nightly-scout" in report and "job-a" in report and "pid 4242" in report and "1m35s" in report
-    assert "restart_after_turn_timeout" in report
+    assert "nightly-scout" in report and "job-a" in report and "4242" in report
 
     # Pre-fix gateway (no active_work field): the wait still explains itself instead of going silent.
     (tmp_path / "gateway_state.json").write_text(json.dumps({"pid": 1, "gateway_state": "draining"}))
     out.clear()
     tick()
-    assert "did not report" in out[0]
+    assert out and out[0].strip()

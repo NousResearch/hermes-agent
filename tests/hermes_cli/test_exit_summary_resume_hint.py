@@ -4,6 +4,9 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from hermes_cli.main_tui_launch import _print_tui_exit_summary
+
+import hermes_cli.main
 
 
 def _make_cli(session_id="20260524_000001_abc123"):
@@ -80,4 +83,40 @@ class TestExitSummaryResumeHint:
         out = capsys.readouterr().out
         # Resume hint still printed without -p.
         assert "hermes --resume 20260524_000001_abc123" in out
+        assert " -p " not in out
+
+
+def _tui_session_store():
+    """A TUI session with three messages and a title, in the test's home store."""
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "20260524_000001_abc123", "tui")
+        for role, content in (("user", "q"), ("assistant", "a"), ("user", "again")):
+            seed_messages(store, "20260524_000001_abc123", {"role": role, "content": content})
+        store.sessions.set_title("20260524_000001_abc123", "My TUI Session")
+
+
+class TestTuiExitSummaryResumeHint:
+    """``_print_tui_exit_summary`` (hermes_cli/main_tui_launch.py) is a separate entry
+    point from the classic CLI summary above and must carry the same ``-p`` flag (#125078)."""
+
+    def test_tui_hints_include_profile_flag_for_named_profile(self, capsys):
+        _tui_session_store()
+        with patch(
+            "hermes_cli.profiles.get_active_profile_name", return_value="dev"
+        ):
+            _print_tui_exit_summary("20260524_000001_abc123")
+        out = capsys.readouterr().out
+        assert "hermes --tui --resume 20260524_000001_abc123 -p dev" in out
+        assert 'hermes --tui -c "My TUI Session" -p dev' in out
+
+    def test_tui_hints_no_profile_flag_on_default(self, capsys):
+        _tui_session_store()
+        with patch(
+            "hermes_cli.profiles.get_active_profile_name", return_value="default"
+        ):
+            _print_tui_exit_summary("20260524_000001_abc123")
+        out = capsys.readouterr().out
+        assert "hermes --tui --resume 20260524_000001_abc123" in out
         assert " -p " not in out

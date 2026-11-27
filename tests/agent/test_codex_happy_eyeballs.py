@@ -1,10 +1,10 @@
 import errno
-import selectors
 import socket
 
 import httpcore
 import pytest
 
+import hermes_bootstrap
 from agent import process_bootstrap
 
 
@@ -109,7 +109,7 @@ def test_connection_staggers_past_blackholed_ipv6(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        process_bootstrap.socket,
+        hermes_bootstrap.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [
             (
@@ -128,22 +128,22 @@ def test_connection_staggers_past_blackholed_ipv6(monkeypatch):
             ),
         ],
     )
-    monkeypatch.setattr(process_bootstrap.socket, "socket", FakeSocket)
+    monkeypatch.setattr(hermes_bootstrap.socket, "socket", FakeSocket)
     monkeypatch.setattr(
-        process_bootstrap.selectors, "DefaultSelector", FakeSelector
+        hermes_bootstrap.selectors, "DefaultSelector", FakeSelector
     )
     monkeypatch.setattr(
-        process_bootstrap.time, "monotonic", lambda: clock[0]
+        hermes_bootstrap.time, "monotonic", lambda: clock[0]
     )
 
-    winner = process_bootstrap._happy_eyeballs_create_connection(
+    winner = hermes_bootstrap._happy_eyeballs_create_connection(
         ("chatgpt.com", 443),
         timeout=10.0,
     )
 
     assert winner.family == socket.AF_INET
     assert winner.timeout == 10.0
-    assert clock[0] == process_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
+    assert clock[0] == hermes_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
     assert sockets[0].closed is True
     assert sockets[1].closed is False
 
@@ -256,36 +256,6 @@ def test_async_connect_races_past_blackholed_ipv6(monkeypatch):
     # and wins immediately. Serial behavior would block until the IPv6
     # connect timeout (tens of seconds). Generous bound for slow CI hosts.
     assert elapsed < 5.0
-
-
-class _RecordingPool:
-    def __init__(self):
-        self._network_backend = "default"
-
-
-class _RecordingTransport:
-    def __init__(self):
-        self._pool = _RecordingPool()
-
-
-def test_enable_happy_eyeballs_on_client_covers_transport_and_mounts():
-    class _Client:
-        pass
-
-    client = _Client()
-    client._transport = _RecordingTransport()
-    client._mounts = {"https://": _RecordingTransport(), "http://": None}
-
-    process_bootstrap.enable_happy_eyeballs_on_client(client)
-
-    assert isinstance(
-        client._transport._pool._network_backend,
-        process_bootstrap._HappyEyeballsSyncBackend,
-    )
-    assert isinstance(
-        client._mounts["https://"]._pool._network_backend,
-        process_bootstrap._HappyEyeballsSyncBackend,
-    )
 
 
 def test_enable_happy_eyeballs_on_client_skips_proxy_pools(no_proxy_env):

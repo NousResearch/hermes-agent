@@ -1,4 +1,5 @@
 import { useAui, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -6,6 +7,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { $hideThreadTimeline } from '@/store/thread-timeline'
 
 import { messageContentText } from './content'
 import {
@@ -17,6 +19,7 @@ import {
   type TimelineRevealRequest,
   type TimelineSourceMessage
 } from './timeline-data'
+import { createTimelinePositionReader } from './timeline-position'
 import { TimelineRail } from './timeline-rail'
 import { useTranscriptWindow } from './transcript-window'
 import { useTimelineHistory } from './use-timeline-history'
@@ -27,8 +30,13 @@ const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
-/** Hidden panes do not subscribe to streaming messages or measure layout. */
-export const ThreadTimeline: FC = () => (usePaneVisible() ? <ActiveThreadTimeline /> : null)
+/** Hidden rails do not subscribe to streaming messages or measure layout. */
+export const ThreadTimeline: FC = () => {
+  const paneVisible = usePaneVisible()
+  const hidden = useStore($hideThreadTimeline)
+
+  return paneVisible && !hidden ? <ActiveThreadTimeline /> : null
+}
 
 const ActiveThreadTimeline: FC = () => {
   const view = useSessionView()
@@ -86,8 +94,22 @@ const ActiveThreadTimeline: FC = () => {
 
   const railEntries = useMemo(() => {
     const indexed = indexedEntries ?? []
-    const selected = history.isHistorical ? deriveTimelineEntries((history.currentMessages ?? []).map(message => ({ id: message.id, rowId: message.rowId, role: message.role, text: messageContentText(message.parts) }))) : []
-    const loaded = new Map([...entries, ...selected].filter(entry => entry.rowId !== undefined).map(entry => [entry.rowId, entry]))
+
+    const selected = history.isHistorical
+      ? deriveTimelineEntries(
+          (history.currentMessages ?? []).map(message => ({
+            id: message.id,
+            rowId: message.rowId,
+            role: message.role,
+            text: messageContentText(message.parts)
+          }))
+        )
+      : []
+
+    const loaded = new Map(
+      [...entries, ...selected].filter(entry => entry.rowId !== undefined).map(entry => [entry.rowId, entry])
+    )
+
     const seen = new Set(indexed.map(entry => entry.rowId))
 
     const merged = [
@@ -98,7 +120,15 @@ const ActiveThreadTimeline: FC = () => {
     return (history.olderAvailable || indexedEntries) && !indexComplete
       ? [{ id: EARLIER_TIMELINE_ID, preview: t.assistant.thread.showEarlier }, ...merged]
       : merged
-  }, [entries, indexedEntries, indexComplete, history.olderAvailable, history.currentMessages, history.isHistorical, t.assistant.thread.showEarlier])
+  }, [
+    entries,
+    indexedEntries,
+    indexComplete,
+    history.olderAvailable,
+    history.currentMessages,
+    history.isHistorical,
+    t.assistant.thread.showEarlier
+  ])
 
   const root = useRef<HTMLDivElement>(null)
   const jumpFrame = useRef(0)
@@ -154,7 +184,14 @@ const ActiveThreadTimeline: FC = () => {
 
           const timeout = window.setTimeout(() => finish(false), 15000)
           controller.signal.addEventListener('abort', () => finish(false), { once: true })
-          const detail: TimelineRevealRequest = { id, rowId: railEntries.find(entry => entry.id === id)?.rowId, signal: controller.signal, complete: finish }
+
+          const detail: TimelineRevealRequest = {
+            id,
+            rowId: railEntries.find(entry => entry.id === id)?.rowId,
+            signal: controller.signal,
+            complete: finish
+          }
+
           viewport.dispatchEvent(new CustomEvent(TIMELINE_REVEAL_EVENT, { detail }))
         })
 
@@ -211,6 +248,7 @@ const ActiveThreadTimeline: FC = () => {
 
     let frame = 0
     const indexes = new Map(railEntries.map((entry, index) => [entry.id, index]))
+    const position = createTimelinePositionReader(viewport, indexes)
 
     const compute = () => {
       frame = 0
@@ -221,30 +259,7 @@ const ActiveThreadTimeline: FC = () => {
         return
       }
 
-      const top = viewport.getBoundingClientRect().top
-      let first = -1
-      let active = -1
-
-      // Walk only mounted messages, never every archived prompt in the rail.
-      for (const node of viewport.querySelectorAll<HTMLElement>('[data-message-id]')) {
-        const index = indexes.get(node.dataset.messageId!)
-
-        if (index === undefined) {
-          continue
-        }
-
-        if (first === -1) {
-          first = index
-        }
-
-        const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
-
-        if (turn.getBoundingClientRect().top - top <= 8) {
-          active = index
-        }
-      }
-
-      setActiveIndex(active === -1 ? Math.max(0, first) : active)
+      setActiveIndex(position.read())
     }
 
     const schedule = () => {
@@ -253,13 +268,25 @@ const ActiveThreadTimeline: FC = () => {
       }
     }
 
-    const observer = new MutationObserver(schedule)
+    const observer = new MutationObserver(records => {
+      position.invalidate(records)
+      schedule()
+    })
+
     const content = viewport.querySelector('[data-slot="aui_thread-content"]')
+    const resize = new ResizeObserver(schedule)
 
     if (content) {
-      observer.observe(content, { childList: true })
+      observer.observe(content, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-message-id']
+      })
+      resize.observe(content)
     }
 
+    resize.observe(viewport)
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('wheel', cancelJump, { passive: true })
     schedule()
@@ -267,6 +294,7 @@ const ActiveThreadTimeline: FC = () => {
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
+      resize.disconnect()
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('wheel', cancelJump)
     }

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
-from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
 from utils import base_url_host_matches, base_url_hostname
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -32,10 +32,10 @@ def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
 
 
-def _salvage_text_parts(content: list, *, any_dict_text: bool) -> List[str]:
+def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
     """Stripped, non-empty text from string parts and text-typed dict parts (or any dict's
     ``text`` when ``any_dict_text``), in order."""
-    texts: List[str] = []
+    texts: list[str] = []
     for part in content:
         if isinstance(part, str):
             text = part.strip()
@@ -159,7 +159,7 @@ class VisionMessagePrepMixin:
         if not self._content_has_image_parts(content):
             return content
 
-        image_notes: List[str] = []
+        image_notes: list[str] = []
         for part in filter(_is_image_part, content):
             image_data = part.get("image_url", {})
             image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
@@ -174,7 +174,7 @@ class VisionMessagePrepMixin:
             return f"{prefix}\n\n{suffix}"
         return prefix or suffix or "[A multimodal message was converted to text for Anthropic compatibility.]"
 
-    def _get_transport(self, api_mode: str = None):
+    def _get_transport(self, api_mode: str | None = None):
         """Return the cached transport for the given (or current) api_mode (lazy; None if unregistered)."""
         mode = api_mode or self.api_mode
         cache = getattr(self, "_transport_cache", None)
@@ -253,7 +253,7 @@ class VisionMessagePrepMixin:
         )
         return summary
 
-    _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression", "try_shrink_image_parts_in_messages")
+    _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression_image_shrink", "try_shrink_image_parts_in_messages")
 
     def _try_strip_image_parts_from_tool_messages(
         self, api_messages: list, *, remember_model: bool = True
@@ -327,33 +327,3 @@ class VisionMessagePrepMixin:
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
-
-    def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
-        """Deep-copy ``api_messages`` and shape them for Qwen Portal (see the in-place variant)."""
-        prepared = copy.deepcopy(api_messages)
-        self._qwen_prepare_chat_messages_inplace(prepared)
-        return prepared
-
-    def _qwen_prepare_chat_messages_inplace(self, messages: list) -> None:
-        """Qwen Portal shaping, in place: every content becomes a list of parts (bare strings → text
-        dicts, dicts kept), then ``cache_control`` is injected on the last part of the system message."""
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            content = msg.get("content")
-            if isinstance(content, str):
-                msg["content"] = [{"type": "text", "text": content}]
-            elif isinstance(content, list):
-                normalized_parts = [
-                    {"type": "text", "text": part} if isinstance(part, str) else part
-                    for part in content if isinstance(part, (str, dict))
-                ]
-                if normalized_parts:
-                    msg["content"] = normalized_parts
-
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("role") == "system":
-                content = msg.get("content")
-                if isinstance(content, list) and content and isinstance(content[-1], dict):
-                    content[-1]["cache_control"] = {"type": "ephemeral"}
-                break

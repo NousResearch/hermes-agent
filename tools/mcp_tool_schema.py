@@ -7,17 +7,21 @@ import hashlib
 import fnmatch
 import re
 from typing import Any, List
-from tools.ansi_strip import strip_unicode_tags
+from tools.ansi_strip import strip_tool_metadata_text
 from tools.mcp_tool_common import mcp_field
 
 logger = logging.getLogger("tools.mcp_tool")
 
 # Prompt-injection indicators in MCP tool descriptions. WARNING-level only: log but never
 # block, since false positives would break legitimate servers.
+# Descriptions are scanned raw, with no whitespace collapse, so the filler keeps unbounded
+# runs (threat_patterns' _FILLER is width-bounded for its chunked scan).
+_FILLER = r"(?:\w+\s+){0,8}"
 _MCP_INJECTION_PATTERNS = [
-    (re.compile(pattern, re.I), reason)
+    (re.compile(pattern, re.IGNORECASE), reason)
     for pattern, reason in (
-        (r"ignore\s+(all\s+)?previous\s+instructions", "prompt override attempt ('ignore previous instructions')"),
+        (rf"ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions",
+         "prompt override attempt ('ignore previous instructions')"),
         (r"you\s+are\s+now\s+a", "identity override attempt ('you are now a...')"),
         (r"your\s+new\s+(task|role|instructions?)\s+(is|are)", "task override attempt"),
         (r"system\s*:\s*", "system prompt injection attempt"),
@@ -29,7 +33,7 @@ _MCP_INJECTION_PATTERNS = [
         (r"import\s+(subprocess|os|shutil|socket)", "dangerous import reference"))]
 
 
-def _scan_mcp_description(server_name: str, tool_name: str, description: str) -> List[str]:
+def _scan_mcp_description(server_name: str, tool_name: str, description: str) -> list[str]:
     """Scan a tool description for injection patterns; returns finding strings (empty =
     clean) and logs a warning when any match."""
     if not description:
@@ -71,10 +75,21 @@ def _rewrite_local_refs(node):
 _SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
 
 
-def _repair_object_shape(node):
+def _repair_object_shape(node, *, _object_root=False):
     """Recursively fill a missing object ``type``, ensure ``properties`` (so ``required``
     can't dangle) and prune ``required`` to names present in ``properties`` (Gemini 400s
-    otherwise)."""
+    otherwise).
+
+    A dict carrying ``required`` but declaring no ``properties`` and no ``type`` is NOT an
+    object declaration — it is a *constraint fragment*, the JSON Schema idiom for "at least
+    one of these keys must be present" (``allOf``/``oneOf``/``anyOf``/``if`` branches).
+    Synthesising ``properties: {}`` for it prunes every name out of ``required``, so sibling
+    branches collapse into identical always-true schemas; the enclosing ``oneOf`` then has
+    two matches and can never be satisfied, making the tool permanently un-dispatchable while
+    the server-side tool itself is fine. Only the parameters-schema ROOT still gets the
+    dangling-``required`` repair (``_object_root``), because that is the single node handed
+    to providers as the function's argument object.
+    """
     if isinstance(node, list):
         return [_repair_object_shape(item) for item in node]
     if not isinstance(node, dict):
@@ -88,20 +103,19 @@ def _repair_object_shape(node):
             repaired[key] = {name: _repair_object_shape(schema) for name, schema in value.items()}
         else:
             repaired[key] = _repair_object_shape(value)
-    if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
-        repaired["type"] = "object"
-    if repaired.get("type") == "object":
-        if not isinstance(repaired.get("properties"), dict):
-            repaired["properties"] = {}
-        required = repaired.get("required")
-        if isinstance(required, list):
+    # Constraint fragments are returned untouched: repairing them is what destroys them.
+    if _object_root or "properties" in repaired or "type" in node:
+        if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
+            repaired["type"] = "object"
+        if repaired.get("type") == "object":
+            if not isinstance(repaired.get("properties"), dict):
+                repaired["properties"] = {}
+            # Always a list: a missing/non-list ``required`` reads as ``null`` on strict
+            # OpenAI-compatible backends (#56123); ``[]`` is valid everywhere (Gemini included).
+            required = repaired.get("required")
             props = repaired.get("properties") or {}
-            valid = [r for r in required if isinstance(r, str) and r in props]
-            if len(valid) != len(required):
-                if valid:
-                    repaired["required"] = valid
-                else:
-                    repaired.pop("required", None)
+            repaired["required"] = ([r for r in required if isinstance(r, str) and r in props]
+                                    if isinstance(required, list) else [])
     return repaired
 
 
@@ -126,7 +140,7 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     normalized = _rewrite_local_refs(schema)
     normalized = strip_nullable_unions(normalized, keep_nullable_hint=True)
     normalized = collapse_const_unions(normalized)
-    normalized = _repair_object_shape(normalized)
+    normalized = _repair_object_shape(normalized, _object_root=True)
     if not isinstance(normalized, dict):
         return dict(_EMPTY_OBJECT_SCHEMA)
     if normalized.get("type") == "object" and "properties" not in normalized:
@@ -173,13 +187,56 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
 
 
+# Strings the server matches calls against: rewriting them would break a working tool, so they stay
+# byte-exact (a hidden char there is logged instead).
+# dependentRequired values and a discriminator (propertyName + mapping $refs) name properties too.
+_SCHEMA_CONTRACT_KEYS = frozenset({"enum", "const", "required", "$ref", "pattern", "dependentRequired", "discriminator"})
+# Literal instance data, not schema: a keyword-named key inside it ({"enum": ...}) is plain data.
+_SCHEMA_DATA_KEYS = frozenset({"default", "examples"})
+
+
+def _strip_schema_child(key, value, tool_name: str, contract: bool, data: bool, schema: bool):
+    if schema and key == "dependencies" and isinstance(value, dict):
+        # draft-07: an array value lists property names (contract), an object value is a sub-schema.
+        new = {name: strip_schema_annotations(dep, tool_name, isinstance(dep, list)) for name, dep in value.items()}
+        return value if all(new[name] is dep for name, dep in value.items()) else new
+    return strip_schema_annotations(value, tool_name, contract or (schema and key in _SCHEMA_CONTRACT_KEYS),
+                                    schema and key in _SCHEMA_MAP_KEYS, data or (schema and key in _SCHEMA_DATA_KEYS))
+
+
+def strip_schema_annotations(node, tool_name: str = "", _contract: bool = False, _names: bool = False,
+                             _data: bool = False):
+    """Strip invisible TAG/bidi chars from every free-text string in a JSON schema (descriptions,
+    titles, defaults, examples) at any depth, leaving property names and enum/const/required/$ref/
+    pattern values exact. Returns ``node`` itself when nothing changed (schemas are frozen wire bytes)."""
+    if isinstance(node, str):
+        if not _contract:
+            return strip_tool_metadata_text(node)
+        if strip_tool_metadata_text(node) != node:
+            logger.warning("MCP tool '%s': schema name/enum value %r carries invisible characters; "
+                           "kept as-is (the server matches it)", tool_name, node)
+        return node
+    if isinstance(node, dict):
+        if _names:  # a ``properties`` map: keys are argument names, values are sub-schemas
+            for name in node:
+                strip_schema_annotations(name, tool_name, True)
+        schema = not (_names or _data or _contract)
+        items = [(k, _strip_schema_child(k, v, tool_name, _contract, _data, schema)) for k, v in node.items()]
+        return node if all(nv is v for (_, nv), v in zip(items, node.values())) else dict(items)
+    if isinstance(node, list):
+        items = [strip_schema_annotations(v, tool_name, _contract, False, _data) for v in node]
+        return node if all(n is v for n, v in zip(items, node)) else items
+    return node
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP ``Tool`` (``.input_schema``, or ``.inputSchema`` before mcp 2.0) to a
     ``registry.register(schema=...)`` dict."""
     return {
         "name": mcp_prefixed_tool_name(server_name, mcp_tool.name),
-        "description": strip_unicode_tags(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
-        "parameters": _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")),
+        "description": strip_tool_metadata_text(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
+        "parameters": strip_schema_annotations(
+            _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")), mcp_tool.name),
     }
 
 
@@ -199,10 +256,36 @@ _UTILITY_TOOL_SPECS = (
              "description": "Optional arguments to pass to the prompt",
              "properties": {},
              "additionalProperties": True},
+     }, ["name"]),
+    ("list_event_types", "List the event types MCP server '{server}' can notify about, and your active "
+     "subscriptions to them", {}, None),
+    ("subscribe_event", "Subscribe to an event from MCP server '{server}': each occurrence starts a new "
+     "agent run with your instructions and delivers its result to the chosen target",
+     {
+         "name": {"type": "string", "description": "Event type name from list_event_types"},
+         "arguments": {
+             "type": "object",
+             "description": "Subscription arguments matching the event's inputSchema",
+             "properties": {},
+             "additionalProperties": True},
+         "instructions": {"type": "string",
+                          "description": "What to do each time the event arrives (up to 2000 characters)"},
+         "deliver": {"type": "string",
+                     "description": "Where each run's result goes: log, telegram, discord, slack, ..."},
+         "deliver_chat_id": {"type": "string", "description": "Optional chat id on the deliver platform"},
+     }, ["name"]),
+    ("unsubscribe_event", "Cancel a subscription to an event from MCP server '{server}'",
+     {
+         "name": {"type": "string", "description": "Event type name"},
+         "arguments": {
+             "type": "object",
+             "description": "The same arguments the subscription was made with",
+             "properties": {},
+             "additionalProperties": True},
      }, ["name"]))
 
 
-def _build_utility_schemas(server_name: str) -> List[dict]:
+def _build_utility_schemas(server_name: str) -> list[dict]:
     """Schemas for the resource/prompt utility tools as ``{schema, handler_key}`` dicts."""
     out = []
     for handler_key, description, properties, required in _UTILITY_TOOL_SPECS:
@@ -252,4 +335,5 @@ def matches_name_filter(tool_name: str, patterns: set[str]) -> bool:
 # the real tools worked. See #18051.
 _UTILITY_CAPABILITY_ATTRS = {
     "list_resources": "resources", "read_resource": "resources",
-    "list_prompts": "prompts", "get_prompt": "prompts"}
+    "list_prompts": "prompts", "get_prompt": "prompts",
+    "list_event_types": "events", "subscribe_event": "events", "unsubscribe_event": "events"}

@@ -1,0 +1,24 @@
+# Community catalog entry — kanban-live-gantt
+#
+# Owner-submitted: the PR author (`ningfangbin`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex) at tag v0.1.4. No self-updating code: the desktop half ships
+# as static files under `desktop/plugin.js` and never fetches, downloads or replaces
+# plugin code — its only network calls are same-origin requests to its own backend
+# under /api/plugins/<name>/. Fork of kanban-gantt (GPL-3.0): credits + change notice
+# in the README and in the source headers.
+name: kanban-live-gantt
+repo: https://github.com/ningfangbin/hermes-kanban-live-gantt
+sha: 00434589b1ab7b1b2e785cbc042378f4f12e0b4c   # tag v0.1.4
+description: "Live, now-centered Gantt timeline for the Hermes kanban boards — a slidable, persisted 72 h window (default now -24h -> now +48h; drag to move, drag the ends to resize), free wheel zoom down to hour ticks, a now line, status filtering, an optional done lane, and lifecycle rendering (dashed waiting vs solid run spans at real durations). Empty views explain themselves: a board whose database cannot be read is named in the aggregate view instead of being silently dropped, and a window that misses every open task says how many sit outside it (with a jump-to-now action) — boards are labelled in the switcher with their open-task counts, archived state and read errors, and the back-compat default board is selectable too. Board snapshots are cached for 5 s (KANBAN_GANTT_CACHE_SECONDS=0 disables, ?refresh=1 bypasses) and the cache is cleared on every write. Fork of kanban-gantt (GPL-3.0). Disclosure — the backend can transition, reassign, comment on and permanently delete kanban tasks on any board (Desktop asks for confirmation before deletes); local SQLite only, no network."
+maintainer: ningfangbin
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/ningfangbin/hermes-kanban-live-gantt#readme
+version: "0.1.4"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

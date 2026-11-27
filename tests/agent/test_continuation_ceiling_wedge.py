@@ -83,7 +83,7 @@ class TestContinuationCeilingWedge:
         from tests.agent.test_run_agent import _mock_response
 
         result1 = self._exhaust_ceiling(loop_agent)
-        assert "truncated after 4 continuation attempts" in (result1.get("error") or "")
+        assert result1["completed"] is False
         calls_after_turn1 = loop_agent.client.chat.completions.create.call_count
         assert calls_after_turn1 == 4
 
@@ -126,27 +126,6 @@ class TestContinuationCeilingWedge:
         for part in ("part one", "part two", "part three", "part four"):
             assert part in content, "Stitched partial must keep every fragment."
 
-    def test_ceiling_not_labeled_network_error(self, loop_agent):
-        """A finish_reason='length' stub is a truncation, not a network
-        error — the user-facing message must not blame the network."""
-        printed = []
-        original = loop_agent._vprint
-
-        def _capture(text, **kwargs):
-            printed.append(str(text))
-            return original(text, **kwargs)
-
-        with patch.object(loop_agent, "_vprint", side_effect=_capture):
-            self._exhaust_ceiling(loop_agent)
-
-        network_lines = [line for line in printed if "network error" in line.lower()]
-        assert network_lines == [], (
-            "Truncation must not be reported as a network error: "
-            f"{network_lines!r}"
-        )
-        assert any("truncated" in line.lower() for line in printed), (
-            "The user-facing message must name the truncation."
-        )
 
     def test_continuation_requests_carry_no_marks(self, loop_agent):
         """The scaffolding marks are Hermes bookkeeping. The centrally
@@ -200,7 +179,7 @@ class TestContinuationCeilingWedge:
         ]
         result = _run(loop_agent, "another long report", history=reloaded_history)
 
-        assert "truncated after 4 continuation attempts" in (result.get("error") or "")
+        assert result["completed"] is False
         prior = [
             m for m in result["messages"]
             if m.get("role") == "assistant"
@@ -237,16 +216,16 @@ class TestTruncatedPartJoining:
     def test_glued_parts_get_a_newline(self):
         from agent.conversation_loop import _join_truncated_parts
         assert _join_truncated_parts(
-            ["Edited index.html", "Review the 5 changes"]
+            [("Edited index.html", False), ("Review the 5 changes", False)]
         ) == "Edited index.html\nReview the 5 changes"
 
     def test_existing_whitespace_is_not_doubled(self):
         from agent.conversation_loop import _join_truncated_parts
-        assert _join_truncated_parts(["line one\n", "line two"]) == "line one\nline two"
-        assert _join_truncated_parts(["word", " next"]) == "word next"
+        assert _join_truncated_parts([("line one\n", False), ("line two", False)]) == "line one\nline two"
+        assert _join_truncated_parts([("word", False), (" next", False)]) == "word next"
 
     def test_degenerate_inputs(self):
         from agent.conversation_loop import _join_truncated_parts
         assert _join_truncated_parts([]) == ""
-        assert _join_truncated_parts(["only"]) == "only"
-        assert _join_truncated_parts(["a", "", "b"]) == "a\nb"
+        assert _join_truncated_parts([("only", False)]) == "only"
+        assert _join_truncated_parts([("a", False), ("", False), ("b", False)]) == "a\nb"

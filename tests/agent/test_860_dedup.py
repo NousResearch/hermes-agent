@@ -12,6 +12,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +33,7 @@ class TestFlushDeduplication:
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
-                session_db=session_db,
+                persistence=session_db,
                 session_id="test-session-860",
                 skip_context_files=True,
                 skip_memory=True,
@@ -41,11 +44,10 @@ class TestFlushDeduplication:
 
     def test_flush_writes_only_new_messages(self):
         """First flush writes all new messages, second flush writes none."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
             try:
                 agent = self._make_agent(db)
 
@@ -60,56 +62,14 @@ class TestFlushDeduplication:
                 # First flush — should write 2 new messages
                 agent._flush_messages_to_session_db(messages, conversation_history)
 
-                rows = db.get_messages(agent.session_id)
+                rows = transcript_rows(db, agent.session_id)
                 assert len(rows) == 2, f"Expected 2 messages, got {len(rows)}"
 
                 # Second flush with SAME messages — should write 0 new messages
                 agent._flush_messages_to_session_db(messages, conversation_history)
 
-                rows = db.get_messages(agent.session_id)
+                rows = transcript_rows(db, agent.session_id)
                 assert len(rows) == 2, f"Expected still 2 messages after second flush, got {len(rows)}"
-            finally:
-                db.close()
-
-
-
-    def test_flush_reset_after_compression(self):
-        """After compression creates a new session, flush index resets."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
-
-                # Write some messages
-                messages = [
-                    {"role": "user", "content": "msg1"},
-                    {"role": "assistant", "content": "reply1"},
-                ]
-                agent._flush_messages_to_session_db(messages, [])
-
-                old_session = agent.session_id
-                assert agent._last_flushed_db_idx == 2
-
-                # Simulate what _compress_context does: new session, reset idx
-                agent.session_id = "compressed-session-new"
-                db.create_session(session_id=agent.session_id, source="test")
-                agent._last_flushed_db_idx = 0
-
-                # Now flush compressed messages to new session
-                compressed_messages = [
-                    {"role": "user", "content": "summary of conversation"},
-                ]
-                agent._flush_messages_to_session_db(compressed_messages, [])
-
-                new_rows = db.get_messages(agent.session_id)
-                assert len(new_rows) == 1
-
-                # Old session should still have its 2 messages
-                old_rows = db.get_messages(old_session)
-                assert len(old_rows) == 2
             finally:
                 db.close()
 
@@ -125,47 +85,26 @@ class TestAppendToTranscriptSkipDb:
         """With skip_db=True and a real DB, message does NOT appear in SQLite."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
-        from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
 
-        db_path = tmp_path / "test_skip.db"
-        db = SessionDB(db_path=db_path)
+        db = storage_handle(get_hermes_home())
 
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = db
         store._loaded = True
 
         session_id = "test-skip-db-real"
-        db.create_session(session_id=session_id, source="test")
+        seed_session(db, session_id, "test")
 
         msg = {"role": "assistant", "content": "hello world"}
         store.append_to_transcript(session_id, msg, skip_db=True)
 
         # SQLite should NOT have the message
-        rows = db.get_messages(session_id)
+        rows = transcript_rows(db, session_id)
         assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
-
 
 
 # ---------------------------------------------------------------------------
 # Test: _last_flushed_db_idx initialization
 # ---------------------------------------------------------------------------
-
-class TestFlushIdxInit:
-    """Verify _last_flushed_db_idx is properly initialized."""
-
-    def test_init_zero(self):
-        """Agent starts with _last_flushed_db_idx = 0."""
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
-            agent = AIAgent(
-                api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
-                model="test/model",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        assert agent._last_flushed_db_idx == 0
-

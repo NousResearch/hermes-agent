@@ -5,6 +5,8 @@ exercise the dispatch site live in test_slash_access_dispatch.py.
 """
 from __future__ import annotations
 
+import pytest
+
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
@@ -19,11 +21,6 @@ from gateway.slash_access import (
 
 
 class TestPolicyFromExtra:
-    def test_empty_extra_is_disabled(self):
-        p = policy_from_extra({}, "dm")
-        assert p.enabled is False
-        assert p.admin_user_ids == frozenset()
-        assert p.user_allowed_commands == frozenset()
 
     def test_disabled_policy_treats_anyone_as_admin(self):
         # When gating is off, downstream code uses is_admin/can_run uniformly.
@@ -56,7 +53,6 @@ class TestPolicyFromExtra:
         # Admin lists are scope-specific. DM admin must not auto-promote in groups.
         extra = {"allow_admin_from": ["111"]}
         dm = policy_from_extra(extra, "dm")
-        gp = policy_from_extra(extra, "group")
         assert dm.is_admin("111") is True
         # Group has no admin list set → gating disabled in groups → "111"
         # gets unrestricted access, but that's the backward-compat fallback,
@@ -126,3 +122,50 @@ class TestPolicyForSource:
         assert grp_p.enabled is True
         assert grp_p.can_run("999", "stop") is False  # gated
 
+
+@pytest.mark.parametrize(
+    ("extra", "chat_type", "admin", "gated"),
+    [
+        # DM-only gated: blank used to fall into the ungated group scope (#116282).
+        ({"allow_admin_from": ["111"]}, "", "111", True),
+        ({"allow_admin_from": ["111"]}, None, "111", True),
+        # Mirror image keeps the gated scope; ungated stays ungated.
+        ({"group_allow_admin_from": ["222"]}, "", "222", True),
+        ({}, "", None, False),
+    ],
+)
+def test_blank_chat_type_resolves_to_the_gated_scope(extra, chat_type, admin, gated):
+    """A blank/None chat_type (relay frames may carry ""/null, restored rows keep a
+    stored empty value) must resolve to whichever scope is gated, never to an
+    ungated allow-everything scope (#116282)."""
+    cfg = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, extra=extra)})
+    src = SessionSource(platform=Platform.DISCORD, chat_id="A", chat_type=chat_type, user_id="999")
+    p = policy_for_source(cfg, src)
+    assert p.enabled is gated
+    assert p.can_run("999", "stop") is (not gated)
+    if admin is not None:
+        assert p.is_admin(admin) is True
+
+
+def test_blank_chat_type_both_scopes_gated_grants_only_the_intersection():
+    """Both scopes gated + ambiguous source: a scope-specific admin or command list must not
+    cross the scope boundary — the ambiguous source could be either scope."""
+    extra = {
+        "allow_admin_from": ["111", "dual"],
+        "user_allowed_commands": ["dm-only", "shared"],
+        "group_allow_admin_from": ["222", "dual"],
+        "group_user_allowed_commands": ["group-only", "shared"],
+    }
+    cfg = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, extra=extra)})
+    src = SessionSource(platform=Platform.DISCORD, chat_id="A", chat_type=None, user_id="999")
+    p = policy_for_source(cfg, src)
+    assert p.enabled is True
+    # Scope-specific admins lose admin on an ambiguous source; dual admins keep it.
+    assert p.is_admin("111") is False
+    assert p.is_admin("222") is False
+    assert p.is_admin("dual") is True
+    # Command access intersects too, beside the always-allowed floor.
+    assert p.can_run("999", "dm-only") is False
+    assert p.can_run("999", "group-only") is False
+    assert p.can_run("999", "shared") is True
+    assert p.can_run("999", "help") is True

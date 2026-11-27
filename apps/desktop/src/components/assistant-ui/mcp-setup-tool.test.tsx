@@ -1,26 +1,45 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { McpSetupPending, McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { I18nProvider } from '@/i18n'
-import { $connectionRequests, type ConnectionRequest, setConnectionRequest } from '@/store/connection-request'
+import {
+  $connectionRequests,
+  type ConnectionRequest,
+  type ConnectionTarget,
+  setConnectionRequest
+} from '@/store/connection-request'
+import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
+import { setSessionOwnerHint } from '@/store/session'
 
 const SESSION_ID = 'session-1'
+
+const LINEAR: ConnectionTarget = {
+  action: 'install',
+  connectUrl: null,
+  connectionId: '',
+  detail: '',
+  discoveryError: null,
+  instructions: null,
+  kind: 'mcp',
+  name: 'linear',
+  requiredEnv: [],
+  state: 'pending',
+  tools: []
+}
 
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
   opId: 'operation-1',
+  seq: 0,
   toolCallId: 'mcp-call-1',
   sessionId: SESSION_ID,
   settled: false,
   settledBy: null,
-  targets: [
-    { action: 'install', connectUrl: null, detail: '', kind: 'mcp', name: 'linear', state: 'pending', tools: [] },
-    { action: 'install', connectUrl: null, detail: '', kind: 'mcp', name: 'postgres', state: 'pending', tools: [] }
-  ]
+  targets: [LINEAR, { ...LINEAR, name: 'postgres' }]
 }
 
 const ARGS = {
@@ -59,6 +78,8 @@ function view(sessionId: string): SessionView {
     $model: atom(''),
     $provider: atom(''),
     $reasoningEffort: atom(''),
+    $reasoningEffortPending: atom(false),
+    $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(sessionId),
     $turnStartedAt: atom(null),
@@ -82,21 +103,89 @@ function renderTool(result?: ToolCallMessagePartProps['result']) {
 afterEach(() => {
   cleanup()
   $connectionRequests.set({})
+  $gateway.set(null)
+  setPrimaryGateway(null)
   vi.clearAllMocks()
 })
 
 describe('the MCP setup card', () => {
-  it('shows one row per target with its verb, and Continue below', () => {
-    setConnectionRequest(REQUEST)
+  it('opens required details from the row action and sends the approved environment', async () => {
+    const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: false })
+
+    const target = {
+      ...LINEAR,
+      instructions: 'Create a Linear API key.',
+      requiredEnv: [{ default: 'workspace', name: 'LINEAR_TEAM', prompt: 'Team', required: true, secret: false }]
+    }
+
+    setSessionOwnerHint(SESSION_ID, { connectionId: 'local', profile: 'default' })
+    // SAFETY: the card calls only `request`; the rest of the client is never touched in this test.
+    setPrimaryGateway({ request: rpc } as never)
+    setPrimaryGatewayConnectionId('local')
+    setConnectionRequest({ ...REQUEST, targets: [target] })
 
     renderTool()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
 
-    expect(screen.getByText('Add MCP servers')).toBeTruthy()
-    expect(screen.getByText('Linear', { selector: 'span' })).toBeTruthy()
-    expect(screen.getByText('Postgres', { selector: 'span' })).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: 'Install' })).toHaveLength(2)
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
+    expect(screen.getByText('Set up Linear')).toBeTruthy()
+    expect(screen.getByText('Create a Linear API key.')).toBeTruthy()
+    expect(screen.getByLabelText('Team').getAttribute('value')).toBe('workspace')
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(rpc).toHaveBeenCalledTimes(1))
+    expect(rpc).toHaveBeenCalledWith('connection.respond', {
+      op_id: 'operation-1',
+      owner: { session_id: SESSION_ID, type: 'session' },
+      result: { targets: [{ env: { LINEAR_TEAM: 'workspace' }, name: 'linear', status: 'approved' }] }
+    })
+  })
+
+  it('names what approving runs as plain text, and drops the line once the row resolves', () => {
+    const markup = 'npx <img src=x onerror=alert(1)> **bold** --api-key=***'
+    const pending = { ...LINEAR, launch: { kind: 'stdio' as const, target: markup } }
+
+    setConnectionRequest({ ...REQUEST, targets: [pending] })
+    const { container } = renderTool()
+
+    const line = container.querySelector('[data-slot="mcp-launch-target"]')
+    expect(line?.textContent).toBe(`Runs: ${markup}`)
+    expect(line?.querySelector('img, strong')).toBeNull()
+
+    act(() => setConnectionRequest({ ...REQUEST, seq: 1, targets: [{ ...pending, state: 'skipped' }] }))
+    expect(container.querySelector('[data-slot="mcp-launch-target"]')).toBeNull()
+  })
+
+  it('names the env vars and working directory a stdio server adds, never their values', () => {
+    const launch = {
+      cwd: '/srv/acme',
+      env: ['ACME_TOKEN', 'NODE_OPTIONS'],
+      kind: 'stdio' as const,
+      target: 'npx -y @acme/mcp'
+    }
+
+    setConnectionRequest({ ...REQUEST, targets: [{ ...LINEAR, launch }] })
+    const { container } = renderTool()
+
+    expect(container.querySelector('[data-slot="mcp-launch-target"]')?.textContent).toBe(
+      'Runs: npx -y @acme/mcp' + 'Working dir: /srv/acme' + 'Env: ACME_TOKEN, NODE_OPTIONS'
+    )
+  })
+
+  it('shows the whole launch line without hover: no clamp, no tooltip, a long middle arg included', () => {
+    const pad = '--log-level=info '.repeat(15)
+    const target = `node server.js ${pad}--exec /tmp/steal.js ${pad}--quiet`
+
+    setConnectionRequest({ ...REQUEST, targets: [{ ...LINEAR, launch: { kind: 'stdio', target } }] })
+    const { container } = renderTool()
+
+    const line = container.querySelector<HTMLElement>('[data-slot="mcp-launch-target"]')
+    expect(line?.textContent).toBe(`Runs: ${target}`)
+    expect(line?.textContent).toContain('--exec /tmp/steal.js')
+    // Bounded, but scrollable: the box may scroll, it never clips.
+    expect(line?.className).not.toMatch(/line-clamp|truncate|overflow-hidden|text-ellipsis/)
+    expect(line?.className).toMatch(/overflow-y-auto/)
+    // Two spaces inside a quoted arg are two arguments' difference: the box keeps them.
+    expect(line?.className).toMatch(/whitespace-pre-wrap/)
+    expect(line?.hasAttribute('title')).toBe(false)
   })
 
   it('lists every target once settled, in the same three words as the connector card', () => {

@@ -1,5 +1,5 @@
 import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { parseMarkdownIntoBlocksCached } from './markdown-blocks'
 
@@ -99,6 +99,47 @@ describe('parseMarkdownIntoBlocksCached', () => {
     expect(blocks.join('')).toBe(LONG_CORPUS)
   })
 
+  it('keeps one streamed prefix per lineage, not every prefix (memory bound)', () => {
+    // Each flush is a new full-length string; retaining all of them in the
+    // exact LRU held ~256 x N bytes per stream. The live tip keeps its array
+    // identity (Streamdown re-renders against it); superseded prefixes go.
+    const base = `retention ${LONG_CORPUS}`
+    const first = parseMarkdownIntoBlocksCached(base)
+    const tip = `${base}\n\nnext paragraph`
+    const tipBlocks = parseMarkdownIntoBlocksCached(tip)
+
+    expect(parseMarkdownIntoBlocksCached(tip)).toBe(tipBlocks)
+    const again = parseMarkdownIntoBlocksCached(base)
+    expect(again).not.toBe(first)
+    expect(again).toEqual(first)
+  })
+
+  it.each([false, true])('keeps a settled parse when another message extends it (streamed: %s)', streamed => {
+    const text = `shared settled ${streamed}\n\n${LONG_CORPUS}`
+    const first = parseMarkdownIntoBlocksCached(text, streamed)
+
+    expect(parseMarkdownIntoBlocksCached(text, false)).toBe(first)
+    const longer = `${text}\n\nAnother message continues.`
+    const tip = parseMarkdownIntoBlocksCached(longer)
+
+    expect(tip).toEqual(parseMarkdownIntoBlocks(longer))
+    expect(parseMarkdownIntoBlocksCached(longer)).toBe(tip)
+    expect(parseMarkdownIntoBlocksCached(text, false)).toBe(first)
+  })
+
+  it('still evicts settled entries from the bounded exact LRU', () => {
+    const text = 'old settled entry'
+    const first = parseMarkdownIntoBlocksCached(text, false)
+
+    for (let i = 0; i < 256; i++) {
+      parseMarkdownIntoBlocksCached(`new settled entry ${i}`, false)
+    }
+
+    const again = parseMarkdownIntoBlocksCached(text, false)
+    expect(again).not.toBe(first)
+    expect(again).toEqual(first)
+  })
+
   it('falls back to a full lex for non-append rewrites (edit / branch swap)', () => {
     const grown = `${LONG_CORPUS}\n\nappended tail paragraph`
     parseMarkdownIntoBlocksCached(grown)
@@ -161,4 +202,23 @@ describe('parseMarkdownIntoBlocksCached', () => {
       }
     }
   }, 30_000)
+
+  it('falls back to the raw text block when the lexer throws instead of crashing the thread (#80621)', () => {
+    // The cached splitter feeds the whole transcript renderer; an unhandled
+    // lexer throw would unwind through MessageRenderBoundary to the root
+    // boundary and blank every message. Spy on String.prototype.split (which
+    // the lexer uses) to force a throw, and assert the fallback keeps the text
+    // visible as one raw block.
+    const splitSpy = vi.spyOn(String.prototype, 'split').mockImplementation(() => {
+      throw new Error('boom')
+    })
+
+    try {
+      const text = 'The proof is at `/tmp/render-proof.png` and it looks good.'
+
+      expect(parseMarkdownIntoBlocksCached(text)).toEqual([text])
+    } finally {
+      splitSpy.mockRestore()
+    }
+  })
 })

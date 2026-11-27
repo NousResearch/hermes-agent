@@ -8,9 +8,9 @@
 
 import {
   cn,
-  coarseElapsed,
   Codicon,
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -18,6 +18,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
+  GlyphSpinner,
   haptic,
   host,
   queryClient,
@@ -34,11 +35,12 @@ import { isBackfilledFacePng } from './avatar-image'
 import {
   $botChatFocused,
   $focusedBotOwner,
+  $pendingBotOpen,
   $selectedRosterKey,
   focusedRosterOwner,
   saveSelectedRosterBot
 } from './bot-state'
-import { ensureBotMetadata } from './canonical-chat'
+import { ensureBotMetadata, ensureBotProfile } from './canonical-chat'
 import {
   $botAttention,
   $botMeta,
@@ -65,6 +67,7 @@ import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { rowAge } from './row-age'
 import {
   A2A_PREFIX_RE,
   botCanonicalSessionId,
@@ -74,7 +77,8 @@ import {
   useTurnBusy,
   workerActiveAt
 } from './row-helpers'
-import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
+import { openBotScreen } from './screen-open'
+import type { GroupMember, RosterRow } from './types'
 import {
   $botSections,
   $draggingBot,
@@ -87,17 +91,6 @@ import {
 } from './user-sections'
 
 // ── bot row ──────────────────────────────────────────────────────────────────
-
-/** Row age in the sidebar's compact form ("now", "52m", "3h", "18d").
- *  Deliberately the same `coarseElapsed` + suffix pair the session rows
- *  directly above use, so the two lists in one rail don't disagree about how
- *  an age is spelled. Not `relativeTime` — that's the bidirectional Intl form
- *  ("in 14 hr"), which belongs on a scheduled next-run. */
-function rowAge(ms: number, r: SidebarRowLabels): string {
-  const { unit, value } = coarseElapsed(Date.now() - ms)
-
-  return unit === 'second' ? r.ageNow : `${value}${unit === 'day' ? r.ageDay : unit === 'hour' ? r.ageHour : r.ageMin}`
-}
 
 interface BotRowProps {
   bot: RosterRow
@@ -114,6 +107,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const b = useBots()
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
   const selectedRosterKey = useValue($selectedRosterKey)
+  const pendingOpenKey = useValue($pendingBotOpen)?.key
+  const isOpening = pendingOpenKey === botRosterKey(bot)
   const botChatFocused = useValue($botChatFocused)
   const activeGroup = useValue($groupChatWorkspace)
   const allMeta = useValue($botMeta)
@@ -148,13 +143,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // last_session alone shows "6d ago" on a bot you just messaged.
   const previewSession = bot.canonical_session || last
   const activitySession = botActivitySession(bot)
-  // A live kanban/tool worker counts as activity (#90268): fresh age while it
-  // runs, falling back to chat activity when it ends.
+  // A live kanban/tool worker gates only the pulse/mood (#90268). The age is
+  // the last time the bot did ANYTHING — chat or delegated worker run — so a
+  // delegate-only specialist that ran all day no longer snaps back to "11d"
+  // the moment the 150 s liveness window lapses (#105874). An absent
+  // worker_session (past the gateway's 20-row window) degrades to chat age.
   const workerActive = workerActiveAt(bot)
-
-  const rowAgeTs = workerActive
-    ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
-    : activitySession?.last_active || 0
+  const rowAgeTs = Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
 
   const groupKeys = useValue($activeGroupMemberKeys)
   const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId, Date.now(), groupKeys)
@@ -181,7 +176,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // resolved the pinned canonical chat, preview THAT session — not the
   // profile's most recent (but unrelated) activity. Liveness checks above
   // keep last_session semantics: any recent activity means the bot is alive.
-  const { fromBot } = previewKind(previewSession?.preview)
+  const { fromBot } = previewKind(previewSession?.preview, $lastRoster.get(), bot.connectionId)
 
   // DM previews read like DMs: strip the delivery prefix, keep the message.
   const displayPreview = stripPreviewMarkdown(
@@ -220,8 +215,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   }
 
   // Rows and Active Now share the exact-owner open path; only that path may
-  // activate a source and resolve the canonical Bot Chat.
-  const open = () => void openRosterBot(bot)
+  // activate a source and resolve the canonical Bot Chat. ⌘/⌃-click opens
+  // the Bot Chat as a stacked tab beside the current one (same modifier the
+  // Sessions rows honour) instead of replacing whatever main holds.
+  const open = (event?: { ctrlKey?: boolean; metaKey?: boolean }) =>
+    void openRosterBot(bot, { intent: event?.metaKey || event?.ctrlKey ? 'tab' : 'in-place' })
 
   // DRAG lives on the row button itself: it already takes pointer events, so
   // the click that opens the bot and the drag that files it are one element's
@@ -234,6 +232,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   const row = (
     <RowButton
+      aria-busy={isOpening || undefined}
       aria-label={rowTooltip}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
@@ -295,6 +294,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
               />
             </Tip>
           ) : null}
+          {isOpening ? (
+            <GlyphSpinner ariaLabel={b.bot.openingChat} className="shrink-0 text-xs text-(--ui-text-secondary)" />
+          ) : null}
           {rowAgeTs ? (
             <span className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)">
               {rowAge(rowAgeTs * 1000, t.sidebar.row)}
@@ -321,6 +323,27 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => void openRosterBot(bot, { intent: 'tab' })}>{b.bot.openBotChatInNewTab}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => openBotScreen(bot, meta)}>{b.screen.menu}</ContextMenuItem>
+        <ContextMenuCheckboxItem
+          checked={Boolean(meta?.screenAutoOpen)}
+          onSelect={() => {
+            void ensureBotMetadata(bot)
+              .then(current => {
+                const next = !current.screenAutoOpen
+                void saveBotMeta(bot, { screenAutoOpen: next })
+                host.notify({
+                  kind: 'info',
+                  message: next
+                    ? b.screen.autoOpenOnToast(displayName(bot, current))
+                    : b.screen.autoOpenOffToast(displayName(bot, current))
+                })
+              })
+              .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
+          }}
+        >
+          {b.screen.autoOpenMenu}
+        </ContextMenuCheckboxItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {
@@ -332,7 +355,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 })
                 host.notify({
                   kind: 'info',
-                  message: pinned ? b.bot.unpinnedToast(displayName(bot, current)) : b.bot.pinnedToast(displayName(bot, current))
+                  message: pinned
+                    ? b.bot.unpinnedToast(displayName(bot, current))
+                    : b.bot.pinnedToast(displayName(bot, current))
                 })
               })
               .catch(error => host.notifyError?.(error, b.bot.metadataLoadFailed))
@@ -368,8 +393,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>
-            void ensureBotMetadata(bot)
-              .then(() => onEdit(bot))
+            void ensureBotProfile(bot)
+              .then(onEdit)
               .catch(error => host.notifyError?.(error, b.bot.loadFailed))
           }
         >
@@ -591,7 +616,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
+        <ContextMenuItem onSelect={() => onOpen(group)}>{b.canonical.openGroup}</ContextMenuItem>
         <ContextMenuSeparator />
         {/* Same affordance as a bot row's pin; pinned rooms lead the roster
             band, and the flag lives on the room record. */}
@@ -600,11 +625,11 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
             const pinned = toggleGroupChatPinned(group)
 
             if (pinned !== null) {
-              host.notify({ kind: 'info', message: `${group} ${pinned ? 'pinned to top' : 'unpinned'}` })
+              host.notify({ kind: 'info', message: pinned ? b.group.groupPinned(group) : b.group.groupUnpinned(group) })
             }
           }}
         >
-          {room.pinned ? 'Unpin' : 'Pin to top'}
+          {room.pinned ? b.group.unpinGroup : b.group.pinGroup}
         </ContextMenuItem>
         {/* Filing — the same submenu a bot row gets, driving the room-record
             assignment instead of profile meta. */}
@@ -644,7 +669,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
             })
           }
         >
-          {b.group.deleteAction}
+          {b.group.disbandAction}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

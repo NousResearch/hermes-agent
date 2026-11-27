@@ -135,3 +135,79 @@ class TestEmbedTargetBytes:
     def test_bad_or_extreme_values_are_clamped_to_the_safe_range(self, raw, expected):
         _write_config(f"vision:\n  embed_target_bytes: {raw}\n")
         assert budget.resolve_embed_target_bytes() == expected
+
+
+class TestNativeTurnDedupe:
+    """An image the surface already attached natively to the active user turn must not be embedded
+    a second time by ``vision_analyze`` in the same request (#76411)."""
+
+    def test_same_image_in_active_turn_returns_text_not_a_second_embed(self, tmp_path):
+        from agent.image_routing import build_native_content_parts
+        same, other = _png(tmp_path / "same.png"), _png(tmp_path / "other.png", noisy=True)
+        parts, skipped = build_native_content_parts("look", [same])
+        assert not skipped
+        with budget.native_turn_images(parts):
+            result = _load(same)
+            assert not _embedded(result)
+            assert json.loads(result)["already_in_context"] is True
+            # New detail (a crop) and a different file still embed.
+            assert _embedded(_load(same, region=[0, 0, 8, 8]))
+            assert _embedded(_load(other))
+
+    def test_run_conversation_scopes_the_turn_for_the_tool_loop(self, tmp_path, monkeypatch):
+        """Production wiring: ``run_conversation`` with a native-parts user message; the model
+        calls ``vision_analyze`` on the attached path from the tool loop and gets the text
+        result, not a second embed. After the turn the scope is gone and the image embeds again."""
+        from types import SimpleNamespace
+
+        from agent.image_routing import build_native_content_parts
+        from run_agent import AIAgent
+        from tools import vision_tools
+
+        same = _png(tmp_path / "same.png")
+        parts, skipped = build_native_content_parts("look", [same])
+        assert not skipped
+        tool_results = []
+
+        def _tool_call_turn():
+            call = SimpleNamespace(id="call_1", type="function", function=SimpleNamespace(
+                name="vision_analyze", arguments=json.dumps({"image_url": same, "question": "q"})))
+            msg = SimpleNamespace(content=None, reasoning=None, tool_calls=[call])
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="tool_calls")], usage=None)
+
+        def _final_turn():
+            msg = SimpleNamespace(content="done", reasoning=None, tool_calls=[])
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")], usage=None)
+
+        class _Completions:
+            calls = 0
+
+            def create(self, **kwargs):
+                self.calls += 1
+                return _tool_call_turn() if self.calls == 1 else _final_turn()
+
+        def _dispatch(name, args, task_id=None, **kwargs):
+            assert name == "vision_analyze"
+            result = asyncio.new_event_loop().run_until_complete(
+                vision_tools._handle_vision_analyze(args, task_id=task_id))
+            tool_results.append(result)
+            return result
+
+        monkeypatch.setattr("agent.process_bootstrap.OpenAI",
+                            lambda **kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+        monkeypatch.setattr("model_tools.get_tool_definitions",
+                            lambda *a, **kw: [{"function": {"name": "vision_analyze"}}])
+        monkeypatch.setattr("model_tools.handle_function_call", _dispatch)
+        monkeypatch.setattr(vision_tools, "_should_use_native_vision_fast_path", lambda: True)
+
+        agent = AIAgent(model="test-model", api_key="test-key", base_url="http://localhost:8080/v1",
+                        platform="cli", max_iterations=3, quiet_mode=True, skip_memory=True)
+        agent._disable_streaming = True
+        result = agent.run_conversation(parts)
+
+        assert result["final_response"].startswith("done")
+        assert len(tool_results) == 1
+        assert not _embedded(tool_results[0])
+        assert json.loads(tool_results[0])["already_in_context"] is True
+        # The scope ended with the turn: a later load (after compression) embeds again.
+        assert _embedded(asyncio.new_event_loop().run_until_complete(_vision_analyze_native(same, "q")))

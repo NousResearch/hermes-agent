@@ -31,6 +31,7 @@ import { ZoneEditor } from '../zone-editor'
 
 import { TreeEditBar } from './edit-bar'
 import { FloatingPanes } from './floating-panes'
+import { KeepAlivePanes } from './keep-alive-panes'
 import { NarrowOverlays } from './narrow-overlays'
 import { TreeNode } from './tree-node'
 
@@ -46,14 +47,8 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
   // main pane's geometry in plain CSS.
   useEffect(publishWorkspaceGeometry, [])
 
-  if (!tree) {
-    return null
-  }
-
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
-      {/* ZonesOverlay::GetAnimationAlpha ramp: clamp(t / 200ms, 0.001, 1). */}
-      <style>{`@keyframes hermes-zone-fade { from { opacity: 0.001 } to { opacity: 1 } }`}</style>
       {/* THE SEAM INVARIANT: boundaries are drawn by the tree (one sash
           hairline per seam) — content mounted in a zone must not paint its
           own edge chrome. App components (asides, the shadcn sidebar) carry
@@ -74,20 +69,28 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
           display: none;
         }
       `}</style>
-      <TreeNode
-        leftEdge={titlebar}
-        node={tree}
-        rightEdge={titlebar}
-        root
-        rootRow={tree.type === 'split' && tree.orientation === 'row'}
-        topEdge={titlebar}
-      />
-      <NarrowOverlays />
-      {/* Non-tiling panes: fixed cards above the tree, outside every zone. */}
-      <FloatingPanes />
-      <TreeEditBar />
-      <ZoneEditor />
-      {children}
+      <KeepAlivePanes>
+        {tree && (
+          <TreeNode
+            leftEdge={titlebar}
+            node={tree}
+            rightEdge={titlebar}
+            root
+            rootRow={tree.type === 'split' && tree.orientation === 'row'}
+            topEdge={titlebar}
+          />
+        )}
+        {tree && <NarrowOverlays />}
+      </KeepAlivePanes>
+      {tree && (
+        <>
+          {/* Non-tiling panes: fixed cards above the tree, outside every zone. */}
+          <FloatingPanes />
+          <TreeEditBar />
+          <ZoneEditor />
+          {children}
+        </>
+      )}
     </div>
   )
 }

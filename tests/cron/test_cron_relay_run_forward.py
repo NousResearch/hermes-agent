@@ -19,9 +19,6 @@ class _Resp:
 
 
 class TestRelayFrontedDeliveryPlatforms:
-    def test_empty_when_nothing_fronted(self):
-        with patch("gateway.relay.relay_fronted_platforms", return_value=set()):
-            assert cronjob_tools._relay_fronted_delivery_platforms({"id": "j1"}) == set()
 
     def test_detects_fronted_delivery_platform(self):
         job = {"id": "j1", "deliver": "discord"}
@@ -135,18 +132,16 @@ class TestForwardRelayFrontedRun:
             )
         assert sent["json"] == {"prompt": "focus on EU numbers"}
 
-    def test_empty_body_without_prompt(self):
-        sent = {}
-
-        def fake_post(url, headers=None, json=None, timeout=None):
-            sent["json"] = json
-            return _Resp(200)
-
+    def test_paused_job_is_not_forwarded(self):
+        """The gateway's run route resumes the job and a local run has no relay sender: refuse."""
+        paused = {"id": "j1", "enabled": False, "state": "paused", "paused_at": "2026-11-24T00:00:00"}
         with patch.object(
             cronjob_tools, "_relay_fronted_delivery_platforms", return_value={"discord"}
-        ), patch("httpx.post", side_effect=fake_post):
-            cronjob_tools._forward_relay_fronted_run({"id": "j1"})
-        assert sent["json"] == {}
+        ), patch("httpx.post") as post:
+            out = json.loads(cronjob_tools._forward_relay_fronted_run(paused))
+        post.assert_not_called()
+        assert out == {"success": False, "error": "Job is paused/disabled; resume it before running."}
+
 
 
 class TestManualRunPromptConsumption:

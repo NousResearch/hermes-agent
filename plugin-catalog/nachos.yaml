@@ -1,0 +1,16 @@
+name: nachos
+repo: https://github.com/Nacho-Labs-LLC/hermes-plugin-nachos
+sha: 4c714c10a841e6e571a43223bafbcf324625d7c2
+version: "0.7.0"
+description: "Local-first durable memory for Hermes Agent with SQLite or flat-file storage: a manifest in the system prompt, hybrid lexical/semantic recall, supersede tracking, links, history search over compression checkpoints, a review inbox and approval-gated reconciliation. Disclosure — replaces the memory provider (memory.provider: nachos; built-in MEMORY.md stays disabled, USER.md and SOUL.md are not modified) and injects a system-prompt block telling the agent to use the nachos_memory_* tools; provides no context engine. Optional semantic recall spawns a separately installed nachos-embeddings CLI (which downloads its model once unless --offline), loads sentence-transformers, or sends recall queries plus memory titles, summaries and body excerpts to a configured OpenAI-compatible endpoint, with any key resolved through Hermes' profile secret scope. Session capture (capture: review, default) runs a background worker that sends a trimmed transcript, up to 200 memory titles/summaries and up to 100 USER.md entries (read only) to Hermes' configured auxiliary LLM; suggestions enter memory only after human approval, capture: off disables it. All storage is local under $HERMES_HOME/nachos/."
+maintainer: Nacho Labs LLC
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Nacho-Labs-LLC/hermes-plugin-nachos#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

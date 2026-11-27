@@ -19,7 +19,10 @@ const CAUSE_PATTERNS: readonly [LocalBootCause, RegExp][] = [
   ['diskFull', /no space left on device|database or disk is full|\bENOSPC\b|disk full/i],
   ['permission', /permission denied|\bEACCES\b|\bEPERM\b|read-only file system|\bEROFS\b|operation not permitted/i],
   ['portInUse', /address already in use|\bEADDRINUSE\b|port .* (?:is )?(?:already )?in use/i],
-  ['installMissing', /installation is missing|is missing or incomplete|venv missing|no module named|modulenotfounderror/i],
+  [
+    'installMissing',
+    /installation is missing|is missing or incomplete|missing or damaged|venv missing|no module named|modulenotfounderror/i
+  ],
   ['timedOut', /timed out|timeout/i],
   ['exitedEarly', /exited before|exited \(|process exited|exited with|traceback \(most recent call last\)/i]
 ]

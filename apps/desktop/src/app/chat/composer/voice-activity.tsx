@@ -165,6 +165,9 @@ function PlaybackWaveform({ audioElement }: { audioElement: HTMLAudioElement | n
 
 export function VoiceActivity({ state }: { state: VoiceActivityState }) {
   const { t } = useI18n()
+  // Subscribe the meter only: the recorder publishes level at the audio rate,
+  // and re-rendering the whole composer for it was measurable voice-mode CPU.
+  const level = useStore(state.levelStore)
 
   if (state.status === 'idle') {
     return null
@@ -192,13 +195,15 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
       </div>
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate font-medium text-foreground/85">{title}</span>
-        <span className="font-mono text-[0.6875rem] text-muted-foreground/85">
+        <span className="truncate font-medium text-foreground/85" title={state.partial || undefined}>
+          {state.partial || title}
+        </span>
+        <span aria-hidden="true" className="font-mono text-[0.6875rem] text-muted-foreground/85">
           {formatElapsed(state.elapsedSeconds)}
         </span>
       </div>
 
-      <VoiceLevelBars active={recording} level={state.level} />
+      <VoiceLevelBars active={recording} level={level} />
     </div>
   )
 }

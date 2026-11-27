@@ -1,6 +1,7 @@
 """The per-call log line carries what a cost or cache investigation needs: the cache write count, the
 provider's response id, and the serving upstream when the route reports one. Existing parsers read a
 prefix of the line, so the fields are appended and optional."""
+import json
 import logging
 from types import SimpleNamespace
 
@@ -52,6 +53,42 @@ def test_fields_are_omitted_when_absent(tmp_path, monkeypatch, caplog):
     assert "write=" not in line and "id=" not in line and "upstream=" not in line
 
 
+def test_usage_is_queued_through_the_writer_handle_with_every_keyword(tmp_path, monkeypatch, caplog):
+    """With a writer's handle beside the store, the per-call delta goes to the handle's usage queue and
+    carries every keyword the store's queue receives."""
+    from unittest.mock import MagicMock
+
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    a = _agent(tmp_path, monkeypatch)
+    resp = SimpleNamespace(usage=_usage(34_283, 28_604, 62_889), id=None, model="anthropic/claude-fable-5.1")
+    try:
+        a._session_db, a._session_db_created = MagicMock(), True
+        _line(a, caplog, resp)
+        (store_sid,), kwargs = a._session_db.queue_token_counts.call_args
+        a._session_db.reset_mock()
+        a.persistence = SimpleNamespace(read_only=False, usage=MagicMock(), sessions=MagicMock())
+        _line(a, caplog, resp)
+        (sid, delta), _ = a.persistence.usage.queue_usage.call_args
+        a._session_db.queue_token_counts.assert_not_called()
+    finally:
+        a.persistence = a._session_db = None
+        a.close()
+    tokens = TokenCounts(**{key: kwargs.pop(key) for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")})
+    route = BillingRoute(**{key: kwargs.pop(key) for key in ("model", "billing_provider", "billing_base_url", "billing_mode")})
+    # The prompt-cache clock is stamped per call (its ``sent_at`` and the deadlines measured from it), so the
+    # two calls' clocks match on every other field.
+    store_clock, delta_clock = json.loads(kwargs.pop("prompt_cache_clock")), json.loads(delta.prompt_cache_clock)
+    for clock in (store_clock, delta_clock):
+        assert clock.pop("sent_at")
+        for timed in ("guaranteed_until", "estimated_until", "coverage"):
+            clock.pop(timed, None)
+    assert store_clock == delta_clock
+    assert sid == store_sid == "t"
+    assert delta == UsageDelta(tokens=tokens, route=route, prompt_cache_clock=delta.prompt_cache_clock, **kwargs)
+    assert delta.tokens.cache_write_tokens == 28_604
+
+
 def test_forensics_parser_reads_the_new_fields(tmp_path):
     from evals.postmortem.forensics.logcalls import parse_logs
     log = tmp_path / "agent.log"
@@ -64,3 +101,19 @@ def test_forensics_parser_reads_the_new_fields(tmp_path):
     assert [c["n"] for c in calls] == [3, 4]
     assert calls[0]["write"] == 28604 and calls[0]["id"] == "gen-1788636728-qMa1" and calls[0]["upstream"] == "Claude Platform on AWS"
     assert "write" not in calls[1] and "id" not in calls[1]
+
+
+def test_long_decode_context_buckets_use_the_first_hop(tmp_path, monkeypatch, caplog):
+    """A multi-hop Gemini long decode sums every hop's re-sent prefix for billing; the context engine's
+    prompt AND canonical input/cache buckets carry hop 1, so cache_read never exceeds prompt there."""
+    a = _agent(tmp_path, monkeypatch)
+    usage = _usage(32_840, 0, 32_968)
+    usage.initial_prompt_tokens, usage.initial_cached_tokens = 100, 40
+    seen = {}
+    monkeypatch.setattr(a.context_compressor, "update_from_response", lambda u: seen.update(u))
+    try:
+        line = _line(a, caplog, SimpleNamespace(usage=usage, id=None, model="anthropic/claude-fable-5.1"))
+    finally:
+        a.close()
+    assert " in=32968 " in line  # the log line keeps the billed sum
+    assert (seen["prompt_tokens"], seen["input_tokens"], seen["cache_read_tokens"]) == (100, 60, 40)

@@ -6,12 +6,14 @@ import types
 import pytest
 
 from agent import conversation_compression as cc
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
 def db(tmp_path):
-    database = SessionDB(tmp_path / "state.db")
+    database = open_persistence(profile_scope(home=tmp_path))
     try:
         yield database
     finally:
@@ -20,7 +22,7 @@ def db(tmp_path):
 
 def _agent(db, session_id):
     return types.SimpleNamespace(
-        _session_db=db, session_id=session_id, platform="cli", model="m", _session_init_model_config=None,
+        _session_db=db, persistence=db, session_id=session_id, platform="cli", model="m", _session_init_model_config=None,
         working_directory=None, _memory_manager=None, context_compressor=types.SimpleNamespace(),
         _flush_messages_to_session_db=lambda *a, **k: None, _persist_user_message_idx=None,
         _session_messages=None, _gateway_session_key=None, _cached_system_prompt="sys",
@@ -29,9 +31,8 @@ def _agent(db, session_id):
 
 @pytest.mark.parametrize("parent_source", ["tool", "oneshot", "kanban"])
 def test_compression_child_keeps_parent_source(db, parent_source):
-    db.create_session("parent", source=parent_source)
-    db.append_message("parent", "user", "hello")
-    db.append_message("parent", "assistant", "world")
+    seed_session(db, "parent", parent_source)
+    seed_messages(db, "parent", {"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"})
     agent = _agent(db, "parent")
 
     cc._publish_rotated_compaction(
@@ -42,4 +43,4 @@ def test_compression_child_keeps_parent_source(db, parent_source):
     )
 
     assert agent.session_id != "parent"
-    assert db.get_session(agent.session_id)["source"] == parent_source
+    assert session_row(db, agent.session_id)["source"] == parent_source

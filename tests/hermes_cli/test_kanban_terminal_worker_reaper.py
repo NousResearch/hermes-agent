@@ -83,7 +83,7 @@ def test_recycled_pid_and_legacy_row_are_never_signalled(conn):
     stranger = _sleeper()
     legacy = _sleeper()
     try:
-        tid, run_id = _completed_card_with_worker(conn, stranger)
+        _tid, run_id = _completed_card_with_worker(conn, stranger)
         # PID reuse: the recorded fingerprint belongs to a process that no longer exists.
         conn.execute("UPDATE task_runs SET worker_started_at = worker_started_at - 1000000 WHERE id=?", (run_id,))
         _, legacy_run = _completed_card_with_worker(conn, legacy)

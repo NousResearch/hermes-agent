@@ -1,7 +1,5 @@
 import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
-import type { ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
 import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
@@ -13,28 +11,33 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
+import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
+import { $introHoldsThread } from '@/components/onboarding/first-run/intro'
+import { IntroCopy } from '@/components/onboarding/first-run/intro-copy'
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
-import { type HermesGateway } from '@/hermes'
+import { type HermesGateway, type ResolvedOwner } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
-import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $introView } from '@/store/onboarding-intro'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $profileSwitchFailure } from '@/store/profile-switch-state'
 import {
   $connection,
   $contextSuggestions,
+  $freshDraftKey,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
@@ -47,24 +50,31 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { $focusedStoredSessionId, $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
-import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
-import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
+import { dropOverlayKind, useShowChatBar } from './chat-surface-state'
+import { ChatSwitchIndicator } from './chat-switch-indicator'
 import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
-import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
-import type { ChatBarState } from './composer/types'
+import {
+  ComposerScopeProvider,
+  ComposerSurfaceProvider,
+  useComposerScope,
+  useComposerSurfaceId
+} from './composer/scope'
+import { useSwitchSendTarget } from './composer/send-target-hint'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
-import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
+import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
@@ -80,6 +90,8 @@ import {
   transcriptBackfillAvailable
 } from './transcript-backfill'
 import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
+import { useChatBarState } from './use-chat-bar-state'
+import { useTranscriptRetention } from './use-transcript-retention'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -103,7 +115,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickFolders: () => void
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
-  onSteer: (text: string) => Promise<boolean> | boolean
+  onSteer: (text: string, mode?: 'interrupt' | 'steer') => Promise<boolean> | boolean
   onSteerHidden?: (text: string) => Promise<boolean> | boolean
   onSubmit: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
@@ -111,7 +123,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onReload: (parentId: string | null) => Promise<void>
   onRestoreToMessage?: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   onRetryResume: (sessionId: string) => void
-  onTranscribeAudio?: (audio: Blob) => Promise<string>
+  onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   onDismissError?: (messageId: string) => void
 }
 
@@ -135,7 +147,9 @@ function ChatHeader({
   const profiles = useStore($profiles)
 
   const activeStoredSession =
-    (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
+    ((selectedSessionId || activeSessionId) &&
+      sessions.find(session => sessionMatchesStoredId(session, selectedSessionId || activeSessionId || ''))) ||
+    null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
 
@@ -175,6 +189,7 @@ function ChatHeader({
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
+          profile={activeStoredSession?.profile}
           sessionId={selectedSessionId || activeSessionId || ''}
           sideOffset={8}
           title={title}
@@ -257,9 +272,24 @@ export function ChatRuntimeBoundary({
   const ownerConnection = ownerRoute?.connectionId
   const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile
 
-  const tailProfile = useMemo(() => ownerProfile
-    ? { connectionId: ownerConnection, profile: ownerProfile }
-    : undefined, [ownerConnection, ownerProfile])
+  const tailProfile = useMemo(
+    () => (ownerProfile ? { connectionId: ownerConnection, profile: ownerProfile } : undefined),
+    [ownerConnection, ownerProfile]
+  )
+
+  // A Bot chat opened IN PLACE in the main pane (openStoredBotChat) keeps the
+  // active profile, so the ambient scope carries no owner. Publish the session
+  // owner hint's (connection, profile) here so voice playback speaks with the
+  // Bot's own voice; a tile's scope already names its owner and is kept as is.
+  const parentScope = useComposerScope()
+
+  const composerScope = useMemo(
+    () =>
+      parentScope.profile || !ownerProfile
+        ? parentScope
+        : { ...parentScope, connectionId: ownerConnection || undefined, profile: ownerProfile },
+    [ownerConnection, ownerProfile, parentScope]
+  )
 
   const history = useHistoryWindow({
     scopeKey: JSON.stringify([runtimeId, storedId, tailProfile, connectionId, activeProfile, suppressMessages]),
@@ -311,6 +341,17 @@ export function ChatRuntimeBoundary({
   }, [messages, windowPages])
 
   const currentMessages = history.page?.messages ?? windowedMessages
+  // Release the store's paged-through history (persisted rows older than the
+  // window) instead of retaining it for the window's lifetime (#77311). A
+  // static history page is not the live store, and neither is a suppressed
+  // transcript, so both opt out.
+  useTranscriptRetention({
+    anchorId: windowed ? (windowedMessages[0]?.id ?? null) : null,
+    enabled: !suppressMessages && !history.page,
+    profile: tailProfile,
+    runtimeId,
+    storedSessionId: storedId
+  })
   const runtimeMessageRepository = useRuntimeMessageRepository(currentMessages)
   // Subscribed (not read imperatively) so the "Show earlier" affordance
   // appears/retires as tail hydrations and backfill pages record their state.
@@ -320,8 +361,11 @@ export function ChatRuntimeBoundary({
 
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
-      // A historical page is not the live tail: never backfill into its store.
-      if (history.page) {return false}
+      // A historical page is not the live tail: its older neighbours come from
+      // the prompt range the rail already draws, never from store backfill.
+      if (history.page) {
+        return history.revealOlder(beforePrepend)
+      }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
@@ -339,11 +383,12 @@ export function ChatRuntimeBoundary({
           // checking the live atoms (not captured props) discards a page that
           // resolves after the user moved on — same pattern as isCurrentResume.
           isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
+          heldMessages: () => view.$messages.get(),
           applyOlderPage: olderPage => {
             const current = view.$messages.get()
 
             if (mergeOlderTranscriptPage(current, olderPage) === current) {
-              return
+              return false
             }
 
             beforePrepend?.()
@@ -367,19 +412,33 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page]
+    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
   )
 
-  // Page navigation stays on the timeline while inspecting history; the
-  // existing prepend action is specifically a live-tail operation.
-  const olderAvailable = !history.page && (windowed || restBackfillAvailable)
+  // An open history page carries its own reach: its first prompt is the anchor,
+  // and the around window reports whether rows precede it. Reading that as
+  // "nothing earlier" (the live-tail flags) retired every way back — the rail
+  // still names older marks, so the entry point must stay live here too.
+  const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
+  const historicalMessages = history.page?.messages
 
-  const transcriptWindow = useMemo(() => ({
-    olderAvailable, expandWindow, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable
-  }), [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable])
+  const transcriptWindow = useMemo(
+    () => ({
+      olderAvailable,
+      expandWindow,
+      revealRow,
+      returnToLatest,
+      // Live navigation reads the session store. Broadcasting the changing
+      // live tail here invalidates the entire transcript's navigation context.
+      currentMessages: historicalMessages ?? [],
+      isHistorical,
+      newerAvailable
+    }),
+    [expandWindow, olderAvailable, revealRow, returnToLatest, historicalMessages, isHistorical, newerAvailable]
+  )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -390,15 +449,26 @@ export function ChatRuntimeBoundary({
       // Submission is handled explicitly by ChatBar.
       // Keeping this no-op avoids duplicate prompt.submit calls.
     },
-    onEdit: isHistorical ? undefined : onEdit,
+    // Editing stays AVAILABLE on a history page. `isDisabled` above blocks
+    // submit/reload/branch and keeps the page static, but the rail jump is
+    // the only way into that page and it has no in-thread exit — so dropping
+    // `onEdit` left the inline composer unopenable after ANY far rail jump
+    // (the throw "Runtime does not support editing", infectious downward,
+    // healed only by the floating jump button's returnToLatest). `editMessage`
+    // already resolves its target against the live session store
+    // (use-prompt-actions), never the display page, so the edit is correct;
+    // sending one rewinds the live transcript and drops the page.
+    onEdit,
     onCancel: isHistorical ? undefined : async () => onCancel(),
     onReload: isHistorical ? undefined : onReload
   })
 
   return (
-    <TranscriptWindowProvider value={transcriptWindow}>
-      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
-    </TranscriptWindowProvider>
+    <ComposerScopeProvider value={composerScope}>
+      <TranscriptWindowProvider value={transcriptWindow}>
+        <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      </TranscriptWindowProvider>
+    </ComposerScopeProvider>
   )
 }
 
@@ -414,6 +484,28 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
     </ComposerSurfaceProvider>
   )
 })
+
+// Vibe hearts rise from the composer only when no pet is out (else they play
+// on the pet). Keep the pet subscriptions with this reaction-event surface.
+function ComposerHeartField() {
+  const petActive = useStore($petActive)
+  const petOverlayActive = useStore($petOverlayActive)
+
+  if (petActive || petOverlayActive) {
+    return null
+  }
+
+  return (
+    <HeartField
+      className="absolute inset-x-0 z-30"
+      config={COMPOSER_HEART_CONFIG}
+      style={{
+        top: 0,
+        bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
+      }}
+    />
+  )
+}
 
 const ChatViewContent = memo(function ChatViewContent({
   className,
@@ -457,6 +549,8 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
+  const introHoldsThread = useStore($introHoldsThread) && isPrimary && isMainWindow()
+  const guideStarted = useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended')
   const activeSessionId = useStore(view.$runtimeId)
 
   const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
@@ -464,6 +558,7 @@ const ChatViewContent = memo(function ChatViewContent({
   )
 
   const storedId = useStore(view.$storedId)
+  const setupChat = useSetupChatView()
   // Multi-pane dimming: only the focused surface paints at full strength, so
   // two sessions side by side read as "this one, and that one over there".
   // A selector, not a plain useStore — the focused id changes on click, and a
@@ -485,14 +580,13 @@ const ChatViewContent = memo(function ChatViewContent({
   const currentCwd = useStore(view.$cwd)
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
-  // A pet anywhere (in-window or popped out) owns the hearts; composer only when none.
-  const petActive = useStore($petActive)
-  const petOverlayActive = useStore($petOverlayActive)
-  const petPresent = petActive || petOverlayActive
   const freshDraftReady = useStore($freshDraftReady)
+  const freshDraftKey = useStore($freshDraftKey)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const hydrationSyncProfile = useStore($hydrationSyncProfile)
+  const profileSwitchFailure = useStore($profileSwitchFailure)
+  const switchTarget = useSwitchSendTarget()
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -610,68 +704,30 @@ const ChatViewContent = memo(function ChatViewContent({
   })
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
-  // Hide the composer in the exhausted error state too: there's no live runtime
-  // to send to until a retry rebinds one. Watch windows are pure spectators of a
-  // subagent run driven elsewhere — no composer, transcript is read-only.
-  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
-  const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
-  const modelOptionsQuery = useQuery<ModelOptionsResult>({
-    queryKey: modelOptionsQueryKey(
-      modelOptionsProfile || activeGatewayProfile,
-      activeSessionId,
-      modelOptionsOwnerConnectionId
-    ),
-    queryFn: () =>
-      requestModelOptions({
-        gateway: gateway || undefined,
-        profile: modelOptionsProfile || activeGatewayProfile,
-        request: requestModelOptionsForOwner,
-        sessionId: activeSessionId
-      }),
-    enabled: gatewayOpen
+  const showChatBar = useShowChatBar({
+    loadingSession,
+    resumeExhausted,
+    routedSessionId,
+    routedSessionView: isRoutedSessionView
   })
 
-  const quickModels = useMemo(
-    () => quickModelOptions(modelOptionsQuery.data, currentProvider, currentModel),
-    [currentModel, currentProvider, modelOptionsQuery.data]
-  )
+  const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
-  const supportsReasoning = currentModelCapabilities(modelOptionsQuery.data, currentProvider, currentModel)?.reasoning
-
-  const chatBarState = useMemo<ChatBarState>(
-    () => ({
-      model: {
-        model: currentModel,
-        provider: currentProvider,
-        canSwitch: gatewayOpen,
-        loading: !gatewayOpen || (!currentModel && !currentProvider),
-        modelMenuContent,
-        quickModels,
-        reasoningMenuContent,
-        supportsReasoning
-      },
-      tools: {
-        enabled: true,
-        label: 'Add context',
-        suggestions: contextSuggestions
-      },
-      voice: {
-        enabled: true,
-        active: false
-      }
-    }),
-    [
-      contextSuggestions,
-      currentModel,
-      currentProvider,
-      gatewayOpen,
-      modelMenuContent,
-      quickModels,
-      reasoningMenuContent,
-      supportsReasoning
-    ]
-  )
+  const chatBarState = useChatBarState({
+    activeGatewayProfile,
+    activeSessionId,
+    contextSuggestions,
+    currentModel,
+    currentProvider,
+    gateway,
+    gatewayOpen,
+    modelMenuContent,
+    modelOptionsOwnerConnectionId,
+    modelOptionsProfile,
+    reasoningMenuContent,
+    requestModelOptionsForOwner
+  })
 
   // Drop files anywhere in the conversation area, not just on the composer
   // input. In-app drags (project tree / gutter) carry workspace-relative paths
@@ -711,7 +767,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const sessionDragging = useStore($sessionTileDragging)
   const sessionEdgeHover = useStore($sessionTileEdgeHover)
 
-  const overlayKind: DragKind = dragKind === 'files' ? 'files' : sessionDragging && !sessionEdgeHover ? 'session' : null
+  const overlayKind = dropOverlayKind(dragKind, sessionDragging, sessionEdgeHover)
 
   return (
     <div
@@ -723,7 +779,9 @@ const ChatViewContent = memo(function ChatViewContent({
       data-chat-unfocused={surfaceFocused || surfaceHovered ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
+      data-guide-arrived={isPrimary && guideStarted ? '' : undefined}
       data-session-anchor={sessionAnchor}
+      data-setup-chat={setupChat ? '' : undefined}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal
@@ -736,6 +794,13 @@ const ChatViewContent = memo(function ChatViewContent({
           onToggleSelectedPin={onToggleSelectedPin}
           selectedSessionId={selectedSessionId}
         />
+      )}
+
+      {/* Profile switch status (rail picks, bot wakes, paint-first sync). In
+          flow above the thread — never over it — and primary-only: a switch
+          re-homes the primary surface; a tile keeps showing its own session. */}
+      {isPrimary && (
+        <ChatSwitchIndicator failure={profileSwitchFailure} syncing={hydrationSyncProfile} target={switchTarget} />
       )}
 
       {/* Mounted for the primary AND every tile, each scoped to its own session
@@ -753,6 +818,7 @@ const ChatViewContent = memo(function ChatViewContent({
       >
         <div
           className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          data-intro-holding={introHoldsThread ? '' : undefined}
           data-slot="composer-bounds"
           {...dropHandlers}
         >
@@ -770,29 +836,15 @@ const ChatViewContent = memo(function ChatViewContent({
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />
+          {isPrimary && isMainWindow() && <IntroCopy />}
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}
           {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
-          {/* Vibe hearts rise from the composer only when no pet is out (else
-              they play on the pet). Fired by the core `reaction` event. */}
-          {!petPresent && (
-            <HeartField
-              className="absolute inset-x-0 z-30"
-              config={COMPOSER_HEART_CONFIG}
-              style={{
-                top: 0,
-                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
-              }}
-            />
-          )}
+          <ComposerHeartField />
           {/* A session drag hovering an EDGE hands the visual to the zone
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />
-          <ChatSwapOverlay profile={gatewaySwapTarget} />
-          {/* Paint-first wake (#89843): transcript is live, profile gate still
-              settling in the background — subtle badge, not an overlay. */}
-          {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}
         </div>
         {/* Docked composers overlay their pane; the shared float escapes pane
             clipping through a stable portal host without remounting its editor. */}
@@ -804,6 +856,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 cwd={currentCwd}
                 disabled={!gatewayOpen}
                 focusKey={activeSessionId}
+                freshDraftKey={freshDraftKey}
                 gateway={gateway}
                 maxRecordingSeconds={maxVoiceRecordingSeconds}
                 onAddContextRef={onAddContextRef}
@@ -821,6 +874,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 onSteerHidden={onSteerHidden}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
+                profile={modelOptionsProfile || activeGatewayProfile}
                 queueSessionKey={queueSessionKey}
                 sessionId={activeSessionId}
                 state={chatBarState}

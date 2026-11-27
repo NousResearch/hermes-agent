@@ -1,0 +1,23 @@
+name: canadian-primary-care
+repo: https://github.com/cortexuvula/canadian-primary-care-calculators
+sha: 31f63539a15ade9ae3c78804f23ec2c09a7a04ea
+description: "Twenty-six offline Canadian-unit clinician decision-support calculators (preview). Disclosure — clinician decision-support calculators, not a regulator-reviewed medical device; runs fully offline with no network calls, stores only your favourites list in Desktop plugin storage, Copy puts the result on the system clipboard, and source citations open in your browser when clicked."
+maintainer: cortexuvula
+tier: community
+category: desktop
+title: Canadian Primary Care
+requires_hermes: ">=0.21.6"
+version: "0.4.0"
+docs_url: https://github.com/cortexuvula/canadian-primary-care-calculators/blob/31f63539a15ade9ae3c78804f23ec2c09a7a04ea/README.md
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/cortexuvula/canadian-primary-care-calculators/31f63539a15ade9ae3c78804f23ec2c09a7a04ea/docs/screenshots/library-light.png
+  - https://raw.githubusercontent.com/cortexuvula/canadian-primary-care-calculators/31f63539a15ade9ae3c78804f23ec2c09a7a04ea/docs/screenshots/ga-dark.png
+  - https://raw.githubusercontent.com/cortexuvula/canadian-primary-care-calculators/31f63539a15ade9ae3c78804f23ec2c09a7a04ea/docs/screenshots/acr-narrow.png
+known_issues:
+  - "Preview: complete native workflow and real OS clipboard verification remain unperformed; screenshots are synthetic browser-harness captures, not native or real-patient evidence."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

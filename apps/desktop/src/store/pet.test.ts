@@ -11,7 +11,6 @@ import {
   flashPetActivity,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
-  type PetInfo,
   setPetActivity
 } from './pet'
 import { $activeSessionId, $busy } from './session'
@@ -111,27 +110,6 @@ describe('pet info metadata cache helpers', () => {
       spritesheetRevision: '100:2048'
     })
   })
-
-  it('returns the same reference when nothing changed to avoid redundant store updates', () => {
-    const current: PetInfo = {
-      enabled: true,
-      slug: 'boba',
-      displayName: 'Boba',
-      scale: 0.33,
-      spritesheetBase64: 'large-sprite-payload',
-      spritesheetRevision: '100:2048'
-    }
-
-    const meta = {
-      enabled: true,
-      slug: 'boba',
-      displayName: 'Boba',
-      scale: 0.33,
-      spritesheetRevision: '100:2048'
-    }
-
-    expect(mergePetInfoMeta(current, meta)).toBe(current)
-  })
 })
 
 describe('flashPetActivity', () => {
@@ -172,5 +150,22 @@ describe('$petState reads the active runtime slice, not the $busy mirror (#84434
     publishSessionState(runtimeId, slice(false))
     expect($petState.get()).toBe('idle')
     expect($petAtRest.get()).toBe(true)
+  })
+})
+
+describe('setPetActivity publishing', () => {
+  afterEach(() => $petActivity.set({}))
+
+  it('does not notify subscribers when the requested flags are already set', () => {
+    $petActivity.set({})
+    let notifications = 0
+    const stop = $petActivity.listen(() => (notifications += 1))
+
+    setPetActivity({ reasoning: true })
+    setPetActivity({ reasoning: true })
+    setPetActivity({ reasoning: true, toolRunning: false })
+
+    stop()
+    expect(notifications).toBe(2)
   })
 })

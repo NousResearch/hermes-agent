@@ -104,13 +104,13 @@ def _count_live(cls_name: str) -> int:
 def _snap(pid: int, db_path: str) -> dict:
     st = open(f"/proc/{pid}/status", encoding="utf-8").read()
     g = lambda k: int(st.split(k + ":")[1].split()[0])
-    tcp = subprocess.run(f"ss -tanp 2>/dev/null | grep -c 'pid={pid},'", shell=True, capture_output=True, text=True).stdout.strip()
-    kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(pid)], capture_output=True, text=True).stdout
+    tcp = subprocess.run(f"ss -tanp 2>/dev/null | grep -c 'pid={pid},'", shell=True, capture_output=True, text=True, check=False).stdout.strip()
+    kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(pid)], capture_output=True, text=True, check=False).stdout
     return {
         "threads": g("Threads"), "rss_mb": g("VmRSS") // 1024, "fds": len(os.listdir(f"/proc/{pid}/fd")),
         "tcp": int(tcp or 0), "pyright": kids.count("pyright"), "kernels": kids.count("hermes_kernel_runner"),
         "db_mb": round(os.path.getsize(db_path) / 2**20, 1) if os.path.exists(db_path) else 0,
-        "httpx_clients": _count_live("Client"), "transports": _count_live("HTTPTransport"), "session_dbs": _count_live("SessionDB"), "live_agents": _count_live("AIAgent"),
+        "httpx_clients": _count_live("Client"), "transports": _count_live("HTTPTransport"), "session_dbs": _count_live("StoreHolder"), "live_agents": _count_live("AIAgent"),
     }
 
 
@@ -167,14 +167,14 @@ def main() -> None:
     from run_agent import AIAgent
     from tools import delegate_tool
 
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     db_path = os.path.join(home, "state.db")
     from pathlib import Path
-    session_db = SessionDB(db_path=Path(db_path))
+    session_db = open_persistence(profile_scope(home=Path(home)), eager=True)
     parent = AIAgent(api_key="bench", base_url=f"http://127.0.0.1:{port}/v1", model="bench-model",
                      quiet_mode=True, skip_context_files=True, skip_memory=True,
                      enabled_toolsets=["delegation", "file", "code_execution"],
-                     session_db=session_db, session_id="bench-root")
+                     persistence=session_db, session_id="bench-root")
     # Children reference parent_session_id; the parent row is normally created
     # lazily on the parent's first turn, which this harness never runs.
     parent._ensure_db_session()
@@ -208,10 +208,6 @@ def main() -> None:
         ok = sum(1 for r in items if str(r.get("status", "")) in ("completed", "success"))
     except Exception:
         ok = None
-    try:
-        session_db.checkpoint() if hasattr(session_db, "checkpoint") else None
-    except Exception:
-        pass
     out = {"label": a.label, "children": a.children, "worktrees": a.worktrees, "ok": ok, "wall_s": wall,
            "before": before, "peak": peak, "after": after}
     sys.__stderr__.write("BENCH " + json.dumps(out) + "\n"); sys.__stderr__.flush()

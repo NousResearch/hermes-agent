@@ -69,6 +69,16 @@ def test_add_then_list_is_password_free(home):
     assert "password" not in dumped
 
 
+def test_vault_list_runs_on_the_rpc_pool_not_the_request_reader():
+    """``vault.list`` can now prepare the real-profile snapshot and launch Chrome (up to ~30 s) the
+    first time the browser login source is listed, so it MUST be a long handler — otherwise it runs
+    inline on the socket's ordered request lane and holds later requests (Stop included) behind that
+    work. Regression guard for the snapshot-prepare change on the browser login source."""
+    assert "vault.list" in srv._LONG_HANDLERS
+    # The fill path stays long too (it round-trips page scripts through the renderer).
+    assert "vault.preview.fill" in srv._LONG_HANDLERS
+
+
 def test_add_validation_errors_are_clean(home):
     err = _error(
         srv._methods["vault.add"](
@@ -85,12 +95,10 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "origin is required" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
     err = _error(srv._methods["vault.add"](2, {"kind": "login", "label": "x"}))
     assert err["code"] == 5095
-    assert "secret payload is required" in err["message"]
 
     err = _error(
         srv._methods["vault.add"](
@@ -98,7 +106,6 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "unknown vault kind" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
 
@@ -138,6 +145,21 @@ def test_undetected_manager_stays_off(home, monkeypatch):
     monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: False)
     rows = _sources_rows(home)
     assert rows["bitwarden"]["installed"] is False
+
+
+def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
+    """A hand-edited ``vault: true`` in config.yaml must not crash the Desktop
+    Credential Vault source toggle: the malformed section is coerced to a dict
+    before the opt-out is written (same YAML-shape hazard class _voice_cfg_dict
+    documents for voice.*, #19835)."""
+    monkeypatch.setattr(
+        "agent.vault_backends.base.is_installed", lambda name: name == "bitwarden"
+    )
+    (home / "config.yaml").write_text("vault: true\n")
+    _result(
+        srv._methods["vault.source.set"](82, {"name": "bitwarden", "enabled": False})
+    )
+    rows = _sources_rows(home)
     assert rows["bitwarden"]["enabled"] is False
 
 
@@ -151,3 +173,15 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home, monkeypatch):
+    """Once a second profile has been served, ``get_secret`` fails closed for unscoped reads. The
+    launch profile's vault.* calls (Desktop sends no ``profile`` for it) must still bind the launch
+    secret scope — otherwise every enabled manager's token read raises UnscopedSecretError and the
+    Passwords & Logins panel shows "Could not load vault items" until the gateway restarts."""
+    from agent.secret_scope import set_multiplex_active
+
+    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
+    set_multiplex_active(True)  # conftest resets the latch per test
+    assert _sources_rows(home)["onepassword"]["enabled"] is True

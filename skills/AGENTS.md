@@ -27,16 +27,19 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
 
 1. **`description` ≤ 60 chars, one sentence, ends with a period.** Long descriptions bloat listings
    and dilute attention when many skills load. State the capability, not the implementation; no
-   marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
-   Check: `len(re.search(r'^description: (.*)$', text, re.M).group(1)) <= 60`.
+   marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name or
+   the category name (the skill index already prints the category above the skill). 60 is the width
+   the index shows by default (`SKILL_PROMPT_DESC_LIMIT`); a user's `skills.index_desc_limit` widens
+   their own index and `skill_manage` budget, never this standard.
 2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
    (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,
-   `browser_navigate`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
+   `browser_exec`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
    `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` →
    `search_files target='files'`. MCP dependencies are named with setup in `## Prerequisites`.
    Third-party CLIs and pipelines are fine inside script files, not as the headline surface.
-3. **`platforms:` gating is audited against actual script imports.** POSIX-only primitives
-   (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)`, `/proc`, hardcoded `/tmp`, `signal.SIGKILL`,
+<!-- no-tmp: ok — names the POSIX-only anti-pattern reviewers look for -->
+3. **`platforms:` gating is audited against actual script imports.** POSIX-only primitives (hardcoded `/tmp`,
+   `fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)`, `/proc`, `signal.SIGKILL`,
    bash heredocs, `osascript`, `apt`, `systemctl`) require a platform declaration. Fix cross-platform
    first (`tempfile.gettempdir`, `pathlib.Path`, `psutil.pid_exists`, Python filtering instead of
    `grep`); gate narrower only when the dependency is genuinely platform-bound.

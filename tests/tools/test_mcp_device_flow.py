@@ -3,6 +3,11 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip(
+    "mcp.client.auth.oauth2",
+    reason="MCP SDK 1.26.0+ required for device-flow coverage",
+)
+
 from evals.mcp_device_flow import DEVICE_GRANT, run_cli
 
 

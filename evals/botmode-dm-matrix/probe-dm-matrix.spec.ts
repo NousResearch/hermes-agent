@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { buildAppEnv, createSandbox, launchDesktop, waitForAppReady, writeEnvFile, writeMockProviderConfig, type MockBackendFixture } from './fixtures'
 import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
@@ -9,7 +10,7 @@ const repo = path.resolve(import.meta.dirname, '../../..')
 let python = path.join(process.env.VIRTUAL_ENV || path.join(repo, '.venv'), 'bin', 'python')
 let fixture: MockBackendFixture
 let env: Record<string, string>
-const evidence = process.env.BOT_DM_EVIDENCE || '/tmp/botmode-dm-matrix/native'
+const evidence = process.env.BOT_DM_EVIDENCE || path.join(os.tmpdir(), 'botmode-dm-matrix/native')
 
 test.beforeAll(async () => {
   fs.mkdirSync(evidence, { recursive: true })
@@ -44,7 +45,7 @@ test.beforeAll(async () => {
     PYTHONPATH: repo, HERMES_SINGLE_QUERY_LINGER_SECONDS: '30' })
   for (const name of ['alpha', 'beta', 'gamma']) {
     const h = path.join(sandbox.hermesHome, 'profiles', name)
-    execFileSync(python, ['-c', 'import sys; from pathlib import Path; from hermes_state import SessionDB; d=SessionDB(db_path=Path(sys.argv[1])/"state.db"); d.create_session("matrix-"+sys.argv[2],"cli",cwd=sys.argv[3]); d.set_session_title("matrix-"+sys.argv[2],"Bot Chat"); d.close()', h, name, sandbox.root], { env, cwd: repo })
+    execFileSync(python, ['-c', 'import sys; from pathlib import Path; from persistence.conversation.sessions import NewSession; from persistence_assembly import open_persistence, profile_scope; d=open_persistence(profile_scope(home=Path(sys.argv[1])), eager=True); d.sessions.create(NewSession(session_id="matrix-"+sys.argv[2], source="cli", cwd=sys.argv[3])); d.sessions.set_title("matrix-"+sys.argv[2], "Bot Chat"); d.close()', h, name, sandbox.root], { env, cwd: repo })
   }
   const { app, page } = await launchDesktop(env)
   fixture = { app, page, sandbox, mock, mockUrl: mock.url, cleanup: async () => {

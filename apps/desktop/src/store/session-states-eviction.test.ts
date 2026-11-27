@@ -1,8 +1,24 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds } from '@/store/session'
-import { $sessionStates, $sessionTiles, closeSessionTile, publishSessionState } from '@/store/session-states'
+import { $projectTree } from '@/store/project-tree'
+import { approvalKindFields, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
+import {
+  $activeSessionId,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $unreadFinishedSessionIds
+} from '@/store/session'
+import {
+  $attentionSessionIds,
+  $sessionStates,
+  $sessionTiles,
+  closeSessionTile,
+  publishSessionState,
+  recordSessionEventScope
+} from '@/store/session-states'
+import { makeSessionInfo } from '@/test/session-info'
 
 /**
  * The closed-tile leak: gateway events keep publishing for sessions whose
@@ -22,9 +38,12 @@ beforeEach(() => {
   $sessionStates.set({})
   $sessionTiles.set([])
   $sessions.set([])
+  $messagingSessions.set([])
+  $projectTree.set([])
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   $unreadFinishedSessionIds.set([])
+  clearAllPrompts()
 })
 
 describe('publish-time eviction', () => {
@@ -38,6 +57,91 @@ describe('publish-time eviction', () => {
     expect($sessionStates.get()['rt-1']).toMatchObject({ storedSessionId: 'stored-1', busy: false })
     // The settle transition still fired: the sidebar's unread marker landed.
     expect($unreadFinishedSessionIds.get()).toContain('stored-1')
+  })
+
+  it('does not mark an external messaging completion unread', () => {
+    $messagingSessions.set([makeSessionInfo({ id: 'wechat-1', source: 'weixin' })])
+
+    publishSessionState('rt-wechat', state('wechat-1', { busy: true }))
+    publishSessionState('rt-wechat', state('wechat-1', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).not.toContain('wechat-1')
+  })
+
+  it('marks a background profile local completion unread when another profile holds a messaging row of that id', () => {
+    $messagingSessions.set([makeSessionInfo({ id: 'shared', source: 'telegram', profile: 'default' })])
+    recordSessionEventScope({ connectionId: 'conn-work', profile: 'work', session_id: 'rt-work' })
+
+    publishSessionState('rt-work', state('shared', { busy: true }))
+    publishSessionState('rt-work', state('shared', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).toContain('shared')
+  })
+
+  it('does not mark a messaging completion unread when only the project tree has its row', () => {
+    // The project tree lists messaging rows too (it excludes only cron/kanban/oneshot), and a
+    // conversation older than the loaded messaging page is known only from there.
+    $projectTree.set([
+      {
+        id: 'proj',
+        label: 'proj',
+        path: null,
+        repos: [
+          {
+            id: 'repo',
+            label: 'repo',
+            path: null,
+            groups: [
+              {
+                id: 'lane',
+                label: 'lane',
+                path: null,
+                sessions: [makeSessionInfo({ id: 'tg-old', source: 'telegram' })]
+              }
+            ],
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1
+      }
+    ])
+
+    publishSessionState('rt-tg', state('tg-old', { busy: true }))
+    publishSessionState('rt-tg', state('tg-old', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-old')
+  })
+
+  it("keeps a local completion lit when only another profile's same-id tree row is messaging", () => {
+    $projectTree.set([
+      {
+        id: 'proj',
+        label: 'proj',
+        path: null,
+        repos: [
+          {
+            id: 'repo',
+            label: 'repo',
+            path: null,
+            groups: [
+              {
+                id: 'lane',
+                label: 'lane',
+                path: null,
+                sessions: [makeSessionInfo({ id: 'shared', profile: 'beta', source: 'telegram' })]
+              }
+            ],
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1
+      }
+    ])
+
+    publishSessionState('rt-local', state('shared', { busy: true }))
+    publishSessionState('rt-local', state('shared', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).toContain('shared')
   })
 
   it('keeps a busy session with no surface — its background turn feeds the sidebar dot', () => {
@@ -105,5 +209,28 @@ describe('closeSessionTile eviction', () => {
     publishSessionState('rt-1', state('stored-1', { busy: false }))
     expect($sessionStates.get()['rt-1']?.messages).toEqual([])
     expect($sessionStates.get()['rt-1']).toMatchObject({ storedSessionId: 'stored-1', busy: false })
+  })
+
+  it('keeps a chat marked as waiting when its tab is closed while a folder or site card is open', () => {
+    // Such a card outlives its turn: the session is settled and the person still owes an answer.
+    $sessions.set([makeSessionInfo({ id: 'stored-1' })])
+    $sessionTiles.set([{ runtimeId: 'rt-1', storedSessionId: 'stored-1' }])
+    publishSessionState('rt-1', state('stored-1', { busy: false }))
+    setApprovalRequest({
+      sessionId: 'rt-1',
+      command: '',
+      description: '',
+      requestId: 'card-1',
+      ...approvalKindFields({ access: 'read', kind: 'access', path: '/srv/data' })
+    })
+
+    closeSessionTile('stored-1')
+
+    expect($attentionSessionIds.get()).toContain('stored-1')
+
+    // Once the card is gone the chat is no longer marked.
+    clearAllPrompts('rt-1')
+
+    expect($attentionSessionIds.get()).not.toContain('stored-1')
   })
 })

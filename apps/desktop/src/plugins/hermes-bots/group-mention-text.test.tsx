@@ -4,17 +4,25 @@
  * so a token is styled exactly when routing would honour it.
  */
 
+import { render, screen } from '@testing-library/react'
+import { useMemo } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import { classifyGroupMention, renderGroupMentionText } from './group-mention-text'
+import { GROUP_CHAT_LOCALES } from './group-chat-locales'
+import { classifyGroupMention, groupMentionComponents, groupMentionText, renderGroupMentionText } from './group-mention-text'
+import { useBots } from './i18n'
+import { translateBotsIn } from './i18n-test-helper'
 import type { GroupMember } from './types'
+
+const selectedLocale = vi.hoisted(() => ({ value: 'en' }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
 
   return {
     atom,
+    usePluginI18n: () => translateBotsIn(selectedLocale.value),
     host: {
       request: vi.fn(),
       state: { connectionId: { get: () => 'local' }, profile: { get: () => 'default' } }
@@ -27,7 +35,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
 vi.mock('./shared', () => ({ getPluginCtx: () => null, ID: 'hermes-bots' }))
 
-const members = [{ name: 'planner', handle: 'planner' }, { name: 'reviewer-mac-mini', handle: 'reviewer-mac-mini' }] as GroupMember[]
+const members = [
+  { name: 'planner', handle: 'planner' },
+  { name: 'reviewer-mac-mini', handle: 'reviewer-mac-mini' }
+] as GroupMember[]
 
 describe('group mention rendering', () => {
   it('classifies seated bots, the human and broadcasts, and leaves unknown tokens plain', () => {
@@ -41,13 +52,38 @@ describe('group mention rendering', () => {
 
   it('wraps only recognized mentions and keeps the visible text byte-identical', () => {
     const text = '@planner compare the options, then @user picks; mail ops@example.com — @everyone review'
-    const html = renderToStaticMarkup(<>{renderGroupMentionText(text, members)}</>)
+    const html = renderToStaticMarkup(<>{renderGroupMentionText(text, members, GROUP_CHAT_LOCALES.en)}</>)
 
-    expect(html).toContain('<span class="ref font-medium" data-ref="agent"')
+    expect(html).toContain('data-ref="agent"')
     expect(html).toContain('data-ref="human"')
     expect(html).toContain('data-ref="broadcast"')
     // `@example.com` is not a room identity — no span around it.
-    expect(html).not.toContain('data-ref="agent" title="Bot in this room">@example')
+    expect(html).not.toMatch(/data-ref="[^"]*"[^>]*>@example/)
     expect(html.replace(/<[^>]+>/g, '')).toBe(text)
   })
+})
+
+function TranslatedMentions() {
+  const b = useBots()
+  const decorate = useMemo(() => groupMentionText(members, b.group), [b.group])
+  const { p: Paragraph } = useMemo(() => groupMentionComponents(members, b.group), [b.group])
+
+  return <>
+    <div>{decorate('@planner @everyone @user')}</div>
+    <Paragraph>@planner @everyone @user</Paragraph>
+  </>
+}
+
+it('updates mention tooltips in both transcript renderers when the locale changes', () => {
+  const view = render(<TranslatedMentions />)
+
+  expect(screen.getAllByTitle('Bot in this group chat')).toHaveLength(2)
+  selectedLocale.value = 'ja'
+  view.rerender(<TranslatedMentions />)
+
+  for (const title of ['このグループチャットのボット', 'グループチャットの全員', 'あなた — グループチャットは人による対応を待っています']) {
+    expect(screen.getAllByTitle(title)).toHaveLength(2)
+  }
+
+  expect(screen.queryByTitle('Bot in this group chat')).toBeNull()
 })

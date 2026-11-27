@@ -6,8 +6,8 @@ silently went missing from the GUI. ``auth_type`` / ``api_key_env_vars`` / ``bas
 come from :data:`hermes_cli.auth.PROVIDER_REGISTRY` (credential truth); ``display_name`` /
 ``description`` / ``signup_url`` from the provider's :class:`providers.base.ProviderProfile`, falling
 back to the ``CANONICAL_PROVIDERS`` entry's ``label`` / ``tui_desc`` and the ``OPTIONAL_ENV_VARS``
-signup URL (many profiles leave these blank, and lmstudio, openai-api, tencent-tokenhub, xai-oauth
-have no profile at all — the fallbacks are load-bearing).
+signup URL (many profiles leave these blank, and openai-api, tencent-tokenplan, xai-oauth have no
+profile at all — the fallbacks are load-bearing).
 """
 
 from __future__ import annotations
@@ -17,10 +17,9 @@ from dataclasses import dataclass
 # Auth types that authenticate via an account / sign-in flow rather than a pasted API key; these
 # route to the desktop "Accounts" tab, everything else (api_key, and aws_sdk configured via
 # AWS_REGION/AWS_PROFILE) to "API keys". Mirrors the auth_type strings in PROVIDER_REGISTRY and
-# ProviderProfile: external_process = copilot-acp (spawns `copilot --acp --stdio`), copilot = GitHub
-# Copilot token / gh auth.
+# ProviderProfile: external_process = a spawned CLI that owns its own login (e.g. an ACP agent).
 _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
-    {"oauth_device_code", "oauth_external", "oauth_minimax", "external_process", "copilot"}
+    {"oauth_device_code", "oauth_external", "oauth_minimax", "external_process"}
 )
 
 
@@ -31,7 +30,7 @@ class ProviderDescriptor:
     slug: str                      # canonical id, e.g. "openai-codex"
     label: str                     # human display name
     description: str               # one-line description
-    auth_type: str                 # api_key | oauth_* | external_process | copilot | aws_sdk
+    auth_type: str                 # api_key | oauth_* | external_process | aws_sdk
     tab: str                       # "keys" | "accounts"
     api_key_env_vars: tuple[str, ...]  # credential env vars (may be empty)
     base_url_env_var: str          # base-URL override env var (may be "")
@@ -67,7 +66,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
     """One descriptor per provider in the ``hermes model`` universe (:data:`CANONICAL_PROVIDERS`,
     auto-extended by provider plugins). Auth/env from ``PROVIDER_REGISTRY``; display metadata from
     ``ProviderProfile`` with canonical/env fallbacks so profile-less providers still resolve."""
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.models_catalog_static import listed_canonical_providers
     PROVIDER_REGISTRY = _safe_import("hermes_cli.auth", "PROVIDER_REGISTRY", {})
     OPTIONAL_ENV_VARS = _safe_import("hermes_cli.config", "OPTIONAL_ENV_VARS", {})
     # Overlays carry auth_type for providers with no registry/profile entry — notably the ``moa``
@@ -79,7 +78,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
     except Exception:
         profiles = {}
     out: list[ProviderDescriptor] = []
-    for order, entry in enumerate(CANONICAL_PROVIDERS):
+    for order, entry in enumerate(listed_canonical_providers()):
         slug = entry.slug
         cfg = PROVIDER_REGISTRY.get(slug)
         prof = profiles.get(slug)

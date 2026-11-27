@@ -1,4 +1,5 @@
 import type { DesktopRegistryConnection } from '@/global'
+import { hostHas } from '@/lib/host-capabilities'
 
 import { normalizeGatewayUrl } from './connections-registry'
 
@@ -21,19 +22,29 @@ export async function reconnectMovedCloudAgent(
   org: string,
   isCurrent: () => boolean
 ): Promise<boolean> {
+  const connections = desktop.connections
+
+  // Only native Desktop signs in to a Cloud agent (the Webapp's sign-out and
+  // sign-in are its own gateway's). Do not log anything out while attempting a
+  // reconnect whose new ownership cannot be signed in or saved.
+  if (!connections || !hostHas('gatewayManagement')) {
+    return false
+  }
+
   const { url } = connection
   await desktop.oauthLogoutConnectionConfig(url)
 
   if (!isCurrent()) {
     return false
   }
+
   const result = await desktop.cloud.agentSignIn(url)
 
   if (!isCurrent() || !result.connected) {
     return false
   }
 
-  await desktop.connections.save({
+  await connections.save({
     id: connection.id,
     kind: 'cloud',
     label: connection.label,

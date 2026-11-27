@@ -1,0 +1,27 @@
+name: life-manager
+title: Life Manager
+repo: https://github.com/Daisuke134/life-manager
+sha: 722bc06474c30aeb9437384cb14db20e544c4823
+subdir: hermes-plugin
+version: "1.0.0"
+description: "Records commitments a person states, keeps habit streaks, and injects the board before each turn. A daily Automation Blueprint runs an unattended check-in. Disclosure: no network, no credentials, no shell. Stores commitment text, due dates, streaks, nudged session ids, and the last check-in id in the active Hermes profile plugin state only."
+maintainer: Daisuke134
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Daisuke134/life-manager/tree/main/hermes-plugin
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - life_manager_status
+    - life_manager_commit
+    - life_manager_complete
+    - life_manager_drop
+    - life_manager_defer
+    - life_manager_checkin
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware:
+    - tool_request
+  requires_env: []

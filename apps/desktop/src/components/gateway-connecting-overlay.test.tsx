@@ -1,9 +1,11 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { $introView } from '@/store/onboarding-intro'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { setGatewayState } from '@/store/session'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
@@ -62,30 +64,6 @@ const isRecoveryShown = () =>
   Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
 
 describe('connecting overlay vs recovery surface', () => {
-  it('hard initial-boot failure surfaces the recovery overlay (the working path)', async () => {
-    // failDesktopBoot() ran: error set, gateway never opened.
-    $desktopBoot.set({
-      ...$desktopBoot.get(),
-      error: 'Hermes backend did not become ready',
-      running: false,
-      visible: true
-    })
-    setGatewayState('error')
-
-    await act(async () => {
-      render(
-        <>
-          <GatewayConnectingOverlay />
-          <BootFailureOverlay />
-        </>
-      )
-    })
-
-    expect(isRecoveryShown()).toBe(true)
-    // Connecting overlay bows out when boot.error is set.
-    expect(isConnectingShown()).toBe(false)
-  })
-
   it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', async () => {
     // 1. Initial boot succeeded: gateway opened, boot completed (no error).
     setGatewayState('open')
@@ -195,6 +173,36 @@ describe('connecting overlay vs recovery surface', () => {
     // Escape hatch is reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
     expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
+    expect(isConnectingShown()).toBe(false)
+  })
+})
+
+describe('first-run starting screen', () => {
+  afterEach(() => {
+    $introView.set('off')
+    vi.useRealTimers()
+  })
+
+  it('comes back over a booted app while Run onboarding again opens its chat, then leaves', async () => {
+    vi.useFakeTimers()
+    setGatewayState('open')
+    markOnboardingDecided()
+
+    await act(async () => {
+      render(<GatewayConnectingOverlay />)
+    })
+    expect(isConnectingShown()).toBe(false)
+
+    await act(async () => $introView.set('starting'))
+    expect(isConnectingShown()).toBe(true)
+
+    await act(async () => $introView.set('intro'))
+
+    // The exit choreography: text out, then the overlay fades.
+    for (let step = 0; step < 3; step += 1) {
+      await act(async () => vi.advanceTimersByTime(1_000))
+    }
+
     expect(isConnectingShown()).toBe(false)
   })
 })

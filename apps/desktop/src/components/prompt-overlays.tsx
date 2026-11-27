@@ -123,7 +123,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       <DialogContent blurBackdrop={false} showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
-          <DialogDescription>{copy.sudoDesc}</DialogDescription>
+          <DialogDescription>{request.description ?? copy.sudoDesc}</DialogDescription>
         </DialogHeader>
 
         {request.command?.trim() ? (

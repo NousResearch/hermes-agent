@@ -6,6 +6,7 @@ import { type TodoItem, type TodoStatus, todoTree } from '@/lib/todos'
 
 import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
+import { $liveWorkRoster, noteEventFed, rosterLiveIds, rosterSaysIdle } from './live-work-roster'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone, noteRuntimeAlive } from './runtime-gone'
@@ -51,6 +52,10 @@ export interface ComposerStatusItem {
 // Writable source for background work, synced from the gateway's process
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
+// When the backend snapshot behind each list arrived: the freshness the
+// live-work roster compares against. Local removals (dismiss, auto-clear) carry
+// the snapshot's stamp forward; they are not new backend data.
+const backgroundWrittenAt = new WeakMap<readonly ComposerStatusItem[], number>()
 
 // Stored session ids that have at least one RUNNING background process. The
 // sidebar row reads this for a hollow dot — distinct from the filled dot of an
@@ -66,20 +71,32 @@ export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem
 // reference when unchanged so rows reading this don't re-render per token.
 let backgroundRunningIds: readonly string[] = []
 export const $backgroundRunningSessionIds = computed(
-  [$backgroundStatusBySession, $sessionStates, $sessions],
-  (bg, states, sessions) => {
+  [$backgroundStatusBySession, $sessionStates, $sessions, $liveWorkRoster],
+  (bg, states, sessions, roster) => {
     const ids = new Set<string>()
+    const eventFedAt = new Map<string, number>()
 
     for (const [runtimeId, items] of Object.entries(bg)) {
-      if (!items.some(i => i.state === 'running')) {
+      if (items.length === 0) {
         continue
       }
 
       // Same fresh-chat fallback as the working/attention projections: before a
       // conversation is persisted its runtime id is the id surfaces key on.
-      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
-        ids.add(alias)
+      const aliases = lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)
+      const writtenAt = backgroundWrittenAt.get(items) ?? -Infinity
+      noteEventFed(eventFedAt, aliases, writtenAt)
+
+      if (items.some(i => i.state === 'running') && !rosterSaysIdle(roster, 'background', aliases, writtenAt)) {
+        for (const alias of aliases) {
+          ids.add(alias)
+        }
       }
+    }
+
+    // Rows no current event feed speaks for (off screen, every row after a reload).
+    for (const alias of rosterLiveIds(roster, 'background', eventFedAt, sessions)) {
+      ids.add(alias)
     }
 
     return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
@@ -274,12 +291,16 @@ export function groupStatusItems(items: readonly ComposerStatusItem[]): StatusGr
   return TYPE_ORDER.filter(type => byType.has(type)).map(type => ({ items: byType.get(type)!, type }))
 }
 
-const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
+const writeBackground = (sid: string, items: ComposerStatusItem[], snapshotAt: number | undefined) => {
   const current = $backgroundStatusBySession.get()
   const next = { ...current }
 
   if (items.length > 0) {
     next[sid] = items
+
+    if (snapshotAt !== undefined) {
+      backgroundWrittenAt.set(items, snapshotAt)
+    }
   } else {
     delete next[sid]
   }
@@ -335,8 +356,22 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
 
   for (const [id, item] of fresh) {
     if (item.state !== 'running' && prevState.get(id) === 'running') {
+      let body = item.title
+
+      if (item.exitCode !== undefined) {
+        body += ` (exit ${item.exitCode})`
+      }
+
+      if (item.output) {
+        const tailLines = item.output.trim().split('\n').slice(-3)
+
+        if (tailLines.length > 0) {
+          body += '\n' + tailLines.join('\n')
+        }
+      }
+
       dispatchNativeNotification({
-        body: item.title,
+        body,
         kind: 'backgroundDone',
         sessionId: sid,
         title: translateNow(
@@ -390,7 +425,7 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
     return
   }
 
-  writeBackground(sid, next)
+  writeBackground(sid, next, Date.now())
 }
 
 /** Pull the session's live process snapshot from the gateway. */
@@ -438,7 +473,8 @@ export function dismissBackgroundProcess(sid: string, id: string) {
 
   writeBackground(
     sid,
-    list.filter(item => item.id !== id)
+    list.filter(item => item.id !== id),
+    backgroundWrittenAt.get(list)
   )
 }
 
@@ -515,5 +551,5 @@ export function resetSessionBackground(sid: string) {
   }
 
   dismissedBySession.set(sid, dismissed)
-  writeBackground(sid, [])
+  writeBackground(sid, [], undefined)
 }

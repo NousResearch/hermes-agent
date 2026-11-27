@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
@@ -27,12 +26,6 @@ test('isWindowsBinaryPathInWsl blocks Windows binary types on WSL', () => {
   assert.equal(isWindowsBinaryPathInWsl('/mnt/c/Tools/hermes.exe', { isWsl: false }), false)
 })
 
-test('bundledRuntimeImportCheck selects platform-specific import checks', () => {
-  assert.equal(bundledRuntimeImportCheck('win32'), 'import fastapi, uvicorn, winpty')
-  assert.equal(bundledRuntimeImportCheck('darwin'), 'import fastapi, uvicorn, ptyprocess')
-  assert.equal(bundledRuntimeImportCheck('linux'), 'import fastapi, uvicorn, ptyprocess')
-})
-
 test('detectRemoteDisplay keeps GPU on for local sessions', () => {
   // Plain local X11, Wayland, native Windows, native macOS — no remote signal.
   assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':0' }, platform: 'linux' }), null)
@@ -51,13 +44,23 @@ test('detectRemoteDisplay does not treat WSLg as remote', () => {
   )
 })
 
-test('detectRemoteDisplay flags SSH sessions on any platform', () => {
-  assert.equal(
-    detectRemoteDisplay({ env: { SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' }, platform: 'linux' }),
-    'ssh-session'
+test('detectRemoteDisplay treats SSH as a remote display only on Linux', () => {
+  for (const platform of ['linux', 'darwin', 'win32'] as const) {
+    for (const env of [
+      { SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' },
+      { SSH_CLIENT: '1.2.3.4 5 22' },
+      { SSH_TTY: '/dev/pts/0' }
+    ]) {
+      assert.equal(detectRemoteDisplay({ env, platform }), platform === 'linux' ? 'ssh-session' : null)
+    }
+  }
+})
+
+test('detectRemoteDisplay still recognizes Windows RDP with inherited SSH variables', () => {
+  assert.match(
+    String(detectRemoteDisplay({ env: { SSH_TTY: '/dev/pts/0', SESSIONNAME: 'RDP-Tcp#7' }, platform: 'win32' })),
+    /^rdp/
   )
-  assert.equal(detectRemoteDisplay({ env: { SSH_CLIENT: '1.2.3.4 5 22' }, platform: 'darwin' }), 'ssh-session')
-  assert.equal(detectRemoteDisplay({ env: { SSH_TTY: '/dev/pts/0' }, platform: 'win32' }), 'ssh-session')
 })
 
 test('detectRemoteDisplay flags forwarded X11 displays but not local ones', () => {

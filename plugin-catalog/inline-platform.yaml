@@ -1,0 +1,17 @@
+name: inline-platform
+repo: https://github.com/inline-chat/inline
+sha: dd7f267e9857fe70f54f3b88eeee8b942c1e2890
+subdir: plugins/hermes-agent/plugin/inline
+description: "Use Hermes Agent from Inline work-chat DMs, chats, and reply threads. Disclosure — the setup wizard can, on explicit opt-in, download https://inline.chat/cli/install.sh and pipe it to sh without a checksum, then run the vendor inline CLI login; on connect the adapter publishes your Hermes slash-command list and the names and descriptions of installed skills to the Inline server (INLINE_SYNC_COMMANDS=false disables); by default (the bot's Detailed output mode) each turn posts a live progress message into the Inline chat showing the agent's terminal commands with up to 2,000 characters of their output, file paths read or searched, file-edit diffs, web URLs and searches, plans and sub-agent goals, with only best-effort secret masking, visible to everyone in that chat (switch the bot to Friendly output to hide tool details); the inline tool lets the agent add participants to, rename, and permanently delete Inline chats the bot can manage, on the model's decision with no confirmation; error telemetry is off unless a Sentry DSN is set."
+maintainer: morajabi
+tier: community
+category: platform
+requires_hermes: ">=0.21.3"
+version: "1.2.8"
+capabilities:
+  provides_tools:
+    - inline
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - INLINE_TOKEN

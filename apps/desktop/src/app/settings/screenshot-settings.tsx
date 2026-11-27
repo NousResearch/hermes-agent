@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import type { ScreenshotStatus } from '../../../electron/command-screenshot-types'
 
 import { ListRow, ToggleRow } from './primitives'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 type SettingsError = 'loadFailed' | 'saveFailed' | 'permissionFailed'
 
@@ -63,6 +64,7 @@ export function ScreenshotSettings() {
       setStatus(next)
       setError(null)
     })
+
     void refresh()
 
     return () => {
@@ -108,6 +110,7 @@ export function ScreenshotSettings() {
     'screen-permission': s.screenPermission,
     unavailable: s.unavailable
   }
+
   const description = busy ? s.checking : error ? s[error] : descriptions[status?.state ?? 'disabled']
   const showStatus = busy || error || status?.enabled || status?.state !== 'disabled'
   const canRetry = error || (status?.state !== 'ready' && status?.state !== 'disabled')
@@ -120,6 +123,7 @@ export function ScreenshotSettings() {
         checked={status?.enabled ?? false}
         description={s.enabledDesc}
         disabled={!status || busy}
+        id={settingElementId(SETTING_IDS.keybinds.screenshot)}
         label={s.enabledTitle}
         onChange={enabled => void refresh(enabled)}
       />
@@ -150,7 +154,9 @@ export function ScreenshotSettings() {
                 <ErrorIcon size="1rem" />
                 {s.errorTitle}
               </span>
-            ) : s.statusTitle
+            ) : (
+              s.statusTitle
+            )
           }
         />
       )}

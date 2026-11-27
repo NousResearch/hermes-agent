@@ -1,6 +1,6 @@
 name: agent-log
 repo: https://github.com/PixelAlchemist4/hermes-agent-log-plugin
-sha: 4cf7af5bf8c8df4f132896db57fd1b868c09f1ae
+sha: e58702e60b2697c9d1dc3daa9eb65ac1fcc50560
 description: Readable agent.log viewer in the desktop status bar — a live, colour-coded feed of
   API calls, tools, turns, fallbacks, warnings and errors, with per-call tokens/latency/cache,
   stats tables, and a single-dot alert for genuine non-self-healing faults. Follows app theme/language.

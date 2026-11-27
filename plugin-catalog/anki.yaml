@@ -1,0 +1,26 @@
+name: anki
+title: Anki
+repo: https://github.com/suhas-svg/hermes_anki
+sha: bc89df834fb104b8d69c6444f35a5ae6b3764dd7
+version: "1.0.0"
+description: "Create, search, and review Anki flashcards from Hermes through the local AnkiConnect API: adds notes to a deck (creating it if needed), searches the collection, lists due cards, and grades reviews. Writes to the local Anki collection and changes scheduling only when its tools or /anki command are used. Requires Anki desktop with AnkiConnect (add-on 2055492159); no telemetry; optional API key via ANKI_BRIDGE_API_KEY."
+maintainer: suhas-svg
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/suhas-svg/hermes_anki#readme
+readme: true
+platforms: []
+known_issues:
+  - "Requires Anki desktop to be running with the AnkiConnect add-on (code 2055492159)."
+  - "AnkiConnect listens on 127.0.0.1:8765 by default; remote endpoints are opt-in via config."
+capabilities:
+  provides_tools:
+    - anki_decks
+    - anki_add_cards
+    - anki_search
+    - anki_due
+    - anki_answer
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,38 @@
+name: run-receipts
+repo: https://github.com/percyhendrux123-prog/hermes-run-receipts
+sha: "cae67eb97ac8f922c478f2c60da9f31093d7afc8"
+version: "0.1.0"
+title: "Run receipts"
+description: >-
+  Writes one small receipt per agent-backed cron run, outside the job's own output: job id,
+  session id, start and end times, tool-call and tool-error counts, tool names, and an outcome
+  (delivered, silent_checked, silent_unchecked, silent_with_errors, failed, incomplete), so a
+  silent run that checked something can be told apart from one that never called a tool.
+  Read back with /receipts or the read-only run_receipts_query tool. Observer only; fails open.
+  Disclosure — four observer hooks; writes one JSON line per cron run to
+  <HERMES_HOME>/run-receipts/receipts.jsonl (or the state_dir setting; 0700 dir, 0600 file) and
+  prunes rows older than keep_days; stores metadata only (no tool arguments, results or prompts)
+  unless store_reason is turned on, which keeps up to 200 characters of silent response text in
+  the local file only; makes no network calls, runs no subprocesses, stores no credentials and
+  sends no telemetry.
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-run-receipts/blob/cae67eb97ac8f922c478f2c60da9f31093d7afc8/README.md
+readme: true
+platforms: [macos, linux]
+capabilities:
+  provides_tools:
+    - run_receipts_query
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - post_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Script-mode (no_agent) cron jobs get no receipt: they run as a bare subprocess and fire no plugin hooks. The cron run-lifecycle hook requested in #57971 would cover them."
+  - "silent_checked means at least one tool call was observed with no flagged error. It is not proof that the check itself was correct."
+  - "Runs skipped before an agent starts (monitor-gate unchanged ticks, preflight failures) leave no receipt."

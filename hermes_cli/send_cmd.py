@@ -33,7 +33,7 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
         if file_path == "-":
             return sys.stdin.read()
         try:
-            return Path(file_path).read_text(encoding="utf-8")
+            return Path(file_path).read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             _fail(
                 f"hermes send: {file_path} is not a text file. --file reads the "
@@ -52,6 +52,13 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
     return (sys.stdin.read() or None) if not sys.stdin.isatty() else None
 
 
+def _invalid_whatsapp_mentions(mentions: list[str]) -> list[str]:
+    """Return mention values that cannot identify a WhatsApp participant."""
+    from gateway.whatsapp_identity import normalize_whatsapp_mention_jid
+
+    return [mention for mention in mentions if not normalize_whatsapp_mention_jid(mention)]
+
+
 def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
     """Print the ``send_message_tool`` JSON result in the requested format; return the exit code.
     Unknown / unexpected shapes are failures so scripts notice."""
@@ -63,6 +70,8 @@ def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
     if json_mode:
         print(json.dumps(payload, indent=2))
     elif not quiet:
+        for warning in payload.get("warnings") or ():  # the cause behind an error, or a partial send
+            print(f"hermes send: warning: {warning}", file=sys.stderr)
         if payload.get("error"):
             print(f"hermes send: {payload['error']}", file=sys.stderr)
         elif payload.get("success"):
@@ -111,7 +120,13 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     if not platforms:
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
-        print("channel discovery can populate ~/.hermes/channel_directory.json.")
+        from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+        home, root = get_hermes_home(), get_default_hermes_root()
+        print(f"channel discovery can populate {home / 'channel_directory.json'}.")
+        # A gateway started from the default root writes that root's directory, never this profile's.
+        if hermes_home_key(root) != hermes_home_key(home) and (root / "channel_directory.json").exists():
+            print(f"A gateway running from {root} already has {root / 'channel_directory.json'}; "
+                  f"this shell is scoped to profile home {home}, which has none.")
         return _SUCCESS_EXIT
 
     # Unfiltered: the shared formatter over the merged view. Filtered: a minimal view of our own.
@@ -132,7 +147,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 
 
 def _load_hermes_env() -> None:
-    """Populate the credential environment from ``~/.hermes/.env`` AND bridge top-level ``config.yaml``
+    """Populate the credential environment from ``<HERMES_HOME>/.env`` AND bridge top-level ``config.yaml``
     keys into it so the gateway config loader sees platform credentials and home channels.
 
     The target is ``os.environ`` for the standalone CLI. Inside a multi-profile host (dashboard console
@@ -143,6 +158,7 @@ def _load_hermes_env() -> None:
     the profile's external secret sources over it — so it is authoritative as-is; replaying raw
     ``.env`` over it would let a stale user value beat the secret-manager one for this request.
     """
+    from hermes_cli.config_backend import config_exists
     import os
     try:
         from hermes_cli.config import get_hermes_home
@@ -166,20 +182,23 @@ def _load_hermes_env() -> None:
     # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
     # into the environment, without overriding existing values.
     config_path = home / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return
     try:
         from hermes_cli.config_effective import load_user_config_effective
         cfg = load_user_config_effective(config_path)
     except Exception:
         return
-    for key, val in cfg.items():
-        if isinstance(val, (str, int, float, bool)) and key not in target:
-            target[key] = str(val)
+    from hermes_cli.env_loader import bridge_config_scalars
+    bridge_config_scalars(cfg, target)
 
 
 def cmd_send(args: argparse.Namespace) -> None:
     """Entry point wired into the top-level argparse dispatcher."""
+    # A profile a plugin runs elsewhere sends from that backend: this would load the credentials that
+    # backend wrote into the home (its .env and config.yaml) and message a platform with them.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+    exit_if_profile_runs_elsewhere("send")
     _load_hermes_env()  # the downstream gateway config loader reads credentials from os.environ
     if getattr(args, "list_targets", False):  # --list short-circuits everything else
         # `hermes send --list telegram` lands "telegram" in the `message` positional.
@@ -194,6 +213,15 @@ def cmd_send(args: argparse.Namespace) -> None:
             "  hermes send --to discord:#ops --file report.md\n"
             "  hermes send --list      # list available targets",
             _USAGE_EXIT)
+    mentions = list(getattr(args, "mentions", None) or [])
+    if mentions and target.split(":", 1)[0].strip().lower() != "whatsapp":
+        _fail("hermes send: --mention is only supported for WhatsApp targets.", _USAGE_EXIT)
+    invalid_mentions = _invalid_whatsapp_mentions(mentions)
+    if invalid_mentions:
+        _fail(
+            "hermes send: invalid --mention value(s): "
+            f"{', '.join(invalid_mentions)}. Use a phone number or participant JID.",
+            _USAGE_EXIT)
     message = _read_message_body(getattr(args, "message", None), getattr(args, "file", None))
     if message is None or not message.strip():
         _fail(
@@ -207,11 +235,14 @@ def cmd_send(args: argparse.Namespace) -> None:
         message = f"{subject}\n\n{message.lstrip()}"
 
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
-    from tools.send_message_tool import send_message_tool
+    from gateway.outbound.send import send_message_tool
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
-    result = send_message_tool({"action": "send", "target": target, "message": message})
+    tool_args = {"action": "send", "target": target, "message": message}
+    if mentions:
+        tool_args["mentions"] = mentions
+    result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 
@@ -227,6 +258,9 @@ _SEND_ARGUMENTS = (
         "Read message body from PATH (text only). Use '-' to force stdin. "
         "To send an image/document as an attachment, use MEDIA:<path> in the message text instead."))),
     (("-s", "--subject"), dict(metavar="LINE", default=None, help="Prepend a subject/header line before the message body.")),
+    (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
+        "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
+        "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
@@ -236,13 +270,16 @@ _SEND_ARGUMENTS = (
 
 def register_send_subparser(subparsers) -> argparse.ArgumentParser:
     """Create the ``send`` subparser and return it."""
+    from hermes_constants import get_hermes_home
+    hermes_home = get_hermes_home()
     parser = subparsers.add_parser(
         "send",
         help="Send a message to a configured platform (scripts, cron jobs, CI).",
         description=(
             "Pipe text from any shell script to any messaging platform Hermes "
             "is already configured for. Reuses the gateway's platform "
-            "credentials (~/.hermes/.env + ~/.hermes/config.yaml) — no LLM, "
+            f"credentials ({hermes_home / '.env'} + "
+            f"{hermes_home / 'config.yaml'}) — no LLM, "
             "no agent loop, no running gateway required for bot-token "
             "platforms like Telegram/Discord/Slack/Signal."
         ),
@@ -250,9 +287,10 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "Examples:\n"
             "  hermes send --to telegram \"deploy finished\"\n"
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
-            "  hermes send --to discord:#ops --file /tmp/report.md\n"
+            "  hermes send --to discord:#ops --file ./report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
-            "  hermes send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
+            "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
+            "  hermes send --to telegram \"MEDIA:./chart.png\"   # send a media attachment\n"
             "  hermes send --list                  # all platforms\n"
             "  hermes send --list telegram         # filter by platform\n"
             "\n"

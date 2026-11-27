@@ -1,10 +1,13 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { $desktopBoot } from '@/store/boot'
+import { $notifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
-import { BootFailureOverlay } from './boot-failure-overlay'
+import { BootFailureOverlay, StartupOverlay } from './boot-failure-overlay'
 
 // Remote-backend users hit a hard boot failure that isn't OAuth reauth (token
 // auth, wrong URL, unreachable host). The recovery screen must let them fix the
@@ -29,7 +32,23 @@ function stubDesktop(config: Record<string, unknown>, overrides: Record<string, 
   const original = window.hermesDesktop
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getRecentLogs: async () => ({ lines: [] }), getConnectionConfig: async () => config, ...overrides }
+    value: {
+      getRecentLogs: async () => ({ lines: [] }),
+      getConnectionConfig: async () => config,
+      getBootstrapState: async () => ({
+        active: false,
+        manifest: null,
+        stages: {},
+        error: null,
+        log: [],
+        startedAt: null,
+        completedAt: null,
+        setupChoice: null,
+        unsupportedPlatform: null,
+        bundled: false
+      }),
+      ...overrides
+    }
   })
 
   return () => Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
@@ -97,6 +116,66 @@ describe('BootFailureOverlay', () => {
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
     expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /back/i })).toBeNull()
+  })
+
+  it('hides the modal on dismiss without clearing the boot error', () => {
+    const { rerender } = render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBe(error)
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'A different startup failure' })
+    rerender(<BootFailureOverlay />)
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: null, running: false })
+    rerender(<BootFailureOverlay />)
+    $desktopBoot.set({ ...$desktopBoot.get(), error, running: false })
+    rerender(<BootFailureOverlay />)
+
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
+  })
+
+  it('dismisses on Escape and keeps the boot error latched', () => {
+    render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: /Hermes couldn't start/i }), { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBe(error)
+  })
+
+  it('dismisses from the embedded gateway settings view', async () => {
+    render(<BootFailureOverlay />)
+
+    fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
+    expect(await screen.findByRole('dialog', { name: /gateway settings/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('re-shows the same error after a retry starts and fails again', () => {
+    render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    act(() => $desktopBoot.set({ ...$desktopBoot.get(), running: true }))
+    act(() => $desktopBoot.set({ ...$desktopBoot.get(), error, running: false }))
+
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
   })
 
   it('drops local-only Repair and Use-local-gateway on a local failure', () => {
@@ -203,10 +282,50 @@ describe('BootFailureOverlay', () => {
       fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
 
       await waitFor(() => expect(cloudAgentSignIn).toHaveBeenCalledWith(gatewayUrl))
-      expect(logout).toHaveBeenCalledWith(gatewayUrl)
+      // The ladder owns the logout: exactly one drop of this gateway's cookies.
+      expect(logout).toHaveBeenCalledExactlyOnceWith(gatewayUrl)
       expect(cloudStatus).toHaveBeenCalledTimes(1)
       expect(cloudLogin).toHaveBeenCalledTimes(1)
       expect(nativeLogin).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('asks a signed-out Webapp tab to sign in instead of offering recovery for a working service', async () => {
+    const restore = stubDesktop({ mode: 'local' })
+    $desktopBoot.set({
+      error: WEBAPP_LAUNCH_REQUIRED,
+      fakeMode: false,
+      message: 'boot failed',
+      phase: 'renderer.error',
+      progress: 40,
+      running: false,
+      timestamp: Date.now(),
+      visible: true
+    })
+
+    try {
+      render(<StartupOverlay />)
+      expect(await screen.findByText(en.boot.failure.webappTitle)).toBeTruthy()
+      expect(screen.getByText(en.boot.failure.webappDescription)).toBeTruthy()
+      expect(screen.queryByText(en.boot.failure.title)).toBeNull()
+      expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /repair/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /logs/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /close/i })).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it('shows the recovery steps for any other startup failure', async () => {
+    const restore = stubDesktop({ mode: 'local' })
+
+    try {
+      render(<StartupOverlay />)
+      expect(await screen.findByText(en.boot.failure.title)).toBeTruthy()
+      expect(screen.queryByText(en.boot.failure.webappTitle)).toBeNull()
     } finally {
       restore()
     }
@@ -246,6 +365,132 @@ describe('BootFailureOverlay', () => {
       expect(screen.getByText(/ares-3009\.agents\.nousresearch\.com/i)).toBeTruthy()
     } finally {
       restore()
+    }
+  })
+
+  const bundledState = {
+    active: false,
+    manifest: null,
+    stages: {},
+    error: null,
+    log: [],
+    startedAt: null,
+    completedAt: null,
+    setupChoice: null,
+    unsupportedPlatform: null,
+    bundled: true
+  }
+
+  it('offers "Reinstall the app" on a bundled install only when the payload itself is damaged', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    const restore = stubDesktop({ mode: 'local' }, { getBootstrapState: async () => bundledState, openExternal })
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error:
+        'This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.'
+    })
+
+    try {
+      render(<BootFailureOverlay />)
+
+      // The bundled artifact has no installer to repair with — the action is
+      // a docs link, and the hint says reinstall instead of re-run installer.
+      expect(await screen.findByRole('button', { name: /reinstall the app/i })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull()
+      expect(screen.getByText(/reinstall the app to restore/i)).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /reinstall the app/i }))
+      await waitFor(() =>
+        expect(openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/user-guide/desktop')
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('a bundled install with an unrelated failure gets neither Repair nor Reinstall', async () => {
+    const restore = stubDesktop({ mode: 'local' }, { getBootstrapState: async () => bundledState })
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'listen EADDRINUSE: address already in use 127.0.0.1:8642' })
+
+    try {
+      render(<BootFailureOverlay />)
+
+      expect(await screen.findByRole('button', { name: /retry/i })).toBeTruthy()
+      // Wait for the bundled snapshot to land before asserting the negatives.
+      await waitFor(() => expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull())
+      expect(screen.queryByRole('button', { name: /reinstall the app/i })).toBeNull()
+      expect(screen.queryByText(/reinstall the app to restore/i)).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it.each(['refused', 'thrown', 'unavailable'])('preserves a %s repair failure without reloading', async failure => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const repair =
+      failure === 'unavailable'
+        ? undefined
+        : vi.fn(async () => {
+            if (failure === 'thrown') {
+              throw new Error('installer permission denied')
+            }
+
+            return { ok: false, error: 'bundled-immutable' }
+          })
+
+    const restore = stubDesktop({ mode: 'local' }, { repairBootstrap: repair })
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      const message =
+        failure === 'thrown'
+          ? 'installer permission denied'
+          : failure === 'refused'
+            ? en.boot.failure.bundledReinstallHint
+            : en.boot.errors.ipcBridgeUnavailable
+
+      await waitFor(() =>
+        expect($notifications.get()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ kind: 'error', message })])
+        )
+      )
+      expect(reload).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: /repair install/i }).hasAttribute('disabled')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
+    }
+  })
+
+  it('reloads after an accepted repair', async () => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const restore = stubDesktop({ mode: 'local' }, { repairBootstrap: vi.fn().mockResolvedValue({ ok: true }) })
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      await waitFor(() => expect(reload).toHaveBeenCalled())
+      expect($notifications.get().some(n => n.kind === 'error')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
     }
   })
 })

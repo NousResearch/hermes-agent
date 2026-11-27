@@ -1,6 +1,6 @@
 /**
  * Regression coverage for an attached image in a durable session. The gateway
- * persists the turn, the builder exits, and desktop renders it from SessionDB
+ * persists the turn, the builder exits, and desktop renders it from the session store
  * for the first time — the "quit and relaunch" case, where the transcript used
  * to come back as vision-enrichment prose instead of a thumbnail.
  *
@@ -14,16 +14,16 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type Sandbox,
   waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
 } from './fixtures'
-import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 import { type ElectronApplication, expect, type Page, test } from './test'
 

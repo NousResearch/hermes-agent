@@ -1,0 +1,32 @@
+name: openmail
+repo: https://github.com/openmailsh/hermes-plugin
+sha: 12f42aee87ff4664b63bccead43205eab242cc12
+version: "0.3.2"
+description: "Gives a Hermes agent its own email address. Inbound mail wakes the agent over a websocket, and replies stay in-thread. Agents can read and send mail, create, review and edit HTML drafts, send approved drafts, delete unsent drafts, and provision inboxes. Disclosure — sends a fixed `X-OpenMail-Client: hermes` header and an `openmail-hermes/<version>` User-Agent with every request to the OpenMail API (api.openmail.sh, or your OPENMAIL_BASE_URL) so OpenMail can attribute usage to this plugin; the agent can send and delete drafts and send mail without a Hermes approval prompt."
+maintainer: openmailsh
+tier: community
+category: platform
+docs_url: https://docs.openmail.sh/integrations/hermes
+image: https://raw.githubusercontent.com/openmailsh/.github/f9d07f18a90a75e8b29f96cbc8d17154ce254828/profile/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools:
+  - openmail_whoami
+  - openmail_send
+  - openmail_create_draft
+  - openmail_list_drafts
+  - openmail_get_draft
+  - openmail_edit_draft
+  - openmail_send_draft
+  - openmail_delete_draft
+  - openmail_reply
+  - openmail_list_threads
+  - openmail_read_thread
+  - openmail_list_messages
+  - openmail_attachment_text
+  - openmail_list_inboxes
+  - openmail_create_inbox
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - OPENMAIL_API_KEY

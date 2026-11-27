@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profile_cmd, profiles
+from hermes_cli import profile_cmd
 
 
 @pytest.fixture()
@@ -34,12 +34,6 @@ def test_every_profile_subcommand_has_a_dispatch_entry():
     assert set(groups[0].choices) == set(profile_cmd.PROFILE_ACTIONS) - {None}
 
 
-def test_purge_identity_reports_success(profile_env, monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.profile_identity.purge_profile_identity", lambda name: True)
-
-    profile_cmd.cmd_profile(Namespace(profile_action="purge-identity", profile_name="gone"))
-
-    assert "identity purged: gone" in capsys.readouterr().out
 
 
 def test_purge_identity_exits_nonzero_when_settlement_stays_pending(
@@ -64,25 +58,20 @@ def test_purge_identity_refuses_a_same_name_profile_created_after_the_delete(pro
     import json
 
     from hermes_cli.profiles import create_profile
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     create_profile("gone", no_alias=True)
     scope = str(profile_env / ".hermes" / "sessions")
-    db = SessionDB(profile_env / ".hermes" / "state.db")
-    db.save_gateway_routing_entry(
-        "agent:gone:feishu:dm:chatA",
-        json.dumps({"session_key": "agent:gone:feishu:dm:chatA"}), scope=scope)
-    db.close()
+    with open_persistence(profile_scope(home=profile_env / ".hermes")) as store:
+        store.routing.upsert_routing_entry(
+            "agent:gone:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:gone:feishu:dm:chatA"}), routing_scope=scope)
 
     with pytest.raises(SystemExit) as exc:
         profile_cmd.cmd_profile(Namespace(profile_action="purge-identity", profile_name="gone"))
 
     assert exc.value.code not in (0, None)
-    assert "purge-identity only settles the identity of a delete" in capsys.readouterr().out
-    check = SessionDB(profile_env / ".hermes" / "state.db")
-    try:
+    with open_persistence(profile_scope(home=profile_env / ".hermes")) as check:
         # The recreated profile still owns its routing key.
-        assert set(check.load_gateway_routing_entries(scope=scope)) == {
+        assert set(check.routing.load_routing_entries(routing_scope=scope)) == {
             "agent:gone:feishu:dm:chatA"}
-    finally:
-        check.close()

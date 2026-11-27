@@ -21,7 +21,7 @@ Design minimal cute IP mascot marks readable at 32px.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `logo`, `mascot`, `branding`, `ip-character`, `image-generation`, `creative` |
-| Related skills | [`pixel-art`](/docs/user-guide/skills/optional/creative/creative-pixel-art) |
+| Related skills | [`pixel-art`](../../optional/creative/creative-pixel-art.md) |
 
 ## Reference: full SKILL.md
 

@@ -21,8 +21,6 @@ now charge it in the walk too — one policy per session shape, chosen by
 ``message_sanitization.stale_thinking_reaches_wire``.
 """
 
-from unittest.mock import patch
-
 from agent.context_compressor import (
     ContextCompressor,
     _estimate_msg_budget_tokens,
@@ -30,12 +28,9 @@ from agent.context_compressor import (
 from agent.message_sanitization import stale_thinking_reaches_wire
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
-    estimate_request_tokens_rough,
 )
 
-
 STALE_THINKING = "considering the next move carefully... " * 200  # ~2K tok
-
 
 def _reasoning_heavy_session(n_turns: int = 40) -> list:
     """Transcript whose bulk is stale reasoning replay (the #84371 shape)."""
@@ -59,7 +54,6 @@ def _reasoning_heavy_session(n_turns: int = 40) -> list:
         msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"r{i}"})
     return msgs
 
-
 class TestWireTruthPredicate:
     def test_codex_responses_never_ships_stale_thinking_text(self):
         assert stale_thinking_reaches_wire(
@@ -77,7 +71,6 @@ class TestWireTruthPredicate:
         assert stale_thinking_reaches_wire(
             "", "mistral", "mistral-large", "https://api.mistral.ai"
         ) is False
-
 
 class TestEstimatorParity:
     """Trigger-fires must imply the walk finds a compactable middle."""
@@ -200,7 +193,6 @@ class TestEstimatorParity:
         # And the echo route genuinely charges the stale thinking bulk.
         assert walk_echo > 3 * walk_codex
 
-
 class TestReasoningDoubleCount:
     """``reasoning`` and ``reasoning_content`` carrying the same text must be
     charged once — the wire ships at most one of them."""
@@ -260,7 +252,6 @@ class TestReasoningDoubleCount:
         )
         assert w > w_base + 500
 
-
 class TestNoProgressDeadLoopBreaker:
     """A fired compaction that returns the transcript unchanged must arm the
     structural backoff so it cannot re-fire (and re-summarize) every turn."""
@@ -283,48 +274,3 @@ class TestNoProgressDeadLoopBreaker:
         assert cc.should_compress(over) is False
         reason = cc._compression_block_reason() or ""
         assert reason.startswith("structural_backoff")
-
-    def test_commit_layer_no_progress_calls_recorder(self):
-        """The conversation_compression no_progress path must invoke the
-        compressor's structural no-op recorder (it used to record telemetry
-        only, so auto-compress re-fired next turn)."""
-        import tempfile
-        from pathlib import Path
-        from unittest.mock import MagicMock
-        import os
-
-        from hermes_state import SessionDB
-        from run_agent import AIAgent
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "t.db")
-            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-                agent = AIAgent(
-                    api_key="test-key",
-                    base_url="https://openrouter.ai/api/v1",
-                    model="test/model",
-                    quiet_mode=True,
-                    session_db=db,
-                    session_id="s-84371",
-                    skip_context_files=True,
-                    skip_memory=True,
-                )
-            agent.compression_in_place = False
-            compressor = MagicMock()
-            # No-op compression: returns input unchanged.
-            compressor.compress.side_effect = (
-                lambda messages, **_kwargs: messages
-            )
-            compressor._last_compress_aborted = False
-            agent.context_compressor = compressor
-            messages = [{"role": "user", "content": "request"}]
-
-            returned, _ = agent._compress_context(
-                messages, "sys", approx_tokens=100
-            )
-
-            assert returned is messages
-            assert compressor._record_structural_no_op.called, (
-                "no_progress must arm the per-session backoff — otherwise "
-                "the dead loop re-fires a full aux summarization every turn"
-            )

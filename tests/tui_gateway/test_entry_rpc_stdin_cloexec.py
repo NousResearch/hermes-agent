@@ -8,7 +8,7 @@ import pytest
 from tui_gateway import entry
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX close-on-exec semantics")
+@pytest.mark.platforms("posix")  # POSIX close-on-exec semantics
 def test_rpc_stdin_is_closed_before_a_bare_child_executes(monkeypatch):
     """A child with no explicit stdin must not be able to consume RPC bytes."""
     original_stdin = os.dup(0)

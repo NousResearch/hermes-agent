@@ -1,0 +1,20 @@
+name: fleet-policy
+repo: https://github.com/Julientalbot/hermes-fleet-policy
+sha: 7d36874a5a625fc2a0c24ee280e34872e5259800
+subdir: fleet_policy
+description: "For administrators who pin settings through the managed scope: records what each agent role really sends to the provider (model, reasoning effort, service tier, plus the tier the provider says it served) next to the managed-scope state and the effective config (`hermes fleet-policy status --json`); measures cron cost per job — runs, empty runs, $/day, gate present (`crons --cost`); and `watch`, a generic wake gate for cron scripts that replays one read tool on an MCP server and wakes the agent only when new item ids appear (stock `wakeAgent` gate, no LLM call otherwise). Ships two skills (managed-scope admin, recurring tasks). Disclosure — records only model, reasoning effort and service tier per role (no message content, headers or keys) via the pre_api_request and pre_auxiliary_call hooks and a pass-through llm_execution middleware, stored in $HERMES_HOME/fleet-policy/observed.json; crons --cost opens cron/executions.db and state.db read-only and checks each cron run's final reply locally for silence; watch is an operator CLI command that calls one MCP tool at the config's server_url (or the admin-pinned watch_server_url) with config headers in which ${VAR} env values are expanded, follows redirects, and writes seen ids to a state file at the config-chosen path; the recurring-tasks skill has the agent write watch configs under $HERMES_HOME/watches, a script under $HERMES_HOME/scripts and a cron job; no other network access, no telemetry."
+maintainer: Julientalbot
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Julientalbot/hermes-fleet-policy/blob/7d36874a5a625fc2a0c24ee280e34872e5259800/README.md
+version: "0.2.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - pre_auxiliary_call
+  provides_middleware:
+    - llm_execution
+  requires_env: []

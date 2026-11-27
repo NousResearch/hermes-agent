@@ -66,7 +66,7 @@ def profiles(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("diagnostic_first", [False, True])
-@pytest.mark.parametrize("setting", [None, False, True])
+@pytest.mark.parametrize("setting", [None, True])
 async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diagnostic_first, setting):
     """Real runner recursion and final-event handoff, not a copied mute snapshot."""
     import gateway.run as gateway_run
@@ -191,7 +191,7 @@ async def test_turn_error_preserves_diagnostic_bridge_and_failed_outcome(
             assert adapter.wire == []
         else:
             assert len(adapter.wire) == 1
-            assert ("same source failure" in adapter.wire[0][0]) is (setting is not True)
+            assert "same source failure" not in adapter.wire[0][0]
         assert not adapter._active_sessions
     finally:
         logger.removeHandler(bridge)

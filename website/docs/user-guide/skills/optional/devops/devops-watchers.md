@@ -15,7 +15,7 @@ Poll RSS, JSON APIs, and GitHub with watermark dedup.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/watchers` |
-| Path | `optional-skills/devops\watchers` |
+| Path | `optional-skills/devops/watchers` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -102,11 +102,8 @@ The agent invokes the script via the terminal tool inside the cron job's agent l
 
 ## State files
 
-Every watcher writes `$HERMES_HOME/watcher-state/<name>.json`. Inspect:
-
-```bash
-cat $HERMES_HOME/watcher-state/hn.json
-```
+Every watcher writes `$HERMES_HOME/watcher-state/<name>.json`. Inspect it with
+`read_file` (e.g. `$HERMES_HOME/watcher-state/hn.json`).
 
 Force a replay (next run treated as first poll):
 

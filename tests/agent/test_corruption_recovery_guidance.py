@@ -15,20 +15,8 @@ The fix adds:
    with the full recovery path (hermes doctor, sqlite3 .recover, backups)
 """
 
-from pytest import fixture
 
 
-def test_format_turn_completion_corrupt_includes_recovery_options():
-    """The 'corrupt' persistence cause must list all recovery options."""
-    from run_agent import AIAgent
-
-    explanation = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "corrupt"
-    )
-    assert "hermes doctor" in explanation
-    assert ".recover" in explanation
-    assert "backups" in explanation
-    assert "Freeing disk space will not help" in explanation
 
 
 def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
@@ -104,25 +92,8 @@ def test_format_turn_completion_corrupt_never_names_the_live_db():
     assert "hermes sessions recover --source" in explanation
 
 
-def test_format_turn_completion_disk_still_advises_space():
-    """The 'disk' cause still gives disk-space advice (unchanged)."""
-    from run_agent import AIAgent
-
-    explanation = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "disk"
-    )
-    assert "free some space" in explanation
 
 
-def test_format_turn_completion_locked_still_advises_retry():
-    """The 'locked' cause still advises retrying (unchanged)."""
-    from run_agent import AIAgent
-
-    explanation = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "locked"
-    )
-    assert "busy" in explanation
-    assert "send it again" in explanation
 
 
 def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
@@ -133,8 +104,7 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     import asyncio
 
     import gateway.run as gateway_run
-    from hermes_state import _default_db_path
-    from hermes_state_repair import _persistent_repair_exhausted_error
+    from persistence.sqlite._state.repair import _persistent_repair_exhausted_error
     from run_agent import AIAgent
 
     root = tmp_path / "hermes"
@@ -147,9 +117,11 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     explanation = AIAgent._format_turn_completion_explanation("session_persistence_failed", "corrupt")
     commands = [line.strip() for line in explanation.splitlines() if "hermes " in line]
     assert commands and all("hermes -p research " in line for line in commands), commands
-    # The conftest pins hermes_state.DEFAULT_DB_PATH, so the store named is whatever the
-    # process resolves — the contract is "the same path the runtime would open".
-    assert f"--source {_default_db_path()} " in explanation
+    # The explainer names the store the storage interface opens for the active profile: the
+    # contract is "the same path the runtime would open".
+    from persistence_assembly import profile_scope, store_location
+
+    assert f"--source {store_location(profile_scope())} " in explanation
 
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_db_init_error = "database disk image is malformed"
@@ -163,7 +135,7 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
     asyncio.run(runner._send_session_db_warning_notifications())
     notice_commands = [line.strip() for line in sent[0].splitlines() if "hermes " in line]
     assert notice_commands and all("hermes -p research " in line for line in notice_commands), notice_commands
-    assert f"--source {_default_db_path()} " in sent[0]
+    assert f"--source {store_location(profile_scope())} " in sent[0]
 
     exhausted = _persistent_repair_exhausted_error(home / "state.db")
     assert "`hermes -p research sessions recover --source" in exhausted

@@ -21,14 +21,14 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
         {"name": "session_search", "arguments": {}},
         {"name": "connectors__gmail__SEND_EMAIL" if mixed else "todo_list", "arguments": {}},
     ]
-    name, args, error = resolve_underlying_call({"calls": calls})
-    assert name is None and "one entry per tool_call" in error
+    name, _args, error = resolve_underlying_call({"calls": calls})
+    assert name is None and "exactly one entry" in error
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
-    monkeypatch.setattr(bridge, "_default_client_factory", lambda: invoked.append("gateway"))
+    monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: invoked.append("gateway"))
     result = json.loads(model_tools.handle_function_call(
         "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
-    assert "one entry per tool_call" in result["error"]
+    assert "exactly one entry" in result["error"]
     assert invoked == []
 
 
@@ -36,7 +36,8 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
 def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe):
     from agent.tool_executor import _unwrap_tool_search_call
     from agent.agent_runtime_helpers import invoke_tool
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools.connectors import live
     from tools.connectors.contract import SettleReason
     from tools.connectors.mcp import apply_answer
@@ -47,9 +48,9 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     # A desktop session: the MCP card exists only there.
     set_session_vars(source="desktop", session_key="current-session", session_id="current-session")
 
-    db = SessionDB(tmp_path / "recall.db")
-    db.create_session("past-session", source="cli")
-    db.append_message("past-session", role="user", content="live-db-proof")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "past-session", "cli")
+    seed_messages(db, "past-session", {"role": "user", "content": "live-db-proof"})
     callbacks = []
     def connection(payload):
         callbacks.append(payload)
@@ -58,16 +59,15 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
             operation = live.get("current-session", payload["op_id"])
             if operation is not None:
                 apply_answer(operation, json.dumps(
-                    {"targets": [{"name": t["name"], "status": "declined"} for t in payload["targets"]]}))
+                    {"targets": [{"name": t["name"], "status": "skipped"} for t in payload["targets"]]}))
                 operation.settle(SettleReason.all_resolved)
 
         threading.Timer(0.02, respond).start()
-        return None
 
     agent = SimpleNamespace(
         enabled_toolsets=["todo", "session_search", "connections"], disabled_toolsets=[],
         session_id="current-session", _todo_store=TodoStore(), _memory_manager=None,
-        _get_session_db_for_recall=lambda: db, connection_callback=connection,
+        _get_session_db_for_recall=lambda: db, persistence=db, connection_callback=connection,
     )
     calls = [
         {"name": "session_search", "arguments": {"session_id": "past-session"}},
@@ -95,3 +95,20 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     finally:
         db.close()
         reset_session_vars()
+
+
+def test_dispatch_connector_batch_guard_echoes_first_entry(monkeypatch):
+    """Direct call: the dispatcher's own local-entry guard (unreachable via tool_call, which
+    partitions first) must reject with the echoed retry shape before any entry runs."""
+    import model_tools
+    from tools.connectors.dispatch import dispatch_connector_batch
+
+    invoked = []
+    monkeypatch.setattr(model_tools, "handle_function_call", lambda *a, **kw: invoked.append(a))
+    calls = [{"name": "session_search", "arguments": {"query": "alpha"}},
+             {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}}]
+    result = json.loads(dispatch_connector_batch(
+        calls, model_tools._CallIds(), user_task=None, enabled_tools=None,
+        middleware_trace=[], enabled_toolsets=None, disabled_toolsets=None))
+    assert 'Retry with only: {"calls":[{"name":"session_search","arguments":{"query":"alpha"}}]}' in result["error"]
+    assert invoked == []

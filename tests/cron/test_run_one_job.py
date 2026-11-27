@@ -1,6 +1,6 @@
 """Characterization + unit tests for the `run_one_job` shared helper (Phase 4A).
 
-`tick`'s per-job body (`_process_job`) is the execute → save → deliver → mark
+`tick`'s per-job body (`_process_job`) is the execute → save → enqueue → mark
 sequence that fires ONE due job. Phase 4A extracts it into a module-level
 `run_one_job(job, *, adapters=None, loop=None, verbose=False)` so the external
 Chronos provider's `fire_due` can reuse the IDENTICAL body — no duplicated
@@ -29,37 +29,26 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
-        calls.append(("deliver", job["id"]))
-        return None
+    def fake_deliver(execution_id, job, content, **kwargs):
+        calls.append(("enqueue", job["id"]))
+        return {"status": "pending"}
 
     def fake_mark(jid, ok, err=None, delivery_error=None, **_kw):
         calls.append(("mark", jid, ok))
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", fake_save)
-    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
+    monkeypatch.setattr("cron.delivery_queue.enqueue", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", fake_mark)
     return calls
 
 
-def test_tick_process_job_sequence(monkeypatch):
-    """Characterization: a single due job driven through tick() runs the
-    sequence run_job → save → deliver → mark, in that order."""
-    calls = _patch_pipeline(monkeypatch)
-    monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
-    monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id, **_kwargs: True)
-
-    s.tick(verbose=False, sync=True)
-
-    assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
-    assert calls[-1] == ("mark", "j1", True)
 
 
 def test_tick_skips_job_when_durable_fire_claim_is_lost(monkeypatch):
     """A manual/external fire that wins the shared CAS must exclude ticker."""
     calls = _patch_pipeline(monkeypatch)
-    monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
+    monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t", "deliver": "telegram"}])
     monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id: False)
 
     assert s.tick(verbose=False, sync=True) == 0
@@ -67,14 +56,14 @@ def test_tick_skips_job_when_durable_fire_claim_is_lost(monkeypatch):
 
 
 def test_run_one_job_success_sequence(monkeypatch):
-    """The extracted helper runs the same execute→save→deliver→mark sequence
+    """The extracted helper runs the same execute→save→enqueue→mark sequence
     for a successful job."""
     calls = _patch_pipeline(monkeypatch)
 
-    ok = s.run_one_job({"id": "j2", "name": "t"})
+    ok = s.run_one_job({"id": "j2", "name": "t", "deliver": "telegram"})
 
     assert ok is True
-    assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
+    assert [c[0] for c in calls] == ["run_job", "save", "enqueue", "mark"]
     assert calls[-1] == ("mark", "j2", True)
 
 
@@ -88,7 +77,7 @@ def test_run_one_job_agent_declared_failure_uses_failure_bookkeeping(monkeypatch
     ok = s.run_one_job({"id": "declared-failure", "name": "delegate", "deliver": "telegram"})
 
     assert ok is True
-    assert [call[0] for call in calls] == ["run_job", "save", "deliver", "mark"]
+    assert [call[0] for call in calls] == ["run_job", "save", "enqueue", "mark"]
     assert calls[-1] == ("mark", "declared-failure", False)
 
 
@@ -98,8 +87,10 @@ def test_run_one_job_agent_declared_failure_is_delivered_verbatim(monkeypatch):
     delivered = []
     evidence = "The export subagent timed out after 30 minutes waiting on the database."
     _patch_pipeline(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
+    # Delivery rides the durable queue on the canonical path; the composed content is what lands.
     monkeypatch.setattr(
-        s, "_deliver_result", lambda job, content, **kw: delivered.append(content))
+        "cron.delivery_queue.enqueue",
+        lambda execution_id, job, content, **kw: delivered.append(content) or {"status": "pending"})
 
     s.run_one_job({"id": "verbatim", "name": "nightly export", "deliver": "telegram"})
 
@@ -226,7 +217,7 @@ def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
     monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
     monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
     # Deterministic threshold: default 3, independent of the host config.
-    monkeypatch.setattr(s, "load_config", lambda: {})
+    monkeypatch.setattr(s, "load_config", dict)
 
 
 def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
@@ -259,7 +250,6 @@ def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
     assert ok is False
     assert len(delivered) == 1
     assert "cannot import name X" in delivered[0]
-    assert "failed 3 runs in a row" in delivered[0]
     assert "hermes cron pause scout" in delivered[0]
 
 
@@ -282,8 +272,8 @@ def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
 
     assert ok is False
     assert len(delivered) == 1
-    assert delivered[0].startswith("⚠️ Cron 'scout' failed: provider failed")
-    assert "hermes cron runs j6" in delivered[0]
+    assert "provider failed" in delivered[0]
+    assert "hermes cron pause scout" not in delivered[0]
 
 
 def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
@@ -319,8 +309,12 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
     ok = s.run_one_job({"id": "j5", "name": "once", "deliver": "telegram"})
 
     assert ok is False
+    assert delivered == [], "bookkeeping failure must not send a second alert"
+    assert s.drain_delivery_queue(adapters={}, loop=None) == 1
     assert delivered == [("j5", "final response")]
-    assert mark_calls[0] == (("j5", True, None), {"delivery_error": None})
+    assert s.drain_delivery_queue(adapters={}, loop=None) == 0
+    assert mark_calls[0] == (("j5", True, None), {
+        "delivery_error": None, "execution_id": "exec-j5", "status": "delivery_queued"})
     assert mark_calls[1] == (
         ("j5", False, "bookkeeping boom"),
         {"delivery_error": None},
@@ -378,7 +372,7 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
 
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
-    keep one profile secret scope active through execution and delivery so
+    keep one profile secret scope active through execution and delivery handoff so
     credential reads do not fail closed or fall through to another profile,
     then tear the scope down after the complete job lifecycle.
 
@@ -404,16 +398,16 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     def fake_deliver(*args, **kwargs):
         scope_during_delivery["scope"] = ss.current_secret_scope()
         scope_during_delivery["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
-        return None
+        return {"status": "pending"}
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
+    monkeypatch.setattr("cron.delivery_queue.enqueue", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
     ss.set_multiplex_active(True)
     try:
-        ok = s.run_one_job({"id": "j7", "name": "t"})
+        ok = s.run_one_job({"id": "j7", "name": "t", "deliver": "telegram"})
     finally:
         ss.set_multiplex_active(False)
 

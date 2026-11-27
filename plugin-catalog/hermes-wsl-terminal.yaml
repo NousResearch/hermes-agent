@@ -1,0 +1,35 @@
+name: hermes-wsl-terminal
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 5bad3fb2baf04ce6befecfefce6d14f4c9c98934
+subdir: wsl-terminal
+description: >-
+  Run Hermes' terminal tools inside an existing WSL distro on Windows: one bash -c per
+  command as the distro's default user, over the same files Windows sees at /mnt/<drive>, with
+  no Docker Desktop, no image and no container to start or tear down. A host cwd is
+  translated (C:\Users\me\proj becomes /mnt/c/Users/me/proj, \\wsl.localhost paths become the
+  distro's own paths) and the mount root is asked once with wslpath, so a distro that moved
+  its automount point still gets correct paths. cwd persists across commands, stdin and exit
+  codes ride through wsl.exe, and hermes doctor / setup and the dashboard picker get real rows
+  (wsl.exe path, WSL version, distros present, selected distro). HERMES_WSL_DISTRO and
+  HERMES_WSL_USER select the distro and the user. Disclosure — this is a full-access backend,
+  not a sandbox: when it is the selected backend, everything the terminal tool runs executes
+  as your user inside your distro, with that distro's files, permissions and network access,
+  so dangerous-command approval stays on and Hermes never stops the distro. The plugin itself
+  reads no credentials, stores nothing and makes no network calls; it spawns wsl.exe per
+  command and wslpath once per distro. It rewrites one core-produced string, the trailing cwd
+  marker, because under WSL a command substitution is handed the directory wsl.exe started in
+  rather than the shell's current one (measurements in the repo's VALIDATION.md); nothing in
+  Hermes is patched or rebound at runtime.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/wsl-terminal
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1685,6 +1685,22 @@ def run_kanban_goal_loop(
     def _result(outcome: str, reason: str) -> dict[str, Any]:
         return {"outcome": outcome, "turns_used": turns_used, "reason": reason}
 
+    def _status_stop() -> dict[str, Any] | None:
+        try:
+            status = task_status_fn()
+        except Exception:
+            logger.warning("kanban goal loop: status check failed; stopping", exc_info=True)
+            return _result("stopped", "status check failed")
+        if (terminal := _KANBAN_TERMINAL_STATUSES.get(status)) is not None:
+            outcome, reason, log_fmt = terminal
+            _log("kanban goal loop: " + log_fmt.format(task_id=task_id, turns=turns_used))
+            return _result(outcome, reason)
+        if status not in ("running", "ready"):
+            # Reclaimed, edited or unexpected — let the dispatcher own it.
+            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
+            return _result("stopped", f"status={status}")
+        return None
+
     def _block(outcome: str, reason: str, message: str) -> dict[str, Any]:
         try:
             if block_fn(message) is not False:
@@ -1702,21 +1718,8 @@ def run_kanban_goal_loop(
     nudged_to_finalize = False
 
     while True:
-        try:
-            status = task_status_fn()
-        except Exception as exc:
-            _log(f"kanban goal loop: status check failed ({exc}); stopping")
-            return _result("stopped", "status check failed")
-
-        terminal = _KANBAN_TERMINAL_STATUSES.get(status)
-        if terminal is not None:
-            outcome, reason, log_fmt = terminal
-            _log("kanban goal loop: " + log_fmt.format(task_id=task_id, turns=turns_used))
-            return _result(outcome, reason)
-        if status not in ("running", "ready"):
-            # Reclaimed / archived / unexpected — let the dispatcher own it.
-            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
-            return _result("stopped", f"status={status}")
+        if (stopped := _status_stop()) is not None:
+            return stopped
 
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
@@ -1728,16 +1731,8 @@ def run_kanban_goal_loop(
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)
-        try:
-            status = task_status_fn()
-        except Exception as exc:
-            _log(f"kanban goal loop: status check failed after judgment ({exc}); stopping")
-            return _result("stopped", "status check failed")
-        terminal = _KANBAN_TERMINAL_STATUSES.get(status)
-        if terminal is not None:
-            return _result(terminal[0], terminal[1])
-        if status not in ("running", "ready"):
-            return _result("stopped", f"Kanban status changed while judging: {status}")
+        if (stopped := _status_stop()) is not None:
+            return stopped
         if _transport_failed:
             _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
             return _result("stopped", "judge transport failure")

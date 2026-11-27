@@ -528,6 +528,23 @@ class TestSendUpdateNotification:
         assert "never connected" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_unstamped_notice_for_never_registered_platform_expires_by_file_age(self, tmp_path):
+        """A marker written before ``timestamp`` existed falls back to the file's age, so a platform that
+        never registers cannot keep it (and a log line per restart) forever."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({"platform": "zz_never_registered", "chat_id": "111"}))
+        (hermes_home / ".update_exit_code").write_text("0")
+        old = (datetime.now() - timedelta(hours=3)).timestamp()
+        os.utime(pending_path, (old, old))
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            assert await runner._send_update_notification() is True
+        assert not pending_path.exists()
+
+    @pytest.mark.asyncio
     async def test_completion_notification_tolerates_invalid_utf8_output(self, tmp_path):
         """Completion-only update notifications must not crash on bad bytes."""
         runner = _make_runner()

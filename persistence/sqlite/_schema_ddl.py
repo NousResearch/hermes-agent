@@ -123,6 +123,51 @@ CREATE TABLE IF NOT EXISTS system_prompts (
     prompt TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS live_voice_calls (
+    id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    closed INTEGER NOT NULL DEFAULT 0,
+    incomplete INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_live_voice_calls_session ON live_voice_calls(session_id);
+
+CREATE TABLE IF NOT EXISTS live_voice_fragments (
+    seq INTEGER PRIMARY KEY,
+    call_id TEXT NOT NULL REFERENCES live_voice_calls(id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    text TEXT,
+    start_ms REAL,
+    end_ms REAL,
+    projection TEXT,
+    UNIQUE (call_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_live_voice_pending
+    ON live_voice_fragments(call_id, seq) WHERE text IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_live_voice_fragment_order ON live_voice_fragments(call_id, seq);
+
+CREATE TABLE IF NOT EXISTS live_voice_markers (
+    call_id TEXT NOT NULL REFERENCES live_voice_calls(id) ON DELETE CASCADE,
+    delegation_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    offset_ms REAL,
+    fragment_seq INTEGER NOT NULL,
+    PRIMARY KEY (call_id, delegation_id),
+    UNIQUE (call_id, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS live_voice_projections (
+    call_id TEXT NOT NULL REFERENCES live_voice_calls(id) ON DELETE CASCADE,
+    projection TEXT NOT NULL,
+    row_id INTEGER UNIQUE REFERENCES messages(id) ON DELETE SET NULL,
+    content_digest TEXT NOT NULL,
+    partial INTEGER NOT NULL,
+    admission_id TEXT,
+    PRIMARY KEY (call_id, projection),
+    UNIQUE (call_id, admission_id)
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     runtime_revision INTEGER NOT NULL DEFAULT 0,

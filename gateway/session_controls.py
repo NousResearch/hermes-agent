@@ -115,7 +115,7 @@ _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
-                               'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
+                               'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats', 'voice.live.start',
                                'session.account_usage',
                                'approval.respond', 'clarify.respond'})
 
@@ -252,7 +252,8 @@ class AuthorityConnection:
                     'plugins.list': self.plugins_list, 'command.observe': self.command_observe,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
-                    'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
+                    'session.mutate': self.mutate, 'voice.live.start': self.voice_live_start,
+                    'bot_relay.deliver': self.bot_deliver,
                     'bot_relay.settle': self.bot_settle, 'bot_relay.cancel': self.bot_cancel,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
@@ -918,6 +919,10 @@ class AuthorityConnection:
             # The owner stamps the turn with the connection's announced label; the wire cannot.
             payload['client'] = self.client
         return Submission(request_id, ref, payload, 'queue')
+
+    async def voice_live_start(self, ref, params):
+        from gateway.session_voice_capture import start_live_voice
+        return await start_live_voice(self.authority, self.actor, ref, params['sdp'], params.get('history'))
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session

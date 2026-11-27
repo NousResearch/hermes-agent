@@ -7,6 +7,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import base64
 import binascii
 import contextlib
+from functools import partial
 import logging
 import queue
 import tempfile
@@ -191,7 +192,7 @@ async def get_voice_live_status(profile: Optional[str] = None):
 
 
 @router.post("/api/audio/voice-live/session")
-async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: Optional[str] = None):
+async def create_voice_live_session(payload: VoiceLiveSessionRequest, request: Request, profile: Optional[str] = None):
     """Exchange the renderer's WebRTC SDP offer for a GPT-Live session answer.
 
     The project API key stays on this host; the renderer only receives the session id and the
@@ -204,13 +205,46 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     sdp = payload.sdp or ""
     if not sdp.strip():
         raise HTTPException(status_code=400, detail="An SDP offer is required")
+    if payload.session_id:
+        result = await _start_chat_voice(request, profile, payload.session_id, sdp, payload.history)
+        if result is not None:
+            return {"ok": True, **result}
+
     try:
         result = await _run_config_scoped(profile, lambda: create_webrtc_session(sdp, payload.history))
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=client_error(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=client_error(exc))
-    return {"ok": True, **result}
+    return {"ok": True, **result, 'capture_status': 'unavailable'}
+
+
+async def _start_chat_voice(request, profile, session_id, sdp, history):
+    from pathlib import Path
+
+    from gateway.session_contract import SessionRef
+    from gateway.session_voice_capture import negotiate_live_voice, start_live_voice
+    from hermes_cli.web_server_sessions import _MUTATION_REFUSAL_STATUS, _native_history_transport, _session_mutation_context
+    from hermes_cli.web_voice_local import find_local_voice_chat, start_local_capture
+    from hermes_cli.web_voice_owner import start_via_voice_owner
+    from persistence.core.errors import AuthorityRefusal
+
+    owner, actor = _session_mutation_context(request, profile)
+    try:
+        if owner is not None:
+            with _native_history_transport(request, owner, actor):
+                return await start_live_voice(owner, actor, SessionRef(owner.profile_id, session_id), sdp, history)
+        chat = await asyncio.to_thread(find_local_voice_chat, actor, session_id)
+        if chat is None:
+            return await start_via_voice_owner(Path(actor.profile_id), actor, session_id, sdp, history)
+        result, key, base = await _run_config_scoped(profile, partial(negotiate_live_voice, sdp, history))
+        recording = await start_local_capture(chat, actor, result['session']['id'], api_key=key, base_url=base)
+        return {**result, 'capture_status': 'recording' if recording else 'unavailable'}
+    except AuthorityRefusal as exc:
+        status = {'voice_provider_unavailable': 502, 'voice_capture_unavailable': 503}.get(
+            exc.reason, _MUTATION_REFUSAL_STATUS.get(exc.reason, 409),
+        )
+        raise HTTPException(status_code=status, detail=exc.reason) from None
 
 
 def _elevenlabs_voice_label(voice: dict[str, Any]) -> str:

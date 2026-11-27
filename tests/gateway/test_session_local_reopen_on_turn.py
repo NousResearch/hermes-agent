@@ -1,4 +1,5 @@
 """Mounting a finalized local session is a read; the first admitted turn reopens it (#85303)."""
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +42,43 @@ async def test_resuming_a_finalized_local_session_leaves_it_ended(tmp_path, monk
         assert (row['end_reason'], row['ended_at'] is not None) == ('tui_shutdown', True), \
             'a mount with no new activity must not re-light a finalized row'
     finally:
+        await connection.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
+async def test_voice_capture_reopens_a_resumed_local_chat_without_an_admission(tmp_path, monkeypatch):
+    from persistence.conversation.live_voice import VoiceFragment
+
+    authority, connection, ref = await _ended_local_session(tmp_path, monkeypatch)
+
+    @asynccontextmanager
+    async def sideband(*args, **kwargs):
+        async def events():
+            yield VoiceFragment('recorded', 'assistant', 'Welcome back.', 0, 400)
+            yield None
+        yield events()
+
+    monkeypatch.setattr('gateway.session_voice_capture.voice_capture_socket', sideband)
+    monkeypatch.setattr('tools.voice_live._resolve_credentials', lambda _: ('fixture-key', 'https://example.invalid'))
+    monkeypatch.setattr('tools.voice_live.create_webrtc_session', lambda *_a, **_kw: {
+        'session': {'id': 'test-call'}, 'transport': {'type': 'webrtc', 'sdp': 'answer'},
+    })
+    try:
+        args = {'session_id': ref.session_id}
+        resumed = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': args})
+        assert 'result' in resumed, resumed
+        started = await connection.dispatch({'id': 2, 'method': 'voice.live.start', 'params': {**args, 'sdp': 'offer'}})
+        assert started.get('result', {}).get('capture_status') == 'recording', started
+        await authority.voice_captures.tasks['test-call']
+        row = session_row(authority.persistence, ref.session_id)
+        assert row is not None and row['ended_at'] is None
+        assert [row.content for row in authority.persistence.messages.read_transcript(ref.session_id)] == [
+            'earlier turn', 'Welcome back.',
+        ]
+        assert not authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)
+    finally:
+        await authority.voice_captures.close()
         await connection.close()
         close_stores_under(authority.persistence.scope.profile_dir)
 

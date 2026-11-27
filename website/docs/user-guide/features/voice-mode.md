@@ -12,6 +12,20 @@ If you want a practical setup walkthrough with recommended configurations and re
 
 For hands-free session start — saying "hey hermes" (or any phrase) to open a fresh voice session on the CLI, TUI, or desktop app — see [Wake Word](./wake-word.md).
 
+## Recording GPT-Live calls through the API
+
+An authenticated client can record a GPT-Live call in an existing authorized chat by posting a real WebRTC SDP offer and the chat ID to `POST /api/audio/voice-live/session`:
+
+```json
+{"sdp": "<WebRTC SDP offer>", "session_id": "<chat session id>", "history": []}
+```
+
+Include the normal session authentication and, when appropriate, the profile selector. A `capture_status` of `recording` means the sideband recorder attached when the call started; it doesn't guarantee every word is saved. `unavailable` means the call is not being saved. The response also contains the SDP answer needed to finish the WebRTC connection.
+
+Recording does not itself submit a prompt or run an agent turn; a separate client submission can still do so. Stock Desktop does not yet send the chat ID for this API, so its calls remain unsaved.
+
+Saved words enter model history like any other message, including the voice's spoken readings of written replies.
+
 ## Prerequisites
 
 Before using voice features, make sure you have:

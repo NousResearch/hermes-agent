@@ -71,6 +71,44 @@ async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path
 
 
 
+
+@pytest.mark.asyncio
+async def test_pending_voice_tail_is_published_before_the_next_typed_claim(tmp_path, monkeypatch):
+    from gateway.session_contract import SessionRef
+    from gateway.session_controls import AuthorityConnection
+    from persistence.conversation.live_voice import VoiceFragment
+
+    authority = await _authority(tmp_path, monkeypatch, lambda _: pytest.fail('Only claim the turn'))
+    monkeypatch.setattr(type(authority), '_schedule_admitted', lambda *_: None)
+    live = authority.sessions['s']
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    messages = authority.persistence.messages
+    call = messages.start_voice_capture('s', 'tail')
+    messages.ingest_voice_fragment(call, VoiceFragment('spoken', 'assistant', 'The last answer.', 0, 500))
+    assert authority.persistence.coordination.try_acquire_turn_lease(session_id='s', holder='previous-turn')
+    messages.finish_voice_capture(call, incomplete=False)
+    assert messages.read_transcript('s') == ()
+    # The provider close is already committed, but the capture task has not
+    # finished its final projection and removed itself from the registry.
+    monkeypatch.setitem(authority.voice_captures.tasks, call, asyncio.current_task())
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        opened = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        assert 'result' in opened, opened
+        queued = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
+            'session_id': 's', 'submission_id': 'typed', 'text': 'What did you say?'}})
+        assert queued.get('result', {}).get('status') == 'queued', queued
+        authority.persistence.coordination.release_turn_lease(session_id='s', holder='previous-turn')
+        claimed, _ = await authority._claim_next(SessionRef('p', 's'), live)
+        assert claimed['request_id'] == 'typed'
+        assert [(row.role, row.content) for row in messages.read_transcript('s')] == [('assistant', 'The last answer.')]
+        event_types = [frame['params']['type'] for frame in frames]
+        assert event_types.index('voice.live.capture') < event_types.index('message.start')
+    finally:
+        await connection.close()
+
+
 @pytest.mark.asyncio
 async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monkeypatch):
     """A spoken voice-mode turn (TUI/Desktop ``voice_turn``) rides canonical admission to the turn

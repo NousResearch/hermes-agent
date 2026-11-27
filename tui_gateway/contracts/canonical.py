@@ -113,6 +113,22 @@ canonical_method("session.mutate", params=SessionMutateParams, result=SessionMut
                      "delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import).")
 
 
+class VoiceLiveStartParams(Params):
+    session_id: str
+    sdp: str
+    history: list[dict[str, JsonValue]] | None = None
+
+
+class VoiceLiveStartResult(Result):
+    session: dict[str, JsonValue]
+    transport: dict[str, JsonValue]
+    capture_status: Literal['recording', 'unavailable']
+
+
+canonical_method('voice.live.start', params=VoiceLiveStartParams, result=VoiceLiveStartResult,
+                 doc='Negotiate GPT-Live for an authorized chat and attach its owner-side transcript capture.')
+
+
 class SessionPruneParams(Params):
     """Exactly one of ``filters`` (``older_than_days``, ``source`` and ``PruneCriteria`` fields, as
     ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``)."""
